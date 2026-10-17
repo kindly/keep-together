@@ -8,7 +8,7 @@ import { internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
 import { internalMutation, internalQuery, query } from '../_generated/server'
-import { requireMember, roleOf } from '../lib/tenancy'
+import { requireMember } from '../lib/tenancy'
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/
 
@@ -37,7 +37,7 @@ export const mine = query({
       memberships.map(async (m) => {
         const t = await ctx.db.get(m.tenantId)
         return t && t.status === 'active'
-          ? { _id: t._id, slug: t.slug, name: t.name, role: roleOf(m) }
+          ? { _id: t._id, slug: t.slug, name: t.name, role: m.role }
           : null
       }),
     )
@@ -67,7 +67,7 @@ export const bySlug = query({
       _id: tenant._id,
       slug: tenant.slug,
       name: tenant.name,
-      role: roleOf(membership),
+      role: membership.role,
     }
   },
 })
@@ -86,7 +86,7 @@ export const members = query({
         const user = await ctx.db.get(m.userId)
         return {
           userId: m.userId,
-          role: roleOf(m),
+          role: m.role,
           name: user?.name ?? user?.email ?? 'someone',
         }
       }),

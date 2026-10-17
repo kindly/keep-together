@@ -62,7 +62,7 @@ describe('scoped db queries', () => {
 describe('requireMember', () => {
   test('returns the caller’s role in that tenant only', async () => {
     const { t, a, b } = await setup()
-    const member = async (role: 'admin' | 'staff' | 'viewer' | 'owner') => {
+    const member = async (role: 'admin' | 'staff' | 'viewer') => {
       const userId = await t.run(async (ctx) => {
         const id = await ctx.db.insert('users', {})
         await ctx.db.insert('memberships', {
@@ -87,7 +87,5 @@ describe('requireMember', () => {
         kind: 'forbidden',
       })
     }
-    // Until the backfill has run everywhere, an 'owner' row is an admin.
-    expect(await roleIn(await member('owner'), a.tenantId)).toBe('admin')
   })
 })

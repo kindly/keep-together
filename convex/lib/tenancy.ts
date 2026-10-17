@@ -65,12 +65,7 @@ import type {
 import { ALL_TABLES, hasTenantId } from './tables'
 
 /** A tenant role (ADR 0020). */
-export type Role = Exclude<Doc<'memberships'>['role'], 'owner'>
-
-/** A membership's role; a not-yet-backfilled 'owner' reads as 'admin'. */
-export function roleOf(membership: Doc<'memberships'>): Role {
-  return membership.role === 'owner' ? 'admin' : membership.role
-}
+export type Role = Doc<'memberships'>['role']
 
 export type TenantScope = {
   tenant: Doc<'tenants'>
@@ -282,7 +277,7 @@ export async function requireMember(
     .unique()
   if (!membership) throw new ConvexError({ kind: 'forbidden' as const })
   const tenant = await loadTenant(ctx, tenantId)
-  return { tenant, membership, role: roleOf(membership), userId }
+  return { tenant, membership, role: membership.role, userId }
 }
 
 // ── constructors ───────────────────────────────────────────────────────────

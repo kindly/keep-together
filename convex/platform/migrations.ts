@@ -12,15 +12,9 @@
  * deployment; `'{"fn":"…","dryRun":true}'` to try one batch without
  * committing.) Tighten the schema only once it reports `isDone: true` on
  * every deployment that will take the tightening; the tightening commit
- * deletes the backfill and its test.
+ * deletes the backfill and its test. Past backfills: `ownerToAdmin`
+ * (auth-roles R1, see git log).
  */
 import { migrations } from '../lib/migrations'
 
 export const run = migrations.runner()
-
-/** auth-roles R1: memberships.role 'owner' is renamed 'admin'. */
-export const ownerToAdmin = migrations.define({
-  table: 'memberships',
-  migrateOne: (_ctx, membership) =>
-    membership.role === 'owner' ? { role: 'admin' as const } : undefined,
-})
