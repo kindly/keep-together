@@ -63,6 +63,27 @@ are not spawned by `spawn.sh`; the human starts you and points you here.
 
 ## Tearing down
 
-- Close only tabs the factory created (`herdr tab close <tab-id>`).
-- Remove a worktree (`git worktree remove`) only after its branch is
-  merged or the human drops it, and mark the row closed in the roster.
+A worker lives for one task (plus its fix rounds), not for a role. The
+next task gets a fresh worker; context lives in plan pages, commits and
+`factory/out/`, not in a tab. Close only tabs the factory created
+(`herdr tab close <tab-id>`), and drop the worker's row from the board
+in the same step.
+
+| Worker | Tear down when |
+|---|---|
+| builder | its branch is merged into `main` and pushed, or the human drops it. Close the tab, `git worktree remove` the worktree (it must be clean), delete the merged local branch. A dropped branch is kept unless the human says delete. |
+| reviewer / tester | the branch they checked is merged or dropped. They stay up until then, for re-review of fix rounds. |
+| planner | its plan is **confirmed** (final grill round sent) and it has no other task. The page stays; a later question about the plan goes to a fresh planner that reads the page. A planner holding several plans goes when the last one is confirmed. |
+
+Plan pages move through two sideview categories:
+
+- **plans**: from the first block until the plan is **complete**, i.e. every
+  step merged, or the human drops the rest. Builds read the page from here.
+- **archive**: set `category="archive"` in the page's `<sv-page>` tag once
+  complete, and add a closing line at the top of the design tree
+  (`Complete <date>: all steps merged, last commit <sha>`, or `Dropped
+  <date>: <reason>`). Follow-on plans named in it keep their own pages.
+  Archived pages stay committed and readable; nothing is deleted.
+
+Never tear down a worker that is `working` or `blocked`, or one whose
+report you haven't read. When in doubt, ask the human.

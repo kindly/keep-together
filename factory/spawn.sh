@@ -24,6 +24,12 @@ if [[ -n $branch ]]; then
     git -C "$repo" worktree add -b "$branch" "$cwd" HEAD >&2
     (cd "$cwd" && pnpm install --frozen-lockfile >&2)
   fi
+  # Local, gitignored Claude settings (e.g. the pnpm qc sandbox exclusion) don't
+  # travel with the worktree; copy them so every worker gets the same rules.
+  if [[ -f $repo/.claude/settings.json ]]; then
+    mkdir -p "$cwd/.claude"
+    cp -f "$repo/.claude/settings.json" "$cwd/.claude/settings.json"
+  fi
 fi
 
 tab=$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$cwd" --label "$name" --no-focus)

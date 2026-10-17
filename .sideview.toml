@@ -2,6 +2,7 @@
 #   factory  controller board (worker roster, what needs the human)
 #   plans    one page per plan, grill rounds included: factory/plans/*.sv
 #            (each .sv sets category="plans" in its own <sv-page> tag)
+#   archive  completed or dropped plans (same files, category flipped)
 #   spikes   docs/spikes/*.md
 #   docs     reference docs
 #   notes    session scratch pages
@@ -66,6 +67,19 @@ order = 5
 path = "docs/spikes/06-dev-instances.md"
 label = "06 dev instances"
 category = "spikes"
+order = 6
+
+[[pages]]
+path = "docs/spikes/07-qc-harness.md"
+label = "07 QC harness"
+category = "spikes"
+order = 7
+
+[[pages]]
+path = "docs/decisions/0018-qc-live-dev-instances.md"
+id = "adr-0018-qc"
+label = "ADR 0018: QC (proposed)"
+category = "docs"
 order = 6
 
 [[pages]]
