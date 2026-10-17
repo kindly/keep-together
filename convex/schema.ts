@@ -50,7 +50,15 @@ export default defineSchema({
   memberships: defineTable({
     tenantId: v.id('tenants'),
     userId: v.id('users'),
-    role: v.union(v.literal('owner'), v.literal('staff')),
+    // 'owner' is admin's pre-R1 name (auth-roles R1): new rows are written
+    // as 'admin', platform/migrations:ownerToAdmin rewrites the old ones,
+    // and the next schema change drops 'owner'.
+    role: v.union(
+      v.literal('admin'),
+      v.literal('staff'),
+      v.literal('viewer'),
+      v.literal('owner'),
+    ),
   })
     .index('by_tenant_user', ['tenantId', 'userId'])
     .index('by_user', ['userId']),

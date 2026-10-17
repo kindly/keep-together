@@ -50,12 +50,12 @@ test('two users, two tenants, each user a member of their own tenant only', asyn
     {
       tenantId: tenantA.tenantId,
       email: 'qc-r7w1-a@example.com',
-      role: 'owner',
+      role: 'admin',
     },
     {
       tenantId: tenantB.tenantId,
       email: 'qc-r7w1-b@example.com',
-      role: 'owner',
+      role: 'admin',
     },
   ])
 })
@@ -191,7 +191,7 @@ test('a slug held by someone else is refused, not duplicated', async () => {
       name: 'A real group',
       status: 'active',
     })
-    await ctx.db.insert('memberships', { tenantId, userId, role: 'owner' })
+    await ctx.db.insert('memberships', { tenantId, userId, role: 'admin' })
   })
   expect(
     await errorData(

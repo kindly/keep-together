@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 /**
  * The two-tenant fixture every test uses (ADR 0017): tenants A and B with one
- * owner each, reference data seeded, and `snapshot` to assert that tenant B
+ * admin each, reference data seeded, and `snapshot` to assert that tenant B
  * observes nothing of tenant A's operations.
  */
 import { convexTest } from 'convex-test'
@@ -32,7 +32,7 @@ export async function setup() {
         name: slug,
         status: 'active',
       })
-      await ctx.db.insert('memberships', { tenantId, userId, role: 'owner' })
+      await ctx.db.insert('memberships', { tenantId, userId, role: 'admin' })
       return { tenantId, userId }
     })
     await t.mutation(internal.contacts.seed.relationshipTypes, {

@@ -5,7 +5,7 @@ export type Tenant = {
   _id: Id<'tenants'>
   slug: string
   name: string
-  role: 'owner' | 'staff'
+  role: 'admin' | 'staff' | 'viewer'
 }
 
 export const TenantContext = createContext<Tenant | null>(null)

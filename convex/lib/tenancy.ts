@@ -64,9 +64,19 @@ import type {
 } from '../_generated/server'
 import { ALL_TABLES, hasTenantId } from './tables'
 
+/** A tenant role (ADR 0020). */
+export type Role = Exclude<Doc<'memberships'>['role'], 'owner'>
+
+/** A membership's role; a not-yet-backfilled 'owner' reads as 'admin'. */
+export function roleOf(membership: Doc<'memberships'>): Role {
+  return membership.role === 'owner' ? 'admin' : membership.role
+}
+
 export type TenantScope = {
   tenant: Doc<'tenants'>
   membership: Doc<'memberships'> | null
+  /** The caller's role; null in internal functions (no caller). */
+  role: Role | null
   userId: Id<'users'> | null
 }
 
@@ -272,7 +282,7 @@ export async function requireMember(
     .unique()
   if (!membership) throw new ConvexError({ kind: 'forbidden' as const })
   const tenant = await loadTenant(ctx, tenantId)
-  return { tenant, membership, userId }
+  return { tenant, membership, role: roleOf(membership), userId }
 }
 
 // ── constructors ───────────────────────────────────────────────────────────
@@ -307,7 +317,12 @@ export const internalTenantQuery = customQuery(internalQuery, {
   args: tenantArgs,
   input: async (ctx, { tenantId }) => {
     const tenant = await loadTenant(ctx, tenantId)
-    const scope: TenantScope = { tenant, membership: null, userId: null }
+    const scope: TenantScope = {
+      tenant,
+      membership: null,
+      role: null,
+      userId: null,
+    }
     return { ctx: { ...scope, db: scopeReader(ctx, tenantId) }, args: {} }
   },
 })
@@ -316,7 +331,12 @@ export const internalTenantMutation = customMutation(internalMutation, {
   args: tenantArgs,
   input: async (ctx, { tenantId }) => {
     const tenant = await loadTenant(ctx, tenantId)
-    const scope: TenantScope = { tenant, membership: null, userId: null }
+    const scope: TenantScope = {
+      tenant,
+      membership: null,
+      role: null,
+      userId: null,
+    }
     return { ctx: { ...scope, db: scopeWriter(ctx, tenantId) }, args: {} }
   },
 })

@@ -7,7 +7,11 @@ import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import { TEST_TENANT, TEST_USERS } from './testSeed'
 import { DONOR_COUNT, generateDonors } from './testSeedData'
 
-const passwords = { owner: 'owner-password-123', staff: 'staff-password-123' }
+const passwords = {
+  admin: 'admin-password-123',
+  staff: 'staff-password-123',
+  viewer: 'viewer-password-123',
+}
 
 // convex-test runs functions in this process, and `env` from
 // _generated/server is process.env, so stubbing it reaches them.
@@ -128,21 +132,21 @@ test('100 donors land in the seeded tenant only, through contracts', async () =>
     await snapshot(t, b.tenantId),
   ]).toEqual(before)
 
-  const owner = await t.run(async (ctx) => {
+  const admin = await t.run(async (ctx) => {
     const user = await ctx.db
       .query('users')
-      .withIndex('email', (q) => q.eq('email', TEST_USERS.owner.email))
+      .withIndex('email', (q) => q.eq('email', TEST_USERS.admin.email))
       .unique()
     return user!._id
   })
-  const asOwner = t.withIdentity({ subject: `${owner}|session` })
-  const list = await asOwner.query(api.contacts.queries.list, {
+  const asAdmin = t.withIdentity({ subject: `${admin}|session` })
+  const list = await asAdmin.query(api.contacts.queries.list, {
     tenantId: world.tenantId,
   })
   expect(list.length).toBeGreaterThan(0)
-  // The seeded owner can't see the fixture's tenants.
+  // The seeded admin can't see the fixture's tenants.
   await expect(
-    asOwner.query(api.contacts.queries.list, { tenantId: a.tenantId }),
+    asAdmin.query(api.contacts.queries.list, { tenantId: a.tenantId }),
   ).rejects.toThrow()
 
   const { contacts, revisions, notes, links } = await t.run(async (ctx) => {
@@ -161,7 +165,7 @@ test('100 donors land in the seeded tenant only, through contracts', async () =>
     donors.filter((d) => d.archived).length,
   )
   expect(notes).toHaveLength(donors.flatMap((d) => d.notes).length)
-  expect(notes.every((n) => n.createdBy === owner)).toBe(true)
+  expect(notes.every((n) => n.createdBy === admin)).toBe(true)
   expect(links).toHaveLength(relationships.length)
   // Every contact was created by contacts.details and has its methods and
   // addresses slices.
@@ -204,6 +208,7 @@ test('a changed password replaces the stored one; the same one keeps it', async 
   const after = await secrets()
   expect(after[0]).toBe(first[0])
   expect(after[1]).not.toBe(first[1])
+  expect(after[2]).toBe(first[2])
 })
 
 test('a missing password is refused before anything is written', async () => {
@@ -212,10 +217,10 @@ test('a missing password is refused before anything is written', async () => {
   expect(
     await errorData(
       t.action(internal.platform.testSeed.seed, {
-        passwords: { owner: passwords.owner },
+        passwords: { admin: passwords.admin },
       }),
     ),
-  ).toEqual({ kind: 'missing_password', missing: ['staff'] })
+  ).toEqual({ kind: 'missing_password', missing: ['staff', 'viewer'] })
   expect(await count(t)).toEqual(counts)
 })
 
@@ -234,7 +239,7 @@ test('every function refuses unless TEST_SEED_ENABLED is "1"', async () => {
   expect(
     await errorData(
       t.mutation(internal.platform.testSeed.tenant, {
-        members: [{ role: 'owner', userId: a.userId }],
+        members: [{ role: 'admin', userId: a.userId }],
       }),
     ),
   ).toMatchObject({ kind: 'disabled' })

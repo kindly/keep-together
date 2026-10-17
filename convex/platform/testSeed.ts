@@ -2,7 +2,7 @@
  * The manual-test instances' world (dev/demo and dev/preview, seeded by
  * scripts/test-instances.mjs): one tenant, one password user per
  * membership role, and 100 varied donors from ./testSeedData. Internal,
- * and only on deployments with `TEST_SEED_ENABLED=1` (it creates owners
+ * and only on deployments with `TEST_SEED_ENABLED=1` (it creates admins
  * with passwords the operator chose).
  *
  * Idempotent: users, tenant and memberships are ensured, and donors are
@@ -11,14 +11,13 @@
  * existing account. Reset is the script's job (an empty snapshot import).
  *
  *   npx convex run platform/testSeed:users
- *   npx convex run platform/testSeed:seed '{"passwords":{"owner":"…","staff":"…"}}'
+ *   npx convex run platform/testSeed:seed '{"passwords":{"admin":"…","staff":"…","viewer":"…"}}'
  */
 import {
   createAccount,
   modifyAccountCredentials,
 } from '@convex-dev/auth/server'
 import { ConvexError, v } from 'convex/values'
-import type { Infer } from 'convex/values'
 import { internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
 import {
@@ -29,6 +28,7 @@ import {
 } from '../_generated/server'
 import { commandGroup, executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
+import type { Role } from '../lib/tenancy'
 import {
   addresses,
   archive,
@@ -45,15 +45,15 @@ import { DONOR_COUNT, generateDonors } from './testSeedData'
 import { insertTenant, tenantForSlug } from './tenants'
 
 const role = schema.tables.memberships.validator.fields.role
-type Role = Infer<typeof role>
 
 /**
- * One sign-in per membership role. `satisfies` makes a new role (R1's
- * `viewer`) a type error here until it gets its line.
+ * One sign-in per membership role. `satisfies` makes a new role a type
+ * error here until it gets its line.
  */
 export const TEST_USERS = {
-  owner: { email: 'owner@keep-together.example', name: 'Olu Adeyemi' },
+  admin: { email: 'admin@keep-together.example', name: 'Olu Adeyemi' },
   staff: { email: 'staff@keep-together.example', name: 'Sam Kowalski' },
+  viewer: { email: 'viewer@keep-together.example', name: 'Vic Okafor' },
 } satisfies Record<Role, { email: string; name: string }>
 
 export const TEST_TENANT = {
@@ -124,7 +124,7 @@ export const seed = internalAction({
       }
       members.push({ role: r, userId })
     }
-    const owner = members.find((m) => m.role === 'owner')!.userId
+    const admin = members.find((m) => m.role === 'admin')!.userId
     const tenantId: Id<'tenants'> = await ctx.runMutation(
       internal.platform.testSeed.tenant,
       { members },
@@ -135,7 +135,7 @@ export const seed = internalAction({
         internal.platform.testSeed.donors,
         {
           tenantId,
-          actor: owner,
+          actor: admin,
           from,
           to: Math.min(from + BATCH, DONOR_COUNT),
         },
@@ -160,12 +160,12 @@ export const tenant = internalMutation({
   },
   handler: async (ctx, { members }) => {
     requireEnabled()
-    const owner = members.find((m) => m.role === 'owner')
-    if (!owner) throw new Error('test seed: no owner among the members')
+    const admin = members.find((m) => m.role === 'admin')
+    if (!admin) throw new Error('test seed: no admin among the members')
     const existing = await tenantForSlug(ctx, TEST_TENANT.slug)
     const tenantId =
       existing?._id ??
-      (await insertTenant(ctx, { ...TEST_TENANT, adminUserId: owner.userId }))
+      (await insertTenant(ctx, { ...TEST_TENANT, adminUserId: admin.userId }))
     for (const { role: r, userId } of members) {
       const membership = await ctx.db
         .query('memberships')

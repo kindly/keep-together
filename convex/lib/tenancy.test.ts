@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import { api } from '../_generated/api'
-import { setup } from '../../test/fixture'
-import { scopeReader } from './tenancy'
+import type { Id } from '../_generated/dataModel'
+import { errorData, setup } from '../../test/fixture'
+import { requireMember, scopeReader } from './tenancy'
 
 const contact = (lastName: string) => ({
   kind: 'individual' as const,
@@ -55,5 +56,38 @@ describe('scoped db queries', () => {
       all: ['Ames', 'Byrne', 'Cole'],
       iterated: ['Cole', 'Byrne', 'Ames'],
     })
+  })
+})
+
+describe('requireMember', () => {
+  test('returns the caller’s role in that tenant only', async () => {
+    const { t, a, b } = await setup()
+    const member = async (role: 'admin' | 'staff' | 'viewer' | 'owner') => {
+      const userId = await t.run(async (ctx) => {
+        const id = await ctx.db.insert('users', {})
+        await ctx.db.insert('memberships', {
+          tenantId: a.tenantId,
+          userId: id,
+          role,
+        })
+        return id
+      })
+      return t.withIdentity({ subject: `${userId}|session-${role}` })
+    }
+    const roleIn = (
+      as: ReturnType<typeof t.withIdentity>,
+      tenantId: Id<'tenants'>,
+    ) => as.run(async (ctx) => (await requireMember(ctx, tenantId)).role)
+
+    expect(await roleIn(a.as, a.tenantId)).toBe('admin')
+    for (const role of ['admin', 'staff', 'viewer'] as const) {
+      const as = await member(role)
+      expect(await roleIn(as, a.tenantId)).toBe(role)
+      expect(await errorData(roleIn(as, b.tenantId))).toEqual({
+        kind: 'forbidden',
+      })
+    }
+    // Until the backfill has run everywhere, an 'owner' row is an admin.
+    expect(await roleIn(await member('owner'), a.tenantId)).toBe('admin')
   })
 })

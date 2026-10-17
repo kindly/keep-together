@@ -5,7 +5,7 @@ import migrations from '@convex-dev/migrations/convex.config.js'
 // Typed app env vars, read as `env` from ./_generated/server.
 const app = defineApp({
   env: {
-    // "1" lets platform/qcSeed create known-password owners (QC pool only).
+    // "1" lets platform/qcSeed create known-password admins (QC pool only).
     QC_SEED_ENABLED: v.optional(v.string()),
     // "1" lets platform/testSeed create the manual-test instances' users
     // (dev/demo and dev/preview only; scripts/test-instances.mjs sets it).

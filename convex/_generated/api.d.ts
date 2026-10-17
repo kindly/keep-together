@@ -29,6 +29,7 @@ import type * as lib_password from "../lib/password.js";
 import type * as lib_tables from "../lib/tables.js";
 import type * as lib_tenancy from "../lib/tenancy.js";
 import type * as platform_devSeed from "../platform/devSeed.js";
+import type * as platform_migrations from "../platform/migrations.js";
 import type * as platform_qcSeed from "../platform/qcSeed.js";
 import type * as platform_tenants from "../platform/tenants.js";
 import type * as platform_testSeed from "../platform/testSeed.js";
@@ -62,6 +63,7 @@ declare const fullApi: ApiFromModules<{
   "lib/tables": typeof lib_tables;
   "lib/tenancy": typeof lib_tenancy;
   "platform/devSeed": typeof platform_devSeed;
+  "platform/migrations": typeof platform_migrations;
   "platform/qcSeed": typeof platform_qcSeed;
   "platform/tenants": typeof platform_tenants;
   "platform/testSeed": typeof platform_testSeed;

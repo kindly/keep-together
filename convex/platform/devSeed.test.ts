@@ -35,7 +35,7 @@ test('demoTenant makes an existing user with adminEmail the admin', async () => 
 
   expect(admin).toBe(userId)
   expect(await adminsOf(t, tenantId)).toEqual([
-    { userId, email: 'me@example.org', role: 'owner' },
+    { userId, email: 'me@example.org', role: 'admin' },
   ])
   const users = await t.run((ctx) =>
     ctx.db
@@ -54,7 +54,7 @@ test('demoTenant without adminEmail creates <slug>-admin@example.com', async () 
   )
   await t.finishAllScheduledFunctions(() => {})
   expect(await adminsOf(t, tenantId)).toEqual([
-    { userId, email: 'demo-admin@example.com', role: 'owner' },
+    { userId, email: 'demo-admin@example.com', role: 'admin' },
   ])
   const types = await t.run((ctx) =>
     ctx.db

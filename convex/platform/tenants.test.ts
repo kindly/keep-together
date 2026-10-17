@@ -44,9 +44,9 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
     name: 'Anytown Village Hall',
     status: 'active',
   })
-  // Exactly one membership, the admin's. R1 renames 'owner' to 'admin'.
+  // Exactly one membership, the admin's.
   expect(memberships.map((m) => [m.userId, m.role])).toEqual([
-    [userId, 'owner'],
+    [userId, 'admin'],
   ])
   expect(types.length).toBeGreaterThan(0)
 
@@ -56,7 +56,7 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
       _id: tenantId,
       slug: 'anytown-hall',
       name: 'Anytown Village Hall',
-      role: 'owner',
+      role: 'admin',
     },
   ])
 })

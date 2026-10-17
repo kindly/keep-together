@@ -8,7 +8,7 @@ import { internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
 import { internalMutation, internalQuery, query } from '../_generated/server'
-import { requireMember } from '../lib/tenancy'
+import { requireMember, roleOf } from '../lib/tenancy'
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/
 
@@ -37,7 +37,7 @@ export const mine = query({
       memberships.map(async (m) => {
         const t = await ctx.db.get(m.tenantId)
         return t && t.status === 'active'
-          ? { _id: t._id, slug: t.slug, name: t.name, role: m.role }
+          ? { _id: t._id, slug: t.slug, name: t.name, role: roleOf(m) }
           : null
       }),
     )
@@ -67,7 +67,7 @@ export const bySlug = query({
       _id: tenant._id,
       slug: tenant.slug,
       name: tenant.name,
-      role: membership.role,
+      role: roleOf(membership),
     }
   },
 })
@@ -86,7 +86,7 @@ export const members = query({
         const user = await ctx.db.get(m.userId)
         return {
           userId: m.userId,
-          role: m.role,
+          role: roleOf(m),
           name: user?.name ?? user?.email ?? 'someone',
         }
       }),
@@ -145,11 +145,10 @@ export async function insertTenant(
     name: args.name.trim(),
     status: 'active',
   })
-  // R1 renames the role to 'admin'; 'owner' is today's admin.
   await ctx.db.insert('memberships', {
     tenantId,
     userId: args.adminUserId,
-    role: 'owner',
+    role: 'admin',
   })
   // Reference data lands after commit, through the scoped constructors.
   await ctx.scheduler.runAfter(0, internal.contacts.seed.relationshipTypes, {

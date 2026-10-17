@@ -4,7 +4,7 @@
  * two tenants, user A owning tenant A only and user B tenant B only, with
  * distinctive contact names so the isolation spec can look for leaks.
  * Internal: run from the QC harness via the CLI, and only on deployments
- * with `QC_SEED_ENABLED=1` (it creates owners with a known password).
+ * with `QC_SEED_ENABLED=1` (it creates admins with a known password).
  * Re-running with the same run, worker and password returns the same world.
  *
  *   npx convex run --deployment <d> platform/qcSeed:fixture \
