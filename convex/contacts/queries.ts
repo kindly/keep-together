@@ -45,8 +45,7 @@ export const EMAIL_LOOKUP_LIMIT = 50
  * Contacts with an email row matching `address` (case- and
  * whitespace-insensitive), oldest row first. Reads at most
  * EMAIL_LOOKUP_LIMIT rows; `truncated` says more exist, so a caller that
- * needs "exactly one live match" must treat it as ambiguous. Rows written
- * before the `addressNormalized` backfill are not found.
+ * needs "exactly one live match" must treat it as ambiguous.
  */
 async function contactsWithEmail(
   db: ScopedDatabaseReader,

@@ -145,8 +145,9 @@ export default defineSchema({
     key: v.string(),
     label: channelLabel,
     address: v.string(), // identity field — immutable per key
-    // normaliseEmail(address), set on insert; optional until the S2 backfill
-    addressNormalized: v.optional(v.string()),
+    // normaliseEmail(address), set on insert (contracts reconcile); the index
+    // behind findByEmail and the shared-email warning
+    addressNormalized: v.string(),
     isPrimary: v.boolean(),
     onHold: v.boolean(), // bounce state, owned by comms; survives every save
   })
