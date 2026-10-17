@@ -5,8 +5,9 @@
 import { getAuthUserId } from '@convex-dev/auth/server'
 import { ConvexError, v } from 'convex/values'
 import { internal } from '../_generated/api'
-import type { QueryCtx } from '../_generated/server'
-import { internalQuery, mutation, query } from '../_generated/server'
+import type { Id } from '../_generated/dataModel'
+import type { MutationCtx, QueryCtx } from '../_generated/server'
+import { internalMutation, internalQuery, query } from '../_generated/server'
 import { requireMember } from '../lib/tenancy'
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/
@@ -93,28 +94,69 @@ export const members = query({
   },
 })
 
-/** Self-serve signup: create a group and make the caller its owner. */
-export const create = mutation({
-  args: { slug: v.string(), name: v.string() },
-  handler: async (ctx, { slug, name }) => {
-    const userId = await getAuthUserId(ctx)
-    if (!userId) throw new ConvexError({ kind: 'unauthenticated' as const })
-    if (await tenantForSlug(ctx, slug)) {
-      throw new ConvexError({ kind: 'taken' as const, field: 'slug' })
+/**
+ * Operator-only: tenants are created from the CLI, never from the app.
+ *
+ *   npx convex run platform/tenants:create \
+ *     '{"slug":"anytown-hall","name":"Anytown Village Hall","adminEmail":"jo@example.org"}'
+ *
+ * Until invitations exist (auth-roles R4), `adminEmail` must belong to a
+ * user who has already signed up; they become the tenant's admin.
+ */
+export const create = internalMutation({
+  args: { slug: v.string(), name: v.string(), adminEmail: v.string() },
+  handler: async (ctx, { slug, name, adminEmail }) => {
+    const email = adminEmail.trim()
+    const users = await ctx.db
+      .query('users')
+      .withIndex('email', (q) => q.eq('email', email))
+      .take(2)
+    if (users.length === 0) {
+      throw new ConvexError({
+        kind: 'unknownUser' as const,
+        field: 'adminEmail',
+        message: `No user with email ${email}: they must sign up before the tenant is created.`,
+      })
     }
-    const tenantId = await ctx.db.insert('tenants', {
-      slug,
-      name: name.trim(),
-      status: 'active',
-    })
-    await ctx.db.insert('memberships', { tenantId, userId, role: 'owner' })
-    // Reference data lands after commit, through the scoped constructors.
-    await ctx.scheduler.runAfter(0, internal.contacts.seed.relationshipTypes, {
-      tenantId,
-    })
-    return tenantId
+    if (users.length > 1) {
+      throw new ConvexError({
+        kind: 'ambiguousUser' as const,
+        field: 'adminEmail',
+        message: `More than one user has email ${email}.`,
+      })
+    }
+    return insertTenant(ctx, { slug, name, adminUserId: users[0]._id })
   },
 })
+
+/**
+ * A new active tenant with one admin, reference data scheduled after commit.
+ * Shared by `create` and the dev seed.
+ */
+export async function insertTenant(
+  ctx: MutationCtx,
+  args: { slug: string; name: string; adminUserId: Id<'users'> },
+) {
+  if (await tenantForSlug(ctx, args.slug)) {
+    throw new ConvexError({ kind: 'taken' as const, field: 'slug' })
+  }
+  const tenantId = await ctx.db.insert('tenants', {
+    slug: args.slug,
+    name: args.name.trim(),
+    status: 'active',
+  })
+  // R1 renames the role to 'admin'; 'owner' is today's admin.
+  await ctx.db.insert('memberships', {
+    tenantId,
+    userId: args.adminUserId,
+    role: 'owner',
+  })
+  // Reference data lands after commit, through the scoped constructors.
+  await ctx.scheduler.runAfter(0, internal.contacts.seed.relationshipTypes, {
+    tenantId,
+  })
+  return tenantId
+}
 
 /** Used by `tenantAction` (actions have no db) to enforce membership. */
 export const assertMember = internalQuery({

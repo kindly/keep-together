@@ -19,7 +19,7 @@ import { commandGroup, executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
 import { details, methods, relationshipType } from '../contacts/contracts'
 import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
-import { tenantForSlug } from './tenants'
+import { insertTenant, tenantForSlug } from './tenants'
 
 const SIDES = [
   { suffix: 'a', label: 'Alpha' },
@@ -108,12 +108,13 @@ export const world = internalMutation({
         })
         continue
       }
-      const tenantId = await ctx.db.insert('tenants', {
+      const tenantId = await insertTenant(ctx, {
         slug,
         name: `${label} ${base} qc group`,
-        status: 'active',
+        adminUserId: userId,
       })
-      await ctx.db.insert('memberships', { tenantId, userId, role: 'owner' })
+      // Seeded inline so the world is complete on return; the job
+      // insertTenant schedules then finds the types and does nothing.
 
       const scoped = { db: scopeWriter(ctx, tenantId), userId }
       const group = await commandGroup(scoped, 'qc seed')

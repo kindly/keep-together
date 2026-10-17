@@ -1,40 +1,41 @@
 /**
- * Dev-only helpers for spinning up instances: a demo tenant with an owner
+ * Dev-only helpers for spinning up instances: a demo tenant with an admin
  * and a few contacts, and an inspection query used by the export/import
  * spike. Internal: callable only from the CLI / dashboard.
  *
  *   npx convex run platform/devSeed:demoTenant '{"slug":"demo"}'
+ *   npx convex run platform/devSeed:demoTenant '{"slug":"demo","adminEmail":"me@example.org"}'
+ *
+ * An `adminEmail` that matches a signed-up user makes that user the admin,
+ * so you can sign in and open the demo; otherwise a password-less user is
+ * created for it.
  */
 import { v } from 'convex/values'
 import { internalMutation, internalQuery } from '../_generated/server'
 import { executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
-import { details, methods, relationshipType } from '../contacts/contracts'
-import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import { details, methods } from '../contacts/contracts'
+import { insertTenant } from './tenants'
 
 export const demoTenant = internalMutation({
-  args: { slug: v.string(), ownerEmail: v.optional(v.string()) },
-  handler: async (ctx, { slug, ownerEmail }) => {
-    const userId = await ctx.db.insert('users', {
-      email: ownerEmail ?? `${slug}-owner@example.com`,
-      name: `${slug} owner`,
-    })
-    const tenantId = await ctx.db.insert('tenants', {
+  args: { slug: v.string(), adminEmail: v.optional(v.string()) },
+  handler: async (ctx, { slug, adminEmail }) => {
+    const email = adminEmail?.trim() ?? `${slug}-admin@example.com`
+    const existing = await ctx.db
+      .query('users')
+      .withIndex('email', (q) => q.eq('email', email))
+      .first()
+    const userId =
+      existing?._id ??
+      (await ctx.db.insert('users', { email, name: `${slug} admin` }))
+    // Relationship types are seeded by the job insertTenant schedules.
+    const tenantId = await insertTenant(ctx, {
       slug,
       name: `${slug} demo group`,
-      status: 'active',
+      adminUserId: userId,
     })
-    await ctx.db.insert('memberships', { tenantId, userId, role: 'owner' })
 
     const scoped = { db: scopeWriter(ctx, tenantId), userId }
-    for (const [labelAB, labelBA, kindA, kindB] of UK_RELATIONSHIP_TYPES) {
-      await executeContract(
-        scoped,
-        relationshipType,
-        { labelAB, labelBA, kindA, kindB, isActive: true },
-        { source: 'seed' },
-      )
-    }
     const people = [
       ['Ada', 'Lovelace', 'ada@example.com'],
       ['Charles', 'Babbage', 'charles@example.com'],

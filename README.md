@@ -19,6 +19,26 @@ pnpm dev:instance demo   # another cloud dev deployment: dev/demo, auth keys set
 npx convex run platform/devSeed:demoTenant '{"slug":"demo"}'   # a tenant with contacts
 ```
 
+## Create a tenant
+
+Groups can't sign up for a tenant in the app; the operator creates each one
+from the CLI. The admin signs up first (any email + password). Before
+you run `create`, check with them that they can sign in. Sign-up is open
+and emails aren't verified yet, so anyone could have registered that
+address first (invitations will close this gap). Then:
+
+```sh
+npx convex run platform/tenants:create \
+  '{"slug":"anytown-hall","name":"Anytown Village Hall","adminEmail":"jo@example.org"}'
+```
+
+The slug is lowercase letters, digits and hyphens, 3–40 characters, and
+must be unused. `adminEmail` must match an existing user exactly; that
+user becomes the tenant's admin. Add `--prod` (or `--deployment <name>`)
+to target a deployment other than the one in `.env.local`. For a demo
+tenant you can open yourself, pass your email to the seed:
+`platform/devSeed:demoTenant '{"slug":"demo","adminEmail":"you@example.org"}'`.
+
 ## Where things are
 
 - `convex/` — backend: `schema.ts`, `lib/tenancy.ts` (scoped function

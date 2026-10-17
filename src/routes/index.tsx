@@ -4,10 +4,8 @@ import {
   AuthLoading,
   Authenticated,
   Unauthenticated,
-  useMutation,
   useQuery,
 } from 'convex/react'
-import { ConvexError } from 'convex/values'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from '../../convex/_generated/api'
@@ -16,7 +14,8 @@ import { authErrorMessage } from '../lib/auth-errors'
 
 export const Route = createFileRoute('/')({ component: Home })
 
-// Slice zero: sign in, see your groups, create one. Plain Tailwind for now;
+// Slice zero: sign in, see your groups. Groups are created by the operator
+// from the CLI (README, "Create a tenant"). Plain Tailwind for now;
 // shadcn components arrive with the first designed page.
 function Home() {
   return (
@@ -103,34 +102,6 @@ function SignIn() {
 function Groups() {
   const { signOut } = useAuthActions()
   const tenants = useQuery(api.platform.tenants.mine)
-  const create = useMutation(api.platform.tenants.create)
-  const [error, setError] = useState<string | null>(null)
-
-  async function onCreate(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault()
-    const form = e.currentTarget
-    const data = new FormData(form)
-    setError(null)
-    try {
-      await create({
-        name: String(data.get('name') ?? ''),
-        slug: String(data.get('slug') ?? ''),
-      })
-      form.reset()
-    } catch (err) {
-      const kind =
-        err instanceof ConvexError
-          ? (err.data as { kind?: string }).kind
-          : undefined
-      setError(
-        kind === 'taken'
-          ? 'That short name is already taken.'
-          : kind === 'invalid'
-            ? 'Short name: lowercase letters, digits and hyphens, 3–40 characters.'
-            : 'Could not create the group.',
-      )
-    }
-  }
 
   return (
     <section className="mt-6 flex flex-col gap-6">
@@ -140,7 +111,8 @@ function Groups() {
           <p className="mt-2 text-sm text-neutral-500">Loading…</p>
         ) : tenants.length === 0 ? (
           <p className="mt-2 text-sm text-neutral-500">
-            You don't belong to a group yet.
+            You don't belong to a group yet. Ask your group's admin for an
+            invite.
           </p>
         ) : (
           <ul className="mt-2 divide-y divide-neutral-200 rounded border border-neutral-200">
@@ -164,30 +136,6 @@ function Groups() {
           </ul>
         )}
       </div>
-
-      <form onSubmit={onCreate} className="flex flex-col gap-3">
-        <h2 className="text-lg font-medium">Create a group</h2>
-        <input
-          name="name"
-          required
-          placeholder="Name, e.g. Anytown Village Hall"
-          className="rounded border border-neutral-300 px-3 py-2"
-        />
-        <input
-          name="slug"
-          required
-          pattern="[a-z0-9][a-z0-9-]{1,38}[a-z0-9]"
-          placeholder="Short name, e.g. anytown-hall"
-          className="rounded border border-neutral-300 px-3 py-2"
-        />
-        <button
-          type="submit"
-          className="rounded bg-neutral-900 px-3 py-2 text-white hover:bg-neutral-700"
-        >
-          Create
-        </button>
-        {error && <p className="text-sm text-red-700">{error}</p>}
-      </form>
 
       <button
         type="button"
