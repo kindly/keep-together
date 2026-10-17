@@ -18,3 +18,14 @@
 import { migrations } from '../lib/migrations'
 
 export const run = migrations.runner()
+
+/**
+ * S4: `contacts.tagsVersion` = 0 on contacts created before S3 added the
+ * tags slice. A contract counter, not payload: 0 is what a create writes and
+ * means "no tags revision yet", which is true of every contact lacking it.
+ */
+export const backfillTagsVersion = migrations.define({
+  table: 'contacts',
+  migrateOne: (_ctx, contact) =>
+    contact.tagsVersion === undefined ? { tagsVersion: 0 } : undefined,
+})
