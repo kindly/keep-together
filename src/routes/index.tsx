@@ -11,6 +11,8 @@ import { ConvexError } from 'convex/values'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from '../../convex/_generated/api'
+import { PASSWORD_MIN_LENGTH } from '../../convex/lib/password'
+import { authErrorMessage } from '../lib/auth-errors'
 
 export const Route = createFileRoute('/')({ component: Home })
 
@@ -46,7 +48,8 @@ function SignIn() {
     try {
       await signIn('password', data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sign-in failed')
+      console.error(err)
+      setError(authErrorMessage(err))
     }
   }
 
@@ -66,8 +69,14 @@ function SignIn() {
         required
         autoComplete={flow === 'signIn' ? 'current-password' : 'new-password'}
         placeholder="Password"
+        aria-describedby={flow === 'signUp' ? 'password-rule' : undefined}
         className="rounded border border-neutral-300 px-3 py-2"
       />
+      {flow === 'signUp' && (
+        <p id="password-rule" className="text-sm text-neutral-600">
+          At least {PASSWORD_MIN_LENGTH} characters.
+        </p>
+      )}
       <button
         type="submit"
         className="rounded bg-neutral-900 px-3 py-2 text-white hover:bg-neutral-700"
@@ -77,7 +86,10 @@ function SignIn() {
       <button
         type="button"
         className="text-sm text-neutral-600 underline"
-        onClick={() => setFlow(flow === 'signIn' ? 'signUp' : 'signIn')}
+        onClick={() => {
+          setFlow(flow === 'signIn' ? 'signUp' : 'signIn')
+          setError(null)
+        }}
       >
         {flow === 'signIn'
           ? 'New here? Create an account'
