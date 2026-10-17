@@ -17,6 +17,8 @@ import type * as contacts_rules from "../contacts/rules.js";
 import type * as contacts_seed from "../contacts/seed.js";
 import type * as contacts_validators from "../contacts/validators.js";
 import type * as contacts_warnings from "../contacts/warnings.js";
+import type * as giftaid_actions from "../giftaid/actions.js";
+import type * as giftaid_irmark from "../giftaid/irmark.js";
 import type * as http from "../http.js";
 import type * as lib_contracts from "../lib/contracts.js";
 import type * as lib_tables from "../lib/tables.js";
@@ -40,6 +42,8 @@ declare const fullApi: ApiFromModules<{
   "contacts/seed": typeof contacts_seed;
   "contacts/validators": typeof contacts_validators;
   "contacts/warnings": typeof contacts_warnings;
+  "giftaid/actions": typeof giftaid_actions;
+  "giftaid/irmark": typeof giftaid_irmark;
   http: typeof http;
   "lib/contracts": typeof lib_contracts;
   "lib/tables": typeof lib_tables;
