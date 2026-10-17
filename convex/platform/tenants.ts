@@ -4,6 +4,7 @@
  */
 import { getAuthUserId } from '@convex-dev/auth/server'
 import { ConvexError, v } from 'convex/values'
+import { internal } from '../_generated/api'
 import { internalQuery, mutation, query } from '../_generated/server'
 import { requireMember } from '../lib/tenancy'
 
@@ -31,6 +32,55 @@ export const mine = query({
   },
 })
 
+/** Resolve a slug for routing; null when unknown or not a member. */
+export const bySlug = query({
+  args: { slug: v.string() },
+  handler: async (ctx, { slug }) => {
+    const userId = await getAuthUserId(ctx)
+    if (!userId) return null
+    const tenant = await ctx.db
+      .query('tenants')
+      .withIndex('by_slug', (q) => q.eq('slug', slug))
+      .unique()
+    if (!tenant || tenant.status !== 'active') return null
+    const membership = await ctx.db
+      .query('memberships')
+      .withIndex('by_tenant_user', (q) =>
+        q.eq('tenantId', tenant._id).eq('userId', userId),
+      )
+      .unique()
+    if (!membership) return null
+    return {
+      _id: tenant._id,
+      slug: tenant.slug,
+      name: tenant.name,
+      role: membership.role,
+    }
+  },
+})
+
+/** Members of a tenant with display names — for "changed by …" in the UI. */
+export const members = query({
+  args: { tenantId: v.id('tenants') },
+  handler: async (ctx, { tenantId }) => {
+    await requireMember(ctx, tenantId)
+    const memberships = await ctx.db
+      .query('memberships')
+      .withIndex('by_tenant_user', (q) => q.eq('tenantId', tenantId))
+      .collect()
+    return Promise.all(
+      memberships.map(async (m) => {
+        const user = await ctx.db.get(m.userId)
+        return {
+          userId: m.userId,
+          role: m.role,
+          name: user?.name ?? user?.email ?? 'someone',
+        }
+      }),
+    )
+  },
+})
+
 /** Self-serve signup: create a group and make the caller its owner. */
 export const create = mutation({
   args: { slug: v.string(), name: v.string() },
@@ -53,6 +103,10 @@ export const create = mutation({
       status: 'active',
     })
     await ctx.db.insert('memberships', { tenantId, userId, role: 'owner' })
+    // Reference data lands after commit, through the scoped constructors.
+    await ctx.scheduler.runAfter(0, internal.contacts.seed.relationshipTypes, {
+      tenantId,
+    })
     return tenantId
   },
 })
