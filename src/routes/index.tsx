@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { Link, createFileRoute } from '@tanstack/react-router'
 import { useAuthActions } from '@convex-dev/auth/react'
 import {
   AuthLoading,
@@ -133,8 +133,17 @@ function Groups() {
         ) : (
           <ul className="mt-2 divide-y divide-neutral-200 rounded border border-neutral-200">
             {tenants.map((t) => (
-              <li key={t._id} className="flex items-baseline justify-between px-3 py-2">
-                <span>{t.name}</span>
+              <li
+                key={t._id}
+                className="flex items-baseline justify-between px-3 py-2"
+              >
+                <Link
+                  to="/t/$slug/contacts"
+                  params={{ slug: t.slug }}
+                  className="underline"
+                >
+                  {t.name}
+                </Link>
                 <span className="text-xs text-neutral-500">
                   {t.slug} · {t.role}
                 </span>

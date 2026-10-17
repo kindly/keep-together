@@ -10,33 +10,86 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as TSlugRouteImport } from './routes/t.$slug'
+import { Route as TSlugContactsIndexRouteImport } from './routes/t.$slug.contacts.index'
+import { Route as TSlugContactsContactIdRouteImport } from './routes/t.$slug.contacts.$contactId'
+import { Route as TSlugContactsNewRouteImport } from './routes/t.$slug.contacts.new'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TSlugRoute = TSlugRouteImport.update({
+  id: '/t/$slug',
+  path: '/t/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TSlugContactsIndexRoute = TSlugContactsIndexRouteImport.update({
+  id: '/contacts/',
+  path: '/contacts/',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugContactsContactIdRoute = TSlugContactsContactIdRouteImport.update({
+  id: '/contacts/$contactId',
+  path: '/contacts/$contactId',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugContactsNewRoute = TSlugContactsNewRouteImport.update({
+  id: '/contacts/new',
+  path: '/contacts/new',
+  getParentRoute: () => TSlugRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/t/$slug': typeof TSlugRouteWithChildren
+  '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
+  '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
+  '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/t/$slug': typeof TSlugRouteWithChildren
+  '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
+  '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
+  '/t/$slug/contacts': typeof TSlugContactsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/t/$slug': typeof TSlugRouteWithChildren
+  '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
+  '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
+  '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/t/$slug'
+    | '/t/$slug/contacts/$contactId'
+    | '/t/$slug/contacts/new'
+    | '/t/$slug/contacts/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/t/$slug'
+    | '/t/$slug/contacts/$contactId'
+    | '/t/$slug/contacts/new'
+    | '/t/$slug/contacts'
+  id:
+    | '__root__'
+    | '/'
+    | '/t/$slug'
+    | '/t/$slug/contacts/$contactId'
+    | '/t/$slug/contacts/new'
+    | '/t/$slug/contacts/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  TSlugRoute: typeof TSlugRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +101,54 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/t/$slug': {
+      id: '/t/$slug'
+      path: '/t/$slug'
+      fullPath: '/t/$slug'
+      preLoaderRoute: typeof TSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/t/$slug/contacts/': {
+      id: '/t/$slug/contacts/'
+      path: '/contacts'
+      fullPath: '/t/$slug/contacts/'
+      preLoaderRoute: typeof TSlugContactsIndexRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/contacts/$contactId': {
+      id: '/t/$slug/contacts/$contactId'
+      path: '/contacts/$contactId'
+      fullPath: '/t/$slug/contacts/$contactId'
+      preLoaderRoute: typeof TSlugContactsContactIdRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/contacts/new': {
+      id: '/t/$slug/contacts/new'
+      path: '/contacts/new'
+      fullPath: '/t/$slug/contacts/new'
+      preLoaderRoute: typeof TSlugContactsNewRouteImport
+      parentRoute: typeof TSlugRoute
+    }
   }
 }
 
+interface TSlugRouteChildren {
+  TSlugContactsContactIdRoute: typeof TSlugContactsContactIdRoute
+  TSlugContactsNewRoute: typeof TSlugContactsNewRoute
+  TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
+}
+
+const TSlugRouteChildren: TSlugRouteChildren = {
+  TSlugContactsContactIdRoute: TSlugContactsContactIdRoute,
+  TSlugContactsNewRoute: TSlugContactsNewRoute,
+  TSlugContactsIndexRoute: TSlugContactsIndexRoute,
+}
+
+const TSlugRouteWithChildren = TSlugRoute._addFileChildren(TSlugRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  TSlugRoute: TSlugRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
