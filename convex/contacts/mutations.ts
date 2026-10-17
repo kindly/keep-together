@@ -82,26 +82,11 @@ export const setArchived = tenantMutation({
 
 // ── tags ───────────────────────────────────────────────────────────────────
 
-/**
- * The contact's `tagsVersion`. Contacts created before S3 lack it until the
- * S4 backfill; refuse them clearly rather than let `executeContract` throw.
- */
-function tagsCounter(contact: Doc<'contacts'>): number {
-  if (contact.tagsVersion === undefined) {
-    throw rejected(
-      'not_migrated',
-      'Tags are not available on this contact yet (pending backfill)',
-    )
-  }
-  return contact.tagsVersion
-}
-
 export const saveTags = tenantMutation({
   args: { id: v.id('contacts'), expected: v.number(), ...tagsFields },
   handler: async (ctx, { id, expected, ...payload }) => {
     const contact = await ctx.db.get(id)
     if (!contact) throw new ConvexError({ kind: 'not_found' as const })
-    tagsCounter(contact)
     return executeContract(ctx, tags, payload, {
       entityId: id,
       expected,
@@ -188,7 +173,7 @@ async function applyBulkTag(
   for (const id of contactIds) {
     const contact = await ctx.db.get(id)
     if (!contact) throw rejected('unknown_contact', 'Contact must exist')
-    const expected = tagsCounter(contact)
+    const expected = contact.tagsVersion
     const rows = (await contactTagRows(ctx.db, id)).map((r) => ({
       key: r.key,
       tagId: r.tagId,
@@ -330,9 +315,7 @@ export const saveForm = tenantMutation({
       name: TSlice,
       contract: (typeof contactContracts)[string],
       submitted: ({ expected: number } & Record<string, unknown>) | undefined,
-      // Read only once the slice has changed: an unchanged tags slice must
-      // not trip `tagsCounter` on a contact awaiting the backfill.
-      counter: () => number,
+      counter: number,
     ) => {
       if (!submitted) return
       const { expected, ...payload } = submitted
@@ -352,9 +335,8 @@ export const saveForm = tenantMutation({
         throw e
       }
       if (canonical(prepared) === canonical(current[name])) return
-      const now = counter()
-      if (expected !== now) {
-        stale[name] = now
+      if (expected !== counter) {
+        stale[name] = counter
         return
       }
       changed.push({
@@ -369,15 +351,10 @@ export const saveForm = tenantMutation({
       })
     }
 
-    consider('details', details, args.details, () => contact.detailsVersion)
-    consider('methods', methods, args.methods, () => contact.methodsVersion)
-    consider(
-      'addresses',
-      addresses,
-      args.addresses,
-      () => contact.addressesVersion,
-    )
-    consider('tags', tags, args.tags, () => tagsCounter(contact))
+    consider('details', details, args.details, contact.detailsVersion)
+    consider('methods', methods, args.methods, contact.methodsVersion)
+    consider('addresses', addresses, args.addresses, contact.addressesVersion)
+    consider('tags', tags, args.tags, contact.tagsVersion)
 
     const group =
       changed.length > 1

@@ -238,9 +238,7 @@ export const archive = defineContract({
  * The contact's tag assignments. Only active tags can be newly added; a
  * kept row keeps its tag even after the tag is archived, and a restore
  * may re-add one (the assignment is history, so restores never fail on
- * tags; the tag stays archived and out of pickers). Called only on
- * contacts that have `tagsVersion` (all of them after the S4 backfill):
- * `executeContract` throws on a missing counter.
+ * tags; the tag stays archived and out of pickers).
  */
 export const tags = defineContract({
   name: 'contacts.tags',

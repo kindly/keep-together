@@ -127,9 +127,7 @@ export default defineSchema({
     methodsVersion: v.number(),
     addressesVersion: v.number(),
     archiveVersion: v.number(),
-    // Optional until the S4 backfill writes 0 on older contacts; creates
-    // write 0. `contacts.tags` refuses a contact without it.
-    tagsVersion: v.optional(v.number()),
+    tagsVersion: v.number(),
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
     .index('by_tenant_clientKey', ['tenantId', 'clientKey'])

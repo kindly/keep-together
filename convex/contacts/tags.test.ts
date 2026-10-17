@@ -355,52 +355,6 @@ describe('contacts.tags slice', () => {
   })
 })
 
-describe('contacts created before tags (pre-backfill)', () => {
-  beforeEach(async () => {
-    await f.t.run((ctx) => ctx.db.patch(ada, { tagsVersion: undefined }))
-  })
-
-  test('every tags write path refuses them clearly', async () => {
-    expect(await errorData(saveTags(0, [{ tagId: member }]))).toMatchObject({
-      kind: 'rejected',
-      reason: 'not_migrated',
-    })
-    expect(
-      await errorData(
-        f.a.as.mutation(api.contacts.mutations.saveForm, {
-          tenantId: f.a.tenantId,
-          id: ada,
-          tags: { expected: 0, tags: [{ tagId: member }] },
-        }),
-      ),
-    ).toMatchObject({ reason: 'not_migrated' })
-    expect(await errorData(bulkTag([ada], member, 'add'))).toMatchObject({
-      reason: 'not_migrated',
-    })
-  })
-
-  test('the form save without tags and get still work', async () => {
-    const result = await f.a.as.mutation(api.contacts.mutations.saveForm, {
-      tenantId: f.a.tenantId,
-      id: ada,
-      details: { expected: 0, ...individual('Lovelace'), nickname: 'Countess' },
-    })
-    expect(result.saved).toEqual(['details'])
-    expect((await get())?.tags).toEqual([])
-  })
-
-  test('an unchanged tags slice never blocks the form save', async () => {
-    const result = await f.a.as.mutation(api.contacts.mutations.saveForm, {
-      tenantId: f.a.tenantId,
-      id: ada,
-      details: { expected: 0, ...individual('Lovelace'), nickname: 'Countess' },
-      tags: { expected: 0, tags: [] },
-    })
-    expect(result.saved).toEqual(['details'])
-    expect(result.stale).toEqual({})
-  })
-})
-
 describe('bulk tagging', () => {
   test('adds under one command group, skipping contacts that already have it', async () => {
     const bob = await createContact(f.a, 'Babbage')

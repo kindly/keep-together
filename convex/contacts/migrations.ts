@@ -13,19 +13,9 @@
  * committing.) Tighten the schema only once it reports `isDone: true` on
  * every deployment that will take the tightening; the tightening commit
  * deletes the backfill and its test (convex-test can no longer build the
- * old shape). Past backfills: `addressNormalized` (S2, see git log).
+ * old shape). Past backfills: `addressNormalized` (S2), `tagsVersion` (S4);
+ * see git log.
  */
 import { migrations } from '../lib/migrations'
 
 export const run = migrations.runner()
-
-/**
- * S4: `contacts.tagsVersion` = 0 on contacts created before S3 added the
- * tags slice. A contract counter, not payload: 0 is what a create writes and
- * means "no tags revision yet", which is true of every contact lacking it.
- */
-export const backfillTagsVersion = migrations.define({
-  table: 'contacts',
-  migrateOne: (_ctx, contact) =>
-    contact.tagsVersion === undefined ? { tagsVersion: 0 } : undefined,
-})
