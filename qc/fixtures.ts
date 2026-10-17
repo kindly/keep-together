@@ -3,7 +3,9 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
-import type { Page } from '@playwright/test'
+import { ConvexHttpClient } from 'convex/browser'
+import type { BrowserContext, Page } from '@playwright/test'
+import { api } from '../convex/_generated/api'
 import { assertFlow, probeRtt, runFlow, runId } from './timing'
 import type { FlowName } from './budgets'
 import type { FlowRecord, FlowStep } from './timing'
@@ -15,6 +17,14 @@ import type { FlowRecord, FlowStep } from './timing'
 // (two users, two tenants, `r<run>w<n>-a|b`), and a storageState per user
 // from one UI sign-in each, which is also the timed `auth.signIn` flow.
 // Tests start signed in as user A on the worker's own instance.
+//
+// That storageState is a template, never loaded as is: every test context
+// gets its own Convex Auth session (`session`). Convex Auth rotates the
+// refresh token on each refresh and treats a used token presented again
+// more than 10 s later as replay, invalidating the whole session
+// (node_modules/@convex-dev/auth/dist/server/implementation/mutations/
+// refreshSession.js, REFRESH_TOKEN_REUSE_WINDOW_MS). The SPA refreshes on
+// page load, so contexts sharing one token sign each other out at random.
 //
 // The world is shared by every test in a worker, and by the replacement
 // worker Playwright starts after a failure (same parallelIndex, and the
@@ -35,6 +45,8 @@ export interface World {
   users: Array<{ email: string }>
   tenants: Array<{ slug: string; tenantId: string; contactIds: Array<string> }>
 }
+
+export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>
 
 export interface QcUser {
   email: string
@@ -94,6 +106,11 @@ interface WorkerFixtures {
 interface TestFixtures {
   /** Time a flow K times and fail the test if it's over budget. */
   flow: Flow
+  /**
+   * A new signed-in session for a user (default A), as a storageState for
+   * one browser context. Never share one between contexts (see the top).
+   */
+  session: (user?: QcUser) => Promise<StorageState>
 }
 
 export const test = base.extend<TestFixtures, WorkerFixtures>({
@@ -186,8 +203,43 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     await use(`http://localhost:${instance.port}`)
   },
 
-  storageState: async ({ users }, use) => {
-    await use(users.a.storageState)
+  session: async ({ instance, users }, use) => {
+    const client = new ConvexHttpClient(instance.url)
+    await use(async (user = users.a) => {
+      const template = JSON.parse(
+        readFileSync(user.storageState, 'utf8'),
+      ) as StorageState
+      const { tokens } = await client.action(api.auth.signIn, {
+        provider: 'password',
+        params: { email: user.email, password: user.password, flow: 'signIn' },
+      })
+      if (!tokens) throw new Error(`no session for ${user.email}`)
+      const value = (name: string, old: string) =>
+        name.startsWith('__convexAuthJWT_')
+          ? tokens.token
+          : name.startsWith('__convexAuthRefreshToken_')
+            ? tokens.refreshToken
+            : old
+      const keys = template.origins.flatMap((o) =>
+        o.localStorage.map((e) => e.name),
+      )
+      if (!keys.some((k) => k.startsWith('__convexAuthRefreshToken_')))
+        throw new Error(`${user.storageState}: no Convex Auth tokens`)
+      return {
+        ...template,
+        origins: template.origins.map((o) => ({
+          ...o,
+          localStorage: o.localStorage.map((e) => ({
+            ...e,
+            value: value(e.name, e.value),
+          })),
+        })),
+      }
+    })
+  },
+
+  storageState: async ({ session }, use) => {
+    await use(await session())
   },
 
   flow: async ({ rttMs }, use, testInfo) => {
