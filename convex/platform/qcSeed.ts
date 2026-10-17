@@ -14,7 +14,7 @@ import { createAccount } from '@convex-dev/auth/server'
 import { ConvexError, v } from 'convex/values'
 import { internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
-import { internalAction, internalMutation } from '../_generated/server'
+import { env, internalAction, internalMutation } from '../_generated/server'
 import { commandGroup, executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
 import { details, methods, relationshipType } from '../contacts/contracts'
@@ -29,7 +29,7 @@ const SIDES = [
 const prefix = (runId: string, worker: number) => `r${runId}w${worker}`
 
 function requireEnabled() {
-  if (process.env.QC_SEED_ENABLED !== '1') {
+  if (env.QC_SEED_ENABLED !== '1') {
     throw new ConvexError({
       kind: 'disabled' as const,
       message:

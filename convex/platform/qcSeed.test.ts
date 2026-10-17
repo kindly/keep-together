@@ -8,7 +8,8 @@ import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 // 12+ characters: auth.ts may gain a minimum-length password check.
 const password = 'qc-password-123'
 
-// convex-test runs functions in this process, so they see process.env.
+// convex-test runs functions in this process, and `env` from
+// _generated/server is process.env, so stubbing it reaches them.
 beforeEach(() => {
   vi.stubEnv('QC_SEED_ENABLED', '1')
 })
