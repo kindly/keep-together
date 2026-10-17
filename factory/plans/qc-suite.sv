@@ -12,12 +12,11 @@
 - **Tool:** Playwright, **Chromium only**, against the production build (`vite build` + `vite preview`), one build per instance.
 - **Instances:** reused pool **`dev/qc-1..3`**, about 2 workers each. **Fresh tenants per run and per worker** (`r<run>w<n>-a|b`), no wipe; reset on demand with `import --replace-all`.
   - **A lock** in the main checkout makes concurrent runs from different worktrees wait their turn (`--no-wait` fails fast).
-- **Latency**
-  - Client time measured in the page; budgets are **round-trip adjusted** (`measured − roundTrips × RTT`).
-  - Pass rule: **K=5 repeats, median ≤ budget and max ≤ 2× budget.**
-  - **Record first:** 3 full runs, possibly at different times of day, without asserting. Each budget is 1.5× the worst p95 across them.
-  - **Raising a budget later needs your explicit OK.** Otherwise the builder fixes the code.
-  - **Server timings are asserted:** query p95 ≤ 50 ms, mutation p95 ≤ 100 ms.
+- **Latency** (*revised by the human 2026-10-17; supersedes the round-trip-adjusted median rule and the server p95 rule*)
+  - **Anything a user can do more than once per logged-in session: every sample < 100 ms, raw**, i.e. from the input event to the result on screen, network included. No round-trip allowance, no median: K=5 repeats, all under 100 ms.
+  - **Once-per-session flows** (sign-in, first page load) keep their own budgets, recorded first (3 runs, 1.5× the worst sample). Reports may get exceptions when they exist.
+  - **Server: every uncached call of our own functions on user paths < 100 ms** (no percentile). `auth:*`, admin and cached calls are reported, not asserted.
+  - **Raising a budget, or exempting a flow, needs your explicit OK.** Otherwise the builder fixes the code.
   - **RTT ceiling of 150 ms:** above it, the run still checks behaviour but skips the latency asserts, with a loud warning.
   - **Desktop viewport 1280×800 only.** A phone viewport comes with the designed UI pass.
 - **Where it runs:** **local only**, as a separate `pnpm qc` that is never part of `pnpm check`. Nightly and manual CI come later (step 11).
