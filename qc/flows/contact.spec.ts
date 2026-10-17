@@ -389,71 +389,64 @@ test.describe(
   'a save against an unseen change',
   { annotation: CONTACT_ROUTE },
   () => {
-    test(
-      'shows the stale notice, then merges and saves',
-      {
-        annotation: {
-          type: 'bug',
-          description:
-            'stale notice never clears after auto-retry; reducer saved/server echo (src/lib/contact-form-state.ts)',
-        },
-      },
-      async ({ page, browser, baseURL, users, session }) => {
-        // Known bug, expected to fail at "toBeHidden" below. When the fix
-        // lands this test passes, which fails the run: remove this mark.
-        test.fail()
-        const url = await createContact(page, users.a.slug, uniqueName('stale'))
-        // Tab B's socket goes through a gate: while held, nothing the server
-        // sends reaches B, so B saves against a counter it hasn't seen move.
-        const other = await secondTab(browser, baseURL!, await session())
-        let held: Array<string | Buffer> | null = null
-        let route: WebSocketRoute | undefined
-        await other.context().routeWebSocket(/.*/, (ws) => {
-          route = ws
-          const server = ws.connectToServer()
-          ws.onMessage((m) => server.send(m))
-          server.onMessage((m) => (held ? held.push(m) : ws.send(m)))
-        })
-        try {
-          await other.goto(url)
-          await expect(other.getByLabel('Known as')).toBeVisible()
-          await other.getByLabel('External reference').fill('from b')
+    test('shows the stale notice, then merges and saves', async ({
+      page,
+      browser,
+      baseURL,
+      users,
+      session,
+    }) => {
+      const url = await createContact(page, users.a.slug, uniqueName('stale'))
+      // Tab B's socket goes through a gate: while held, nothing the server
+      // sends reaches B, so B saves against a counter it hasn't seen move.
+      const other = await secondTab(browser, baseURL!, await session())
+      let held: Array<string | Buffer> | null = null
+      let route: WebSocketRoute | undefined
+      await other.context().routeWebSocket(/.*/, (ws) => {
+        route = ws
+        const server = ws.connectToServer()
+        ws.onMessage((m) => server.send(m))
+        server.onMessage((m) => (held ? held.push(m) : ws.send(m)))
+      })
+      try {
+        await other.goto(url)
+        await expect(other.getByLabel('Known as')).toBeVisible()
+        await other.getByLabel('External reference').fill('from b')
 
-          held = []
-          await page.getByLabel('Known as').fill('from a')
-          await saveButton(page).click()
-          await expect(saved(page)).toBeVisible()
-          await saveButton(other).click()
-          // Let B's save reach the server and be answered (and held).
-          await page.waitForTimeout(1000)
-          // Deliver A's change first and let B render it, then B's save
-          // result: the order a slower link gives. Released together, React
-          // may apply the result first and clear the notice in the same
-          // render.
-          const release = held
-          const answer = release.findIndex(
-            (m) => typeof m === 'string' && m.includes('"MutationResponse"'),
-          )
-          expect(answer).toBeGreaterThan(0)
-          for (const m of release.slice(0, answer)) route!.send(m)
-          await expect(other.getByLabel('Known as')).toHaveValue('from a')
-          held = null
-          for (const m of release.slice(answer)) route!.send(m)
+        held = []
+        await page.getByLabel('Known as').fill('from a')
+        await saveButton(page).click()
+        await expect(saved(page)).toBeVisible()
+        await saveButton(other).click()
+        // Let B's save reach the server and be answered (and held).
+        await page.waitForTimeout(1000)
+        // Deliver A's change first and let B render it, then B's save
+        // result: the order a slower link gives. Released together, React
+        // may apply the result first and clear the notice in the same
+        // render.
+        const release = held
+        const answer = release.findIndex(
+          (m) => typeof m === 'string' && m.includes('"MutationResponse"'),
+        )
+        expect(answer).toBeGreaterThan(0)
+        for (const m of release.slice(0, answer)) route!.send(m)
+        await expect(other.getByLabel('Known as')).toHaveValue('from a')
+        held = null
+        for (const m of release.slice(answer)) route!.send(m)
 
-          await expect(
-            other.getByText(/details changed by .* while you were editing/),
-          ).toBeVisible()
-          // B retries against the newer state: both edits end up saved.
-          await expect(other.getByText(/while you were editing/)).toBeHidden()
-          await expect(saved(other)).toBeVisible()
-          await expect(other.getByLabel('Known as')).toHaveValue('from a')
-          await expect(page.getByLabel('External reference')).toHaveValue(
-            'from b',
-          )
-        } finally {
-          await other.context().close()
-        }
-      },
-    )
+        await expect(
+          other.getByText(/details changed by .* while you were editing/),
+        ).toBeVisible()
+        // B retries against the newer state: both edits end up saved.
+        await expect(other.getByText(/while you were editing/)).toBeHidden()
+        await expect(saved(other)).toBeVisible()
+        await expect(other.getByLabel('Known as')).toHaveValue('from a')
+        await expect(page.getByLabel('External reference')).toHaveValue(
+          'from b',
+        )
+      } finally {
+        await other.context().close()
+      }
+    })
   },
 )
