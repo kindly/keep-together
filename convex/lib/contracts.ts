@@ -28,6 +28,18 @@ export type ContractCtx = {
   userId: Id<'users'> | null
 }
 
+/**
+ * What `executeContract` tells an apply about the command it is part of.
+ * `at` is fixed once per command, so apply stays pure: restore re-runs it
+ * with the restore's own time.
+ */
+export type Command = {
+  at: number
+  actor: Id<'users'> | null
+  /** Create-only arguments that are not part of the slice (e.g. a parent id). */
+  createWith?: unknown
+}
+
 export type Problem = { field: string; message: string }
 
 /** Blocking validation failure: unstorable or invariant-breaking data. */
@@ -69,14 +81,16 @@ export type Contract<
   // eslint-disable-next-line @typescript-eslint/method-signature-style
   prepare?(payload: ObjectType<TFields>): ObjectType<TFields>
   /**
-   * Pure state application: no side effects, nothing time-dependent —
-   * restore re-runs it. `root` is null on create. Returns the root id.
+   * Pure state application: no side effects, nothing time-dependent beyond
+   * `command.at` — restore re-runs it. `root` is null on create. Returns
+   * the root id.
    */
   // eslint-disable-next-line @typescript-eslint/method-signature-style
   apply(
     ctx: ContractCtx,
     payload: ObjectType<TFields>,
     root: Doc<TRoot> | null,
+    command: Command,
   ): Promise<Id<TRoot>>
   /** fromVersion → function taking a payload at that version to the next. */
   upcasters?: Record<number, (payload: unknown) => unknown>
@@ -108,6 +122,8 @@ export type ExecuteOptions<TRoot extends TableNames> = {
   source: Source
   group?: Id<'commandGroups'>
   restoredFrom?: Id<'revisions'>
+  /** Passed to apply on create only; never stored in the revision. */
+  createWith?: unknown
 }
 
 export type ExecuteResult<TRoot extends TableNames> = {
@@ -150,7 +166,11 @@ export async function executeContract<
     counter = current + 1
   }
 
-  const id = await contract.apply(ctx, payload, root)
+  const id = await contract.apply(ctx, payload, root, {
+    at: Date.now(),
+    actor: ctx.userId,
+    createWith: root === null ? opts.createWith : undefined,
+  })
   // Not every apply touches the root row; the counter bump is ours.
   await ctx.db.patch(contract.entity, id, {
     [contract.counter]: counter,

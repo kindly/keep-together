@@ -205,4 +205,23 @@ export function prepareRelationshipType(
   return out
 }
 
+/** 200 notes (the panel's cap) at this length stay well under the read limit. */
+export const NOTE_MAX_LENGTH = 20_000
+
+export function prepareNote(p: Payloads['note']): Payloads['note'] {
+  const out = { ...p, body: trim(p.body) }
+  if (!out.body) {
+    throw invalid([{ field: 'body', message: 'A note needs some text' }])
+  }
+  if (out.body.length > NOTE_MAX_LENGTH) {
+    throw invalid([
+      {
+        field: 'body',
+        message: `A note can be at most ${NOTE_MAX_LENGTH} characters`,
+      },
+    ])
+  }
+  return out
+}
+
 export type { Infer }

@@ -1,8 +1,11 @@
 /**
  * Contact contracts (ADR 0014). Four partitioned slices on the Contact
- * root, plus RelationshipType and Relationship as their own aggregates.
+ * root, plus RelationshipType, Relationship and ContactNote (two slices)
+ * as their own aggregates.
  * Apply functions are pure state application — restore re-runs them.
  */
+import { v } from 'convex/values'
+import { validate } from 'convex-helpers/validators'
 import type { Id } from '../_generated/dataModel'
 import type { ContractCtx } from '../lib/contracts'
 import { defineContract, registry, rejected } from '../lib/contracts'
@@ -12,6 +15,7 @@ import {
   prepareAddresses,
   prepareDetails,
   prepareMethods,
+  prepareNote,
   prepareRelationship,
   prepareRelationshipType,
 } from './rules'
@@ -20,6 +24,9 @@ import {
   archiveFields,
   detailsFields,
   methodsFields,
+  noteCreateFields,
+  noteFields,
+  noteFlagsFields,
   relationshipFields,
   relationshipTypeFields,
 } from './validators'
@@ -273,6 +280,70 @@ export const relationship = defineContract({
   },
 })
 
+/**
+ * The note's text. `contactId` is a create-only argument, not payload, so
+ * any revision restores onto the note wherever it lives now.
+ */
+export const note = defineContract({
+  name: 'contacts.note',
+  entity: 'contactNotes',
+  version: 1,
+  counter: 'bodyVersion',
+  fields: noteFields,
+  prepare: prepareNote,
+  apply: async (ctx, p, root, command) => {
+    const edited = {
+      editedBy: command.actor ?? undefined,
+      editedAt: command.at,
+    }
+    if (!root) {
+      validate(v.object(noteCreateFields), command.createWith, { throw: true })
+      const { contactId } = command.createWith as { contactId: Id<'contacts'> }
+      // Another tenant's id reads as null through the scoped db.
+      const contact = await ctx.db.get(contactId)
+      if (!contact) throw rejected('unknown_contact', 'Contact must exist')
+      return ctx.db.insert('contactNotes', {
+        contactId,
+        body: p.body,
+        pinned: false,
+        archived: false,
+        createdBy: command.actor ?? undefined,
+        ...edited,
+        bodyVersion: 0,
+        flagsVersion: 0,
+      })
+    }
+    if (root.archived) {
+      throw rejected('archived', 'Restore the note before editing it')
+    }
+    await ctx.db.patch('contactNotes', root._id, { body: p.body, ...edited })
+    return root._id
+  },
+})
+
+/** Pin and archive: not edits, so they leave body and editedBy/At alone. */
+export const noteFlags = defineContract({
+  name: 'contacts.noteFlags',
+  entity: 'contactNotes',
+  version: 1,
+  counter: 'flagsVersion',
+  fields: noteFlagsFields,
+  apply: async (ctx, p, root) => {
+    if (!root)
+      throw rejected('no_root', 'contacts.noteFlags targets an existing note')
+    // Archive and unarchive are always allowed; nothing else changes on an
+    // archived note.
+    if (root.archived && p.archived && root.pinned !== p.pinned) {
+      throw rejected('archived', 'Restore the note before pinning it')
+    }
+    await ctx.db.patch('contactNotes', root._id, {
+      pinned: p.pinned,
+      archived: p.archived,
+    })
+    return root._id
+  },
+})
+
 /** Everything restore needs to know about this module. */
 export const contactContracts = registry(
   details,
@@ -281,6 +352,8 @@ export const contactContracts = registry(
   archive,
   relationshipType,
   relationship,
+  note,
+  noteFlags,
 )
 
 /** Slices of the Contact form, in the order the form shows them. */

@@ -11,6 +11,7 @@
 import type * as auth from "../auth.js";
 import type * as contacts_contracts from "../contacts/contracts.js";
 import type * as contacts_mutations from "../contacts/mutations.js";
+import type * as contacts_notes from "../contacts/notes.js";
 import type * as contacts_queries from "../contacts/queries.js";
 import type * as contacts_relationships from "../contacts/relationships.js";
 import type * as contacts_rules from "../contacts/rules.js";
@@ -36,6 +37,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   "contacts/contracts": typeof contacts_contracts;
   "contacts/mutations": typeof contacts_mutations;
+  "contacts/notes": typeof contacts_notes;
   "contacts/queries": typeof contacts_queries;
   "contacts/relationships": typeof contacts_relationships;
   "contacts/rules": typeof contacts_rules;

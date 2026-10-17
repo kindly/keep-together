@@ -207,4 +207,35 @@ export default defineSchema({
   })
     .index('by_tenant_a', ['tenantId', 'contactA'])
     .index('by_tenant_b', ['tenantId', 'contactB']),
+
+  // Its own aggregate, one root per note, so two people writing notes on
+  // one contact never conflict. Field ownership:
+  //   contacts.note      → body (bodyVersion)
+  //   contacts.noteFlags → pinned, archived (flagsVersion)
+  // `contactId` is stamped at create and owned by no slice (a future
+  // `notes.move`, run by merge, re-points it: live class under ADR 0019).
+  // System-owned: createdBy, and editedBy / editedAt from body saves only.
+  contactNotes: defineTable({
+    tenantId: v.id('tenants'),
+    contactId: v.id('contacts'),
+    body: v.string(), // plain text
+    pinned: v.boolean(),
+    archived: v.boolean(), // remove = archive: hidden, restorable
+    createdBy: v.optional(v.id('users')), // absent = system
+    editedBy: v.optional(v.id('users')),
+    editedAt: v.number(),
+    bodyVersion: v.number(),
+    flagsVersion: v.number(),
+  })
+    // Prefix `contactId` = every note of a contact (merge, anonymisation).
+    // Read `desc`, each (archived, pinned) range is one section of the notes
+    // panel, newest first.
+    .index('by_tenant_contact_archived_pinned', [
+      'tenantId',
+      'contactId',
+      'archived',
+      'pinned',
+    ])
+    // The archived list: newest first regardless of pin.
+    .index('by_tenant_contact_archived', ['tenantId', 'contactId', 'archived']),
 })

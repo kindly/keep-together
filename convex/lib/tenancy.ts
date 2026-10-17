@@ -165,6 +165,29 @@ const rules = Object.fromEntries(
 
 // ── scoped db construction ─────────────────────────────────────────────────
 
+/**
+ * The RLS query (convex-helpers' QueryWithFilter) collects a row before it
+ * checks the limit, so its `take(0)` returns one row. Every query handed to
+ * domain code goes through this, as do the queries `order` returns.
+ */
+function guardTake<TQuery extends object>(q: TQuery): TQuery {
+  return new Proxy(q, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop, target)
+      if (typeof value !== 'function') return value
+      if (prop === 'take') {
+        return (n: number) =>
+          n <= 0 ? Promise.resolve([]) : value.call(target, n)
+      }
+      if (prop === 'order' || prop === 'filter') {
+        return (...args: Array<unknown>) =>
+          guardTake(value.apply(target, args) as object)
+      }
+      return value.bind(target)
+    },
+  })
+}
+
 function scopedReader(
   tenantId: Id<'tenants'>,
   rls: DatabaseReader,
@@ -176,16 +199,20 @@ function scopedReader(
     system: rls.system,
     query: (table) => ({
       withIndex: (index, range) =>
-        rls.query(table).withIndex(index as any, (q: any) => {
-          const scoped = q.eq('tenantId', tenantId)
-          return range ? range(scoped) : scoped
-        }),
+        guardTake(
+          rls.query(table).withIndex(index as any, (q: any) => {
+            const scoped = q.eq('tenantId', tenantId)
+            return range ? range(scoped) : scoped
+          }),
+        ),
       withSearchIndex: (index, filter) =>
-        rls
-          .query(table)
-          .withSearchIndex(index as any, (q: any) =>
-            (filter(q) as any).eq('tenantId', tenantId),
-          ),
+        guardTake(
+          rls
+            .query(table)
+            .withSearchIndex(index as any, (q: any) =>
+              (filter(q) as any).eq('tenantId', tenantId),
+            ),
+        ),
     }),
   }
 }

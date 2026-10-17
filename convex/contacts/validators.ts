@@ -73,6 +73,13 @@ export const relationshipFields = {
   description: v.string(),
 }
 
+export const noteFields = { body: v.string() } // ≤ NOTE_MAX_LENGTH, in prepareNote
+
+export const noteFlagsFields = { pinned: v.boolean(), archived: v.boolean() }
+
+/** Create-only argument of `contacts.note`: never part of a payload. */
+export const noteCreateFields = { contactId: v.id('contacts') }
+
 export type Payloads = {
   details: ObjectType<typeof detailsFields>
   methods: ObjectType<typeof methodsFields>
@@ -80,4 +87,6 @@ export type Payloads = {
   archive: ObjectType<typeof archiveFields>
   relationshipType: ObjectType<typeof relationshipTypeFields>
   relationship: ObjectType<typeof relationshipFields>
+  note: ObjectType<typeof noteFields>
+  noteFlags: ObjectType<typeof noteFlagsFields>
 }
