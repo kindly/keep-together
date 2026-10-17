@@ -5,6 +5,7 @@ import { api } from '../../convex/_generated/api'
 import { useTenant } from '../lib/tenant'
 import { ContactForm } from '../components/contact-form'
 import { ContactHistory } from '../components/contact-history'
+import { ContactNotes } from '../components/contact-notes'
 
 export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
   component: ContactPage,
@@ -20,7 +21,10 @@ function ContactPage() {
   if (data === null) return <main className="p-6">No such contact.</main>
   return (
     <main className="mx-auto grid max-w-5xl gap-8 p-6 md:grid-cols-[1fr_18rem]">
-      <ContactForm id={id} data={data} />
+      <div className="flex flex-col gap-8">
+        <ContactForm id={id} data={data} />
+        <ContactNotes contactId={id} />
+      </div>
       <ContactHistory
         id={id}
         archived={data.contact.archived}
