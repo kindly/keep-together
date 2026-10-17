@@ -128,42 +128,35 @@ async function reconcile(
   rows: Array<Row>,
   identityFields: Array<string>,
 ) {
-  const existing = await ctx.db
-    .query(table)
-    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
-    .collect()
+  // The ownership lookups go with the read of the current rows, not after
+  // it: one read level instead of two. A key found on a row of this
+  // contact is simply kept.
+  const [existing, byKeyAnywhere] = await Promise.all([
+    ctx.db
+      .query(table)
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+      .collect(),
+    Promise.all(
+      rows.map((row) =>
+        ctx.db
+          .query(table)
+          .withIndex('by_tenant_key', (q) => q.eq('key', row.key as string))
+          .first(),
+      ),
+    ),
+  ])
   const byKey = new Map(existing.map((d) => [d.key, d]))
   const payloadKeys = new Set(rows.map((r) => r.key as string))
 
-  for (const doc of existing) {
-    if (!payloadKeys.has(doc.key)) await ctx.db.delete(table, doc._id)
-  }
+  // Every check before any write, and the reads and writes each as one
+  // concurrent batch: a save's latency is the depth of its awaits.
+  const updates: Array<{ id: Id<ChildTable>; changes: Record<string, unknown> }> =
+    []
+  const added: Array<Row> = []
   for (const row of rows) {
-    const key = row.key as string
-    const current = byKey.get(key)
+    const current = byKey.get(row.key as string)
     if (!current) {
-      const elsewhere = await ctx.db
-        .query(table)
-        .withIndex('by_tenant_key', (q) => q.eq('key', key))
-        .first()
-      if (elsewhere) {
-        throw rejected(
-          'child_ownership',
-          `${table} row ${key} belongs to another contact`,
-        )
-      }
-      await ctx.db.insert(table, {
-        ...(row as object),
-        key,
-        contactId,
-        ...(table === 'contactEmails'
-          ? {
-              onHold: false,
-              // Derived from the identity field, so it never changes per key.
-              addressNormalized: normaliseEmail(row.address as string),
-            }
-          : {}),
-      })
+      added.push(row)
       continue
     }
     const doc = current as unknown as Record<string, unknown>
@@ -179,10 +172,40 @@ async function reconcile(
       if (field === 'key' || identityFields.includes(field)) continue
       if (doc[field] !== value) changes[field] = value
     }
-    if (Object.keys(changes).length) {
-      await ctx.db.patch(table, current._id, changes as never)
-    }
+    if (Object.keys(changes).length) updates.push({ id: current._id, changes })
   }
+  const owned = byKeyAnywhere.findIndex(
+    (d) => d !== null && d.contactId !== contactId,
+  )
+  if (owned !== -1) {
+    throw rejected(
+      'child_ownership',
+      `${table} row ${rows[owned].key as string} belongs to another contact`,
+    )
+  }
+
+  await Promise.all([
+    ...existing
+      .filter((doc) => !payloadKeys.has(doc.key))
+      .map((doc) => ctx.db.delete(table, doc._id)),
+    ...added.map((row) =>
+      ctx.db.insert(table, {
+        ...(row as object),
+        key: row.key,
+        contactId,
+        ...(table === 'contactEmails'
+          ? {
+              onHold: false,
+              // Derived from the identity field, so it never changes per key.
+              addressNormalized: normaliseEmail(row.address as string),
+            }
+          : {}),
+      } as never),
+    ),
+    ...updates.map(({ id, changes }) =>
+      ctx.db.patch(table, id, changes as never),
+    ),
+  ])
 }
 
 export const methods = defineContract({
@@ -195,8 +218,10 @@ export const methods = defineContract({
   apply: async (ctx, p, root) => {
     if (!root)
       throw rejected('no_root', 'contacts.methods targets an existing contact')
-    await reconcile(ctx, 'contactEmails', root._id, p.emails, ['address'])
-    await reconcile(ctx, 'contactPhones', root._id, p.phones, ['number'])
+    await Promise.all([
+      reconcile(ctx, 'contactEmails', root._id, p.emails, ['address']),
+      reconcile(ctx, 'contactPhones', root._id, p.phones, ['number']),
+    ])
     return root._id
   },
 })

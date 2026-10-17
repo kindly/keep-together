@@ -286,12 +286,15 @@ export function scopeWriter(
 
 const tenantArgs = { tenantId: v.id('tenants') }
 
-async function loadTenant(ctx: QueryCtx, tenantId: Id<'tenants'>) {
-  const tenant = await ctx.db.get(tenantId)
+function activeTenant(tenant: Doc<'tenants'> | null): Doc<'tenants'> {
   if (!tenant || tenant.status !== 'active') {
     throw new ConvexError({ kind: 'forbidden' as const })
   }
   return tenant
+}
+
+async function loadTenant(ctx: QueryCtx, tenantId: Id<'tenants'>) {
+  return activeTenant(await ctx.db.get(tenantId))
 }
 
 /**
@@ -305,16 +308,20 @@ export async function requireMember(
 ): Promise<TenantScope & { role: Role }> {
   const userId = await getAuthUserId(ctx)
   if (!userId) throw new ConvexError({ kind: 'unauthenticated' as const })
-  const membership = await ctx.db
-    .query('memberships')
-    .withIndex('by_tenant_user', (q) =>
-      q.eq('tenantId', tenantId).eq('userId', userId),
-    )
-    .unique()
+  // Both reads at once: this runs before every domain function.
+  const [membership, maybeTenant] = await Promise.all([
+    ctx.db
+      .query('memberships')
+      .withIndex('by_tenant_user', (q) =>
+        q.eq('tenantId', tenantId).eq('userId', userId),
+      )
+      .unique(),
+    ctx.db.get(tenantId),
+  ])
   if (!membership || !hasRole(membership.role, minRole)) {
     throw new ConvexError({ kind: 'forbidden' as const })
   }
-  const tenant = await loadTenant(ctx, tenantId)
+  const tenant = activeTenant(maybeTenant)
   return { tenant, membership, role: membership.role, userId }
 }
 

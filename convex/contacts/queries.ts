@@ -7,12 +7,20 @@ import { normaliseEmail, normaliseTagName } from './rules'
 import { contactWarnings } from './warnings'
 import type { AlsoUsedBy } from './warnings'
 
-async function children(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
+function emailRows(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
+  return db
+    .query('contactEmails')
+    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+    .collect()
+}
+
+async function children(
+  db: ScopedDatabaseReader,
+  contactId: Id<'contacts'>,
+  emailsRead: ReturnType<typeof emailRows>,
+) {
   const [emails, phones, addresses] = await Promise.all([
-    db
-      .query('contactEmails')
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
-      .collect(),
+    emailsRead,
     db
       .query('contactPhones')
       .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
@@ -130,6 +138,8 @@ export const EMAIL_LOOKUP_LIMIT = 50
 async function contactsWithEmail(
   db: ScopedDatabaseReader,
   address: string,
+  /** A contact to leave out, never read (`get` skips its own row). */
+  except?: Id<'contacts'>,
 ): Promise<{ contacts: Array<Doc<'contacts'>>; truncated: boolean }> {
   const normalised = normaliseEmail(address)
   if (!normalised) return { contacts: [], truncated: false }
@@ -142,7 +152,7 @@ async function contactsWithEmail(
   const truncated = rows.length > EMAIL_LOOKUP_LIMIT
   const ids = [
     ...new Set(rows.slice(0, EMAIL_LOOKUP_LIMIT).map((r) => r.contactId)),
-  ]
+  ].filter((id) => id !== except)
   const contacts = await Promise.all(ids.map((id) => db.get(id)))
   return { contacts: contacts.filter((c) => c !== null), truncated }
 }
@@ -201,33 +211,56 @@ export const list = tenantQuery({
   },
 })
 
-/** The whole aggregate: root, children, counters and advisory warnings. */
+/**
+ * The whole aggregate: root, children, counters and advisory warnings.
+ * Every read that doesn't depend on another runs concurrently: this query
+ * re-runs after every save of the contact, and its time is on the save's
+ * critical path (the client sees the save once its queries are current).
+ */
+async function contactView(db: ScopedDatabaseReader, id: Id<'contacts'>) {
+  const emails = emailRows(db, id)
+  const [contact, kids, tagList, alsoUsedBy] = await Promise.all([
+    db.get(id),
+    children(db, id, emails),
+    tagsOf(db, id),
+    emails.then((rows) => sharedAddresses(db, id, rows)),
+  ])
+  if (!contact) return null
+  return {
+    contact,
+    ...kids,
+    tags: tagList,
+    warnings: contactWarnings(kids, alsoUsedBy),
+  }
+}
+
+/** Per email row, the other contacts using its address (S1 warning). */
+async function sharedAddresses(
+  db: ScopedDatabaseReader,
+  id: Id<'contacts'>,
+  emails: Array<Doc<'contactEmails'>>,
+): Promise<AlsoUsedBy> {
+  return Object.fromEntries(
+    await Promise.all(
+      emails.map(async (email) => {
+        const { contacts, truncated } = await contactsWithEmail(
+          db,
+          email.address,
+          id,
+        )
+        const others = contacts.map((c) => ({
+          displayName: c.displayName,
+          archived: c.archived,
+        }))
+        return [email.key, { contacts: others, truncated }] as const
+      }),
+    ),
+  )
+}
+
 export const get = tenantQuery({
   args: { id: v.id('contacts') },
-  handler: async (ctx, { id }) => {
-    const contact = await ctx.db.get(id)
-    if (!contact) return null
-    const kids = await children(ctx.db, id)
-    const alsoUsedBy: AlsoUsedBy = {}
-    for (const email of kids.emails) {
-      const { contacts, truncated } = await contactsWithEmail(
-        ctx.db,
-        email.address,
-      )
-      alsoUsedBy[email.key] = {
-        contacts: contacts
-          .filter((c) => c._id !== id)
-          .map((c) => ({ displayName: c.displayName, archived: c.archived })),
-        truncated,
-      }
-    }
-    return {
-      contact,
-      ...kids,
-      tags: await tagsOf(ctx.db, id),
-      warnings: contactWarnings(kids, alsoUsedBy),
-    }
-  },
+  handler: async (ctx, { id }) => contactView(ctx.db, id),
 })
 
 /**
@@ -244,6 +277,15 @@ export const history = tenantQuery({
       )
       .order('desc')
       .take(100)
+    // Group names in one concurrent batch, not one read per moment.
+    const groupIds = [
+      ...new Set(revisions.flatMap((r) => (r.group ? [r.group] : []))),
+    ]
+    const groupNames = new Map(
+      await Promise.all(
+        groupIds.map(async (g) => [g, (await ctx.db.get(g))?.name] as const),
+      ),
+    )
     const moments: Array<{
       revisionId: Id<'revisions'>
       at: number
@@ -264,13 +306,12 @@ export const history = tenantQuery({
         continue
       }
       index.set(key, moments.length)
-      const group = r.group ? await ctx.db.get(r.group) : null
       moments.push({
         revisionId: r._id,
         at: r._creationTime,
         actor: r.actor ?? null,
         source: r.source,
-        groupName: group?.name ?? null,
+        groupName: r.group ? (groupNames.get(r.group) ?? null) : null,
         slices: [slice],
         restored: r.restoredFrom !== undefined,
       })

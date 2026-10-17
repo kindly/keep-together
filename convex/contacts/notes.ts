@@ -41,10 +41,13 @@ function capped(notes: Array<Doc<'contactNotes'>>) {
 export const forContact = tenantQuery({
   args: { id: v.id('contacts') },
   handler: async (ctx, { id }) => {
-    // One row past the cap tells us whether anything was cut off.
-    const pinned = await liveSection(ctx.db, id, true, LIMIT + 1)
-    const room = LIMIT + 1 - pinned.length
-    const rest = room > 0 ? await liveSection(ctx.db, id, false, room) : []
+    // One row past the cap tells us whether anything was cut off. Both
+    // sections at once (this re-runs after every note change, on the
+    // change's critical path), at the cost of reading past the cap.
+    const [pinned, rest] = await Promise.all([
+      liveSection(ctx.db, id, true, LIMIT + 1),
+      liveSection(ctx.db, id, false, LIMIT + 1),
+    ])
     return capped([...pinned, ...rest])
   },
 })

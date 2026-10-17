@@ -212,32 +212,40 @@ const slice = <TFields extends PropertyValidators>(fields: TFields) =>
 
 type Slice = 'details' | 'methods' | 'addresses' | 'tags'
 
-/** The current state of each slice, in payload shape, for change detection. */
+/**
+ * The current state of each slice, in payload shape, for change detection.
+ * Reads the root and its children concurrently; null if no such contact.
+ */
 export async function currentPayloads(
   db: ScopedDatabaseReader,
-  contact: Doc<'contacts'>,
+  id: Id<'contacts'>,
 ): Promise<{
-  details: Payloads['details']
-  methods: Payloads['methods']
-  addresses: Payloads['addresses']
-  tags: Payloads['tags']
-}> {
-  const [emails, phones, addrs, tagRows] = await Promise.all([
+  contact: Doc<'contacts'>
+  current: {
+    details: Payloads['details']
+    methods: Payloads['methods']
+    addresses: Payloads['addresses']
+    tags: Payloads['tags']
+  }
+} | null> {
+  const [contact, emails, phones, addrs, tagRows] = await Promise.all([
+    db.get(id),
     db
       .query('contactEmails')
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', contact._id))
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
       .collect(),
     db
       .query('contactPhones')
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', contact._id))
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
       .collect(),
     db
       .query('contactAddresses')
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', contact._id))
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
       .collect(),
-    contactTagRows(db, contact._id),
+    contactTagRows(db, id),
   ])
-  return {
+  if (!contact) return null
+  const current = {
     details: {
       kind: contact.kind,
       title: contact.title,
@@ -279,6 +287,7 @@ export async function currentPayloads(
     },
     tags: { tags: tagRows.map((r) => ({ key: r.key, tagId: r.tagId })) },
   }
+  return { contact, current }
 }
 
 /**
@@ -299,16 +308,16 @@ export const saveForm = tenantMutation({
     tags: slice(tagsFields),
   },
   handler: async (ctx, args) => {
-    const contact = await ctx.db.get(args.id)
-    if (!contact) throw new ConvexError({ kind: 'not_found' as const })
-    const current = await currentPayloads(ctx.db, contact)
+    const found = await currentPayloads(ctx.db, args.id)
+    if (!found) throw new ConvexError({ kind: 'not_found' as const })
+    const { contact, current } = found
     const source = args.source ?? 'ui'
 
     const problems: Partial<Record<Slice, Array<Problem>>> = {}
     const stale: Partial<Record<Slice, number>> = {}
     const changed: Array<{
       name: Slice
-      run: (group?: Id<'commandGroups'>) => Promise<unknown>
+      run: (group?: Id<'commandGroups'>) => Promise<{ counter: number }>
     }> = []
 
     const consider = <TSlice extends Slice>(
@@ -360,20 +369,21 @@ export const saveForm = tenantMutation({
       changed.length > 1
         ? await commandGroup(ctx, 'contact form save')
         : undefined
-    for (const c of changed) await c.run(group)
+    // The counters after the save, from what ran (no re-read of the root).
+    const counters = {
+      details: contact.detailsVersion,
+      methods: contact.methodsVersion,
+      addresses: contact.addressesVersion,
+      archive: contact.archiveVersion,
+      tags: contact.tagsVersion,
+    }
+    for (const c of changed) counters[c.name] = (await c.run(group)).counter
 
-    const after = (await ctx.db.get(args.id))!
     return {
       saved: changed.map((c) => c.name),
       problems,
       stale,
-      counters: {
-        details: after.detailsVersion,
-        methods: after.methodsVersion,
-        addresses: after.addressesVersion,
-        archive: after.archiveVersion,
-        tags: after.tagsVersion,
-      },
+      counters,
     }
   },
 })
