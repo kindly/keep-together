@@ -11,7 +11,22 @@ import { defineConfig, devices } from '@playwright/test'
 // The pool comes from qc/.instances.json, which scripts/qc-instances.mjs
 // writes after pushing and building (`pnpm qc` runs it first, under the
 // QC lock). Each instance gets its own preview server; mapping workers to
-// instances is the fixtures' job (step 4).
+// instances is qc/fixtures.ts's job, which also points each test's
+// baseURL at its own instance.
+
+// One id per run, shared by the runner, the reporter and every worker. It
+// names the run's tenants (`r<run>w<n>-a|b`) and its records in
+// qc-results/runs/. Workers are children of the runner, inherit its env
+// and re-read this file, so they keep its id; the runner always makes a
+// fresh one, so an id left exported in the shell can't merge two runs.
+if (process.env.QC_RUN_PID !== String(process.ppid)) {
+  process.env.QC_RUN_ID =
+    Math.floor(Date.now() / 1000).toString(36) +
+    Math.floor(Math.random() * 36 ** 2)
+      .toString(36)
+      .padStart(2, '0')
+  process.env.QC_RUN_PID = String(process.pid)
+}
 
 // Playwright's browser download is blocked here, so use the system
 // Chromium. QC_CHROMIUM overrides it; with neither (CI) Playwright falls
@@ -61,6 +76,7 @@ export default defineConfig({
     ['./qc/reporter.ts'],
   ],
   outputDir: 'test-results',
+  globalSetup: './qc/global-setup.ts',
   use: {
     baseURL: `http://localhost:${instances[0].port}`,
     headless: true,

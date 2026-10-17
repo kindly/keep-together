@@ -1,0 +1,56 @@
+// Client-perceived budgets per flow (factory/plans/qc-suite.sv, Latency).
+// Times are raw: from the input event to the result on screen, network
+// included, with no round-trip allowance. A flow passes when **every**
+// sample is under maxMs; there is no median.
+//
+// - repeatable: anything a user can do more than once per signed-in
+//   session. Always 100 ms.
+// - oncePerSession: sign-in and the first page load. Their own budgets,
+//   recorded first: 1.5× the worst sample of three `QC_MODE=record` runs
+//   (step 9b). The numbers below are provisional until then.
+//
+// **Raising a budget, or exempting a flow, needs the human's explicit
+// OK.** A flow over budget means fixing the code.
+//
+// Every flow here must be timed in each assert run, or the run fails
+// (qc/reporter.ts). `pending: true` marks one whose spec isn't written yet
+// (QC steps 6–8): untimed, it only warns. Drop the mark with the spec.
+
+export type FlowKind = 'repeatable' | 'oncePerSession'
+
+export interface Budget {
+  kind: FlowKind
+  /** Every sample must be under this, in ms. */
+  maxMs: number
+  /** The harness's own self-test: never in history, never fails the run. */
+  selfTest?: true
+  /** No spec times it yet: missing from a run warns instead of failing. */
+  pending?: true
+}
+
+const repeatable = { kind: 'repeatable', maxMs: 100 } as const
+const pending = { ...repeatable, pending: true } as const
+
+export const budgets = {
+  'auth.signIn': { kind: 'oncePerSession', maxMs: 2000 },
+  'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 1200, pending: true },
+  'contacts.nav': pending,
+  'contacts.search': pending,
+  'contacts.showArchived': pending,
+  'contacts.create': pending,
+  'contact.save': pending,
+  'contact.addEmail': pending,
+  'contact.livePropagation': pending,
+  'contact.archive': pending,
+  'contact.restore': pending,
+
+  // qc/harness.spec.ts: proves the timing path can fail and pass.
+  'harness.impossible': { kind: 'repeatable', maxMs: 1, selfTest: true },
+  'harness.generous': { kind: 'repeatable', maxMs: 60_000, selfTest: true },
+} satisfies Record<string, Budget>
+
+export type FlowName = keyof typeof budgets
+
+export function budgetFor(name: FlowName): Budget {
+  return budgets[name]
+}
