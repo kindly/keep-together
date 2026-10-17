@@ -9,7 +9,14 @@ const convexUrl = import.meta.env.VITE_CONVEX_URL as string | undefined
 if (!convexUrl) {
   throw new Error('VITE_CONVEX_URL is not set — run `pnpm convex` first')
 }
-const convex = new ConvexReactClient(convexUrl)
+const convex = new ConvexReactClient(convexUrl, {
+  // Keep the cached JWT on page load (a refresh is still scheduled before
+  // it expires). Without it the client fetches a fresh token right after
+  // connecting, and the second Authenticate makes the server re-run every
+  // subscription: a refresh round trip plus a full re-run on every load,
+  // landing on whatever the user does first. Experimental in convex 1.47.
+  initialAuthTokenReuse: true,
+})
 
 const router = createRouter({
   routeTree,
