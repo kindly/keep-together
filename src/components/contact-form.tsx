@@ -139,6 +139,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
     slice: TSlice,
     value: Slices[TSlice],
   ) => dispatch({ type: 'edit', slice, value })
+  const commit = () => dispatch({ type: 'commit' })
 
   const memberName = (userId: Id<'users'> | null) =>
     members?.find((m) => m.userId === userId)?.name ?? 'someone'
@@ -152,8 +153,24 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
   return (
     <form
       noValidate
+      onBlur={commit}
+      // Selects, checkboxes, radios and the row buttons are complete edits
+      // in themselves: commit right after the child's own handler ran.
+      onChange={(e) => {
+        const t = e.target as unknown as HTMLInputElement
+        if (
+          t.tagName === 'SELECT' ||
+          t.type === 'checkbox' ||
+          t.type === 'radio'
+        )
+          commit()
+      }}
+      onClick={(e) => {
+        if ((e.target as HTMLElement).closest('button[type="button"]')) commit()
+      }}
       onSubmit={(e) => {
         e.preventDefault()
+        commit()
         void save()
       }}
       className="flex flex-col gap-8"
@@ -207,7 +224,6 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
 
       <MethodsFields
         value={state.local.methods}
-        base={state.base.methods}
         onChange={(v) => edit('methods', v)}
         problems={state.problems.methods ?? []}
         warnings={data.warnings}
@@ -324,19 +340,15 @@ export function DetailsFields({
 
 function MethodsFields({
   value,
-  base,
   onChange,
   problems,
   warnings,
 }: {
   value: Payloads['methods']
-  base: Payloads['methods']
   onChange: (v: Payloads['methods']) => void
   problems: Array<Problem>
   warnings: Data['warnings']
 }) {
-  const savedEmailKeys = new Set(base.emails.map((e) => e.key))
-  const savedPhoneKeys = new Set(base.phones.map((p) => p.key))
   return (
     <>
       <section>
@@ -404,16 +416,7 @@ function MethodsFields({
                   onChange({
                     ...value,
                     emails: value.emails.map((r) =>
-                      r === row
-                        ? // An identity field edit on a saved row is remove + add (ADR 0014).
-                          {
-                            ...r,
-                            address: e.target.value,
-                            key: savedEmailKeys.has(r.key)
-                              ? crypto.randomUUID()
-                              : r.key,
-                          }
-                        : r,
+                      r === row ? { ...r, address: e.target.value } : r,
                     ),
                   })
                 }
@@ -485,15 +488,7 @@ function MethodsFields({
                   onChange({
                     ...value,
                     phones: value.phones.map((r) =>
-                      r === row
-                        ? {
-                            ...r,
-                            number: e.target.value,
-                            key: savedPhoneKeys.has(r.key)
-                              ? crypto.randomUUID()
-                              : r.key,
-                          }
-                        : r,
+                      r === row ? { ...r, number: e.target.value } : r,
                     ),
                   })
                 }

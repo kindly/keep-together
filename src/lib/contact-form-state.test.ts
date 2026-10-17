@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest'
 import type { Slices } from './contact-form-state'
-import { initialState, reduce, submission } from './contact-form-state'
+import {
+  clean,
+  initialState,
+  reduce,
+  rekey,
+  submission,
+} from './contact-form-state'
 
 const slices: Slices = {
   details: {
@@ -33,15 +39,56 @@ describe('contact form state', () => {
     expect(s.dirty.details).toBe(false)
   })
 
-  test('typing marks the slice dirty and asks for a save', () => {
-    const s = reduce(initialState(slices, counters), {
+  test('typing marks the slice dirty; committing asks for a save', () => {
+    let s = reduce(initialState(slices, counters), {
       type: 'edit',
       slice: 'details',
       value: { ...slices.details, nickname: 'Countess' },
     })
     expect(s.dirty.details).toBe(true)
+    expect(s.needsSave).toBe(false)
+    s = reduce(s, { type: 'commit' })
     expect(s.needsSave).toBe(true)
     expect(Object.keys(submission(s))).toEqual(['details'])
+  })
+
+  test('a blank new row is neither dirty nor submitted', () => {
+    const withBlank = {
+      emails: [
+        ...slices.methods.emails,
+        { key: 'e2', label: 'home' as const, address: '', isPrimary: false },
+      ],
+      phones: [],
+    }
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'methods',
+      value: withBlank,
+    })
+    expect(s.dirty.methods).toBe(false)
+    s = reduce(s, { type: 'commit' })
+    expect(s.needsSave).toBe(false)
+    expect(clean('methods', withBlank).emails).toHaveLength(1)
+  })
+
+  test('editing a saved email address re-keys the row at commit, not per keystroke', () => {
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'methods',
+      value: {
+        emails: [
+          { key: 'e1', label: 'home', address: 'b@x.com', isPrimary: true },
+        ],
+        phones: [],
+      },
+    })
+    expect(s.local.methods.emails[0].key).toBe('e1')
+    s = reduce(s, { type: 'commit' })
+    expect(s.local.methods.emails[0].key).not.toBe('e1')
+    expect(s.dirty.methods).toBe(true)
+    expect(
+      rekey(slices.methods, slices.methods, () => 'new').emails[0].key,
+    ).toBe('e1')
   })
 
   test('a remote change to another field merges under in-progress typing', () => {
