@@ -18,8 +18,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "dev:instance": "scripts/dev-instance.sh",
-    "qc": "playwright test",
-    "qc:instances": "echo 'qc:instances: not yet (QC plan step 2)' && exit 1",
+    "qc": "node scripts/qc-instances.mjs -- playwright test",
+    "qc:instances": "node scripts/qc-instances.mjs",
     "qc:report": "echo 'qc:report: not yet (QC plan step 10)' && exit 1"
   },
   "dependencies": {

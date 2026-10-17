@@ -1,4 +1,6 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { availableParallelism } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { defineConfig, devices } from '@playwright/test'
 
 // QC suite (ADR 0018, factory/plans/qc-suite.sv): the production build,
@@ -6,8 +8,10 @@ import { defineConfig, devices } from '@playwright/test'
 // Convex dev deployment. Runs outside the Claude sandbox (WebSockets don't
 // pass its proxy) and is never part of `pnpm check`.
 //
-// Step 1 skeleton: one build against dev/qc-1. The instance pool (step 2)
-// replaces the single webServer with one build and port per instance.
+// The pool comes from qc/.instances.json, which scripts/qc-instances.mjs
+// writes after pushing and building (`pnpm qc` runs it first, under the
+// QC lock). Each instance gets its own preview server; mapping workers to
+// instances is the fixtures' job (step 4).
 
 // Playwright's browser download is blocked here, so use the system
 // Chromium. QC_CHROMIUM overrides it; with neither (CI) Playwright falls
@@ -16,11 +20,33 @@ const chromium =
   process.env.QC_CHROMIUM ??
   (existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined)
 
-const convexUrl =
-  process.env.QC_CONVEX_URL ??
-  'https://expert-oriole-119.eu-west-1.convex.cloud'
-const port = 4101
-const outDir = 'dist-qc/qc-1'
+interface Instance {
+  name: string
+  deployment: string
+  url: string
+  envFile: string
+  port: number
+  outDir: string
+}
+
+const instancesFile = fileURLToPath(
+  new URL('qc/.instances.json', import.meta.url),
+)
+if (!existsSync(instancesFile)) {
+  throw new Error(
+    `qc/.instances.json is missing: run \`pnpm qc\`, which prepares the pool, or \`pnpm qc:instances\` first`,
+  )
+}
+const instances: Array<Instance> = JSON.parse(
+  readFileSync(instancesFile, 'utf8'),
+)
+
+// About two workers per instance, but no more than half the cores, so
+// browser CPU contention doesn't inflate render times.
+const workers = Math.max(
+  1,
+  Math.min(2 * instances.length, Math.floor(availableParallelism() / 2)),
+)
 
 export default defineConfig({
   testDir: 'qc',
@@ -28,6 +54,7 @@ export default defineConfig({
   // A flaky test is a failure to investigate, not to retry.
   retries: 0,
   forbidOnly: true,
+  workers,
   reporter: [
     ['list'],
     ['html', { outputFolder: 'qc-report/playwright', open: 'never' }],
@@ -35,7 +62,7 @@ export default defineConfig({
   ],
   outputDir: 'test-results',
   use: {
-    baseURL: `http://localhost:${port}`,
+    baseURL: `http://localhost:${instances[0].port}`,
     headless: true,
     viewport: { width: 1280, height: 800 },
     trace: 'retain-on-failure',
@@ -50,11 +77,10 @@ export default defineConfig({
       },
     },
   ],
-  webServer: {
-    command: `vite build --outDir ${outDir} --emptyOutDir && vite preview --outDir ${outDir} --port ${port} --strictPort`,
-    url: `http://localhost:${port}`,
-    env: { VITE_CONVEX_URL: convexUrl },
+  webServer: instances.map((inst) => ({
+    command: `vite preview --outDir ${inst.outDir} --port ${inst.port} --strictPort`,
+    url: `http://localhost:${inst.port}`,
     reuseExistingServer: false,
-    timeout: 120_000,
-  },
+    timeout: 30_000,
+  })),
 })

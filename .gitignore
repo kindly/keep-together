@@ -31,6 +31,8 @@ dist-qc/
 qc-results/
 qc-report/
 test-results/
+.qc.lock
+qc/.instances.json
 
 # Factory worker reports
 factory/out/
