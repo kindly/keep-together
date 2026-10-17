@@ -15,7 +15,8 @@
     "check": "pnpm typecheck && pnpm lint && pnpm test",
     "convex": "convex dev",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev:instance": "scripts/dev-instance.sh"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.96",
