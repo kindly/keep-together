@@ -228,6 +228,90 @@ describe('contact form state', () => {
     expect(s.counters.methods).toBe(1)
   })
 
+  describe('a stale notice clears once the retry saves', () => {
+    const theirs = { ...slices.details, title: 'Lady' }
+    const mine = { ...slices.details, nickname: 'Countess' }
+    const result = (
+      saved: Array<'details'>,
+      stale: { details?: number },
+      details: number,
+    ) => ({
+      saved,
+      problems: {},
+      stale,
+      counters: { details, methods: 0, addresses: 0, archive: 0 },
+    })
+
+    // Their change (counter 1) has already reached us when our save, sent
+    // against counter 0, comes back stale; the retry goes against 1.
+    function retrying() {
+      let s = reduce(initialState(slices, counters), {
+        type: 'edit',
+        slice: 'details',
+        value: mine,
+      })
+      const first = submission(s)
+      s = reduce(s, { type: 'saving' })
+      s = reduce(s, {
+        type: 'server',
+        slices: { ...slices, details: theirs },
+        counters: { ...counters, details: 1 },
+      })
+      s = reduce(s, {
+        type: 'saved',
+        submitted: first,
+        at: 1,
+        result: result([], { details: 1 }, 1),
+      })
+      expect(s.stale).toEqual({ details: 1 })
+      expect(s.needsSave).toBe(true)
+      const retry = submission(s)
+      expect(retry.details).toMatchObject({
+        title: 'Lady',
+        nickname: 'Countess',
+      })
+      return { s: reduce(s, { type: 'saving' }), retry }
+    }
+    const echo = {
+      type: 'server' as const,
+      slices: {
+        ...slices,
+        details: { ...slices.details, title: 'Lady', nickname: 'Countess' },
+      },
+      counters: { ...counters, details: 2 },
+    }
+
+    test('result before echo', () => {
+      const { s: start, retry } = retrying()
+      let s = start
+      s = reduce(s, {
+        type: 'saved',
+        submitted: retry,
+        at: 2,
+        result: result(['details'], {}, 2),
+      })
+      expect(s.stale).toEqual({})
+      s = reduce(s, echo)
+      expect(s.stale).toEqual({})
+      expect(s.dirty.details).toBe(false)
+    })
+
+    test('echo before result', () => {
+      const { s: start, retry } = retrying()
+      let s = start
+      s = reduce(s, echo)
+      expect(s.stale).toEqual({})
+      s = reduce(s, {
+        type: 'saved',
+        submitted: retry,
+        at: 2,
+        result: result(['details'], {}, 2),
+      })
+      expect(s.stale).toEqual({})
+      expect(s.dirty.details).toBe(false)
+    })
+  })
+
   test('a blocking problem keeps the slice dirty without retrying', () => {
     let s = reduce(initialState(slices, counters), {
       type: 'edit',

@@ -265,6 +265,15 @@ export function reduce(state: FormState, action: Action): FormState {
         if (action.result.stale[slice] === undefined)
           counters[slice] = action.result.counters[slice]
       }
+      // An earlier notice is resolved once this save holds the counter it
+      // named. The echo of this save carries the same counters and stops at
+      // the early return in `server`, so it can't be left to clear it.
+      const stale = { ...state.stale }
+      for (const slice of SLICES) {
+        const was = stale[slice]
+        if (was !== undefined && counters[slice] >= was) delete stale[slice]
+      }
+      Object.assign(stale, action.result.stale)
       return {
         ...state,
         base,
@@ -272,7 +281,7 @@ export function reduce(state: FormState, action: Action): FormState {
         conflicts,
         counters,
         problems: action.result.problems,
-        stale: { ...state.stale, ...action.result.stale },
+        stale,
         status: 'saved',
         savedAt: action.result.saved.length ? action.at : state.savedAt,
         needsSave:
