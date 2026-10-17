@@ -15,6 +15,11 @@
 // Every flow here must be timed in each assert run, or the run fails
 // (qc/reporter.ts). `pending: true` marks one whose spec isn't written yet
 // (QC steps 6–8): untimed, it only warns. Drop the mark with the spec.
+//
+// `knownOver` is an exception the human approved: the flow is still timed
+// and recorded in full, but being over budget doesn't fail the run. Every
+// run lists every knownOver flow in a banner, timed or not, so it can't be
+// forgotten. Remove the mark with the fix.
 
 export type FlowKind = 'repeatable' | 'oncePerSession'
 
@@ -26,21 +31,27 @@ export interface Budget {
   selfTest?: true
   /** No spec times it yet: missing from a run warns instead of failing. */
   pending?: true
+  /** Approved exception, "<reason> (<who> <date>)": over budget never fails. */
+  knownOver?: string
 }
 
 const repeatable = { kind: 'repeatable', maxMs: 100 } as const
+const perfTaskPending = {
+  ...repeatable,
+  knownOver: 'perf task pending (human 2026-10-17)',
+} as const
 
 export const budgets = {
   'auth.signIn': { kind: 'oncePerSession', maxMs: 2000 },
-  'groups.open': repeatable,
+  'groups.open': perfTaskPending,
   'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 1200 },
   'contacts.nav': repeatable,
   'contacts.search': repeatable,
   'contacts.showArchived': repeatable,
-  'contacts.create': repeatable,
+  'contacts.create': perfTaskPending,
   'contact.save': repeatable,
-  'contact.addEmail': repeatable,
-  'contact.livePropagation': repeatable,
+  'contact.addEmail': perfTaskPending,
+  'contact.livePropagation': perfTaskPending,
   'contact.archive': repeatable,
   'contact.restore': repeatable,
   'contact.note.add': repeatable,

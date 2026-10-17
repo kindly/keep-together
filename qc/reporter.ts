@@ -36,6 +36,9 @@ import type { Budget, FlowKind, FlowName } from './budgets'
 // - in a full assert run, a flow in qc/budgets.ts that nothing timed,
 //   unless it's marked `pending`. A filtered run (spec files, --grep,
 //   --last-failed …) only warns, since it skips flows on purpose.
+//
+// A `knownOver` flow (an approved exception) never fails the run, but
+// every run lists all of them in a banner with their samples.
 
 const HISTORY = path.join('qc-results', 'history.jsonl')
 
@@ -63,6 +66,8 @@ export interface HistoryLine {
   budgetMs: number
   /** Every call of this flow passed; null when none was judged. */
   pass: boolean | null
+  /** Approved exception: `pass` is still the real judgement. */
+  knownOver?: string
   /**
    * The run's Convex server execution times (qc/server-timings.ts), the
    * same on every line of a run; null when the collector wrote nothing.
@@ -152,6 +157,7 @@ function summarise(
         rttOver: rs.some((r) => r.rttOver),
         budgetMs,
         pass: judged.length ? judged.every((r) => r.pass) : null,
+        ...(rs[0].knownOver && { knownOver: rs[0].knownOver }),
       }
     })
 }
@@ -186,8 +192,12 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
       : l.pass === null
         ? 'not judged'
         : l.pass
-          ? 'ok'
-          : 'OVER',
+          ? l.knownOver
+            ? 'ok (known over)'
+            : 'ok'
+          : l.knownOver
+            ? 'KNOWN OVER'
+            : 'OVER',
   ])
   const widths = head.map((h, i) =>
     Math.max(h.length, ...rows.map((r) => r[i].length)),
@@ -220,6 +230,24 @@ function isFiltered(argv: Array<string>): boolean {
   )
 }
 
+/** Every knownOver flow in qc/budgets.ts, with this run's samples if any. */
+function knownOverBanner(lines: Array<HistoryLine>): Array<string> {
+  const known = (Object.entries(budgets) as Array<[FlowName, Budget]>).filter(
+    ([, b]) => b.knownOver,
+  )
+  if (!known.length) return []
+  return banner([
+    `${known.length} flows are KNOWN OVER (approved exceptions, qc/budgets.ts): timed, never failing.`,
+    ...known.map(([name, b]) => {
+      const l = lines.find((x) => x.flow === name)
+      const samples = l
+        ? `${l.overBudget}/${l.n} over: ${l.samplesMs.join(', ')} ms, budget < ${l.budgetMs}`
+        : 'not timed this run'
+      return `${name}: KNOWN OVER, not failing: ${b.knownOver} · ${samples}`
+    }),
+  ])
+}
+
 const banner = (lines: Array<string>) => {
   const bar = '!'.repeat(72)
   return [bar, ...lines.map((l) => `!! ${l}`), bar]
@@ -239,6 +267,7 @@ export default class QcReporter implements Reporter {
     const records = readRecords(runDir(id))
     const out = ['']
     const failures: Array<string> = []
+    let summary: Array<HistoryLine> = []
 
     if (records.length) {
       const selfTest = new Set(
@@ -267,6 +296,7 @@ export default class QcReporter implements Reporter {
           ]),
         )
       }
+      summary = lines
       out.push(table(lines, selfTest))
       const real = lines.filter((l) => !selfTest.has(l.flow))
       mkdirSync(path.dirname(HISTORY), { recursive: true })
@@ -278,7 +308,7 @@ export default class QcReporter implements Reporter {
 
       // Flows timed in a worker fixture can't fail a test; judge them here.
       for (const r of records) {
-        if (r.where === 'worker setup' && r.pass === false) {
+        if (r.where === 'worker setup' && r.pass === false && !r.knownOver) {
           failures.push(
             `${r.flow} over budget in worker ${r.worker} setup: ${r.samplesMs.join(', ')} ms, budget < ${r.budgetMs}`,
           )
@@ -287,6 +317,8 @@ export default class QcReporter implements Reporter {
     } else {
       out.push(`qc ${id}: no flows timed`)
     }
+
+    out.push(...knownOverBanner(summary))
 
     const timed = new Set(records.map((r) => r.flow))
     const untimed = (Object.entries(budgets) as Array<[FlowName, Budget]>)

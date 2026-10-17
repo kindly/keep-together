@@ -75,6 +75,8 @@ export interface FlowRecord {
   pass: boolean | null
   skipped?: 'record' | 'rtt'
   selfTest?: true
+  /** Approved exception (qc/budgets.ts): judged, but never fails. */
+  knownOver?: string
 }
 
 export interface FlowStep<TArg = undefined> {
@@ -258,6 +260,7 @@ export async function runFlow<TArg>(
     pass: skipped ? null : pass,
     ...(skipped && { skipped }),
     ...(budget.selfTest && { selfTest: true as const }),
+    ...(budget.knownOver && { knownOver: budget.knownOver }),
   }
   const dir = runDir()
   mkdirSync(dir, { recursive: true })
@@ -271,7 +274,7 @@ export async function runFlow<TArg>(
 export class OverBudgetError extends Error {}
 
 export function assertFlow(record: FlowRecord) {
-  if (record.pass !== false) return
+  if (record.pass !== false || record.knownOver) return
   throw new OverBudgetError(
     `flow ${record.flow} over budget: samples ${record.samplesMs.join(', ')} ms, ` +
       `every one must be under ${record.budgetMs} ms (RTT ${record.rttMs} ms)`,
