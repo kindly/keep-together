@@ -5,10 +5,22 @@
 import { getAuthUserId } from '@convex-dev/auth/server'
 import { ConvexError, v } from 'convex/values'
 import { internal } from '../_generated/api'
+import type { QueryCtx } from '../_generated/server'
 import { internalQuery, mutation, query } from '../_generated/server'
 import { requireMember } from '../lib/tenancy'
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/
+
+/** Throws `invalid` for a malformed slug; returns the tenant already using it, if any. */
+export async function tenantForSlug(ctx: QueryCtx, slug: string) {
+  if (!SLUG.test(slug)) {
+    throw new ConvexError({ kind: 'invalid' as const, field: 'slug' })
+  }
+  return ctx.db
+    .query('tenants')
+    .withIndex('by_slug', (q) => q.eq('slug', slug))
+    .unique()
+}
 
 /** Tenants the signed-in user belongs to (for the picker / routing). */
 export const mine = query({
@@ -87,14 +99,7 @@ export const create = mutation({
   handler: async (ctx, { slug, name }) => {
     const userId = await getAuthUserId(ctx)
     if (!userId) throw new ConvexError({ kind: 'unauthenticated' as const })
-    if (!SLUG.test(slug)) {
-      throw new ConvexError({ kind: 'invalid' as const, field: 'slug' })
-    }
-    const existing = await ctx.db
-      .query('tenants')
-      .withIndex('by_slug', (q) => q.eq('slug', slug))
-      .unique()
-    if (existing) {
+    if (await tenantForSlug(ctx, slug)) {
       throw new ConvexError({ kind: 'taken' as const, field: 'slug' })
     }
     const tenantId = await ctx.db.insert('tenants', {
