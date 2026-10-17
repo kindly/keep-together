@@ -33,6 +33,7 @@ const pending = { ...repeatable, pending: true } as const
 
 export const budgets = {
   'auth.signIn': { kind: 'oncePerSession', maxMs: 2000 },
+  'groups.open': repeatable,
   'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 1200, pending: true },
   'contacts.nav': pending,
   'contacts.search': pending,
