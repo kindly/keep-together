@@ -115,8 +115,13 @@ mentions tenants; the runtime enforces them.** Concretely:
 Moving between tiers is a data move, not a code change: a per-tenant
 export in Convex's snapshot ZIP format (which preserves `_id` and
 `_creationTime`, so `v.id` references survive) imported into the target
-deployment. This must be proven by a test between two deployments before
-the first real tenant exists.
+deployment. Proven 2026-10-17 between two cloud deployments
+(`docs/spikes/01-export-import.md`) with one constraint: ids encode a
+per-deployment table number, so **a deployment that will receive tenants
+is born from a snapshot import (`--replace-all`) before any schema push,
+and every deployment takes schema changes in the same order**. Two
+deployments whose tables were created independently cannot exchange
+documents by id.
 
 ### Control plane
 
@@ -176,4 +181,6 @@ refinements are ever needed.
   schema invariant test, two-tenant fixture; (3) Contact contract with
   counters, revisions, restore; (4) live form with per-field merge and
   echo handling; (5) IRmark generation in a Node action against HMRC
-  samples; (6) one self-hosted run on a VPS to prove the exit.
+  samples; (6) one self-hosted run on a VPS to prove the exit. Reports:
+  `docs/spikes/`. (6) was swapped for scripted cloud dev instances on
+  2026-10-17; the self-host run is still owed.

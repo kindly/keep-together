@@ -45,7 +45,7 @@ on where the SPA is served from. No SSR, no Node server of our own.
 | Path | Owns |
 |---|---|
 | `convex/schema.ts` | every table; all domain tables have `tenantId` and tenantId-first indexes |
-| `convex/lib/tenancy.ts` | `tenantQuery` / `tenantMutation` / `tenantAction` (+ `internal*`) — the only way to declare domain functions |
+| `convex/lib/tenancy.ts` | `tenantQuery` / `tenantMutation` / `tenantAction` (+ `internal*`) — the only way to declare domain functions. Handlers get a **scoped db**: inserts stamped, every `withIndex` range starts *after* `tenantId`, no unindexed `query()` |
 | `convex/lib/contracts.ts` | `executeContract`: counter check, pure apply, revision append |
 | `convex/platform/` | control plane: tenants, memberships, settings, routing, billing. **Only place raw `query`/`mutation`/`action` may be imported** |
 | `convex/{contacts,giving,giftaid,consent,comms}/` | domain modules (boundaries in docs/architecture.md) |
@@ -58,7 +58,8 @@ on where the SPA is served from. No SSR, no Node server of our own.
 
 `pnpm convex` (Convex dev: pushes functions, watches, generates `convex/_generated`) ·
 `pnpm dev` (Vite on :3000) · `pnpm check` (typecheck + lint + tests — what CI runs) ·
-`pnpm test` · `pnpm build`. Run `pnpm convex` and `pnpm dev` side by side.
+`pnpm test` · `pnpm build` · `pnpm dev:instance <name>` (another cloud dev
+deployment). Run `pnpm convex` and `pnpm dev` side by side.
 
 ## Conventions
 
@@ -99,6 +100,14 @@ on where the SPA is served from. No SSR, no Node server of our own.
 - Reports and lists are indexed queries or in-memory passes over one
   tenant's data; never a cross-tenant scan in one function (32k-document
   limit). Big jobs are paginated actions.
+- **Deployments that exchange tenants must share lineage**: Convex ids
+  encode a per-deployment table number, so a target deployment is born
+  from a snapshot import (`import --replace-all`) *before* any schema
+  push, and all deployments take schema changes in the same order
+  (`docs/spikes/01-export-import.md`).
+- Dev instances: `pnpm dev:instance <name>` (creates `dev/<name>` in the
+  EU, sets auth keys, pushes); `platform/devSeed:demoTenant` seeds one.
+  Test fixtures live in `test/` — anything under `convex/` is pushed.
 - Cross-module imports go through a module's public functions, never its
   internals. Domain logic lives in plain TypeScript modules with the
   Convex handler as a thin wrapper — that is the portability boundary.

@@ -15,6 +15,8 @@ pnpm convex          # first run: logs you into Convex, creates a dev deployment
 npx @convex-dev/auth # once per deployment: sets JWT keys + SITE_URL for Convex Auth
 pnpm dev             # Vite on http://localhost:3000
 pnpm check           # typecheck + lint + tests (CI)
+pnpm dev:instance demo   # another cloud dev deployment: dev/demo, auth keys set, code pushed
+npx convex run platform/devSeed:demoTenant '{"slug":"demo"}'   # a tenant with contacts
 ```
 
 ## Where things are
@@ -30,7 +32,8 @@ pnpm check           # typecheck + lint + tests (CI)
   the Django predecessor proved in code; the checklist to re-prove here).
 
 `CLAUDE.md` holds the working rules (domain invariants, contracts,
-tenancy, validation tiers).
+tenancy, validation tiers). `docs/spikes/` records what each ADR 0017
+spike proved.
 
 ## Deploy the SPA
 
