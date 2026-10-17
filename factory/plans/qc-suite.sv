@@ -26,7 +26,7 @@
 - **Guardrails**
   - **No retries.**
   - The **coverage gate fails the run** when a route has no flow.
-  - `qcSeed` is an **internal function, like devSeed**, with no env-var gate.
+  - `qcSeed` is an **internal function, like devSeed**, and since 2026-10-17 also refuses to run unless the deployment env `QC_SEED_ENABLED=1` (set only on the dev/qc-* pool). Changed from "no env-var gate" after review; confirmed by the human. Merged in 444f76f.
   - The **devtools get gated behind `import.meta.env.DEV`** if step 0e shows they ship in the build.
 - **ADR 0018:** drafted by the step 0 spike for your review.
 </sv-prose>
