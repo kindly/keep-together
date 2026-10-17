@@ -29,6 +29,10 @@ are not spawned by `spawn.sh`; the human starts you and points you here.
 - Usual flow for a goal: planner brief → human approves the brief →
   builder(s) per step → reviewer and tester on the builder's worktree →
   builder fixes → report to the human. Skip stages the goal doesn't need.
+- **At most 6 workers at once** (the human's cap; the machine runs out
+  of memory beyond that). Reviewers and testers count. When full, queue
+  the next task under "Queued" on the board and start it when a teardown
+  frees a slot; tear down promptly so slots don't sit idle.
 - Workers in parallel must not share a worktree. A reviewer or tester can
   read a builder's worktree while the builder is idle.
 
