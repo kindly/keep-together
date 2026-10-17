@@ -1,5 +1,6 @@
 import { readInstances } from './fixtures'
 import type { Instance } from './fixtures'
+import { serverTimingsHook } from './server-timings.setup'
 
 // Runs once per `playwright test`, after scripts/qc-instances.mjs has
 // pushed and built the pool and Playwright's webServer has started one
@@ -22,7 +23,9 @@ export interface QcHook {
   setup: (pool: Array<Instance>) => Promise<(() => Promise<void>) | void>
 }
 
-const hooks: Array<QcHook> = []
+// A warm-up hook, if one returns, goes before serverTimingsHook so its
+// calls aren't timed.
+const hooks: Array<QcHook> = [serverTimingsHook]
 
 export default async function globalSetup() {
   const pool = readInstances()

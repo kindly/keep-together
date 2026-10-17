@@ -6,8 +6,14 @@ export default defineConfig({
   test: {
     environment: 'edge-runtime',
     server: { deps: { inline: ['convex-test'] } },
-    include: ['convex/**/*.test.ts', 'src/**/*.test.{ts,tsx}'],
-    // qc/ is the Playwright suite (`pnpm qc`), never part of `pnpm check`.
-    exclude: [...configDefaults.exclude, 'qc/**'],
+    // qc/*.test.ts are unit tests of the QC harness's pure parts.
+    include: [
+      'convex/**/*.test.ts',
+      'src/**/*.test.{ts,tsx}',
+      'qc/**/*.test.ts',
+    ],
+    // qc/*.spec.ts is the Playwright suite (`pnpm qc`), never part of
+    // `pnpm check`.
+    exclude: [...configDefaults.exclude, 'qc/**/*.spec.ts'],
   },
 })

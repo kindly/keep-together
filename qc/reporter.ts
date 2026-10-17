@@ -22,6 +22,8 @@ import {
 } from './timing'
 import type { FlowRecord } from './timing'
 import { budgets } from './budgets'
+import { RESULTS_FILE } from './server-timings'
+import type { ServerTimingsFile } from './server-timings'
 import type { Budget, FlowKind, FlowName } from './budgets'
 
 // QC reporter: gathers every flow record the workers wrote for this run
@@ -61,6 +63,46 @@ export interface HistoryLine {
   budgetMs: number
   /** Every call of this flow passed; null when none was judged. */
   pass: boolean | null
+  /**
+   * The run's Convex server execution times (qc/server-timings.ts), the
+   * same on every line of a run; null when the collector wrote nothing.
+   */
+  server: ServerSummary | null
+}
+
+export interface ServerSummary {
+  /** No stream was lost and no asserted call reached the budget. */
+  pass: boolean
+  /** Uncached executions only; `asserted` ones are judged. */
+  functions: Array<{
+    fn: string
+    type: string
+    asserted: boolean
+    n: number
+    p50Ms: number
+    p95Ms: number
+    maxMs: number
+  }>
+}
+
+function readServer(dir: string): ServerSummary | null {
+  const file = path.join(dir, RESULTS_FILE)
+  if (!existsSync(file)) return null
+  const t = JSON.parse(readFileSync(file, 'utf8')) as ServerTimingsFile
+  return {
+    pass: t.errors.length === 0 && t.failures.length === 0,
+    functions: t.functions
+      .filter((f) => !f.cached)
+      .map((f) => ({
+        fn: f.identifier,
+        type: f.udfType,
+        asserted: f.asserted,
+        n: f.n,
+        p50Ms: f.p50,
+        p95Ms: f.p95,
+        maxMs: f.max,
+      })),
+  }
 }
 
 function git(args: Array<string>) {
@@ -85,7 +127,7 @@ function readRecords(dir: string): Array<FlowRecord> {
 
 function summarise(
   records: Array<FlowRecord>,
-  base: Pick<HistoryLine, 'runId' | 'at' | 'sha' | 'dirty' | 'mode'>,
+  base: Pick<HistoryLine, 'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'server'>,
 ): Array<HistoryLine> {
   const byFlow = new Map<FlowName, Array<FlowRecord>>()
   for (const r of records)
@@ -208,6 +250,7 @@ export default class QcReporter implements Reporter {
         sha: git(['rev-parse', 'HEAD']),
         dirty: git(['status', '--porcelain']) !== '',
         mode: RECORD ? 'record' : 'assert',
+        server: readServer(runDir(id)),
       })
       const rtts = [...new Set(records.map((r) => `w${r.worker} ${r.rttMs}`))]
       out.push(
