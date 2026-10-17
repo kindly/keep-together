@@ -117,6 +117,30 @@ export async function setAuthKeys(deployment, siteUrl) {
   }
 }
 
+// Prove a deploy key belongs to `ref` before anything writes with it: the
+// project reference must resolve (with the team login, not the key) to the
+// deployment the key names. A key for any other deployment, pasted into an
+// env file, would otherwise get code pushed to it and, on reset, its data
+// wiped. `source` names where the key came from, for the error.
+export async function verifyDeployKey(ref, deployment, source) {
+  const env = { ...process.env }
+  delete env.CONVEX_DEPLOY_KEY
+  delete env.CONVEX_DEPLOYMENT
+  const { code, stdout, stderr } = await convex(
+    ['dashboard', '--deployment', ref, '--no-open'],
+    { env, timeoutMs: 60_000 },
+  )
+  const actual = stdout.match(/\/d\/([a-z0-9-]+)/)?.[1]
+  if (code !== 0 || !actual) {
+    throw new Error(`cannot resolve ${ref}: ${stderr.trim()}`)
+  }
+  if (actual !== deployment) {
+    throw new Error(
+      `${source}: key is for ${deployment}, but ${ref} is ${actual}; refusing to touch it`,
+    )
+  }
+}
+
 async function main([command, ...args]) {
   if (command === 'create') {
     const [ref, envfile, region] = args

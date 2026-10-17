@@ -6,6 +6,13 @@ const app = defineApp({
   env: {
     // "1" lets platform/qcSeed create known-password owners (QC pool only).
     QC_SEED_ENABLED: v.optional(v.string()),
+    // "1" lets platform/testSeed create the manual-test instances' users
+    // (dev/demo and dev/preview only; scripts/test-instances.mjs sets it).
+    TEST_SEED_ENABLED: v.optional(v.string()),
+    // "0" exempts staff password sign-ins from 2FA. Unread until 2FA exists
+    // (auth-roles R4, Better Auth), which must honour it; set only on the
+    // manual-test instances. Absent or anything else = 2FA required.
+    AUTH_2FA_REQUIRED: v.optional(v.string()),
   },
 })
 

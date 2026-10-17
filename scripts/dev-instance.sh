@@ -26,7 +26,12 @@ if [ ! -f "$envfile" ]; then
 fi
 
 # shellcheck disable=SC1090
-deployment=$(grep '^CONVEX_DEPLOYMENT=' "$envfile" | cut -d= -f2 | sed 's/^dev://')
+deployment=$(grep '^CONVEX_DEPLOYMENT=' "$envfile" | cut -d= -f2 | sed 's/^dev://' || true)
+if [ -z "$deployment" ]; then
+  echo "✖ $envfile has no CONVEX_DEPLOYMENT; it isn't a dev:instance file" >&2
+  echo "  (dev/demo and dev/preview belong to pnpm instances:sync; pick another name)" >&2
+  exit 1
+fi
 
 node scripts/convex-instance.mjs auth "$deployment" "$site"
 

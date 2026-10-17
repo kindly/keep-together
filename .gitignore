@@ -34,5 +34,9 @@ test-results/
 .qc.lock
 qc/.instances.json
 
+# Manual-test instances' preview build (pnpm instances:sync)
+# (dist-preview is a symlink into dist-preview.builds/)
+/dist-preview*
+
 # Factory worker reports
 factory/out/

@@ -29,6 +29,8 @@ import type * as lib_tenancy from "../lib/tenancy.js";
 import type * as platform_devSeed from "../platform/devSeed.js";
 import type * as platform_qcSeed from "../platform/qcSeed.js";
 import type * as platform_tenants from "../platform/tenants.js";
+import type * as platform_testSeed from "../platform/testSeed.js";
+import type * as platform_testSeedData from "../platform/testSeedData.js";
 
 import type {
   ApiFromModules,
@@ -58,6 +60,8 @@ declare const fullApi: ApiFromModules<{
   "platform/devSeed": typeof platform_devSeed;
   "platform/qcSeed": typeof platform_qcSeed;
   "platform/tenants": typeof platform_tenants;
+  "platform/testSeed": typeof platform_testSeed;
+  "platform/testSeedData": typeof platform_testSeedData;
 }>;
 
 /**

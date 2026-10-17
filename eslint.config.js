@@ -64,6 +64,7 @@ export default [
       'src/routeTree.gen.ts',
       'dist/**',
       'dist-qc/**',
+      'dist-preview*/**',
       'qc-report/**',
       'test-results/**',
     ],

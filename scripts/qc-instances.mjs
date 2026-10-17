@@ -35,7 +35,12 @@ import {
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { convex, createDeployment, setAuthKeys } from './convex-instance.mjs'
+import {
+  convex,
+  createDeployment,
+  setAuthKeys,
+  verifyDeployKey,
+} from './convex-instance.mjs'
 
 const PROJECT = 'mr-raznick:keep-together'
 const BASE_PORT = 4100
@@ -247,32 +252,16 @@ function loadInstance(i) {
   }
 }
 
-// Prove each key belongs to its slot before anything writes to it: the
-// project's reference dev/qc-<i> must resolve (with the team login, not
-// the key) to the deployment the key names. A key for any other
-// deployment, pasted into an env file, would otherwise get worktree code
-// deployed to it and, with --reset, its data wiped.
+// Prove each key is its slot's (dev/qc-<i>) before anything writes with it.
 async function verifyPool(pool) {
-  const env = { ...process.env }
-  delete env.CONVEX_DEPLOY_KEY
-  delete env.CONVEX_DEPLOYMENT
   await Promise.all(
-    pool.map(async (inst) => {
-      const ref = `${PROJECT}:dev/${inst.name}`
-      const { code, stdout, stderr } = await convex(
-        ['dashboard', '--deployment', ref, '--no-open'],
-        { env, timeoutMs: 60_000 },
-      )
-      const actual = stdout.match(/\/d\/([a-z0-9-]+)/)?.[1]
-      if (code !== 0 || !actual) {
-        throw new Error(`cannot resolve ${ref}: ${stderr.trim()}`)
-      }
-      if (actual !== inst.deployment) {
-        throw new Error(
-          `${inst.envFile}: key is for ${inst.deployment}, but ${ref} is ${actual}; refusing to touch it`,
-        )
-      }
-    }),
+    pool.map((inst) =>
+      verifyDeployKey(
+        `${PROJECT}:dev/${inst.name}`,
+        inst.deployment,
+        inst.envFile,
+      ),
+    ),
   )
 }
 
