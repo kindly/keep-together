@@ -97,6 +97,13 @@ export interface FlowStep<TArg = undefined> {
    * `page.goto(url, { waitUntil: 'commit' })`.
    */
   start?: 'input' | 'navigation'
+  /**
+   * The page the action's input lands on, when it isn't the page `until`
+   * watches (propagation between two tabs). t0 is read there and both
+   * clocks are put on one time base with `performance.timeOrigin`; the
+   * pages share the machine's clock.
+   */
+  inputPage?: Page
 }
 
 export interface FlowContext {
@@ -183,7 +190,8 @@ async function measureOnce<TArg>(
     )
   }
   const start = step.start ?? 'input'
-  if (start === 'input') await page.evaluate(arm)
+  const inputPage = step.inputPage ?? page
+  if (start === 'input') await inputPage.evaluate(arm)
   await step.action()
   // The predicate and the clock read happen in the same frame callback.
   const handle = await page.waitForFunction(
@@ -194,13 +202,15 @@ async function measureOnce<TArg>(
   const t1 = (await handle.jsonValue()) as number
   await handle.dispose()
   if (start === 'navigation') return t1
-  const t0 = await page.evaluate(readT0)
+  const t0 = await inputPage.evaluate(readT0)
   if (t0 === null) {
     throw new Error(
       `flow ${name}: the action dispatched no input event; a page load needs start: 'navigation'`,
     )
   }
-  return t1 - t0
+  if (inputPage === page) return t1 - t0
+  const origin = (p: Page) => p.evaluate(() => performance.timeOrigin)
+  return (await origin(page)) + t1 - ((await origin(inputPage)) + t0)
 }
 
 // Per worker process: flows that already had their untimed warm-up.

@@ -29,7 +29,6 @@ export interface Budget {
 }
 
 const repeatable = { kind: 'repeatable', maxMs: 100 } as const
-const pending = { ...repeatable, pending: true } as const
 
 export const budgets = {
   'auth.signIn': { kind: 'oncePerSession', maxMs: 2000 },
@@ -39,11 +38,15 @@ export const budgets = {
   'contacts.search': repeatable,
   'contacts.showArchived': repeatable,
   'contacts.create': repeatable,
-  'contact.save': pending,
-  'contact.addEmail': pending,
-  'contact.livePropagation': pending,
-  'contact.archive': pending,
-  'contact.restore': pending,
+  'contact.save': repeatable,
+  'contact.addEmail': repeatable,
+  'contact.livePropagation': repeatable,
+  'contact.archive': repeatable,
+  'contact.restore': repeatable,
+  'contact.note.add': repeatable,
+  'contact.note.save': repeatable,
+  'contact.note.pin': repeatable,
+  'contact.note.archive': repeatable,
 
   // qc/harness.spec.ts: proves the timing path can fail and pass.
   'harness.impossible': { kind: 'repeatable', maxMs: 1, selfTest: true },
