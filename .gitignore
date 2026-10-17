@@ -11,3 +11,17 @@ dist-ssr
 .vinxi
 __unconfig*
 todos.json
+
+# Shell/session files that can appear in the project root (as in ngo-go)
+.bash_profile
+.bashrc
+.gitconfig
+.gitmodules
+.mcp.json
+.profile
+.ripgreprc
+.zprofile
+.zshrc
+.idea
+.claude/*
+!.claude/skills/

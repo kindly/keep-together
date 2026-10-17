@@ -145,8 +145,9 @@ deployment is not built until a second dedicated instance exists.
   union) → deploy → backfill with the migrations component → tighten →
   deploy. Bumping a contract's version still requires registering an
   upcaster.
-- Child rows are id-less replace-sets inside the root's command, as in
-  0013; handlers preserve system-owned child fields.
+- Child rows live inside the root's command payload and carry ids,
+  reconciled per ADR 0014 (identity fields immutable per id, addresses
+  editable in place); handlers preserve system-owned child fields.
 - Money is integer pence in `v.int64()`; no arithmetic in pounds.
 
 ### Validation (0015 unchanged)

@@ -26,7 +26,8 @@ pnpm check           # typecheck + lint + tests (CI)
   shadcn components under `src/components/ui/`.
 - `docs/` — `architecture.md`, `decisions/` (ADRs; 0017 is the founding
   one), `research.md` (CiviCRM/Gift Aid/GDPR domain reference),
-  `product-brief.md`, `competition.md`.
+  `product-brief.md`, `competition.md`, `inherited-from-ngo-go.md` (what
+  the Django predecessor proved in code; the checklist to re-prove here).
 
 `CLAUDE.md` holds the working rules (domain invariants, contracts,
 tenancy, validation tiers).
