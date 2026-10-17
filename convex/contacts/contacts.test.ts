@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, test } from 'vitest'
 import type { Id } from '../_generated/dataModel'
-import { api } from '../_generated/api'
+import { api, internal } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
+import { contactWarnings } from './warnings'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
 
@@ -296,6 +297,370 @@ describe('methods (child rows)', () => {
       ]),
     )
     expect(data.kind).toBe('invalid')
+  })
+})
+
+describe('email lookup', () => {
+  const findByEmail = (tenant: Fixture['a'], emailAddress: string) =>
+    f.t
+      .query(internal.contacts.queries.findByEmail, {
+        tenantId: tenant.tenantId,
+        address: emailAddress,
+      })
+      .then((r) => r.contacts)
+  const createWithEmail = async (
+    tenant: Fixture['a'],
+    lastName: string,
+    emailAddress: string,
+  ) => {
+    const id = await tenant.as.mutation(api.contacts.mutations.create, {
+      tenantId: tenant.tenantId,
+      ...individual,
+      firstName: 'Ann',
+      lastName,
+    })
+    await tenant.as.mutation(api.contacts.mutations.saveMethods, {
+      tenantId: tenant.tenantId,
+      id,
+      expected: 0,
+      emails: [email(emailAddress)],
+      phones: [],
+    })
+    return id
+  }
+
+  test('lookup ignores case and surrounding whitespace', async () => {
+    await saveMethods(0, [email(' Ann@Example.com ')])
+    const got = await getAda()
+    expect(got?.emails[0].address).toBe('Ann@Example.com')
+    expect(got?.emails[0].addressNormalized).toBe('ann@example.com')
+    const found = await findByEmail(f.a, '  ANN@example.COM ')
+    expect(found.map((c) => c._id)).toEqual([ada])
+    expect(await findByEmail(f.a, 'nobody@example.com')).toEqual([])
+  })
+
+  test('addressNormalized survives a kept-key reconcile', async () => {
+    await saveMethods(0, [email('Ann@Example.com', { key: 'e1' })])
+    await saveMethods(1, [
+      email('Ann@Example.com', { key: 'e1', label: 'work' }),
+    ])
+    const row = (await getAda())!.emails[0]
+    expect(row.label).toBe('work')
+    expect(row.addressNormalized).toBe('ann@example.com')
+  })
+
+  test('remove + add of a changed address moves the lookup', async () => {
+    await saveMethods(0, [email('old@x.com', { key: 'e1' })])
+    await saveMethods(1, [email('new@x.com', { key: 'e2' })])
+    expect(await findByEmail(f.a, 'old@x.com')).toEqual([])
+    expect((await findByEmail(f.a, 'NEW@x.com')).map((c) => c._id)).toEqual([
+      ada,
+    ])
+  })
+
+  test('the list finds a contact by exact email', async () => {
+    await saveMethods(0, [email('countess@analytical.org')])
+    const list = await f.a.as.query(api.contacts.queries.list, {
+      tenantId: f.a.tenantId,
+      search: ' Countess@Analytical.org',
+    })
+    expect(list.map((c) => c._id)).toEqual([ada])
+  })
+
+  test('a shared address saves on both, each warned naming the other', async () => {
+    await saveMethods(0, [email('ann@example.com', { key: 'e1' })])
+    const bob = await createWithEmail(f.a, 'Smith', 'ANN@example.com')
+    const adaWarnings = (await getAda())!.warnings
+    expect(adaWarnings).toEqual([
+      expect.objectContaining({
+        anchor: 'emails#e1',
+        message: 'Also used by Ann Smith',
+      }),
+    ])
+    const other = await f.a.as.query(api.contacts.queries.get, {
+      tenantId: f.a.tenantId,
+      id: bob,
+    })
+    expect(other!.warnings).toEqual([
+      expect.objectContaining({
+        anchor: `emails#${other!.emails[0].key}`,
+        message: 'Also used by Ada Lovelace',
+      }),
+    ])
+    expect(
+      (await findByEmail(f.a, 'ann@example.com')).map((c) => c._id).sort(),
+    ).toEqual([ada, bob].sort())
+  })
+
+  test('the same address in another tenant is invisible', async () => {
+    await saveMethods(0, [email('Ann@Example.com')])
+    const before = await snapshot(f.t, f.b.tenantId)
+    expect(before).toBe(bSnapshot)
+    const inB = await createWithEmail(f.b, 'Beta', 'ann@example.com')
+    expect(
+      (await findByEmail(f.b, 'Ann@Example.com')).map((c) => c._id),
+    ).toEqual([inB])
+    expect(
+      (await findByEmail(f.a, 'Ann@Example.com')).map((c) => c._id),
+    ).toEqual([ada])
+    expect((await getAda())!.warnings).toEqual([])
+    const bList = await f.b.as.query(api.contacts.queries.list, {
+      tenantId: f.b.tenantId,
+      search: 'ann@example.com',
+    })
+    expect(bList.map((c) => c._id)).toEqual([inB])
+  })
+})
+
+describe('shared-email warning (pure)', () => {
+  const sharers = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      displayName: `P${i + 1}`,
+      archived: false,
+    }))
+  const warn = (n: number, truncated = false) =>
+    contactWarnings(
+      {
+        emails: [
+          { key: 'k1', address: 'a@x.com' },
+          { key: 'k2', address: 'b@x.com' },
+        ],
+        phones: [],
+        addresses: [],
+      },
+      { k2: { contacts: sharers(n), truncated } },
+    )
+
+  test('anchored by row key, not position', () => {
+    expect(warn(1)).toEqual([
+      { anchor: 'emails#k2', label: 'email 2', message: 'Also used by P1' },
+    ])
+  })
+
+  test('names the first three, then counts the rest', () => {
+    expect(warn(3)[0].message).toBe('Also used by P1, P2, P3')
+    expect(warn(4)[0].message).toBe('Also used by P1, P2, P3 and 1 other')
+    expect(warn(6)[0].message).toBe('Also used by P1, P2, P3 and 3 others')
+    expect(warn(6, true)[0].message).toBe(
+      'Also used by P1, P2, P3 and at least 3 others',
+    )
+  })
+
+  test('no sharers, no warning', () => {
+    expect(warn(0)).toEqual([])
+  })
+})
+
+describe('email lookup edges', () => {
+  const findIds = async (tenant: Fixture['a'], emailAddress: string) =>
+    (
+      await f.t.query(internal.contacts.queries.findByEmail, {
+        tenantId: tenant.tenantId,
+        address: emailAddress,
+      })
+    ).contacts.map((c) => c._id)
+  const listIds = async (
+    tenant: Fixture['a'],
+    search: string,
+    includeArchived = false,
+  ) =>
+    (
+      await tenant.as.query(api.contacts.queries.list, {
+        tenantId: tenant.tenantId,
+        search,
+        includeArchived,
+      })
+    ).map((c) => c._id)
+  const createWithEmail = async (
+    tenant: Fixture['a'],
+    lastName: string,
+    emailAddress: string,
+  ) => {
+    const id = await tenant.as.mutation(api.contacts.mutations.create, {
+      tenantId: tenant.tenantId,
+      ...individual,
+      firstName: 'Ann',
+      lastName,
+    })
+    await tenant.as.mutation(api.contacts.mutations.saveMethods, {
+      tenantId: tenant.tenantId,
+      id,
+      expected: 0,
+      emails: [email(emailAddress)],
+      phones: [],
+    })
+    return id
+  }
+  const archive = (tenant: Fixture['a'], id: Id<'contacts'>) =>
+    tenant.as.mutation(api.contacts.mutations.setArchived, {
+      tenantId: tenant.tenantId,
+      id,
+      expected: 0,
+      archived: true,
+    })
+
+  test('two emails that normalise the same are rejected and nothing saves', async () => {
+    const data = await errorData(
+      saveMethods(0, [email(' ann@x.com'), email('ANN@X.COM  ')]),
+    )
+    expect(data.kind).toBe('invalid')
+    expect((data.problems as Array<{ field: string }>)[0].field).toBe('emails')
+    const got = await getAda()
+    expect(got?.emails).toEqual([])
+    expect(got?.contact.methodsVersion).toBe(0)
+  })
+
+  test('a case-only change on a kept key is rejected, never re-normalised', async () => {
+    await saveMethods(0, [email('Ann@Example.com', { key: 'e1' })])
+    const data = await errorData(
+      saveMethods(1, [email('ann@example.com', { key: 'e1' })]),
+    )
+    expect(data).toMatchObject({ kind: 'rejected', reason: 'immutable_child' })
+    const got = (await getAda())!
+    expect(got.emails[0].address).toBe('Ann@Example.com')
+    expect(got.contact.methodsVersion).toBe(1)
+  })
+
+  test('surrounding whitespace on a kept key is not a change', async () => {
+    await saveMethods(0, [email('ann@x.com', { key: 'e1' })])
+    const before = (await getAda())!.emails[0]
+    await saveMethods(1, [email('  ann@x.com ', { key: 'e1', label: 'work' })])
+    const after = (await getAda())!.emails[0]
+    expect(after._id).toBe(before._id)
+    expect(after.address).toBe('ann@x.com')
+    expect(after.addressNormalized).toBe('ann@x.com')
+    expect(after.label).toBe('work')
+  })
+
+  test('remove + add of a re-cased address in one save swaps the row', async () => {
+    await saveMethods(0, [email('Ann@Example.com', { key: 'e1' })])
+    await saveMethods(1, [email('ANN@example.com', { key: 'e2' })])
+    const got = (await getAda())!
+    expect(
+      got.emails.map((e) => [e.key, e.address, e.addressNormalized]),
+    ).toEqual([['e2', 'ANN@example.com', 'ann@example.com']])
+    expect(await findIds(f.a, 'ann@example.com')).toEqual([ada])
+  })
+
+  test('a blank lookup finds nothing, even with a blank address stored', async () => {
+    await saveMethods(0, [email('   ')])
+    expect(await findIds(f.a, '')).toEqual([])
+    expect(await findIds(f.a, '   ')).toEqual([])
+  })
+
+  test('the form save and restore both set the lookup field', async () => {
+    await f.a.as.mutation(api.contacts.mutations.saveForm, {
+      tenantId: f.a.tenantId,
+      id: ada,
+      methods: {
+        expected: 0,
+        emails: [email('Form@X.com', { key: 'e1' })],
+        phones: [],
+      },
+    })
+    expect(await findIds(f.a, 'form@x.com')).toEqual([ada])
+    await saveMethods(1, [])
+    expect(await findIds(f.a, 'form@x.com')).toEqual([])
+    const history = await f.a.as.query(api.contacts.queries.history, {
+      tenantId: f.a.tenantId,
+      id: ada,
+    })
+    const withEmail = history.find(
+      (m) => m.slices.includes('methods') && m.at < history[0].at,
+    )!
+    await f.a.as.mutation(api.contacts.mutations.restoreRevision, {
+      tenantId: f.a.tenantId,
+      revisionId: withEmail.revisionId,
+    })
+    expect((await getAda())!.emails[0].addressNormalized).toBe('form@x.com')
+    expect(await findIds(f.a, 'FORM@x.com')).toEqual([ada])
+  })
+
+  test('a stale methods save leaves the lookup unchanged', async () => {
+    await saveMethods(0, [email('kept@x.com')])
+    const data = await errorData(saveMethods(0, [email('loser@x.com')]))
+    expect(data).toMatchObject({
+      kind: 'stale',
+      contract: 'contacts.methods',
+      current: 1,
+    })
+    expect(await findIds(f.a, 'loser@x.com')).toEqual([])
+    expect(await findIds(f.a, 'kept@x.com')).toEqual([ada])
+  })
+
+  test('findByEmail includes archived contacts; the list hides them unless asked', async () => {
+    await saveMethods(0, [email('ann@example.com')])
+    await archive(f.a, ada)
+    expect(await findIds(f.a, 'Ann@Example.com')).toEqual([ada])
+    expect(await listIds(f.a, 'ann@example.com')).toEqual([])
+    expect(await listIds(f.a, 'ann@example.com', true)).toEqual([ada])
+  })
+
+  test('an archived contact sharing the address is named and marked archived', async () => {
+    await saveMethods(0, [email('ann@example.com', { key: 'e1' })])
+    const bob = await createWithEmail(f.a, 'Smith', 'ann@example.com')
+    await archive(f.a, bob)
+    expect((await getAda())!.warnings).toEqual([
+      expect.objectContaining({
+        anchor: 'emails#e1',
+        message: 'Also used by Ann Smith (archived)',
+      }),
+    ])
+  })
+
+  test('findByEmail returns the 50 oldest contacts sharing an address and flags the rest', async () => {
+    await saveMethods(0, [email('shared@x.com')])
+    const ids = [ada]
+    for (let i = 1; i <= 50; i++) {
+      ids.push(await createWithEmail(f.a, `Shared${i}`, 'Shared@X.com'))
+    }
+    const found = await findIds(f.a, 'shared@x.com')
+    expect(found).toHaveLength(50)
+    expect(found).toEqual(ids.slice(0, 50))
+    const raw = await f.t.query(internal.contacts.queries.findByEmail, {
+      tenantId: f.a.tenantId,
+      address: 'shared@x.com',
+    })
+    expect(raw.truncated).toBe(true)
+    // The 51st still sees the shared address; three names, then a lower bound.
+    const last = await f.a.as.query(api.contacts.queries.get, {
+      tenantId: f.a.tenantId,
+      id: ids[50],
+    })
+    expect(last!.warnings).toHaveLength(1)
+    expect(last!.warnings[0].message).toBe(
+      'Also used by Ada Lovelace, Ann Shared1, Ann Shared2 and at least 47 others',
+    )
+    // No match: nothing to flag.
+    const exact = await f.t.query(internal.contacts.queries.findByEmail, {
+      tenantId: f.a.tenantId,
+      address: 'nobody@x.com',
+    })
+    expect(exact).toEqual({ contacts: [], truncated: false })
+    expect(await listIds(f.a, 'shared@x.com')).toEqual(ids.slice(0, 50))
+  })
+
+  test('tenant isolation on every lookup path', async () => {
+    await saveMethods(0, [email('Ann@Example.com', { key: 'e1' })])
+    await errorData(saveMethods(1, [email('ann@example.com', { key: 'e1' })]))
+    expect(await snapshot(f.t, f.b.tenantId)).toBe(bSnapshot)
+    const inB = await createWithEmail(f.b, 'Beta', 'ann@example.com')
+    // A's list never returns B's contact, and B's warning never names A's.
+    expect(await listIds(f.a, 'ann@example.com', true)).toEqual([ada])
+    const bGot = await f.b.as.query(api.contacts.queries.get, {
+      tenantId: f.b.tenantId,
+      id: inB,
+    })
+    expect(bGot!.warnings).toEqual([])
+    expect(await findIds(f.b, 'ANN@example.com')).toEqual([inB])
+    // B's member cannot search A's tenant.
+    const forbidden = await errorData(
+      f.b.as.query(api.contacts.queries.list, {
+        tenantId: f.a.tenantId,
+        search: 'ann@example.com',
+      }),
+    )
+    expect(forbidden.kind).toBe('forbidden')
   })
 })
 

@@ -378,7 +378,8 @@ function MethodsFields({
               key={row.key}
               message={
                 problemFor(problems, `emails.${i}`) ??
-                warningFor(warnings, `emails.${i}`)
+                warningFor(warnings, `emails.${i}`) ??
+                warningFor(warnings, `emails#${row.key}`)
               }
               tone={problemFor(problems, `emails.${i}`) ? 'error' : 'warning'}
               primary={row.isPrimary}

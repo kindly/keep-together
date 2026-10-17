@@ -26,6 +26,14 @@ export function computedNames(p: {
 
 const trim = (s: string) => s.trim()
 
+/**
+ * The lookup form of an email address: trimmed, whole address lowercased.
+ * The typed address is kept as is for display and sending.
+ */
+export function normaliseEmail(address: string): string {
+  return address.trim().toLowerCase()
+}
+
 export function prepareDetails(p: Payloads['details']): Payloads['details'] {
   const out = {
     ...p,
@@ -117,11 +125,11 @@ export function prepareMethods(p: Payloads['methods']): Payloads['methods'] {
   )
   const seen = new Set<string>()
   for (const e of emails) {
-    const lower = e.address.toLowerCase()
-    if (seen.has(lower)) {
+    const normalised = normaliseEmail(e.address)
+    if (seen.has(normalised)) {
       throw invalid([{ field: 'emails', message: 'Duplicate email address' }])
     }
-    seen.add(lower)
+    seen.add(normalised)
   }
   const phones = prepareRows(
     p.phones.map((e) => ({ ...e, number: trim(e.number) })),

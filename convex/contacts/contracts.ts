@@ -8,6 +8,7 @@ import type { ContractCtx } from '../lib/contracts'
 import { defineContract, registry, rejected } from '../lib/contracts'
 import {
   computedNames,
+  normaliseEmail,
   prepareAddresses,
   prepareDetails,
   prepareMethods,
@@ -141,7 +142,13 @@ async function reconcile(
         ...(row as object),
         key,
         contactId,
-        ...(table === 'contactEmails' ? { onHold: false } : {}),
+        ...(table === 'contactEmails'
+          ? {
+              onHold: false,
+              // Derived from the identity field, so it never changes per key.
+              addressNormalized: normaliseEmail(row.address as string),
+            }
+          : {}),
       } as never)
       continue
     }

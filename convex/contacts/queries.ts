@@ -1,8 +1,10 @@
 import { v } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
-import { tenantQuery } from '../lib/tenancy'
+import { internalTenantQuery, tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
+import { normaliseEmail } from './rules'
 import { contactWarnings } from './warnings'
+import type { AlsoUsedBy } from './warnings'
 
 async function children(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
   const [emails, phones, addresses] = await Promise.all([
@@ -36,7 +38,46 @@ async function children(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
   }
 }
 
-/** Searchable list; archived hidden unless asked. Bounded at 100 rows. */
+/** How many email rows one address lookup reads. */
+export const EMAIL_LOOKUP_LIMIT = 50
+
+/**
+ * Contacts with an email row matching `address` (case- and
+ * whitespace-insensitive), oldest row first. Reads at most
+ * EMAIL_LOOKUP_LIMIT rows; `truncated` says more exist, so a caller that
+ * needs "exactly one live match" must treat it as ambiguous. Rows written
+ * before the `addressNormalized` backfill are not found.
+ */
+async function contactsWithEmail(
+  db: ScopedDatabaseReader,
+  address: string,
+): Promise<{ contacts: Array<Doc<'contacts'>>; truncated: boolean }> {
+  const normalised = normaliseEmail(address)
+  if (!normalised) return { contacts: [], truncated: false }
+  const rows = await db
+    .query('contactEmails')
+    .withIndex('by_tenant_addressNormalized', (q) =>
+      q.eq('addressNormalized', normalised),
+    )
+    .take(EMAIL_LOOKUP_LIMIT + 1)
+  const truncated = rows.length > EMAIL_LOOKUP_LIMIT
+  const ids = [
+    ...new Set(rows.slice(0, EMAIL_LOOKUP_LIMIT).map((r) => r.contactId)),
+  ]
+  const contacts = await Promise.all(ids.map((id) => db.get(id)))
+  return { contacts: contacts.filter((c) => c !== null), truncated }
+}
+
+/**
+ * For imports and webhooks: the contacts using this email address, archived
+ * ones included, capped as described on `contactsWithEmail`.
+ */
+export const findByEmail = internalTenantQuery({
+  args: { address: v.string() },
+  handler: async (ctx, { address }) => contactsWithEmail(ctx.db, address),
+})
+
+/** Searchable list (name, or an exact email address); archived hidden unless asked. Bounded at 100 rows. */
 export const list = tenantQuery({
   args: {
     search: v.optional(v.string()),
@@ -46,10 +87,15 @@ export const list = tenantQuery({
     const term = search?.trim()
     let rows: Array<Doc<'contacts'>>
     if (term) {
-      rows = await ctx.db
-        .query('contacts')
-        .withSearchIndex('search_name', (q) => q.search('sortName', term))
-        .take(100)
+      const [byEmail, byName] = await Promise.all([
+        contactsWithEmail(ctx.db, term).then((r) => r.contacts),
+        ctx.db
+          .query('contacts')
+          .withSearchIndex('search_name', (q) => q.search('sortName', term))
+          .take(100),
+      ])
+      const seen = new Set(byEmail.map((c) => c._id))
+      rows = [...byEmail, ...byName.filter((c) => !seen.has(c._id))]
     } else {
       rows = await ctx.db
         .query('contacts')
@@ -83,7 +129,20 @@ export const get = tenantQuery({
     const contact = await ctx.db.get(id)
     if (!contact) return null
     const kids = await children(ctx.db, id)
-    return { contact, ...kids, warnings: contactWarnings(kids) }
+    const alsoUsedBy: AlsoUsedBy = {}
+    for (const email of kids.emails) {
+      const { contacts, truncated } = await contactsWithEmail(
+        ctx.db,
+        email.address,
+      )
+      alsoUsedBy[email.key] = {
+        contacts: contacts
+          .filter((c) => c._id !== id)
+          .map((c) => ({ displayName: c.displayName, archived: c.archived })),
+        truncated,
+      }
+    }
+    return { contact, ...kids, warnings: contactWarnings(kids, alsoUsedBy) }
   },
 })
 
