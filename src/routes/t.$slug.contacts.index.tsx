@@ -2,10 +2,19 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import { useState } from 'react'
 import { api } from '../../convex/_generated/api'
-import { useCanWrite, useTenant } from '../lib/tenant'
+import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/contacts/')({
   component: ContactList,
+  // Subscribe as the navigation starts, not once the list has mounted.
+  loader: ({ context: { convex }, params }) => {
+    const tenant = cachedTenant(convex, params.slug)
+    if (!tenant) return
+    convex.prewarmQuery({
+      query: api.contacts.queries.list,
+      args: { tenantId: tenant._id, search: '', includeArchived: false },
+    })
+  },
 })
 
 function ContactList() {

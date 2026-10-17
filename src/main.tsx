@@ -17,6 +17,8 @@ const router = createRouter({
   // /<repo>/ on GitHub Pages as well as at /.
   basepath: import.meta.env.BASE_URL,
   defaultPreload: 'intent',
+  // Route loaders prewarm the Convex queries their page subscribes to.
+  context: { convex },
   scrollRestoration: true,
 })
 

@@ -43,7 +43,7 @@ const perfTaskPending = {
 
 export const budgets = {
   'auth.signIn': { kind: 'oncePerSession', maxMs: 2000 },
-  'groups.open': perfTaskPending,
+  'groups.open': repeatable,
   'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 1200 },
   'contacts.nav': repeatable,
   'contacts.search': repeatable,

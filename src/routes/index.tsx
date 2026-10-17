@@ -1,16 +1,11 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useAuthActions } from '@convex-dev/auth/react'
-import {
-  AuthLoading,
-  Authenticated,
-  Unauthenticated,
-  useQuery,
-} from 'convex/react'
+import { AuthLoading, Authenticated, Unauthenticated } from 'convex/react'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { api } from '../../convex/_generated/api'
 import { PASSWORD_MIN_LENGTH } from '../../convex/lib/password'
 import { authErrorMessage } from '../lib/auth-errors'
+import { useMyTenants } from '../lib/tenant'
 
 export const Route = createFileRoute('/')({ component: Home })
 
@@ -101,7 +96,7 @@ function SignIn() {
 
 function Groups() {
   const { signOut } = useAuthActions()
-  const tenants = useQuery(api.platform.tenants.mine)
+  const tenants = useMyTenants()
 
   return (
     <section className="mt-6 flex flex-col gap-6">

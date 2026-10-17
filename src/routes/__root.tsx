@@ -1,18 +1,26 @@
-import { Outlet, createRootRoute } from '@tanstack/react-router'
+import { Outlet, createRootRouteWithContext } from '@tanstack/react-router'
+import type { ConvexReactClient } from 'convex/react'
 
 import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 
+import { MyTenantsProvider } from '../lib/tenant'
 import '../styles.css'
 
-export const Route = createRootRoute({
+export interface RouterContext {
+  convex: ConvexReactClient
+}
+
+export const Route = createRootRouteWithContext<RouterContext>()({
   component: RootComponent,
 })
 
 function RootComponent() {
   return (
     <>
-      <Outlet />
+      <MyTenantsProvider>
+        <Outlet />
+      </MyTenantsProvider>
       <TanStackDevtools
         config={{
           position: 'bottom-right',

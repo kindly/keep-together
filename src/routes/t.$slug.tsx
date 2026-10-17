@@ -1,7 +1,6 @@
 import { Link, Outlet, createFileRoute } from '@tanstack/react-router'
-import { Authenticated, Unauthenticated, useQuery } from 'convex/react'
-import { api } from '../../convex/_generated/api'
-import { TenantContext } from '../lib/tenant'
+import { Authenticated, Unauthenticated } from 'convex/react'
+import { TenantContext, useMyTenants } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug')({ component: TenantLayout })
 
@@ -27,7 +26,9 @@ function TenantLayout() {
 }
 
 function Resolved({ slug }: { slug: string }) {
-  const tenant = useQuery(api.platform.tenants.bySlug, { slug })
+  // From the groups list the root keeps live: no round trip of our own.
+  const tenants = useMyTenants()
+  const tenant = tenants && (tenants.find((t) => t.slug === slug) ?? null)
   if (tenant === undefined)
     return <main className="p-6 text-sm text-neutral-500">Loading…</main>
   if (tenant === null) {
