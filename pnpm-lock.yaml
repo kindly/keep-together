@@ -11,6 +11,9 @@ importers:
       '@convex-dev/auth':
         specifier: ^0.0.96
         version: 0.0.96(@auth/core@0.41.3)(convex@1.47.0(react@19.3.1))(react@19.3.1)
+      '@convex-dev/migrations':
+        specifier: ^0.3.7
+        version: 0.3.7(convex-helpers@0.1.128(convex@1.47.0(react@19.3.1))(hono@4.13.13)(react@19.3.1)(typescript@6.0.3)(zod@3.25.76))(convex@1.47.0(react@19.3.1))
       '@fontsource-variable/geist':
         specifier: ^5.3.0
         version: 5.3.0
@@ -264,6 +267,12 @@ packages:
     peerDependenciesMeta:
       react:
         optional: true
+
+  '@convex-dev/migrations@0.3.7':
+    resolution: {integrity: sha512-B5psv+FhfFLu2ttusIMcWiHS2fpxOiqWrvHl9wOjgcCwTy1Lqhvn2rY7LBQ8O6hVF5dPm8uoEbaNKPSHxkiD7A==}
+    peerDependencies:
+      convex: ^1.42.0
+      convex-helpers: ^0.1.115
 
   '@dotenvx/dotenvx@1.75.1':
     resolution: {integrity: sha512-/BITOC9dmS/edY2zQwZNicQ059O6RKabtQfyEafV0nGtfYRNHYy1DIPiYVcov40+tob9hfmBnbR963dS+EQ1DQ==}
@@ -4296,6 +4305,11 @@ snapshots:
       server-only: 0.0.1
     optionalDependencies:
       react: 19.3.1
+
+  '@convex-dev/migrations@0.3.7(convex-helpers@0.1.128(convex@1.47.0(react@19.3.1))(hono@4.13.13)(react@19.3.1)(typescript@6.0.3)(zod@3.25.76))(convex@1.47.0(react@19.3.1))':
+    dependencies:
+      convex: 1.47.0(react@19.3.1)
+      convex-helpers: 0.1.128(convex@1.47.0(react@19.3.1))(hono@4.13.13)(react@19.3.1)(typescript@6.0.3)(zod@3.25.76)
 
   '@dotenvx/dotenvx@1.75.1':
     dependencies:

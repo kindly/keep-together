@@ -10,6 +10,7 @@
 
 import type * as auth from "../auth.js";
 import type * as contacts_contracts from "../contacts/contracts.js";
+import type * as contacts_migrations from "../contacts/migrations.js";
 import type * as contacts_mutations from "../contacts/mutations.js";
 import type * as contacts_notes from "../contacts/notes.js";
 import type * as contacts_queries from "../contacts/queries.js";
@@ -23,6 +24,7 @@ import type * as giftaid_irmark from "../giftaid/irmark.js";
 import type * as http from "../http.js";
 import type * as lib_authErrors from "../lib/authErrors.js";
 import type * as lib_contracts from "../lib/contracts.js";
+import type * as lib_migrations from "../lib/migrations.js";
 import type * as lib_password from "../lib/password.js";
 import type * as lib_tables from "../lib/tables.js";
 import type * as lib_tenancy from "../lib/tenancy.js";
@@ -41,6 +43,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   "contacts/contracts": typeof contacts_contracts;
+  "contacts/migrations": typeof contacts_migrations;
   "contacts/mutations": typeof contacts_mutations;
   "contacts/notes": typeof contacts_notes;
   "contacts/queries": typeof contacts_queries;
@@ -54,6 +57,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   "lib/authErrors": typeof lib_authErrors;
   "lib/contracts": typeof lib_contracts;
+  "lib/migrations": typeof lib_migrations;
   "lib/password": typeof lib_password;
   "lib/tables": typeof lib_tables;
   "lib/tenancy": typeof lib_tenancy;
@@ -90,4 +94,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  migrations: import("@convex-dev/migrations/_generated/component.js").ComponentApi<"migrations">;
+};

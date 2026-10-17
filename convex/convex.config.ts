@@ -1,5 +1,6 @@
 import { defineApp } from 'convex/server'
 import { v } from 'convex/values'
+import migrations from '@convex-dev/migrations/convex.config.js'
 
 // Typed app env vars, read as `env` from ./_generated/server.
 const app = defineApp({
@@ -15,5 +16,8 @@ const app = defineApp({
     AUTH_2FA_REQUIRED: v.optional(v.string()),
   },
 })
+
+// Batched, resumable data migrations (convex/lib/migrations.ts).
+app.use(migrations)
 
 export default app
