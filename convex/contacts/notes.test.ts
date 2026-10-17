@@ -5,7 +5,7 @@ import { errorData, setup, snapshot } from '../../test/fixture'
 import { executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
 import { note } from './contracts'
-import { NOTE_MAX_LENGTH } from './rules'
+import { NOTE_MAX_BYTES } from './rules'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
 
@@ -118,10 +118,18 @@ describe('notes', () => {
     expect(data.kind).toBe('invalid')
   })
 
-  test('body is capped at NOTE_MAX_LENGTH characters', async () => {
-    await create('x'.repeat(NOTE_MAX_LENGTH))
-    const data = await errorData(create('x'.repeat(NOTE_MAX_LENGTH + 1)))
+  test('body is capped at NOTE_MAX_BYTES UTF-8 bytes', async () => {
+    await create('x'.repeat(NOTE_MAX_BYTES))
+    const data = await errorData(create('x'.repeat(NOTE_MAX_BYTES + 1)))
     expect(data.kind).toBe('invalid')
+  })
+
+  test('multi-byte text is capped by bytes, not characters', async () => {
+    // '€' is 3 bytes in UTF-8: 6,667 characters, 20,001 bytes.
+    const euros = '€'.repeat(6_667)
+    expect(euros.length).toBeLessThan(NOTE_MAX_BYTES)
+    expect(await errorData(create(euros))).toMatchObject({ kind: 'invalid' })
+    await create('€'.repeat(6_666))
   })
 
   test('stale edit conflicts and leaves no trace', async () => {

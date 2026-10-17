@@ -73,7 +73,7 @@ export const relationshipFields = {
   description: v.string(),
 }
 
-export const noteFields = { body: v.string() } // ≤ NOTE_MAX_LENGTH, in prepareNote
+export const noteFields = { body: v.string() } // ≤ NOTE_MAX_BYTES, in prepareNote
 
 export const noteFlagsFields = { pinned: v.boolean(), archived: v.boolean() }
 

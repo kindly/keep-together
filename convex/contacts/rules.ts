@@ -205,19 +205,22 @@ export function prepareRelationshipType(
   return out
 }
 
-/** 200 notes (the panel's cap) at this length stay well under the read limit. */
-export const NOTE_MAX_LENGTH = 20_000
+/**
+ * UTF-8 bytes, which is what Convex's read limit counts: 200 notes (the
+ * panel's cap) at this size stay well under it whatever the script.
+ */
+export const NOTE_MAX_BYTES = 20_000
 
 export function prepareNote(p: Payloads['note']): Payloads['note'] {
   const out = { ...p, body: trim(p.body) }
   if (!out.body) {
     throw invalid([{ field: 'body', message: 'A note needs some text' }])
   }
-  if (out.body.length > NOTE_MAX_LENGTH) {
+  if (new TextEncoder().encode(out.body).length > NOTE_MAX_BYTES) {
     throw invalid([
       {
         field: 'body',
-        message: `A note can be at most ${NOTE_MAX_LENGTH} characters`,
+        message: `A note can be at most ${NOTE_MAX_BYTES} bytes (fewer characters if it uses accents, symbols or emoji)`,
       },
     ])
   }
