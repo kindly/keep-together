@@ -21,6 +21,11 @@ cwd=$repo
 if [[ -n $branch ]]; then
   cwd=$(dirname "$repo")/keep-together-$name
   if [[ ! -d $cwd ]]; then
+    # Sandboxed git commands elsewhere leave an empty read-only .git/config.lock
+    # behind, which makes worktree add fail. Clear it only when it is empty and
+    # no git process is running.
+    lock=$(git -C "$repo" rev-parse --git-common-dir)/config.lock
+    if [[ -f $lock && ! -s $lock ]] && ! pgrep -x git >/dev/null; then rm -f "$lock"; fi
     git -C "$repo" worktree add -b "$branch" "$cwd" HEAD >&2
     (cd "$cwd" && pnpm install --frozen-lockfile >&2)
   fi

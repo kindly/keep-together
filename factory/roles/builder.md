@@ -24,6 +24,11 @@ yours to edit, except `factory/out/` for reports.
 ## Don't
 
 - Commit unless the task says so; if it does, commit only to your branch.
-- Run `pnpm convex` against a shared deployment. If you need a live backend,
+- Run `pnpm convex` against a shared deployment. (`pnpm qc` pushing to the
+  `dev/qc-*` pool is fine and expected; that's what the pool is for.)
+  **Exception: if your branch changes `convex/schema.ts`, don't run
+  `pnpm qc` until it's merged.** The pool is shared; your schema and the
+  data your seeds write there would stop every main-based run from
+  deploying. Say "pnpm qc pending merge" in your report instead. If you need a live backend,
   report `QUESTION` and the controller will arrange a dev instance.
 - Widen scope. Note follow-ups in the report instead.
