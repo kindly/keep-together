@@ -2,7 +2,7 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import { useState } from 'react'
 import { api } from '../../convex/_generated/api'
-import { useTenant } from '../lib/tenant'
+import { useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/contacts/')({
   component: ContactList,
@@ -10,6 +10,7 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
 
 function ContactList() {
   const tenant = useTenant()
+  const canWrite = useCanWrite()
   const [search, setSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
   const contacts = useQuery(api.contacts.queries.list, {
@@ -36,13 +37,15 @@ function ContactList() {
           />
           show archived
         </label>
-        <Link
-          to="/t/$slug/contacts/new"
-          params={{ slug: tenant.slug }}
-          className="ml-auto rounded bg-neutral-900 px-3 py-1.5 text-sm text-white hover:bg-neutral-700"
-        >
-          New contact
-        </Link>
+        {canWrite && (
+          <Link
+            to="/t/$slug/contacts/new"
+            params={{ slug: tenant.slug }}
+            className="ml-auto rounded bg-neutral-900 px-3 py-1.5 text-sm text-white hover:bg-neutral-700"
+          >
+            New contact
+          </Link>
+        )}
       </div>
       {contacts === undefined ? (
         <p className="mt-6 text-sm text-neutral-500">Loading…</p>

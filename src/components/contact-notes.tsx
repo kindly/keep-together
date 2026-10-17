@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from 'convex/react'
 import type { Doc, Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
-import { useTenant } from '../lib/tenant'
+import { useCanWrite, useTenant } from '../lib/tenant'
 import type { Draft, Gone } from '../lib/notes'
 import {
   budget,
@@ -20,6 +20,7 @@ type Entry = { note: Note; gone: Gone | null }
 /** Live notes (pinned first, then newest), plus the archived ones on demand. */
 export function ContactNotes({ contactId }: { contactId: Id<'contacts'> }) {
   const tenant = useTenant()
+  const canWrite = useCanWrite()
   const [showArchived, setShowArchived] = useState(false)
   // Open editors, by note id, with the note as it was when opened. Held
   // here so an editor outlives its note leaving the live list.
@@ -62,7 +63,7 @@ export function ContactNotes({ contactId }: { contactId: Id<'contacts'> }) {
           show archived
         </label>
       </div>
-      <Composer contactId={contactId} />
+      {canWrite && <Composer contactId={contactId} />}
       {live === undefined ? (
         <p className="text-sm text-neutral-500">Loading…</p>
       ) : entries.length === 0 ? (
@@ -211,6 +212,7 @@ function NoteItem({
   setEditing: (on: boolean) => void
 }) {
   const tenant = useTenant()
+  const canWrite = useCanWrite()
   const setPinned = useMutation(api.contacts.notes.setPinned)
   const setArchived = useMutation(api.contacts.notes.setArchived)
   const [error, setError] = useState<string | null>(null)
@@ -245,7 +247,7 @@ function NoteItem({
             </>
           )}
         </span>
-        {!editing && (
+        {!editing && canWrite && (
           <span className="flex gap-2">
             {!note.archived && (
               <>

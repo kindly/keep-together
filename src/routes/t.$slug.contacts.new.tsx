@@ -4,7 +4,7 @@ import { ConvexError } from 'convex/values'
 import { useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from '../../convex/_generated/api'
-import { useTenant } from '../lib/tenant'
+import { useCanWrite, useTenant } from '../lib/tenant'
 import { DetailsFields } from '../components/contact-form'
 import type { Payloads } from '../../convex/contacts/validators'
 
@@ -25,6 +25,7 @@ const blank = (kind: Payloads['details']['kind']): Payloads['details'] => ({
 
 function NewContact() {
   const tenant = useTenant()
+  const canWrite = useCanWrite()
   const navigate = useNavigate()
   const create = useMutation(api.contacts.mutations.create)
   // Minted once per form: a double submit lands on the existing contact.
@@ -60,6 +61,14 @@ function NewContact() {
         setError(data ? String(data.message ?? data.kind) : 'Could not save')
       }
     }
+  }
+
+  if (!canWrite) {
+    return (
+      <main className="mx-auto max-w-2xl p-6 text-sm text-neutral-600">
+        You have view-only access to {tenant.name}, so you can't add contacts.
+      </main>
+    )
   }
 
   return (

@@ -8,7 +8,8 @@ import { internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
 import { internalMutation, internalQuery, query } from '../_generated/server'
-import { requireMember } from '../lib/tenancy'
+import { requireMember, roleValidator } from '../lib/tenancy'
+import type { Role } from '../lib/tenancy'
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/
 
@@ -158,11 +159,14 @@ export async function insertTenant(
   return tenantId
 }
 
-/** Used by `tenantAction` (actions have no db) to enforce membership. */
+/**
+ * Used by `tenantAction` (actions have no db) to enforce membership and
+ * role; returns the caller's role.
+ */
 export const assertMember = internalQuery({
-  args: { tenantId: v.id('tenants') },
-  handler: async (ctx, { tenantId }) => {
-    await requireMember(ctx, tenantId)
-    return null
+  args: { tenantId: v.id('tenants'), minRole: roleValidator },
+  handler: async (ctx, { tenantId, minRole }): Promise<Role> => {
+    const { role } = await requireMember(ctx, tenantId, minRole)
+    return role
   },
 })

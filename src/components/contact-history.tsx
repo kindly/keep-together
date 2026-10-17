@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from 'convex/react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
-import { useTenant } from '../lib/tenant'
+import { useCanWrite, useTenant } from '../lib/tenant'
 
 /** The timeline as moments; "Restore to here" re-executes every slice's state at that time. */
 export function ContactHistory({
@@ -14,6 +14,7 @@ export function ContactHistory({
   archiveVersion: number
 }) {
   const tenant = useTenant()
+  const canWrite = useCanWrite()
   const moments = useQuery(api.contacts.queries.history, {
     tenantId: tenant._id,
     id,
@@ -27,20 +28,22 @@ export function ContactHistory({
     members?.find((m) => m.userId === userId)?.name ?? 'system'
   return (
     <aside className="flex flex-col gap-4 text-sm">
-      <button
-        type="button"
-        onClick={() =>
-          void setArchived({
-            tenantId: tenant._id,
-            id,
-            expected: archiveVersion,
-            archived: !archived,
-          })
-        }
-        className="self-start rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-100"
-      >
-        {archived ? 'Unarchive' : 'Archive'}
-      </button>
+      {canWrite && (
+        <button
+          type="button"
+          onClick={() =>
+            void setArchived({
+              tenantId: tenant._id,
+              id,
+              expected: archiveVersion,
+              archived: !archived,
+            })
+          }
+          className="self-start rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-100"
+        >
+          {archived ? 'Unarchive' : 'Archive'}
+        </button>
+      )}
       <h2 className="text-lg font-medium">History</h2>
       {moments === undefined ? (
         <p className="text-neutral-500">Loading…</p>
@@ -78,7 +81,7 @@ export function ContactHistory({
                   {m.slices.join(', ')}
                 </div>
               )}
-              {i > 0 && (
+              {i > 0 && canWrite && (
                 <button
                   type="button"
                   onClick={() =>

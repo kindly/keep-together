@@ -14,8 +14,14 @@
  * unindexed `query(table)` on the scoped db: a domain read is always an
  * index range inside one tenant.
  *
+ * Each takes a `minRole` option (ADR 0020): the caller's role must be at
+ * least that, or the call fails `forbidden`. Defaults: `viewer` for
+ * queries, `staff` for mutations and actions — a viewer never writes.
+ * Admin-only functions say `minRole: 'admin'`.
+ *
  * `internalTenant*` skip the membership check (callers are trusted:
- * scheduler, crons, webhook handlers) but keep the scoped db.
+ * scheduler, crons, webhook handlers) but keep the scoped db; they have no
+ * caller, so no role.
  *
  * Raw `query` / `mutation` / `action` may only be imported under
  * `convex/platform/` — ESLint enforces this.
@@ -32,6 +38,7 @@ import {
 } from 'convex-helpers/server/rowLevelSecurity'
 import type { Rules } from 'convex-helpers/server/rowLevelSecurity'
 import { ConvexError, v } from 'convex/values'
+import type { Infer } from 'convex/values'
 import type {
   DocumentByInfo,
   IndexNames,
@@ -66,6 +73,31 @@ import { ALL_TABLES, hasTenantId } from './tables'
 
 /** A tenant role (ADR 0020). */
 export type Role = Doc<'memberships'>['role']
+
+/** Matches `memberships.role`; for function args that name a role. */
+export const roleValidator = v.union(
+  v.literal('admin'),
+  v.literal('staff'),
+  v.literal('viewer'),
+)
+// Fails to typecheck if the schema's roles and this validator drift apart.
+type Same<TLeft, TRight> = [TLeft] extends [TRight]
+  ? [TRight] extends [TLeft]
+    ? true
+    : false
+  : false
+const _rolesMatch: Same<Infer<typeof roleValidator>, Role> = true
+void _rolesMatch
+
+const RANK: Record<Role, number> = { viewer: 0, staff: 1, admin: 2 }
+
+/** Whether `role` grants at least `minRole`. */
+export function hasRole(role: Role, minRole: Role): boolean {
+  return RANK[role] >= RANK[minRole]
+}
+
+/** Per-function options on the public constructors. */
+export type RoleOption = { minRole?: Role }
 
 export type TenantScope = {
   tenant: Doc<'tenants'>
@@ -262,11 +294,15 @@ async function loadTenant(ctx: QueryCtx, tenantId: Id<'tenants'>) {
   return tenant
 }
 
-/** Authenticated caller must be a member of the tenant. */
+/**
+ * Authenticated caller must be a member of the tenant with at least
+ * `minRole`. A role in one tenant grants nothing in another.
+ */
 export async function requireMember(
   ctx: QueryCtx,
   tenantId: Id<'tenants'>,
-): Promise<TenantScope> {
+  minRole: Role = 'viewer',
+): Promise<TenantScope & { role: Role }> {
   const userId = await getAuthUserId(ctx)
   if (!userId) throw new ConvexError({ kind: 'unauthenticated' as const })
   const membership = await ctx.db
@@ -275,7 +311,9 @@ export async function requireMember(
       q.eq('tenantId', tenantId).eq('userId', userId),
     )
     .unique()
-  if (!membership) throw new ConvexError({ kind: 'forbidden' as const })
+  if (!membership || !hasRole(membership.role, minRole)) {
+    throw new ConvexError({ kind: 'forbidden' as const })
+  }
   const tenant = await loadTenant(ctx, tenantId)
   return { tenant, membership, role: membership.role, userId }
 }
@@ -284,27 +322,34 @@ export async function requireMember(
 
 export const tenantQuery = customQuery(query, {
   args: tenantArgs,
-  input: async (ctx, { tenantId }) => {
-    const scope = await requireMember(ctx, tenantId)
+  input: async (ctx, { tenantId }, { minRole = 'viewer' }: RoleOption) => {
+    const scope = await requireMember(ctx, tenantId, minRole)
     return { ctx: { ...scope, db: scopeReader(ctx, tenantId) }, args: {} }
   },
 })
 
 export const tenantMutation = customMutation(mutation, {
   args: tenantArgs,
-  input: async (ctx, { tenantId }) => {
-    const scope = await requireMember(ctx, tenantId)
+  input: async (ctx, { tenantId }, { minRole = 'staff' }: RoleOption) => {
+    const scope = await requireMember(ctx, tenantId, minRole)
     return { ctx: { ...scope, db: scopeWriter(ctx, tenantId) }, args: {} }
   },
 })
 
-// Actions have no db; they verify membership and carry tenantId for the
-// internal functions they call.
+// Actions have no db; they verify membership and role, and carry tenantId
+// for the internal functions they call.
 export const tenantAction = customAction(action, {
   args: tenantArgs,
-  input: async (ctx, { tenantId }) => {
-    await ctx.runQuery(internal.platform.tenants.assertMember, { tenantId })
-    return { ctx: { tenantId }, args: {} }
+  input: async (
+    ctx,
+    { tenantId },
+    { minRole = 'staff' }: RoleOption,
+  ): Promise<{ ctx: { tenantId: Id<'tenants'>; role: Role }; args: {} }> => {
+    const role: Role = await ctx.runQuery(
+      internal.platform.tenants.assertMember,
+      { tenantId, minRole },
+    )
+    return { ctx: { tenantId, role }, args: {} }
   },
 })
 

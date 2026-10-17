@@ -13,7 +13,7 @@ import type {
   Slices,
 } from '../lib/contact-form-state'
 import { initialState, reduce, submission } from '../lib/contact-form-state'
-import { useTenant } from '../lib/tenant'
+import { useCanWrite, useTenant } from '../lib/tenant'
 
 type Data = NonNullable<FunctionReturnType<typeof api.contacts.queries.get>>
 type Problem = { field: string; message: string }
@@ -77,6 +77,7 @@ function toCounters(data: Data): Counters {
 
 export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
   const tenant = useTenant()
+  const canWrite = useCanWrite()
   const saveForm = useMutation(api.contacts.mutations.saveForm)
   const members = useQuery(api.platform.tenants.members, {
     tenantId: tenant._id,
@@ -213,37 +214,42 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
         </div>
       )}
 
-      <section>
-        <h2 className="mb-3 text-lg font-medium">Details</h2>
-        <DetailsFields
-          value={state.local.details}
-          onChange={(v) => edit('details', v)}
-          problems={state.problems.details ?? []}
-          conflicts={state.conflicts
-            .filter((c) => c.startsWith('details.'))
-            .map((c) => c.slice(8))}
+      {/* Viewers see the same form, every control disabled (ADR 0020). */}
+      <fieldset disabled={!canWrite} className="flex min-w-0 flex-col gap-8">
+        <section>
+          <h2 className="mb-3 text-lg font-medium">Details</h2>
+          <DetailsFields
+            value={state.local.details}
+            onChange={(v) => edit('details', v)}
+            problems={state.problems.details ?? []}
+            conflicts={state.conflicts
+              .filter((c) => c.startsWith('details.'))
+              .map((c) => c.slice(8))}
+          />
+        </section>
+
+        <MethodsFields
+          value={state.local.methods}
+          onChange={(v) => edit('methods', v)}
+          problems={state.problems.methods ?? []}
+          warnings={data.warnings}
         />
-      </section>
 
-      <MethodsFields
-        value={state.local.methods}
-        onChange={(v) => edit('methods', v)}
-        problems={state.problems.methods ?? []}
-        warnings={data.warnings}
-      />
+        <AddressFields
+          value={state.local.addresses}
+          onChange={(v) => edit('addresses', v)}
+          problems={state.problems.addresses ?? []}
+          warnings={data.warnings}
+        />
+      </fieldset>
 
-      <AddressFields
-        value={state.local.addresses}
-        onChange={(v) => edit('addresses', v)}
-        problems={state.problems.addresses ?? []}
-        warnings={data.warnings}
-      />
-
-      <SavePane
-        state={state}
-        problemCount={problemCount}
-        warningCount={data.warnings.length}
-      />
+      {canWrite && (
+        <SavePane
+          state={state}
+          problemCount={problemCount}
+          warningCount={data.warnings.length}
+        />
+      )}
     </form>
   )
 }
