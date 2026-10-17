@@ -63,6 +63,9 @@ export default [
       'convex/_generated/**',
       'src/routeTree.gen.ts',
       'dist/**',
+      'dist-qc/**',
+      'qc-report/**',
+      'test-results/**',
     ],
   },
 ]
