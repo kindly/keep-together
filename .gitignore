@@ -25,3 +25,6 @@ todos.json
 .idea
 .claude/*
 !.claude/skills/
+
+# Factory worker reports
+factory/out/

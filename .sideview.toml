@@ -1,0 +1,83 @@
+# Sideview page catalogue. Categories:
+#   factory  controller board (worker roster, what needs the human)
+#   plans    one page per plan, grill rounds included: factory/plans/*.sv
+#            (each .sv sets category="plans" in its own <sv-page> tag)
+#   spikes   docs/spikes/*.md
+#   docs     reference docs
+#   notes    session scratch pages
+# .sv pages declare their own label/category/order; this file is for
+# markdown, which can't.
+
+[[pages]]
+path = "docs/architecture.md"
+label = "Architecture"
+category = "docs"
+order = 1
+
+[[pages]]
+path = "docs/product-brief.md"
+label = "Product brief"
+category = "docs"
+order = 2
+
+[[pages]]
+path = "docs/research.md"
+label = "CiviCRM research"
+category = "docs"
+order = 3
+
+[[pages]]
+path = "docs/inherited-from-ngo-go.md"
+label = "Inherited from ngo-go"
+category = "docs"
+order = 4
+
+[[pages]]
+path = "docs/spikes/01-export-import.md"
+label = "01 export/import"
+category = "spikes"
+order = 1
+
+[[pages]]
+path = "docs/spikes/02-tenancy.md"
+label = "02 tenancy"
+category = "spikes"
+order = 2
+
+[[pages]]
+path = "docs/spikes/03-contracts-contacts.md"
+label = "03 contracts + contacts"
+category = "spikes"
+order = 3
+
+[[pages]]
+path = "docs/spikes/04-live-form.md"
+label = "04 live form"
+category = "spikes"
+order = 4
+
+[[pages]]
+path = "docs/spikes/05-irmark.md"
+label = "05 IRmark"
+category = "spikes"
+order = 5
+
+[[pages]]
+path = "docs/spikes/06-dev-instances.md"
+label = "06 dev instances"
+category = "spikes"
+order = 6
+
+[[pages]]
+path = "factory/out/roster.md"
+id = "factory-board"
+label = "Factory board"
+category = "factory"
+order = 1
+
+[[pages]]
+path = "docs/decisions/0019-contact-merge-tombstone.md"
+id = "adr-0019-merge"
+label = "ADR 0019: merge"
+category = "docs"
+order = 5
