@@ -264,6 +264,23 @@ export const get = tenantQuery({
 })
 
 /**
+ * The contact a new-contact form created, by the form's `clientKey`; null
+ * until it exists. The form subscribes before it submits, so the new
+ * contact arrives with the create mutation's own result and the contact
+ * page renders without a second round trip.
+ */
+export const byClientKey = tenantQuery({
+  args: { clientKey: v.string() },
+  handler: async (ctx, { clientKey }) => {
+    const contact = await ctx.db
+      .query('contacts')
+      .withIndex('by_tenant_clientKey', (q) => q.eq('clientKey', clientKey))
+      .unique()
+    return contact && contactView(ctx.db, contact._id)
+  },
+})
+
+/**
  * History as *moments*: revisions from one action (sharing a command group)
  * collapse into a single entry listing the slices it touched. Newest first.
  */

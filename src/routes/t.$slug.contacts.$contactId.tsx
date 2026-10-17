@@ -1,21 +1,45 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
+import { useEffect } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
-import { useTenant } from '../lib/tenant'
+import { cachedTenant, useTenant } from '../lib/tenant'
+import { contactSeed, dropContactSeed } from '../lib/contact-seed'
 import { ContactForm } from '../components/contact-form'
 import { ContactHistory } from '../components/contact-history'
 import { ContactNotes } from '../components/contact-notes'
 
 export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
   component: ContactPage,
+  // Every query the page subscribes to, at once, as the navigation starts
+  // (or on hover), not one waterfall step per component as they mount.
+  loader: ({ context: { convex }, params }) => {
+    const tenant = cachedTenant(convex, params.slug)
+    if (!tenant) return
+    const args = {
+      tenantId: tenant._id,
+      id: params.contactId as Id<'contacts'>,
+    }
+    convex.prewarmQuery({ query: api.contacts.queries.get, args })
+    convex.prewarmQuery({ query: api.contacts.queries.history, args })
+    convex.prewarmQuery({ query: api.contacts.notes.forContact, args })
+    convex.prewarmQuery({
+      query: api.platform.tenants.members,
+      args: { tenantId: tenant._id },
+    })
+  },
 })
 
 function ContactPage() {
   const tenant = useTenant()
   const { contactId } = Route.useParams()
   const id = contactId as Id<'contacts'>
-  const data = useQuery(api.contacts.queries.get, { tenantId: tenant._id, id })
+  const live = useQuery(api.contacts.queries.get, { tenantId: tenant._id, id })
+  // Straight from the new-contact form: its view until `get` answers.
+  const data = live === undefined ? contactSeed(id) : live
+  useEffect(() => {
+    if (live !== undefined) dropContactSeed(id)
+  }, [id, live])
   if (data === undefined)
     return <main className="p-6 text-sm text-neutral-500">Loading…</main>
   if (data === null) return <main className="p-6">No such contact.</main>

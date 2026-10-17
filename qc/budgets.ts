@@ -36,10 +36,6 @@ export interface Budget {
 }
 
 const repeatable = { kind: 'repeatable', maxMs: 100 } as const
-const perfTaskPending = {
-  ...repeatable,
-  knownOver: 'perf task pending (human 2026-10-17)',
-} as const
 
 export const budgets = {
   'auth.signIn': { kind: 'oncePerSession', maxMs: 2000 },
@@ -48,7 +44,7 @@ export const budgets = {
   'contacts.nav': repeatable,
   'contacts.search': repeatable,
   'contacts.showArchived': repeatable,
-  'contacts.create': perfTaskPending,
+  'contacts.create': repeatable,
   'contact.save': repeatable,
   'contact.addEmail': repeatable,
   'contact.livePropagation': repeatable,

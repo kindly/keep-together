@@ -1,10 +1,11 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useMutation } from 'convex/react'
+import { useConvex, useMutation, useQuery } from 'convex/react'
 import { ConvexError } from 'convex/values'
 import { useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from '../../convex/_generated/api'
 import { useCanWrite, useTenant } from '../lib/tenant'
+import { seedContact } from '../lib/contact-seed'
 import { DetailsFields } from '../components/contact-form'
 import type { Payloads } from '../../convex/contacts/validators'
 
@@ -30,6 +31,21 @@ function NewContact() {
   const create = useMutation(api.contacts.mutations.create)
   // Minted once per form: a double submit lands on the existing contact.
   const clientKey = useMemo(() => crypto.randomUUID(), [])
+  // Watch for the contact this form creates: it arrives with the create's
+  // result, so the contact page can render without a second round trip.
+  const convex = useConvex()
+  const watchArgs = { tenantId: tenant._id, clientKey }
+  useQuery(api.contacts.queries.byClientKey, watchArgs)
+  const toContact = async (id: string) => {
+    const view = convex
+      .watchQuery(api.contacts.queries.byClientKey, watchArgs)
+      .localQueryResult()
+    if (view?.contact._id === id) seedContact(id, view)
+    await navigate({
+      to: '/t/$slug/contacts/$contactId',
+      params: { slug: tenant.slug, contactId: id },
+    })
+  }
   const [details, setDetails] = useState(blank('individual'))
   const [problems, setProblems] = useState<
     Array<{ field: string; message: string }>
@@ -40,11 +56,9 @@ function NewContact() {
     e.preventDefault()
     setError(null)
     try {
-      const id = await create({ tenantId: tenant._id, clientKey, ...details })
-      await navigate({
-        to: '/t/$slug/contacts/$contactId',
-        params: { slug: tenant.slug, contactId: id },
-      })
+      await toContact(
+        await create({ tenantId: tenant._id, clientKey, ...details }),
+      )
     } catch (err) {
       const data =
         err instanceof ConvexError
@@ -53,10 +67,7 @@ function NewContact() {
       if (data?.kind === 'invalid') {
         setProblems(data.problems as Array<{ field: string; message: string }>)
       } else if (data?.kind === 'rejected' && data.reason === 'duplicate') {
-        await navigate({
-          to: '/t/$slug/contacts/$contactId',
-          params: { slug: tenant.slug, contactId: String(data.message) },
-        })
+        await toContact(String(data.message))
       } else {
         setError(data ? String(data.message ?? data.kind) : 'Could not save')
       }
