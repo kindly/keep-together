@@ -39,7 +39,7 @@ import {
   relationship,
   relationshipType,
 } from '../contacts/contracts'
-import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import { seedTags, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import schema from '../schema'
 import { DONOR_COUNT, generateDonors } from './testSeedData'
 import { insertTenant, tenantForSlug } from './tenants'
@@ -179,8 +179,8 @@ export const tenant = internalMutation({
         await ctx.db.patch('memberships', membership._id, { role: r })
       }
     }
-    // Seeded inline so the donors can link at once; the job insertTenant
-    // schedules then finds the types and does nothing.
+    // Seeded inline so the donors can link at once; the jobs insertTenant
+    // schedules then find the types and tags and do nothing.
     const scoped = { db: scopeWriter(ctx, tenantId), userId: null }
     const types = await scoped.db
       .query('relationshipTypes')
@@ -197,6 +197,7 @@ export const tenant = internalMutation({
         )
       }
     }
+    await seedTags(scoped)
     return tenantId
   },
 })

@@ -1,7 +1,7 @@
 /**
- * Contact contracts (ADR 0014). Four partitioned slices on the Contact
- * root, plus RelationshipType, Relationship and ContactNote (two slices)
- * as their own aggregates.
+ * Contact contracts (ADR 0014). Five partitioned slices on the Contact
+ * root, plus Tag, RelationshipType, Relationship and ContactNote (two
+ * slices) as their own aggregates.
  * Apply functions are pure state application — restore re-runs them.
  */
 import { v } from 'convex/values'
@@ -12,12 +12,15 @@ import { defineContract, registry, rejected } from '../lib/contracts'
 import {
   computedNames,
   normaliseEmail,
+  normaliseTagName,
   prepareAddresses,
   prepareDetails,
   prepareMethods,
   prepareNote,
   prepareRelationship,
   prepareRelationshipType,
+  prepareTag,
+  prepareTags,
 } from './rules'
 import {
   addressesFields,
@@ -29,6 +32,8 @@ import {
   noteFlagsFields,
   relationshipFields,
   relationshipTypeFields,
+  tagFields,
+  tagsFields,
 } from './validators'
 
 export const details = defineContract({
@@ -88,6 +93,7 @@ export const details = defineContract({
         methodsVersion: 0,
         addressesVersion: 0,
         archiveVersion: 0,
+        tagsVersion: 0,
       })
     }
     if (root.kind !== p.kind) {
@@ -104,7 +110,8 @@ export const details = defineContract({
 
 // ── child-row reconciliation ───────────────────────────────────────────────
 
-type ChildTable = 'contactEmails' | 'contactPhones' | 'contactAddresses'
+type ChildTable =
+  'contactEmails' | 'contactPhones' | 'contactAddresses' | 'contactTags'
 type Row = { key?: string } & Record<string, unknown>
 
 /**
@@ -156,7 +163,7 @@ async function reconcile(
               addressNormalized: normaliseEmail(row.address as string),
             }
           : {}),
-      } as never)
+      })
       continue
     }
     const doc = current as unknown as Record<string, unknown>
@@ -223,6 +230,68 @@ export const archive = defineContract({
     if (!root)
       throw rejected('no_root', 'contacts.archive targets an existing contact')
     await ctx.db.patch('contacts', root._id, { archived: p.archived })
+    return root._id
+  },
+})
+
+/**
+ * The contact's tag assignments. Only active tags can be newly added; a
+ * kept row keeps its tag even after the tag is archived, and a restore
+ * may re-add one (the assignment is history, so restores never fail on
+ * tags; the tag stays archived and out of pickers). Called only on
+ * contacts that have `tagsVersion` (all of them after the S4 backfill):
+ * `executeContract` throws on a missing counter.
+ */
+export const tags = defineContract({
+  name: 'contacts.tags',
+  entity: 'contacts',
+  version: 1,
+  counter: 'tagsVersion',
+  fields: tagsFields,
+  prepare: prepareTags,
+  apply: async (ctx, p, root, command) => {
+    if (!root)
+      throw rejected('no_root', 'contacts.tags targets an existing contact')
+    const existing = await ctx.db
+      .query('contactTags')
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', root._id))
+      .collect()
+    const kept = new Set(existing.map((r) => r.key))
+    for (const row of p.tags) {
+      if (kept.has(row.key!)) continue
+      // Another tenant's id reads as null through the scoped db.
+      const tag = await ctx.db.get(row.tagId)
+      if (!tag || (!tag.isActive && command.source !== 'restore')) {
+        throw rejected('unknown_tag', 'Tag must exist and be active')
+      }
+    }
+    await reconcile(ctx, 'contactTags', root._id, p.tags, ['tagId'])
+    return root._id
+  },
+})
+
+/** A tag definition. Renaming keeps every assignment (they hold the id). */
+export const tag = defineContract({
+  name: 'contacts.tag',
+  entity: 'tags',
+  version: 1,
+  counter: 'saveVersion',
+  fields: tagFields,
+  prepare: prepareTag,
+  apply: async (ctx, p, root) => {
+    const nameNormalized = normaliseTagName(p.name)
+    const clash = await ctx.db
+      .query('tags')
+      .withIndex('by_tenant_nameNormalized', (q) =>
+        q.eq('nameNormalized', nameNormalized),
+      )
+      .first()
+    if (clash && clash._id !== root?._id) {
+      throw rejected('duplicate_tag_name', `A tag called ${clash.name} exists`)
+    }
+    const fields = { name: p.name, nameNormalized, isActive: p.isActive }
+    if (!root) return ctx.db.insert('tags', { ...fields, saveVersion: 0 })
+    await ctx.db.patch('tags', root._id, fields)
     return root._id
   },
 })
@@ -350,6 +419,8 @@ export const contactContracts = registry(
   methods,
   addresses,
   archive,
+  tags,
+  tag,
   relationshipType,
   relationship,
   note,
@@ -357,4 +428,4 @@ export const contactContracts = registry(
 )
 
 /** Slices of the Contact form, in the order the form shows them. */
-export const contactSlices = { details, methods, addresses } as const
+export const contactSlices = { details, methods, addresses, tags } as const

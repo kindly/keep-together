@@ -1,8 +1,9 @@
+import { paginationOptsValidator } from 'convex/server'
 import { v } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
 import { internalTenantQuery, tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
-import { normaliseEmail } from './rules'
+import { normaliseEmail, normaliseTagName } from './rules'
 import { contactWarnings } from './warnings'
 import type { AlsoUsedBy } from './warnings'
 
@@ -37,6 +38,85 @@ async function children(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
     addresses: primaryFirst(addresses),
   }
 }
+
+/** A contact's tags with their names, alphabetical. */
+async function tagsOf(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
+  const rows = await db
+    .query('contactTags')
+    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+    .collect()
+  const out = await Promise.all(
+    rows.map(async (r) => {
+      const tag = await db.get(r.tagId)
+      return {
+        key: r.key,
+        tagId: r.tagId,
+        name: tag?.name ?? '?',
+        isActive: tag?.isActive ?? false,
+      }
+    }),
+  )
+  return out.sort((a, b) =>
+    normaliseTagName(a.name).localeCompare(normaliseTagName(b.name)),
+  )
+}
+
+/** How many tags a tenant can hold before the picker list truncates. */
+export const TAG_LIST_LIMIT = 500
+
+/** The tenant's tags, alphabetical; archived ones only when asked (admin). */
+export const tags = tenantQuery({
+  args: { includeInactive: v.optional(v.boolean()) },
+  handler: async (ctx, { includeInactive }) => {
+    const rows = await ctx.db
+      .query('tags')
+      .withIndex('by_tenant_nameNormalized')
+      .take(TAG_LIST_LIMIT)
+    return includeInactive ? rows : rows.filter((t) => t.isActive)
+  },
+})
+
+/** The most assignments one `byTag` page reads (one contact read each). */
+export const BY_TAG_PAGE_LIMIT = 100
+
+/**
+ * Contacts carrying a tag, in the order they were tagged. A page holds the
+ * page's assignments (at most BY_TAG_PAGE_LIMIT) minus archived contacts
+ * (unless asked), so it can be shorter than `numItems`; `isDone` is what
+ * ends the list.
+ */
+export const byTag = tenantQuery({
+  args: {
+    tagId: v.id('tags'),
+    includeArchived: v.optional(v.boolean()),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, { tagId, includeArchived, paginationOpts }) => {
+    const result = await ctx.db
+      .query('contactTags')
+      .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId))
+      .paginate({
+        ...paginationOpts,
+        numItems: Math.min(paginationOpts.numItems, BY_TAG_PAGE_LIMIT),
+      })
+    const contacts = await Promise.all(
+      result.page.map((r) => ctx.db.get(r.contactId)),
+    )
+    return {
+      ...result,
+      page: contacts
+        .filter((c) => c !== null)
+        .filter((c) => includeArchived || !c.archived)
+        .map((c) => ({
+          _id: c._id,
+          kind: c.kind,
+          displayName: c.displayName,
+          sortName: c.sortName,
+          archived: c.archived,
+        })),
+    }
+  },
+})
 
 /** How many email rows one address lookup reads. */
 export const EMAIL_LOOKUP_LIMIT = 50
@@ -141,7 +221,12 @@ export const get = tenantQuery({
         truncated,
       }
     }
-    return { contact, ...kids, warnings: contactWarnings(kids, alsoUsedBy) }
+    return {
+      contact,
+      ...kids,
+      tags: await tagsOf(ctx.db, id),
+      warnings: contactWarnings(kids, alsoUsedBy),
+    }
   },
 })
 

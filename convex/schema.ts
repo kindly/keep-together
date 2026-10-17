@@ -105,6 +105,7 @@ export default defineSchema({
   //   contacts.methods   → contactEmails / contactPhones rows (methodsVersion)
   //   contacts.addresses → contactAddresses rows (addressesVersion)
   //   contacts.archive   → archived (archiveVersion)
+  //   contacts.tags      → contactTags rows (tagsVersion)
   // System-managed (no contract): displayName / sortName, counters.
   contacts: defineTable({
     tenantId: v.id('tenants'),
@@ -126,6 +127,9 @@ export default defineSchema({
     methodsVersion: v.number(),
     addressesVersion: v.number(),
     archiveVersion: v.number(),
+    // Optional until the S4 backfill writes 0 on older contacts; creates
+    // write 0. `contacts.tags` refuses a contact without it.
+    tagsVersion: v.optional(v.number()),
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
     .index('by_tenant_clientKey', ['tenantId', 'clientKey'])
@@ -182,6 +186,30 @@ export default defineSchema({
   })
     .index('by_tenant_contact', ['tenantId', 'contactId'])
     .index('by_tenant_key', ['tenantId', 'key']),
+
+  // Assignment of a tag to a contact (`contacts.tags` slice). `tagId` is the
+  // identity field — immutable per key; re-tagging is remove + add.
+  contactTags: defineTable({
+    tenantId: v.id('tenants'),
+    contactId: v.id('contacts'),
+    key: v.string(),
+    tagId: v.id('tags'),
+  })
+    .index('by_tenant_contact', ['tenantId', 'contactId'])
+    .index('by_tenant_key', ['tenantId', 'key'])
+    .index('by_tenant_tag', ['tenantId', 'tagId']),
+
+  // Its own aggregate (`contacts.tag`, saveVersion). Flat; names unique per
+  // tenant case-insensitively (checked in apply against `nameNormalized`).
+  // Retire = `isActive: false`: hidden from pickers, assignments kept.
+  // Seeded per tenant: member, volunteer.
+  tags: defineTable({
+    tenantId: v.id('tenants'),
+    name: v.string(),
+    nameNormalized: v.string(), // normaliseTagName(name)
+    isActive: v.boolean(),
+    saveVersion: v.number(),
+  }).index('by_tenant_nameNormalized', ['tenantId', 'nameNormalized']),
 
   // Seeded per tenant (UK basics); charities add their own.
   relationshipTypes: defineTable({

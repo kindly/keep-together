@@ -5,10 +5,12 @@ import {
   canonical,
   commandGroup,
   executeContract,
+  invalid,
+  rejected,
   restore,
   restoreEntityTo,
 } from '../lib/contracts'
-import type { Problem } from '../lib/contracts'
+import type { ContractCtx, Problem } from '../lib/contracts'
 import { tenantMutation } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import {
@@ -17,12 +19,16 @@ import {
   contactContracts,
   details,
   methods,
+  tag,
+  tags,
 } from './contracts'
 import {
   addressesFields,
   archiveFields,
   detailsFields,
   methodsFields,
+  tagFields,
+  tagsFields,
 } from './validators'
 import type { Payloads } from './validators'
 
@@ -74,12 +80,152 @@ export const setArchived = tenantMutation({
     }),
 })
 
-// ── the form save (an action over the three content slices) ──────────────
+// ── tags ───────────────────────────────────────────────────────────────────
+
+/**
+ * The contact's `tagsVersion`. Contacts created before S3 lack it until the
+ * S4 backfill; refuse them clearly rather than let `executeContract` throw.
+ */
+function tagsCounter(contact: Doc<'contacts'>): number {
+  if (contact.tagsVersion === undefined) {
+    throw rejected(
+      'not_migrated',
+      'Tags are not available on this contact yet (pending backfill)',
+    )
+  }
+  return contact.tagsVersion
+}
+
+export const saveTags = tenantMutation({
+  args: { id: v.id('contacts'), expected: v.number(), ...tagsFields },
+  handler: async (ctx, { id, expected, ...payload }) => {
+    const contact = await ctx.db.get(id)
+    if (!contact) throw new ConvexError({ kind: 'not_found' as const })
+    tagsCounter(contact)
+    return executeContract(ctx, tags, payload, {
+      entityId: id,
+      expected,
+      source: 'ui',
+    })
+  },
+})
+
+/** Create a tag (no `id`) or rename / archive / reactivate one. */
+export const saveTag = tenantMutation({
+  args: {
+    id: v.optional(v.id('tags')),
+    expected: v.optional(v.number()),
+    ...tagFields,
+  },
+  handler: async (ctx, { id, expected, ...payload }) => {
+    if (id !== undefined && expected === undefined) {
+      // Without it two admins renaming one tag silently overwrite each other.
+      throw invalid([
+        { field: 'expected', message: 'An update needs the version it edits' },
+      ])
+    }
+    return executeContract(ctx, tag, payload, {
+      entityId: id,
+      expected,
+      source: 'ui',
+    })
+  },
+})
+
+/** The most contacts one `bulkTag` call changes; larger selections are batched by the caller. */
+export const BULK_TAG_LIMIT = 100
+
+async function contactTagRows(
+  db: ScopedDatabaseReader,
+  contactId: Id<'contacts'>,
+) {
+  return db
+    .query('contactTags')
+    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+    .collect()
+}
+
+/**
+ * Add or remove one tag on a batch of contacts, as one command group: one
+ * `contacts.tags` revision per contact that changes, none for contacts
+ * already in the wanted state. The whole batch is refused if any contact
+ * is unknown or not yet migrated, or if an inactive tag is being added.
+ */
+export const bulkTag = tenantMutation({
+  args: {
+    contactIds: v.array(v.id('contacts')),
+    tagId: v.id('tags'),
+    op: v.union(v.literal('add'), v.literal('remove')),
+  },
+  handler: async (ctx, { contactIds, tagId, op }) =>
+    applyBulkTag(ctx, [...new Set(contactIds)], tagId, op),
+})
+
+async function applyBulkTag(
+  ctx: ContractCtx,
+  contactIds: Array<Id<'contacts'>>,
+  tagId: Id<'tags'>,
+  op: 'add' | 'remove',
+) {
+  if (contactIds.length > BULK_TAG_LIMIT) {
+    throw invalid([
+      {
+        field: 'contactIds',
+        message: `At most ${BULK_TAG_LIMIT} contacts per batch`,
+      },
+    ])
+  }
+  const t = await ctx.db.get(tagId)
+  if (!t) throw rejected('unknown_tag', 'Tag must exist')
+  if (op === 'add' && !t.isActive) {
+    throw rejected('unknown_tag', 'Tag must exist and be active')
+  }
+  const plans: Array<{
+    id: Id<'contacts'>
+    expected: number
+    rows: Array<{ key: string; tagId: Id<'tags'> }>
+  }> = []
+  for (const id of contactIds) {
+    const contact = await ctx.db.get(id)
+    if (!contact) throw rejected('unknown_contact', 'Contact must exist')
+    const expected = tagsCounter(contact)
+    const rows = (await contactTagRows(ctx.db, id)).map((r) => ({
+      key: r.key,
+      tagId: r.tagId,
+    }))
+    const has = rows.some((r) => r.tagId === tagId)
+    if (op === 'add' && !has) {
+      plans.push({
+        id,
+        expected,
+        rows: [...rows, { key: crypto.randomUUID(), tagId }],
+      })
+    } else if (op === 'remove' && has) {
+      plans.push({ id, expected, rows: rows.filter((r) => r.tagId !== tagId) })
+    }
+  }
+  if (plans.length === 0) return { changed: 0, group: null }
+  const group = await commandGroup(
+    ctx,
+    `${op === 'add' ? 'add' : 'remove'} tag ${t.name}`,
+  )
+  for (const plan of plans) {
+    await executeContract(
+      ctx,
+      tags,
+      { tags: plan.rows },
+      { entityId: plan.id, expected: plan.expected, source: 'ui', group },
+    )
+  }
+  return { changed: plans.length, group }
+}
+
+// ── the form save (an action over the content slices) ─────────────────────
 
 const slice = <TFields extends PropertyValidators>(fields: TFields) =>
   v.optional(v.object({ expected: v.number(), ...fields }))
 
-type Slice = 'details' | 'methods' | 'addresses'
+type Slice = 'details' | 'methods' | 'addresses' | 'tags'
 
 /** The current state of each slice, in payload shape, for change detection. */
 export async function currentPayloads(
@@ -89,8 +235,9 @@ export async function currentPayloads(
   details: Payloads['details']
   methods: Payloads['methods']
   addresses: Payloads['addresses']
+  tags: Payloads['tags']
 }> {
-  const [emails, phones, addrs] = await Promise.all([
+  const [emails, phones, addrs, tagRows] = await Promise.all([
     db
       .query('contactEmails')
       .withIndex('by_tenant_contact', (q) => q.eq('contactId', contact._id))
@@ -103,6 +250,7 @@ export async function currentPayloads(
       .query('contactAddresses')
       .withIndex('by_tenant_contact', (q) => q.eq('contactId', contact._id))
       .collect(),
+    contactTagRows(db, contact._id),
   ])
   return {
     details: {
@@ -144,6 +292,7 @@ export async function currentPayloads(
         isPrimary: a.isPrimary,
       })),
     },
+    tags: { tags: tagRows.map((r) => ({ key: r.key, tagId: r.tagId })) },
   }
 }
 
@@ -162,6 +311,7 @@ export const saveForm = tenantMutation({
     details: slice(detailsFields),
     methods: slice(methodsFields),
     addresses: slice(addressesFields),
+    tags: slice(tagsFields),
   },
   handler: async (ctx, args) => {
     const contact = await ctx.db.get(args.id)
@@ -180,7 +330,9 @@ export const saveForm = tenantMutation({
       name: TSlice,
       contract: (typeof contactContracts)[string],
       submitted: ({ expected: number } & Record<string, unknown>) | undefined,
-      counter: number,
+      // Read only once the slice has changed: an unchanged tags slice must
+      // not trip `tagsCounter` on a contact awaiting the backfill.
+      counter: () => number,
     ) => {
       if (!submitted) return
       const { expected, ...payload } = submitted
@@ -200,8 +352,9 @@ export const saveForm = tenantMutation({
         throw e
       }
       if (canonical(prepared) === canonical(current[name])) return
-      if (expected !== counter) {
-        stale[name] = counter
+      const now = counter()
+      if (expected !== now) {
+        stale[name] = now
         return
       }
       changed.push({
@@ -216,9 +369,15 @@ export const saveForm = tenantMutation({
       })
     }
 
-    consider('details', details, args.details, contact.detailsVersion)
-    consider('methods', methods, args.methods, contact.methodsVersion)
-    consider('addresses', addresses, args.addresses, contact.addressesVersion)
+    consider('details', details, args.details, () => contact.detailsVersion)
+    consider('methods', methods, args.methods, () => contact.methodsVersion)
+    consider(
+      'addresses',
+      addresses,
+      args.addresses,
+      () => contact.addressesVersion,
+    )
+    consider('tags', tags, args.tags, () => tagsCounter(contact))
 
     const group =
       changed.length > 1
@@ -236,6 +395,7 @@ export const saveForm = tenantMutation({
         methods: after.methodsVersion,
         addresses: after.addressesVersion,
         archive: after.archiveVersion,
+        tags: after.tagsVersion,
       },
     }
   },

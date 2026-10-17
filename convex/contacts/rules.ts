@@ -97,11 +97,11 @@ export function prepareDetails(p: Payloads['details']): Payloads['details'] {
 
 type Keyed = { key?: string; isPrimary: boolean }
 
-/** Mint missing keys, require unique keys, exactly one primary (or none if empty). */
-function prepareRows<TRow extends Keyed>(
+/** Mint missing keys and require unique keys. */
+function mintKeys<TRow extends { key?: string }>(
   rows: Array<TRow>,
   field: string,
-): Array<TRow> {
+): Array<TRow & { key: string }> {
   const out = rows.map((r) => ({ ...r, key: r.key || crypto.randomUUID() }))
   const keys = new Set<string>()
   for (const r of out) {
@@ -109,6 +109,15 @@ function prepareRows<TRow extends Keyed>(
       throw invalid([{ field, message: 'Duplicate row key' }])
     keys.add(r.key)
   }
+  return out
+}
+
+/** Mint missing keys, require unique keys, exactly one primary (or none if empty). */
+function prepareRows<TRow extends Keyed>(
+  rows: Array<TRow>,
+  field: string,
+): Array<TRow> {
+  const out = mintKeys(rows, field)
   const primaries = out.filter((r) => r.isPrimary)
   if (primaries.length > 1) {
     throw invalid([{ field, message: 'Only one entry can be primary' }])
@@ -201,6 +210,39 @@ export function prepareRelationshipType(
   const out = { ...p, labelAB: trim(p.labelAB), labelBA: trim(p.labelBA) }
   if (!out.labelAB || !out.labelBA) {
     throw invalid([{ field: 'labelAB', message: 'Both labels are required' }])
+  }
+  return out
+}
+
+/** A contact's tags: keyed rows, each tag at most once. */
+export function prepareTags(p: Payloads['tags']): Payloads['tags'] {
+  const tags = mintKeys(p.tags, 'tags')
+  const seen = new Set<string>()
+  for (const t of tags) {
+    if (seen.has(t.tagId)) {
+      throw invalid([
+        { field: 'tags', message: 'A tag can be added only once' },
+      ])
+    }
+    seen.add(t.tagId)
+  }
+  return { tags }
+}
+
+/**
+ * The uniqueness form of a tag name: names compare case-insensitively
+ * (`Volunteer` and `volunteer` are the same tag). Applied to a prepared
+ * name, so whitespace is already tidied.
+ */
+export function normaliseTagName(name: string): string {
+  return name.toLowerCase()
+}
+
+/** Trimmed, inner whitespace runs collapsed, never blank. */
+export function prepareTag(p: Payloads['tag']): Payloads['tag'] {
+  const out = { ...p, name: p.name.trim().replace(/\s+/g, ' ') }
+  if (!out.name) {
+    throw invalid([{ field: 'name', message: 'A tag needs a name' }])
   }
   return out
 }

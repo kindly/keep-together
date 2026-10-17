@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { api, internal } from '../_generated/api'
 import schema from '../schema'
 import { errorData, modules } from '../../test/fixture'
-import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import { SEED_TAGS, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 
 // 12+ characters: auth.ts may gain a minimum-length password check.
 const password = 'qc-password-123'
@@ -140,7 +140,7 @@ test('every seeded write went through a contract and left a revision', async () 
       ).toEqual(['contacts.details', 'contacts.methods'])
     }
     expect(revisions).toHaveLength(
-      UK_RELATIONSHIP_TYPES.length + contactIds.length * 2,
+      UK_RELATIONSHIP_TYPES.length + SEED_TAGS.length + contactIds.length * 2,
     )
   }
 })

@@ -8,6 +8,7 @@ import type { Payloads } from '../../convex/contacts/validators'
 import type {
   Counters,
   FormState,
+  SaveResult,
   SliceName,
   Slices,
 } from '../lib/contact-form-state'
@@ -113,7 +114,9 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
       }
     }
     try {
-      const result = await saveForm(args as never)
+      // The form submits only its own slices (no `tags` until the tags UI),
+      // so the result names only those.
+      const result = (await saveForm(args as never)) as SaveResult
       dispatch({ type: 'saved', submitted, result, at: Date.now() })
     } catch (err) {
       const detail =

@@ -155,6 +155,7 @@ export async function insertTenant(
   await ctx.scheduler.runAfter(0, internal.contacts.seed.relationshipTypes, {
     tenantId,
   })
+  await ctx.scheduler.runAfter(0, internal.contacts.seed.tags, { tenantId })
   return tenantId
 }
 

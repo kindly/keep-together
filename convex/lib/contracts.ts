@@ -36,6 +36,8 @@ export type ContractCtx = {
 export type Command = {
   at: number
   actor: Id<'users'> | null
+  /** Where the command came from; restore re-applies history. */
+  source: Source
   /** Create-only arguments that are not part of the slice (e.g. a parent id). */
   createWith?: unknown
 }
@@ -169,6 +171,7 @@ export async function executeContract<
   const id = await contract.apply(ctx, payload, root, {
     at: Date.now(),
     actor: ctx.userId,
+    source: opts.source,
     createWith: root === null ? opts.createWith : undefined,
   })
   // Not every apply touches the root row; the counter bump is ours.

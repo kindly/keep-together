@@ -18,7 +18,7 @@ import { env, internalAction, internalMutation } from '../_generated/server'
 import { commandGroup, executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
 import { details, methods, relationshipType } from '../contacts/contracts'
-import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import { seedTags, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import { insertTenant, tenantForSlug } from './tenants'
 
 const SIDES = [
@@ -113,8 +113,8 @@ export const world = internalMutation({
         name: `${label} ${base} qc group`,
         adminUserId: userId,
       })
-      // Seeded inline so the world is complete on return; the job
-      // insertTenant schedules then finds the types and does nothing.
+      // Seeded inline so the world is complete on return; the jobs
+      // insertTenant schedules then find the types and tags and do nothing.
 
       const scoped = { db: scopeWriter(ctx, tenantId), userId }
       const group = await commandGroup(scoped, 'qc seed')
@@ -126,6 +126,7 @@ export const world = internalMutation({
           { source: 'seed', group },
         )
       }
+      await seedTags(scoped, group)
       const name = `${label}-${runId}`
       const contacts = [
         { kind: 'individual', firstName: 'Ada', lastName: name, name: '' },
