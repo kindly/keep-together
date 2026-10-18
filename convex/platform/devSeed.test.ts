@@ -77,3 +77,51 @@ test('demoTenant refuses a taken slug instead of making a duplicate tenant', asy
   )
   expect(slugs).toEqual(['alpha', 'beta'])
 })
+
+test('demoTenant seeds identifier types and rows; identifiers:false none', async () => {
+  const { t } = await setup()
+  const withIds = await t.mutation(internal.platform.devSeed.demoTenant, {
+    slug: 'demo',
+  })
+  const plain = await t.mutation(internal.platform.devSeed.demoTenant, {
+    slug: 'plain',
+    identifiers: false,
+  })
+  await t.finishAllScheduledFunctions(() => {})
+  const of = (tenantId: Id<'tenants'>) =>
+    t.run(async (ctx) => {
+      const types = await ctx.db
+        .query('identifierTypes')
+        .withIndex('by_tenant_nameNormalized', (q) =>
+          q.eq('tenantId', tenantId),
+        )
+        .collect()
+      const rows = await ctx.db
+        .query('contactIdentifiers')
+        .withIndex('by_tenant_valueNormalized_type', (q) =>
+          q.eq('tenantId', tenantId),
+        )
+        .collect()
+      return {
+        types: types.map((x) => [x.name, x.isActive]),
+        rows: rows.map((r) => [
+          r.contactId,
+          types.find((x) => x._id === r.typeId)?.name,
+          r.value,
+        ]),
+      }
+    })
+  const [ada, charles] = withIds.contactIds
+  expect(await of(withIds.tenantId)).toEqual({
+    types: [
+      ['Membership number', true],
+      ['Old CRM id', true],
+    ],
+    rows: [
+      [ada, 'Old CRM id', 'CRM-1815'],
+      [ada, 'Membership number', 'M-0001'],
+      [charles, 'Membership number', 'M-0002'],
+    ],
+  })
+  expect(await of(plain.tenantId)).toEqual({ types: [], rows: [] })
+})

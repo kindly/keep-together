@@ -33,15 +33,20 @@ import {
   addresses,
   archive,
   details,
+  identifiers,
   methods,
   note,
   noteFlags,
   relationship,
   relationshipType,
 } from '../contacts/contracts'
-import { seedTags, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import {
+  ensureIdentifierTypes,
+  seedTags,
+  UK_RELATIONSHIP_TYPES,
+} from '../contacts/seed'
 import schema from '../schema'
-import { DONOR_COUNT, generateDonors } from './testSeedData'
+import { DONOR_COUNT, generateDonors, IDENTIFIER_TYPES } from './testSeedData'
 import { insertTenant, tenantForSlug } from './tenants'
 
 const role = schema.tables.memberships.validator.fields.role
@@ -198,6 +203,7 @@ export const tenant = internalMutation({
       }
     }
     await seedTags(scoped)
+    await ensureIdentifierTypes(scoped, IDENTIFIER_TYPES)
     return tenantId
   },
 })
@@ -235,6 +241,11 @@ export const donors = internalMutation({
     )
     const ids = new Map<number, Id<'contacts'>>()
     const opts = { source: 'seed', group } as const
+    // The tenant mutation made them; this only looks them up.
+    const identifierTypes = await ensureIdentifierTypes(
+      scoped,
+      IDENTIFIER_TYPES,
+    )
     for (let i = from; i < to; i++) {
       const spec = specs[i]
       const { id } = await executeContract(
@@ -254,6 +265,20 @@ export const donors = internalMutation({
         entityId: id,
         expected: 0,
       })
+      if (spec.identifiers.length) {
+        await executeContract(
+          scoped,
+          identifiers,
+          {
+            identifiers: spec.identifiers.map(({ key, type, value }) => ({
+              key,
+              typeId: identifierTypes.get(type)!,
+              value,
+            })),
+          },
+          { ...opts, entityId: id, expected: 0 },
+        )
+      }
       if (spec.archived) {
         await executeContract(
           scoped,

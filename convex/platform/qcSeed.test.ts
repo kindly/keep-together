@@ -4,6 +4,7 @@ import { api, internal } from '../_generated/api'
 import schema from '../schema'
 import { errorData, modules } from '../../test/fixture'
 import { SEED_TAGS, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import { IDENTIFIER_TYPE, qcIdentifiers } from './qcSeed'
 
 // 12+ characters: auth.ts may gain a minimum-length password check.
 const password = 'qc-password-123'
@@ -27,11 +28,13 @@ async function seed() {
   return { t, world }
 }
 
-test('two users, two tenants, each user a member of their own tenant only', async () => {
+test('four users, two tenants: A and B admin their own; staff and viewer in A', async () => {
   const { t, world } = await seed()
-  expect(world.users.map((u) => u.email)).toEqual([
-    'qc-r7w1-a@example.com',
-    'qc-r7w1-b@example.com',
+  expect(world.users).toEqual([
+    { email: 'qc-r7w1-a@example.com', role: 'admin' },
+    { email: 'qc-r7w1-b@example.com', role: 'admin' },
+    { email: 'qc-r7w1-a-staff@example.com', role: 'staff' },
+    { email: 'qc-r7w1-a-viewer@example.com', role: 'viewer' },
   ])
   expect(world.tenants.map((x) => x.slug)).toEqual(['r7w1-a', 'r7w1-b'])
 
@@ -53,6 +56,16 @@ test('two users, two tenants, each user a member of their own tenant only', asyn
       role: 'admin',
     },
     {
+      tenantId: tenantA.tenantId,
+      email: 'qc-r7w1-a-staff@example.com',
+      role: 'staff',
+    },
+    {
+      tenantId: tenantA.tenantId,
+      email: 'qc-r7w1-a-viewer@example.com',
+      role: 'viewer',
+    },
+    {
       tenantId: tenantB.tenantId,
       email: 'qc-r7w1-b@example.com',
       role: 'admin',
@@ -66,6 +79,8 @@ test('each seeded user has a hashed password account', async () => {
   expect(accounts.map((a) => [a.provider, a.providerAccountId])).toEqual([
     ['password', 'qc-r7w1-a@example.com'],
     ['password', 'qc-r7w1-b@example.com'],
+    ['password', 'qc-r7w1-a-staff@example.com'],
+    ['password', 'qc-r7w1-a-viewer@example.com'],
   ])
   // Stored as a hash, never the password itself.
   expect(accounts.every((a) => a.secret && a.secret !== password)).toBe(true)
@@ -135,16 +150,33 @@ test('every seeded write went through a contract and left a revision', async () 
       ),
     }))
     expect(types).toHaveLength(UK_RELATIONSHIP_TYPES.length)
-    for (const contactId of contactIds) {
+    const isA = tenantId === world.tenants[0].tenantId
+    // A: Ada's identifier and tag. B: Ada's and Charles's identifiers.
+    const extra = isA
+      ? [['contacts.identifiers', 'contacts.tags'], []]
+      : [
+          ['contacts.identifiers'],
+          ['contacts.identifiers'],
+          ['contacts.identifiers'],
+        ]
+    for (const [i, contactId] of contactIds.entries()) {
       expect(
         revisions
           .filter((r) => r.entityId === contactId)
           .map((r) => r.contract)
           .sort(),
-      ).toEqual(['contacts.details', 'contacts.methods'])
+      ).toEqual(
+        ['contacts.details', 'contacts.methods', ...(extra[i] ?? [])].sort(),
+      )
     }
+    // One identifier type, plus its archive in B.
+    const typeRevisions = isA ? 1 : 2
     expect(revisions).toHaveLength(
-      UK_RELATIONSHIP_TYPES.length + SEED_TAGS.length + contactIds.length * 2,
+      UK_RELATIONSHIP_TYPES.length +
+        SEED_TAGS.length +
+        contactIds.length * 2 +
+        extra.flat().length +
+        typeRevisions,
     )
   }
 })
@@ -183,7 +215,7 @@ test('re-running the same run and worker returns the same world', async () => {
     users: (await ctx.db.query('users').collect()).length,
     contacts: (await ctx.db.query('contacts').collect()).length,
   }))
-  expect(counts).toEqual({ tenants: 2, memberships: 2, users: 2, contacts: 6 })
+  expect(counts).toEqual({ tenants: 2, memberships: 4, users: 4, contacts: 6 })
 })
 
 test('a slug held by someone else is refused, not duplicated', async () => {
@@ -254,4 +286,56 @@ test('both functions refuse unless QC_SEED_ENABLED is "1"', async () => {
     tenants: (await ctx.db.query('tenants').collect()).length,
   }))
   expect(counts).toEqual({ users: 1, tenants: 0 })
+})
+
+test("identifiers: A finds its own, never B's; B has no active type", async () => {
+  const { t, world } = await seed()
+  const [tenantA, tenantB] = world.tenants
+  const { shared, bOnly, bReuse } = qcIdentifiers('7', 1)
+  expect(world.identifiers).toEqual({ shared, bOnly, bReuse })
+  const viewer = await t.run(async (ctx) => {
+    const user = await ctx.db
+      .query('users')
+      .withIndex('email', (q) => q.eq('email', 'qc-r7w1-a-viewer@example.com'))
+      .unique()
+    return user!._id
+  })
+  const asViewer = t.withIdentity({ subject: `${viewer}|session` })
+  const search = (term: string) =>
+    asViewer
+      .query(api.contacts.queries.list, {
+        tenantId: tenantA.tenantId,
+        search: term,
+      })
+      .then((r) => r.rows.map((c) => c._id))
+
+  // The value both tenants hold finds only A's Ada; B's own value nothing.
+  expect(await search(shared)).toEqual([tenantA.contactIds[0]])
+  expect(await search(bOnly)).toEqual([])
+  expect(await search(bReuse)).toEqual([])
+
+  const ada = await asViewer.query(api.contacts.queries.get, {
+    tenantId: tenantA.tenantId,
+    id: tenantA.contactIds[0],
+  })
+  expect(ada?.identifiers.map((r) => r.value)).toEqual([shared])
+  expect(ada?.tags).toHaveLength(1)
+
+  const types = await t.run((ctx) => ctx.db.query('identifierTypes').collect())
+  expect(types.map((x) => [x.tenantId, x.name, x.isActive]).sort()).toEqual(
+    [
+      [tenantA.tenantId, IDENTIFIER_TYPE, true],
+      [tenantB.tenantId, IDENTIFIER_TYPE, false],
+    ].sort(),
+  )
+  const rowsB = await t.run(async (ctx) =>
+    (await ctx.db.query('contactIdentifiers').collect())
+      .filter((r) => r.tenantId === tenantB.tenantId)
+      .map((r) => [r.contactId, r.value]),
+  )
+  expect(rowsB).toEqual([
+    [tenantB.contactIds[0], shared],
+    [tenantB.contactIds[1], bOnly],
+    [tenantB.contactIds[2], bReuse],
+  ])
 })

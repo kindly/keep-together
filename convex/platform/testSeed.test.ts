@@ -5,7 +5,7 @@ import { errorData, setup, snapshot } from '../../test/fixture'
 import { contactWarnings } from '../contacts/warnings'
 import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import { TEST_TENANT, TEST_USERS } from './testSeed'
-import { DONOR_COUNT, generateDonors } from './testSeedData'
+import { DONOR_COUNT, generateDonors, IDENTIFIER_TYPES } from './testSeedData'
 
 const passwords = {
   admin: 'admin-password-123',
@@ -43,6 +43,9 @@ const count = (t: Awaited<ReturnType<typeof setup>>['t']) =>
       contactNotes: await n('contactNotes'),
       relationships: await n('relationships'),
       relationshipTypes: await n('relationshipTypes'),
+      identifierTypes: await n('identifierTypes'),
+      contactIdentifiers: await n('contactIdentifiers'),
+      commandGroups: await n('commandGroups'),
       revisions: await n('revisions'),
     }
   })
@@ -83,6 +86,12 @@ test('the generator is deterministic and varied', () => {
   const notes = donors.flatMap((d) => d.notes)
   expect(notes.some((n) => n.pinned)).toBe(true)
   expect(notes.some((n) => n.archived)).toBe(true)
+  const ids = donors.flatMap((d) => d.identifiers)
+  for (const type of IDENTIFIER_TYPES) {
+    expect(ids.filter((x) => x.type === type).length).toBeGreaterThan(5)
+  }
+  expect(donors.some((d) => d.identifiers.length > 1)).toBe(true)
+  expect(new Set(ids.map((x) => x.value)).size).toBe(ids.length)
   const used = new Set(relationships.map((r) => r.type))
   expect([...used].sort()).toEqual(
     UK_RELATIONSHIP_TYPES.map(([labelAB]) => labelAB).sort(),
@@ -186,6 +195,35 @@ test('100 donors land in the seeded tenant only, through contracts', async () =>
     )
   }
   expect(revisions.every((r) => r.source === 'seed')).toBe(true)
+
+  // Identifier rows under the two types, findable by the list search.
+  const seededIds = donors.flatMap((d) =>
+    d.identifiers.map((x) => [d.clientKey, x.type, x.value]),
+  )
+  const rows = await t.run(async (ctx) => {
+    const types = await ctx.db.query('identifierTypes').collect()
+    return Promise.all(
+      (await ctx.db.query('contactIdentifiers').collect())
+        .filter((r) => r.tenantId === world.tenantId)
+        .map(async (r) => [
+          (await ctx.db.get(r.contactId))?.clientKey,
+          types.find((x) => x._id === r.typeId)?.name,
+          r.value,
+        ]),
+    )
+  })
+  expect(rows.sort()).toEqual(seededIds.sort())
+  const [, , value] = seededIds[0]
+  const hits = await asAdmin
+    .query(api.contacts.queries.list, {
+      tenantId: world.tenantId,
+      search: value,
+      includeArchived: true,
+    })
+    .then((r) => r.rows.map((c) => c._id))
+  expect(hits).toEqual([
+    contacts.find((c) => c.clientKey === seededIds[0][0])!._id,
+  ])
 })
 
 test('a rerun creates nothing and leaves the data alone', async () => {

@@ -1,8 +1,16 @@
 /**
  * The QC suite's seeded world (factory/plans/qc-suite.sv, step 3): per run
- * and per Playwright worker, two users who can sign in with a password and
- * two tenants, user A owning tenant A only and user B tenant B only, with
- * distinctive contact names so the isolation spec can look for leaks.
+ * and per Playwright worker, two tenants and four users who can sign in
+ * with a password: user A admin of tenant A only, user B admin of tenant B
+ * only, plus a staff and a viewer member of tenant A. Contact names are
+ * distinctive so the isolation spec can look for leaks.
+ *
+ * Identifiers (external-ids X5): A's Ada holds `shared` under the active
+ * type "Membership number", and carries the Member tag. In B the same type
+ * name holds `shared` on B's Ada, `bOnly` on B's Charles and `bReuse` on
+ * B's Trust, then is archived: B has no active type (the form hides the
+ * section there), A's search can prove B's values don't leak, and A can
+ * add `bReuse` without a clash (then removes it again).
  * Internal: run from the QC harness via the CLI, and only on deployments
  * with `QC_SEED_ENABLED=1` (it creates admins with a known password).
  * Re-running with the same run, worker and password returns the same world.
@@ -17,8 +25,20 @@ import type { Id } from '../_generated/dataModel'
 import { env, internalAction, internalMutation } from '../_generated/server'
 import { commandGroup, executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
-import { details, methods, relationshipType } from '../contacts/contracts'
-import { seedTags, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import {
+  details,
+  identifiers,
+  identifierType,
+  methods,
+  relationshipType,
+  tags,
+} from '../contacts/contracts'
+import {
+  ensureIdentifierTypes,
+  seedTags,
+  UK_RELATIONSHIP_TYPES,
+} from '../contacts/seed'
+import { normaliseTagName } from '../contacts/rules'
 import { insertTenant, tenantForSlug } from './tenants'
 
 const SIDES = [
@@ -26,7 +46,21 @@ const SIDES = [
   { suffix: 'b', label: 'Bravo' },
 ] as const
 
+/** Tenant A's members besides its admin, user A. */
+const MEMBERS = ['staff', 'viewer'] as const
+
+export const IDENTIFIER_TYPE = 'Membership number'
+
 const prefix = (runId: string, worker: number) => `r${runId}w${worker}`
+
+/**
+ * The seeded identifier values. One token each, with no name in it, so the
+ * full-text name search never matches them.
+ */
+export const qcIdentifiers = (runId: string, worker: number) => {
+  const base = prefix(runId, worker)
+  return { shared: `ID${base}`, bOnly: `ID${base}B`, bReuse: `ID${base}R` }
+}
 
 function requireEnabled() {
   if (env.QC_SEED_ENABLED !== '1') {
@@ -44,17 +78,24 @@ export const fixture = internalAction({
     ctx,
     { runId, worker, password },
   ): Promise<{
-    users: Array<{ email: string }>
+    /** a, b, then tenant A's staff and viewer. */
+    users: Array<{ email: string; role: 'admin' | 'staff' | 'viewer' }>
     tenants: Array<{
       slug: string
       tenantId: Id<'tenants'>
       contactIds: Array<Id<'contacts'>>
     }>
+    identifierType: string
+    identifiers: ReturnType<typeof qcIdentifiers>
   }> => {
     requireEnabled()
     const base = prefix(runId, worker)
+    const accounts = [
+      ...SIDES.map(({ suffix }) => ({ suffix, role: 'admin' as const })),
+      ...MEMBERS.map((role) => ({ suffix: `a-${role}`, role })),
+    ]
     const users = []
-    for (const { suffix } of SIDES) {
+    for (const { suffix, role } of accounts) {
       // createAccount doesn't copy the account id into the profile.
       const email = `qc-${base}-${suffix}@example.com`
       const { user } = await createAccount(ctx, {
@@ -62,18 +103,26 @@ export const fixture = internalAction({
         account: { id: email, secret: password },
         profile: { email, name: `${base}-${suffix} qc user` },
       })
-      users.push({ email, userId: user._id })
+      users.push({ email, role, userId: user._id })
     }
     const tenants = await ctx.runMutation(internal.platform.qcSeed.world, {
       runId,
       worker,
       userIds: users.map((u) => u.userId),
     })
-    return { users: users.map(({ email }) => ({ email })), tenants }
+    return {
+      users: users.map(({ email, role }) => ({ email, role })),
+      tenants,
+      identifierType: IDENTIFIER_TYPE,
+      identifiers: qcIdentifiers(runId, worker),
+    }
   },
 })
 
-/** Tenants, memberships, reference data and contacts for `fixture`'s users. */
+/**
+ * Tenants, memberships, reference data and contacts for `fixture`'s users:
+ * `userIds` is [a, b, ...MEMBERS of tenant A].
+ */
 export const world = internalMutation({
   args: {
     runId: v.string(),
@@ -113,6 +162,15 @@ export const world = internalMutation({
         name: `${label} ${base} qc group`,
         adminUserId: userId,
       })
+      if (suffix === 'a') {
+        for (const [j, role] of MEMBERS.entries()) {
+          await ctx.db.insert('memberships', {
+            tenantId,
+            userId: userIds[SIDES.length + j],
+            role,
+          })
+        }
+      }
       // Seeded inline so the world is complete on return; the jobs
       // insertTenant schedules then find the types and tags and do nothing.
 
@@ -168,6 +226,48 @@ export const world = internalMutation({
           { entityId: id, expected: 0, source: 'seed', group },
         )
         contactIds.push(id)
+      }
+
+      const { shared, bOnly, bReuse } = qcIdentifiers(runId, worker)
+      const typeId = (
+        await ensureIdentifierTypes(scoped, [IDENTIFIER_TYPE], group)
+      ).get(IDENTIFIER_TYPE)!
+      const held: Array<[Id<'contacts'>, string]> =
+        suffix === 'a'
+          ? [[contactIds[0], shared]]
+          : [
+              [contactIds[0], shared],
+              [contactIds[1], bOnly],
+              [contactIds[2], bReuse],
+            ]
+      for (const [contactId, value] of held) {
+        await executeContract(
+          scoped,
+          identifiers,
+          { identifiers: [{ typeId, value }] },
+          { entityId: contactId, expected: 0, source: 'seed', group },
+        )
+      }
+      if (suffix === 'a') {
+        const member = await scoped.db
+          .query('tags')
+          .withIndex('by_tenant_nameNormalized', (q) =>
+            q.eq('nameNormalized', normaliseTagName('Member')),
+          )
+          .unique()
+        await executeContract(
+          scoped,
+          tags,
+          { tags: [{ tagId: member!._id }] },
+          { entityId: contactIds[0], expected: 0, source: 'seed', group },
+        )
+      } else {
+        await executeContract(
+          scoped,
+          identifierType,
+          { name: IDENTIFIER_TYPE, isActive: false },
+          { entityId: typeId, expected: 0, source: 'seed', group },
+        )
       }
       out.push({ slug, tenantId, contactIds })
     }

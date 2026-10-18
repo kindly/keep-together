@@ -14,9 +14,12 @@ import type { FlowRecord, FlowStep } from './timing'
 // `expect` from here, not from @playwright/test.
 //
 // Per worker: an instance from the pool, its RTT, a freshly seeded world
-// (two users, two tenants, `r<run>w<n>-a|b`), and a storageState per user
-// from one UI sign-in each, which is also the timed `auth.signIn` flow.
-// Tests start signed in as user A on the worker's own instance.
+// (two tenants, `r<run>w<n>-a|b`; admins A and B, plus a staff and a
+// viewer member of tenant A), and a storageState per admin from one UI
+// sign-in each, which is also the timed `auth.signIn` flow. Staff and
+// viewer reuse A's storageState as their template (the keys name the
+// deployment, not the user). Tests start signed in as user A on the
+// worker's own instance.
 //
 // That storageState is a template, never loaded as is: every test context
 // gets its own Convex Auth session (`session`). Convex Auth rotates the
@@ -42,8 +45,13 @@ export interface Instance {
 }
 
 export interface World {
-  users: Array<{ email: string }>
+  /** a, b, then tenant A's staff and viewer. */
+  users: Array<{ email: string; role: 'admin' | 'staff' | 'viewer' }>
   tenants: Array<{ slug: string; tenantId: string; contactIds: Array<string> }>
+  /** The type A's Ada holds `shared` under (archived in B). */
+  identifierType: string
+  /** Seeded values: A's and B's Ada `shared`; B only `bOnly`, `bReuse`. */
+  identifiers: { shared: string; bOnly: string; bReuse: string }
 }
 
 export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>
@@ -51,8 +59,9 @@ export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>
 export interface QcUser {
   email: string
   password: string
-  /** The user's own tenant (A owns tenants[0], B tenants[1]). */
+  /** The user's tenant (A, staff, viewer: tenants[0]; B: tenants[1]). */
   slug: string
+  /** A signed-in storageState: a template for `session`, never loaded. */
   storageState: string
 }
 
@@ -100,7 +109,7 @@ interface WorkerFixtures {
   instance: Instance
   rttMs: number
   world: World
-  users: { a: QcUser; b: QcUser }
+  users: { a: QcUser; b: QcUser; staff: QcUser; viewer: QcUser }
 }
 
 interface TestFixtures {
@@ -207,7 +216,17 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         await context.close()
         return { email, password, slug, storageState }
       }
-      await use({ a: await signIn(0), b: await signIn(1) })
+      const a = await signIn(0)
+      const member = (role: 'staff' | 'viewer'): QcUser => {
+        const { email } = world.users.find((u) => u.role === role)!
+        return { ...a, email }
+      }
+      await use({
+        a,
+        b: await signIn(1),
+        staff: member('staff'),
+        viewer: member('viewer'),
+      })
     },
     { scope: 'worker' },
   ],

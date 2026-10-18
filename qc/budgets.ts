@@ -49,6 +49,7 @@ export const budgets = {
   'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 1200 },
   'contacts.nav': repeatable,
   'contacts.search': repeatable,
+  'contacts.searchIdentifier': repeatable,
   'contacts.showArchived': repeatable,
   'contacts.create': repeatable,
   'contact.save': repeatable,

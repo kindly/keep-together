@@ -7,11 +7,23 @@
  * The mix exercises the UI: individuals, organisations and households;
  * shared and malformed emails (warnings); addresses without postcodes or
  * abroad; archived contacts; pinned and archived notes; relationships of
- * every seeded type.
+ * every seeded type; external identifiers under two types, some people
+ * holding both.
  */
 import type { Payloads } from '../contacts/validators'
 
 export const DONOR_COUNT = 100
+
+/**
+ * The identifier types the donors' rows use. "External reference" is the
+ * name the X2 backfill gave the old single field, so instances seeded
+ * before X1 and reseeded since hold one type, not two.
+ */
+export const IDENTIFIER_TYPES = [
+  'External reference',
+  'Membership number',
+] as const
+export type IdentifierTypeName = (typeof IDENTIFIER_TYPES)[number]
 
 /** A relationship type, by its `labelAB` in contacts/seed's UK list. */
 export type RelationshipLabel =
@@ -30,11 +42,11 @@ export type DonorSpec = {
   methods: Payloads['methods']
   addresses: Payloads['addresses']
   /**
-   * An id from the group's old system (`LEGACY-nnnn`, on 20 % of people).
-   * Not written yet: X5 (external identifiers) seeds it as an identifier
-   * row. Kept here so the generated world stays the same.
+   * External identifiers: the group's old-system id (`LEGACY-nnnn`, on
+   * 20 % of people) and a membership number (`RCT-nnnn`, on every fourth
+   * individual), by type name.
    */
-  legacyId?: string
+  identifiers: Array<{ key: string; type: IdentifierTypeName; value: string }>
   archived: boolean
   notes: Array<{ body: string; pinned: boolean; archived: boolean }>
 }
@@ -383,9 +395,15 @@ export function generateDonors(seed = 20261017): {
           ? `2025-0${1 + r.int(9)}-1${r.int(10)}`
           : undefined,
       },
-      legacyId: r.chance(0.2)
-        ? `LEGACY-${String(nextExternal++).padStart(4, '0')}`
-        : undefined,
+      identifiers: r.chance(0.2)
+        ? [
+            {
+              key: key(i, 'x', 0),
+              type: 'External reference',
+              value: `LEGACY-${String(nextExternal++).padStart(4, '0')}`,
+            },
+          ]
+        : [],
       methods: { emails, phones },
       addresses: { addresses: r.chance(0.82) ? [address(i, 'home')] : [] },
       archived: false,
@@ -410,6 +428,7 @@ export function generateDonors(seed = 20261017): {
         name,
         isDeceased: false,
       },
+      identifiers: [],
       methods: {
         emails:
           kind === 'organization' && r.chance(0.85)
@@ -569,6 +588,19 @@ export function generateDonors(seed = 20261017): {
       },
     ]
   }
+
+  // Membership numbers: every fourth individual, in order. No random draw,
+  // so the rest of the world is the same as before they were added.
+  let members = 0
+  donors.forEach((donor, i) => {
+    if (donor.details.kind !== 'individual') return
+    if (members++ % 4 !== 0) return
+    donor.identifiers.push({
+      key: key(i, 'x', 1),
+      type: 'Membership number',
+      value: `RCT-${String(members).padStart(4, '0')}`,
+    })
+  })
 
   // Archived: a handful of contacts nobody should mail any more.
   for (let n = 0; n < 7; n++) donors[r.int(DONOR_COUNT)].archived = true

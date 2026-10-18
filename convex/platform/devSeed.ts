@@ -9,17 +9,26 @@
  * An `adminEmail` that matches a signed-up user makes that user the admin,
  * so you can sign in and open the demo; otherwise a password-less user is
  * created for it.
+ *
+ * The contacts carry external identifiers under two types. Pass
+ * `"identifiers":false` for a group with no types, where the contact form
+ * hides its Identifiers section.
  */
 import { v } from 'convex/values'
 import { internalMutation, internalQuery } from '../_generated/server'
-import { executeContract } from '../lib/contracts'
+import { commandGroup, executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
-import { details, methods } from '../contacts/contracts'
+import { details, identifiers, methods } from '../contacts/contracts'
+import { ensureIdentifierTypes } from '../contacts/seed'
 import { insertTenant } from './tenants'
 
 export const demoTenant = internalMutation({
-  args: { slug: v.string(), adminEmail: v.optional(v.string()) },
-  handler: async (ctx, { slug, adminEmail }) => {
+  args: {
+    slug: v.string(),
+    adminEmail: v.optional(v.string()),
+    identifiers: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { slug, adminEmail, identifiers: withIds = true }) => {
     const email = adminEmail?.trim() ?? `${slug}-admin@example.com`
     const existing = await ctx.db
       .query('users')
@@ -36,13 +45,34 @@ export const demoTenant = internalMutation({
     })
 
     const scoped = { db: scopeWriter(ctx, tenantId), userId }
+    const group = await commandGroup(scoped, 'dev seed')
+    const types = withIds
+      ? await ensureIdentifierTypes(
+          scoped,
+          ['Membership number', 'Old CRM id'],
+          group,
+        )
+      : null
     const people = [
-      ['Ada', 'Lovelace', 'ada@example.com'],
-      ['Charles', 'Babbage', 'charles@example.com'],
-      ['Mary', 'Somerville', 'mary@example.com'],
+      [
+        'Ada',
+        'Lovelace',
+        'ada@example.com',
+        [
+          ['Membership number', 'M-0001'],
+          ['Old CRM id', 'CRM-1815'],
+        ],
+      ],
+      [
+        'Charles',
+        'Babbage',
+        'charles@example.com',
+        [['Membership number', 'M-0002']],
+      ],
+      ['Mary', 'Somerville', 'mary@example.com', []],
     ] as const
     const contactIds = []
-    for (const [firstName, lastName, address] of people) {
+    for (const [firstName, lastName, address, ids] of people) {
       const { id } = await executeContract(
         scoped,
         details,
@@ -55,14 +85,27 @@ export const demoTenant = internalMutation({
           name: '',
           isDeceased: false,
         },
-        { source: 'seed' },
+        { source: 'seed', group },
       )
       await executeContract(
         scoped,
         methods,
         { emails: [{ label: 'home', address, isPrimary: true }], phones: [] },
-        { entityId: id, expected: 0, source: 'seed' },
+        { entityId: id, expected: 0, source: 'seed', group },
       )
+      if (types && ids.length) {
+        await executeContract(
+          scoped,
+          identifiers,
+          {
+            identifiers: ids.map(([type, value]) => ({
+              typeId: types.get(type)!,
+              value,
+            })),
+          },
+          { entityId: id, expected: 0, source: 'seed', group },
+        )
+      }
       contactIds.push(id)
     }
     return { tenantId, userId, contactIds }

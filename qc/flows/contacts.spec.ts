@@ -150,6 +150,42 @@ test.describe('contacts list', () => {
   )
 
   test(
+    'search by exact identifier opens the contact',
+    { annotation: [LIST, CONTACT] },
+    async ({ page, flow, users, world }) => {
+      // The seeded Ada's identifier (convex/platform/qcSeed.ts); B's Ada
+      // holds the same value, and must not show here.
+      const { shared } = world.identifiers
+      const adaId = world.tenants[0].contactIds[0]
+      const adaHref = `${listPath(users.a.slug)}/${adaId}`
+      await page.goto(listPath(users.a.slug))
+      const search = page.getByPlaceholder('Search by name')
+      await flow(page, 'contacts.searchIdentifier', {
+        before: async () => {
+          await search.fill('')
+          await expect(rows(page).nth(1)).toBeVisible()
+        },
+        // Typed with different case and spaces: matching is normalised.
+        action: () => search.fill(`  ${shared.toLowerCase()} `),
+        until: (href) => {
+          const links = [...document.querySelectorAll('main ul li a')]
+          return links.length === 1 && links[0].getAttribute('href') === href
+        },
+        arg: adaHref,
+      })
+      await rows(page).first().click()
+      await expect(page).toHaveURL(adaHref)
+      await expect(
+        page
+          .locator('section', {
+            has: page.getByRole('heading', { name: 'Identifiers' }),
+          })
+          .getByText(shared, { exact: true }),
+      ).toBeVisible()
+    },
+  )
+
+  test(
     'show archived reveals an archived contact',
     { annotation: [LIST, CONTACT] },
     async ({ page, flow, users }) => {

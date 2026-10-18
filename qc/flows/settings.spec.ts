@@ -1,5 +1,5 @@
 import { expect, test } from '../fixtures'
-import { section, uniqueName, want } from './contact.helpers'
+import { secondTab, section, uniqueName, want } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
 // Settings (external-ids X4a): the admin-only identifier types page
@@ -152,4 +152,40 @@ test.describe('identifier types', { annotation: IDENTIFIERS_ROUTE }, () => {
       section(page, 'In use').getByText(current, { exact: true }),
     ).toBeVisible()
   })
+})
+
+test.describe('settings are for admins only', () => {
+  for (const role of ['staff', 'viewer'] as const) {
+    test(`${role}: no Settings link, and the page says admins only`, async ({
+      browser,
+      baseURL,
+      session,
+      users,
+    }) => {
+      test
+        .info()
+        .annotations.push(
+          { type: 'route', description: '/t/$slug/contacts/' },
+          IDENTIFIERS_ROUTE,
+        )
+      const user = users[role]
+      const other = await secondTab(browser, baseURL!, await session(user))
+      await other.goto(`/t/${user.slug}/contacts`)
+      await expect(
+        other.getByRole('link', { name: 'Contacts', exact: true }),
+      ).toBeVisible()
+      await expect(
+        other.getByRole('link', { name: 'Tags', exact: true }),
+      ).toBeVisible()
+      await expect(
+        other.getByRole('link', { name: 'Settings', exact: true }),
+      ).toHaveCount(0)
+      await other.goto(identifiersPath(user.slug))
+      await expect(
+        other.getByText('Only admins of this group can change its settings.'),
+      ).toBeVisible()
+      await expect(other.getByLabel('New identifier type')).toHaveCount(0)
+      await other.context().close()
+    })
+  }
 })

@@ -232,3 +232,51 @@ test.describe('identifiers on a contact', { annotation: CONTACT_ROUTE }, () => {
     await other.context().close()
   })
 })
+
+test.describe('as a viewer', { annotation: CONTACT_ROUTE }, () => {
+  test('identifiers and tags show read-only, with no Settings link', async ({
+    browser,
+    baseURL,
+    session,
+    users,
+    world,
+  }) => {
+    const viewer = await secondTab(
+      browser,
+      baseURL!,
+      await session(users.viewer),
+    )
+    const { shared } = world.identifiers
+    await viewer.goto(
+      `/t/${users.viewer.slug}/contacts/${world.tenants[0].contactIds[0]}`,
+    )
+    await expect(
+      identifiers(viewer).getByText(shared, { exact: true }),
+    ).toBeVisible()
+    await expect(identifiers(viewer)).toContainText(world.identifierType)
+    await expect(
+      identifiers(viewer).getByRole('button', {
+        name: `remove identifier ${shared}`,
+      }),
+    ).toBeDisabled()
+    await expect(
+      identifiers(viewer).getByRole('button', { name: 'add' }),
+    ).toBeDisabled()
+
+    const tags = section(viewer, 'Tags')
+    await expect(tags.getByText('Member', { exact: true })).toBeVisible()
+    await expect(
+      tags.getByRole('button', { name: 'remove tag Member' }),
+    ).toBeDisabled()
+    await expect(tags.getByLabel('Add tag')).toBeDisabled()
+
+    await expect(saveButton(viewer)).toHaveCount(0)
+    await expect(
+      viewer.getByRole('link', { name: 'Contacts', exact: true }),
+    ).toBeVisible()
+    await expect(
+      viewer.getByRole('link', { name: 'Settings', exact: true }),
+    ).toHaveCount(0)
+    await viewer.context().close()
+  })
+})

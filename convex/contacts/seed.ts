@@ -4,7 +4,9 @@
 import { commandGroup, executeContract } from '../lib/contracts'
 import type { CommandGroup, ContractCtx } from '../lib/contracts'
 import { internalTenantMutation } from '../lib/tenancy'
-import { relationshipType, tag } from './contracts'
+import type { Id } from '../_generated/dataModel'
+import { identifierType, relationshipType, tag } from './contracts'
+import { normaliseTagName } from './rules'
 
 type Kind = 'individual' | 'organization' | 'household'
 
@@ -71,3 +73,39 @@ export const tags = internalTenantMutation({
   args: {},
   handler: async (ctx) => ({ seeded: await seedTags(ctx) }),
 })
+
+/**
+ * Identifier types by name, created (active) where the tenant has none of
+ * that name, under `group` or else a group of their own made only if one
+ * is created. Only the seeds call this: a real group starts with no types
+ * (external-ids g2q4).
+ */
+export async function ensureIdentifierTypes(
+  ctx: ContractCtx,
+  names: ReadonlyArray<string>,
+  group?: CommandGroup,
+): Promise<Map<string, Id<'identifierTypes'>>> {
+  const ids = new Map<string, Id<'identifierTypes'>>()
+  let g = group
+  for (const name of names) {
+    const existing = await ctx.db
+      .query('identifierTypes')
+      .withIndex('by_tenant_nameNormalized', (q) =>
+        q.eq('nameNormalized', normaliseTagName(name)),
+      )
+      .unique()
+    if (existing) {
+      ids.set(name, existing._id)
+      continue
+    }
+    g ??= await commandGroup(ctx, 'seed identifier types')
+    const { id } = await executeContract(
+      ctx,
+      identifierType,
+      { name, isActive: true },
+      { source: 'seed', group: g },
+    )
+    ids.set(name, id)
+  }
+  return ids
+}

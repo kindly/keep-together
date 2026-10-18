@@ -1,5 +1,12 @@
 import { expect, test } from '../fixtures'
 import { runId } from '../timing'
+import {
+  contactForm,
+  createContact,
+  saved,
+  section,
+  uniqueName,
+} from './contact.helpers'
 
 // The mandatory isolation spec (factory/plans/qc-suite.sv, "Isolation";
 // CLAUDE.md rule 6). Signed in as user A, who belongs to tenant A only;
@@ -90,6 +97,60 @@ test.describe('isolation', () => {
       await search.fill('Ada')
       await expect(rows).toHaveCount(1)
     }
+  })
+
+  test("B's identifiers are not found from A", async ({
+    page,
+    users,
+    world,
+  }) => {
+    route('/t/$slug/contacts/')
+    const { shared, bOnly, bReuse } = world.identifiers
+    await page.goto(`/t/${users.a.slug}/contacts`)
+    const rows = page.getByRole('main').getByRole('listitem')
+    const search = page.getByPlaceholder('Search by name')
+    const ada = `/t/${users.a.slug}/contacts/${world.tenants[0].contactIds[0]}`
+    // A value both groups hold: only A's own contact.
+    await search.fill(shared)
+    await expect(rows).toHaveCount(1)
+    await expect(page.locator('main ul li a')).toHaveAttribute('href', ada)
+    // Values only B holds: nothing. (Back to `shared` between them, so we
+    // can tell when each new result has arrived.)
+    for (const value of [bOnly, bReuse]) {
+      await search.fill(value)
+      await expect(page.getByText('No contacts yet.')).toBeVisible()
+      await expect(page.locator('body')).not.toContainText('Bravo')
+      await search.fill(shared)
+      await expect(rows).toHaveCount(1)
+    }
+  })
+
+  test('a value B holds saves in A without a clash', async ({
+    page,
+    users,
+    world,
+  }) => {
+    route('/t/$slug/contacts/$contactId')
+    const { bReuse } = world.identifiers
+    await createContact(page, users.a.slug, uniqueName('noclash'))
+    const identifiers = section(page, 'Identifiers')
+    await identifiers.getByRole('button', { name: 'add' }).click()
+    const row = identifiers.locator('ul > li').last()
+    await row
+      .getByLabel('Identifier type')
+      .selectOption({ label: world.identifierType })
+    await row.getByLabel('Identifier value').fill(bReuse)
+    await row.getByLabel('Identifier value').press('Tab')
+    await expect(identifiers.getByText(bReuse, { exact: true })).toBeVisible()
+    await expect(saved(page)).toBeVisible()
+    await expect(contactForm(page).getByText(/to fix/)).toHaveCount(0)
+    await expect(page.locator('body')).not.toContainText('Bravo')
+    // Put it back: the isolation search above expects A to hold none.
+    await identifiers
+      .getByRole('button', { name: `remove identifier ${bReuse}` })
+      .click()
+    await expect(identifiers.getByText('No identifiers.')).toBeVisible()
+    await expect(saved(page)).toBeVisible()
   })
 
   test("A's groups list shows only A's group", async ({ page, users }) => {
