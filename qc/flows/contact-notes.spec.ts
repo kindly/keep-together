@@ -215,9 +215,59 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
     await expect(leave).toBeHidden()
     await page.goForward()
     await page.waitForURL(url)
-    await expect(items(page).nth(0).locator('p')).toHaveText(
-      'saved going back',
-    )
+    await expect(items(page).nth(0).locator('p')).toHaveText('saved going back')
+  })
+
+  test('leaving waits for a slow save, and says so', async ({
+    page,
+    browser,
+    baseURL,
+    users,
+    session,
+  }) => {
+    test.info().annotations.push({
+      type: 'route',
+      description: '/t/$slug/tags',
+    })
+    const url = await createContact(page, users.a.slug, uniqueName('slow'))
+    await addNote(page, 'before')
+    // The other tab's mutations are held 1.5 s on the way out while
+    // `slow` is set: a slow link, as far as the page can tell.
+    const other = await secondTab(browser, baseURL!, await session())
+    let slow = false
+    await other.context().routeWebSocket(/.*/, (ws) => {
+      const server = ws.connectToServer()
+      ws.onMessage((m) => {
+        if (slow && typeof m === 'string' && m.includes('"Mutation"'))
+          setTimeout(() => server.send(m), 1500)
+        else server.send(m)
+      })
+      server.onMessage((m) => ws.send(m))
+    })
+    try {
+      await other.goto(url)
+      const top = items(other).nth(0)
+      await top.getByRole('button', { name: 'edit' }).click()
+      await top.getByRole('textbox').fill('saved before leaving')
+      slow = true
+      await other.getByRole('link', { name: 'Tags', exact: true }).click()
+      const status = other.getByRole('status').filter({
+        hasText: 'Saving before you leave…',
+      })
+      await expect(status).toBeVisible()
+      expect(other.url()).toBe(url)
+      // The save lands: the page leaves with no question.
+      await other.waitForURL(/\/tags$/)
+      await expect(status).toBeHidden()
+      await expect(
+        other.getByRole('alertdialog', { name: /You have unsaved changes/ }),
+      ).toBeHidden()
+      await expect(items(page).nth(0).locator('p')).toHaveText(
+        'saved before leaving',
+      )
+    } finally {
+      await other.context().close()
+    }
   })
 
   test('closing the tab with unsaved work gets the browser prompt', async ({
