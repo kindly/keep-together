@@ -1,6 +1,7 @@
 # 0020 — Accounts: operator-created tenants, tenant roles, supporter logins
 
-Status: accepted (2026-10-18; proposed 2026-10-17) · from the logins & roles plan
+Status: accepted (2026-10-18; proposed 2026-10-17; amended 2026-10-18:
+list management by staff is a tenant switch, see decision 2) · from the logins & roles plan
 (`factory/plans/auth-roles.sv`, confirmed in grill round 3). **Amends
 [0017](0017-convex-react-shared-tenancy.md)** on authentication. The
 auth-library part (decision 4) is conditional on spike A0
@@ -59,12 +60,14 @@ team is named operators with 2FA, and the processor DPA says so.
 The rule is structural, like rule 6:
 - `tenantQuery` defaults to `minRole: 'viewer'` and `tenantMutation` to
   `minRole: 'staff'`; admin-only functions declare `minRole: 'admin'`.
-- One check depends on a tenant preference, so it can't be a static
-  `minRole`: managing the tag and identifier type lists is for admins, and
-  for staff only while the admin switch "staff can manage tags and
-  identifier types" is on (off by default). `saveTag` and
-  `saveIdentifierType` call `requireListManager` (`platform/preferences`)
-  first; the roles meta-test lists them in `LIST_MANAGERS`.
+- *Amendment (2026-10-18), the settings-tabs task:* one check depends on
+  a tenant preference, so it can't be a static `minRole`: managing the tag
+  and identifier type lists is for admins, and for staff only while the
+  admin switch "staff can manage tags and identifier types" is on (off by
+  default). Contracts over those lists are marked `managesList`, and
+  `executeContract` calls `requireListManager` (`convex/lib/lists.ts`) for
+  them on every path, restore included; the roles meta-test lists the
+  save functions in `LIST_MANAGERS`.
 - A tenant always has at least one admin.
 - Schema: `owner` → `admin` (loosen → backfill → tighten).
 

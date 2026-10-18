@@ -179,7 +179,7 @@ export const world = internalMutation({
       // Seeded inline so the world is complete on return; the jobs
       // insertTenant schedules then find the types and tags and do nothing.
 
-      const scoped = { db: scopeWriter(ctx, tenantId), userId }
+      const scoped = { db: scopeWriter(ctx, tenantId), userId, role: null }
       const group = await commandGroup(scoped, 'qc seed')
       for (const [labelAB, labelBA, kindA, kindB] of UK_RELATIONSHIP_TYPES) {
         await executeContract(

@@ -333,7 +333,7 @@ describe('restore to a moment', () => {
     const run = await f.t.run(async (ctx) => {
       const { db, reads } = counting(scopeWriter(ctx, tenantId))
       const result = await restoreEntityTo(
-        { db, userId: f.a.userId },
+        { db, userId: f.a.userId, role: null },
         contactContracts,
         'contacts',
         id,

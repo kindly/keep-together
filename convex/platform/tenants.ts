@@ -9,7 +9,8 @@ import type { Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
 import { internalMutation, internalQuery, query } from '../_generated/server'
 import { requireMember, roleValidator } from '../lib/tenancy'
-import { mayManageLists, preferencesFor } from './preferences'
+import { mayManageLists } from '../lib/lists'
+import { preferencesFor } from './preferences'
 import type { Role } from '../lib/tenancy'
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/

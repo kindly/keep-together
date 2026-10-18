@@ -61,7 +61,12 @@ function IdentifierTypesPage() {
   const [busy, setBusy] = useState(false)
 
   if (!canManage) {
-    return <p>Only admins of this group can change its settings.</p>
+    return (
+      <p>
+        Only admins (or staff, if an admin allows it in Settings) can change
+        identifier types.
+      </p>
+    )
   }
 
   async function create(e: FormEvent) {

@@ -186,7 +186,7 @@ export const tenant = internalMutation({
     }
     // Seeded inline so the donors can link at once; the jobs insertTenant
     // schedules then find the types and tags and do nothing.
-    const scoped = { db: scopeWriter(ctx, tenantId), userId: null }
+    const scoped = { db: scopeWriter(ctx, tenantId), userId: null, role: null }
     const types = await scoped.db
       .query('relationshipTypes')
       .withIndex('by_tenant')
@@ -223,7 +223,7 @@ export const donors = internalMutation({
   handler: async (ctx, { tenantId, actor, from, to }) => {
     requireEnabled()
     const { donors: specs, relationships } = generateDonors()
-    const scoped = { db: scopeWriter(ctx, tenantId), userId: actor }
+    const scoped = { db: scopeWriter(ctx, tenantId), userId: actor, role: null }
     const idOf = async (i: number) => {
       const row = await scoped.db
         .query('contacts')

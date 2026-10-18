@@ -308,7 +308,11 @@ describe('notes', () => {
 
   test('forContact reports truncation past 200', async () => {
     await f.t.run(async (ctx) => {
-      const c = { db: scopeWriter(ctx, f.a.tenantId), userId: f.a.userId }
+      const c = {
+        db: scopeWriter(ctx, f.a.tenantId),
+        userId: f.a.userId,
+        role: null,
+      }
       for (let i = 0; i < 201; i++) {
         await executeContract(
           c,

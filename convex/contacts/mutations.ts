@@ -26,7 +26,6 @@ import {
   tags,
 } from './contracts'
 import { BULK_TAG_LIMIT } from './rules'
-import { requireListManager } from '../platform/preferences'
 import {
   addressesFields,
   archiveFields,
@@ -106,7 +105,8 @@ export const saveTags = tenantMutation({
 
 /**
  * Create a tag (no `id`) or rename / archive / reactivate one. Admins, and
- * staff when the tenant lets them manage lists (platform/preferences).
+ * staff when the tenant lets them manage lists (the contract is
+ * `managesList`; lib/lists).
  */
 export const saveTag = tenantMutation({
   args: {
@@ -115,7 +115,6 @@ export const saveTag = tenantMutation({
     ...tagFields,
   },
   handler: async (ctx, { id, expected, ...payload }) => {
-    await requireListManager(ctx)
     if (id !== undefined && expected === undefined) {
       // Without it two admins renaming one tag silently overwrite each other.
       throw invalid([
@@ -132,8 +131,8 @@ export const saveTag = tenantMutation({
 
 /**
  * Create an identifier type (no `id`) or rename / archive / reactivate one.
- * Admins, and staff when the tenant lets them manage lists
- * (platform/preferences): types are managed on the settings page; the
+ * Admins, and staff when the tenant lets them manage lists (the contract
+ * is `managesList`; lib/lists): types are managed on the settings page; the
  * contact form's picker only selects (external-ids plan, g2q3). Never
  * deleted.
  */
@@ -144,7 +143,6 @@ export const saveIdentifierType = tenantMutation({
     ...identifierTypeFields,
   },
   handler: async (ctx, { id, expected, ...payload }) => {
-    await requireListManager(ctx)
     if (id !== undefined && expected === undefined) {
       throw invalid([
         { field: 'expected', message: 'An update needs the version it edits' },

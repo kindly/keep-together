@@ -33,7 +33,7 @@ const runContract = <TArgs>(
   fn: (ctx: Parameters<typeof executeContract>[0]) => Promise<TArgs>,
 ) =>
   f.t.run((ctx) =>
-    fn({ db: scopeWriter(ctx, who.tenantId), userId: who.userId }),
+    fn({ db: scopeWriter(ctx, who.tenantId), userId: who.userId, role: null }),
   )
 const saveType = (
   who: Tenant,

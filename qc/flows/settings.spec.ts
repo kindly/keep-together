@@ -244,7 +244,9 @@ test.describe('settings for staff and viewers', () => {
 
       await other.goto(identifiersPath(user.slug))
       await expect(
-        other.getByText('Only admins of this group can change its settings.'),
+        other.getByText(
+          'Only admins (or staff, if an admin allows it in Settings) can change identifier types.',
+        ),
       ).toBeVisible()
       await expect(other.getByLabel('New identifier type')).toHaveCount(0)
       await other.context().close()
@@ -304,7 +306,9 @@ test.describe('staff can manage lists', () => {
       await toggle.click()
       await expect(sw).not.toBeChecked()
       await expect(
-        staff.getByText('Only admins of this group can change its settings.'),
+        staff.getByText(
+          'Only admins (or staff, if an admin allows it in Settings) can change identifier types.',
+        ),
       ).toBeVisible()
       await expect(tabs(staff).getByRole('link')).toHaveText(['Tags'])
     } finally {

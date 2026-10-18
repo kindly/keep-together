@@ -201,3 +201,74 @@ describe('staff can manage lists', () => {
     ])
   })
 })
+
+describe('restoring a list revision', () => {
+  test('needs a list manager: staff only while on, admins always', async () => {
+    const { t, a } = await setup()
+    const staff = await member(t, a.tenantId, 'staff')
+    const viewer = await member(t, a.tenantId, 'viewer')
+    // An old name to go back to, for a tag and an identifier type.
+    const tagId = (
+      await a.as.query(api.contacts.queries.tags, { tenantId: a.tenantId })
+    ).find((x) => x.name === 'Member')!._id
+    await a.as.mutation(api.contacts.mutations.saveTag, {
+      tenantId: a.tenantId,
+      id: tagId,
+      expected: 0,
+      name: 'Members',
+      isActive: true,
+    })
+    const { id: typeId } = await a.as.mutation(
+      api.contacts.mutations.saveIdentifierType,
+      { tenantId: a.tenantId, name: 'Old CRM id', isActive: true },
+    )
+    await a.as.mutation(api.contacts.mutations.saveIdentifierType, {
+      tenantId: a.tenantId,
+      id: typeId,
+      expected: 0,
+      name: 'Legacy id',
+      isActive: false,
+    })
+    const first = (entityId: string) =>
+      t.run(async (ctx) => {
+        const rows = await ctx.db
+          .query('revisions')
+          .withIndex('by_tenant_entity', (q) => q.eq('tenantId', a.tenantId))
+          .collect()
+        return rows.find((r) => r.entityId === entityId && r.counter === 0)!._id
+      })
+    const revisions = [await first(tagId), await first(typeId)]
+    const restore = (as: Caller, revisionId: (typeof revisions)[number]) =>
+      as.mutation(api.contacts.mutations.restoreRevision, {
+        tenantId: a.tenantId,
+        revisionId,
+      })
+
+    for (const revisionId of revisions) {
+      expect(await errorData(restore(staff, revisionId))).toEqual({
+        kind: 'forbidden',
+      })
+      expect(await errorData(restore(viewer, revisionId))).toEqual({
+        kind: 'forbidden',
+      })
+      await restore(a.as, revisionId)
+    }
+    await set(a.as, a.tenantId, true)
+    for (const revisionId of revisions) await restore(staff, revisionId)
+    expect(await errorData(restore(viewer, revisions[0]))).toEqual({
+      kind: 'forbidden',
+    })
+
+    const tags = await staff.query(api.contacts.queries.tags, {
+      tenantId: a.tenantId,
+    })
+    expect(tags.map((x) => x.name)).toContain('Member')
+    const types = await staff.query(api.contacts.queries.listIdentifierTypes, {
+      tenantId: a.tenantId,
+      includeInactive: true,
+    })
+    expect(types.map((x) => [x.name, x.isActive])).toEqual([
+      ['Old CRM id', true],
+    ])
+  })
+})

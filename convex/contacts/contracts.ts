@@ -157,9 +157,7 @@ async function reconcile(
     ? [
         known,
         await Promise.all(
-          rows
-            .filter((r) => !known.some((d) => d.key === r.key))
-            .map(lookup),
+          rows.filter((r) => !known.some((d) => d.key === r.key)).map(lookup),
         ),
       ]
     : await Promise.all([
@@ -331,6 +329,7 @@ export const tag = defineContract({
   name: 'contacts.tag',
   entity: 'tags',
   version: 1,
+  managesList: true,
   counter: 'saveVersion',
   project: projectTag,
   fields: tagFields,
@@ -459,6 +458,7 @@ export const identifierType = defineContract({
   name: 'contacts.identifierType',
   entity: 'identifierTypes',
   version: 1,
+  managesList: true,
   counter: 'saveVersion',
   fields: identifierTypeFields,
   prepare: prepareIdentifierType,

@@ -44,7 +44,7 @@ export const demoTenant = internalMutation({
       adminUserId: userId,
     })
 
-    const scoped = { db: scopeWriter(ctx, tenantId), userId }
+    const scoped = { db: scopeWriter(ctx, tenantId), userId, role: null }
     const group = await commandGroup(scoped, 'dev seed')
     const types = withIds
       ? await ensureIdentifierTypes(

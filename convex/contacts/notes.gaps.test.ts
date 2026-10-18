@@ -98,7 +98,11 @@ const bulk = (
   specs: Array<{ body: string; pinned?: boolean; archived?: boolean }>,
 ) =>
   f.t.run(async (ctx) => {
-    const c = { db: scopeWriter(ctx, f.a.tenantId), userId: f.a.userId }
+    const c = {
+      db: scopeWriter(ctx, f.a.tenantId),
+      userId: f.a.userId,
+      role: null,
+    }
     const ids: Array<Id<'contactNotes'>> = []
     for (const s of specs) {
       const { id } = await executeContract(
