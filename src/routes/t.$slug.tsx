@@ -60,23 +60,13 @@ function Resolved({ slug }: { slug: string }) {
               Contacts
             </Link>
             <Link
-              to="/t/$slug/tags"
+              to="/t/$slug/settings"
               params={{ slug }}
               className="text-sm hover:underline"
               activeProps={{ className: 'text-sm font-medium underline' }}
             >
-              Tags
+              Settings
             </Link>
-            {tenant.role === 'admin' && (
-              <Link
-                to="/t/$slug/settings/identifiers"
-                params={{ slug }}
-                className="text-sm hover:underline"
-                activeProps={{ className: 'text-sm font-medium underline' }}
-              >
-                Settings
-              </Link>
-            )}
           </nav>
         </header>
         <ContactQueryCache>

@@ -80,6 +80,7 @@ export const budgets = {
   'tags.archive': repeatable,
   'tags.filter': repeatable,
   'settings.nav': repeatable,
+  'settings.tab': repeatable,
   'settings.identifierTypes.create': repeatable,
   'settings.identifierTypes.rename': repeatable,
   'settings.identifierTypes.archive': repeatable,

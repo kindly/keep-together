@@ -60,11 +60,7 @@ function IdentifierTypesPage() {
   const [busy, setBusy] = useState(false)
 
   if (!isAdmin) {
-    return (
-      <main className="mx-auto max-w-3xl p-6">
-        <p>Only admins of this group can change its settings.</p>
-      </main>
-    )
+    return <p>Only admins of this group can change its settings.</p>
   }
 
   async function create(e: FormEvent) {
@@ -85,10 +81,9 @@ function IdentifierTypesPage() {
   const archived = (types ?? []).filter((t) => !t.isActive)
 
   return (
-    <main className="mx-auto flex max-w-3xl flex-col gap-6 p-6">
+    <div className="flex flex-col gap-6">
       <div>
-        <p className="text-sm text-neutral-500">Settings</p>
-        <h1 className="text-xl font-semibold">Identifier types</h1>
+        <h2 className="text-lg font-semibold">Identifier types</h2>
         <p className="mt-1 text-sm text-neutral-600">
           The kinds of reference other systems use for a contact, such as an old
           CRM's id or a membership number. Contacts can then carry them in their
@@ -144,7 +139,7 @@ function IdentifierTypesPage() {
           )}
         </>
       )}
-    </main>
+    </div>
   )
 }
 
@@ -161,7 +156,7 @@ function TypeList({
 }) {
   return (
     <section>
-      <h2 className="text-lg font-medium">{title}</h2>
+      <h3 className="font-medium">{title}</h3>
       {note && <p className="text-sm text-neutral-500">{note}</p>}
       {types.length === 0 ? (
         <p className="mt-2 text-sm text-neutral-500">{empty}</p>

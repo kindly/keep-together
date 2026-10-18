@@ -237,7 +237,7 @@ test.describe('identifiers on a contact', { annotation: CONTACT_ROUTE }, () => {
 })
 
 test.describe('as a viewer', { annotation: CONTACT_ROUTE }, () => {
-  test('identifiers and tags show read-only, with no Settings link', async ({
+  test('identifiers and tags show read-only', async ({
     browser,
     baseURL,
     session,
@@ -277,9 +277,6 @@ test.describe('as a viewer', { annotation: CONTACT_ROUTE }, () => {
     await expect(
       viewer.getByRole('link', { name: 'Contacts', exact: true }),
     ).toBeVisible()
-    await expect(
-      viewer.getByRole('link', { name: 'Settings', exact: true }),
-    ).toHaveCount(0)
     await viewer.context().close()
   })
 })

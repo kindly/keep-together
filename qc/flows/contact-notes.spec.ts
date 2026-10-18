@@ -165,7 +165,7 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
   }) => {
     test.info().annotations.push({
       type: 'route',
-      description: '/t/$slug/tags',
+      description: '/t/$slug/settings/tags',
     })
     const url = await createContact(page, users.a.slug, uniqueName('leave'))
     await addNote(page, 'before')
@@ -175,8 +175,8 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
     // Clicking a link blurs the editor: it saves on the way, no question.
     await top.getByRole('button', { name: 'edit' }).click()
     await top.getByRole('textbox').fill('saved on the way out')
-    await page.getByRole('link', { name: 'Tags', exact: true }).click()
-    await page.waitForURL(/\/tags$/)
+    await page.getByRole('link', { name: 'Settings', exact: true }).click()
+    await page.waitForURL(/\/settings\/tags$/)
     await expect(leave).toBeHidden()
     // Back inside the app (same document, so the router sees it).
     await page.goBack()
@@ -197,10 +197,10 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
     expect(page.url()).toBe(url)
     await expect(top.getByRole('textbox')).toHaveValue(over)
 
-    await page.getByRole('link', { name: 'Tags', exact: true }).click()
+    await page.getByRole('link', { name: 'Settings', exact: true }).click()
     await expect(leave).toBeVisible()
     await leave.getByRole('button', { name: 'Leave anyway' }).click()
-    await page.waitForURL(/\/tags$/)
+    await page.waitForURL(/\/settings\/tags$/)
     await page.goBack()
     await page.waitForURL(url)
     await expect(items(page).nth(0).locator('p')).toHaveText(
@@ -227,7 +227,7 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
   }) => {
     test.info().annotations.push({
       type: 'route',
-      description: '/t/$slug/tags',
+      description: '/t/$slug/settings/tags',
     })
     const url = await createContact(page, users.a.slug, uniqueName('slow'))
     await addNote(page, 'before')
@@ -250,14 +250,14 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
       await top.getByRole('button', { name: 'edit' }).click()
       await top.getByRole('textbox').fill('saved before leaving')
       slow = true
-      await other.getByRole('link', { name: 'Tags', exact: true }).click()
+      await other.getByRole('link', { name: 'Settings', exact: true }).click()
       const status = other.getByRole('status').filter({
         hasText: 'Saving before you leave…',
       })
       await expect(status).toBeVisible()
       expect(other.url()).toBe(url)
       // The save lands: the page leaves with no question.
-      await other.waitForURL(/\/tags$/)
+      await other.waitForURL(/\/settings\/tags$/)
       await expect(status).toBeHidden()
       await expect(
         other.getByRole('alertdialog', { name: /You have unsaved changes/ }),

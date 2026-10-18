@@ -10,14 +10,15 @@ import {
 } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
-// Tags (contact-model S5): the tags page (create, rename, archive /
-// reactivate), tags on the contact form, the list's tag filter, and bulk
+// Tags (contact-model S5): the Settings › Tags tab (create, rename,
+// archive / reactivate) and the old /tags URL's redirect to it, tags on the contact form, the list's tag filter, and bulk
 // add / remove from a list selection. Every test makes its own tags, so
 // nothing depends on what another test left in the worker's tenant.
 
-const TAGS_ROUTE = { type: 'route', description: '/t/$slug/tags' }
+const TAGS_ROUTE = { type: 'route', description: '/t/$slug/settings/tags' }
+const SETTINGS_ROUTE = { type: 'route', description: '/t/$slug/settings' }
 
-const tagsPath = (slug: string) => `/t/${slug}/tags`
+const tagsPath = (slug: string) => `/t/${slug}/settings/tags`
 
 /** The tags page's row for a tag. */
 const tagRow = (page: Page, name: string) =>
@@ -92,7 +93,7 @@ function bulkStatusIsWant() {
 
 // ── specs ──────────────────────────────────────────────────────────────────
 
-test.describe('tags page', { annotation: TAGS_ROUTE }, () => {
+test.describe('tags page', { annotation: [SETTINGS_ROUTE, TAGS_ROUTE] }, () => {
   test('create, rename, archive and reactivate', async ({
     page,
     flow,
@@ -103,6 +104,11 @@ test.describe('tags page', { annotation: TAGS_ROUTE }, () => {
     // Seeded per tenant.
     await expect(tagRow(page, 'Member')).toBeVisible()
     await expect(tagRow(page, 'Volunteer')).toBeVisible()
+    await expect(
+      page
+        .getByRole('navigation', { name: 'Settings sections' })
+        .getByRole('link', { name: 'Tags' }),
+    ).toHaveAttribute('aria-current', 'page')
     const name = page.getByLabel('New tag name')
     const create = page.getByRole('button', { name: 'Create tag' })
     await expect(create).toBeDisabled()
@@ -169,6 +175,27 @@ test.describe('tags page', { annotation: TAGS_ROUTE }, () => {
       section(page, 'In use').getByText(current, { exact: true }),
     ).toBeVisible()
   })
+})
+
+test.describe('old tags URL', () => {
+  test(
+    '/tags and /settings land on the Tags tab',
+    {
+      annotation: [
+        { type: 'route', description: '/t/$slug/tags' },
+        { type: 'route', description: '/t/$slug/settings/' },
+        SETTINGS_ROUTE,
+        TAGS_ROUTE,
+      ],
+    },
+    async ({ page, users }) => {
+      for (const from of ['tags', 'settings']) {
+        await page.goto(`/t/${users.a.slug}/${from}`)
+        await page.waitForURL(new RegExp(`${tagsPath(users.a.slug)}$`))
+        await expect(tagRow(page, 'Member')).toBeVisible()
+      }
+    },
+  )
 })
 
 test.describe('tags on a contact', { annotation: CONTACT_ROUTE }, () => {

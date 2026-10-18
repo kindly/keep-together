@@ -2,17 +2,30 @@ import { expect, test } from '../fixtures'
 import { secondTab, section, uniqueName, want } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
-// Settings (external-ids X4a): the admin-only identifier types page
-// (create, rename, archive / reactivate) and the "Settings" nav link. User
-// A is an admin of tenant A. No types are seeded, and the world is shared
-// by every test in a worker, so each test makes its own types.
+// Settings: the tabbed layout every member reaches from the "Settings"
+// nav link, and its admin-only Identifier types tab (external-ids X4a:
+// create, rename, archive / reactivate). The Tags tab's own flows are in
+// tags.spec.ts. User A is an admin of tenant A. No types are seeded, and
+// the world is shared by every test in a worker, so each test makes its
+// own types.
 
 const IDENTIFIERS_ROUTE = {
   type: 'route',
   description: '/t/$slug/settings/identifiers',
 }
+const SETTINGS_ROUTE = { type: 'route', description: '/t/$slug/settings' }
+const SETTINGS_INDEX_ROUTE = {
+  type: 'route',
+  description: '/t/$slug/settings/',
+}
+const TAGS_ROUTE = { type: 'route', description: '/t/$slug/settings/tags' }
 
 const identifiersPath = (slug: string) => `/t/${slug}/settings/identifiers`
+const tagsPath = (slug: string) => `/t/${slug}/settings/tags`
+
+/** The settings tab bar. */
+const tabs = (page: Page) =>
+  page.getByRole('navigation', { name: 'Settings sections' })
 
 /** The page's row for a type. */
 const typeRow = (page: Page, name: string) =>
@@ -38,11 +51,12 @@ function typeRowButtonIsWant(name: string) {
   )
 }
 
-/** The identifier types page has loaded its list. */
-function typesLoaded() {
+/** The settings tab headed window.__qcWant has loaded its list. */
+function tabLoaded() {
+  const w = (window as unknown as { __qcWant?: string }).__qcWant
   return (
-    document.querySelector('main h1')?.textContent === 'Identifier types' &&
-    [...document.querySelectorAll('main h2')].some(
+    document.querySelector('main h2')?.textContent === w &&
+    [...document.querySelectorAll('main h3')].some(
       (h) => h.textContent === 'In use',
     )
   )
@@ -50,28 +64,58 @@ function typesLoaded() {
 
 // ── specs ──────────────────────────────────────────────────────────────────
 
-test.describe('identifier types', { annotation: IDENTIFIERS_ROUTE }, () => {
-  test('an admin reaches the page from the Settings link', async ({
+test.describe('settings tabs', () => {
+  test('an admin reaches Settings from the nav, and switches tabs', async ({
     page,
     flow,
     users,
   }) => {
+    test
+      .info()
+      .annotations.push(
+        SETTINGS_ROUTE,
+        SETTINGS_INDEX_ROUTE,
+        TAGS_ROUTE,
+        IDENTIFIERS_ROUTE,
+      )
     await page.goto(`/t/${users.a.slug}/contacts`)
     const settings = page.getByRole('link', { name: 'Settings', exact: true })
     const contacts = page.getByRole('link', { name: 'Contacts', exact: true })
+    await want(page, 'Tags')
+    // The link opens the first tab, Tags.
     await flow(page, 'settings.nav', {
       before: async () => {
-        if (!(await settings.isVisible()) || page.url().includes('/settings')) {
+        if (page.url().includes('/settings')) {
           await contacts.click()
           await expect(page.getByRole('searchbox')).toBeVisible()
         }
       },
       action: () => settings.click(),
-      until: typesLoaded,
+      until: tabLoaded,
     })
-    await expect(page).toHaveURL(identifiersPath(users.a.slug))
-  })
+    await expect(page).toHaveURL(tagsPath(users.a.slug))
 
+    const tagsTab = tabs(page).getByRole('link', { name: 'Tags' })
+    const typesTab = tabs(page).getByRole('link', { name: 'Identifier types' })
+    await expect(tagsTab).toHaveAttribute('aria-current', 'page')
+    await expect(typesTab).not.toHaveAttribute('aria-current', 'page')
+
+    let to = 'Tags'
+    await flow(page, 'settings.tab', {
+      before: async () => {
+        to = to === 'Tags' ? 'Identifier types' : 'Tags'
+        await want(page, to)
+      },
+      action: () => (to === 'Tags' ? tagsTab : typesTab).click(),
+      until: tabLoaded,
+    })
+    await typesTab.click()
+    await expect(page).toHaveURL(identifiersPath(users.a.slug))
+    await expect(typesTab).toHaveAttribute('aria-current', 'page')
+  })
+})
+
+test.describe('identifier types', { annotation: IDENTIFIERS_ROUTE }, () => {
   test('create, rename, archive and reactivate', async ({
     page,
     flow,
@@ -154,9 +198,9 @@ test.describe('identifier types', { annotation: IDENTIFIERS_ROUTE }, () => {
   })
 })
 
-test.describe('settings are for admins only', () => {
+test.describe('settings for staff and viewers', () => {
   for (const role of ['staff', 'viewer'] as const) {
-    test(`${role}: no Settings link, and the page says admins only`, async ({
+    test(`${role}: only the Tags tab, and Identifier types says admins only`, async ({
       browser,
       baseURL,
       session,
@@ -166,20 +210,32 @@ test.describe('settings are for admins only', () => {
         .info()
         .annotations.push(
           { type: 'route', description: '/t/$slug/contacts/' },
+          SETTINGS_ROUTE,
+          SETTINGS_INDEX_ROUTE,
+          TAGS_ROUTE,
           IDENTIFIERS_ROUTE,
         )
       const user = users[role]
       const other = await secondTab(browser, baseURL!, await session(user))
       await other.goto(`/t/${user.slug}/contacts`)
       await expect(
-        other.getByRole('link', { name: 'Contacts', exact: true }),
-      ).toBeVisible()
-      await expect(
         other.getByRole('link', { name: 'Tags', exact: true }),
-      ).toBeVisible()
-      await expect(
-        other.getByRole('link', { name: 'Settings', exact: true }),
       ).toHaveCount(0)
+      await other.getByRole('link', { name: 'Settings', exact: true }).click()
+      await other.waitForURL(new RegExp(`${tagsPath(user.slug)}$`))
+      await expect(tabs(other).getByRole('link')).toHaveText(['Tags'])
+      await expect(
+        other.locator('main li', { hasText: 'Member' }),
+      ).toBeVisible()
+      // Staff edit tags; viewers read them.
+      const editable = role === 'staff'
+      await expect(other.getByLabel('New tag name')).toHaveCount(
+        editable ? 1 : 0,
+      )
+      await expect(
+        other.locator('main li', { hasText: 'Member' }).getByRole('button'),
+      ).toHaveCount(editable ? 2 : 0)
+
       await other.goto(identifiersPath(user.slug))
       await expect(
         other.getByText('Only admins of this group can change its settings.'),
