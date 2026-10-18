@@ -298,7 +298,11 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
       await page.getByRole('searchbox').fill(last)
       // Full-text search: other rows may match, but not the archived one.
       const row = page.getByRole('link', { name: new RegExp(`${last}(?!\\d)`) })
-      await expect(page.getByRole('list')).toBeVisible()
+      // Every word must match, so the archived contact may be the only hit:
+      // wait for the result (a list or the empty notice) before checking.
+      await expect(
+        page.getByRole('list').or(page.getByText('No contacts match.')),
+      ).toBeVisible()
       await expect(row).toBeHidden()
       await page.getByLabel('show archived').check()
       await expect(row).toBeVisible()

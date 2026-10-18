@@ -665,7 +665,9 @@ describe('email lookup edges', () => {
       address: 'nobody@x.com',
     })
     expect(exact).toEqual({ contacts: [], truncated: false })
-    expect(await listIds(f.a, 'shared@x.com')).toEqual(ids.slice(0, 50))
+    // The list: the 50 exact matches first, and the full-text search
+    // still finds the one beyond the lookup's cap.
+    expect(await listIds(f.a, 'shared@x.com')).toEqual(ids)
   })
 
   test('tenant isolation on every lookup path', async () => {

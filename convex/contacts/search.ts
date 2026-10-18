@@ -114,3 +114,46 @@ export function searchRow(
     phones: [...new Set(children.phones.map(normalisePhone).filter(Boolean))],
   }
 }
+
+/** How many terms Convex search takes in one query. */
+export const MAX_SEARCH_TERMS = 16
+
+/** Words the way the search index splits them (on anything not a letter or digit). */
+export function tokens(s: string): Array<string> {
+  return fold(s)
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+}
+
+/**
+ * What a search box entry asks for. A phone-shaped entry (digits and phone
+ * punctuation only, at least PHONE_TAIL digits) becomes one normalised
+ * number, so "07700 900123" matches as typed; anything else is its folded
+ * words. `phone` is set for the exact-phone ranking.
+ */
+export function parseSearch(term: string): {
+  terms: Array<string>
+  phone: string | null
+} {
+  if (/^[\d\s+().-]+$/.test(term)) {
+    const phone = normalisePhone(term)
+    if (phone.length >= PHONE_TAIL) return { terms: [phone], phone }
+  }
+  return { terms: tokens(term).slice(0, MAX_SEARCH_TERMS), phone: null }
+}
+
+/**
+ * Whether a search text holds every term: whole words, the last one as a
+ * prefix. Convex ranks documents matching *any* term; the list keeps only
+ * those matching all of them.
+ */
+export function matchesAll(text: string, terms: Array<string>): boolean {
+  if (terms.length === 0) return false
+  const words = tokens(text)
+  const have = new Set(words)
+  const last = terms[terms.length - 1]
+  return (
+    terms.slice(0, -1).every((t) => have.has(t)) &&
+    words.some((w) => w.startsWith(last))
+  )
+}

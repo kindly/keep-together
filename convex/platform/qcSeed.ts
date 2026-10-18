@@ -55,11 +55,12 @@ const prefix = (runId: string, worker: number) => `r${runId}w${worker}`
 
 /**
  * The seeded identifier values. One token each, with no name in it, so the
- * full-text name search never matches them.
+ * full-text name search never matches them; and none a prefix of another,
+ * since the search matches its last word as a prefix (search Q2).
  */
 export const qcIdentifiers = (runId: string, worker: number) => {
   const base = prefix(runId, worker)
-  return { shared: `ID${base}`, bOnly: `ID${base}B`, bReuse: `ID${base}R` }
+  return { shared: `ID${base}`, bOnly: `IDB${base}`, bReuse: `IDR${base}` }
 }
 
 function requireEnabled() {

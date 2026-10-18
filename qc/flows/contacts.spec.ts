@@ -197,12 +197,12 @@ test.describe('contacts list', () => {
       ).toBeVisible()
       await toList(page, users.a.slug)
       await page.getByRole('searchbox').fill(lastName)
-      await expect(page.getByText('No contacts yet.')).toBeVisible()
+      await expect(page.getByText('No contacts match.')).toBeVisible()
       const toggle = page.getByLabel('show archived')
       await flow(page, 'contacts.showArchived', {
         before: async () => {
           await toggle.uncheck()
-          await expect(page.getByText('No contacts yet.')).toBeVisible()
+          await expect(page.getByText('No contacts match.')).toBeVisible()
         },
         action: () => toggle.check(),
         until: onlyRow,

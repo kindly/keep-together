@@ -292,6 +292,11 @@ test("identifiers: A finds its own, never B's; B has no active type", async () =
   const [tenantA, tenantB] = world.tenants
   const { shared, bOnly, bReuse } = qcIdentifiers('7', 1)
   expect(world.identifiers).toEqual({ shared, bOnly, bReuse })
+  // The list search prefix-matches its last word: no value may start another.
+  for (const a of [shared, bOnly, bReuse])
+    for (const b of [shared, bOnly, bReuse])
+      if (a !== b)
+        expect(b.toLowerCase().startsWith(a.toLowerCase())).toBe(false)
   const viewer = await t.run(async (ctx) => {
     const user = await ctx.db
       .query('users')

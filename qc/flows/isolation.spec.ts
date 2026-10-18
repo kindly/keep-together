@@ -70,7 +70,7 @@ test.describe('isolation', () => {
     }
 
     const search = page.getByRole('searchbox')
-    const empty = page.getByText('No contacts yet.')
+    const empty = page.getByText('No contacts match.')
     const noneOfB = async () => {
       await expect(page.locator('body')).not.toContainText('Bravo')
       for (const id of world.tenants[1].contactIds) {
