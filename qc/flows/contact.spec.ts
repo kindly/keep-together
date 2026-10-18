@@ -295,7 +295,7 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
       await expect(toggle).toHaveText('Unarchive')
 
       await page.goto(`/t/${users.a.slug}/contacts`)
-      await page.getByRole('searchbox', { name: 'Search contacts' }).fill(last)
+      await page.getByPlaceholder('Search by name').fill(last)
       // Full-text search: other rows may match, but not the archived one.
       const row = page.getByRole('link', { name: new RegExp(`${last}(?!\\d)`) })
       await expect(page.getByRole('list')).toBeVisible()

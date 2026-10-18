@@ -24,15 +24,6 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
   },
 })
 
-type Kind = 'individual' | 'organization' | 'household'
-
-const KINDS: Array<{ value: Kind | ''; label: string }> = [
-  { value: '', label: 'everyone' },
-  { value: 'individual', label: 'people' },
-  { value: 'organization', label: 'organisations' },
-  { value: 'household', label: 'households' },
-]
-
 type Bulk =
   | { state: 'idle' }
   | { state: 'running'; op: 'add' | 'remove'; done: number; total: number }
@@ -45,13 +36,11 @@ function ContactList() {
   const [search, setSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
   const [tagFilter, setTagFilter] = useState<Id<'tags'> | ''>('')
-  const [kind, setKind] = useState<Kind | ''>('')
   const listed = useQuery(api.contacts.queries.list, {
     tenantId: tenant._id,
     search,
     includeArchived,
     ...(tagFilter && { tagId: tagFilter }),
-    ...(kind && { kind }),
   })
   const contacts = listed?.rows
   const tags = useQuery(api.contacts.queries.tags, {
@@ -85,28 +74,9 @@ function ContactList() {
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search contacts"
-          aria-label="Search contacts"
-          aria-describedby="search-hint"
+          placeholder="Search by name"
           className="rounded border border-neutral-300 px-3 py-1.5"
         />
-        <div
-          role="group"
-          aria-label="Filter by kind"
-          className="flex overflow-hidden rounded-full border border-neutral-300 text-sm"
-        >
-          {KINDS.map((k) => (
-            <button
-              key={k.value}
-              type="button"
-              aria-pressed={kind === k.value}
-              onClick={() => setKind(k.value)}
-              className={`px-2.5 py-1 ${kind === k.value ? 'bg-neutral-900 text-white' : 'hover:bg-neutral-50'}`}
-            >
-              {k.label}
-            </button>
-          ))}
-        </div>
         <select
           aria-label="Filter by tag"
           value={tagFilter}
@@ -138,9 +108,6 @@ function ContactList() {
           </Link>
         )}
       </div>
-      <p id="search-hint" className="mt-1 text-xs text-neutral-500">
-        Search by name, email, phone, postcode, street or reference
-      </p>
       {canWrite && contacts !== undefined && contacts.length > 0 && (
         <BulkBar
           chosen={chosen.map((c) => c._id)}
@@ -154,7 +121,7 @@ function ContactList() {
           allTags={tags ?? []}
         />
       )}
-      {listed?.truncated && (contacts?.length ?? 0) > 0 && (
+      {listed?.truncated && (
         <p className="mt-3 text-sm text-amber-800">
           Showing the first {contacts?.length} contacts
           {tagFilter ? ' with this tag' : ''}; there are more. Narrow the search
@@ -165,15 +132,7 @@ function ContactList() {
         <p className="mt-6 text-sm text-neutral-500">Loading…</p>
       ) : contacts.length === 0 ? (
         <p className="mt-6 text-sm text-neutral-500">
-          {listed?.tooBroad
-            ? 'Too many partial matches: add another word.'
-            : search.trim()
-              ? 'No contacts match.'
-              : tagFilter
-                ? 'No contacts with this tag.'
-                : kind
-                  ? 'No contacts of this kind.'
-                  : 'No contacts yet.'}
+          {tagFilter ? 'No contacts with this tag.' : 'No contacts yet.'}
         </p>
       ) : (
         <ul className="mt-3 divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
