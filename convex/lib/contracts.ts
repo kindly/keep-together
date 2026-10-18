@@ -316,6 +316,11 @@ function sortDeep(value: unknown): unknown {
  * Contracts are full-state, so no replay: re-execute the latest revision of
  * each contract at or before `at`, skipping slices already in that state
  * and any `exclude`d contracts, in one named command group.
+ *
+ * Reads are bounded by the number of contracts, not the length of history:
+ * a descending skip-scan of `by_tenant_entity_contract` yields each
+ * contract's latest revision in one read, and one more finds its latest
+ * at or before `at` when that differs.
  */
 export async function restoreEntityTo(
   ctx: ContractCtx,
@@ -325,20 +330,39 @@ export async function restoreEntityTo(
   at: number,
   opts: { exclude?: Array<string>; label?: string } = {},
 ): Promise<{ restored: Array<string>; group: Id<'commandGroups'> | null }> {
-  const revisions = await ctx.db
-    .query('revisions')
-    .withIndex('by_tenant_entity', (q) =>
-      q.eq('entity', entity).eq('entityId', entityId),
-    )
-    .order('asc')
-    .collect()
   const exclude = new Set(opts.exclude ?? [])
   const target = new Map<string, Doc<'revisions'>>()
   const current = new Map<string, Doc<'revisions'>>()
-  for (const r of revisions) {
-    if (exclude.has(r.contract)) continue
-    current.set(r.contract, r)
-    if (r._creationTime <= at) target.set(r.contract, r)
+  let below: string | undefined
+  for (;;) {
+    const bound = below
+    const latest = await ctx.db
+      .query('revisions')
+      .withIndex('by_tenant_entity_contract', (q) => {
+        const r = q.eq('entity', entity).eq('entityId', entityId)
+        return bound === undefined ? r : r.lt('contract', bound)
+      })
+      .order('desc')
+      .first()
+    if (!latest) break
+    below = latest.contract
+    if (exclude.has(latest.contract)) continue
+    current.set(latest.contract, latest)
+    const atOrBefore =
+      latest._creationTime <= at
+        ? latest
+        : await ctx.db
+            .query('revisions')
+            .withIndex('by_tenant_entity_contract', (q) =>
+              q
+                .eq('entity', entity)
+                .eq('entityId', entityId)
+                .eq('contract', latest.contract)
+                .lte('_creationTime', at),
+            )
+            .order('desc')
+            .first()
+    if (atOrBefore) target.set(latest.contract, atOrBefore)
   }
   // Compared at the code's version: a v1 and a v2 payload of the same
   // state are the same state.

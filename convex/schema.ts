@@ -96,8 +96,7 @@ export default defineSchema({
       'entity',
       'entityId',
       'contract',
-    ])
-    .index('by_tenant_group', ['tenantId', 'group']),
+    ]),
 
   // ── contacts (ADR 0014) ───────────────────────────────────────────────
   // Aggregate root. Field ownership (contracts partition, never overlap):

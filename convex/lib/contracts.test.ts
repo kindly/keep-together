@@ -6,9 +6,12 @@ import {
   canonical,
   defineContract,
   missingUpcasterSteps,
+  restoreEntityTo,
   upcast,
 } from './contracts'
-import { errorData, setup } from '../../test/fixture'
+import { scopeWriter } from './tenancy'
+import type { ScopedDatabaseWriter } from './tenancy'
+import { errorData, setup, snapshot } from '../../test/fixture'
 
 const individual = {
   kind: 'individual' as const,
@@ -181,6 +184,190 @@ describe('command layer', () => {
       contract: 'contacts.details',
       from: 0,
     })
+  })
+})
+
+// ── restore reads ──────────────────────────────────────────────────────────
+
+/** Wraps a scoped db so every document a query or `get` returns is counted. */
+function counting(db: ScopedDatabaseWriter) {
+  const reads = { count: 0 }
+  const docs = (result: unknown) => {
+    if (Array.isArray(result)) reads.count += result.length
+    else if (result !== null && result !== undefined) reads.count += 1
+    return result
+  }
+  const wrapQuery = (q: object): object =>
+    new Proxy(q, {
+      get(target, prop) {
+        const value: unknown = Reflect.get(target, prop, target)
+        if (typeof value !== 'function') return value
+        if (prop === Symbol.asyncIterator) {
+          return async function* () {
+            for await (const d of target as AsyncIterable<unknown>) {
+              reads.count += 1
+              yield d
+            }
+          }
+        }
+        if (prop === 'order' || prop === 'filter') {
+          return (...args: Array<unknown>) =>
+            wrapQuery(value.apply(target, args) as object)
+        }
+        if (['first', 'unique', 'collect', 'take'].includes(String(prop))) {
+          return async (...args: Array<unknown>) =>
+            docs(await value.apply(target, args))
+        }
+        if (prop === 'paginate') {
+          return async (...args: Array<unknown>) => {
+            const r = (await value.apply(target, args)) as { page: unknown }
+            docs(r.page)
+            return r
+          }
+        }
+        return value.bind(target)
+      },
+    })
+  const wrapped: ScopedDatabaseWriter = {
+    ...db,
+    get: async (...args: Array<unknown>) =>
+      docs(await (db.get as any)(...args)) as never,
+    query: ((table: never) => {
+      const init = db.query(table)
+      return {
+        withIndex: (index: never, range?: never) =>
+          wrapQuery(init.withIndex(index, range)),
+        withSearchIndex: (index: never, filter: never) =>
+          wrapQuery(init.withSearchIndex(index, filter)),
+      }
+    }) as ScopedDatabaseWriter['query'],
+  }
+  return { db: wrapped, reads }
+}
+
+describe('restore to a moment', () => {
+  const email = (address: string) => ({
+    label: 'home' as const,
+    address,
+    isPrimary: false,
+  })
+  const address = (line1: string) => ({
+    label: 'home' as const,
+    line1,
+    line2: '',
+    line3: '',
+    town: 'Stroud',
+    postcode: 'GL5 1AA',
+    country: 'GB',
+    isPrimary: false,
+  })
+
+  /**
+   * A contact with one moment worth returning to, then `edits` more saves
+   * of each of details, methods, addresses and archive. Returns the
+   * documents the restore read.
+   */
+  async function restoreAfter(edits: number) {
+    const f = await setup()
+    const as = f.a.as
+    const tenantId = f.a.tenantId
+    const id = await as.mutation(api.contacts.mutations.create, {
+      tenantId,
+      ...individual,
+    })
+    await as.mutation(api.contacts.mutations.saveMethods, {
+      tenantId,
+      id,
+      expected: 0,
+      emails: [email('ada@example.com')],
+      phones: [],
+    })
+    await as.mutation(api.contacts.mutations.saveAddresses, {
+      tenantId,
+      id,
+      expected: 0,
+      addresses: [address('1 High St')],
+    })
+    const moment = await f.t.run(async (ctx) => {
+      const latest = await ctx.db
+        .query('revisions')
+        .withIndex('by_tenant_entity', (q) =>
+          q
+            .eq('tenantId', tenantId)
+            .eq('entity', 'contacts')
+            .eq('entityId', id),
+        )
+        .order('desc')
+        .first()
+      return latest!._creationTime
+    })
+    for (let i = 1; i <= edits; i++) {
+      await as.mutation(api.contacts.mutations.saveDetails, {
+        tenantId,
+        id,
+        expected: i - 1,
+        ...individual,
+        nickname: `n${i}`,
+      })
+      await as.mutation(api.contacts.mutations.saveMethods, {
+        tenantId,
+        id,
+        expected: i,
+        emails: [email(`ada${i}@example.com`)],
+        phones: [],
+      })
+      await as.mutation(api.contacts.mutations.saveAddresses, {
+        tenantId,
+        id,
+        expected: i,
+        addresses: [address(`${i} High St`)],
+      })
+      await as.mutation(api.contacts.mutations.setArchived, {
+        tenantId,
+        id,
+        expected: i - 1,
+        archived: i % 2 === 1,
+      })
+    }
+    const before = await snapshot(f.t, f.b.tenantId)
+    const run = await f.t.run(async (ctx) => {
+      const { db, reads } = counting(scopeWriter(ctx, tenantId))
+      const result = await restoreEntityTo(
+        { db, userId: f.a.userId },
+        contactContracts,
+        'contacts',
+        id,
+        moment,
+        { exclude: ['contacts.archive'] },
+      )
+      return { result, reads: reads.count }
+    })
+    expect(await snapshot(f.t, f.b.tenantId)).toBe(before)
+    const contact = await as.query(api.contacts.queries.get, {
+      tenantId,
+      id,
+    })
+    return { ...run, contact }
+  }
+
+  test('reads a bounded number of documents however long the history', async () => {
+    const short = await restoreAfter(2)
+    const long = await restoreAfter(30)
+    for (const run of [short, long]) {
+      expect(run.result.restored.sort()).toEqual([
+        'contacts.addresses',
+        'contacts.details',
+        'contacts.methods',
+      ])
+      expect(run.contact?.contact.nickname).toBe('')
+      expect(run.contact?.emails.map((e) => e.address)).toEqual([
+        'ada@example.com',
+      ])
+      expect(run.contact?.addresses.map((a) => a.line1)).toEqual(['1 High St'])
+    }
+    // 123 revisions on the long contact; reading them all took 131 documents.
+    expect(long.reads).toBe(short.reads)
+    expect(long.reads).toBeLessThan(40)
   })
 })
 
