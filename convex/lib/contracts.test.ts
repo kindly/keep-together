@@ -18,7 +18,6 @@ const individual = {
   nickname: '',
   name: '',
   isDeceased: false,
-  externalIdentifier: '',
 }
 
 describe('command layer', () => {
@@ -42,7 +41,7 @@ describe('command layer', () => {
     expect(revisions).toHaveLength(1)
     expect(revisions[0]).toMatchObject({
       contract: 'contacts.details',
-      version: 1,
+      version: 2,
       counter: 0,
       source: 'ui',
       actor: f.a.userId,

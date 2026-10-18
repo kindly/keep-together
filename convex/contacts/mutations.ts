@@ -18,6 +18,8 @@ import {
   archive,
   contactContracts,
   details,
+  identifierClashes,
+  identifiers,
   methods,
   tag,
   tags,
@@ -27,6 +29,7 @@ import {
   addressesFields,
   archiveFields,
   detailsFields,
+  identifiersFields,
   methodsFields,
   tagFields,
   tagsFields,
@@ -209,7 +212,32 @@ async function applyBulkTag(
 const slice = <TFields extends PropertyValidators>(fields: TFields) =>
   v.optional(v.object({ expected: v.number(), ...fields }))
 
-type Slice = 'details' | 'methods' | 'addresses' | 'tags'
+type Slice = 'details' | 'methods' | 'addresses' | 'tags' | 'identifiers'
+
+/**
+ * The contact's `identifiersVersion`. Contacts created before X1 lack it
+ * until the X2 backfill; refuse them clearly rather than let
+ * `executeContract` throw.
+ */
+function identifiersCounter(contact: Doc<'contacts'>): number {
+  if (contact.identifiersVersion === undefined) {
+    throw rejected(
+      'not_migrated',
+      'Identifiers are not available on this contact yet (pending backfill)',
+    )
+  }
+  return contact.identifiersVersion
+}
+
+async function contactIdentifierRows(
+  db: ScopedDatabaseReader,
+  contactId: Id<'contacts'>,
+) {
+  return db
+    .query('contactIdentifiers')
+    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+    .collect()
+}
 
 /**
  * The current state of each slice, in payload shape, for change detection.
@@ -225,9 +253,10 @@ export async function currentPayloads(
     methods: Payloads['methods']
     addresses: Payloads['addresses']
     tags: Payloads['tags']
+    identifiers: Payloads['identifiers']
   }
 } | null> {
-  const [contact, emails, phones, addrs, tagRows] = await Promise.all([
+  const [contact, emails, phones, addrs, tagRows, idRows] = await Promise.all([
     db.get(id),
     db
       .query('contactEmails')
@@ -242,6 +271,7 @@ export async function currentPayloads(
       .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
       .collect(),
     contactTagRows(db, id),
+    contactIdentifierRows(db, id),
   ])
   if (!contact) return null
   const current = {
@@ -255,7 +285,6 @@ export async function currentPayloads(
       birthDate: contact.birthDate,
       isDeceased: contact.isDeceased,
       deceasedDate: contact.deceasedDate,
-      externalIdentifier: contact.externalIdentifier,
     },
     methods: {
       emails: emails.map((e) => ({
@@ -285,6 +314,13 @@ export async function currentPayloads(
       })),
     },
     tags: { tags: tagRows.map((r) => ({ key: r.key, tagId: r.tagId })) },
+    identifiers: {
+      identifiers: idRows.map((r) => ({
+        key: r.key,
+        typeId: r.typeId,
+        value: r.value,
+      })),
+    },
   }
   return { contact, current }
 }
@@ -295,7 +331,8 @@ export async function currentPayloads(
  * no-op save creates no command, no counter bump, no revision. Slices that
  * fail blocking validation or are stale are reported and skipped; the rest
  * still save (partial saves are correct behaviour). Multi-slice saves share
- * one command group.
+ * one command group. An identifier another contact already holds is
+ * reported the same way, per row, naming that contact.
  */
 export const saveForm = tenantMutation({
   args: {
@@ -305,6 +342,7 @@ export const saveForm = tenantMutation({
     methods: slice(methodsFields),
     addresses: slice(addressesFields),
     tags: slice(tagsFields),
+    identifiers: slice(identifiersFields),
   },
   handler: async (ctx, args) => {
     const found = await currentPayloads(ctx.db, args.id)
@@ -312,10 +350,16 @@ export const saveForm = tenantMutation({
     const { contact, current } = found
     const source = args.source ?? 'ui'
 
-    const problems: Partial<Record<Slice, Array<Problem>>> = {}
+    const problems: Partial<
+      Record<
+        Slice,
+        Array<Problem & { key?: string; contactId?: Id<'contacts'> }>
+      >
+    > = {}
     const stale: Partial<Record<Slice, number>> = {}
     const changed: Array<{
       name: Slice
+      prepared: unknown
       run: (group?: Id<'commandGroups'>) => Promise<{ counter: number }>
     }> = []
 
@@ -323,7 +367,9 @@ export const saveForm = tenantMutation({
       name: TSlice,
       contract: (typeof contactContracts)[string],
       submitted: ({ expected: number } & Record<string, unknown>) | undefined,
-      counter: number,
+      // Read only once the slice has changed: an unchanged identifiers
+      // slice must not trip `identifiersCounter` on a contact awaiting X2.
+      counter: () => number,
     ) => {
       if (!submitted) return
       const { expected, ...payload } = submitted
@@ -343,12 +389,14 @@ export const saveForm = tenantMutation({
         throw e
       }
       if (canonical(prepared) === canonical(current[name])) return
-      if (expected !== counter) {
-        stale[name] = counter
+      const now = counter()
+      if (expected !== now) {
+        stale[name] = now
         return
       }
       changed.push({
         name,
+        prepared,
         run: (group) =>
           executeContract(ctx, contract, prepared as never, {
             entityId: args.id,
@@ -359,10 +407,41 @@ export const saveForm = tenantMutation({
       })
     }
 
-    consider('details', details, args.details, contact.detailsVersion)
-    consider('methods', methods, args.methods, contact.methodsVersion)
-    consider('addresses', addresses, args.addresses, contact.addressesVersion)
-    consider('tags', tags, args.tags, contact.tagsVersion)
+    consider('details', details, args.details, () => contact.detailsVersion)
+    consider('methods', methods, args.methods, () => contact.methodsVersion)
+    consider(
+      'addresses',
+      addresses,
+      args.addresses,
+      () => contact.addressesVersion,
+    )
+    consider('tags', tags, args.tags, () => contact.tagsVersion)
+    consider('identifiers', identifiers, args.identifiers, () =>
+      identifiersCounter(contact),
+    )
+
+    // A clash is the contract's refusal too, but caught here it stays on
+    // its slice: the other slices still save.
+    const ids = changed.findIndex((c) => c.name === 'identifiers')
+    if (ids !== -1) {
+      const kept = new Set(current.identifiers.identifiers.map((r) => r.key))
+      const rows = (changed[ids].prepared as Payloads['identifiers'])
+        .identifiers
+      const clashes = await identifierClashes(
+        ctx.db,
+        args.id,
+        rows.filter((r) => !kept.has(r.key)),
+      )
+      if (clashes.length) {
+        problems.identifiers = clashes.map((c) => ({
+          field: 'identifiers',
+          message: `${c.value} is already used by ${c.displayName}`,
+          key: c.key,
+          contactId: c.contactId,
+        }))
+        changed.splice(ids, 1)
+      }
+    }
 
     const group =
       changed.length > 1
@@ -375,6 +454,7 @@ export const saveForm = tenantMutation({
       addresses: contact.addressesVersion,
       archive: contact.archiveVersion,
       tags: contact.tagsVersion,
+      identifiers: contact.identifiersVersion,
     }
     for (const c of changed) counters[c.name] = (await c.run(group)).counter
 

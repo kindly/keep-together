@@ -106,6 +106,7 @@ export default defineSchema({
   //   contacts.addresses → contactAddresses rows (addressesVersion)
   //   contacts.archive   → archived (archiveVersion)
   //   contacts.tags      → contactTags rows (tagsVersion)
+  //   contacts.identifiers → contactIdentifiers rows (identifiersVersion)
   // System-managed (no contract): displayName / sortName, counters.
   contacts: defineTable({
     tenantId: v.id('tenants'),
@@ -119,7 +120,9 @@ export default defineSchema({
     birthDate: v.optional(v.string()), // ISO date
     isDeceased: v.boolean(),
     deceasedDate: v.optional(v.string()),
-    externalIdentifier: v.string(), // '' = none; unique per tenant otherwise
+    // Owned by no contract since details v2; the X2 backfill moves it into
+    // contactIdentifiers and X3 drops it with its index.
+    externalIdentifier: v.optional(v.string()),
     displayName: v.string(),
     sortName: v.string(),
     archived: v.boolean(),
@@ -128,6 +131,7 @@ export default defineSchema({
     addressesVersion: v.number(),
     archiveVersion: v.number(),
     tagsVersion: v.number(),
+    identifiersVersion: v.optional(v.number()), // required after the X2 backfill
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
     .index('by_tenant_clientKey', ['tenantId', 'clientKey'])
@@ -196,6 +200,39 @@ export default defineSchema({
     .index('by_tenant_contact', ['tenantId', 'contactId'])
     .index('by_tenant_key', ['tenantId', 'key'])
     .index('by_tenant_tag', ['tenantId', 'tagId']),
+
+  // An external identifier (`contacts.identifiers` slice): the contact's id
+  // in another system. `typeId` and `value` are identity fields, immutable
+  // per key. A (type, valueNormalized) pair belongs to at most one contact
+  // per tenant (checked in apply).
+  contactIdentifiers: defineTable({
+    tenantId: v.id('tenants'),
+    contactId: v.id('contacts'),
+    key: v.string(),
+    typeId: v.id('identifierTypes'),
+    value: v.string(), // as typed (trimmed)
+    valueNormalized: v.string(), // normaliseIdentifier(value), set on insert
+  })
+    .index('by_tenant_contact', ['tenantId', 'contactId'])
+    .index('by_tenant_key', ['tenantId', 'key'])
+    // Prefix `valueNormalized` = "this value, any type" (list search);
+    // both fields = "this type + value" (findByIdentifier, uniqueness).
+    .index('by_tenant_valueNormalized_type', [
+      'tenantId',
+      'valueNormalized',
+      'typeId',
+    ]),
+
+  // Its own aggregate (`contacts.identifierType`, saveVersion), like tags:
+  // names unique per tenant case-insensitively; archive = `isActive: false`
+  // (out of the picker, rows kept and still found). None seeded.
+  identifierTypes: defineTable({
+    tenantId: v.id('tenants'),
+    name: v.string(),
+    nameNormalized: v.string(), // normaliseTagName(name)
+    isActive: v.boolean(),
+    saveVersion: v.number(),
+  }).index('by_tenant_nameNormalized', ['tenantId', 'nameNormalized']),
 
   // Its own aggregate (`contacts.tag`, saveVersion). Flat; names unique per
   // tenant case-insensitively (checked in apply against `nameNormalized`).

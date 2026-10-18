@@ -12,7 +12,6 @@ const contact = (lastName: string) => ({
   nickname: '',
   name: '',
   isDeceased: false,
-  externalIdentifier: '',
 })
 
 describe('scoped db queries', () => {

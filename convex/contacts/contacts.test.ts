@@ -14,7 +14,6 @@ const individual = {
   nickname: '',
   name: '',
   isDeceased: false,
-  externalIdentifier: '',
 }
 const organisation = {
   kind: 'organization' as const,
@@ -24,7 +23,6 @@ const organisation = {
   nickname: '',
   name: 'Anytown Hall',
   isDeceased: false,
-  externalIdentifier: '',
 }
 const email = (
   address: string,
@@ -211,28 +209,6 @@ describe('details', () => {
     const data = await errorData(byKey(f.b, f.a.tenantId, 'form-1'))
     expect(data.kind).toBe('forbidden')
     expect(await snapshot(f.t, f.b.tenantId)).toBe(bSnapshot)
-  })
-
-  test('external identifier unique per tenant', async () => {
-    await f.a.as.mutation(api.contacts.mutations.create, {
-      tenantId: f.a.tenantId,
-      ...individual,
-      externalIdentifier: 'X1',
-    })
-    const data = await errorData(
-      f.a.as.mutation(api.contacts.mutations.create, {
-        tenantId: f.a.tenantId,
-        ...individual,
-        externalIdentifier: 'X1',
-      }),
-    )
-    expect(data.reason).toBe('duplicate_external_identifier')
-    // Same identifier in another tenant is fine.
-    await f.b.as.mutation(api.contacts.mutations.create, {
-      tenantId: f.b.tenantId,
-      ...individual,
-      externalIdentifier: 'X1',
-    })
   })
 })
 

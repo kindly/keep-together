@@ -42,7 +42,6 @@ export function prepareDetails(p: Payloads['details']): Payloads['details'] {
     lastName: trim(p.lastName),
     nickname: trim(p.nickname),
     name: trim(p.name),
-    externalIdentifier: trim(p.externalIdentifier),
     birthDate: p.birthDate || undefined,
     deceasedDate: p.deceasedDate || undefined,
   }
@@ -244,11 +243,61 @@ export function normaliseTagName(name: string): string {
   return name.toLowerCase()
 }
 
+const tidyName = (name: string) => name.trim().replace(/\s+/g, ' ')
+
 /** Trimmed, inner whitespace runs collapsed, never blank. */
 export function prepareTag(p: Payloads['tag']): Payloads['tag'] {
-  const out = { ...p, name: p.name.trim().replace(/\s+/g, ' ') }
+  const out = { ...p, name: tidyName(p.name) }
   if (!out.name) {
     throw invalid([{ field: 'name', message: 'A tag needs a name' }])
+  }
+  return out
+}
+
+/**
+ * The matching form of an identifier value: trimmed, case-insensitive
+ * (`m123` and `M123` are the same id). The value is shown as typed.
+ */
+export function normaliseIdentifier(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+/**
+ * A contact's identifiers: keyed rows, values trimmed and never blank, and
+ * a (type, value) pair at most once. Several values of one type are fine.
+ */
+export function prepareIdentifiers(
+  p: Payloads['identifiers'],
+): Payloads['identifiers'] {
+  const identifiers = mintKeys(
+    p.identifiers.map((r) => ({ ...r, value: trim(r.value) })),
+    'identifiers',
+  )
+  const seen = new Set<string>()
+  for (const r of identifiers) {
+    if (!r.value) {
+      throw invalid([
+        { field: 'identifiers', message: 'An identifier needs a value' },
+      ])
+    }
+    const pair = `${r.typeId}\u0000${normaliseIdentifier(r.value)}`
+    if (seen.has(pair)) {
+      throw invalid([{ field: 'identifiers', message: 'Duplicate identifier' }])
+    }
+    seen.add(pair)
+  }
+  return { identifiers }
+}
+
+/** Like a tag name: tidied, never blank, unique case-insensitively. */
+export function prepareIdentifierType(
+  p: Payloads['identifierType'],
+): Payloads['identifierType'] {
+  const out = { ...p, name: tidyName(p.name) }
+  if (!out.name) {
+    throw invalid([
+      { field: 'name', message: 'An identifier type needs a name' },
+    ])
   }
   return out
 }

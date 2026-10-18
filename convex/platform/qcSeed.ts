@@ -148,7 +148,6 @@ export const world = internalMutation({
             title: '',
             nickname: '',
             isDeceased: false,
-            externalIdentifier: '',
           },
           { source: 'seed', group },
         )

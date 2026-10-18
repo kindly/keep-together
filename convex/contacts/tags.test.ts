@@ -16,7 +16,6 @@ const individual = (lastName: string) => ({
   nickname: '',
   name: '',
   isDeceased: false,
-  externalIdentifier: '',
 })
 
 let f: Fixture

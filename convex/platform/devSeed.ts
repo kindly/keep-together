@@ -54,7 +54,6 @@ export const demoTenant = internalMutation({
           nickname: '',
           name: '',
           isDeceased: false,
-          externalIdentifier: '',
         },
         { source: 'seed' },
       )

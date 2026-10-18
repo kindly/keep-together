@@ -17,7 +17,6 @@ export const detailsFields = {
   birthDate: v.optional(v.string()),
   isDeceased: v.boolean(),
   deceasedDate: v.optional(v.string()),
-  externalIdentifier: v.string(),
 }
 
 export const emailRow = v.object({
@@ -64,6 +63,16 @@ export const tagsFields = { tags: v.array(tagRow) }
 
 export const tagFields = { name: v.string(), isActive: v.boolean() }
 
+export const identifierRow = v.object({
+  key: v.optional(v.string()), // omitted = new row
+  typeId: v.id('identifierTypes'), // identity field — immutable per key
+  value: v.string(), // identity field — immutable per key
+})
+
+export const identifiersFields = { identifiers: v.array(identifierRow) }
+
+export const identifierTypeFields = { name: v.string(), isActive: v.boolean() }
+
 export const relationshipTypeFields = {
   labelAB: v.string(),
   labelBA: v.string(),
@@ -96,6 +105,8 @@ export type Payloads = {
   archive: ObjectType<typeof archiveFields>
   tags: ObjectType<typeof tagsFields>
   tag: ObjectType<typeof tagFields>
+  identifiers: ObjectType<typeof identifiersFields>
+  identifierType: ObjectType<typeof identifierTypeFields>
   relationshipType: ObjectType<typeof relationshipTypeFields>
   relationship: ObjectType<typeof relationshipFields>
   note: ObjectType<typeof noteFields>

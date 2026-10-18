@@ -29,6 +29,12 @@ export type DonorSpec = {
   details: Payloads['details']
   methods: Payloads['methods']
   addresses: Payloads['addresses']
+  /**
+   * An id from the group's old system (`LEGACY-nnnn`, on 20 % of people).
+   * Not written yet: X5 (external identifiers) seeds it as an identifier
+   * row. Kept here so the generated world stays the same.
+   */
+  legacyId?: string
   archived: boolean
   notes: Array<{ body: string; pinned: boolean; archived: boolean }>
 }
@@ -376,10 +382,10 @@ export function generateDonors(seed = 20261017): {
         deceasedDate: deceased
           ? `2025-0${1 + r.int(9)}-1${r.int(10)}`
           : undefined,
-        externalIdentifier: r.chance(0.2)
-          ? `LEGACY-${String(nextExternal++).padStart(4, '0')}`
-          : '',
       },
+      legacyId: r.chance(0.2)
+        ? `LEGACY-${String(nextExternal++).padStart(4, '0')}`
+        : undefined,
       methods: { emails, phones },
       addresses: { addresses: r.chance(0.82) ? [address(i, 'home')] : [] },
       archived: false,
@@ -403,7 +409,6 @@ export function generateDonors(seed = 20261017): {
         nickname: '',
         name,
         isDeceased: false,
-        externalIdentifier: '',
       },
       methods: {
         emails:

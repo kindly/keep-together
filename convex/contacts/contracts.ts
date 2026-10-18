@@ -1,7 +1,7 @@
 /**
- * Contact contracts (ADR 0014). Five partitioned slices on the Contact
- * root, plus Tag, RelationshipType, Relationship and ContactNote (two
- * slices) as their own aggregates.
+ * Contact contracts (ADR 0014). Six partitioned slices on the Contact
+ * root, plus Tag, IdentifierType, RelationshipType, Relationship and
+ * ContactNote (two slices) as their own aggregates.
  * Apply functions are pure state application — restore re-runs them.
  */
 import { v } from 'convex/values'
@@ -9,12 +9,16 @@ import { validate } from 'convex-helpers/validators'
 import type { Id } from '../_generated/dataModel'
 import type { ContractCtx } from '../lib/contracts'
 import { defineContract, registry, rejected } from '../lib/contracts'
+import type { ScopedDatabaseReader } from '../lib/tenancy'
 import {
   computedNames,
   normaliseEmail,
+  normaliseIdentifier,
   normaliseTagName,
   prepareAddresses,
   prepareDetails,
+  prepareIdentifierType,
+  prepareIdentifiers,
   prepareMethods,
   prepareNote,
   prepareRelationship,
@@ -26,6 +30,8 @@ import {
   addressesFields,
   archiveFields,
   detailsFields,
+  identifierTypeFields,
+  identifiersFields,
   methodsFields,
   noteCreateFields,
   noteFields,
@@ -36,29 +42,29 @@ import {
   tagsFields,
 } from './validators'
 
+/**
+ * v2 (external identifiers X1): `externalIdentifier` left the payload for
+ * the `contacts.identifiers` slice. A v1 revision restores through the
+ * upcaster and leaves the contact's identifiers (and any not yet
+ * backfilled `externalIdentifier`) as they are.
+ */
 export const details = defineContract({
   name: 'contacts.details',
   entity: 'contacts',
-  version: 1,
+  version: 2,
   counter: 'detailsVersion',
   fields: detailsFields,
   prepare: prepareDetails,
+  upcasters: {
+    1: (payload) => {
+      const { externalIdentifier: _, ...rest } = payload as {
+        externalIdentifier?: string
+      }
+      return rest
+    },
+  },
   apply: async (ctx, p, root) => {
     const names = computedNames(p)
-    if (p.externalIdentifier) {
-      const clash = await ctx.db
-        .query('contacts')
-        .withIndex('by_tenant_external', (q) =>
-          q.eq('externalIdentifier', p.externalIdentifier),
-        )
-        .first()
-      if (clash && clash._id !== root?._id) {
-        throw rejected(
-          'duplicate_external_identifier',
-          `External identifier ${p.externalIdentifier} is already used`,
-        )
-      }
-    }
     const fields = {
       title: p.title,
       firstName: p.firstName,
@@ -68,7 +74,6 @@ export const details = defineContract({
       birthDate: p.birthDate,
       isDeceased: p.isDeceased,
       deceasedDate: p.deceasedDate,
-      externalIdentifier: p.externalIdentifier,
       ...names,
     }
     if (root === null) {
@@ -94,6 +99,7 @@ export const details = defineContract({
         addressesVersion: 0,
         archiveVersion: 0,
         tagsVersion: 0,
+        identifiersVersion: 0,
       })
     }
     if (root.kind !== p.kind) {
@@ -111,7 +117,11 @@ export const details = defineContract({
 // ── child-row reconciliation ───────────────────────────────────────────────
 
 type ChildTable =
-  'contactEmails' | 'contactPhones' | 'contactAddresses' | 'contactTags'
+  | 'contactEmails'
+  | 'contactPhones'
+  | 'contactAddresses'
+  | 'contactTags'
+  | 'contactIdentifiers'
 type Row = { key?: string } & Record<string, unknown>
 
 /**
@@ -150,8 +160,10 @@ async function reconcile(
 
   // Every check before any write, and the reads and writes each as one
   // concurrent batch: a save's latency is the depth of its awaits.
-  const updates: Array<{ id: Id<ChildTable>; changes: Record<string, unknown> }> =
-    []
+  const updates: Array<{
+    id: Id<ChildTable>
+    changes: Record<string, unknown>
+  }> = []
   const added: Array<Row> = []
   for (const row of rows) {
     const current = byKey.get(row.key as string)
@@ -199,6 +211,9 @@ async function reconcile(
               // Derived from the identity field, so it never changes per key.
               addressNormalized: normaliseEmail(row.address as string),
             }
+          : {}),
+        ...(table === 'contactIdentifiers'
+          ? { valueNormalized: normaliseIdentifier(row.value as string) }
           : {}),
       } as never),
     ),
@@ -315,6 +330,131 @@ export const tag = defineContract({
     const fields = { name: p.name, nameNormalized, isActive: p.isActive }
     if (!root) return ctx.db.insert('tags', { ...fields, saveVersion: 0 })
     await ctx.db.patch('tags', root._id, fields)
+    return root._id
+  },
+})
+
+/** Another contact holding one of these (type, value) pairs. */
+export type IdentifierClash = {
+  key: string
+  value: string
+  contactId: Id<'contacts'>
+  displayName: string
+}
+
+/**
+ * For each row, the other contact (if any) already holding its (type,
+ * value) pair in this tenant. Shared by the contract (which refuses) and
+ * the form save (which reports it on the row and saves the other slices).
+ */
+export async function identifierClashes(
+  db: ScopedDatabaseReader,
+  contactId: Id<'contacts'>,
+  rows: Array<{ key?: string; typeId: Id<'identifierTypes'>; value: string }>,
+): Promise<Array<IdentifierClash>> {
+  const found = await Promise.all(
+    rows.map(async (row) => {
+      const held = await db
+        .query('contactIdentifiers')
+        .withIndex('by_tenant_valueNormalized_type', (q) =>
+          q
+            .eq('valueNormalized', normaliseIdentifier(row.value))
+            .eq('typeId', row.typeId),
+        )
+        .first()
+      if (!held || held.contactId === contactId) return null
+      const other = await db.get(held.contactId)
+      return {
+        key: row.key!,
+        value: row.value,
+        contactId: held.contactId,
+        displayName: other?.displayName ?? '?',
+      }
+    }),
+  )
+  return found.filter((c) => c !== null)
+}
+
+/**
+ * The contact's external identifiers. A (type, value) pair belongs to at
+ * most one contact. Only active types can be newly added; a kept row keeps
+ * an archived type, and a restore may re-add one (same rule as tags).
+ * Called only on contacts that have `identifiersVersion` (all of them after
+ * the X2 backfill): `executeContract` throws on a missing counter.
+ */
+export const identifiers = defineContract({
+  name: 'contacts.identifiers',
+  entity: 'contacts',
+  version: 1,
+  counter: 'identifiersVersion',
+  fields: identifiersFields,
+  prepare: prepareIdentifiers,
+  apply: async (ctx, p, root, command) => {
+    if (!root)
+      throw rejected(
+        'no_root',
+        'contacts.identifiers targets an existing contact',
+      )
+    const existing = await ctx.db
+      .query('contactIdentifiers')
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', root._id))
+      .collect()
+    const kept = new Set(existing.map((r) => r.key))
+    const added = p.identifiers.filter((r) => !kept.has(r.key!))
+    const [types, clashes] = await Promise.all([
+      // Another tenant's id reads as null through the scoped db.
+      Promise.all(added.map((r) => ctx.db.get(r.typeId))),
+      identifierClashes(ctx.db, root._id, added),
+    ])
+    if (
+      types.some((t) => !t || (!t.isActive && command.source !== 'restore'))
+    ) {
+      throw rejected(
+        'unknown_identifier_type',
+        'Identifier type must exist and be active',
+      )
+    }
+    if (clashes.length) {
+      const { value, displayName } = clashes[0]
+      throw rejected(
+        'duplicate_identifier',
+        `${value} is already used by ${displayName}`,
+      )
+    }
+    await reconcile(ctx, 'contactIdentifiers', root._id, p.identifiers, [
+      'typeId',
+      'value',
+    ])
+    return root._id
+  },
+})
+
+/** An identifier type. Renaming keeps every row (they hold the id). */
+export const identifierType = defineContract({
+  name: 'contacts.identifierType',
+  entity: 'identifierTypes',
+  version: 1,
+  counter: 'saveVersion',
+  fields: identifierTypeFields,
+  prepare: prepareIdentifierType,
+  apply: async (ctx, p, root) => {
+    const nameNormalized = normaliseTagName(p.name)
+    const clash = await ctx.db
+      .query('identifierTypes')
+      .withIndex('by_tenant_nameNormalized', (q) =>
+        q.eq('nameNormalized', nameNormalized),
+      )
+      .first()
+    if (clash && clash._id !== root?._id) {
+      throw rejected(
+        'duplicate_identifier_type_name',
+        `An identifier type called ${clash.name} exists`,
+      )
+    }
+    const fields = { name: p.name, nameNormalized, isActive: p.isActive }
+    if (!root)
+      return ctx.db.insert('identifierTypes', { ...fields, saveVersion: 0 })
+    await ctx.db.patch('identifierTypes', root._id, fields)
     return root._id
   },
 })
@@ -444,6 +584,8 @@ export const contactContracts = registry(
   archive,
   tags,
   tag,
+  identifiers,
+  identifierType,
   relationshipType,
   relationship,
   note,
@@ -451,4 +593,10 @@ export const contactContracts = registry(
 )
 
 /** Slices of the Contact form, in the order the form shows them. */
-export const contactSlices = { details, methods, addresses, tags } as const
+export const contactSlices = {
+  details,
+  methods,
+  addresses,
+  tags,
+  identifiers,
+} as const

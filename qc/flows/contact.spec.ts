@@ -43,12 +43,14 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     })
 
     // Autosave: an edit committed by leaving the field saves with no click.
-    await page.getByLabel('External reference').fill('autosaved')
+    await page.getByLabel('Title', { exact: true }).fill('autosaved')
     await expect(contactForm(page).getByText('Unsaved changes')).toBeVisible()
-    await page.getByLabel('External reference').press('Tab')
+    await page.getByLabel('Title', { exact: true }).press('Tab')
     await expect(saved(page)).toBeVisible()
     await page.reload()
-    await expect(page.getByLabel('External reference')).toHaveValue('autosaved')
+    await expect(page.getByLabel('Title', { exact: true })).toHaveValue(
+      'autosaved',
+    )
     await expect(page.getByLabel('Known as')).toHaveValue(`save ${n}`)
   })
 
@@ -377,16 +379,16 @@ test.describe('two tabs on one contact', { annotation: CONTACT_ROUTE }, () => {
   })
 
   test('a remote edit lands under in-progress typing', async ({ page }) => {
-    await other.getByLabel('External reference').fill('typing in b')
+    await other.getByLabel('Title', { exact: true }).fill('typing in b')
     await page.getByLabel('Known as').fill('from a')
     await saveButton(page).click()
     await expect(saved(page)).toBeVisible()
 
     await expect(other.getByLabel('Known as')).toHaveValue('from a')
-    await expect(other.getByLabel('External reference')).toHaveValue(
+    await expect(other.getByLabel('Title', { exact: true })).toHaveValue(
       'typing in b',
     )
-    await expect(other.getByLabel('External reference')).toBeFocused()
+    await expect(other.getByLabel('Title', { exact: true })).toBeFocused()
     await expect(other.getByText('changed by someone else too')).toBeHidden()
   })
 
@@ -438,7 +440,7 @@ test.describe(
       try {
         await other.goto(url)
         await expect(other.getByLabel('Known as')).toBeVisible()
-        await other.getByLabel('External reference').fill('from b')
+        await other.getByLabel('Title', { exact: true }).fill('from b')
 
         held = []
         await page.getByLabel('Known as').fill('from a')
@@ -468,7 +470,7 @@ test.describe(
         await expect(other.getByText(/while you were editing/)).toBeHidden()
         await expect(saved(other)).toBeVisible()
         await expect(other.getByLabel('Known as')).toHaveValue('from a')
-        await expect(page.getByLabel('External reference')).toHaveValue(
+        await expect(page.getByLabel('Title', { exact: true })).toHaveValue(
           'from b',
         )
       } finally {

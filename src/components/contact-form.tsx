@@ -35,7 +35,6 @@ function toSlices(data: Data): Slices {
       birthDate: c.birthDate,
       isDeceased: c.isDeceased,
       deceasedDate: c.deceasedDate,
-      externalIdentifier: c.externalIdentifier,
     },
     methods: {
       emails: data.emails.map((e) => ({
@@ -306,13 +305,7 @@ export function DetailsFields({
     v: Payloads['details'][TKey],
   ) => onChange({ ...value, [key]: v })
   const text = (
-    key:
-      | 'title'
-      | 'firstName'
-      | 'lastName'
-      | 'nickname'
-      | 'name'
-      | 'externalIdentifier',
+    key: 'title' | 'firstName' | 'lastName' | 'nickname' | 'name',
     label: string,
   ) => (
     <Field
@@ -370,7 +363,6 @@ export function DetailsFields({
       ) : (
         text('name', 'Name')
       )}
-      {text('externalIdentifier', 'External reference')}
     </div>
   )
 }

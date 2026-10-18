@@ -21,7 +21,6 @@ const blank = (kind: Payloads['details']['kind']): Payloads['details'] => ({
   nickname: '',
   name: '',
   isDeceased: false,
-  externalIdentifier: '',
 })
 
 function NewContact() {

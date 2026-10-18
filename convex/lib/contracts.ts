@@ -340,8 +340,14 @@ export async function restoreEntityTo(
     current.set(r.contract, r)
     if (r._creationTime <= at) target.set(r.contract, r)
   }
+  // Compared at the code's version: a v1 and a v2 payload of the same
+  // state are the same state.
+  const state = (r: Doc<'revisions'>) =>
+    Object.hasOwn(reg, r.contract) && r.version <= reg[r.contract].version
+      ? canonical(upcast(reg[r.contract], r.payload, r.version))
+      : canonical(r.payload)
   const toRestore = [...target.values()].filter(
-    (r) => canonical(r.payload) !== canonical(current.get(r.contract)!.payload),
+    (r) => state(r) !== state(current.get(r.contract)!),
   )
   if (toRestore.length === 0) return { restored: [], group: null }
 

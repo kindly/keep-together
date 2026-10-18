@@ -45,7 +45,6 @@ const person = (lastName: string) => ({
   nickname: '',
   name: '',
   isDeceased: false,
-  externalIdentifier: '',
 })
 
 // ── every public mutation / action rejects a viewer ────────────────────────

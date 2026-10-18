@@ -19,7 +19,6 @@ const slices: Slices = {
     nickname: '',
     name: '',
     isDeceased: false,
-    externalIdentifier: '',
   },
   methods: {
     emails: [{ key: 'e1', label: 'home', address: 'a@x.com', isPrimary: true }],

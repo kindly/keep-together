@@ -3,7 +3,7 @@ import { v } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
 import { internalTenantQuery, tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
-import { normaliseEmail, normaliseTagName } from './rules'
+import { normaliseEmail, normaliseIdentifier, normaliseTagName } from './rules'
 import { contactWarnings } from './warnings'
 import type { AlsoUsedBy } from './warnings'
 
@@ -66,6 +66,38 @@ async function tagsOf(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
   )
   return out.sort((a, b) =>
     normaliseTagName(a.name).localeCompare(normaliseTagName(b.name)),
+  )
+}
+
+/**
+ * A contact's identifiers with their type names, by type name then value.
+ * A row of an archived type says so (`typeActive: false`).
+ */
+async function identifiersOf(
+  db: ScopedDatabaseReader,
+  contactId: Id<'contacts'>,
+) {
+  const rows = await db
+    .query('contactIdentifiers')
+    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+    .collect()
+  const out = await Promise.all(
+    rows.map(async (r) => {
+      const type = await db.get(r.typeId)
+      return {
+        key: r.key,
+        typeId: r.typeId,
+        value: r.value,
+        typeName: type?.name ?? '?',
+        typeActive: type?.isActive ?? false,
+      }
+    }),
+  )
+  return out.sort(
+    (a, b) =>
+      normaliseTagName(a.typeName).localeCompare(
+        normaliseTagName(b.typeName),
+      ) || a.value.localeCompare(b.value),
   )
 }
 
@@ -166,15 +198,56 @@ export const findByEmail = internalTenantQuery({
   handler: async (ctx, { address }) => contactsWithEmail(ctx.db, address),
 })
 
+/**
+ * For imports: the contact holding this identifier (archived included), or
+ * null. Matching is trimmed and case-insensitive; an archived type's rows
+ * are still found. At most one contact holds a (type, value) pair.
+ */
+export const findByIdentifier = internalTenantQuery({
+  args: { typeId: v.id('identifierTypes'), value: v.string() },
+  handler: async (ctx, { typeId, value }) => {
+    const valueNormalized = normaliseIdentifier(value)
+    if (!valueNormalized) return null
+    const row = await ctx.db
+      .query('contactIdentifiers')
+      .withIndex('by_tenant_valueNormalized_type', (q) =>
+        q.eq('valueNormalized', valueNormalized).eq('typeId', typeId),
+      )
+      .first()
+    return row && ctx.db.get(row.contactId)
+  },
+})
+
+/** How many identifier rows one list search reads (any type, one value). */
+export const IDENTIFIER_LOOKUP_LIMIT = 50
+
+/** Contacts holding an identifier equal to `value`, of any type. */
+async function contactsWithIdentifier(
+  db: ScopedDatabaseReader,
+  value: string,
+): Promise<Array<Doc<'contacts'>>> {
+  const valueNormalized = normaliseIdentifier(value)
+  if (!valueNormalized) return []
+  const rows = await db
+    .query('contactIdentifiers')
+    .withIndex('by_tenant_valueNormalized_type', (q) =>
+      q.eq('valueNormalized', valueNormalized),
+    )
+    .take(IDENTIFIER_LOOKUP_LIMIT)
+  const ids = [...new Set(rows.map((r) => r.contactId))]
+  const contacts = await Promise.all(ids.map((id) => db.get(id)))
+  return contacts.filter((c) => c !== null)
+}
+
 /** The most rows `list` returns. */
 export const LIST_LIMIT = 100
 /** The most assignments a tag-filtered `list` reads (then sorted by name). */
 export const LIST_TAG_SCAN = 200
 
 /**
- * Searchable list (name, or an exact email address), optionally only the
- * contacts carrying one tag; archived hidden unless asked. Bounded at
- * LIST_LIMIT rows. Each row carries its tag ids (names come from `tags`).
+ * Searchable list (name, or an exact email address or identifier),
+ * optionally only the contacts carrying one tag; archived hidden unless
+ * asked. Bounded at LIST_LIMIT rows. Each row carries its tag ids (names come from `tags`).
  * Without a search, a tag filter reads the tag's first LIST_TAG_SCAN
  * assignments; larger tags page through `byTag`. `truncated` says more
  * contacts may match than `rows` holds (the cap or the tag scan was hit),
@@ -192,15 +265,19 @@ export const list = tenantQuery({
     // A read that hit its cap: more contacts may match than it saw.
     let scanFull = false
     if (term) {
-      const [byEmail, byName] = await Promise.all([
+      const [byEmail, byIdentifier, byName] = await Promise.all([
         contactsWithEmail(ctx.db, term).then((r) => r.contacts),
+        contactsWithIdentifier(ctx.db, term),
         ctx.db
           .query('contacts')
           .withSearchIndex('search_name', (q) => q.search('sortName', term))
           .take(LIST_LIMIT),
       ])
-      const seen = new Set(byEmail.map((c) => c._id))
-      rows = [...byEmail, ...byName.filter((c) => !seen.has(c._id))]
+      // Exact matches first, each contact once.
+      const seen = new Set<Id<'contacts'>>()
+      rows = [...byEmail, ...byIdentifier, ...byName].filter(
+        (c) => !seen.has(c._id) && Boolean(seen.add(c._id)),
+      )
       scanFull = byName.length === LIST_LIMIT
     } else if (tagId) {
       const assigned = await ctx.db
@@ -268,17 +345,20 @@ export const list = tenantQuery({
  */
 async function contactView(db: ScopedDatabaseReader, id: Id<'contacts'>) {
   const emails = emailRows(db, id)
-  const [contact, kids, tagList, alsoUsedBy] = await Promise.all([
-    db.get(id),
-    children(db, id, emails),
-    tagsOf(db, id),
-    emails.then((rows) => sharedAddresses(db, id, rows)),
-  ])
+  const [contact, kids, tagList, identifierList, alsoUsedBy] =
+    await Promise.all([
+      db.get(id),
+      children(db, id, emails),
+      tagsOf(db, id),
+      identifiersOf(db, id),
+      emails.then((rows) => sharedAddresses(db, id, rows)),
+    ])
   if (!contact) return null
   return {
     contact,
     ...kids,
     tags: tagList,
+    identifiers: identifierList,
     warnings: contactWarnings(kids, alsoUsedBy),
   }
 }
