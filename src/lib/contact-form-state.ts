@@ -8,25 +8,38 @@
  * dirty slices with their `expected` counters; the server diffs again and
  * reports invalid / stale slices while saving the rest.
  */
+import type { Id } from '../../convex/_generated/dataModel'
 import type { Payloads } from '../../convex/contacts/validators'
 import { same, threeWayMerge } from './merge'
 import type { Unsaved } from './unsaved'
 
-export type SliceName = 'details' | 'methods' | 'addresses' | 'tags'
+export type SliceName =
+  'details' | 'methods' | 'addresses' | 'tags' | 'identifiers'
 export type Slices = {
   details: Payloads['details']
   methods: Payloads['methods']
   addresses: Payloads['addresses']
   tags: Payloads['tags']
+  identifiers: Payloads['identifiers']
 }
 export type Counters = Record<SliceName, number>
-export type Problem = { field: string; message: string }
+/**
+ * A blocking problem. An identifier clash names its row (`key`, minted
+ * here so it matches) and the contact already holding the value.
+ */
+export type Problem = {
+  field: string
+  message: string
+  key?: string
+  contactId?: Id<'contacts'>
+}
 
 export const SLICES: Array<SliceName> = [
   'details',
   'methods',
   'addresses',
   'tags',
+  'identifiers',
 ]
 
 export type FormState = {
@@ -69,7 +82,8 @@ export type Action =
 /**
  * Rows the user has added but not filled in are not part of the command
  * (ngo-go's rule): an email with no address, a phone with no number, an
- * address with no first line stay on screen but are never submitted.
+ * address with no first line, an identifier without both a type and a
+ * value stay on screen but are never submitted.
  */
 export function clean<TSlice extends SliceName>(
   slice: TSlice,
@@ -80,6 +94,14 @@ export function clean<TSlice extends SliceName>(
     return {
       emails: m.emails.filter((e) => e.address.trim() !== ''),
       phones: m.phones.filter((p) => p.number.trim() !== ''),
+    } as Slices[TSlice]
+  }
+  if (slice === 'identifiers') {
+    const i = value as Slices['identifiers']
+    return {
+      identifiers: i.identifiers.filter(
+        (r) => (r.typeId as string) !== '' && r.value.trim() !== '',
+      ),
     } as Slices[TSlice]
   }
   if (slice === 'addresses') {
@@ -136,6 +158,27 @@ export function mergeTags(
   return { tags: [...kept, ...added] }
 }
 
+/**
+ * Identifier rows are immutable per key, so they merge as a set of rows
+ * like tags: our adds and removes are replayed onto the remote rows.
+ */
+export function mergeIdentifiers(
+  base: Slices['identifiers'],
+  local: Slices['identifiers'],
+  remote: Slices['identifiers'],
+): Slices['identifiers'] {
+  const had = new Set(base.identifiers.map((r) => r.key))
+  const has = new Set(local.identifiers.map((r) => r.key))
+  const kept = remote.identifiers.filter(
+    (r) => has.has(r.key) || !had.has(r.key),
+  )
+  const present = new Set(kept.map((r) => r.key))
+  const added = local.identifiers.filter(
+    (r) => !had.has(r.key) && !present.has(r.key),
+  )
+  return { identifiers: [...kept, ...added] }
+}
+
 function isDirty<TSlice extends SliceName>(
   slice: TSlice,
   local: Slices[TSlice],
@@ -157,7 +200,13 @@ export function initialState(slices: Slices, counters: Counters): FormState {
     base: slices,
     local: slices,
     counters,
-    dirty: { details: false, methods: false, addresses: false, tags: false },
+    dirty: {
+      details: false,
+      methods: false,
+      addresses: false,
+      tags: false,
+      identifiers: false,
+    },
     conflicts: [],
     problems: {},
     stale: {},
@@ -207,11 +256,20 @@ export function reduce(state: FormState, action: Action): FormState {
                 ),
                 conflicts: [],
               }
-            : threeWayMerge(
-                state.base[slice] as Record<string, unknown>,
-                state.local[slice] as Record<string, unknown>,
-                remote as Record<string, unknown>,
-              )
+            : slice === 'identifiers'
+              ? {
+                  value: mergeIdentifiers(
+                    state.base.identifiers,
+                    state.local.identifiers,
+                    remote as Slices['identifiers'],
+                  ),
+                  conflicts: [],
+                }
+              : threeWayMerge(
+                  state.base[slice] as Record<string, unknown>,
+                  state.local[slice] as Record<string, unknown>,
+                  remote as Record<string, unknown>,
+                )
         put(next.base, slice, remote)
         put(next.local, slice, merged.value as Slices[typeof slice])
         conflicts = [
@@ -246,10 +304,15 @@ export function reduce(state: FormState, action: Action): FormState {
           state.base[action.slice],
         ),
       }
+      // A slice edited back to its saved state submits nothing, so a
+      // refusal of it (say, the clashing identifier row removed) is moot.
+      const problems = { ...state.problems }
+      if (!dirty[action.slice]) delete problems[action.slice]
       return {
         ...state,
         local,
         dirty,
+        problems,
         status: state.status === 'saved' ? 'idle' : state.status,
       }
     }
@@ -333,11 +396,12 @@ export function reduce(state: FormState, action: Action): FormState {
   }
 }
 
-/** Which slices a save should submit, with their expected counters. */
+/** Which slices a save should submit, without their unfilled rows. */
 export function submission(state: FormState): Partial<Slices> {
   const out: Partial<Slices> = {}
   for (const slice of SLICES)
-    if (state.dirty[slice]) out[slice] = state.local[slice] as never
+    if (state.dirty[slice])
+      out[slice] = clean(slice, state.local[slice]) as never
   return out
 }
 

@@ -5,6 +5,7 @@ import {
   clean,
   initialState,
   reduce,
+  mergeIdentifiers,
   mergeTags,
   rekey,
   submission,
@@ -27,8 +28,19 @@ const slices: Slices = {
   },
   addresses: { addresses: [] },
   tags: { tags: [{ key: 't1', tagId: 'tagMember' as Id<'tags'> }] },
+  identifiers: {
+    identifiers: [
+      { key: 'i1', typeId: 'typeOld' as Id<'identifierTypes'>, value: 'M1' },
+    ],
+  },
 }
-const counters = { details: 0, methods: 0, addresses: 0, tags: 0 }
+const counters = {
+  details: 0,
+  methods: 0,
+  addresses: 0,
+  tags: 0,
+  identifiers: 0,
+}
 
 describe('contact form state', () => {
   test('a clean slice follows the server', () => {
@@ -142,7 +154,14 @@ describe('contact form state', () => {
         saved: ['details'],
         problems: {},
         stale: {},
-        counters: { details: 1, methods: 0, addresses: 0, archive: 0, tags: 0 },
+        counters: {
+          details: 1,
+          methods: 0,
+          addresses: 0,
+          archive: 0,
+          tags: 0,
+          identifiers: 0,
+        },
       },
     })
     expect(s.dirty.details).toBe(false)
@@ -180,7 +199,14 @@ describe('contact form state', () => {
         saved: ['details'],
         problems: {},
         stale: {},
-        counters: { details: 1, methods: 0, addresses: 0, archive: 0, tags: 0 },
+        counters: {
+          details: 1,
+          methods: 0,
+          addresses: 0,
+          archive: 0,
+          tags: 0,
+          identifiers: 0,
+        },
       },
     })
     expect(s.base.details.nickname).toBe('Coun')
@@ -204,7 +230,14 @@ describe('contact form state', () => {
         saved: [],
         problems: {},
         stale: { methods: 1 },
-        counters: { details: 0, methods: 1, addresses: 0, archive: 0, tags: 0 },
+        counters: {
+          details: 0,
+          methods: 1,
+          addresses: 0,
+          archive: 0,
+          tags: 0,
+          identifiers: 0,
+        },
       },
     })
     expect(s.stale).toEqual({ methods: 1 })
@@ -242,7 +275,14 @@ describe('contact form state', () => {
       saved,
       problems: {},
       stale,
-      counters: { details, methods: 0, addresses: 0, archive: 0, tags: 0 },
+      counters: {
+        details,
+        methods: 0,
+        addresses: 0,
+        archive: 0,
+        tags: 0,
+        identifiers: 0,
+      },
     })
 
     // Their change (counter 1) has already reached us when our save, sent
@@ -331,7 +371,14 @@ describe('contact form state', () => {
         saved: [],
         problems: { details: [{ field: 'lastName', message: 'needed' }] },
         stale: {},
-        counters: { details: 0, methods: 0, addresses: 0, archive: 0, tags: 0 },
+        counters: {
+          details: 0,
+          methods: 0,
+          addresses: 0,
+          archive: 0,
+          tags: 0,
+          identifiers: 0,
+        },
       },
     })
     expect(s.problems.details?.[0].field).toBe('lastName')
@@ -417,7 +464,14 @@ describe('contact form state', () => {
           saved: [],
           problems: {},
           stale: { tags: 1 },
-          counters: { details: 0, methods: 0, addresses: 0, archive: 0, tags: 1 },
+          counters: {
+            details: 0,
+            methods: 0,
+            addresses: 0,
+            archive: 0,
+            tags: 1,
+            identifiers: 0,
+          },
         },
       })
       expect(s.stale).toEqual({ tags: 1 })
@@ -432,12 +486,131 @@ describe('contact form state', () => {
           saved: ['tags'],
           problems: {},
           stale: {},
-          counters: { details: 0, methods: 0, addresses: 0, archive: 0, tags: 2 },
+          counters: {
+            details: 0,
+            methods: 0,
+            addresses: 0,
+            archive: 0,
+            tags: 2,
+            identifiers: 0,
+          },
         },
       })
       expect(s.stale).toEqual({})
       expect(s.dirty.tags).toBe(false)
     })
+  })
+})
+
+describe('the identifiers slice', () => {
+  const row = (key: string, typeId: string, value: string) => ({
+    key,
+    typeId: typeId as Id<'identifierTypes'>,
+    value,
+  })
+  const old = row('i1', 'typeOld', 'M1')
+  const zeros = { ...counters, archive: 0 }
+
+  test('a row without both a type and a value is neither dirty nor sent', () => {
+    for (const unfilled of [row('i2', '', 'M2'), row('i2', 'typeOld', '  ')]) {
+      const s = reduce(initialState(slices, counters), {
+        type: 'edit',
+        slice: 'identifiers',
+        value: { identifiers: [old, unfilled] },
+      })
+      expect(s.dirty.identifiers).toBe(false)
+      expect(submission(s)).toEqual({})
+    }
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'identifiers',
+      value: {
+        identifiers: [old, row('i2', 'typeOld', 'M2'), row('i3', '', '')],
+      },
+    })
+    expect(submission(s).identifiers).toEqual({
+      identifiers: [old, row('i2', 'typeOld', 'M2')],
+    })
+    s = reduce(s, { type: 'commit' })
+    expect(unsavedWork(s)).toBe('busy')
+  })
+
+  test('a clash stays on its row (by key) until the row is removed', () => {
+    const clashing = row('i2', 'typeOld', 'M9')
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'identifiers',
+      value: { identifiers: [old, clashing] },
+    })
+    const submitted = submission(s)
+    s = reduce(s, { type: 'saving' })
+    s = reduce(s, {
+      type: 'saved',
+      submitted,
+      at: 1,
+      result: {
+        saved: [],
+        problems: {
+          identifiers: [
+            {
+              field: 'identifiers',
+              message: 'M9 is already used by Ada Byron',
+              key: 'i2',
+              contactId: 'other' as Id<'contacts'>,
+            },
+          ],
+        },
+        stale: {},
+        counters: zeros,
+      },
+    })
+    expect(s.problems.identifiers?.[0].key).toBe('i2')
+    expect(s.dirty.identifiers).toBe(true)
+    expect(s.needsSave).toBe(false)
+    expect(unsavedWork(s)).toBe('unsaved')
+    // Still dirty after an unrelated edit: the problem stays.
+    s = reduce(s, {
+      type: 'edit',
+      slice: 'identifiers',
+      value: { identifiers: [old, { ...clashing, value: 'M99' }] },
+    })
+    expect(s.problems.identifiers).toHaveLength(1)
+    // Removing the row leaves nothing to save, and nothing to fix.
+    s = reduce(s, {
+      type: 'edit',
+      slice: 'identifiers',
+      value: { identifiers: [old] },
+    })
+    expect(s.dirty.identifiers).toBe(false)
+    expect(s.problems.identifiers).toBeUndefined()
+    expect(unsavedWork(s)).toBe('clean')
+  })
+
+  test('rows added here and elsewhere merge by key, removals stick', () => {
+    const theirs = row('t9', 'typeOld', 'M7')
+    const mine = row('i2', 'typeOld', 'M2')
+    expect(
+      mergeIdentifiers(
+        { identifiers: [old] },
+        { identifiers: [mine] },
+        { identifiers: [old, theirs] },
+      ),
+    ).toEqual({ identifiers: [theirs, mine] })
+
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'identifiers',
+      value: { identifiers: [old, mine] },
+    })
+    s = reduce(s, {
+      type: 'server',
+      slices: { ...slices, identifiers: { identifiers: [old, theirs] } },
+      counters: { ...counters, identifiers: 1 },
+    })
+    expect(s.local.identifiers.identifiers).toEqual([old, theirs, mine])
+    expect(s.conflicts).toEqual([])
+    expect(s.counters.identifiers).toBe(1)
+    expect(s.needsSave).toBe(true)
   })
 })
 

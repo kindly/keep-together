@@ -1,3 +1,4 @@
+import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
 import { ConvexError } from 'convex/values'
@@ -10,6 +11,7 @@ import type { Warning } from '../../convex/contacts/warnings'
 import type {
   Counters,
   FormState,
+  Problem,
   SaveResult,
   SliceName,
   Slices,
@@ -24,7 +26,6 @@ import { useCanWrite, useTenant } from '../lib/tenant'
 import { useReportUnsaved } from '../lib/unsaved'
 
 type Data = NonNullable<FunctionReturnType<typeof api.contacts.queries.get>>
-type Problem = { field: string; message: string }
 type Label = 'home' | 'work' | 'other'
 
 const LABELS: Array<Label> = ['home', 'work', 'other']
@@ -72,6 +73,13 @@ function toSlices(data: Data): Slices {
       })),
     },
     tags: { tags: data.tags.map((t) => ({ key: t.key, tagId: t.tagId })) },
+    identifiers: {
+      identifiers: data.identifiers.map((r) => ({
+        key: r.key,
+        typeId: r.typeId,
+        value: r.value,
+      })),
+    },
   }
 }
 
@@ -81,6 +89,7 @@ function toCounters(data: Data): Counters {
     methods: data.contact.methodsVersion,
     addresses: data.contact.addressesVersion,
     tags: data.contact.tagsVersion,
+    identifiers: data.contact.identifiersVersion,
   }
 }
 
@@ -118,13 +127,18 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
     () => contactWarnings(data, alsoUsedBy),
     [data, alsoUsedBy],
   )
+  // Active types only: the picker never offers an archived one, and a row
+  // of one names its type from `data.identifiers`.
+  const identifierTypes = useQuery(api.contacts.queries.listIdentifierTypes, {
+    tenantId: tenant._id,
+  })
   const [state, dispatch] = useReducer(reduce, data, (d) =>
     initialState(toSlices(d), toCounters(d)),
   )
   const latest = useRef(state)
   latest.current = state
-  // A tag pick is a whole edit with nothing left to type: save it now, not
-  // after the autosave pause.
+  // A tag pick, or an identifier row finished or removed, is a whole edit
+  // with nothing left to type: save it now, not after the autosave pause.
   const saveNow = useRef(false)
 
   // The live query: merge every server change per field (own saves are
@@ -155,9 +169,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
       }
     }
     try {
-      // The server knows the identifiers slice too; this form never sends
-      // it (until X4b), so it never comes back saved, stale or invalid.
-      const result = (await saveForm(args as never)) as SaveResult
+      const result: SaveResult = await saveForm(args as never)
       dispatch({ type: 'saved', submitted, result, at: Date.now() })
     } catch (err) {
       const detail =
@@ -200,6 +212,13 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
 
   const memberName = (userId: Id<'users'> | null) =>
     members?.find((m) => m.userId === userId)?.name ?? 'someone'
+
+  // Hidden until the group has a type to pick, unless the contact already
+  // carries rows (of a since-archived type, say).
+  const showIdentifiers =
+    (identifierTypes?.length ?? 0) > 0 ||
+    data.identifiers.length > 0 ||
+    state.local.identifiers.identifiers.length > 0
 
   const generalWarnings = warnings.filter((w) => w.anchor === '')
   const problemCount = Object.values(state.problems).reduce(
@@ -294,6 +313,21 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
           problems={state.problems.addresses ?? []}
           warnings={warnings}
         />
+
+        {showIdentifiers && (
+          <IdentifierFields
+            value={state.local.identifiers}
+            onChange={(v) => edit('identifiers', v)}
+            onDone={() => {
+              saveNow.current = true
+            }}
+            problems={state.problems.identifiers ?? []}
+            saved={state.base.identifiers}
+            known={data.identifiers}
+            types={identifierTypes}
+            slug={tenant.slug}
+          />
+        )}
 
         <TagFields
           value={state.local.tags}
@@ -760,6 +794,161 @@ function TagFields({
           </select>
         )}
       </div>
+    </section>
+  )
+}
+
+/**
+ * External identifiers: a saved row's type and value are read-only (change
+ * = remove + add); a new row picks an active type and saves once its value
+ * is filled in. A clash names and links the contact holding the value.
+ */
+function IdentifierFields({
+  value,
+  onChange,
+  onDone,
+  problems,
+  saved,
+  known,
+  types,
+  slug,
+}: {
+  value: Payloads['identifiers']
+  onChange: (v: Payloads['identifiers']) => void
+  /** The row is complete: save now rather than after the pause. */
+  onDone: () => void
+  problems: Array<Problem>
+  saved: Payloads['identifiers']
+  known: Data['identifiers']
+  types: Array<{ _id: Id<'identifierTypes'>; name: string }> | undefined
+  slug: string
+}) {
+  const savedKeys = new Set(saved.identifiers.map((r) => r.key))
+  const info = new Map<string, TagInfo>(
+    known.map((r) => [r.typeId, { name: r.typeName, isActive: r.typeActive }]),
+  )
+  for (const t of types ?? []) info.set(t._id, { name: t.name, isActive: true })
+  const update = (
+    row: Payloads['identifiers']['identifiers'][number],
+    patch: Partial<typeof row>,
+  ) =>
+    onChange({
+      identifiers: value.identifiers.map((r) =>
+        r === row ? { ...r, ...patch } : r,
+      ),
+    })
+  return (
+    <section>
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-lg font-medium">Identifiers</h2>
+        {(types?.length ?? 0) > 0 && (
+          <AddButton
+            onClick={() =>
+              onChange({
+                identifiers: [
+                  ...value.identifiers,
+                  {
+                    key: crypto.randomUUID(),
+                    typeId: '' as Id<'identifierTypes'>,
+                    value: '',
+                  },
+                ],
+              })
+            }
+          />
+        )}
+      </div>
+      <Message
+        message={problems.find((p) => p.key === undefined)?.message}
+        tone="error"
+      />
+      {value.identifiers.length === 0 && (
+        <p className="text-sm text-neutral-500">No identifiers.</p>
+      )}
+      <ul className="flex flex-col gap-2">
+        {value.identifiers.map((row) => {
+          const type = info.get(row.typeId)
+          const clash = problems.find((p) => p.key === row.key)
+          const remove = () => {
+            onDone()
+            onChange({
+              identifiers: value.identifiers.filter((r) => r !== row),
+            })
+          }
+          return (
+            <li
+              key={row.key}
+              className="flex flex-col gap-1 rounded border border-neutral-200 bg-white p-2"
+            >
+              <div className="flex items-center gap-2">
+                {row.key !== undefined && savedKeys.has(row.key) ? (
+                  <>
+                    <span className="w-48 text-sm text-neutral-600">
+                      {type?.name ?? '…'}
+                      {type?.isActive === false && (
+                        <span className="ml-1 text-xs">(archived type)</span>
+                      )}
+                    </span>
+                    <span className="flex-1 px-3 py-1.5">{row.value}</span>
+                  </>
+                ) : (
+                  <>
+                    <select
+                      aria-label="Identifier type"
+                      value={row.typeId}
+                      onChange={(e) => {
+                        if (row.value.trim()) onDone()
+                        update(row, {
+                          typeId: e.target.value as Id<'identifierTypes'>,
+                        })
+                      }}
+                      className="w-48 rounded border border-neutral-300 px-2 py-1.5 text-sm"
+                    >
+                      <option value="">type…</option>
+                      {(types ?? []).map((t) => (
+                        <option key={t._id} value={t._id}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      aria-label="Identifier value"
+                      placeholder="identifier"
+                      value={row.value}
+                      onChange={(e) => update(row, { value: e.target.value })}
+                      onBlur={() => {
+                        if (row.typeId && row.value.trim()) onDone()
+                      }}
+                      className="flex-1 rounded border border-neutral-300 px-3 py-1.5"
+                    />
+                  </>
+                )}
+                <button
+                  type="button"
+                  aria-label={`remove identifier ${row.value}`}
+                  onClick={remove}
+                  className="text-xs text-neutral-500 underline"
+                >
+                  remove
+                </button>
+              </div>
+              {clash &&
+                (clash.contactId ? (
+                  <Link
+                    to="/t/$slug/contacts/$contactId"
+                    params={{ slug, contactId: clash.contactId }}
+                    className="text-xs text-red-700 underline"
+                  >
+                    {clash.message}
+                  </Link>
+                ) : (
+                  <Message message={clash.message} tone="error" />
+                ))}
+            </li>
+          )
+        })}
+      </ul>
     </section>
   )
 }
