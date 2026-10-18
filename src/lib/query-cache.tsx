@@ -3,7 +3,11 @@ import {
   ConvexQueryCacheContext,
   ConvexQueryCacheProvider,
 } from 'convex-helpers/react/cache/provider'
-import { useContext, useEffect } from 'react'
+import { getFunctionName } from 'convex/server'
+import type { FunctionReference } from 'convex/server'
+import { convexToJson } from 'convex/values'
+import type { Value } from 'convex/values'
+import { useCallback, useContext, useEffect } from 'react'
 import type { ReactNode } from 'react'
 
 // The contact page's keep-alive cache (factory/plans/perf-storage.sv,
@@ -74,6 +78,31 @@ function DropOnUnmount() {
     [registry],
   )
   return null
+}
+
+/**
+ * Release one query the cache holds idle (nothing renders it) at once,
+ * instead of after its 2 minutes: for a subscription its component has
+ * replaced and that would otherwise keep re-running on every save. A query
+ * something still renders is left alone. The key is convex-helpers'
+ * (`createQueryKey` in its hooks).
+ */
+export function useDropIdle() {
+  const { registry } = useContext(ConvexQueryCacheContext)
+  return useCallback(
+    (query: FunctionReference<'query'>, args: Record<string, Value>) => {
+      const key = JSON.stringify([getFunctionName(query), convexToJson(args)])
+      const entry = registry?.queries.get(key)
+      if (!registry || !entry || entry.refs.size > 0) return
+      if (entry.evictTimer !== null) {
+        clearTimeout(entry.evictTimer)
+        registry.idle -= 1
+      }
+      entry.unsub()
+      registry.queries.delete(key)
+    },
+    [registry],
+  )
 }
 
 /** A JWT's `sub` claim, unverified (only a cache key), or null. */

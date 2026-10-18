@@ -55,8 +55,10 @@ function ContactList() {
     ...(tagFilter && { tagId: tagFilter }),
     ...(kind && { kind }),
   })
-  // After the useQuery above: its subscription is in place by now.
-  useEffect(releaseList, [])
+  // After the useQuery above: its subscription is in place by now. After
+  // every render, not just the first: navigating to the list from the list
+  // runs the loader (a new hold) without remounting the page.
+  useEffect(releaseList)
   const contacts = listed?.rows
   const tags = useQuery(api.contacts.queries.tags, {
     tenantId: tenant._id,

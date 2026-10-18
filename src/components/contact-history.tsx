@@ -1,14 +1,19 @@
 import { useMutation, useQueries } from 'convex/react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { joinMoments } from '../../convex/contacts/history'
 import type { Moment } from '../../convex/contacts/history'
 import { useCanWrite, useTenant } from '../lib/tenant'
-import { useQuery } from '../lib/query-cache'
+import { useDropIdle, useQuery } from '../lib/query-cache'
 
 /** Revisions per history page (the server caps it at HISTORY_PAGE_LIMIT). */
 const PAGE = 10
+/**
+ * Moments the live newest page may grow to before it is re-subscribed
+ * afresh (see useHistoryPages).
+ */
+export const REANCHOR_AT = 2 * PAGE
 const NO_CURSORS: Array<string> = []
 // One formatter for every moment: `toLocaleString` with options builds a
 // new one per call, on every render of the page (each save re-renders it).
@@ -18,12 +23,25 @@ const AT = new Intl.DateTimeFormat([], {
 })
 
 /**
- * The newest page's args. The route prewarms exactly these, so they must
- * not vary per mount (which is why this isn't `usePaginatedQuery`: its
- * per-hook pagination id would miss the prewarmed subscription).
+ * The newest page's args. The route prewarms exactly these (generation 0),
+ * so they must not vary per mount (which is why this isn't
+ * `usePaginatedQuery`: its per-hook pagination id would miss the prewarmed
+ * subscription). A later generation is the same page subscribed afresh.
  */
-export function historyFirstPage(tenantId: Id<'tenants'>, id: Id<'contacts'>) {
-  return { tenantId, id, paginationOpts: { numItems: PAGE, cursor: null } }
+export function historyFirstPage(
+  tenantId: Id<'tenants'>,
+  id: Id<'contacts'>,
+  generation = 0,
+) {
+  return {
+    tenantId,
+    id,
+    paginationOpts: {
+      numItems: PAGE,
+      cursor: null,
+      ...(generation > 0 && { id: generation }),
+    },
+  }
 }
 
 /**
@@ -32,13 +50,27 @@ export function historyFirstPage(tenantId: Id<'tenants'>, id: Id<'contacts'>) {
  * end on re-runs (Convex pins a page's range per subscription) and grows
  * as saves land, so pages never leave a gap. Only the newest page re-runs
  * on a save; older ones read ranges a save never touches.
+ *
+ * Every save re-runs the whole newest page, so its growth over a session
+ * is paid on each save. Past REANCHOR_AT moments, and only while no older
+ * page hangs off its end, it is subscribed afresh (newest PAGE again) and
+ * the grown subscription released at once; the grown page stays on screen
+ * until the fresh one answers.
  */
 function useHistoryPages(id: Id<'contacts'>) {
   const tenant = useTenant()
-  const first = useQuery(
+  const [anchor, setAnchor] = useState({ id, generation: 0 })
+  const generation = anchor.id === id ? anchor.generation : 0
+  const live = useQuery(
     api.contacts.queries.history,
-    historyFirstPage(tenant._id, id),
+    historyFirstPage(tenant._id, id, generation),
   )
+  const shown = useRef<{ id: Id<'contacts'>; page: typeof live }>({
+    id,
+    page: undefined,
+  })
+  if (live !== undefined) shown.current = { id, page: live }
+  const first = shown.current.id === id ? shown.current.page : undefined
   const [older, setOlder] = useState<{
     id: Id<'contacts'>
     cursors: Array<string>
@@ -64,6 +96,23 @@ function useHistoryPages(id: Id<'contacts'>) {
     [tenant._id, id, cursors],
   )
   const results = useQueries(queries)
+  const dropIdle = useDropIdle()
+  const grown =
+    live !== undefined &&
+    cursors.length === 0 &&
+    live.page.length > REANCHOR_AT
+  useEffect(() => {
+    if (grown) setAnchor({ id, generation: generation + 1 })
+  }, [grown, id, generation])
+  // After the useQuery above has moved to the new generation, the old one
+  // is idle in the cache: release it now, not in 2 minutes.
+  useEffect(() => {
+    if (generation > 0)
+      dropIdle(
+        api.contacts.queries.history,
+        historyFirstPage(tenant._id, id, generation - 1),
+      )
+  }, [dropIdle, tenant._id, id, generation])
   if (first === undefined) return { moments: undefined }
   const pages = [first]
   for (const cursor of cursors) {
@@ -77,8 +126,9 @@ function useHistoryPages(id: Id<'contacts'>) {
   return {
     moments: joinMoments(pages.flatMap((p) => p.page)),
     loading,
+    // Not while a re-anchored page loads: older pages start at its end.
     loadOlder:
-      loading || last.isDone
+      loading || live === undefined || last.isDone
         ? undefined
         : () => setOlder({ id, cursors: [...cursors, last.continueCursor] }),
   }

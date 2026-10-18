@@ -131,6 +131,22 @@ describe('history pages', () => {
     expect(after).toEqual((await revisions()).map((r) => r._id))
   })
 
+  test('a re-anchored first page (a pagination id) is the newest page, nothing else', async () => {
+    for (let i = 0; i < 25; i++) await rename(`n${i}`)
+    const plain = await page(f.a, null)
+    const anchored = await f.a.as.query(api.contacts.queries.history, {
+      tenantId: f.a.tenantId,
+      id: ada,
+      paginationOpts: { numItems: 10, cursor: null, id: 3 },
+    })
+    expect(anchored).toEqual(plain)
+    // Load older from it continues without a gap.
+    const older = await page(f.a, anchored.continueCursor)
+    expect([...anchored.page, ...older.page].map((m) => m.revisionId)).toEqual(
+      (await revisions()).slice(0, 20).map((r) => r._id),
+    )
+  })
+
   test('a group cut by the page boundary joins into one moment', async () => {
     await formSave('grouped', 'a@x.com', 0)
     // Nine newer revisions: the group's newer half closes page one.

@@ -1,7 +1,7 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
 import { useConvex, useMutation, useQuery } from 'convex/react'
 import { ConvexError } from 'convex/values'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from '../../convex/_generated/api'
 import { useCanWrite, useTenant } from '../lib/tenant'
@@ -33,6 +33,14 @@ function NewContact() {
   // Watch for the contact this form creates: it arrives with the create's
   // result, so the contact page can render without a second round trip.
   const convex = useConvex()
+  // Where a create lands: fetch the contact page's code now, while the form
+  // is filled in, not after the create (its first visit costs 30–70 ms).
+  const router = useRouter()
+  useEffect(() => {
+    void router.loadRouteChunk(
+      router.routesById['/t/$slug/contacts/$contactId'],
+    )
+  }, [router])
   const watchArgs = { tenantId: tenant._id, clientKey }
   useQuery(api.contacts.queries.byClientKey, watchArgs)
   const toContact = async (id: string) => {

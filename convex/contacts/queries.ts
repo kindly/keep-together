@@ -525,6 +525,9 @@ export const HISTORY_PAGE_LIMIT = 10
 export const history = tenantQuery({
   args: { id: v.id('contacts'), paginationOpts: paginationOptsValidator },
   handler: async (ctx, { id, paginationOpts }) => {
+    // `paginationOpts.id` only tells subscriptions apart (the SPA's history
+    // panel re-anchors its newest page with it); it is not a read option.
+    const { id: _subscription, ...opts } = paginationOpts
     const result = await ctx.db
       .query('revisions')
       .withIndex('by_tenant_entity', (q) =>
@@ -532,8 +535,8 @@ export const history = tenantQuery({
       )
       .order('desc')
       .paginate({
-        ...paginationOpts,
-        numItems: Math.min(paginationOpts.numItems, HISTORY_PAGE_LIMIT),
+        ...opts,
+        numItems: Math.min(opts.numItems, HISTORY_PAGE_LIMIT),
       })
     const revisions = result.page
     const groupNames = new Map(
