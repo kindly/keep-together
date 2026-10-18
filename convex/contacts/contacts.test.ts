@@ -186,6 +186,33 @@ describe('details', () => {
     })
   })
 
+  test('byClientKey finds the contact a form created, in its own tenant only', async () => {
+    const byKey = (
+      who: typeof f.a,
+      tenantId: Id<'tenants'>,
+      clientKey: string,
+    ) => who.as.query(api.contacts.queries.byClientKey, { tenantId, clientKey })
+    expect(await byKey(f.a, f.a.tenantId, 'form-1')).toBeNull()
+    const id = await f.a.as.mutation(api.contacts.mutations.create, {
+      tenantId: f.a.tenantId,
+      ...individual,
+      clientKey: 'form-1',
+    })
+    // The same view `get` gives, so the contact page can render it.
+    expect(await byKey(f.a, f.a.tenantId, 'form-1')).toEqual(
+      await f.a.as.query(api.contacts.queries.get, {
+        tenantId: f.a.tenantId,
+        id,
+      }),
+    )
+    // B, in its own tenant, with A's key: nothing.
+    expect(await byKey(f.b, f.b.tenantId, 'form-1')).toBeNull()
+    // B naming A's tenant: refused.
+    const data = await errorData(byKey(f.b, f.a.tenantId, 'form-1'))
+    expect(data.kind).toBe('forbidden')
+    expect(await snapshot(f.t, f.b.tenantId)).toBe(bSnapshot)
+  })
+
   test('external identifier unique per tenant', async () => {
     await f.a.as.mutation(api.contacts.mutations.create, {
       tenantId: f.a.tenantId,

@@ -14,7 +14,14 @@ const convex = new ConvexReactClient(convexUrl, {
   // it expires). Without it the client fetches a fresh token right after
   // connecting, and the second Authenticate makes the server re-run every
   // subscription: a refresh round trip plus a full re-run on every load,
-  // landing on whatever the user does first. Experimental in convex 1.47.
+  // landing on whatever the user does first. Experimental in convex 1.47:
+  // re-check on upgrades.
+  // Security: the skipped refresh was also a revocation check, so a session
+  // revoked elsewhere (sign-out everywhere, password reset) survives a
+  // reload until its JWT expires (Convex Auth default 1 h), as an open tab
+  // already does. Membership and role are still checked on every call. R4's
+  // admin step-up must check the session's sign-in time on the server, not
+  // the token's age.
   initialAuthTokenReuse: true,
 })
 
