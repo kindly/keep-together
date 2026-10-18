@@ -1,7 +1,9 @@
-<sv-page label="plan: external identifiers" category="plans">
+<sv-page label="plan: external identifiers" category="archive">
 
 <sv-prose id="b1">
 ## Design tree
+
+**Complete 2026-10-18: all steps merged (X1–X5; ADR 0019 amended), last commit 557aa14.** Rolled out to every dev deployment; the X2 backfill left 0 leftovers.
 
 *Confirmed by the human in round 3 (2026-10-18). Round 2 changed type management (g2q3) and how an empty type list looks (g2q4); everything else as recommended. Ready for building.*
 
