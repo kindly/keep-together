@@ -321,11 +321,7 @@ export function reduce(state: FormState, action: Action): FormState {
           ...conflicts,
           ...merged.conflicts.map((f) => `${slice}.${f}`),
         ]
-        next.dirty[slice] = isDirty(
-          slice,
-          merged.value,
-          remote,
-        )
+        next.dirty[slice] = isDirty(slice, merged.value, remote)
         if (next.dirty[slice]) needsSave = true // retry the save against the new counter
       }
       // A stale notice is resolved once the newer state has arrived.
@@ -430,9 +426,11 @@ export function reduce(state: FormState, action: Action): FormState {
         stale,
         status: 'saved',
         savedAt: action.result.saved.length ? action.at : state.savedAt,
-        needsSave:
-          state.needsSave ||
-          SLICES.some((s) => dirty[s] && !action.result.problems[s]),
+        // Recomputed, not carried over: a commit during the save (the Save
+        // click's own blur) queues it, and if this save took everything a
+        // queued save submits nothing and would never clear it, leaving
+        // the form `busy` and the leave guard waiting forever.
+        needsSave: SLICES.some((s) => dirty[s] && !action.result.problems[s]),
         error: null,
       }
     }

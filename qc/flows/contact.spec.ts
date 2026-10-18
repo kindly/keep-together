@@ -341,6 +341,9 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     await createContact(page, users.a.slug, uniqueName('pages'))
     const moments = page.locator('aside ol > li')
     const known = page.getByLabel('Known as')
+    // The create's moment first: counting before the history has loaded
+    // reads 0, and the first save would then expect 1 moment, not 2.
+    await expect(moments).toHaveCount(1)
     const saveKnownAs = async (value: string) => {
       const before = await moments.count()
       await known.fill(value)

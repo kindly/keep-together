@@ -717,6 +717,46 @@ describe('the identifiers slice', () => {
 })
 
 describe('unsavedWork', () => {
+  test('a commit during the save that took everything leaves it clean', () => {
+    const phone = {
+      key: 'p1',
+      label: 'home' as const,
+      number: '07700 900123',
+      isPrimary: true,
+    }
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'methods',
+      value: { ...slices.methods, phones: [phone] },
+    })
+    s = reduce(s, { type: 'commit' })
+    const submitted = submission(s)
+    s = reduce(s, { type: 'saving' })
+    // The Save click's blur commits while the save is in flight.
+    s = reduce(s, { type: 'commit' })
+    expect(s.needsSave).toBe(true)
+    s = reduce(s, {
+      type: 'saved',
+      submitted,
+      at: 1,
+      result: {
+        saved: ['methods'],
+        problems: {},
+        stale: {},
+        counters: {
+          details: 0,
+          methods: 1,
+          addresses: 0,
+          archive: 0,
+          tags: 0,
+          identifiers: 0,
+        },
+      },
+    })
+    expect(s.needsSave).toBe(false)
+    expect(unsavedWork(s)).toBe('clean')
+  })
+
   const typed = (state = initialState(slices, counters)) =>
     reduce(state, {
       type: 'edit',
