@@ -22,25 +22,17 @@
 // Must run outside the Claude sandbox: it writes to the main checkout, and
 // `pnpm qc` needs WebSockets.
 import { execFileSync, spawn } from 'node:child_process'
-import {
-  closeSync,
-  existsSync,
-  linkSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
-  convex,
-  createDeployment,
-  setAuthKeys,
+  createInstance as createKeyInstance,
+  emptySnapshot,
+  keyEnv as deployKeyEnv,
+  loadKeyFile,
   verifyDeployKey,
 } from './convex-instance.mjs'
+import { readLock, tryLock as tryLockFile } from './lockfile.mjs'
 
 const PROJECT = 'mr-raznick:keep-together'
 const BASE_PORT = 4100
@@ -114,72 +106,12 @@ const ms = (start) => `${Math.round(performance.now() - start)} ms`
 
 // ── lock ────────────────────────────────────────────────────────────────
 
-function readLock(file) {
-  try {
-    return JSON.parse(readFileSync(file, 'utf8'))
-  } catch {
-    return null
-  }
-}
-
-function alive(pid) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return err.code === 'EPERM'
-  }
-}
-
 function tryLock() {
-  try {
-    const fd = openSync(lockPath, 'wx')
-    writeFileSync(
-      fd,
-      JSON.stringify({
-        pid: process.pid,
-        worktree: root,
-        startedAt: new Date().toISOString(),
-      }) + '\n',
-    )
-    closeSync(fd)
-    return null
-  } catch (err) {
-    if (err.code !== 'EEXIST') {
-      throw new Error(
-        `cannot create ${lockPath} (${err.code}); run outside the Claude sandbox`,
-      )
-    }
-  }
-  const holder = readLock(lockPath)
-  // A lock being written right now reads as empty: treat it as held.
-  if (!holder) return { pid: '?' }
-  const age = Date.now() - Date.parse(holder.startedAt)
-  if (alive(holder.pid) && !(age > LOCK_MAX_AGE_MS)) return holder
-  // Stale: move it aside atomically, so only one waiter takes it over.
-  const aside = `${lockPath}.stale-${process.pid}`
-  try {
-    renameSync(lockPath, aside)
-  } catch {
-    return holder
-  }
-  const moved = readLock(aside)
-  if (moved && moved.pid !== holder.pid && alive(moved.pid)) {
-    // Someone else's fresh lock landed between our read and rename: put
-    // it back (link fails if yet another lock appeared, which is fine).
-    try {
-      linkSync(aside, lockPath)
-    } catch {
-      /* lockPath already taken */
-    }
-    unlinkSync(aside)
-    return moved
-  }
-  unlinkSync(aside)
-  console.log(
-    `▸ taking over stale QC lock (pid ${holder.pid} from ${holder.worktree}, since ${holder.startedAt}, is gone or too old)`,
+  return tryLockFile(
+    lockPath,
+    { pid: process.pid, worktree: root, startedAt: new Date().toISOString() },
+    { maxAgeMs: LOCK_MAX_AGE_MS, label: 'QC lock' },
   )
-  return tryLock()
 }
 
 async function acquireLock(wait) {
@@ -214,39 +146,10 @@ function envFile(i) {
   return path.join(envDir, `.env.qc-${i}.local`)
 }
 
-function readEnv(file) {
-  const env = {}
-  for (const line of readFileSync(file, 'utf8').split('\n')) {
-    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/)
-    if (m) env[m[1]] = m[2]
-  }
-  return env
-}
-
-// Load and check an instance's env file. `convex deploy` without a key
-// targets the project's *production* deployment, so a missing or non-dev
-// key is fatal, never a fallback.
 function loadInstance(i) {
-  const file = envFile(i)
-  const { CONVEX_DEPLOY_KEY: key, VITE_CONVEX_URL: url } = readEnv(file)
-  const deployment = key?.match(/^dev:([a-z0-9-]+)\|/)?.[1]
-  if (!deployment) {
-    throw new Error(
-      `${file}: CONVEX_DEPLOY_KEY missing or not a dev deploy key`,
-    )
-  }
-  if (DENIED.has(deployment)) {
-    throw new Error(`${file}: ${deployment} is never a QC instance`)
-  }
-  if (!url?.startsWith(`https://${deployment}.`)) {
-    throw new Error(`${file}: VITE_CONVEX_URL ${url} is not ${deployment}`)
-  }
   return {
     name: `qc-${i}`,
-    deployment,
-    url,
-    key,
-    envFile: file,
+    ...loadKeyFile(envFile(i), { denied: DENIED, role: 'a QC instance' }),
     port: BASE_PORT + i,
     outDir: `dist-qc/qc-${i}`,
   }
@@ -265,74 +168,17 @@ async function verifyPool(pool) {
   )
 }
 
-// Create dev/qc-<i> with auth keys and a deploy key. The env file is
-// written last, so an interrupted creation is redone on the next run: the
-// deployment is then reused (each retry leaves an extra `qc-<i>-push` key
-// to delete from the dashboard).
-async function createInstance(i) {
-  const ref = `${PROJECT}:dev/qc-${i}`
-  console.log(`▸ creating ${ref}`)
-  let url
-  try {
-    ;({ url } = await createDeployment(ref))
-  } catch (err) {
-    if (!/DeploymentReferenceAlreadyExists/.test(err.message)) throw err
-    console.log(`▸ ${ref} exists from an interrupted run; finishing its setup`)
-  }
-  console.log(`▸ setting Convex Auth keys + SITE_URL on ${ref}`)
-  await setAuthKeys(ref, `http://localhost:${BASE_PORT + i}`)
-  const { code, stdout, stderr } = await convex([
-    'deployment',
-    'token',
-    'create',
-    `qc-${i}-push`,
-    '--deployment',
-    ref,
-  ])
-  const key = stdout.trim().split('\n').at(-1) ?? ''
-  const deployment = key.match(/^dev:([a-z0-9-]+)\|/)?.[1]
-  if (code !== 0 || !deployment) {
-    throw new Error(`deploy key for ${ref} not created: ${stderr}`)
-  }
-  if (!url) {
-    // A dry-run deploy names the URL without changing anything.
-    const out = await run(
-      'npx',
-      [
-        'convex',
-        'deploy',
-        '--dry-run',
-        '--typecheck',
-        'disable',
-        '--codegen',
-        'disable',
-        '-y',
-      ],
-      keyEnv({ key }),
-    )
-    url = out.match(/https:\/\/[a-z0-9.-]*\.convex\.cloud/)?.[0]
-  }
-  if (!url?.startsWith(`https://${deployment}.`)) {
-    throw new Error(`no URL for ${deployment}`)
-  }
-  writeFileSync(
-    envFile(i),
-    `# dev/qc-${i}: QC pool instance (scripts/qc-instances.mjs)\n` +
-      `CONVEX_DEPLOY_KEY=${key}\nVITE_CONVEX_URL=${url}\n`,
-    { mode: 0o600 },
-  )
-  console.log(`▸ wrote ${envFile(i)}`)
+function createInstance(i) {
+  return createKeyInstance({
+    ref: `${PROJECT}:dev/qc-${i}`,
+    tokenName: `qc-${i}-push`,
+    siteUrl: `http://localhost:${BASE_PORT + i}`,
+    envFile: envFile(i),
+    comment: `dev/qc-${i}: QC pool instance (scripts/qc-instances.mjs)`,
+  })
 }
 
-// Child env for a Convex CLI call scoped by a deploy key: nothing inherited
-// may pick a different deployment.
-function keyEnv(inst) {
-  const env = { ...process.env, CONVEX_DEPLOY_KEY: inst.key }
-  delete env.CONVEX_DEPLOYMENT
-  delete env.CONVEX_SELF_HOSTED_URL
-  delete env.CONVEX_SELF_HOSTED_ADMIN_KEY
-  return env
-}
+const keyEnv = (inst) => deployKeyEnv(inst.key)
 
 function run(cmd, args, env) {
   return new Promise((resolve, reject) => {
@@ -354,15 +200,6 @@ function run(cmd, args, env) {
         : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}:\n${out}`)),
     )
   })
-}
-
-// A snapshot with no tables: `import --replace-all` clears every table.
-function emptySnapshot() {
-  const file = path.join(os.tmpdir(), `qc-empty-${process.pid}.zip`)
-  const eocd = Buffer.alloc(22)
-  eocd.writeUInt32LE(0x06054b50, 0)
-  writeFileSync(file, eocd)
-  return file
 }
 
 async function timed(label, fn) {
@@ -387,7 +224,7 @@ async function main() {
   )
 
   if (opts.reset) {
-    const zip = emptySnapshot()
+    const zip = emptySnapshot('qc')
     console.log('▸ resetting data (import --replace-all of an empty snapshot)')
     await Promise.all(
       pool.map((inst) =>

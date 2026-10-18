@@ -22,7 +22,11 @@
     "qc:instances": "node scripts/qc-instances.mjs",
     "instances:sync": "node scripts/test-instances.mjs",
     "instances:serve": "node scripts/test-instances.mjs serve",
-    "qc:report": "node scripts/qc-report.mjs"
+    "qc:report": "node scripts/qc-report.mjs",
+    "rehearsal:claim": "node scripts/rehearsal.mjs claim",
+    "rehearsal:run": "node scripts/rehearsal.mjs run",
+    "rehearsal:release": "node scripts/rehearsal.mjs release",
+    "rehearsal:status": "node scripts/rehearsal.mjs status"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.96",

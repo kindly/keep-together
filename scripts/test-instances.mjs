@@ -33,7 +33,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -42,12 +41,13 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import {
-  convex,
-  createDeployment,
-  setAuthKeys,
+  createInstance as createKeyInstance,
+  emptySnapshot,
+  keyEnv as deployKeyEnv,
+  loadKeyFile,
+  readEnv,
   verifyDeployKey,
 } from './convex-instance.mjs'
 
@@ -104,15 +104,6 @@ function parseArgs(argv) {
 
 const ms = (start) => `${Math.round(performance.now() - start)} ms`
 
-function readEnv(file) {
-  const env = {}
-  for (const line of readFileSync(file, 'utf8').split('\n')) {
-    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/)
-    if (m) env[m[1]] = m[2]
-  }
-  return env
-}
-
 function git(...args) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim()
 }
@@ -147,25 +138,12 @@ function requireMain() {
 
 // ── instances ───────────────────────────────────────────────────────────
 
-// Load and check an instance's env file. `convex deploy` without a key
-// targets the project's *production* deployment, so a missing or non-dev
-// key is fatal, never a fallback.
 function loadInstance(name) {
-  const file = envFile(name)
-  const { CONVEX_DEPLOY_KEY: key, VITE_CONVEX_URL: url } = readEnv(file)
-  const deployment = key?.match(/^dev:([a-z0-9-]+)\|/)?.[1]
-  if (!deployment) {
-    throw new Error(
-      `${file}: CONVEX_DEPLOY_KEY missing or not a dev deploy key`,
-    )
+  return {
+    name,
+    ...loadKeyFile(envFile(name), { denied: DENIED, role: 'a test instance' }),
+    ...INSTANCES[name],
   }
-  if (DENIED.has(deployment)) {
-    throw new Error(`${file}: ${deployment} is never a test instance`)
-  }
-  if (!url?.startsWith(`https://${deployment}.`)) {
-    throw new Error(`${file}: VITE_CONVEX_URL ${url} is not ${deployment}`)
-  }
-  return { name, deployment, url, key, envFile: file, ...INSTANCES[name] }
 }
 
 // Prove the key is dev/<name>'s before anything writes with it.
@@ -177,74 +155,17 @@ function verify(inst) {
   )
 }
 
-// Create dev/<name> with auth keys and a deploy key. The env file is
-// written last, so an interrupted creation is redone on the next run: the
-// deployment is then reused (each retry leaves an extra `<name>-push` key
-// to delete from the dashboard).
-async function createInstance(name) {
-  const ref = `${PROJECT}:dev/${name}`
-  console.log(`▸ creating ${ref}`)
-  let url
-  try {
-    ;({ url } = await createDeployment(ref))
-  } catch (err) {
-    if (!/DeploymentReferenceAlreadyExists/.test(err.message)) throw err
-    console.log(`▸ ${ref} already exists; finishing its setup`)
-  }
-  console.log(`▸ setting Convex Auth keys + SITE_URL on ${ref}`)
-  await setAuthKeys(ref, INSTANCES[name].siteUrl)
-  const { code, stdout, stderr } = await convex([
-    'deployment',
-    'token',
-    'create',
-    `${name}-push`,
-    '--deployment',
-    ref,
-  ])
-  const key = stdout.trim().split('\n').at(-1) ?? ''
-  const deployment = key.match(/^dev:([a-z0-9-]+)\|/)?.[1]
-  if (code !== 0 || !deployment) {
-    throw new Error(`deploy key for ${ref} not created: ${stderr}`)
-  }
-  if (!url) {
-    // A dry-run deploy names the URL without changing anything.
-    const out = await run(
-      'npx',
-      [
-        'convex',
-        'deploy',
-        '--dry-run',
-        '--typecheck',
-        'disable',
-        '--codegen',
-        'disable',
-        '-y',
-      ],
-      keyEnv({ key }),
-    )
-    url = out.match(/https:\/\/[a-z0-9.-]*\.convex\.cloud/)?.[0]
-  }
-  if (!url?.startsWith(`https://${deployment}.`)) {
-    throw new Error(`no URL for ${deployment}`)
-  }
-  writeFileSync(
-    envFile(name),
-    `# dev/${name}: manual-test instance (scripts/test-instances.mjs)\n` +
-      `CONVEX_DEPLOY_KEY=${key}\nVITE_CONVEX_URL=${url}\n`,
-    { mode: 0o600 },
-  )
-  console.log(`▸ wrote ${envFile(name)}`)
+function createInstance(name) {
+  return createKeyInstance({
+    ref: `${PROJECT}:dev/${name}`,
+    tokenName: `${name}-push`,
+    siteUrl: INSTANCES[name].siteUrl,
+    envFile: envFile(name),
+    comment: `dev/${name}: manual-test instance (scripts/test-instances.mjs)`,
+  })
 }
 
-// Child env for a Convex CLI call scoped by a deploy key: nothing inherited
-// may pick a different deployment.
-function keyEnv(inst) {
-  const env = { ...process.env, CONVEX_DEPLOY_KEY: inst.key }
-  delete env.CONVEX_DEPLOYMENT
-  delete env.CONVEX_SELF_HOSTED_URL
-  delete env.CONVEX_SELF_HOSTED_ADMIN_KEY
-  return env
-}
+const keyEnv = (inst) => deployKeyEnv(inst.key)
 
 function run(cmd, args, env) {
   return new Promise((resolve, reject) => {
@@ -268,15 +189,6 @@ function run(cmd, args, env) {
           ),
     )
   })
-}
-
-// A snapshot with no tables: `import --replace-all` clears every table.
-function emptySnapshot() {
-  const file = path.join(os.tmpdir(), `test-instances-empty-${process.pid}.zip`)
-  const eocd = Buffer.alloc(22)
-  eocd.writeUInt32LE(0x06054b50, 0)
-  writeFileSync(file, eocd)
-  return file
 }
 
 // ── sign-ins ────────────────────────────────────────────────────────────
@@ -334,7 +246,7 @@ async function sync(opts) {
     `▸ instances: ${pool.map((p) => `${p.name}=${p.deployment}`).join(' ')}`,
   )
 
-  const zip = opts.reset ? emptySnapshot() : null
+  const zip = opts.reset ? emptySnapshot('test-instances') : null
   const commit =
     git('rev-parse', '--short', 'HEAD') +
     (git('status', '--porcelain', '--untracked-files=no') ? '+uncommitted' : '')

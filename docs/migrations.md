@@ -14,6 +14,10 @@ until its backfill has run, so a skipped step fails loudly, not silently.
 | 4 | `c94194c` (X2) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillExternalIdentifiers"}'` | isDone, and `npx convex run platform/migrations:legacyLeftoverTotal` → total 0 (resolve any leftover first) |
 | 5 | `main` | (perf step 1's revision `groupName` backfill, once merged: optional, history falls back without it) | — |
 
+Rehearse the sequence on a rehearsal slot first (README "Rehearsal
+slots"): `pnpm rehearsal:claim`, then `pnpm rehearsal:run <n> --cwd
+<worktree> -- deploy -y` / `-- run …` per row, never a new deployment.
+
 Do it from a temporary worktree (`git worktree add --detach <dir> <commit>`)
 with the deployment's `.env.local` / deploy key, so the main checkout is
 untouched.

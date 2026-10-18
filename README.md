@@ -16,6 +16,8 @@ npx @convex-dev/auth # once per deployment: sets JWT keys + SITE_URL for Convex 
 pnpm dev             # Vite on http://localhost:3000
 pnpm check           # typecheck + lint + tests (CI)
 pnpm dev:instance scratch   # another cloud dev deployment: dev/scratch, auth keys set, code pushed
+                            # (to try something against a throwaway backend, claim a
+                            # rehearsal slot instead: see "Rehearsal slots")
 npx convex run platform/devSeed:demoTenant '{"slug":"demo"}'   # a tenant with contacts
 # (dev/demo and dev/preview are taken: see "Manual test instances")
 ```
@@ -85,6 +87,49 @@ main checkout, so run it outside the Claude sandbox.
 - The seed is `convex/platform/testSeed.ts` (users, tenant) and
   `testSeedData.ts` (the donors). A new membership role is one line in
   `TEST_USERS`; the next sync mints its password.
+
+## Rehearsal slots
+
+Two fixed dev deployments for trying something against a real, empty
+backend: a migration from an old commit, a seed, a deploy you don't want on
+your own dev. Use them instead of creating a deployment per attempt; the
+Convex CLI can't delete deployments, so throwaways pile up.
+
+| Slot | Deployment | URL |
+|---|---|---|
+| 1 | `dev/rehearsal-1` = `fortunate-pika-201` | `https://fortunate-pika-201.eu-west-1.convex.cloud` |
+| 2 | `dev/rehearsal-2` = `first-newt-648` | `https://first-newt-648.eu-west-1.convex.cloud` |
+
+```sh
+pnpm rehearsal:claim [--slot N]    # take a free slot and wipe its data
+pnpm rehearsal:run 1 -- deploy --codegen disable -y      # push this checkout
+pnpm rehearsal:run 1 --cwd ../old-commit -- deploy -y    # or another checkout
+pnpm rehearsal:run 1 -- run platform/devSeed:demoTenant '{"slug":"demo"}'
+pnpm rehearsal:release 1
+pnpm rehearsal:status              # who holds what
+```
+
+- **Claim** takes `.rehearsal-<n>.lock` in the main checkout, creates the
+  deployment on first use (EU, auth keys, deploy key in
+  `.env.rehearsal-<n>.local`, mode 600), proves the key is that slot's,
+  replaces all its data with an empty snapshot (component tables too)
+  and sets `TEST_SEED_ENABLED=1` and `QC_SEED_ENABLED=1`. It doesn't
+  deploy: the code is whatever the last holder pushed, so push yours first.
+- **The lock** belongs to the process that claimed: the Claude session or
+  interactive shell above the command (`--pid` to name another). It is
+  stale once that process dies or 2 h after the last claim or `run`, and
+  the next claim takes it over. A live holder blocks every other claim.
+- **`run`** passes `deploy`, `run`, `import`, `export`, `data`, `env`,
+  `logs` and `function-spec` to `npx convex` with the slot's key, for the
+  worktree holding the slot only, and refuses flags that would pick
+  another deployment (`--prod`, `--deployment`, `--env-file`, …). The key
+  is never printed. `npx convex <cmd> --env-file
+  <main>/.env.rehearsal-<n>.local` also works, without the lock check.
+- A slot's env file that names `zany-bird-247`, or any deployment another
+  `.env.*.local` in the main checkout names (QC pool, demo, preview), is
+  refused before anything runs.
+- Runs the Convex CLI and writes to the main checkout: outside the Claude
+  sandbox.
 
 ## Where things are
 
