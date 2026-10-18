@@ -150,10 +150,14 @@ export const world = internalMutation({
           .query('contacts')
           .withIndex('by_tenant_sort', (q) => q.eq('tenantId', existing._id))
           .collect()
+        // In creation order, as a first run returns them: specs take
+        // contactIds[0] to be Ada.
         out.push({
           slug,
           tenantId: existing._id,
-          contactIds: contacts.map((c) => c._id),
+          contactIds: contacts
+            .sort((x, y) => x._creationTime - y._creationTime)
+            .map((c) => c._id),
         })
         continue
       }

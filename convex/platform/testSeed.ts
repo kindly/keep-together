@@ -241,11 +241,18 @@ export const donors = internalMutation({
     )
     const ids = new Map<number, Id<'contacts'>>()
     const opts = { source: 'seed', group } as const
-    // The tenant mutation made them; this only looks them up.
-    const identifierTypes = await ensureIdentifierTypes(
+    // The tenant mutation made them; this only looks them up. A type an
+    // admin has archived since (say "External reference", which the X2
+    // backfill made on older instances) stays archived and its rows are
+    // skipped: the contract adds rows of active types only.
+    const identifierTypes = new Map<string, Id<'identifierTypes'>>()
+    for (const [name, typeId] of await ensureIdentifierTypes(
       scoped,
       IDENTIFIER_TYPES,
-    )
+    )) {
+      if ((await scoped.db.get(typeId))?.isActive)
+        identifierTypes.set(name, typeId)
+    }
     for (let i = from; i < to; i++) {
       const spec = specs[i]
       const { id } = await executeContract(
@@ -265,17 +272,15 @@ export const donors = internalMutation({
         entityId: id,
         expected: 0,
       })
-      if (spec.identifiers.length) {
+      const rows = spec.identifiers.flatMap(({ key, type, value }) => {
+        const typeId = identifierTypes.get(type)
+        return typeId ? [{ key, typeId, value }] : []
+      })
+      if (rows.length) {
         await executeContract(
           scoped,
           identifiers,
-          {
-            identifiers: spec.identifiers.map(({ key, type, value }) => ({
-              key,
-              typeId: identifierTypes.get(type)!,
-              value,
-            })),
-          },
+          { identifiers: rows },
           { ...opts, entityId: id, expected: 0 },
         )
       }

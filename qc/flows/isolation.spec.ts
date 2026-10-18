@@ -4,9 +4,11 @@ import {
   contactForm,
   createContact,
   saved,
+  secondTab,
   section,
   uniqueName,
 } from './contact.helpers'
+import type { Page } from '@playwright/test'
 
 // The mandatory isolation spec (factory/plans/qc-suite.sv, "Isolation";
 // CLAUDE.md rule 6). Signed in as user A, who belongs to tenant A only;
@@ -67,7 +69,7 @@ test.describe('isolation', () => {
       await expect(page.locator(`a[href$="/contacts/${id}"]`)).toHaveCount(0)
     }
 
-    const search = page.getByPlaceholder('Search by name')
+    const search = page.getByRole('searchbox')
     const empty = page.getByText('No contacts yet.')
     const noneOfB = async () => {
       await expect(page.locator('body')).not.toContainText('Bravo')
@@ -99,6 +101,48 @@ test.describe('isolation', () => {
     }
   })
 
+  /**
+   * Search `slug`'s list for each value and check no result is one of
+   * `foreign`'s contacts (and `foreignLabel` never shows). Between values
+   * it goes back to `shared`, whose one result is `own`, so the next
+   * result has arrived once `own` is gone (no value here matches it).
+   * Asserts on ids, not "No contacts yet.": another test may leave its
+   * own contact holding one of the values in this group.
+   */
+  async function searchShowsNoneOf(
+    page: Page,
+    slug: string,
+    shared: string,
+    own: string,
+    foreign: Array<string>,
+    foreignLabel: string,
+    values: Array<string>,
+  ) {
+    await page.goto(`/t/${slug}/contacts`)
+    const links = page.locator('main ul li a')
+    const ownLink = page.locator(`main a[href="/t/${slug}/contacts/${own}"]`)
+    const noneForeign = async () => {
+      await expect(page.locator('body')).not.toContainText(foreignLabel)
+      for (const id of foreign) {
+        await expect(page.locator(`a[href$="/contacts/${id}"]`)).toHaveCount(0)
+      }
+    }
+    const search = page.getByRole('searchbox')
+    // A value both groups hold: only this group's own contact.
+    await search.fill(shared)
+    await expect(links).toHaveCount(1)
+    await expect(ownLink).toBeVisible()
+    await noneForeign()
+    for (const value of values) {
+      await search.fill(value)
+      await expect(ownLink).toHaveCount(0)
+      await noneForeign()
+      await search.fill(shared)
+      await expect(links).toHaveCount(1)
+      await expect(ownLink).toBeVisible()
+    }
+  }
+
   test("B's identifiers are not found from A", async ({
     page,
     users,
@@ -106,23 +150,40 @@ test.describe('isolation', () => {
   }) => {
     route('/t/$slug/contacts/')
     const { shared, bOnly, bReuse } = world.identifiers
-    await page.goto(`/t/${users.a.slug}/contacts`)
-    const rows = page.getByRole('main').getByRole('listitem')
-    const search = page.getByPlaceholder('Search by name')
-    const ada = `/t/${users.a.slug}/contacts/${world.tenants[0].contactIds[0]}`
-    // A value both groups hold: only A's own contact.
-    await search.fill(shared)
-    await expect(rows).toHaveCount(1)
-    await expect(page.locator('main ul li a')).toHaveAttribute('href', ada)
-    // Values only B holds: nothing. (Back to `shared` between them, so we
-    // can tell when each new result has arrived.)
-    for (const value of [bOnly, bReuse]) {
-      await search.fill(value)
-      await expect(page.getByText('No contacts yet.')).toBeVisible()
-      await expect(page.locator('body')).not.toContainText('Bravo')
-      await search.fill(shared)
-      await expect(rows).toHaveCount(1)
-    }
+    const [tenantA, tenantB] = world.tenants
+    await searchShowsNoneOf(
+      page,
+      users.a.slug,
+      shared,
+      tenantA.contactIds[0],
+      tenantB.contactIds,
+      'Bravo',
+      [bOnly, bReuse],
+    )
+  })
+
+  test("A's identifier is not found from B", async ({
+    browser,
+    baseURL,
+    session,
+    users,
+    world,
+  }) => {
+    route('/t/$slug/contacts/')
+    const [tenantA, tenantB] = world.tenants
+    const other = await secondTab(browser, baseURL!, await session(users.b))
+    // `shared` is the value A holds; B's own Ada holds it too, so B finds
+    // exactly that one, never A's.
+    await searchShowsNoneOf(
+      other,
+      users.b.slug,
+      world.identifiers.shared,
+      tenantB.contactIds[0],
+      tenantA.contactIds,
+      'Alpha',
+      [],
+    )
+    await other.context().close()
   })
 
   test('a value B holds saves in A without a clash', async ({
@@ -145,7 +206,8 @@ test.describe('isolation', () => {
     await expect(saved(page)).toBeVisible()
     await expect(contactForm(page).getByText(/to fix/)).toHaveCount(0)
     await expect(page.locator('body')).not.toContainText('Bravo')
-    // Put it back: the isolation search above expects A to hold none.
+    // Removed so a rerun in this worker doesn't clash with its own row.
+    // Nothing else relies on it: the searches check ids, not emptiness.
     await identifiers
       .getByRole('button', { name: `remove identifier ${bReuse}` })
       .click()

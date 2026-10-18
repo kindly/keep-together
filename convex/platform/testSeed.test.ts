@@ -297,3 +297,39 @@ test('every function refuses unless TEST_SEED_ENABLED is "1"', async () => {
   ).toMatchObject({ kind: 'disabled' })
   expect(await count(t)).toEqual(counts)
 })
+
+test('an archived "External reference" stays archived; its rows are skipped', async () => {
+  const { t, a } = await setup()
+  // An older instance: the tenant exists and an admin archived the type
+  // before the donors were seeded.
+  const tenantId = await t.mutation(internal.platform.testSeed.tenant, {
+    members: [{ role: 'admin', userId: a.userId }],
+  })
+  await t.run(async (ctx) => {
+    const type = (await ctx.db.query('identifierTypes').collect()).find(
+      (x) => x.tenantId === tenantId && x.name === 'External reference',
+    )!
+    await ctx.db.patch('identifierTypes', type._id, { isActive: false })
+  })
+  const world = await t.action(internal.platform.testSeed.seed, { passwords })
+  expect(world.donorsCreated).toBe(DONOR_COUNT)
+
+  const { types, rows } = await t.run(async (ctx) => ({
+    types: (await ctx.db.query('identifierTypes').collect()).filter(
+      (x) => x.tenantId === tenantId,
+    ),
+    rows: (await ctx.db.query('contactIdentifiers').collect()).filter(
+      (r) => r.tenantId === tenantId,
+    ),
+  }))
+  expect(types.map((x) => [x.name, x.isActive]).sort()).toEqual([
+    ['External reference', false],
+    ['Membership number', true],
+  ])
+  const membership = types.find((x) => x.name === 'Membership number')!._id
+  const expected = generateDonors().donors.flatMap((d) =>
+    d.identifiers.filter((x) => x.type === 'Membership number'),
+  )
+  expect(rows.length).toBe(expected.length)
+  expect(rows.every((r) => r.typeId === membership)).toBe(true)
+})

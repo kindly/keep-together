@@ -204,11 +204,10 @@ test('re-running the same run and worker returns the same world', async () => {
   expect(again.tenants.map((x) => [x.slug, x.tenantId])).toEqual(
     world.tenants.map((x) => [x.slug, x.tenantId]),
   )
-  for (const [i, tenant] of again.tenants.entries()) {
-    expect([...tenant.contactIds].sort()).toEqual(
-      [...world.tenants[i].contactIds].sort(),
-    )
-  }
+  // Same order too: specs take contactIds[0] to be Ada.
+  expect(again.tenants.map((x) => x.contactIds)).toEqual(
+    world.tenants.map((x) => x.contactIds),
+  )
   const counts = await t.run(async (ctx) => ({
     tenants: (await ctx.db.query('tenants').collect()).length,
     memberships: (await ctx.db.query('memberships').collect()).length,

@@ -113,7 +113,10 @@ test.describe('identifiers on a contact', { annotation: CONTACT_ROUTE }, () => {
         },
         action: () =>
           identifiers(page)
-            .getByRole('button', { name: `remove identifier ${value}` })
+            .getByRole('button', {
+              name: `remove identifier ${value}`,
+              exact: true,
+            })
             .click(),
         until: identifierSaved,
         arg: false,

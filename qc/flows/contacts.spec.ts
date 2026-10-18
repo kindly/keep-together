@@ -77,7 +77,7 @@ test.describe('contacts list', () => {
       await expect(
         page.getByRole('heading', { name: 'Contacts' }),
       ).toBeVisible()
-      await expect(page.getByPlaceholder('Search by name')).toBeVisible()
+      await expect(page.getByRole('searchbox')).toBeVisible()
       await expect(page.getByLabel('show archived')).not.toBeChecked()
       await expect(
         page.getByRole('link', { name: 'New contact' }),
@@ -116,7 +116,7 @@ test.describe('contacts list', () => {
       const lastName = uniq('Search')
       await createIndividual(page, users.a.slug, 'Sam', lastName)
       await toList(page, users.a.slug)
-      const search = page.getByPlaceholder('Search by name')
+      const search = page.getByRole('searchbox')
       await flow(page, 'contacts.search', {
         before: async () => {
           await search.fill('')
@@ -139,7 +139,7 @@ test.describe('contacts list', () => {
       const email = `ada-${users.a.slug}@example.com`
       const adaId = world.tenants[0].contactIds[0]
       await page.goto(listPath(users.a.slug))
-      await page.getByPlaceholder('Search by name').fill(email)
+      await page.getByRole('searchbox').fill(email)
       await expect(rows(page)).toHaveCount(1)
       await expect(rows(page).first()).toHaveAttribute(
         'href',
@@ -159,7 +159,7 @@ test.describe('contacts list', () => {
       const adaId = world.tenants[0].contactIds[0]
       const adaHref = `${listPath(users.a.slug)}/${adaId}`
       await page.goto(listPath(users.a.slug))
-      const search = page.getByPlaceholder('Search by name')
+      const search = page.getByRole('searchbox')
       await flow(page, 'contacts.searchIdentifier', {
         before: async () => {
           await search.fill('')
@@ -196,7 +196,7 @@ test.describe('contacts list', () => {
         page.getByRole('button', { name: 'Unarchive' }),
       ).toBeVisible()
       await toList(page, users.a.slug)
-      await page.getByPlaceholder('Search by name').fill(lastName)
+      await page.getByRole('searchbox').fill(lastName)
       await expect(page.getByText('No contacts yet.')).toBeVisible()
       const toggle = page.getByLabel('show archived')
       await flow(page, 'contacts.showArchived', {
@@ -329,7 +329,7 @@ test.describe('new contact', () => {
 
       // The clientKey dedupe: one contact, the one we landed on.
       await toList(page, users.a.slug)
-      await page.getByPlaceholder('Search by name').fill(lastName)
+      await page.getByRole('searchbox').fill(lastName)
       await expect(rows(page)).toHaveCount(1)
       await expect(rows(page).first()).toHaveAttribute(
         'href',
