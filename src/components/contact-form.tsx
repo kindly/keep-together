@@ -20,11 +20,13 @@ import {
   initialState,
   reduce,
   submission,
+  tornSlices,
   unsavedWork,
 } from '../lib/contact-form-state'
 import { useCanWrite, useTenant } from '../lib/tenant'
 import { useQuery } from '../lib/query-cache'
 import { useReportUnsaved } from '../lib/unsaved'
+import { useHistoryHold } from './contact-history'
 
 type Data = NonNullable<FunctionReturnType<typeof api.contacts.queries.get>>
 type Label = 'home' | 'work' | 'other'
@@ -103,6 +105,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
   const tenant = useTenant()
   const canWrite = useCanWrite()
   const saveForm = useMutation(api.contacts.mutations.saveForm)
+  const history = useHistoryHold(id)
   const members = useQuery(api.platform.tenants.members, {
     tenantId: tenant._id,
   })
@@ -157,12 +160,15 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
 
   // The live query: merge every server change per field (own saves are
   // recognised by counters inside the reducer and ignored).
+  const delivered = useRef({
+    slices: toSlices(data),
+    counters: toCounters(data),
+  })
   useEffect(() => {
-    dispatch({
-      type: 'server',
-      slices: toSlices(data),
-      counters: toCounters(data),
-    })
+    const now = { slices: toSlices(data), counters: toCounters(data) }
+    const torn = tornSlices(delivered.current, now)
+    delivered.current = now
+    dispatch({ type: 'server', ...now, torn })
   }, [data])
 
   async function save() {
@@ -185,6 +191,9 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
         ...payload,
       }
     }
+    // No history fetch may be subscribed when the save commits, or "saved"
+    // would wait on its run too.
+    history.hold()
     try {
       const result: SaveResult = await saveForm(args as never)
       dispatch({ type: 'saved', submitted, result, at: Date.now() })
@@ -199,6 +208,8 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
           ? String(detail.message ?? detail.kind)
           : 'Could not save',
       })
+    } finally {
+      history.release()
     }
   }
 

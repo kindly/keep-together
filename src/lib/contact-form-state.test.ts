@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import type { Id } from '../../convex/_generated/dataModel'
-import type { Slices } from './contact-form-state'
+import type { Counters, FormState, Slices } from './contact-form-state'
 import {
   clean,
   initialState,
@@ -9,6 +9,7 @@ import {
   mergeTags,
   rekey,
   submission,
+  tornSlices,
   unsavedWork,
 } from './contact-form-state'
 
@@ -939,5 +940,143 @@ describe('unsavedWork', () => {
       { type: 'failed', message: 'offline' },
     )
     expect(unsavedWork(failed)).toBe('unsaved')
+  })
+})
+
+describe('a torn view (rows and counter delivered apart)', () => {
+  const second = {
+    key: 'e2',
+    label: 'work' as const,
+    address: 'b@x.com',
+    isPrimary: false,
+  }
+  const v1 = { ...slices.methods, emails: [...slices.methods.emails, second] }
+  /** What the contact form does with each delivery. */
+  const form = (start: Slices) => {
+    let last = { slices: start, counters }
+    return (state: FormState, delivered: Slices, at: Counters): FormState => {
+      const now = { slices: delivered, counters: at }
+      const torn = tornSlices(last, now)
+      last = now
+      return reduce(state, { type: 'server', ...now, torn })
+    }
+  }
+
+  test('the counter first, the rows after: a clean slice still takes the rows', () => {
+    const deliver = form(slices)
+    let s = initialState(slices, counters)
+    s = deliver(s, slices, { ...counters, methods: 1 })
+    expect(s.counters.methods).toBe(1)
+    s = deliver(s, { ...slices, methods: v1 }, { ...counters, methods: 1 })
+    expect(s.local.methods).toEqual(v1)
+    expect(s.base.methods).toEqual(v1)
+    expect(s.dirty.methods).toBe(false)
+  })
+
+  test('a dirty slice merges the late rows like any remote change', () => {
+    const deliver = form(slices)
+    let s = initialState(slices, counters)
+    s = reduce(s, {
+      type: 'edit',
+      slice: 'details',
+      value: { ...slices.details, nickname: 'Countess' },
+    })
+    s = reduce(s, {
+      type: 'edit',
+      slice: 'methods',
+      value: {
+        ...slices.methods,
+        emails: [{ ...slices.methods.emails[0], label: 'other' }],
+      },
+    })
+    s = deliver(s, slices, { ...counters, methods: 1 })
+    s = deliver(s, { ...slices, methods: v1 }, { ...counters, methods: 1 })
+    // Merged against the rows the counter belongs to: both sides changed
+    // the emails, so it is the usual flagged conflict, not a silent loss.
+    expect(s.base.methods).toEqual(v1)
+    expect(s.conflicts).toEqual(['methods.emails'])
+    expect(s.local.methods.emails).toEqual([
+      { ...slices.methods.emails[0], label: 'other' },
+    ])
+    expect(s.local.details.nickname).toBe('Countess')
+  })
+
+  test('the rows first, the counter after: taken once, then nothing new', () => {
+    const deliver = form(slices)
+    let s = initialState(slices, counters)
+    s = deliver(s, { ...slices, methods: v1 }, counters)
+    expect(s.local.methods).toEqual(v1)
+    expect(s.counters.methods).toBe(0)
+    const after = deliver(
+      s,
+      { ...slices, methods: v1 },
+      { ...counters, methods: 1 },
+    )
+    expect(after.local.methods).toEqual(v1)
+    expect(after.counters.methods).toBe(1)
+  })
+
+  test('our own save’s echo is not torn: in-progress typing survives it', () => {
+    const deliver = form(slices)
+    let s = initialState(slices, counters)
+    const submitted = {
+      ...slices.methods,
+      emails: [...slices.methods.emails, second],
+    }
+    s = reduce(s, { type: 'edit', slice: 'methods', value: submitted })
+    s = reduce(s, { type: 'commit' })
+    s = reduce(s, { type: 'saving' })
+    // Typing on during the save.
+    const typing = {
+      ...submitted,
+      emails: [...submitted.emails, { ...second, key: 'e3', address: 'c@x' }],
+    }
+    s = reduce(s, { type: 'edit', slice: 'methods', value: typing })
+    s = reduce(s, {
+      type: 'saved',
+      submitted: { methods: submitted },
+      result: {
+        saved: ['methods'],
+        problems: {},
+        stale: {},
+        counters: { ...counters, methods: 1, archive: 0 },
+      },
+      at: 1,
+    })
+    // The echo, ordered as the server orders it.
+    s = deliver(
+      s,
+      {
+        ...slices,
+        methods: { ...submitted, emails: [...submitted.emails].reverse() },
+      },
+      { ...counters, methods: 1 },
+    )
+    expect(s.local.methods).toEqual(typing)
+    expect(s.dirty.methods).toBe(true)
+  })
+
+  test('rows reordered by a rename elsewhere, counter unchanged: nothing to take', () => {
+    const two = {
+      tags: [
+        { key: 't1', tagId: 'tagMember' as Id<'tags'> },
+        { key: 't2', tagId: 'tagVolunteer' as Id<'tags'> },
+      ],
+    }
+    const deliver = form({ ...slices, tags: two })
+    let s = initialState({ ...slices, tags: two }, counters)
+    s = reduce(s, {
+      type: 'edit',
+      slice: 'tags',
+      value: { tags: [two.tags[0]] },
+    })
+    s = deliver(
+      s,
+      { ...slices, tags: { tags: [...two.tags].reverse() } },
+      counters,
+    )
+    expect(s.local.tags).toEqual({ tags: [two.tags[0]] })
+    expect(s.base.tags).toEqual(two)
+    expect(s.conflicts).toEqual([])
   })
 })

@@ -22,12 +22,11 @@ export const CACHE_EXPIRATION_MS = 120_000
  * Idle queries held at once. A contact page leaves 5 of its own behind
  * (`getRoot`, `getChannels`, `getTags`, `getIdentifiers`, `forContact`;
  * `members`, `tags` and identifier types are shared by every contact, and
- * history is fetched, not subscribed), so this is about 4 contacts (it was
- * about 6 with one `get`). convex-helpers drops the query that just went idle, not the
- * oldest, once the limit is reached. 20 as confirmed by the human
- * (2026-10-18); ~60 (about 20 contacts) is an open question for them.
+ * history is fetched, not subscribed), so this is about 20 contacts.
+ * convex-helpers drops the query that just went idle, not the oldest, once
+ * the limit is reached. 100 as decided by the human (2026-10-18).
  */
-export const CACHE_MAX_IDLE = 20
+export const CACHE_MAX_IDLE = 100
 
 /**
  * The cache, one per signed-in session. Keyed on the token's subject

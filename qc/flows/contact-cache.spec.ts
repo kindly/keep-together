@@ -181,22 +181,28 @@ test.describe(
       await expect(contactForm(page).getByText('Up to date')).toBeVisible()
     })
 
-    test('memory is bounded: 20 idle queries at most', async ({
+    test('memory is bounded: 100 idle queries at most', async ({
       page,
       users,
     }) => {
-      test.setTimeout(90_000)
-      const names: Array<string> = []
-      for (let i = 0; i < 8; i++) {
+      // CACHE_MAX_IDLE is 100 and a contact leaves 5 queries: 22 contacts
+      // go past it.
+      test.setTimeout(240_000)
+      const visits: Array<{ last: string; path: string }> = []
+      for (let i = 0; i < 22; i++) {
         const last = uniqueName(`bound${i}`)
-        await createContact(page, users.a.slug, last)
-        names.push(last)
+        const url = await createContact(page, users.a.slug, last)
+        visits.push({ last, path: new URL(url).pathname })
       }
       const subs = await trackSubscriptions(page.context())
       await page.goto(`/t/${users.a.slug}/contacts`)
-      for (const last of names) {
-        await expect(listRow(page, last)).toBeVisible()
-        await listRow(page, last).click()
+      for (const { last, path } of visits) {
+        // In-app navigation (the list shows at most 100 rows), so the
+        // cache lives on between visits.
+        await page.evaluate((to) => {
+          history.pushState({}, '', to)
+          dispatchEvent(new PopStateEvent('popstate'))
+        }, path)
         await expect(page.getByRole('heading', { name: last })).toBeVisible()
         await expect(page.getByText('Loading…')).toHaveCount(0)
         await toList(page)
@@ -218,11 +224,14 @@ test.describe(
         description: JSON.stringify(live),
       })
       expect(held.length).toBeGreaterThan(0)
-      expect(held.length).toBeLessThanOrEqual(20)
-      // 8 contacts × 5 of their own queries is past the cap, so the last
+      expect(held.length).toBeLessThanOrEqual(100)
+      // 22 contacts × 5 of their own queries is past the cap, so the last
       // ones left were dropped as they went idle (convex-helpers drops the
-      // newest idle query, not the oldest): not every root is held.
-      expect(count(live, 'contacts/queries:getRoot')).toBeLessThan(names.length)
+      // newest idle query, not the oldest): not every root is held, but
+      // many more than the old cap's 4 contacts.
+      const roots = count(live, 'contacts/queries:getRoot')
+      expect(roots).toBeLessThan(visits.length)
+      expect(roots).toBeGreaterThanOrEqual(15)
       // History is fetched, never held: a held one re-runs on every save.
       expect(count(live, 'contacts/queries:history')).toBe(0)
     })

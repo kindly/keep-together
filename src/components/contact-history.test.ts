@@ -16,17 +16,32 @@ const page = (keys: Array<string>, end: string, isDone = false): Page =>
 
 /** A fetcher whose calls the test answers by hand, in any order. */
 function fetcher() {
-  const calls: Array<{ opts: Opts; answer: (p: Page) => Promise<void> }> = []
-  const fetchPage = (opts: Opts) =>
-    new Promise<Page>((resolve) => {
-      calls.push({
-        opts,
-        answer: async (p) => {
-          resolve(p)
-          await Promise.resolve()
-        },
-      })
+  const calls: Array<{
+    opts: Opts
+    cancelled: boolean
+    answer: (p: Page | Error) => Promise<void>
+  }> = []
+  const fetchPage = (opts: Opts) => {
+    const call = {
+      opts,
+      cancelled: false,
+      answer: async (_: Page | Error) => {},
+    }
+    const result = new Promise<Page>((resolve, reject) => {
+      call.answer = async (p) => {
+        if (p instanceof Error) reject(p)
+        else resolve(p)
+        await new Promise((r) => setTimeout(r))
+      }
     })
+    calls.push(call)
+    return {
+      result,
+      cancel: () => {
+        call.cancelled = true
+      },
+    }
+  }
   return { calls, feed: new HistoryFeed(fetchPage) }
 }
 
@@ -52,10 +67,11 @@ describe('HistoryFeed', () => {
     expect(feed.snapshot().first?.isDone).toBe(false)
   })
 
-  test('an answer to a superseded fetch is dropped', async () => {
+  test('a superseded fetch is cancelled, and its answer dropped', async () => {
     const { calls, feed } = fetcher()
     feed.refresh()
     feed.refresh()
+    expect(calls[0].cancelled).toBe(true)
     await calls[1].answer(page(['new'], 'end-new'))
     await calls[0].answer(page(['old'], 'end-old'))
     expect(keys(feed.snapshot().first)).toEqual(['new'])
@@ -113,21 +129,74 @@ describe('HistoryFeed', () => {
     expect(calls[4].opts).toEqual({ numItems: 10, cursor: null })
   })
 
-  test('a failed fetch is kept to throw; the next good one clears it', async () => {
-    const answers: Array<(p: Page | Error) => void> = []
-    const feed = new HistoryFeed(
-      () =>
-        new Promise<Page>((resolve, reject) =>
-          answers.push((p) => (p instanceof Error ? reject(p) : resolve(p))),
-        ),
-    )
+  test('a failed fetch is state, kept with the last page; a retry clears it', async () => {
+    const { calls, feed } = fetcher()
     feed.refresh()
-    answers[0](new Error('forbidden'))
-    await new Promise((r) => setTimeout(r))
+    await calls[0].answer(new Error('forbidden'))
     expect(feed.snapshot().error?.message).toBe('forbidden')
+    expect(feed.snapshot().first).toBeUndefined()
     feed.refresh()
-    answers[1](page(['a'], 'end-1'))
-    await new Promise((r) => setTimeout(r))
+    await calls[1].answer(page(['a'], 'end-1'))
     expect(feed.snapshot().error).toBeNull()
+    expect(keys(feed.snapshot().first)).toEqual(['a'])
+
+    // A later failure keeps the moments on screen.
+    feed.refresh()
+    await calls[2].answer(new Error('read limit'))
+    expect(feed.snapshot().error?.message).toBe('read limit')
+    expect(keys(feed.snapshot().first)).toEqual(['a'])
+
+    // Load older fails on its own, and retries.
+    feed.loadOlder()
+    await calls[3].answer(new Error('transient'))
+    expect(feed.snapshot()).toMatchObject({ loadingOlder: false })
+    expect(feed.snapshot().olderError?.message).toBe('transient')
+    feed.loadOlder()
+    expect(feed.snapshot().olderError).toBeNull()
+    await calls[4].answer(page(['older'], 'end-2', true))
+    expect(feed.snapshot().older.map(keys)).toEqual([['older']])
+  })
+
+  test('held while a save is out: a fetch in flight is cancelled and sent again on release', async () => {
+    const { calls, feed } = fetcher()
+    feed.refresh()
+    await calls[0].answer(page(['b', 'a'], 'end-1'))
+    feed.refresh()
+    feed.loadOlder()
+    feed.hold()
+    expect(calls[1].cancelled).toBe(true)
+    expect(calls[2].cancelled).toBe(true)
+    // Asked again while held (the save's own root change): nothing sent.
+    feed.refresh()
+    expect(calls).toHaveLength(3)
+    // A cancelled fetch's late answer changes nothing.
+    await calls[1].answer(page(['stale'], 'end-1'))
+    expect(keys(feed.snapshot().first)).toEqual(['b', 'a'])
+
+    feed.release()
+    expect(calls.slice(3).map((c) => c.opts)).toEqual([
+      { numItems: 10, cursor: null, endCursor: 'end-1' },
+      { numItems: 10, cursor: 'end-1' },
+    ])
+    await calls[3].answer(page(['c', 'b', 'a'], 'end-1'))
+    await calls[4].answer(page(['z'], 'end-2', true))
+    expect(keys(feed.snapshot().first)).toEqual(['c', 'b', 'a'])
+    expect(feed.snapshot().older.map(keys)).toEqual([['z']])
+  })
+
+  test('holds nest; nothing is sent until the last save settles', async () => {
+    const { calls, feed } = fetcher()
+    feed.hold()
+    feed.hold()
+    feed.refresh()
+    feed.release()
+    expect(calls).toHaveLength(0)
+    feed.release()
+    expect(calls).toHaveLength(1)
+    await calls[0].answer(page(['a'], 'end-1'))
+    // Nothing waited: a release sends nothing.
+    feed.hold()
+    feed.release()
+    expect(calls).toHaveLength(1)
   })
 })

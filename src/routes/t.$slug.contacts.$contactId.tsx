@@ -54,8 +54,10 @@ const SLICE_QUERIES = [
  * `get`'s view, assembled from one query per slice, so a save re-runs (and
  * waits for) only the slices it wrote plus the root, not the whole view.
  * The parts come from one consistent snapshot: Convex applies a save's
- * re-runs in a single transition. Undefined until every part has answered,
- * null when there is no such contact (in this tenant).
+ * re-runs in a single transition. The form doesn't rely on that alone: a
+ * slice's rows arriving apart from its counter are still merged (`server`
+ * in contact-form-state). Undefined until every part has answered, null
+ * when there is no such contact (in this tenant).
  */
 function useContactView(
   tenantId: Id<'tenants'>,

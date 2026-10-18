@@ -66,7 +66,13 @@ export type SaveResult = {
 }
 
 export type Action =
-  | { type: 'server'; slices: Slices; counters: Counters }
+  | {
+      type: 'server'
+      slices: Slices
+      counters: Counters
+      /** Slices to take although their counter is unchanged (`tornSlices`). */
+      torn?: Array<SliceName>
+    }
   | { type: 'edit'; slice: SliceName; value: Slices[SliceName] }
   /** The user finished an edit (blur, select, checkbox, remove): request a save. */
   | { type: 'commit' }
@@ -233,6 +239,42 @@ function isDirty<TSlice extends SliceName>(
   return !same(clean(slice, local), base)
 }
 
+/**
+ * The page assembles its view from one query per slice and relies on
+ * Convex delivering a save's re-runs together (one transition, one render),
+ * so a slice's rows and its counter on the root arrive at once. If they
+ * ever came apart (a torn view), the reducer could take a counter with the
+ * old rows and then drop the new rows as "no change", and the next save
+ * would overwrite them unseen. So a slice whose rows changed while its
+ * counter stayed where the previous delivery had it is a remote change
+ * too: these are the slices to pass as `torn`. Our own save's echo can't
+ * look like that: the delivery before it still had the old counter.
+ */
+export function tornSlices(
+  previous: { slices: Slices; counters: Counters },
+  delivered: { slices: Slices; counters: Counters },
+): Array<SliceName> {
+  return SLICES.filter(
+    (s) =>
+      delivered.counters[s] === previous.counters[s] &&
+      !sameRows(delivered.slices[s], previous.slices[s]),
+  )
+}
+
+/**
+ * Same rows, whatever their order: the server sorts tags and identifiers
+ * by name, so a rename elsewhere reorders them without changing them.
+ */
+function sameRows(a: unknown, b: unknown): boolean {
+  const byKey = (_: string, v: unknown) =>
+    Array.isArray(v) && v.every((r) => typeof r === 'object' && r && 'key' in r)
+      ? [...(v as Array<{ key: string }>)].sort((x, y) =>
+          x.key < y.key ? -1 : x.key > y.key ? 1 : 0,
+        )
+      : v
+  return JSON.stringify(a, byKey) === JSON.stringify(b, byKey)
+}
+
 function put<TSlice extends SliceName>(
   slices: Slices,
   slice: TSlice,
@@ -266,9 +308,13 @@ export function initialState(slices: Slices, counters: Counters): FormState {
 export function reduce(state: FormState, action: Action): FormState {
   switch (action.type) {
     case 'server': {
+      // Slices the server changed: a new counter, or rows that changed
+      // under the same one (`torn`, see `tornSlices`).
+      const torn = action.torn ?? []
+      const changed = (s: SliceName) =>
+        action.counters[s] !== state.counters[s] || torn.includes(s)
       // Same counters everywhere: same state (or our own save echoing back).
-      if (SLICES.every((s) => action.counters[s] === state.counters[s]))
-        return state
+      if (!SLICES.some(changed)) return state
       const next = {
         ...state,
         base: { ...state.base },
@@ -276,15 +322,11 @@ export function reduce(state: FormState, action: Action): FormState {
         counters: { ...state.counters },
       }
       let conflicts = state.conflicts.filter(
-        (c) =>
-          !SLICES.some(
-            (s) =>
-              c.startsWith(`${s}.`) && action.counters[s] !== state.counters[s],
-          ),
+        (c) => !SLICES.some((s) => c.startsWith(`${s}.`) && changed(s)),
       )
       let needsSave = state.needsSave
       for (const slice of SLICES) {
-        if (action.counters[slice] === state.counters[slice]) continue // same state, or our own save echoing back
+        if (!changed(slice)) continue // same state, or our own save echoing back
         next.counters[slice] = action.counters[slice]
         const remote = action.slices[slice]
         if (!state.dirty[slice]) {
