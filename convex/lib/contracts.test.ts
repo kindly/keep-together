@@ -241,6 +241,19 @@ describe('registry invariants (meta-test)', () => {
       seen.set(c.entity, counters)
     }
   })
+
+  // A version bump without its upcaster would otherwise surface only when
+  // someone restores an old revision. Every registry restore uses goes
+  // in REGISTRIES.
+  const REGISTRIES = { contactContracts }
+  test.each(
+    Object.entries(REGISTRIES).flatMap(([registryName, reg]) =>
+      Object.values(reg).map((c) => [registryName, c.name, c] as const),
+    ),
+  )('%s: %s upcasts from version 1 to its current version', (_r, _n, c) => {
+    expect(c.version).toBeGreaterThanOrEqual(1)
+    expect(missingUpcasterSteps(c, 1)).toEqual([])
+  })
 })
 
 describe('canonical', () => {

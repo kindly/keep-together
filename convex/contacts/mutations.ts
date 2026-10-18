@@ -36,17 +36,29 @@ import {
 } from './validators'
 import type { Payloads } from './validators'
 
+/**
+ * Details args as the SPA sends them. A tab opened before X1 still sends
+ * `externalIdentifier`; it is accepted and ignored so those tabs keep
+ * saving until reloaded. Remove in X3.
+ */
+const detailsArgs = {
+  ...detailsFields,
+  externalIdentifier: v.optional(v.string()), // remove in X3
+}
+
 export const create = tenantMutation({
-  args: detailsFields,
-  handler: async (ctx, args) => {
-    const { id } = await executeContract(ctx, details, args, { source: 'ui' })
+  args: detailsArgs,
+  handler: async (ctx, { externalIdentifier: _, ...payload }) => {
+    const { id } = await executeContract(ctx, details, payload, {
+      source: 'ui',
+    })
     return id
   },
 })
 
 export const saveDetails = tenantMutation({
-  args: { id: v.id('contacts'), expected: v.number(), ...detailsFields },
-  handler: async (ctx, { id, expected, ...payload }) =>
+  args: { id: v.id('contacts'), expected: v.number(), ...detailsArgs },
+  handler: async (ctx, { id, expected, externalIdentifier: _, ...payload }) =>
     executeContract(ctx, details, payload, {
       entityId: id,
       expected,
@@ -120,7 +132,6 @@ export const saveTag = tenantMutation({
     })
   },
 })
-
 
 async function contactTagRows(
   db: ScopedDatabaseReader,
@@ -338,7 +349,7 @@ export const saveForm = tenantMutation({
   args: {
     id: v.id('contacts'),
     source: v.optional(v.union(v.literal('ui'), v.literal('autosave'))),
-    details: slice(detailsFields),
+    details: slice(detailsArgs),
     methods: slice(methodsFields),
     addresses: slice(addressesFields),
     tags: slice(tagsFields),
@@ -373,8 +384,11 @@ export const saveForm = tenantMutation({
     ) => {
       if (!submitted) return
       const { expected, ...payload } = submitted
-      if (name === 'details')
+      if (name === 'details') {
         delete (payload as { clientKey?: string }).clientKey
+        // remove in X3 (see detailsArgs)
+        delete (payload as { externalIdentifier?: string }).externalIdentifier
+      }
       let prepared: unknown
       try {
         prepared = contract.prepare ? contract.prepare(payload) : payload

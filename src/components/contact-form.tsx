@@ -126,7 +126,9 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
       }
     }
     try {
-      const result: SaveResult = await saveForm(args as never)
+      // The server knows the identifiers slice too; this form never sends
+      // it (until X4b), so it never comes back saved, stale or invalid.
+      const result = (await saveForm(args as never)) as SaveResult
       dispatch({ type: 'saved', submitted, result, at: Date.now() })
     } catch (err) {
       const detail =
@@ -653,7 +655,8 @@ function TagFields({
   onChange: (v: Payloads['tags']) => void
   problems: Array<Problem>
   known: Data['tags']
-  allTags: Array<{ _id: Id<'tags'>; name: string; isActive: boolean }> | undefined
+  allTags:
+    Array<{ _id: Id<'tags'>; name: string; isActive: boolean }> | undefined
 }) {
   const info = new Map<string, TagInfo>(
     known.map((t) => [t.tagId, { name: t.name, isActive: t.isActive }]),

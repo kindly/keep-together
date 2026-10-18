@@ -384,12 +384,12 @@ describe('lookup', () => {
       tenantId: f.a.tenantId,
       search: ' m7 ',
     })
-    expect(list[0]._id).toBe(ada)
+    expect(list.rows[0]._id).toBe(ada)
     const partial = await f.a.as.query(api.contacts.queries.list, {
       tenantId: f.a.tenantId,
       search: 'M',
     })
-    expect(partial.map((c) => c._id)).not.toContain(ada)
+    expect(partial.rows.map((c) => c._id)).not.toContain(ada)
   })
 })
 
@@ -409,7 +409,7 @@ describe('tenant isolation', () => {
       tenantId: f.b.tenantId,
       search: 'C-1',
     })
-    expect(bList.map((c) => c._id)).toEqual([bAda])
+    expect(bList.rows.map((c) => c._id)).toEqual([bAda])
   })
 
   test('tenant B observes nothing of tenant A', async () => {
@@ -512,6 +512,37 @@ describe('details v2', () => {
       at: moment,
     })
     expect(result).toEqual({ restored: [], group: null })
+  })
+
+  test('an SPA built before X1 still saves; the old field is ignored (remove in X3)', async () => {
+    const old = { ...individual('Byron'), externalIdentifier: 'OLD-1' }
+    const id = await f.a.as.mutation(api.contacts.mutations.create, {
+      tenantId: f.a.tenantId,
+      ...old,
+    })
+    await f.a.as.mutation(api.contacts.mutations.saveDetails, {
+      tenantId: f.a.tenantId,
+      id,
+      expected: 0,
+      ...old,
+      nickname: 'B',
+    })
+    const result = await form(
+      { details: { expected: 1, ...old, nickname: 'C' } },
+      id,
+    )
+    expect(result.saved).toEqual(['details'])
+    const contact = await f.t.run((ctx) => ctx.db.get(id))
+    expect(contact).toMatchObject({ nickname: 'C', detailsVersion: 2 })
+    expect(contact?.externalIdentifier).toBeUndefined()
+    for (const r of await revisionsOf(id, 'contacts.details')) {
+      expect(r.payload).not.toHaveProperty('externalIdentifier')
+    }
+    // Sending the old field alone is not a change.
+    expect(
+      (await form({ details: { expected: 2, ...old, nickname: 'C' } }, id))
+        .saved,
+    ).toEqual([])
   })
 
   test('the upcaster drops only the old field', () => {
