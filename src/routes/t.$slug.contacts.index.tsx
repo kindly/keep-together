@@ -26,13 +26,13 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
   },
 })
 
-type Kind = 'individual' | 'organization' | 'household'
+// 'household' is a valid kind but dormant: nothing creates one, so no chip.
+type Kind = 'individual' | 'organization'
 
 const KINDS: Array<{ value: Kind | ''; label: string }> = [
   { value: '', label: 'everyone' },
   { value: 'individual', label: 'people' },
   { value: 'organization', label: 'organisations' },
-  { value: 'household', label: 'households' },
 ]
 
 type Bulk =

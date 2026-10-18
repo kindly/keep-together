@@ -49,6 +49,10 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
     [userId, 'admin'],
   ])
   expect(types.length).toBeGreaterThan(0)
+  // Households are dormant: a new tenant gets no household types.
+  expect(
+    types.filter((t) => t.kindA === 'household' || t.kindB === 'household'),
+  ).toEqual([])
 
   const jo = t.withIdentity({ subject: `${userId}|session-jo` })
   expect(await jo.query(api.platform.tenants.mine, {})).toEqual([

@@ -58,9 +58,10 @@ test('the generator is deterministic and varied', () => {
   expect(new Set(donors.map((d) => d.clientKey)).size).toBe(DONOR_COUNT)
 
   const kinds = donors.map((d) => d.details.kind)
-  for (const kind of ['individual', 'organization', 'household']) {
+  for (const kind of ['individual', 'organization']) {
     expect(kinds.filter((k) => k === kind).length).toBeGreaterThan(5)
   }
+  expect(kinds).not.toContain('household') // dormant
   const emails = donors.flatMap((d) => d.methods.emails.map((e) => e.address))
   expect(new Set(emails).size).toBeLessThan(emails.length) // some shared
   const warned = donors.map((d) =>

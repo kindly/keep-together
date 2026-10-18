@@ -4,7 +4,8 @@
  * gets the same people. Pure: no Convex functions, only payloads for the
  * contact contracts, with links between donors as array indexes.
  *
- * The mix exercises the UI: individuals, organisations and households;
+ * The mix exercises the UI: individuals (some in families) and
+ * organisations, but no households while those are dormant (contacts/seed);
  * shared and malformed emails (warnings); addresses without postcodes or
  * abroad; archived contacts; pinned and archived notes; relationships of
  * every seeded type; external identifiers under two types, some people
@@ -28,8 +29,6 @@ export type IdentifierTypeName = (typeof IDENTIFIER_TYPES)[number]
 /** A relationship type, by its `labelAB` in contacts/seed's UK list. */
 export type RelationshipLabel =
   | 'Employee of'
-  | 'Member of household'
-  | 'Head of household for'
   | 'Trustee of'
   | 'Spouse/partner of'
   | 'Parent of'
@@ -412,7 +411,7 @@ export function generateDonors(seed = 20261017): {
     return i
   }
 
-  const group = (kind: 'organization' | 'household', name: string): number => {
+  const organisation = (name: string): number => {
     const i = donors.length
     const local = strip(name).slice(0, 18)
     donors.push({
@@ -420,7 +419,7 @@ export function generateDonors(seed = 20261017): {
       firstName: '',
       lastName: '',
       details: {
-        kind,
+        kind: 'organization',
         title: '',
         firstName: '',
         lastName: '',
@@ -430,33 +429,29 @@ export function generateDonors(seed = 20261017): {
       },
       identifiers: [],
       methods: {
-        emails:
-          kind === 'organization' && r.chance(0.85)
-            ? [
-                {
-                  key: key(i, 'e', 0),
-                  label: 'work',
-                  address: `${r.pick(['info', 'hello', 'treasurer', 'office'])}@${local}.org.uk`,
-                  isPrimary: true,
-                },
-              ]
-            : [],
-        phones:
-          kind === 'organization' && r.chance(0.7)
-            ? [
-                {
-                  key: key(i, 'p', 0),
-                  label: 'work',
-                  number: phone(),
-                  isPrimary: true,
-                },
-              ]
-            : [],
+        emails: r.chance(0.85)
+          ? [
+              {
+                key: key(i, 'e', 0),
+                label: 'work',
+                address: `${r.pick(['info', 'hello', 'treasurer', 'office'])}@${local}.org.uk`,
+                isPrimary: true,
+              },
+            ]
+          : [],
+        phones: r.chance(0.7)
+          ? [
+              {
+                key: key(i, 'p', 0),
+                label: 'work',
+                number: phone(),
+                isPrimary: true,
+              },
+            ]
+          : [],
       },
       addresses: {
-        addresses: r.chance(0.9)
-          ? [address(i, kind === 'organization' ? 'work' : 'home')]
-          : [],
+        addresses: r.chance(0.9) ? [address(i, 'work')] : [],
       },
       archived: false,
       notes: [],
@@ -465,19 +460,18 @@ export function generateDonors(seed = 20261017): {
   }
 
   // Organisations first, so individuals can work for or govern them.
-  const orgs = ORGANISATIONS.map((name) => group('organization', name))
+  const orgs = ORGANISATIONS.map(organisation)
 
-  // Households: 2–3 members sharing a surname, a home address and (usually)
-  // one email, so the "also used by" warning shows.
-  const HOUSEHOLDS = 12
-  for (let h = 0; h < HOUSEHOLDS; h++) {
+  // Families: 2–3 individuals sharing a surname, a home address and
+  // (usually) one email, so the "also used by" warning shows. No household
+  // contact while households are dormant.
+  const FAMILIES = 12
+  for (let h = 0; h < FAMILIES; h++) {
     const surname = LAST_NAMES[(h * 7 + 3) % LAST_NAMES.length]
-    const hh = group('household', `The ${surname} Household`)
     const size = 2 + r.int(2)
     const members = Array.from({ length: size }, () => individual(surname))
     const shared = `the${strip(surname)}s@${r.pick(DOMAINS)}`
-    const home = donors[hh].addresses.addresses[0] ?? address(hh, 'home')
-    donors[hh].addresses.addresses = [home]
+    const home = address(members[0], 'home')
     for (const [n, m] of members.entries()) {
       donors[m].addresses.addresses = [{ ...home, key: key(m, 'a', 0) }]
       if (n < 2 && r.chance(0.8)) {
@@ -492,12 +486,6 @@ export function generateDonors(seed = 20261017): {
           ...own.map((e) => ({ ...e, isPrimary: false })),
         ]
       }
-      relationships.push({
-        a: m,
-        b: hh,
-        type: n === 0 ? 'Head of household for' : 'Member of household',
-        description: '',
-      })
     }
     relationships.push({
       a: members[0],

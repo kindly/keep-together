@@ -213,6 +213,7 @@ describe('filters', () => {
   test('kind, with and without a search; archived hidden unless asked', async () => {
     const person = await contact(f.a, { first: 'Ruth', last: 'Oakfield' })
     const org = await contact(f.a, { org: 'Oakfield Trust' })
+    // Households are dormant, not broken: one still saves and filters.
     const home = await contact(f.a, {
       org: 'The Oakfield Household',
       kind: 'household',

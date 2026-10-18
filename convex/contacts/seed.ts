@@ -10,10 +10,18 @@ import { normaliseTagName } from './rules'
 
 type Kind = 'individual' | 'organization' | 'household'
 
+/**
+ * The relationship types every new tenant starts with (and the platform
+ * seeds, which reuse this list). Households are dormant: the 'household'
+ * kind is still valid, but nothing creates one, so new tenants get no
+ * household types. When households return, restore these two rows here:
+ *   ['Member of household', 'Household member is', 'individual', 'household'],
+ *   ['Head of household for', 'Head of household is', 'individual', 'household'],
+ * Tenants created while they were dormant won't have them; give those a
+ * backfill.
+ */
 export const UK_RELATIONSHIP_TYPES: Array<[string, string, Kind, Kind]> = [
   ['Employee of', 'Employer of', 'individual', 'organization'],
-  ['Member of household', 'Household member is', 'individual', 'household'],
-  ['Head of household for', 'Head of household is', 'individual', 'household'],
   ['Trustee of', 'Has trustee', 'individual', 'organization'],
   ['Spouse/partner of', 'Spouse/partner of', 'individual', 'individual'],
   ['Parent of', 'Child of', 'individual', 'individual'],

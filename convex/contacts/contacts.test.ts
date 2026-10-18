@@ -909,7 +909,11 @@ describe('relationships', () => {
       tenantId: f.a.tenantId,
     })
     expect(types.map((t) => t.labelAB)).toContain('Employee of')
-    expect(types).toHaveLength(7)
+    expect(types).toHaveLength(5)
+    // Households are dormant: no household types for a new tenant.
+    expect(
+      types.filter((t) => t.kindA === 'household' || t.kindB === 'household'),
+    ).toEqual([])
   })
 
   test('create, kind compatibility and self-relationship', async () => {
