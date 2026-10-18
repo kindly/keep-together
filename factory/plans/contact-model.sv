@@ -1,7 +1,9 @@
-<sv-page label="plan: contact model" category="plans">
+<sv-page label="plan: contact model" category="archive">
 
 <sv-prose id="b1">
 ## Design tree
+
+**Complete 2026-10-18: all steps merged (S1–S7, S8 → ADR 0019), last commit fc1baf3.** Follow-ons have their own pages: external identifiers (building), logins & roles, supporter portal (later).
 
 *Confirmed by the human in round 3 (2026-10-17); round 4 settled the merge ADR's open questions. All rounds were approved as recommended, plus the supporter-login thread on g2q2. Ready for building.*
 
