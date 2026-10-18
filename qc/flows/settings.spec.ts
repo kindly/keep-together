@@ -63,7 +63,9 @@ test.describe('identifier types', { annotation: IDENTIFIERS_ROUTE }, () => {
       before: async () => {
         if (!(await settings.isVisible()) || page.url().includes('/settings')) {
           await contacts.click()
-          await expect(page.getByPlaceholder('Search by name')).toBeVisible()
+          await expect(
+            page.getByRole('searchbox', { name: 'Search contacts' }),
+          ).toBeVisible()
         }
       },
       action: () => settings.click(),

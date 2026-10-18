@@ -135,7 +135,10 @@ export default defineSchema({
     identifiersVersion: v.number(),
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
+    .index('by_tenant_kind_sort', ['tenantId', 'kind', 'sortName']) // list's kind filter
     .index('by_tenant_clientKey', ['tenantId', 'clientKey'])
+    // Superseded by contactSearch.search_text (search Q2); dropped once Q2
+    // has rolled out everywhere.
     .searchIndex('search_name', {
       searchField: 'sortName',
       filterFields: ['tenantId', 'archived'],

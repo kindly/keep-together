@@ -9,6 +9,8 @@ import {
   normaliseIdentifier,
   normaliseTagName,
 } from './rules'
+import { contactKind } from '../schema'
+import { matchesAll, parseSearch } from './search'
 import type { AlsoUsedBy } from './warnings'
 import { groupsToRead, toMoments } from './history'
 
@@ -264,42 +266,84 @@ async function contactsWithIdentifier(
 export const LIST_LIMIT = 100
 /** The most assignments a tag-filtered `list` reads (then sorted by name). */
 export const LIST_TAG_SCAN = 200
+/**
+ * The most `contactSearch` hits one search reads. Convex ranks rows that
+ * match any term; those missing a term are dropped after, so it reads
+ * more than it returns.
+ */
+export const LIST_SEARCH_SCAN = 2 * LIST_LIMIT
 
 /**
- * Searchable list (name, or an exact email address or identifier),
- * optionally only the contacts carrying one tag; archived hidden unless
- * asked. Bounded at LIST_LIMIT rows. Each row carries its tag ids (names come from `tags`).
+ * Searchable list, optionally only the contacts carrying one tag and of
+ * one kind; archived hidden unless asked. Bounded at LIST_LIMIT rows. Each
+ * row carries its tag ids (names come from `tags`).
+ *
+ * A search finds a contact by anything in its `contactSearch` text (names,
+ * emails and their parts, phones, postcodes, street, town, identifiers,
+ * tags): every word must match, the last as a prefix. Exact matches come
+ * first: an email address, then an identifier, then a phone number
+ * (normalised), then the rest in Convex's relevance order.
+ *
  * Without a search, a tag filter reads the tag's first LIST_TAG_SCAN
  * assignments; larger tags page through `byTag`. `truncated` says more
- * contacts may match than `rows` holds (the cap or the tag scan was hit),
- * so the UI can say it shows only some of them.
+ * contacts may match than `rows` holds (a cap or scan limit was hit), so
+ * the UI can say it shows only some of them. `tooBroad` says the search
+ * read LIST_SEARCH_SCAN hits and none held every word: a full match may
+ * rank beyond them, so the UI asks for another word instead of saying
+ * nothing matches.
  */
 export const list = tenantQuery({
   args: {
     search: v.optional(v.string()),
     includeArchived: v.optional(v.boolean()),
     tagId: v.optional(v.id('tags')),
+    kind: v.optional(contactKind),
   },
-  handler: async (ctx, { search, includeArchived, tagId }) => {
+  handler: async (ctx, { search, includeArchived, tagId, kind }) => {
     const term = search?.trim()
     let rows: Array<Doc<'contacts'>>
     // A read that hit its cap: more contacts may match than it saw.
     let scanFull = false
+    // The scan was all partial matches: a full match may lie beyond it.
+    let tooBroad = false
     if (term) {
-      const [byEmail, byIdentifier, byName] = await Promise.all([
+      const { terms, phone } = parseSearch(term)
+      const [byEmail, byIdentifier, hits] = await Promise.all([
         contactsWithEmail(ctx.db, term).then((r) => r.contacts),
         contactsWithIdentifier(ctx.db, term),
-        ctx.db
-          .query('contacts')
-          .withSearchIndex('search_name', (q) => q.search('sortName', term))
-          .take(LIST_LIMIT),
+        terms.length
+          ? ctx.db
+              .query('contactSearch')
+              .withSearchIndex('search_text', (q) => {
+                const s = q.search('text', terms.join(' '))
+                const live = includeArchived ? s : s.eq('archived', false)
+                return kind ? live.eq('kind', kind) : live
+              })
+              .take(LIST_SEARCH_SCAN)
+          : Promise.resolve([]),
       ])
-      // Exact matches first, each contact once.
+      scanFull = hits.length === LIST_SEARCH_SCAN
+      const matched = hits.filter((h) => matchesAll(h.text, terms))
+      tooBroad = scanFull && matched.length === 0
+      const byPhone = phone
+        ? matched.filter((h) => h.phones.includes(phone))
+        : []
+      // Exact matches first, each contact once; then read only as many
+      // full-text hits as can still be shown (all of them under a tag
+      // filter, which drops hits after).
       const seen = new Set<Id<'contacts'>>()
-      rows = [...byEmail, ...byIdentifier, ...byName].filter(
-        (c) => !seen.has(c._id) && Boolean(seen.add(c._id)),
+      const once = (id: Id<'contacts'>) =>
+        !seen.has(id) && Boolean(seen.add(id))
+      const exact = [...byEmail, ...byIdentifier].filter(
+        (c) =>
+          (!kind || c.kind === kind) &&
+          (includeArchived || !c.archived) &&
+          once(c._id),
       )
-      scanFull = byName.length === LIST_LIMIT
+      const rest = [...byPhone, ...matched].map((h) => h.contactId).filter(once)
+      const wanted = tagId ? rest : rest.slice(0, LIST_LIMIT + 1 - exact.length)
+      const found = await Promise.all(wanted.map((id) => ctx.db.get(id)))
+      rows = [...exact, ...found.filter((c) => c !== null)]
     } else if (tagId) {
       const assigned = await ctx.db
         .query('contactTags')
@@ -311,12 +355,16 @@ export const list = tenantQuery({
       )
       rows = contacts
         .filter((c) => c !== null)
+        .filter((c) => !kind || c.kind === kind)
         .sort((a, b) => a.sortName.localeCompare(b.sortName))
     } else {
-      rows = await ctx.db
-        .query('contacts')
-        .withIndex('by_tenant_sort')
-        .take(2 * LIST_LIMIT)
+      rows = await (
+        kind
+          ? ctx.db
+              .query('contacts')
+              .withIndex('by_tenant_kind_sort', (q) => q.eq('kind', kind))
+          : ctx.db.query('contacts').withIndex('by_tenant_sort')
+      ).take(2 * LIST_LIMIT)
       scanFull = rows.length === 2 * LIST_LIMIT
     }
     const visible = includeArchived ? rows : rows.filter((c) => !c.archived)
@@ -351,6 +399,7 @@ export const list = tenantQuery({
       : shaped
     return {
       rows: matching.slice(0, LIST_LIMIT),
+      tooBroad,
       truncated:
         scanFull ||
         (searchingTag ? matching.length : visible.length) > LIST_LIMIT,

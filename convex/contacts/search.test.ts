@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'vitest'
-import { fold, normalisePhone, searchRow, searchText } from './search'
+import {
+  fold,
+  matchesAll,
+  normalisePhone,
+  parseSearch,
+  searchRow,
+  searchText,
+} from './search'
 import type { SearchChildren, SearchContact } from './search'
 
 const person: SearchContact = {
@@ -148,5 +155,48 @@ describe('searchRow', () => {
     expect(row.archived).toBe(true)
     expect(row.kind).toBe('individual')
     expect(row.phones).toEqual(['07700900123'])
+  })
+})
+
+describe('parseSearch', () => {
+  test('a phone-shaped entry is one normalised number', () => {
+    expect(parseSearch(' +44 (0)7700 900-123 ')).toEqual({
+      terms: ['07700900123'],
+      phone: '07700900123',
+    })
+    expect(parseSearch('900123')).toEqual({
+      terms: ['900123'],
+      phone: '900123',
+    })
+  })
+
+  test('short numbers and everything else are folded words', () => {
+    expect(parseSearch('69003')).toEqual({ terms: ['69003'], phone: null })
+    expect(parseSearch('Zoë  N@Example')).toEqual({
+      terms: ['zoe', 'n', 'example'],
+      phone: null,
+    })
+    expect(parseSearch('@@')).toEqual({ terms: [], phone: null })
+  })
+
+  test('at most 16 terms', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `w${i}`).join(' ')
+    expect(parseSearch(many).terms).toHaveLength(16)
+  })
+})
+
+describe('matchesAll', () => {
+  const text = searchText(person, {
+    ...none,
+    emails: ['zoe.n@example.co.uk'],
+    addresses: [{ line1: '12 Mill Lane', town: 'Stroud', postcode: 'GL5 1AB' }],
+  })
+  test('every term, the last as a prefix', () => {
+    expect(matchesAll(text, ['ndiaye', 'stro'])).toBe(true)
+    expect(matchesAll(text, ['nd', 'stroud'])).toBe(false)
+    expect(matchesAll(text, ['ndiaye', 'london'])).toBe(false)
+    expect(matchesAll(text, ['zoe', 'n', 'example'])).toBe(true)
+    expect(matchesAll(text, ['gl5', '1ab'])).toBe(true)
+    expect(matchesAll(text, [])).toBe(false)
   })
 })

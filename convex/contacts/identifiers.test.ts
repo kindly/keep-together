@@ -430,11 +430,13 @@ describe('lookup', () => {
       search: ' m7 ',
     })
     expect(list.rows[0]._id).toBe(ada)
+    // Values are in the full-text search too (search Q2): a prefix finds
+    // them, with no exact match to rank first.
     const partial = await f.a.as.query(api.contacts.queries.list, {
       tenantId: f.a.tenantId,
       search: 'M',
     })
-    expect(partial.rows.map((c) => c._id)).not.toContain(ada)
+    expect(partial.rows.map((c) => c._id)).toContain(ada)
   })
 })
 

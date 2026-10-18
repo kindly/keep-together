@@ -60,8 +60,8 @@ test.describe('isolation', () => {
       await expect(page.locator(`a[href$="/contacts/${id}"]`)).toHaveCount(0)
     }
 
-    const search = page.getByPlaceholder('Search by name')
-    const empty = page.getByText('No contacts yet.')
+    const search = page.getByRole('searchbox', { name: 'Search contacts' })
+    const empty = page.getByText('No contacts match.')
     const noneOfB = async () => {
       await expect(page.locator('body')).not.toContainText('Bravo')
       for (const id of world.tenants[1].contactIds) {
