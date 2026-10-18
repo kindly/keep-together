@@ -10,6 +10,9 @@
  * - `get` returns null for another tenant's document, and `patch` /
  *   `replace` / `delete` on one throws (row-level rules).
  *
+ * Mutations also get a scoped `ctx.scheduler`: it schedules internal
+ * tenant functions and stamps their `tenantId`, like inserts.
+ *
  * Handlers never see `tenantId` and never filter by it. There is no
  * unindexed `query(table)` on the scoped db: a domain read is always an
  * index range inside one tenant.
@@ -41,6 +44,9 @@ import { ConvexError, v } from 'convex/values'
 import type { Infer } from 'convex/values'
 import type {
   DocumentByInfo,
+  FunctionArgs,
+  FunctionReference,
+  Scheduler,
   IndexNames,
   IndexRange,
   IndexRangeBuilder,
@@ -162,6 +168,37 @@ export type ScopedDatabaseWriter = ScopedDatabaseReader & {
     value: Insertable<T>,
   ) => Promise<void>
   delete: DatabaseWriter['delete']
+}
+
+/**
+ * The scheduler domain code sees: it schedules internal tenant functions
+ * in the caller's tenant, stamping `tenantId` like inserts are stamped.
+ */
+export type ScopedScheduler = {
+  runAfter: <
+    TFn extends FunctionReference<
+      'mutation' | 'action',
+      'internal',
+      { tenantId: Id<'tenants'> }
+    >,
+  >(
+    delayMs: number,
+    fn: TFn,
+    args: Omit<FunctionArgs<TFn>, 'tenantId'>,
+  ) => Promise<Id<'_scheduled_functions'>>
+}
+
+function scopedScheduler(
+  tenantId: Id<'tenants'>,
+  scheduler: Scheduler,
+): ScopedScheduler {
+  return {
+    runAfter: (delayMs, fn, args) => {
+      // Widened: the generic args can't be shown to accept `tenantId`.
+      const target: FunctionReference<'mutation' | 'action', 'internal'> = fn
+      return scheduler.runAfter(delayMs, target, { ...args, tenantId })
+    },
+  }
 }
 
 // ── row-level rules (built once from the schema) ───────────────────────────
@@ -339,7 +376,14 @@ export const tenantMutation = customMutation(mutation, {
   args: tenantArgs,
   input: async (ctx, { tenantId }, { minRole = 'staff' }: RoleOption) => {
     const scope = await requireMember(ctx, tenantId, minRole)
-    return { ctx: { ...scope, db: scopeWriter(ctx, tenantId) }, args: {} }
+    return {
+      ctx: {
+        ...scope,
+        db: scopeWriter(ctx, tenantId),
+        scheduler: scopedScheduler(tenantId, ctx.scheduler),
+      },
+      args: {},
+    }
   },
 })
 
@@ -384,7 +428,14 @@ export const internalTenantMutation = customMutation(internalMutation, {
       role: null,
       userId: null,
     }
-    return { ctx: { ...scope, db: scopeWriter(ctx, tenantId) }, args: {} }
+    return {
+      ctx: {
+        ...scope,
+        db: scopeWriter(ctx, tenantId),
+        scheduler: scopedScheduler(tenantId, ctx.scheduler),
+      },
+      args: {},
+    }
   },
 })
 

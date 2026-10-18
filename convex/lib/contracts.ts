@@ -11,6 +11,8 @@
  *     → run the pure apply function
  *     → bump the counter
  *     → append a revision (normalised payload + contract name + version)
+ *     → run the contract's projection hook, if any (derived rows such as
+ *       `contactSearch`, rebuilt from the root's new state)
  *
  * Restore re-executes a stored payload as a NEW command, chaining upcasters
  * by declared version. Nothing is ever rewound.
@@ -19,13 +21,15 @@ import { ConvexError, v } from 'convex/values'
 import type { ObjectType, PropertyValidators } from 'convex/values'
 import { validate } from 'convex-helpers/validators'
 import type { Doc, Id, TableNames } from '../_generated/dataModel'
-import type { ScopedDatabaseWriter } from './tenancy'
+import type { ScopedDatabaseWriter, ScopedScheduler } from './tenancy'
 
 export type Source = Doc<'revisions'>['source']
 
 export type ContractCtx = {
   db: ScopedDatabaseWriter
   userId: Id<'users'> | null
+  /** Present in tenant mutations; a projection that fans out needs it. */
+  scheduler?: ScopedScheduler
 }
 
 /**
@@ -94,6 +98,18 @@ export type Contract<
     root: Doc<TRoot> | null,
     command: Command,
   ): Promise<Id<TRoot>>
+  /**
+   * Rebuild derived data from the root's state after the command, in the
+   * same transaction (so it is never stale). Derived rows are not domain
+   * state: no contract, no revisions; this hook (and its backfill) are
+   * their only writers. `before` is the root as the command found it.
+   */
+  // eslint-disable-next-line @typescript-eslint/method-signature-style
+  project?(
+    ctx: ContractCtx,
+    id: Id<TRoot>,
+    before: Doc<TRoot> | null,
+  ): Promise<void>
   /** fromVersion → function taking a payload at that version to the next. */
   upcasters?: Record<number, (payload: unknown) => unknown>
 }
@@ -193,6 +209,7 @@ export async function executeContract<
     groupName: opts.group?.name,
     restoredFrom: opts.restoredFrom,
   })
+  if (contract.project) await contract.project(ctx, id, root)
   return { id, counter }
 }
 

@@ -42,6 +42,7 @@ import {
   tagFields,
   tagsFields,
 } from './validators'
+import { projectContact, projectTag } from './searchProjection'
 
 /**
  * v2 (external identifiers X1): `externalIdentifier` left the payload for
@@ -54,6 +55,7 @@ export const details = defineContract({
   entity: 'contacts',
   version: 2,
   counter: 'detailsVersion',
+  project: projectContact,
   fields: detailsFields,
   prepare: prepareDetails,
   upcasters: {
@@ -229,6 +231,7 @@ export const methods = defineContract({
   entity: 'contacts',
   version: 1,
   counter: 'methodsVersion',
+  project: projectContact,
   fields: methodsFields,
   prepare: prepareMethods,
   apply: async (ctx, p, root) => {
@@ -247,6 +250,7 @@ export const addresses = defineContract({
   entity: 'contacts',
   version: 1,
   counter: 'addressesVersion',
+  project: projectContact,
   fields: addressesFields,
   prepare: prepareAddresses,
   apply: async (ctx, p, root) => {
@@ -266,6 +270,7 @@ export const archive = defineContract({
   entity: 'contacts',
   version: 1,
   counter: 'archiveVersion',
+  project: projectContact,
   fields: archiveFields,
   apply: async (ctx, p, root) => {
     if (!root)
@@ -286,6 +291,7 @@ export const tags = defineContract({
   entity: 'contacts',
   version: 1,
   counter: 'tagsVersion',
+  project: projectContact,
   fields: tagsFields,
   prepare: prepareTags,
   apply: async (ctx, p, root, command) => {
@@ -315,6 +321,7 @@ export const tag = defineContract({
   entity: 'tags',
   version: 1,
   counter: 'saveVersion',
+  project: projectTag,
   fields: tagFields,
   prepare: prepareTag,
   apply: async (ctx, p, root) => {
@@ -386,6 +393,7 @@ export const identifiers = defineContract({
   entity: 'contacts',
   version: 1,
   counter: 'identifiersVersion',
+  project: projectContact,
   fields: identifiersFields,
   prepare: prepareIdentifiers,
   apply: async (ctx, p, root, command) => {

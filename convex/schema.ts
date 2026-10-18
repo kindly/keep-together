@@ -223,6 +223,27 @@ export default defineSchema({
       'typeId',
     ]),
 
+  // Derived search projection: one row per contact, rebuilt from the
+  // contact's current state by `projectContactSearch` (contacts/
+  // searchProjection.ts), which every contract touching a searchable slice
+  // runs as its `project` hook inside the same transaction. NOT a domain
+  // aggregate: no contract, no counter, no revisions (history lives on the
+  // contact). That hook and the backfill are the only writers; nothing else
+  // may insert or patch these rows.
+  contactSearch: defineTable({
+    tenantId: v.id('tenants'),
+    contactId: v.id('contacts'),
+    text: v.string(), // searchText(): folded, de-duplicated words
+    archived: v.boolean(),
+    kind: contactKind,
+    phones: v.array(v.string()), // normalisePhone() of each number (exact-phone ranking)
+  })
+    .index('by_tenant_contact', ['tenantId', 'contactId'])
+    .searchIndex('search_text', {
+      searchField: 'text',
+      filterFields: ['tenantId', 'archived', 'kind'],
+    }),
+
   // Its own aggregate (`contacts.identifierType`, saveVersion), like tags:
   // names unique per tenant case-insensitively; archive = `isActive: false`
   // (out of the picker, rows kept and still found). None seeded.

@@ -15,11 +15,31 @@
  * deletes the backfill and its test (convex-test can no longer build the
  * old shape). Past backfills: `addressNormalized` (S2), `tagsVersion` (S4),
  * `externalIdentifier` → identifier rows (X2);
- * see git log.
+ * see git log. `backfillContactSearch` is not a two-phase step: it fills a
+ * new derived table, and stays (rerunnable) as the way to rebuild it.
  */
 import { migrations } from '../lib/migrations'
+import { scopeWriter } from '../lib/tenancy'
+import { projectContactSearch } from './searchProjection'
 
 export const run = migrations.runner()
+
+/**
+ * Search Q1: a `contactSearch` row for every contact, built exactly as the
+ * contracts' projection hook builds it. Rewrites only rows that differ, so
+ * a rerun is a read-only pass.
+ *
+ *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillContactSearch"}'
+ */
+export const backfillContactSearch = migrations.define({
+  table: 'contacts',
+  migrateOne: async (ctx, contact) => {
+    await projectContactSearch(
+      { db: scopeWriter(ctx, contact.tenantId) },
+      contact._id,
+    )
+  },
+})
 
 /**
  * perf-storage step 1: `revisions.groupName`, copied from the revision's

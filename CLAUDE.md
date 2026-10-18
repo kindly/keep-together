@@ -76,6 +76,10 @@ deployment). Run `pnpm convex` and `pnpm dev` side by side.
   identity fields (email address, phone number) immutable per id — change
   = remove + add; addresses fully editable in place. Handlers preserve
   system-owned child fields (e.g. email `onHold`) across every reconcile.
+- **Derived projections** (`contactSearch`) are the one exception to
+  "writes go through contracts": rebuilt from the root's current state by
+  the contract's `project` hook inside the same transaction, never
+  written anywhere else (bar their backfill), no counter, no revisions.
 - Update contracts take `expected: <counter>`; on mismatch throw
   `ConvexError({ kind: "stale", current })` so the form can merge and
   retry. Different sections never falsely conflict.
