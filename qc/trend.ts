@@ -1,4 +1,4 @@
-import { BULK_FUNCTIONS } from './budgets'
+import { BULK_FUNCTIONS } from './budgets.ts'
 import type { HistoryLine } from './reporter'
 
 // QC trend report (factory/plans/qc-suite.sv step 10): shapes
