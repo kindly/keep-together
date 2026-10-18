@@ -33,7 +33,10 @@ are not spawned by `spawn.sh`; the human starts you and points you here.
   of memory beyond that). Reviewers and testers count. When full, queue
   the next task under "Queued" on the board and start it when a teardown
   frees a slot; tear down promptly so slots don't sit idle.
-- Workers in parallel must not share a worktree. A reviewer or tester can
+- Workers in parallel must not share a worktree.
+- Rehearsals use the fixed slots dev/rehearsal-1 and -2 (`pnpm
+  rehearsal:claim`), never a fresh deployment per task. The permanent set
+  is: qc-1..3, demo, preview, rehearsal-1..2, plus the human's dev. A reviewer or tester can
   read a builder's worktree while the builder is idle.
 
 ## Watching

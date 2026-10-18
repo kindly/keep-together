@@ -21,6 +21,13 @@ yours to edit, except `factory/out/` for reports.
 - In the report, list files changed and anything you deviated from the
   brief, with the reason.
 
+## Rehearsing a migration or deploy
+
+Use a fixed rehearsal slot: `pnpm rehearsal:claim` (it resets the slot to
+empty), run against it with `pnpm rehearsal:run <slot> -- …`, and
+`pnpm rehearsal:release <slot>` when done. **Never create a new Convex
+deployment**: the CLI can't delete them, so they pile up in the dashboard.
+
 ## Don't
 
 - Commit unless the task says so; if it does, commit only to your branch.
