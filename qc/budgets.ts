@@ -47,7 +47,9 @@ export const budgets = {
   // Step 9b, recorded 2026-10-18 in runs tn357fbu, tn35ew84, tn35t6tx
   // (sha 1cd6e46): signIn worst 488 ms, coldLoad worst 272 ms, bulkTag
   // worst 329 ms; each budget is 1.5× that, rounded up to 10 ms.
-  'auth.signIn': { kind: 'oncePerSession', maxMs: 740 },
+  // Raised 740 → 1000 by the human (2026-10-18): the recorded 1.5× set had no
+  // slack under machine load; sign-in is once per session.
+  'auth.signIn': { kind: 'oncePerSession', maxMs: 1000 },
   'groups.open': repeatable,
   'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 410 },
   'contacts.nav': repeatable,
@@ -60,7 +62,11 @@ export const budgets = {
   'contacts.showArchived': repeatable,
   'contacts.create': repeatable,
   'contact.save': repeatable,
-  'contact.addEmail': repeatable,
+  'contact.addEmail': {
+    ...repeatable,
+    knownOver:
+      'save floor ~95 ms (RTT + save + get/history re-runs + render); perf task pending (human 2026-10-18)',
+  },
   'contact.livePropagation': repeatable,
   // Back to a contact opened in the last 2 minutes: the keep-alive cache
   // (perf-storage step 2). Expected well under, at about one frame.
@@ -73,7 +79,11 @@ export const budgets = {
   'contact.note.archive': repeatable,
   'contact.tag.add': repeatable,
   'contact.tag.remove': repeatable,
-  'contact.identifier.add': repeatable,
+  'contact.identifier.add': {
+    ...repeatable,
+    knownOver:
+      'save floor ~95 ms (RTT + save + get/history re-runs + render); perf task pending (human 2026-10-18)',
+  },
   'contact.identifier.remove': repeatable,
   'tags.create': repeatable,
   'tags.rename': repeatable,
