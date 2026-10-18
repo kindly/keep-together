@@ -1,6 +1,6 @@
 # 0020 — Accounts: operator-created tenants, tenant roles, supporter logins
 
-Status: **proposed** (2026-10-17) · from the logins & roles plan
+Status: accepted (2026-10-18; proposed 2026-10-17) · from the logins & roles plan
 (`factory/plans/auth-roles.sv`, confirmed in grill round 3). **Amends
 [0017](0017-convex-react-shared-tenancy.md)** on authentication. The
 auth-library part (decision 4) is conditional on spike A0

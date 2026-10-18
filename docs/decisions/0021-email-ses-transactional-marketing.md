@@ -1,6 +1,6 @@
 # 0021 — Email: AWS SES London, transactional isolated from marketing
 
-Status: **proposed** (2026-10-17) · from the logins & roles plan
+Status: accepted (2026-10-18; proposed 2026-10-17) · from the logins & roles plan
 (`factory/plans/auth-roles.sv`, confirmed in grill round 3). Transport
 details are confirmed by spike E1 (`docs/spikes/08-email.md`).
 

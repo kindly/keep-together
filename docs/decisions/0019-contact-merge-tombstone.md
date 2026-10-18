@@ -1,6 +1,6 @@
 # 0019 — Contact merge: tombstone and the reference rule
 
-Status: accepted (2026-10-17) · from the contact-model plan
+Status: accepted (2026-10-17) · amended 2026-10-18 (external identifiers re-parented on merge, from `factory/plans/external-ids.sv` g1q8) · from the contact-model plan
 (`factory/plans/contact-model.sv`, g1q5; open questions settled in grill
 round 4).
 
@@ -42,11 +42,14 @@ is create-new-then-merge, which needs cross-kind merge and is deferred.
 The merge UI produces full-state payloads for the survivor's `details`,
 `methods`, `addresses` and `tags` slices. Each runs through
 `executeContract` like any save, so revisions and counters stay honest.
-Email and phone rows from the loser are **re-parented with their keys**
-rather than copied. That keeps identity-field state with the row: email
-`onHold`, and the supporter login that binds to an email row. This is the
-one operation allowed to move a child row between roots. It lives in the
-merge contract, not in `reconcile`, which keeps rejecting foreign keys.
+Email, phone and identifier rows from the loser are **re-parented with
+their keys** rather than copied. That keeps identity-field state with
+the row: email `onHold`, the supporter login that binds to an email
+row, and an external identifier's uniqueness (a (type, value) pair
+belongs to one contact, so a copy would clash with the original). This
+is the one operation allowed to move a child row between roots. It
+lives in the merge contract, not in `reconcile`, which keeps rejecting
+foreign keys.
 
 **3. The loser becomes a tombstone.** It is not deleted or trashed. A new
 contract `contacts.merge` (counter `mergeVersion`) sets
@@ -78,7 +81,9 @@ Initial classification:
   contributions, Gift Aid claim lines, activities.
 - **Live:** relationships (a relationship that would become
   self-referential is ended, not moved), notes, recurring
-  contributions / mandates, pledges, memberships, supporter login.
+  contributions / mandates, pledges, memberships, supporter login,
+  contact identifiers (re-parented, see decision 2; lookup by an old id
+  lands on the survivor directly).
 - **Tags** are merged by union into the survivor's `tags` slice.
 
 **6. Domain consequences.**

@@ -1,6 +1,17 @@
 # 0018 — QC runs the built SPA against a pool of live dev instances, with RTT-adjusted budgets and a coverage gate
 
-Status: **proposed** (2026-10-17) · drafted by the step 0 spike
+Status: accepted (2026-10-18; proposed 2026-10-17) · drafted by the step 0 spike
+
+**Amended in review (2026-10-18), superseding decision 4's numbers:**
+anything a user can do more than once per session must have **every
+sample under 100 ms, raw** (input to screen, network included; no RTT
+allowance, no median). Server: every uncached call of our functions on
+user paths under 100 ms. A flow over budget is re-measured once and fails
+only if over twice; both sets are recorded. Bulk actions and
+once-per-session flows have their own recorded budgets. Approved
+exceptions are marked `knownOver` with a reason and date. Raising a
+budget or adding an exception needs the human's OK. Details:
+`factory/plans/qc-suite.sv`, `qc/README.md`.
 (`docs/spikes/07-qc-harness.md`) for review. Plan:
 `factory/plans/qc-suite.sv`.
 

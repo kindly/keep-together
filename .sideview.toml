@@ -78,7 +78,7 @@ order = 7
 [[pages]]
 path = "docs/decisions/0018-qc-live-dev-instances.md"
 id = "adr-0018-qc"
-label = "ADR 0018: QC (proposed)"
+label = "ADR 0018: QC"
 category = "docs"
 order = 6
 
@@ -104,23 +104,17 @@ category = "factory"
 order = 2
 render = "iframe"
 
-[[pages]]
-path = "factory/out/planner-extid-adr-0019-amendment.md"
-id = "adr-0019-amendment"
-label = "ADR 0019 amendment (proposed)"
-category = "plans"
-order = 11
 
 [[pages]]
 path = "docs/decisions/0020-accounts-roles-supporter-logins.md"
 id = "adr-0020-accounts"
-label = "ADR 0020: accounts & roles (proposed)"
+label = "ADR 0020: accounts & roles"
 category = "docs"
 order = 7
 
 [[pages]]
 path = "docs/decisions/0021-email-ses-transactional-marketing.md"
 id = "adr-0021-email"
-label = "ADR 0021: email (proposed)"
+label = "ADR 0021: email"
 category = "docs"
 order = 8
