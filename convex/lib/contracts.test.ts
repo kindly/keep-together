@@ -369,6 +369,97 @@ describe('restore to a moment', () => {
     expect(long.reads).toBe(short.reads)
     expect(long.reads).toBeLessThan(40)
   })
+
+  test('a slice first written after the moment is left as it is', async () => {
+    const f = await setup()
+    const tenantId = f.a.tenantId
+    const id = await f.a.as.mutation(api.contacts.mutations.create, {
+      tenantId,
+      ...individual,
+    })
+    const moment = await f.t.run(async (ctx) => {
+      const created = await ctx.db
+        .query('revisions')
+        .withIndex('by_tenant_entity', (q) =>
+          q
+            .eq('tenantId', tenantId)
+            .eq('entity', 'contacts')
+            .eq('entityId', id),
+        )
+        .first()
+      return created!._creationTime
+    })
+    const [tag, other] = await f.a.as.query(api.contacts.queries.tags, {
+      tenantId,
+    })
+    await f.a.as.mutation(api.contacts.mutations.saveTags, {
+      tenantId,
+      id,
+      expected: 0,
+      tags: [{ tagId: tag._id }],
+    })
+    await f.a.as.mutation(api.contacts.mutations.saveTags, {
+      tenantId,
+      id,
+      expected: 1,
+      tags: [{ tagId: tag._id }, { tagId: other._id }],
+    })
+    await f.a.as.mutation(api.contacts.mutations.saveDetails, {
+      tenantId,
+      id,
+      expected: 0,
+      ...individual,
+      nickname: 'Countess',
+    })
+    const result = await f.a.as.mutation(api.contacts.mutations.restoreTo, {
+      tenantId,
+      id,
+      at: moment,
+    })
+    expect(result.restored).toEqual(['contacts.details'])
+    const got = await f.a.as.query(api.contacts.queries.get, { tenantId, id })
+    expect(got?.contact.nickname).toBe('')
+    expect(got?.contact.tagsVersion).toBe(2)
+    expect(got?.tags.map((t) => t.tagId).sort()).toEqual(
+      [tag._id, other._id].sort(),
+    )
+  })
+
+  test('a changed slice of an unregistered contract is refused', async () => {
+    const f = await setup()
+    const tenantId = f.a.tenantId
+    const id = await f.a.as.mutation(api.contacts.mutations.create, {
+      tenantId,
+      ...individual,
+    })
+    const legacy = (payload: unknown) =>
+      f.t.run(async (ctx) => {
+        const revisionId = await ctx.db.insert('revisions', {
+          tenantId,
+          entity: 'contacts',
+          entityId: id,
+          contract: 'contacts.legacy',
+          version: 1,
+          counter: 0,
+          payload,
+          source: 'ui',
+        })
+        return (await ctx.db.get(revisionId))!._creationTime
+      })
+    const moment = await legacy({ note: 'before' })
+    await legacy({ note: 'after' })
+    const before = await snapshot(f.t, tenantId)
+    expect(
+      await errorData(
+        f.a.as.mutation(api.contacts.mutations.restoreTo, {
+          tenantId,
+          id,
+          at: moment,
+        }),
+      ),
+    ).toEqual({ kind: 'unknown_contract', contract: 'contacts.legacy' })
+    expect(await snapshot(f.t, tenantId)).toBe(before)
+  })
 })
 
 describe('upcasters (pure)', () => {
