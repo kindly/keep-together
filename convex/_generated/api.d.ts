@@ -27,6 +27,7 @@ import type * as giftaid_irmark from "../giftaid/irmark.js";
 import type * as http from "../http.js";
 import type * as lib_authErrors from "../lib/authErrors.js";
 import type * as lib_contracts from "../lib/contracts.js";
+import type * as lib_lists from "../lib/lists.js";
 import type * as lib_migrations from "../lib/migrations.js";
 import type * as lib_password from "../lib/password.js";
 import type * as lib_tables from "../lib/tables.js";
@@ -65,6 +66,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   "lib/authErrors": typeof lib_authErrors;
   "lib/contracts": typeof lib_contracts;
+  "lib/lists": typeof lib_lists;
   "lib/migrations": typeof lib_migrations;
   "lib/password": typeof lib_password;
   "lib/tables": typeof lib_tables;
