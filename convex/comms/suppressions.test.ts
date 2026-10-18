@@ -351,7 +351,8 @@ describe('release', () => {
 })
 
 // Review F2: the role-null writer, and the contract under it, are
-// reachable only from trusted modules.
+// reachable only from trusted modules (comms; E2b's event ingest joins
+// them here).
 const callersOf = (pattern: RegExp) =>
   Object.entries(
     import.meta.glob<string>('../**/*.ts', {
@@ -367,10 +368,10 @@ const callersOf = (pattern: RegExp) =>
     .map(([file]) => file)
     .sort()
 
-test('only comms and the backfill call the system writer', () => {
+test('only comms calls the system writer', () => {
   expect(
     callersOf(/suppressAddress\b|comms\.suppressions\.suppress\b/),
-  ).toEqual(['../contacts/migrations.ts', './suppressions.ts'])
+  ).toEqual(['./suppressions.ts'])
 })
 
 test('only comms/suppressions runs the suppression contract', () => {

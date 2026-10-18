@@ -14,41 +14,16 @@
  * every deployment that will take the tightening; the tightening commit
  * deletes the backfill and its test (convex-test can no longer build the
  * old shape). Past backfills: `addressNormalized` (S2), `tagsVersion` (S4),
- * `externalIdentifier` → identifier rows (X2);
+ * `externalIdentifier` → identifier rows (X2), `contactEmails.onHold` →
+ * comms' emailSuppressions (E2a);
  * see git log. `backfillContactSearch` is not a two-phase step: it fills a
  * new derived table, and stays (rerunnable) as the way to rebuild it.
  */
 import { migrations } from '../lib/migrations'
 import { scopeWriter } from '../lib/tenancy'
-import { suppressAddress } from '../comms/suppressions'
 import { projectContactSearch } from './searchProjection'
 
 export const run = migrations.runner()
-
-/**
- * E2a: holds move from the email row to comms (per address). A row with
- * `onHold: true` suppresses its address in the tenant, as a bounce (the
- * only thing that ever set it); every row loses the field. A no-op on
- * rows without it.
- *
- *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillEmailHolds"}'
- */
-export const backfillEmailHolds = migrations.define({
-  table: 'contactEmails',
-  migrateOne: async (ctx, row) => {
-    if (row.onHold === undefined) return undefined
-    if (row.onHold) {
-      await suppressAddress(
-        { db: scopeWriter(ctx, row.tenantId), userId: null, role: null },
-        {
-          address: row.addressNormalized,
-          note: 'carried over from the email row (E2a)',
-        },
-      )
-    }
-    return { onHold: undefined }
-  },
-})
 
 /**
  * Search Q1: a `contactSearch` row for every contact, built exactly as the

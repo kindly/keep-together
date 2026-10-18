@@ -182,10 +182,8 @@ export default defineSchema({
     // behind findByEmail and the shared-email warning
     addressNormalized: v.string(),
     isPrimary: v.boolean(),
-    // Superseded by comms' emailSuppressions (per address, E2a): no longer
-    // written or read; backfillEmailHolds carries a true one over and
-    // unsets it, then the field goes.
-    onHold: v.optional(v.boolean()),
+    // Whether the address is on hold is comms' emailSuppressions, per
+    // address (E2a), not row state.
   })
     .index('by_tenant_contact', ['tenantId', 'contactId'])
     .index('by_tenant_key', ['tenantId', 'key'])

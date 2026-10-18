@@ -52,7 +52,7 @@ export async function isSuppressed(
  * it again.
  *
  * Trusted callers only: it refuses a ctx with a role, so it runs from
- * internal functions (the SES webhook's ingest, a migration). That alone
+ * internal functions (the SES webhook's ingest, E2b). That alone
  * doesn't keep users out: a public function must never call or schedule an
  * internal function that runs this. The webhook is an HTTP action with no
  * user behind it, which is why it may.
