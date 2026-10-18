@@ -1,9 +1,86 @@
-import { useMutation, useQuery } from 'convex/react'
+import { useMutation, useQueries, useQuery } from 'convex/react'
+import { useMemo, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
+import { joinMoments } from '../../convex/contacts/history'
+import type { Moment } from '../../convex/contacts/history'
 import { useCanWrite, useTenant } from '../lib/tenant'
 
-/** The timeline as moments; "Restore to here" re-executes every slice's state at that time. */
+/** Revisions per history page (the server caps it at HISTORY_PAGE_LIMIT). */
+const PAGE = 10
+const NO_CURSORS: Array<string> = []
+
+/**
+ * The newest page's args. The route prewarms exactly these, so they must
+ * not vary per mount (which is why this isn't `usePaginatedQuery`: its
+ * per-hook pagination id would miss the prewarmed subscription).
+ */
+export function historyFirstPage(tenantId: Id<'tenants'>, id: Id<'contacts'>) {
+  return { tenantId, id, paginationOpts: { numItems: PAGE, cursor: null } }
+}
+
+/**
+ * The newest page, live, plus the older pages "Load older" asked for. Each
+ * older page starts at the previous page's end; the newest page keeps its
+ * end on re-runs (Convex pins a page's range per subscription) and grows
+ * as saves land, so pages never leave a gap. Only the newest page re-runs
+ * on a save; older ones read ranges a save never touches.
+ */
+function useHistoryPages(id: Id<'contacts'>) {
+  const tenant = useTenant()
+  const first = useQuery(
+    api.contacts.queries.history,
+    historyFirstPage(tenant._id, id),
+  )
+  const [older, setOlder] = useState<{
+    id: Id<'contacts'>
+    cursors: Array<string>
+  }>({ id, cursors: [] })
+  const cursors = older.id === id ? older.cursors : NO_CURSORS
+  // useQueries resubscribes whenever its argument's identity changes, so
+  // the object must only change when the pages do.
+  const queries = useMemo(
+    () =>
+      Object.fromEntries(
+        cursors.map((cursor) => [
+          cursor,
+          {
+            query: api.contacts.queries.history,
+            args: {
+              tenantId: tenant._id,
+              id,
+              paginationOpts: { numItems: PAGE, cursor },
+            },
+          },
+        ]),
+      ),
+    [tenant._id, id, cursors],
+  )
+  const results = useQueries(queries)
+  if (first === undefined) return { moments: undefined }
+  const pages = [first]
+  for (const cursor of cursors) {
+    const page: unknown = results[cursor]
+    if (page instanceof Error) throw page
+    if (page === undefined) break
+    pages.push(page as typeof first)
+  }
+  const last = pages[pages.length - 1]
+  const loading = pages.length < cursors.length + 1
+  return {
+    moments: joinMoments(pages.flatMap((p) => p.page)),
+    loading,
+    loadOlder:
+      loading || last.isDone
+        ? undefined
+        : () => setOlder({ id, cursors: [...cursors, last.continueCursor] }),
+  }
+}
+
+/**
+ * The timeline as moments, newest first, a page at a time; "Restore to
+ * here" re-executes every slice's state at that time, from any page.
+ */
 export function ContactHistory({
   id,
   archived,
@@ -15,10 +92,7 @@ export function ContactHistory({
 }) {
   const tenant = useTenant()
   const canWrite = useCanWrite()
-  const moments = useQuery(api.contacts.queries.history, {
-    tenantId: tenant._id,
-    id,
-  })
+  const { moments, loading, loadOlder } = useHistoryPages(id)
   const members = useQuery(api.platform.tenants.members, {
     tenantId: tenant._id,
   })
@@ -49,9 +123,11 @@ export function ContactHistory({
         <p className="text-neutral-500">Loading…</p>
       ) : (
         <ol className="flex flex-col gap-2">
-          {moments.map((m, i) => (
+          {moments.map((m: Moment, i) => (
             <li
-              key={m.revisionId}
+              key={m.key}
+              data-revision={m.revisionId}
+              data-at={m.at}
               className="rounded border border-neutral-200 bg-white p-2"
             >
               <div className="flex items-baseline justify-between gap-2">
@@ -95,6 +171,16 @@ export function ContactHistory({
             </li>
           ))}
         </ol>
+      )}
+      {loading && <p className="text-neutral-500">Loading…</p>}
+      {loadOlder && (
+        <button
+          type="button"
+          onClick={loadOlder}
+          className="self-start text-xs text-neutral-600 underline"
+        >
+          Load older
+        </button>
       )}
     </aside>
   )

@@ -10,7 +10,7 @@ import {
   restore,
   restoreEntityTo,
 } from '../lib/contracts'
-import type { ContractCtx, Problem } from '../lib/contracts'
+import type { CommandGroup, ContractCtx, Problem } from '../lib/contracts'
 import { tenantMutation } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import {
@@ -233,7 +233,7 @@ async function applyBulkTag(
       { entityId: plan.id, expected: plan.expected, source: 'ui', group },
     )
   }
-  return { changed: plans.length, group }
+  return { changed: plans.length, group: group.id }
 }
 
 // ── the form save (an action over the content slices) ─────────────────────
@@ -374,7 +374,7 @@ export const saveForm = tenantMutation({
     const changed: Array<{
       name: Slice
       prepared: unknown
-      run: (group?: Id<'commandGroups'>) => Promise<{ counter: number }>
+      run: (group?: CommandGroup) => Promise<{ counter: number }>
     }> = []
 
     const consider = <TSlice extends Slice>(

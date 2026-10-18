@@ -9,8 +9,8 @@ import {
   normaliseIdentifier,
   normaliseTagName,
 } from './rules'
-import { contactWarnings } from './warnings'
 import type { AlsoUsedBy } from './warnings'
+import { groupsToRead, toMoments } from './history'
 
 function emailRows(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
   return db
@@ -359,54 +359,76 @@ export const list = tenantQuery({
 })
 
 /**
- * The whole aggregate: root, children, counters and advisory warnings.
- * Every read that doesn't depend on another runs concurrently: this query
- * re-runs after every save of the contact, and its time is on the save's
- * critical path (the client sees the save once its queries are current).
+ * The whole aggregate: root, children and counters. Every read that doesn't
+ * depend on another runs concurrently: this query re-runs after every save
+ * of the contact, and its time is on the save's critical path (the client
+ * sees the save once its queries are current). Advisory warnings are
+ * `contactWarnings(view, sharedAddresses)`, computed by the caller, so the
+ * shared-address lookup (two more read levels) stays off that path.
  */
 async function contactView(db: ScopedDatabaseReader, id: Id<'contacts'>) {
   const emails = emailRows(db, id)
-  const [contact, kids, tagList, identifierList, alsoUsedBy] =
-    await Promise.all([
-      db.get(id),
-      children(db, id, emails),
-      tagsOf(db, id),
-      identifiersOf(db, id),
-      emails.then((rows) => sharedAddresses(db, id, rows)),
-    ])
+  const [contact, kids, tagList, identifierList] = await Promise.all([
+    db.get(id),
+    children(db, id, emails),
+    tagsOf(db, id),
+    identifiersOf(db, id),
+  ])
   if (!contact) return null
   return {
     contact,
     ...kids,
     tags: tagList,
     identifiers: identifierList,
-    warnings: contactWarnings(kids, alsoUsedBy),
   }
 }
 
-/** Per email row, the other contacts using its address (S1 warning). */
-async function sharedAddresses(
-  db: ScopedDatabaseReader,
-  id: Id<'contacts'>,
-  emails: Array<Doc<'contactEmails'>>,
-): Promise<AlsoUsedBy> {
-  return Object.fromEntries(
-    await Promise.all(
-      emails.map(async (email) => {
-        const { contacts, truncated } = await contactsWithEmail(
-          db,
-          email.address,
-          id,
-        )
-        const others = contacts.map((c) => ({
-          displayName: c.displayName,
-          archived: c.archived,
-        }))
-        return [email.key, { contacts: others, truncated }] as const
-      }),
+/**
+ * The most addresses one `sharedAddresses` call looks up. The methods
+ * contract has no per-contact cap, so rows past this come back `unchecked`
+ * and the form says so rather than implying nobody shares them.
+ */
+export const SHARED_ADDRESS_LIMIT = 20
+
+/**
+ * Per email row (by key), the other contacts in the tenant using its
+ * address: the "also used by" warning's input (S1). Takes the contact's
+ * saved addresses as args rather than reading its rows, so a save that
+ * adds an address doesn't re-run it inside the save's wait; the caller
+ * re-subscribes with the new list one round trip later. Advisory only
+ * (ADR 0015), so arriving late is fine.
+ */
+export const sharedAddresses = tenantQuery({
+  args: {
+    id: v.id('contacts'),
+    emails: v.array(v.object({ key: v.string(), address: v.string() })),
+  },
+  handler: async (ctx, { id, emails }): Promise<AlsoUsedBy> =>
+    Object.fromEntries(
+      await Promise.all(
+        emails.map(async (email, i) => {
+          if (i >= SHARED_ADDRESS_LIMIT) {
+            const unchecked = {
+              contacts: [],
+              truncated: false,
+              unchecked: true,
+            }
+            return [email.key, unchecked] as const
+          }
+          const { contacts, truncated } = await contactsWithEmail(
+            ctx.db,
+            email.address,
+            id,
+          )
+          const others = contacts.map((c) => ({
+            displayName: c.displayName,
+            archived: c.archived,
+          }))
+          return [email.key, { contacts: others, truncated }] as const
+        }),
+      ),
     ),
-  )
-}
+})
 
 export const get = tenantQuery({
   args: { id: v.id('contacts') },
@@ -430,59 +452,42 @@ export const byClientKey = tenantQuery({
   },
 })
 
+/** Revisions one `history` page reads at most (newest first). */
+export const HISTORY_PAGE_LIMIT = 10
+
 /**
  * History as *moments*: revisions from one action (sharing a command group)
- * collapse into a single entry listing the slices it touched. Newest first.
+ * collapse into a single entry listing the slices it touched. Newest first,
+ * one page of HISTORY_PAGE_LIMIT revisions when subscribed, so its cost on
+ * open doesn't depend on how long the history is. While a subscription
+ * lives, Convex keeps the page's end where it was, so the newest page grows
+ * by one read per revision saved meanwhile (that's what keeps older pages
+ * contiguous); a fresh subscription starts at HISTORY_PAGE_LIMIT again.
+ * A group can straddle a page boundary: the client joins adjacent moments
+ * with the same `key` (`joinMoments`).
  */
 export const history = tenantQuery({
-  args: { id: v.id('contacts') },
-  handler: async (ctx, { id }) => {
-    const revisions = await ctx.db
+  args: { id: v.id('contacts'), paginationOpts: paginationOptsValidator },
+  handler: async (ctx, { id, paginationOpts }) => {
+    const result = await ctx.db
       .query('revisions')
       .withIndex('by_tenant_entity', (q) =>
         q.eq('entity', 'contacts').eq('entityId', id),
       )
       .order('desc')
-      .take(100)
-    // Group names in one concurrent batch, not one read per moment.
-    const groupIds = [
-      ...new Set(revisions.flatMap((r) => (r.group ? [r.group] : []))),
-    ]
+      .paginate({
+        ...paginationOpts,
+        numItems: Math.min(paginationOpts.numItems, HISTORY_PAGE_LIMIT),
+      })
+    const revisions = result.page
     const groupNames = new Map(
       await Promise.all(
-        groupIds.map(async (g) => [g, (await ctx.db.get(g))?.name] as const),
+        groupsToRead(revisions).map(
+          async (g) => [g, (await ctx.db.get(g))?.name] as const,
+        ),
       ),
     )
-    const moments: Array<{
-      revisionId: Id<'revisions'>
-      at: number
-      actor: Id<'users'> | null
-      source: Doc<'revisions'>['source']
-      groupName: string | null
-      slices: Array<string>
-      restored: boolean
-    }> = []
-    const index = new Map<string, number>()
-    for (const r of revisions) {
-      const key = r.group ?? r._id
-      const slice = r.contract.replace(/^contacts\./, '')
-      const at = index.get(key)
-      if (at !== undefined) {
-        const m = moments[at]
-        if (!m.slices.includes(slice)) m.slices.push(slice)
-        continue
-      }
-      index.set(key, moments.length)
-      moments.push({
-        revisionId: r._id,
-        at: r._creationTime,
-        actor: r.actor ?? null,
-        source: r.source,
-        groupName: r.group ? (groupNames.get(r.group) ?? null) : null,
-        slices: [slice],
-        restored: r.restoredFrom !== undefined,
-      })
-    }
-    return moments
+    const moments = toMoments(revisions, groupNames)
+    return { ...result, page: moments }
   },
 })

@@ -6,7 +6,7 @@ import { api } from '../../convex/_generated/api'
 import { cachedTenant, useTenant } from '../lib/tenant'
 import { contactSeed, dropContactSeed } from '../lib/contact-seed'
 import { ContactForm } from '../components/contact-form'
-import { ContactHistory } from '../components/contact-history'
+import { ContactHistory, historyFirstPage } from '../components/contact-history'
 import { ContactNotes } from '../components/contact-notes'
 import { LeaveGuard } from '../components/leave-guard'
 import { UnsavedWorkProvider, useUnsavedWork } from '../lib/unsaved'
@@ -23,7 +23,10 @@ export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
       id: params.contactId as Id<'contacts'>,
     }
     convex.prewarmQuery({ query: api.contacts.queries.get, args })
-    convex.prewarmQuery({ query: api.contacts.queries.history, args })
+    convex.prewarmQuery({
+      query: api.contacts.queries.history,
+      args: historyFirstPage(args.tenantId, args.id),
+    })
     convex.prewarmQuery({ query: api.contacts.notes.forContact, args })
     convex.prewarmQuery({
       query: api.platform.tenants.members,

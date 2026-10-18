@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from 'vitest'
 import type { Id } from '../_generated/dataModel'
 import { api, internal } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
+import type { Tenant } from '../../test/fixture'
 import { contactWarnings } from './warnings'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
@@ -67,6 +68,28 @@ beforeEach(async () => {
 
 const getAda = () =>
   f.a.as.query(api.contacts.queries.get, { tenantId: f.a.tenantId, id: ada })
+/** What the contact form shows: `get` merged with `sharedAddresses`. */
+const warningsOf = async (who: Tenant, id: Id<'contacts'>) => {
+  const view = await who.as.query(api.contacts.queries.get, {
+    tenantId: who.tenantId,
+    id,
+  })
+  const shared = await who.as.query(api.contacts.queries.sharedAddresses, {
+    tenantId: who.tenantId,
+    id,
+    emails: view!.emails.map((e) => ({ key: e.key, address: e.address })),
+  })
+  return contactWarnings(view!, shared)
+}
+/** The newest history page's moments. */
+const historyOf = (id: Id<'contacts'>) =>
+  f.a.as
+    .query(api.contacts.queries.history, {
+      tenantId: f.a.tenantId,
+      id,
+      paginationOpts: { numItems: 10, cursor: null },
+    })
+    .then((r) => r.page)
 const saveMethods = (
   expected: number,
   emails: Array<ReturnType<typeof email>>,
@@ -250,7 +273,9 @@ describe('methods (child rows)', () => {
     await saveMethods(0, [email('not-an-email')])
     const got = await getAda()
     expect(got?.emails[0].address).toBe('not-an-email')
-    expect(got?.warnings.map((w) => w.anchor)).toEqual(['emails.0'])
+    expect((await warningsOf(f.a, ada)).map((w) => w.anchor)).toEqual([
+      'emails.0',
+    ])
   })
 
   test('kept keys leave rows untouched and onHold survives', async () => {
@@ -375,7 +400,7 @@ describe('email lookup', () => {
   test('a shared address saves on both, each warned naming the other', async () => {
     await saveMethods(0, [email('ann@example.com', { key: 'e1' })])
     const bob = await createWithEmail(f.a, 'Smith', 'ANN@example.com')
-    const adaWarnings = (await getAda())!.warnings
+    const adaWarnings = await warningsOf(f.a, ada)
     expect(adaWarnings).toEqual([
       expect.objectContaining({
         anchor: 'emails#e1',
@@ -386,7 +411,7 @@ describe('email lookup', () => {
       tenantId: f.a.tenantId,
       id: bob,
     })
-    expect(other!.warnings).toEqual([
+    expect(await warningsOf(f.a, bob)).toEqual([
       expect.objectContaining({
         anchor: `emails#${other!.emails[0].key}`,
         message: 'Also used by Ada Lovelace',
@@ -408,7 +433,7 @@ describe('email lookup', () => {
     expect(
       (await findByEmail(f.a, 'Ann@Example.com')).map((c) => c._id),
     ).toEqual([ada])
-    expect((await getAda())!.warnings).toEqual([])
+    expect(await warningsOf(f.a, ada)).toEqual([])
     const bList = await f.b.as
       .query(api.contacts.queries.list, {
         tenantId: f.b.tenantId,
@@ -570,10 +595,7 @@ describe('email lookup edges', () => {
     expect(await findIds(f.a, 'form@x.com')).toEqual([ada])
     await saveMethods(1, [])
     expect(await findIds(f.a, 'form@x.com')).toEqual([])
-    const history = await f.a.as.query(api.contacts.queries.history, {
-      tenantId: f.a.tenantId,
-      id: ada,
-    })
+    const history = await historyOf(ada)
     const withEmail = history.find(
       (m) => m.slices.includes('methods') && m.at < history[0].at,
     )!
@@ -609,7 +631,7 @@ describe('email lookup edges', () => {
     await saveMethods(0, [email('ann@example.com', { key: 'e1' })])
     const bob = await createWithEmail(f.a, 'Smith', 'ann@example.com')
     await archive(f.a, bob)
-    expect((await getAda())!.warnings).toEqual([
+    expect(await warningsOf(f.a, ada)).toEqual([
       expect.objectContaining({
         anchor: 'emails#e1',
         message: 'Also used by Ann Smith (archived)',
@@ -632,12 +654,9 @@ describe('email lookup edges', () => {
     })
     expect(raw.truncated).toBe(true)
     // The 51st still sees the shared address; three names, then a lower bound.
-    const last = await f.a.as.query(api.contacts.queries.get, {
-      tenantId: f.a.tenantId,
-      id: ids[50],
-    })
-    expect(last!.warnings).toHaveLength(1)
-    expect(last!.warnings[0].message).toBe(
+    const last = await warningsOf(f.a, ids[50])
+    expect(last).toHaveLength(1)
+    expect(last[0].message).toBe(
       'Also used by Ada Lovelace, Ann Shared1, Ann Shared2 and at least 47 others',
     )
     // No match: nothing to flag.
@@ -656,11 +675,16 @@ describe('email lookup edges', () => {
     const inB = await createWithEmail(f.b, 'Beta', 'ann@example.com')
     // A's list never returns B's contact, and B's warning never names A's.
     expect(await listIds(f.a, 'ann@example.com', true)).toEqual([ada])
-    const bGot = await f.b.as.query(api.contacts.queries.get, {
-      tenantId: f.b.tenantId,
-      id: inB,
-    })
-    expect(bGot!.warnings).toEqual([])
+    expect(await warningsOf(f.b, inB)).toEqual([])
+    // Asked in A about B's contact, nothing comes back.
+    const crossed = await errorData(
+      f.a.as.query(api.contacts.queries.sharedAddresses, {
+        tenantId: f.b.tenantId,
+        id: inB,
+        emails: [{ key: 'e1', address: 'ann@example.com' }],
+      }),
+    )
+    expect(crossed.kind).toBe('forbidden')
     expect(await findIds(f.b, 'ANN@example.com')).toEqual([inB])
     // B's member cannot search A's tenant.
     const forbidden = await errorData(
@@ -681,19 +705,21 @@ describe('addresses', () => {
     const got = await getAda()
     expect(got?.addresses[0].postcode).toBe('GL5 1DL')
     expect(got?.addresses[0].country).toBe('GB')
-    expect(got?.warnings).toEqual([])
+    expect(await warningsOf(f.a, ada)).toEqual([])
   })
 
   test('bad UK postcode saved and warned', async () => {
     await saveAddresses(0, [address('NOT A CODE')])
     const got = await getAda()
     expect(got?.addresses[0].postcode).toBe('NOT A CODE')
-    expect(got?.warnings.map((w) => w.anchor)).toEqual(['addresses.0'])
+    expect((await warningsOf(f.a, ada)).map((w) => w.anchor)).toEqual([
+      'addresses.0',
+    ])
   })
 
   test('non-GB postcode not checked', async () => {
     await saveAddresses(0, [address('75001', { country: 'FR' })])
-    expect((await getAda())?.warnings).toEqual([])
+    expect(await warningsOf(f.a, ada)).toEqual([])
   })
 
   test('address fields update in place by key', async () => {
@@ -734,10 +760,7 @@ describe('counters and conflicts', () => {
     })
     const got = await getAda()
     expect(got?.emails.map((e) => e.address)).toEqual(['a@x.com'])
-    const history = await f.a.as.query(api.contacts.queries.history, {
-      tenantId: f.a.tenantId,
-      id: ada,
-    })
+    const history = await historyOf(ada)
     expect(history.map((m) => m.slices)).toEqual([['methods'], ['details']])
   })
 
@@ -793,10 +816,7 @@ describe('the form save', () => {
       details: { expected: 0, ...individual, nickname: 'Countess' },
       methods: { expected: 0, emails: [email('a@x.com')], phones: [] },
     })
-    const history = await f.a.as.query(api.contacts.queries.history, {
-      tenantId: f.a.tenantId,
-      id: ada,
-    })
+    const history = await historyOf(ada)
     expect(history[0].slices.sort()).toEqual(['details', 'methods'])
     expect(history[0].groupName).toBe('contact form save')
   })
@@ -828,10 +848,7 @@ describe('history and restore', () => {
   test('restore recreates removed rows with their keys', async () => {
     await saveMethods(0, [email('a@x.com', { key: 'e1' })])
     await saveMethods(1, [])
-    const history = await f.a.as.query(api.contacts.queries.history, {
-      tenantId: f.a.tenantId,
-      id: ada,
-    })
+    const history = await historyOf(ada)
     const withEmail = history.find(
       (m) => m.slices.includes('methods') && m.at < history[0].at,
     )!
@@ -846,12 +863,7 @@ describe('history and restore', () => {
 
   test('restore to a moment reverts the whole contact in one grouped entry', async () => {
     await saveMethods(0, [email('a@x.com', { key: 'e1' })])
-    const moment = (
-      await f.a.as.query(api.contacts.queries.history, {
-        tenantId: f.a.tenantId,
-        id: ada,
-      })
-    )[0].at
+    const moment = (await historyOf(ada))[0].at
     await f.a.as.mutation(api.contacts.mutations.saveDetails, {
       tenantId: f.a.tenantId,
       id: ada,
@@ -872,10 +884,7 @@ describe('history and restore', () => {
     const got = await getAda()
     expect(got?.contact.lastName).toBe('Lovelace')
     expect(got?.emails.map((e) => e.address)).toEqual(['a@x.com'])
-    const history = await f.a.as.query(api.contacts.queries.history, {
-      tenantId: f.a.tenantId,
-      id: ada,
-    })
+    const history = await historyOf(ada)
     expect(history[0].restored).toBe(true)
     expect(history[0].groupName).toMatch(/^restore to /)
     expect(history[0].slices.sort()).toEqual(['details', 'methods'])

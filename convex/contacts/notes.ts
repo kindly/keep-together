@@ -8,7 +8,7 @@
 import { ConvexError, v } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
 import { commandGroup, executeContract } from '../lib/contracts'
-import type { ContractCtx } from '../lib/contracts'
+import type { CommandGroup, ContractCtx } from '../lib/contracts'
 import { tenantMutation, tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { note, noteFlags } from './contracts'
@@ -101,7 +101,7 @@ async function setFlag(
   id: Id<'contactNotes'>,
   flag: 'pinned' | 'archived',
   value: boolean,
-  group?: Id<'commandGroups'>,
+  group?: CommandGroup,
 ) {
   const n = await ctx.db.get(id)
   if (!n) throw new ConvexError({ kind: 'not_found' as const })

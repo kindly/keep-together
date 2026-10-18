@@ -1,9 +1,8 @@
 /**
  * Per-tenant reference data. Scheduled by platform.tenants.create; idempotent.
  */
-import type { Id } from '../_generated/dataModel'
 import { commandGroup, executeContract } from '../lib/contracts'
-import type { ContractCtx } from '../lib/contracts'
+import type { CommandGroup, ContractCtx } from '../lib/contracts'
 import { internalTenantMutation } from '../lib/tenancy'
 import { relationshipType, tag } from './contracts'
 
@@ -49,7 +48,7 @@ export const SEED_TAGS = ['Member', 'Volunteer']
  */
 export async function seedTags(
   ctx: ContractCtx,
-  group?: Id<'commandGroups'>,
+  group?: CommandGroup,
 ): Promise<number> {
   const existing = await ctx.db
     .query('tags')

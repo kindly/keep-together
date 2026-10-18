@@ -334,6 +334,52 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     await expect(known).toHaveValue('')
   })
 
+  test('history pages: Load older, and no gap while saves arrive', async ({
+    page,
+    users,
+  }) => {
+    await createContact(page, users.a.slug, uniqueName('pages'))
+    const moments = page.locator('aside ol > li')
+    const known = page.getByLabel('Known as')
+    const saveKnownAs = async (value: string) => {
+      const before = await moments.count()
+      await known.fill(value)
+      await saveButton(page).click()
+      await expect(saved(page)).toBeVisible()
+      await expect(moments).toHaveCount(before + 1)
+    }
+    /** The panel's moments as [revision id, time], top to bottom. */
+    const shown = () =>
+      moments.evaluateAll((items) =>
+        items.map((li) => [
+          li.getAttribute('data-revision')!,
+          Number(li.getAttribute('data-at')),
+        ]),
+      )
+    // Each save is one details revision, so one moment: well past a page.
+    for (let i = 1; i <= 14; i++) await saveKnownAs(`page ${i}`)
+
+    // A fresh subscription shows the newest page only.
+    await page.reload()
+    await expect(moments).toHaveCount(10)
+    await page.getByRole('button', { name: 'Load older' }).click()
+    // Hidden while the older page loads too: wait for the page itself.
+    await expect(page.getByRole('button', { name: 'Load older' })).toBeHidden()
+    await expect(page.locator('aside').getByText('Loading…')).toBeHidden()
+    const all = await shown()
+    expect(all.length).toBeGreaterThan(10)
+
+    // Saves land on the newest page, which grows; the older page stays put.
+    await saveKnownAs('after 1')
+    await saveKnownAs('after 2')
+    const after = await shown()
+    expect(after).toHaveLength(all.length + 2)
+    expect(after.slice(2)).toEqual(all)
+    expect(new Set(after.map(([id]) => id)).size).toBe(after.length)
+    const times = after.map(([, at]) => at as number)
+    expect(times).toEqual([...times].sort((a, b) => b - a))
+  })
+
   test('a contact from another group: "No such contact"', async ({
     page,
     users,

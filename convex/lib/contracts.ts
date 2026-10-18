@@ -122,7 +122,7 @@ export type ExecuteOptions<TRoot extends TableNames> = {
   /** Counter value the caller last saw. Always passed by forms. */
   expected?: number
   source: Source
-  group?: Id<'commandGroups'>
+  group?: CommandGroup
   restoredFrom?: Id<'revisions'>
   /** Passed to apply on create only; never stored in the revision. */
   createWith?: unknown
@@ -188,21 +188,30 @@ export async function executeContract<
     payload,
     actor: ctx.userId ?? undefined,
     source: opts.source,
-    group: opts.group,
+    group: opts.group?.id,
+    // A group's name never changes; stamped so `history` never reads groups.
+    groupName: opts.group?.name,
     restoredFrom: opts.restoredFrom,
   })
   return { id, counter }
 }
 
+/**
+ * A command group as `executeContract` takes it: the id, and the name each
+ * revision carries so history needs no second read.
+ */
+export type CommandGroup = { id: Id<'commandGroups'>; name: string }
+
 /** An *action*: several contracts under one named group in one mutation. */
 export async function commandGroup(
   ctx: ContractCtx,
   name: string,
-): Promise<Id<'commandGroups'>> {
-  return ctx.db.insert('commandGroups', {
+): Promise<CommandGroup> {
+  const id = await ctx.db.insert('commandGroups', {
     name,
     actor: ctx.userId ?? undefined,
   })
+  return { id, name }
 }
 
 // ── restore ────────────────────────────────────────────────────────────────
@@ -248,7 +257,7 @@ export async function restore(
   ctx: ContractCtx,
   reg: Registry,
   revisionId: Id<'revisions'>,
-  opts: { group?: Id<'commandGroups'> } = {},
+  opts: { group?: CommandGroup } = {},
 ) {
   const revision = await ctx.db.get(revisionId)
   if (!revision) throw new ConvexError({ kind: 'not_found' as const })
@@ -384,5 +393,5 @@ export async function restoreEntityTo(
     await restore(ctx, reg, r._id, { group })
     restored.push(r.contract)
   }
-  return { restored, group }
+  return { restored, group: group.id }
 }

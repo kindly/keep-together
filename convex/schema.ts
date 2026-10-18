@@ -88,6 +88,11 @@ export default defineSchema({
     actor: v.optional(v.id('users')),
     source: revisionSource,
     group: v.optional(v.id('commandGroups')),
+    // The group's name, copied at insert (a group's name never changes) so
+    // `history` needs no second read. Optional for good: rows from before
+    // perf-storage step 1 are backfilled, and `history` falls back to the
+    // group document for any that aren't.
+    groupName: v.optional(v.string()),
     restoredFrom: v.optional(v.id('revisions')),
   })
     .index('by_tenant_entity', ['tenantId', 'entity', 'entityId'])

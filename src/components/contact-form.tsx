@@ -1,10 +1,12 @@
 import { useMutation, useQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
 import { ConvexError } from 'convex/values'
-import { useEffect, useReducer, useRef } from 'react'
+import { useEffect, useMemo, useReducer, useRef } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import type { Payloads } from '../../convex/contacts/validators'
+import { contactWarnings } from '../../convex/contacts/warnings'
+import type { Warning } from '../../convex/contacts/warnings'
 import type {
   Counters,
   FormState,
@@ -95,6 +97,27 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
     tenantId: tenant._id,
     includeInactive: true,
   })
+  // "Also used by" lookups for the saved addresses: their own query, so a
+  // save never waits on them; a new address's warning lands one round trip
+  // after the save. Until the new answer comes, the last one stands: an
+  // email row's address never changes under its key (ADR 0014).
+  const sharedNow = useQuery(
+    api.contacts.queries.sharedAddresses,
+    data.emails.length === 0
+      ? 'skip'
+      : {
+          tenantId: tenant._id,
+          id,
+          emails: data.emails.map((e) => ({ key: e.key, address: e.address })),
+        },
+  )
+  const sharedLast = useRef(sharedNow)
+  if (sharedNow !== undefined) sharedLast.current = sharedNow
+  const alsoUsedBy = sharedNow ?? sharedLast.current
+  const warnings = useMemo(
+    () => contactWarnings(data, alsoUsedBy),
+    [data, alsoUsedBy],
+  )
   const [state, dispatch] = useReducer(reduce, data, (d) =>
     initialState(toSlices(d), toCounters(d)),
   )
@@ -178,7 +201,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
   const memberName = (userId: Id<'users'> | null) =>
     members?.find((m) => m.userId === userId)?.name ?? 'someone'
 
-  const generalWarnings = data.warnings.filter((w) => w.anchor === '')
+  const generalWarnings = warnings.filter((w) => w.anchor === '')
   const problemCount = Object.values(state.problems).reduce(
     (n, p) => n + p.length,
     0,
@@ -262,14 +285,14 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
           value={state.local.methods}
           onChange={(v) => edit('methods', v)}
           problems={state.problems.methods ?? []}
-          warnings={data.warnings}
+          warnings={warnings}
         />
 
         <AddressFields
           value={state.local.addresses}
           onChange={(v) => edit('addresses', v)}
           problems={state.problems.addresses ?? []}
-          warnings={data.warnings}
+          warnings={warnings}
         />
 
         <TagFields
@@ -288,7 +311,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
         <SavePane
           state={state}
           problemCount={problemCount}
-          warningCount={data.warnings.length}
+          warningCount={warnings.length}
         />
       )}
     </form>
@@ -390,7 +413,7 @@ function MethodsFields({
   value: Payloads['methods']
   onChange: (v: Payloads['methods']) => void
   problems: Array<Problem>
-  warnings: Data['warnings']
+  warnings: Array<Warning>
 }) {
   return (
     <>
@@ -557,7 +580,7 @@ function AddressFields({
   value: Payloads['addresses']
   onChange: (v: Payloads['addresses']) => void
   problems: Array<Problem>
-  warnings: Data['warnings']
+  warnings: Array<Warning>
 }) {
   const update = (
     row: Payloads['addresses']['addresses'][number],
@@ -764,7 +787,7 @@ type RowMessage = { text: string; tone: 'error' | 'warning' }
  */
 function rowMessages(
   problem: string | undefined,
-  warnings: Data['warnings'],
+  warnings: Array<Warning>,
   anchors: Array<string>,
 ): Array<RowMessage> {
   if (problem) return [{ text: problem, tone: 'error' }]

@@ -33,6 +33,8 @@ export function looksLikeUkPostcode(value: string): boolean {
 export type Sharers = {
   contacts: Array<{ displayName: string; archived: boolean }>
   truncated: boolean
+  /** Past the lookup's per-contact cap: nobody looked, so say so. */
+  unchecked?: boolean
 }
 export type AlsoUsedBy = Partial<Record<string, Sharers>>
 
@@ -80,7 +82,14 @@ export function contactWarnings(
       })
     }
     const shared = alsoUsedBy[email.key]
-    if (shared && (shared.contacts.length || shared.truncated)) {
+    if (shared?.unchecked) {
+      warnings.push({
+        anchor: `emails#${email.key}`,
+        label: `email ${index + 1}`,
+        message:
+          'Not checked for other contacts using this address (too many addresses on this contact)',
+      })
+    } else if (shared && (shared.contacts.length || shared.truncated)) {
       // Anchored by key: the form's rows can be reordered or removed before
       // a save, and this warning names a person.
       warnings.push({
