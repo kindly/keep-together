@@ -1,0 +1,12 @@
+{
+  "ContactType": "PERSON",
+  "FirstName": "Jane",
+  "LastName": "Example",
+  "AddressLine1": "1 Example Street",
+  "City": "Exampleton",
+  "ZipCode": "EX1 1AA",
+  "CountryCode": "GB",
+  "PhoneNumber": "+44.7700900000",
+  "Email": "you@example.com",
+  "ExtraParams": [{ "Name": "UK_CONTACT_TYPE", "Value": "IND" }]
+}

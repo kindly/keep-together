@@ -5,7 +5,7 @@
 
 *Planner `planner-email`, 2026-10-18. ADR 0021 chose SES London. This page re-opens that choice: Mailgun EU (the controller's ask), plus Brevo and SMS (your ask). Every fact below was read from vendor pages today; the full notes with URLs are in `factory/out/planner-email-{ses,mailgun,brevo-sms}-research.md`.*
 
-**Recommendation: keep SES London, and put the transport behind a small adapter so Mailgun EU stays a drop-in fallback.**
+**Decided (rounds 1–2): SES London in three accounts (`keep-prod` marketing, `keep-mail-tx` transactional, `keep-dev` sandbox), with the transport behind a small adapter so Mailgun EU stays a drop-in fallback.**
 
 - **Cost.** At 170k emails a month SES is about **$17** (à la carte) and Mailgun about **$167**. Brevo is about **£197**. Mailgun's floor is **$35/month**, because two sending subdomains (`auth.`, `mail.`) already need the Foundation plan.
 - **Isolating each group comes built in.** SES Tenants gives every group its own reputation metrics, auto-pause and complaint suppression list for about $1/month for 200 groups. Mailgun has the same only through subaccounts, which are contract plans. Brevo has it only on Enterprise. On both of them, all groups would share one reputation.
@@ -23,12 +23,27 @@
 - **AWS layout (settled in chat, 2026-10-18; applies if SES stays):**
   - **Platform domain** `keep-together.org.uk`, registered in Route 53 and hosted there, so every DNS record is scripted.
   - **Accounts:** the existing account is the Organization's management account. IAM Identity Center is already enabled in **eu-west-2**, with an AdministratorAccess permission set, so root is no longer used.
-    - Member accounts `kt-prod` (SES out of the sandbox, the domain, EventBridge) and `kt-dev` (SES left **in the sandbox for good**: dev and rehearsal can only reach addresses we verified) sit in a `keep-together` organisational unit.
+    - Member accounts `keep-prod` (SES out of the sandbox, the domain, EventBridge) and `keep-dev` (SES left **in the sandbox for good**: dev and rehearsal can only reach addresses we verified) sit in a `keep` organisational unit.
     - An SCP on that unit denies everything outside eu-west-2, except global services such as IAM, Route 53 and Route 53 Domains, starting from AWS's region-deny example.
-  - **Keys:** Convex holds a long-lived IAM key, stored as a platform env var (not in `tenantSettings`). `kt-sender` may call `ses:SendEmail` only, from `auth.` and `mail.` only, through `kt-*` configuration sets, API v2 only, plus `GetAccount`. `kt-provisioner` may only create and associate SES tenants. Humans sign in through Identity Center, never with long-lived keys.
+  - **Keys:** Convex holds a long-lived IAM key, stored as a platform env var (not in `tenantSettings`). `keep-sender` may call `ses:SendEmail` only, from `auth.` and `mail.` only, through `keep-*` configuration sets, API v2 only, plus `GetAccount`. `keep-provisioner` may only create and associate SES tenants. Humans sign in through Identity Center, never with long-lived keys.
   - **Scripted:** everything after Identity Center goes in a committed `scripts/aws-ses-setup.sh`: accounts, domain, SES identities, DNS, configuration sets, EventBridge API destination, IAM users and keys.
-- **Round 1 (open):** provider · adapter · whose lists · SMS.
-- **Round 2 (after the provider is settled):** event route · complaint scope · pricing plan · how transactional mail is isolated.
+- **Round 1 (settled, all as recommended):**
+  - **Provider: AWS SES London.** ADR 0021 stands, so there is no amendment to draft.
+  - **Transport adapter:** `comms/transport/ses.ts` (`send`, `parseEvent`) is the only code that names the provider. Mailgun EU stays a fallback that would be one new file.
+  - **Lists and unsubscribe are ours.** The consent log is the source of truth, and we serve our own one-click List-Unsubscribe endpoint. SES suppresses only hard bounces, plus complaints scoped per group.
+  - **SMS later**, in the comms plan. `comms.send(kind, channel, …)` takes the channel now, email only. The provider is chosen then.
+- **Round 2 (settled, all as recommended):**
+  - **Events:** a configuration set sends to EventBridge, whose API destination POSTs to `convex/http.ts` with an API-key header. No SNS.
+  - **Transactional isolation:** a third account, **`keep-mail-tx`**, sends `auth.` mail only, so a marketing incident can never pause sign-in links. `bootstrap.sh` now creates it.
+  - **Complaints are scoped per group** (SES Tenants suppression scope `TENANT`). Hard bounces stay global.
+  - **Pricing:** à la carte ($0.10 per 1,000). Virtual Deliverability Manager only if needed. Shared IPs; managed dedicated IPs later.
+  - **Bulk:** one `SendEmail` per recipient through a throttled Workpool queue, so the From-address IAM condition applies to every call.
+  - **SES tenants** are created by Convex in `platform/tenants:create` with the `keep-provisioner` key.
+- **Round 3 (settled, all as recommended; the plan is confirmed for building):**
+  - E2 covers transactional mail and event ingestion only. Marketing, consent events from complaints, and SES tenant provisioning go to the comms plan.
+  - `emailEvents` is an append-only log outside contracts. Anonymising a contact blanks its address there.
+  - `onHold` is written through a new system contract, `contacts.deliverability` (counter `deliverabilityVersion`).
+  - `keep-dev` sends from `auth.dev.` / `mail.dev.` in the sandbox, with events going to one chosen dev deployment.
 </sv-prose>
 
 <sv-prose id="b3">
@@ -63,7 +78,7 @@
 - **`comms.send(kind, channel, …)`** calls a `transport` adapter (`send`, `parseEvent`). The adapter is the only code that names a provider, so switching provider is one new file plus DNS.
 
 **If SES stays (ADR 0021 as written)**
-- **E1:** write `scripts/aws-ses-setup.sh` (see the AWS layout in the design tree) and run it against `kt-dev`. Send with `aws4fetch` from a default-runtime action. Deliver events through an EventBridge API destination with an API-key header to `convex/http.ts` (SNS only if that fails). Create one SES tenant and prove its complaint suppression scope. Poll `GetAccount` for an account-level pause. Decide whether transactional mail gets its own AWS account or a configuration set with BOUNCE-only suppression.
+- **E1:** write `scripts/aws-ses-setup.sh` (see the AWS layout in the design tree) and run it against `keep-dev`. Send with `aws4fetch` from a default-runtime action. Deliver events through an EventBridge API destination with an API-key header to `convex/http.ts` (SNS only if that fails). Create one SES tenant and prove its complaint suppression scope. Poll `GetAccount` for an account-level pause. Decide whether transactional mail gets its own AWS account or a configuration set with BOUNCE-only suppression.
 - **E2:** as planned, plus a cron (one job per tenant) that syncs tenant status into `tenantSettings`.
 
 **If Mailgun EU wins**
@@ -100,4 +115,140 @@
 
 <sv-ask id="g1fin" round="1" role="close">
 Round 1: provider, adapter, lists, SMS. The provider-specific details (event route, complaint scope, SES pricing plan, transactional isolation) come in round 2 once the provider is settled. Send when done.
+</sv-ask>
+
+<sv-ask id="g2q1" round="2">
+**How bounce and complaint events reach Convex.**
+- * EventBridge API destination: POSTs SES events to an HTTP route in `convex/http.ts` with an API-key header (stored in Secrets Manager, compared in constant time on our side). Retries for 24h, about $0.20 per million events, no certificate parsing.
+- SNS HTTPS subscription: we verify SNS's RSA-SHA256 signature ourselves, which means fetching and parsing an X.509 certificate in the default runtime, plus a confirm-subscription handshake.
+</sv-ask>
+
+<sv-ask id="g2q2" round="2">
+**Keeping transactional mail separate from marketing.** SES enforces bounce and complaint thresholds **per account** (review at 5% bounces or 0.1% complaints, possible pause at 10% or 0.5%), and a pause stops sign-in links too. SES Tenants pauses one bad group first, but every group's traffic still counts toward the account.
+- * a third account, `keep-mail-tx`, for `auth.` mail only: a marketing incident can never stop sign-in links or receipts. Costs nothing fixed, but needs one more production-access request and one more sender key.
+- one account (`keep-prod`) with two configuration sets: transactional suppresses bounces only and has no tenant; marketing goes through Tenants. Simpler, but an account-level pause hits both.
+</sv-ask>
+
+<sv-ask id="g2q3" round="2">
+**Complaint scope for marketing.** A newsletter complaint should block whom?
+- * that group only: SES Tenants suppression scope `TENANT`, and the complaint also becomes a consent-withdrawal event for that group's purpose. Hard bounces stay global (the address is dead for everyone).
+- every group on the platform (account-wide suppression list)
+</sv-ask>
+
+<sv-ask id="g2q4" round="2">
+**SES pricing plan.** New accounts start on "Essentials".
+- * switch to à la carte ($0.10 per 1,000) and add Virtual Deliverability Manager only if we need its dashboards
+- stay on Essentials ($0.16 per 1,000, VDM included)
+</sv-ask>
+
+<sv-ask id="g2q5" round="2">
+**Sending IPs.**
+- * shared SES IPs for now. Managed dedicated IPs ($15/month plus $0.08 per 1,000, warm-up handled by AWS) only once volume is steady at tens of thousands a month
+- managed dedicated IPs from launch
+</sv-ask>
+
+<sv-ask id="g2q6" round="2">
+**How a newsletter is sent.**
+- * one `SendEmail` per recipient, through a Workpool queue throttled under the account's send rate. Each message carries its own List-Unsubscribe link and tenant name, and the IAM rule pinning the From address applies to every call.
+- `SendBulkEmail` with an SES template, 50 recipients per call. Fewer calls, but the IAM From-address condition doesn't apply, and templates live in SES rather than with us.
+</sv-ask>
+
+<sv-ask id="g2q7" round="2">
+**Who creates a group's SES tenant.**
+- * Convex, inside the operator's `platform/tenants:create`, using the `keep-provisioner` key (it can only create tenants and attach them to our identities and configuration sets)
+- the operator runs a separate script after creating the group, so no provisioning key lives in Convex
+</sv-ask>
+
+<sv-ask id="g2fin" round="2" role="close">
+Round 2: SES specifics. After this I'll write the E1/E2 steps and tests in full and ask for a final confirmation. Send when done.
+</sv-ask>
+
+<sv-prose id="b5">
+## Brief
+
+**Goal.** Give keep a working email transport. One entry point, `comms.send(kind, channel, …)`, sends transactional mail (sign-in codes, invitations, receipts) through SES London from `auth.keep-together.org.uk`. Bounces and complaints flow back automatically: a hard bounce puts that address `onHold` for its group, and every provider event is kept. Marketing mail has to be able to run on the same transport later without redesign.
+
+**Out of scope:** sending marketing (it needs the consent log and lists, which come in the comms plan), the newsletter editor, segments, the unsubscribe page, SMS, groups' own domains, the Gmail BCC helper, the Google connector, managed dedicated IPs.
+
+**Domain rules that apply**
+- **2.** A complaint becomes a consent-withdrawal event once the consent log exists. Until then the complaint is kept in `emailEvents`, so nothing is lost.
+- **3.** Anonymising a contact must also blank its rows in `emailEvents`. Its SES suppression entry stays, because it holds only an address and removing it would let mail go out again.
+- **5.** Transactional mail ignores marketing consent and only refuses `onHold` addresses. Transactional and marketing mail go through different accounts and configuration sets.
+- **6.** The SES event route is platform-level, because the SES accounts are ours rather than the groups'. It resolves the tenant from the message's `tenantId` tag (set by `comms.send`) and then calls an `internalTenantMutation`, so domain code never sees a tenant.
+- **7.** No money is involved.
+
+### What's already done
+- **E0, by you:** `scripts/aws/bootstrap.sh` (OU `keep` plus the London-only SCP; accounts `keep-prod`, `keep-mail-tx`, `keep-dev`; Identity Center access; `keep-together.org.uk` registered in `keep-prod`). Re-run it once to create `keep-mail-tx`.
+
+### Steps
+1. **E1, SES spike and setup script, one session.** ∥ R1, R2.
+   - **`scripts/aws/ses-setup.sh`**, idempotent, printing each command like `bootstrap.sh` does:
+     - **`keep-mail-tx`:** identity `auth.keep-together.org.uk` (Easy DKIM, MAIL FROM `bounce.auth.…`), configuration set `keep-transactional` (suppression on bounces only), IAM user `keep-sender` (`ses:SendEmail` only from `*@auth.…`, plus `GetAccount`), production-access request (TRANSACTIONAL).
+     - **`keep-prod`:** identity `mail.keep-together.org.uk`, configuration set `keep-marketing`, `keep-sender` (only from `*@mail.…`) and `keep-provisioner`, production-access request (MARKETING), and a switch to à la carte.
+     - **All accounts:** DMARC `p=none` with reports on the apex. Every DNS record is written to the `keep-prod` zone. An EventBridge rule plus API destination to the Convex site URL `/webhooks/ses` with an API-key connection.
+     - **`keep-dev`:** the same setup with `dev.` subdomains, left in the sandbox (round 3, question 4).
+   - **Convex side:**
+     - a default-runtime action sends one mail with `aws4fetch`, which proves `crypto.subtle` SigV4 works there;
+     - `/webhooks/ses` receives SES's simulator bounce and complaint (`bounce@` and `complaint@simulator.amazonses.com`; these work in the sandbox);
+     - a poll of `GetAccount` reads the account status.
+   - **Report** in `docs/spikes/08-email.md`: what worked, the event payloads (saved as test fixtures), and the per-second send rate each account gets.
+   - **Files:** `scripts/aws/ses-setup.sh`, `convex/comms/spike.ts` (deleted after the spike), `convex/http.ts`, `docs/spikes/08-email.md`.
+2. **E2a, the `onHold` write path.** ∥ E1.
+   - A new contract `contacts.deliverability`. Its slice is `onHold` on every email row; its counter is `deliverabilityVersion` on `contacts`. Only the system writes it (internal function, no `expected`, read-modify-write inside the mutation), and it records a revision with source `comms`.
+   - **Schema in two phases:** add `deliverabilityVersion` as optional, deploy, backfill it to 0 (migrations component), then tighten.
+   - **Files:** `convex/contacts/contracts.ts`, `convex/contacts/mutations.ts` (internal), `convex/schema.ts`, `convex/contacts/migrations.ts`.
+3. **E2b, `comms.send` and event ingestion.** After E1 and E2a.
+   - New `convex/comms/`:
+     - `transport/ses.ts`: plain TypeScript, `send` and `parseEvent`, the only file that names SES;
+     - `send.ts`: `comms.send(kind, channel, …)`. Transactional mail checks `onHold` and goes on the Workpool queue; `kind: 'marketing'` throws `notImplemented` until the comms plan;
+     - `events.ts`: `recordEvent` (`internalTenantMutation`). A hard bounce runs `contacts.deliverability` for every row in that tenant with the same `addressNormalized`; every event appends to `emailEvents`.
+   - Install the Workpool component (`convex/convex.config.ts`), throttled under the account's send rate.
+   - App env vars for the sender keys and the events API key. These are platform secrets, not `tenantSettings`. Update the comment in `http.ts` to say so.
+   - **Schema:** `emailEvents` is a new table, so no loosen/tighten is needed.
+4. **E3, provisioning SES tenants.** Moves to the comms plan as its first step, because tenants only matter for marketing. `platform/tenants:create` schedules an action (`keep-provisioner`) that calls `CreateTenant` and associates `mail.` and `keep-marketing`. A backfill covers existing tenants. A cron per tenant polls tenant status and `GetAccount`.
+5. **Wiring auth mail:** R4/P1 (in the logins & roles plan) call `comms.send('transactional', 'email', …)` for codes and invitations. That plan already sequences R4 after E2.
+
+### Tests
+- **`transport/ses.ts`:** a request signed at a fixed clock and keys matches a known SigV4 signature. `parseEvent` maps the E1 fixtures (bounce Permanent/Transient, complaint, delivery, suppressed) to our event kinds.
+- **`/webhooks/ses`:** a missing or wrong key returns 401 and writes nothing. A valid hard bounce sets `onHold` on matching rows **in the tagged tenant only**: the same address in a second tenant stays untouched. A soft bounce is logged but sets no hold. An unknown tenant tag returns 200, is logged and writes nothing.
+- **`comms.send`:** transactional mail to an `onHold` address is refused, and mail to a contact with no marketing consent still sends. `marketing` throws. The transport is stubbed and receives the `tenantId` tag and the transactional configuration set.
+- **`contacts.deliverability`:** writes a revision and bumps `deliverabilityVersion`. A later `methods` save keeps `onHold` (existing test).
+- **Every fixture has two tenants.** Spike only, not in CI: a live sandbox run where the simulator bounce arrives at the route end to end.
+
+### ADR 0021 needs updating (yours or the controller's to write; I don't edit ADRs)
+- Isolation is decided: a separate `keep-mail-tx` account.
+- Events go through EventBridge API destinations, not SNS.
+- Pricing is à la carte.
+- Complaints are scoped per tenant.
+- The account layout is three accounts in an OU locked to eu-west-2.
+- Bootstrap and setup scripts live in `scripts/aws/`.
+- SMS comes later through the channel argument.
+</sv-prose>
+
+<sv-ask id="g3q1" round="3">
+**E2 scope.** Marketing needs the consent log, which doesn't exist yet (no `convex/consent/`).
+- * E2 is transactional plus event ingestion. `marketing` throws until the comms plan. Complaints are stored and turned into consent events there.
+- E2 also builds a minimal consent log, so complaints become consent events straight away
+</sv-ask>
+
+<sv-ask id="g3q2" round="3">
+**Where provider events live.** An append-only `emailEvents` table (tenantId, kind, addressNormalized, messageId, at, raw subtype): written only by `comms.recordEvent`, never edited, with tenantId-first indexes. Like `revisions`, it is a log rather than an entity, so it sits outside contracts.
+- * yes: an append-only log outside contracts, with anonymisation blanking its address
+- no: only apply the effects (`onHold`), and keep no event history
+</sv-ask>
+
+<sv-ask id="g3q3" round="3">
+**How `onHold` gets written.** It's a system-owned field on `contactEmails`, and today only tests patch it.
+- * a new system contract `contacts.deliverability` (slice: `onHold` on every email row; counter `deliverabilityVersion`), so every hold has a revision and history shows "bounced on …"
+- comms patches `onHold` directly, as a carve-out like the derived projections (no revision)
+</sv-ask>
+
+<sv-ask id="g3q4" round="3">
+**Dev sending.** `keep-dev` stays in the SES sandbox.
+- * its own subdomains `auth.dev.` / `mail.dev.keep-together.org.uk`. Its EventBridge destination points at one chosen dev deployment, and other dev deployments send but get no events.
+- dev deployments don't send at all (the transport is a stub logging to the console). Only the spike and production use SES.
+</sv-ask>
+
+<sv-ask id="g3fin" round="3" role="close">
+Round 3: the last structural questions. **Approve with these answers = the plan is confirmed for building**: E1 and E2a can start in parallel. Revise = tell me what's wrong.
 </sv-ask>

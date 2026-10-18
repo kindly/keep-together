@@ -1,0 +1,55 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyAllOutsideLondon",
+      "Effect": "Deny",
+      "NotAction": [
+        "account:*",
+        "acm:*",
+        "aws-marketplace-management:*",
+        "aws-marketplace:*",
+        "aws-portal:*",
+        "billing:*",
+        "budgets:*",
+        "ce:*",
+        "cloudfront:*",
+        "config:*",
+        "cur:*",
+        "directconnect:*",
+        "ec2:DescribeRegions",
+        "fms:*",
+        "freetier:*",
+        "globalaccelerator:*",
+        "health:*",
+        "iam:*",
+        "identitystore:*",
+        "invoicing:*",
+        "kms:*",
+        "networkmanager:*",
+        "organizations:*",
+        "payments:*",
+        "pricing:*",
+        "route53:*",
+        "route53domains:*",
+        "s3:GetAccountPublic*",
+        "s3:ListAllMyBuckets",
+        "s3:PutAccountPublic*",
+        "shield:*",
+        "sso:*",
+        "sts:*",
+        "support:*",
+        "tax:*",
+        "trustedadvisor:*",
+        "waf-regional:*",
+        "waf:*",
+        "wafv2:*",
+        "wellarchitected:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": { "aws:RequestedRegion": ["eu-west-2"] }
+      }
+    }
+  ]
+}
