@@ -99,7 +99,7 @@ describe('budgets', () => {
     expect(spikes({ functions: under })).toEqual([])
     const over = aggregate([bulk(1100), bulk(1050), bulk(90)])
     expect(checkBudgets({ functions: over })).toEqual([
-      'Mutation contacts/mutations:bulkTag: two calls ≥ 1000 ms: 1100 and 1050 ms (n=3)',
+      `Mutation contacts/mutations:bulkTag: two calls ≥ ${BULK_FUNCTIONS['contacts/mutations:bulkTag']} ms: 1100 and 1050 ms (n=3)`,
     ])
     // Anything else keeps the 100 ms rule.
     expect(aggregate([ev({})])[0].budgetMs).toBe(100)
