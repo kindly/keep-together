@@ -289,6 +289,13 @@ export function prepareIdentifiers(
   return { identifiers }
 }
 
+/**
+ * The most identifier types a tenant can hold, archived ones included
+ * (types are never deleted). The contract refuses one more, so a list of
+ * them never truncates. The SPA imports it from here.
+ */
+export const IDENTIFIER_TYPE_LIMIT = 200
+
 /** Like a tag name: tidied, never blank, unique case-insensitively. */
 export function prepareIdentifierType(
   p: Payloads['identifierType'],

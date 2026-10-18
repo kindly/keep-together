@@ -11,6 +11,7 @@ import type { ContractCtx } from '../lib/contracts'
 import { defineContract, registry, rejected } from '../lib/contracts'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import {
+  IDENTIFIER_TYPE_LIMIT,
   computedNames,
   normaliseEmail,
   normaliseIdentifier,
@@ -429,7 +430,10 @@ export const identifiers = defineContract({
   },
 })
 
-/** An identifier type. Renaming keeps every row (they hold the id). */
+/**
+ * An identifier type. Renaming keeps every row (they hold the id). A
+ * tenant holds at most IDENTIFIER_TYPE_LIMIT, archived ones included.
+ */
 export const identifierType = defineContract({
   name: 'contacts.identifierType',
   entity: 'identifierTypes',
@@ -452,8 +456,19 @@ export const identifierType = defineContract({
       )
     }
     const fields = { name: p.name, nameNormalized, isActive: p.isActive }
-    if (!root)
+    if (!root) {
+      const held = await ctx.db
+        .query('identifierTypes')
+        .withIndex('by_tenant_nameNormalized')
+        .take(IDENTIFIER_TYPE_LIMIT)
+      if (held.length >= IDENTIFIER_TYPE_LIMIT) {
+        throw rejected(
+          'identifier_type_limit',
+          `A group can have at most ${IDENTIFIER_TYPE_LIMIT} identifier types, archived ones included`,
+        )
+      }
       return ctx.db.insert('identifierTypes', { ...fields, saveVersion: 0 })
+    }
     await ctx.db.patch('identifierTypes', root._id, fields)
     return root._id
   },

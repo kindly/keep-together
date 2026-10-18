@@ -5,6 +5,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Doc } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
+import { IDENTIFIER_TYPE_LIMIT } from '../../convex/contacts/rules'
 import { cachedTenant, useIsAdmin, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/identifiers')({
@@ -18,6 +19,9 @@ export const Route = createFileRoute('/t/$slug/settings/identifiers')({
     })
   },
 })
+
+/** From how many types the page says how close the group is to the cap. */
+const NEAR_LIMIT = IDENTIFIER_TYPE_LIMIT - 20
 
 /** A failed `saveIdentifierType` as one line for the user. */
 function message(err: unknown): string {
@@ -112,6 +116,12 @@ function IdentifierTypesPage() {
         {error && (
           <span role="alert" className="text-sm text-red-700">
             {error}
+          </span>
+        )}
+        {types && types.length >= NEAR_LIMIT && (
+          <span className="text-sm text-neutral-600">
+            {types.length} of {IDENTIFIER_TYPE_LIMIT} identifier types used
+            (archived ones count; types are never deleted).
           </span>
         )}
       </form>

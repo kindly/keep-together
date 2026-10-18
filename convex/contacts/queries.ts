@@ -3,7 +3,12 @@ import { v } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
 import { internalTenantQuery, tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
-import { normaliseEmail, normaliseIdentifier, normaliseTagName } from './rules'
+import {
+  IDENTIFIER_TYPE_LIMIT,
+  normaliseEmail,
+  normaliseIdentifier,
+  normaliseTagName,
+} from './rules'
 import { contactWarnings } from './warnings'
 import type { AlsoUsedBy } from './warnings'
 
@@ -116,12 +121,10 @@ export const tags = tenantQuery({
   },
 })
 
-/** How many identifier types a tenant can hold before the list truncates. */
-export const IDENTIFIER_TYPE_LIST_LIMIT = 200
-
 /**
  * The tenant's identifier types, alphabetical; archived ones only when
- * asked (the settings page). Any member may read.
+ * asked (the settings page). Any member may read. Never truncated: the
+ * contract caps a tenant at IDENTIFIER_TYPE_LIMIT.
  */
 export const listIdentifierTypes = tenantQuery({
   args: { includeInactive: v.optional(v.boolean()) },
@@ -129,7 +132,7 @@ export const listIdentifierTypes = tenantQuery({
     const rows = await ctx.db
       .query('identifierTypes')
       .withIndex('by_tenant_nameNormalized')
-      .take(IDENTIFIER_TYPE_LIST_LIMIT)
+      .take(IDENTIFIER_TYPE_LIMIT)
     return includeInactive ? rows : rows.filter((t) => t.isActive)
   },
 })

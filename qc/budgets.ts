@@ -54,7 +54,8 @@ export const budgets = {
   'contact.save': repeatable,
   'contact.addEmail': {
     ...repeatable,
-    knownOver: 'sits at 90-95 ms, frame-bound; with planner-perf (human 2026-10-18)',
+    knownOver:
+      'sits at 90-95 ms, frame-bound; with planner-perf (human 2026-10-18)',
   },
   'contact.livePropagation': repeatable,
   'contact.archive': repeatable,

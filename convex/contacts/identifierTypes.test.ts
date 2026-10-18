@@ -4,6 +4,7 @@ import { api } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
 import type { Role } from '../lib/tenancy'
+import { IDENTIFIER_TYPE_LIMIT } from './rules'
 
 // Identifier types through their public functions (external-ids X4a): the
 // settings page's create / rename / archive / reactivate, admin only.
@@ -160,6 +161,35 @@ describe('saveIdentifierType', () => {
       ),
     ).toEqual({ kind: 'not_found' })
     expect(await list(f.b)).toMatchObject([{ name: 'Theirs', saveVersion: 0 }])
+  })
+})
+
+describe('the per-tenant cap', () => {
+  test('a tenant holding the limit (archived included) cannot create one more; edits still work', async () => {
+    // Fill straight to one under the cap (the contract is exercised below).
+    await f.t.run(async (ctx) => {
+      for (let i = 0; i < IDENTIFIER_TYPE_LIMIT - 1; i++) {
+        const name = `Type ${String(i).padStart(3, '0')}`
+        await ctx.db.insert('identifierTypes', {
+          tenantId: f.a.tenantId,
+          name,
+          nameNormalized: name.toLowerCase(),
+          isActive: i % 2 === 0,
+          saveVersion: 0,
+        })
+      }
+    })
+    const { id } = await save({ name: 'The last one' })
+    expect(await errorData(save({ name: 'One too many' }))).toMatchObject({
+      kind: 'rejected',
+      reason: 'identifier_type_limit',
+      message: `A group can have at most ${IDENTIFIER_TYPE_LIMIT} identifier types, archived ones included`,
+    })
+    // At the cap, the list holds every type.
+    expect(await list(f.a, true)).toHaveLength(IDENTIFIER_TYPE_LIMIT)
+    await save({ id, expected: 0, name: 'Renamed', isActive: false })
+    // Another tenant's count is its own.
+    await save({ name: 'One too many' }, f.b)
   })
 })
 

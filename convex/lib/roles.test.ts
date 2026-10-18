@@ -213,6 +213,13 @@ describe('every public mutation and action', () => {
     // Guard against the enumeration silently finding nothing.
     expect(writes.map((w) => w.path)).toContain('contacts/mutations:create')
     expect(writes.map((w) => w.path)).toContain('contacts/notes:save')
+    // A stale ADMIN_ONLY entry (renamed or deleted function) fails here.
+    for (const p of ADMIN_ONLY) {
+      expect(
+        writes.map((w) => w.path),
+        `ADMIN_ONLY ${p}`,
+      ).toContain(p)
+    }
 
     const checked: Array<string> = []
     for (const w of writes) {
