@@ -318,12 +318,15 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     let n = 0
     await flow(page, 'contact.restore', {
       before: async () => {
+        // Waits for the save's own moment on top, not for a total: each
+        // round adds two moments, and past REANCHOR_AT the newest page is
+        // re-subscribed to PAGE whenever the panel isn't being read.
         await expect(moments.first()).toBeVisible()
-        const before = await moments.count()
+        const top = await moments.first().getAttribute('data-revision')
         await known.fill(`restore ${++n}`)
         await saveButton(page).click()
         await expect(saved(page)).toBeVisible()
-        await expect(moments).toHaveCount(before + 1)
+        await expect(moments.first()).not.toHaveAttribute('data-revision', top!)
         await expect(moments.nth(0).getByText('current')).toBeVisible()
         await want(page, '')
       },
@@ -347,6 +350,8 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     const known = page.getByLabel('Known as')
     // The create's moment first: counting before the history has loaded
     // reads 0, and the first save would then expect 1 moment, not 2.
+    // Counting is safe here: the newest page stays under REANCHOR_AT
+    // (15 moments, then an older page hangs off it, which holds it).
     await expect(moments).toHaveCount(1)
     const saveKnownAs = async (value: string) => {
       const before = await moments.count()
@@ -385,6 +390,73 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     expect(new Set(after.map(([id]) => id)).size).toBe(after.length)
     const times = after.map(([, at]) => at as number)
     expect(times).toEqual([...times].sort((a, b) => b - a))
+  })
+
+  test('Restore to here on a moment from an older page', async ({
+    page,
+    users,
+  }) => {
+    await createContact(page, users.a.slug, uniqueName('older'))
+    const moments = page.locator('aside ol > li')
+    const known = page.getByLabel('Known as')
+    await expect(moments).toHaveCount(1)
+    for (let i = 1; i <= 12; i++) {
+      await known.fill(`old ${i}`)
+      await saveButton(page).click()
+      await expect(saved(page)).toBeVisible()
+      await expect(moments).toHaveCount(i + 1)
+    }
+    // Newest first: "old 12" … "old 1", then the create. A fresh load
+    // shows the newest 10, so "old 1" (12th) is on the older page.
+    await page.reload()
+    await expect(moments).toHaveCount(10)
+    await page.getByRole('button', { name: 'Load older' }).click()
+    await expect(moments).toHaveCount(13)
+    const target = moments.nth(11)
+    const at = await target.getAttribute('data-at')
+    await target.getByRole('button', { name: 'Restore to here' }).click()
+
+    await expect(known).toHaveValue('old 1')
+    await expect(moments.nth(0).getByText('restored')).toBeVisible()
+    // The older page stays put under the restore's moment.
+    await expect(moments.nth(12)).toHaveAttribute('data-at', at!)
+    await page.reload()
+    await expect(known).toHaveValue('old 1')
+  })
+
+  test('history re-anchors past REANCHOR_AT, but not while it is read', async ({
+    page,
+    users,
+  }) => {
+    await createContact(page, users.a.slug, uniqueName('anchor'))
+    const moments = page.locator('aside ol > li')
+    const known = page.getByLabel('Known as')
+    await expect(moments).toHaveCount(1)
+    // Autosave on Tab: no click, so the pointer stays where it is put.
+    const save = async (value: string) => {
+      const top = await moments.first().getAttribute('data-revision')
+      await known.fill(value)
+      await known.press('Tab')
+      await expect(saved(page)).toBeVisible()
+      await expect(moments.first()).not.toHaveAttribute('data-revision', top!)
+    }
+    // 1 + 19 moments: at REANCHOR_AT (20), not past it.
+    for (let i = 1; i <= 19; i++) await save(`anchor ${i}`)
+    await expect(moments).toHaveCount(20)
+
+    // Being read (hovered): the 21st moment grows the page, no swap.
+    await page.getByRole('heading', { name: 'History' }).hover()
+    await save('anchor 20')
+    await expect(moments).toHaveCount(21)
+    // Hold long enough for a swap to have shown up, had it been allowed.
+    await page.waitForTimeout(500)
+    await expect(moments).toHaveCount(21)
+
+    // At rest: the newest page is subscribed afresh.
+    await page.mouse.move(0, 0)
+    await expect(moments).toHaveCount(10)
+    await expect(moments.nth(0).getByText('current')).toBeVisible()
+    await expect(known).toHaveValue('anchor 20')
   })
 
   test('a contact from another group: "No such contact"', async ({
