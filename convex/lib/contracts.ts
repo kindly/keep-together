@@ -22,6 +22,7 @@ import type { ObjectType, PropertyValidators } from 'convex/values'
 import { validate } from 'convex-helpers/validators'
 import type { Doc, Id, TableNames } from '../_generated/dataModel'
 import { requireListManager } from './lists'
+import type { ListKind } from './lists'
 import type { Role, ScopedDatabaseWriter, ScopedScheduler } from './tenancy'
 
 export type Source = Doc<'revisions'>['source']
@@ -86,11 +87,11 @@ export type Contract<
   /** Bump whenever the payload shape or semantics change; register an upcaster. */
   version: number
   /**
-   * The root is one of the tenant's lists (tags, identifier types): every
-   * execution, restore included, needs a caller who may manage lists
-   * (lib/lists). Internal callers (role null) are trusted.
+   * The root is an entry in one of the tenant's lists (tags, identifier
+   * types): every execution, restore included, needs a caller who may
+   * manage that list (lib/lists). Internal callers (role null) are trusted.
    */
-  managesList?: boolean
+  managesList?: ListKind
   /** Integer counter field on the root owned by this contract. */
   counter: keyof Doc<TRoot> & string
   /** Full state of the slice. Reused as mutation args. */
@@ -177,7 +178,10 @@ export async function executeContract<
   opts: ExecuteOptions<TRoot>,
 ): Promise<ExecuteResult<TRoot>> {
   if (contract.managesList && ctx.role !== null) {
-    await requireListManager({ db: ctx.db, role: ctx.role })
+    await requireListManager(
+      { db: ctx.db, role: ctx.role },
+      contract.managesList,
+    )
   }
   // Shape check matters for restore (stored payloads re-enter here); for
   // live calls the mutation's args validator has already run.

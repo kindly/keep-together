@@ -6,13 +6,14 @@ import type { FormEvent } from 'react'
 import type { Doc } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { IDENTIFIER_TYPE_LIMIT } from '../../convex/contacts/rules'
-import { cachedTenant, useCanManageLists, useTenant } from '../lib/tenant'
+import { StaffListSwitch } from '../components/staff-list-switch'
+import { cachedTenant, useCanManageList, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/identifiers')({
   component: IdentifierTypesPage,
   loader: ({ context: { convex }, params }) => {
     const tenant = cachedTenant(convex, params.slug)
-    if (!tenant?.canManageLists) return
+    if (!tenant) return
     convex.prewarmQuery({
       query: api.contacts.queries.listIdentifierTypes,
       args: { tenantId: tenant._id, includeInactive: true },
@@ -44,30 +45,23 @@ function message(err: unknown): string {
 
 /**
  * The tenant's identifier types (external-ids plan): create, rename,
- * archive / reactivate: admins, and staff when the group allows it. Archiving takes a type out of the
- * contact form's picker; contacts keep its identifiers and lookups still
- * find them. Types are never deleted.
+ * archive / reactivate (admins, and staff when the group allows it;
+ * everyone else reads), under the admins' "staff can manage identifier
+ * types" switch. Archiving takes a type out of the contact form's picker;
+ * contacts keep its identifiers and lookups still find them. Types are
+ * never deleted.
  */
 function IdentifierTypesPage() {
   const tenant = useTenant()
-  const canManage = useCanManageLists()
-  const types = useQuery(
-    api.contacts.queries.listIdentifierTypes,
-    canManage ? { tenantId: tenant._id, includeInactive: true } : 'skip',
-  )
+  const canManage = useCanManageList('identifierTypes')
+  const types = useQuery(api.contacts.queries.listIdentifierTypes, {
+    tenantId: tenant._id,
+    includeInactive: true,
+  })
   const save = useMutation(api.contacts.mutations.saveIdentifierType)
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-
-  if (!canManage) {
-    return (
-      <p>
-        Only admins (or staff, if an admin allows it in Settings) can change
-        identifier types.
-      </p>
-    )
-  }
 
   async function create(e: FormEvent) {
     e.preventDefault()
@@ -96,36 +90,39 @@ function IdentifierTypesPage() {
           Identifiers section.
         </p>
       </div>
-      <form onSubmit={create} className="flex flex-col gap-1">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="New identifier type"
-            aria-label="New identifier type"
-            className="flex-1 rounded border border-neutral-300 px-3 py-1.5"
-          />
-          <button
-            type="submit"
-            disabled={busy || !name.trim()}
-            className="rounded bg-neutral-900 px-3 py-1.5 text-sm text-white hover:bg-neutral-700 disabled:opacity-40"
-          >
-            Create type
-          </button>
-        </div>
-        {error && (
-          <span role="alert" className="text-sm text-red-700">
-            {error}
-          </span>
-        )}
-        {types && types.length >= NEAR_LIMIT && (
-          <span className="text-sm text-neutral-600">
-            {types.length} of {IDENTIFIER_TYPE_LIMIT} identifier types used
-            (archived ones count; types are never deleted).
-          </span>
-        )}
-      </form>
+      <StaffListSwitch kind="identifierTypes" />
+      {canManage && (
+        <form onSubmit={create} className="flex flex-col gap-1">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="New identifier type"
+              aria-label="New identifier type"
+              className="flex-1 rounded border border-neutral-300 px-3 py-1.5"
+            />
+            <button
+              type="submit"
+              disabled={busy || !name.trim()}
+              className="rounded bg-neutral-900 px-3 py-1.5 text-sm text-white hover:bg-neutral-700 disabled:opacity-40"
+            >
+              Create type
+            </button>
+          </div>
+          {error && (
+            <span role="alert" className="text-sm text-red-700">
+              {error}
+            </span>
+          )}
+          {types && types.length >= NEAR_LIMIT && (
+            <span className="text-sm text-neutral-600">
+              {types.length} of {IDENTIFIER_TYPE_LIMIT} identifier types used
+              (archived ones count; types are never deleted).
+            </span>
+          )}
+        </form>
+      )}
       {types === undefined ? (
         <p className="text-sm text-neutral-500">Loading…</p>
       ) : (
@@ -179,6 +176,7 @@ function TypeList({
 
 function TypeRow({ type }: { type: Doc<'identifierTypes'> }) {
   const tenant = useTenant()
+  const canManage = useCanManageList('identifierTypes')
   const saveType = useMutation(api.contacts.mutations.saveIdentifierType)
   const [editing, setEditing] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -247,7 +245,7 @@ function TypeRow({ type }: { type: Doc<'identifierTypes'> }) {
             </button>
           </form>
         )}
-        {editing === null && (
+        {canManage && editing === null && (
           <>
             <button
               type="button"

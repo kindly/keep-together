@@ -105,8 +105,8 @@ export const saveTags = tenantMutation({
 
 /**
  * Create a tag (no `id`) or rename / archive / reactivate one. Admins, and
- * staff when the tenant lets them manage lists (the contract is
- * `managesList`; lib/lists).
+ * staff when the tenant lets them manage tags (the contract is
+ * `managesList: 'tags'`; lib/lists).
  */
 export const saveTag = tenantMutation({
   args: {
@@ -131,8 +131,8 @@ export const saveTag = tenantMutation({
 
 /**
  * Create an identifier type (no `id`) or rename / archive / reactivate one.
- * Admins, and staff when the tenant lets them manage lists (the contract
- * is `managesList`; lib/lists): types are managed on the settings page; the
+ * Admins, and staff when the tenant lets them manage identifier types (the
+ * contract is `managesList: 'identifierTypes'`; lib/lists): types are managed on the settings page; the
  * contact form's picker only selects (external-ids plan, g2q3). Never
  * deleted.
  */

@@ -14,6 +14,7 @@ import type { Id, TableNames } from '../_generated/dataModel'
 import schema from '../schema'
 import { errorData, modules, setup } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
+import type { ListKind } from './lists'
 import { tenantAction, tenantMutation, tenantQuery } from './tenancy'
 import type { Role } from './tenancy'
 
@@ -37,6 +38,28 @@ async function callers(t: T, a: Tenant) {
   }
 }
 
+/** Turn a tenant's "staff can manage <kind>" switch on or off. */
+async function staffManage(who: Tenant, kind: ListKind, on: boolean) {
+  const mine = await who.as.query(api.platform.tenants.mine, {})
+  const prefs = mine.find((m) => m._id === who.tenantId)!
+  if (kind === 'tags') {
+    await who.as.mutation(api.platform.preferences.setStaffCanManageTags, {
+      tenantId: who.tenantId,
+      expected: prefs.tagsVersion ?? undefined,
+      staffCanManageTags: on,
+    })
+  } else {
+    await who.as.mutation(
+      api.platform.preferences.setStaffCanManageIdentifierTypes,
+      {
+        tenantId: who.tenantId,
+        expected: prefs.identifierTypesVersion ?? undefined,
+        staffCanManageIdentifierTypes: on,
+      },
+    )
+  }
+}
+
 const person = (lastName: string) => ({
   kind: 'individual' as const,
   title: '',
@@ -53,15 +76,19 @@ const person = (lastName: string) => ({
 const NOT_TENANT_SCOPED = new Set(['auth:signIn', 'auth:signOut'])
 
 /** Admin-only writes (`minRole: 'admin'`): staff are refused too. */
-const ADMIN_ONLY = new Set(['platform/preferences:setStaffCanManageLists'])
+const ADMIN_ONLY = new Set([
+  'platform/preferences:setStaffCanManageTags',
+  'platform/preferences:setStaffCanManageIdentifierTypes',
+])
 
 /**
- * List management (platform/preferences): admins always; staff only while
- * the tenant's "staff can manage lists" preference is on.
+ * List management (lib/lists), by the list each write manages: admins
+ * always; staff only while that list's "staff can manage …" preference is
+ * on, whatever the other list's says.
  */
-const LIST_MANAGERS = new Set([
-  'contacts/mutations:saveTag',
-  'contacts/mutations:saveIdentifierType',
+const LIST_MANAGERS = new Map<string, ListKind>([
+  ['contacts/mutations:saveTag', 'tags'],
+  ['contacts/mutations:saveIdentifierType', 'identifierTypes'],
 ])
 
 /** Modules that register no functions and only load in the Convex runtime. */
@@ -224,20 +251,15 @@ describe('every public mutation and action', () => {
     expect(writes.map((w) => w.path)).toContain('contacts/notes:save')
     // A stale ADMIN_ONLY / LIST_MANAGERS entry (renamed or deleted
     // function) fails here.
-    for (const p of [...ADMIN_ONLY, ...LIST_MANAGERS]) {
+    for (const p of [...ADMIN_ONLY, ...LIST_MANAGERS.keys()]) {
       expect(
         writes.map((w) => w.path),
         `ADMIN_ONLY / LIST_MANAGERS ${p}`,
       ).toContain(p)
     }
-    const staffManageLists = async (on: boolean) => {
-      const mine = await a.as.query(api.platform.tenants.mine, {})
-      const prefs = mine.find((m) => m._id === a.tenantId)!
-      await a.as.mutation(api.platform.preferences.setStaffCanManageLists, {
-        tenantId: a.tenantId,
-        expected: prefs.listsVersion ?? undefined,
-        staffCanManageLists: on,
-      })
+    // Tenant B's switches are all on, and must not reach tenant A.
+    for (const kind of ['tags', 'identifierTypes'] as const) {
+      await staffManage(b, kind, true)
     }
 
     const checked: Array<string> = []
@@ -270,16 +292,32 @@ describe('every public mutation and action', () => {
         expect(await kindOf(staff), `${w.path} as staff`).toBe('forbidden')
         expect(await kindOf(a.as), `${w.path} as admin`).not.toBe('forbidden')
       } else if (LIST_MANAGERS.has(w.path)) {
+        const kind = LIST_MANAGERS.get(w.path)!
+        const other = kind === 'tags' ? 'identifierTypes' : 'tags'
         expect(await kindOf(staff), `${w.path} as staff`).toBe('forbidden')
         expect(await kindOf(a.as), `${w.path} as admin`).not.toBe('forbidden')
-        await staffManageLists(true)
-        expect(await kindOf(staff), `${w.path} as staff, on`).not.toBe(
+        // The other list's switch alone opens nothing here.
+        await staffManage(a, other, true)
+        expect(await kindOf(staff), `${w.path} as staff, ${other} on`).toBe(
           'forbidden',
         )
-        expect(await kindOf(viewer), `${w.path} as viewer, on`).toBe(
+        await staffManage(a, kind, true)
+        expect(await kindOf(staff), `${w.path} as staff, ${kind} on`).not.toBe(
           'forbidden',
         )
-        await staffManageLists(false)
+        expect(await kindOf(viewer), `${w.path} as viewer, ${kind} on`).toBe(
+          'forbidden',
+        )
+        // Only its own switch: the other off again changes nothing.
+        await staffManage(a, other, false)
+        expect(
+          await kindOf(staff),
+          `${w.path} as staff, ${kind} on, ${other} off`,
+        ).not.toBe('forbidden')
+        await staffManage(a, kind, false)
+        expect(await kindOf(staff), `${w.path} as staff, both off`).toBe(
+          'forbidden',
+        )
       } else {
         expect(await kindOf(staff), w.path).not.toBe('forbidden')
       }

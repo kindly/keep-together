@@ -72,6 +72,18 @@ The rule is structural, like rule 6:
   and skips the check, so a public function must never reach such a
   contract through an internal mutation with `role: null`: it carries the
   caller's role instead.
+- *Amendment (2026-10-18), the settings-per-category task:* the switch is
+  per list, not global. "Staff can manage tags" (top of the Tags tab) and
+  "staff can manage identifier types" (top of the Identifier types tab)
+  are independent, both off by default, each its own contract and counter
+  on `tenantPreferences` (`tenantPreferences.tags`,
+  `tenantPreferences.identifierTypes`). `managesList` names the list
+  (`'tags' | 'identifierTypes'`) and `requireListManager` checks that
+  list's switch; `LIST_MANAGERS` maps each save function to its list, and
+  the meta-test proves the other list's switch opens nothing. Every member
+  sees both tabs; each is editable only by whoever may manage that list.
+  Tenants that had the old single switch on got both on (two-phase split,
+  `platform/migrations:splitStaffCanManageLists`).
 - A tenant always has at least one admin.
 - Schema: `owner` → `admin` (loosen → backfill → tighten).
 

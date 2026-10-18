@@ -109,6 +109,11 @@ test.describe('tags page', { annotation: [SETTINGS_ROUTE, TAGS_ROUTE] }, () => {
         .getByRole('navigation', { name: 'Settings sections' })
         .getByRole('link', { name: 'Tags' }),
     ).toHaveAttribute('aria-current', 'page')
+    // The tab opens with its own admin switch, and no other.
+    await expect(
+      page.getByRole('switch', { name: 'Staff can manage tags' }),
+    ).toHaveCount(1)
+    await expect(page.getByRole('switch')).toHaveCount(1)
     const name = page.getByLabel('New tag name')
     const create = page.getByRole('button', { name: 'Create tag' })
     await expect(create).toBeDisabled()

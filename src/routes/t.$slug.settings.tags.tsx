@@ -5,7 +5,8 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Doc } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
-import { cachedTenant, useCanManageLists, useTenant } from '../lib/tenant'
+import { StaffListSwitch } from '../components/staff-list-switch'
+import { cachedTenant, useCanManageList, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/tags')({
   component: TagsPage,
@@ -40,12 +41,13 @@ function message(err: unknown): string {
 
 /**
  * The tenant's tags: create, rename, archive / reactivate (admins, and
- * staff when the group allows it; everyone else reads). Archiving hides a tag from pickers and keeps
- * every assignment (contact-model plan).
+ * staff when the group allows it; everyone else reads), under the admins'
+ * "staff can manage tags" switch. Archiving hides a tag from pickers and
+ * keeps every assignment (contact-model plan).
  */
 function TagsPage() {
   const tenant = useTenant()
-  const canWrite = useCanManageLists()
+  const canWrite = useCanManageList('tags')
   const tags = useQuery(api.contacts.queries.tags, {
     tenantId: tenant._id,
     includeInactive: true,
@@ -75,6 +77,7 @@ function TagsPage() {
   return (
     <div className="flex flex-col gap-6">
       <h2 className="text-lg font-semibold">Tags</h2>
+      <StaffListSwitch kind="tags" />
       {canWrite && (
         <form onSubmit={create} className="flex flex-col gap-1">
           <div className="flex gap-2">
@@ -150,7 +153,7 @@ function TagList({
 
 function TagRow({ tag }: { tag: Doc<'tags'> }) {
   const tenant = useTenant()
-  const canWrite = useCanManageLists()
+  const canWrite = useCanManageList('tags')
   const saveTag = useMutation(api.contacts.mutations.saveTag)
   const [editing, setEditing] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)

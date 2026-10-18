@@ -9,7 +9,7 @@ import type { Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
 import { internalMutation, internalQuery, query } from '../_generated/server'
 import { requireMember, roleValidator } from '../lib/tenancy'
-import { mayManageLists } from '../lib/lists'
+import { mayManageList, staffMayManage } from '../lib/lists'
 import { preferencesFor } from './preferences'
 import type { Role } from '../lib/tenancy'
 
@@ -48,10 +48,21 @@ export const mine = query({
               slug: t.slug,
               name: t.name,
               role: m.role,
-              // The Settings page's switch, and what it means for this caller.
-              staffCanManageLists: prefs?.staffCanManageLists ?? false,
-              listsVersion: prefs?.listsVersion ?? null,
-              canManageLists: mayManageLists(m.role, prefs),
+              // The Settings page's switches, with the counters their saves
+              // need, and what they mean for this caller.
+              staffCanManageTags: staffMayManage(prefs, 'tags'),
+              tagsVersion: prefs?.tagsVersion ?? null,
+              staffCanManageIdentifierTypes: staffMayManage(
+                prefs,
+                'identifierTypes',
+              ),
+              identifierTypesVersion: prefs?.identifierTypesVersion ?? null,
+              canManageTags: mayManageList(m.role, prefs, 'tags'),
+              canManageIdentifierTypes: mayManageList(
+                m.role,
+                prefs,
+                'identifierTypes',
+              ),
             }
           : null
       }),
