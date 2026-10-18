@@ -555,9 +555,12 @@ function TextButton({
   )
 }
 
+// Built once: `toLocaleString` with options makes a formatter per call.
+const AT = new Intl.DateTimeFormat([], {
+  dateStyle: 'short',
+  timeStyle: 'short',
+})
+
 function when(at: number) {
-  return new Date(at).toLocaleString([], {
-    dateStyle: 'short',
-    timeStyle: 'short',
-  })
+  return AT.format(at)
 }

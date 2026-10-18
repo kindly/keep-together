@@ -31,6 +31,11 @@ type Label = 'home' | 'work' | 'other'
 
 const LABELS: Array<Label> = ['home', 'work', 'other']
 const AUTOSAVE_MS = 700
+// Built once: `toLocaleTimeString` with options makes one per call.
+const SAVED_AT = new Intl.DateTimeFormat([], {
+  hour: '2-digit',
+  minute: '2-digit',
+})
 
 function toSlices(data: Data): Slices {
   const c = data.contact
@@ -1144,7 +1149,7 @@ function SavePane({
           : dirty
             ? 'Unsaved changes'
             : state.savedAt
-              ? `All changes saved ${new Date(state.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+              ? `All changes saved ${SAVED_AT.format(state.savedAt)}`
               : 'Up to date'
   return (
     <div

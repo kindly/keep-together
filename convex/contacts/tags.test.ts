@@ -200,6 +200,21 @@ describe('contacts.tags slice', () => {
     ).toMatchObject({ reason: 'immutable_child' })
   })
 
+  test('another contact’s row key is refused; this contact’s keys are kept', async () => {
+    const bob = await createContact(f.a, 'Babbage')
+    await saveTags(0, [{ key: 'b1', tagId: member }], bob)
+    await saveTags(0, [{ key: 'a1', tagId: volunteer }])
+    expect(
+      await errorData(
+        saveTags(1, [
+          { key: 'a1', tagId: volunteer },
+          { key: 'b1', tagId: member },
+        ]),
+      ),
+    ).toMatchObject({ reason: 'child_ownership' })
+    expect((await get())?.tags.map((t) => t.key)).toEqual(['a1'])
+  })
+
   test('a tags save never stales the other slices, and vice versa', async () => {
     await saveTags(0, [{ tagId: member }])
     await f.a.as.mutation(api.contacts.mutations.saveDetails, {

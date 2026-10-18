@@ -88,18 +88,25 @@ async function identifiersOf(
     .query('contactIdentifiers')
     .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
     .collect()
-  const out = await Promise.all(
-    rows.map(async (r) => {
-      const type = await db.get(r.typeId)
-      return {
-        key: r.key,
-        typeId: r.typeId,
-        value: r.value,
-        typeName: type?.name ?? '?',
-        typeActive: type?.isActive ?? false,
-      }
-    }),
+  // Rows share a few types: read each type once, not once per row (every
+  // save re-runs this, and a read costs the same however small).
+  const typeIds = [...new Set(rows.map((r) => r.typeId))]
+  const types = new Map(
+    (await Promise.all(typeIds.map((id) => db.get(id)))).map((t, i) => [
+      typeIds[i],
+      t,
+    ]),
   )
+  const out = rows.map((r) => {
+    const type = types.get(r.typeId)
+    return {
+      key: r.key,
+      typeId: r.typeId,
+      value: r.value,
+      typeName: type?.name ?? '?',
+      typeActive: type?.isActive ?? false,
+    }
+  })
   return out.sort(
     (a, b) =>
       normaliseTagName(a.typeName).localeCompare(

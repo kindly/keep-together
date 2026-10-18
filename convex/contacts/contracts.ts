@@ -6,7 +6,7 @@
  */
 import { v } from 'convex/values'
 import { validate } from 'convex-helpers/validators'
-import type { Id } from '../_generated/dataModel'
+import type { Doc, Id } from '../_generated/dataModel'
 import type { ContractCtx } from '../lib/contracts'
 import { defineContract, registry, rejected } from '../lib/contracts'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
@@ -140,24 +140,35 @@ async function reconcile(
   contactId: Id<'contacts'>,
   rows: Array<Row>,
   identityFields: Array<string>,
+  /** The contact's current rows, when the caller has just read them. */
+  known?: Array<Doc<ChildTable>>,
 ) {
-  // The ownership lookups go with the read of the current rows, not after
-  // it: one read level instead of two. A key found on a row of this
-  // contact is simply kept.
-  const [existing, byKeyAnywhere] = await Promise.all([
+  // A key on another contact's row is refused; one on this contact's is
+  // simply kept. Without `known`, the ownership lookups go with the read of
+  // the current rows (one level, not two) at a lookup per row. With it,
+  // only keys new to the contact need one: each lookup is a read, which a
+  // contact with many rows would pay for on every save of the slice.
+  const lookup = (row: Row) =>
     ctx.db
       .query(table)
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
-      .collect(),
-    Promise.all(
-      rows.map((row) =>
+      .withIndex('by_tenant_key', (q) => q.eq('key', row.key as string))
+      .first()
+  const [existing, byKeyAnywhere] = known
+    ? [
+        known,
+        await Promise.all(
+          rows
+            .filter((r) => !known.some((d) => d.key === r.key))
+            .map(lookup),
+        ),
+      ]
+    : await Promise.all([
         ctx.db
           .query(table)
-          .withIndex('by_tenant_key', (q) => q.eq('key', row.key as string))
-          .first(),
-      ),
-    ),
-  ])
+          .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+          .collect(),
+        Promise.all(rows.map(lookup)),
+      ])
   const byKey = new Map(existing.map((d) => [d.key, d]))
   const payloadKeys = new Set(rows.map((r) => r.key as string))
 
@@ -189,13 +200,13 @@ async function reconcile(
     }
     if (Object.keys(changes).length) updates.push({ id: current._id, changes })
   }
-  const owned = byKeyAnywhere.findIndex(
+  const owned = byKeyAnywhere.find(
     (d) => d !== null && d.contactId !== contactId,
   )
-  if (owned !== -1) {
+  if (owned) {
     throw rejected(
       'child_ownership',
-      `${table} row ${rows[owned].key as string} belongs to another contact`,
+      `${table} row ${owned.key} belongs to another contact`,
     )
   }
 
@@ -310,7 +321,7 @@ export const tags = defineContract({
         throw rejected('unknown_tag', 'Tag must exist and be active')
       }
     }
-    await reconcile(ctx, 'contactTags', root._id, p.tags, ['tagId'])
+    await reconcile(ctx, 'contactTags', root._id, p.tags, ['tagId'], existing)
     return root._id
   },
 })
@@ -428,10 +439,14 @@ export const identifiers = defineContract({
         `${value} is already used by ${displayName}`,
       )
     }
-    await reconcile(ctx, 'contactIdentifiers', root._id, p.identifiers, [
-      'typeId',
-      'value',
-    ])
+    await reconcile(
+      ctx,
+      'contactIdentifiers',
+      root._id,
+      p.identifiers,
+      ['typeId', 'value'],
+      existing,
+    )
     return root._id
   },
 })

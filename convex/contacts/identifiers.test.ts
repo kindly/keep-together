@@ -310,6 +310,43 @@ describe('uniqueness', () => {
     expect(data).toMatchObject({ reason: 'duplicate_identifier' })
   })
 
+  test('behind kept rows: the clash names its own row; the kept rows pass both checks', async () => {
+    await saveIds(0, [
+      { key: 'k1', typeId: oldCrm, value: 'K-1' },
+      { key: 'k2', typeId: membership, value: 'K-2' },
+    ])
+    const rows = [
+      { key: 'k1', typeId: oldCrm, value: 'K-1' },
+      { key: 'k2', typeId: membership, value: 'K-2' },
+      { key: 'a3', typeId: oldCrm, value: 'C-1' },
+    ]
+    expect((await saveIds(1, rows)).problems.identifiers).toEqual([
+      {
+        field: 'identifiers',
+        message: 'C-1 is already used by Ada Babbage',
+        key: 'a3',
+        contactId: bob,
+      },
+    ])
+    const data = await errorData(
+      runContract(f.a, (ctx) =>
+        executeContract(
+          ctx,
+          identifiers,
+          { identifiers: rows },
+          { entityId: ada, expected: 1, source: 'test' },
+        ),
+      ),
+    )
+    expect(data).toMatchObject({ reason: 'duplicate_identifier' })
+    // Without the clash, the kept rows' own pairs don't count against them.
+    expect((await saveIds(1, rows.slice(0, 2))).saved).toEqual([])
+    expect(
+      (await saveIds(1, [...rows.slice(0, 2), { ...rows[2], value: 'K-3' }]))
+        .saved,
+    ).toEqual(['identifiers'])
+  })
+
   test('a removed pair is free for another contact', async () => {
     await saveIds(1, [], bob)
     expect(

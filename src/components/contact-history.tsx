@@ -10,6 +10,12 @@ import { useQuery } from '../lib/query-cache'
 /** Revisions per history page (the server caps it at HISTORY_PAGE_LIMIT). */
 const PAGE = 10
 const NO_CURSORS: Array<string> = []
+// One formatter for every moment: `toLocaleString` with options builds a
+// new one per call, on every render of the page (each save re-renders it).
+const AT = new Intl.DateTimeFormat([], {
+  dateStyle: 'short',
+  timeStyle: 'short',
+})
 
 /**
  * The newest page's args. The route prewarms exactly these, so they must
@@ -132,12 +138,7 @@ export function ContactHistory({
               className="rounded border border-neutral-200 bg-white p-2"
             >
               <div className="flex items-baseline justify-between gap-2">
-                <time className="text-neutral-600">
-                  {new Date(m.at).toLocaleString([], {
-                    dateStyle: 'short',
-                    timeStyle: 'short',
-                  })}
-                </time>
+                <time className="text-neutral-600">{AT.format(m.at)}</time>
                 {i === 0 && (
                   <span className="rounded bg-neutral-200 px-1 text-xs">
                     current
