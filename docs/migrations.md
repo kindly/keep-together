@@ -1,0 +1,22 @@
+# Data migrations: order for a deployment that is behind
+
+Schema changes are two-phase (CLAUDE.md): loosen → deploy → backfill →
+tighten. Every factory dev deployment (dev/qc-*, dev/demo, dev/preview,
+the human's dev) has had all of these run. A deployment that is **behind**
+must be brought forward in this order; each tighten refuses to deploy
+until its backfill has run, so a skipped step fails loudly, not silently.
+
+| # | Deploy this commit | Then run | Then |
+|---|---|---|---|
+| 1 | `e27367a` (S2a) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillAddressNormalized"}'` | wait for `npx convex run --component migrations lib:getStatus` → isDone |
+| 2 | `a19344b` (R1a) | `npx convex run platform/migrations:run '{"fn":"platform/migrations:ownerToAdmin"}'` | isDone |
+| 3 | `3034c32` (S4a) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillTagsVersion"}'` | isDone |
+| 4 | `c94194c` (X2) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillExternalIdentifiers"}'` | isDone, and `npx convex run platform/migrations:legacyLeftoverTotal` → total 0 (resolve any leftover first) |
+| 5 | `main` | (perf step 1's revision `groupName` backfill, once merged: optional, history falls back without it) | — |
+
+Do it from a temporary worktree (`git worktree add --detach <dir> <commit>`)
+with the deployment's `.env.local` / deploy key, so the main checkout is
+untouched.
+
+**Release note:** SPA tabs opened before X3 send a removed details field and
+get a validator error on save; reload them.
