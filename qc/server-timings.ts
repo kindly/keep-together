@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ChildProcess } from 'node:child_process'
+import { BULK_FUNCTIONS } from './budgets'
 
 // Server-time collector (factory/plans/qc-suite.sv step 5, spike 07 item a).
 //
@@ -17,6 +18,9 @@ import type { ChildProcess } from 'node:child_process'
 // deployments occasionally stall). That is the server form of the
 // flows' one re-measure: the function's other calls are its re-measure.
 // The spike is still listed (spikes()) so it stays visible.
+//
+// Bulk functions (BULK_FUNCTIONS in ./budgets, exempt from 100 ms like their
+// `bulk` flows) are asserted against their own limit instead.
 //
 // Not asserted: cached queries (~0 ms, served without running), `auth:*`
 // (Convex Auth hashes passwords in JS: auth:store is ~150 ms p95),
@@ -72,8 +76,10 @@ export interface FunctionStats {
   identifier: string
   udfType: string
   cached: boolean
-  /** Asserted against BUDGET_MS. */
+  /** Asserted against `budgetMs`. */
   asserted: boolean
+  /** BUDGET_MS for its type, or its BULK_FUNCTIONS limit; null if not asserted. */
+  budgetMs: number | null
   n: number
   p50: number
   p95: number
@@ -348,6 +354,12 @@ export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
     .map(({ ev, ms }) => {
       ms.sort((a, b) => a - b)
       const cached = ev.cachedResult === true
+      const asserted =
+        !cached &&
+        ev.componentPath === null &&
+        ev.identityType !== 'instance_admin' &&
+        ev.udfType in BUDGET_MS &&
+        isOwn(ev.identifier)
       return {
         identifier:
           ev.identityType === 'instance_admin'
@@ -355,12 +367,11 @@ export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
             : ev.identifier,
         udfType: ev.udfType,
         cached,
-        asserted:
-          !cached &&
-          ev.componentPath === null &&
-          ev.identityType !== 'instance_admin' &&
-          ev.udfType in BUDGET_MS &&
-          isOwn(ev.identifier),
+        asserted,
+        budgetMs: asserted
+          ? (BULK_FUNCTIONS[ev.identifier] ??
+            BUDGET_MS[ev.udfType as keyof typeof BUDGET_MS])
+          : null,
         n: ms.length,
         p50: round(percentile(ms, 0.5)),
         p95: round(percentile(ms, 0.95)),
@@ -399,8 +410,8 @@ export function spikes(t: Pick<ServerTimings, 'functions'>): Array<string> {
     .filter(
       (f) =>
         f.asserted &&
-        f.max >= BUDGET_MS[f.udfType as keyof typeof BUDGET_MS] &&
-        budgetMiss(f, BUDGET_MS[f.udfType as keyof typeof BUDGET_MS]) === null,
+        f.max >= f.budgetMs! &&
+        budgetMiss(f, f.budgetMs!) === null,
     )
     .map(
       (f) =>
@@ -415,16 +426,14 @@ export function checkBudgets(
   return t.functions
     .filter((f) => f.asserted)
     .flatMap((f) => {
-      const miss = budgetMiss(f, BUDGET_MS[f.udfType as keyof typeof BUDGET_MS])
+      const miss = budgetMiss(f, f.budgetMs!)
       return miss ? [`${f.udfType} ${f.identifier}: ${miss}`] : []
     })
 }
 
 export function formatTable(t: ServerTimings): string {
   const rows = t.functions.map((f) => {
-    const budget = f.asserted
-      ? `<${BUDGET_MS[f.udfType as keyof typeof BUDGET_MS]}`
-      : '—'
+    const budget = f.budgetMs === null ? '—' : `<${f.budgetMs}`
     return [
       String(f.n).padStart(5),
       f.p50.toFixed(1).padStart(7),

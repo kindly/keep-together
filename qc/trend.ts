@@ -1,3 +1,4 @@
+import { BULK_FUNCTIONS } from './budgets'
 import type { HistoryLine } from './reporter'
 
 // QC trend report (factory/plans/qc-suite.sv step 10): shapes
@@ -390,10 +391,12 @@ ${chart({
 }
 
 function serverCard(s: ServerSeries, runs: Array<Run>): string {
+  // A bulk function has its own limit (qc/budgets.ts), not the 100 ms rule.
+  const budgetMs = BULK_FUNCTIONS[s.fn] ?? SERVER_BUDGET_MS
   const marks = s.points.map((p, i) => {
     if (!p) return null
     const r = runs[i]
-    const over = s.asserted && p.maxMs >= SERVER_BUDGET_MS && !p.spike
+    const over = s.asserted && p.maxMs >= budgetMs && !p.spike
     const spike = s.asserted && p.spike === true
     return {
       cls: over ? 'over' : spike ? 'spike' : s.asserted ? 'ok' : 'info',
@@ -419,8 +422,8 @@ ${chart({
     { values: s.points.map((p) => p?.maxMs ?? null), cls: 'max' },
     { values: s.points.map((p) => p?.p95Ms ?? null), cls: 'p95' },
   ],
-  budgetMs: SERVER_BUDGET_MS,
-  budgetLabel: `${SERVER_BUDGET_MS}`,
+  budgetMs,
+  budgetLabel: `${budgetMs}`,
   marks,
 })}
 </figure>`

@@ -92,3 +92,15 @@ export type FlowName = keyof typeof budgets
 export function budgetFor(name: FlowName): Budget {
   return budgets[name]
 }
+
+/**
+ * Server functions behind `bulk` flows: an action over many records at once
+ * (bulkTag runs one contract and one search-projection rebuild per contact,
+ * about 700 extra reads at 100 contacts since search Q1). Exempt from the
+ * 100 ms server rule like their flows (human, 2026-10-18): each has its own
+ * limit in ms, provisional until recorded like the `bulk` flow budgets.
+ * qc/server-timings.ts asserts them against it instead of 100 ms.
+ */
+export const BULK_FUNCTIONS: Record<string, number> = {
+  'contacts/mutations:bulkTag': 1000,
+}

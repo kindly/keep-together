@@ -116,7 +116,8 @@ function readServer(dir: string): ServerSummary | null {
     functions: t.functions
       .filter((f) => !f.cached)
       .map((f) => {
-        const budget = BUDGET_MS[f.udfType as keyof typeof BUDGET_MS]
+        const budget =
+          f.budgetMs ?? BUDGET_MS[f.udfType as keyof typeof BUDGET_MS]
         const spike =
           f.asserted && f.max >= budget && budgetMiss(f, budget) === null
         return {
