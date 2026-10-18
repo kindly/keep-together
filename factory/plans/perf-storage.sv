@@ -1,4 +1,4 @@
-<sv-page label="plan: performance & storage" category="plans">
+<sv-page label="plan: performance & storage" category="archive">
 
 <sv-prose id="b1">
 # Performance & storage, starting from contact.addEmail
@@ -10,6 +10,8 @@ Layout: short answers → addEmail anatomy and levers → evidence for each ques
 
 <sv-prose id="b2">
 ## Design tree (confirmed 2026-10-18)
+
+**Complete 2026-10-18: steps 0–4 merged overnight** (step 1 + history paging, step 3 restore reads, step 2 keep-alive cache, then follow-ups: create headroom, history page bound). addEmail's knownOver dropped after 3 clean runs (2a47209). Open for the human: cache size 20 vs ~60; the ~95 ms save floor (identifier.add marginal).
 
 **Added 2026-10-18 after step 0 (factory/out/perf-storage-step0.md):** no payload split (payloads are 35% of revision bytes; split saves 0 ms). `history` cost grows with revision count (~0.11 ms/revision) and gates saves on long histories, so **step 1 also pages the history panel: newest 10 moments, "Load older" for the rest** (human). Restore still works on any revision.
 
