@@ -1,6 +1,7 @@
 import { Link, Outlet, createFileRoute } from '@tanstack/react-router'
 import { Authenticated, Unauthenticated } from 'convex/react'
 import { TenantContext, useMyTenants } from '../lib/tenant'
+import { ContactQueryCache } from '../lib/query-cache'
 
 export const Route = createFileRoute('/t/$slug')({ component: TenantLayout })
 
@@ -78,7 +79,9 @@ function Resolved({ slug }: { slug: string }) {
             )}
           </nav>
         </header>
-        <Outlet />
+        <ContactQueryCache>
+          <Outlet />
+        </ContactQueryCache>
       </div>
     </TenantContext.Provider>
   )

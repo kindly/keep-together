@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { useMutation, useQuery } from 'convex/react'
+import { useMutation, useQuery as useLiveQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
 import { ConvexError } from 'convex/values'
 import { useEffect, useMemo, useReducer, useRef } from 'react'
@@ -23,6 +23,7 @@ import {
   unsavedWork,
 } from '../lib/contact-form-state'
 import { useCanWrite, useTenant } from '../lib/tenant'
+import { useQuery } from '../lib/query-cache'
 import { useReportUnsaved } from '../lib/unsaved'
 
 type Data = NonNullable<FunctionReturnType<typeof api.contacts.queries.get>>
@@ -109,8 +110,10 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
   // "Also used by" lookups for the saved addresses: their own query, so a
   // save never waits on them; a new address's warning lands one round trip
   // after the save. Until the new answer comes, the last one stands: an
-  // email row's address never changes under its key (ADR 0014).
-  const sharedNow = useQuery(
+  // email row's address never changes under its key (ADR 0014). Not
+  // cached: its args change with every email edit, so each edit would
+  // leave an idle entry behind and fill the cache with stale address lists.
+  const sharedNow = useLiveQuery(
     api.contacts.queries.sharedAddresses,
     data.emails.length === 0
       ? 'skip'

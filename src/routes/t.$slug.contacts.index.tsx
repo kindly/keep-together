@@ -13,9 +13,14 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
   loader: ({ context: { convex }, params }) => {
     const tenant = cachedTenant(convex, params.slug)
     if (!tenant) return
+    // Held 1 s, not the default 5: the page's own useQuery takes over as
+    // it mounts, and every contact save re-runs `list` while anything
+    // holds it, so a contact opened within 5 s of the list would wait on
+    // it at every save (perf-storage lever C).
     convex.prewarmQuery({
       query: api.contacts.queries.list,
       args: { tenantId: tenant._id, search: '', includeArchived: false },
+      extendSubscriptionFor: 1_000,
     })
     convex.prewarmQuery({
       query: api.contacts.queries.tags,

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery } from 'convex/react'
+import { useMutation } from 'convex/react'
 import type { Doc, Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { useCanWrite, useTenant } from '../lib/tenant'
+import { useQuery } from '../lib/query-cache'
 import type { Draft, Gone } from '../lib/notes'
 import {
   budget,

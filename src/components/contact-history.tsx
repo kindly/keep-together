@@ -1,10 +1,11 @@
-import { useMutation, useQueries, useQuery } from 'convex/react'
+import { useMutation, useQueries } from 'convex/react'
 import { useMemo, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { joinMoments } from '../../convex/contacts/history'
 import type { Moment } from '../../convex/contacts/history'
 import { useCanWrite, useTenant } from '../lib/tenant'
+import { useQuery } from '../lib/query-cache'
 
 /** Revisions per history page (the server caps it at HISTORY_PAGE_LIMIT). */
 const PAGE = 10

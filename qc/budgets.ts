@@ -63,6 +63,9 @@ export const budgets = {
       'sits at 90-95 ms, frame-bound; with planner-perf (human 2026-10-18)',
   },
   'contact.livePropagation': repeatable,
+  // Back to a contact opened in the last 2 minutes: the keep-alive cache
+  // (perf-storage step 2). Expected well under, at about one frame.
+  'contact.revisit': repeatable,
   'contact.archive': repeatable,
   'contact.restore': repeatable,
   'contact.note.add': repeatable,
