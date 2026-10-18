@@ -155,7 +155,10 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
     saveNow.current = false
     const current = latest.current
     const submitted = submission(current)
-    if (Object.keys(submitted).length === 0) return
+    if (Object.keys(submitted).length === 0) {
+      dispatch({ type: 'nothingToSave' })
+      return
+    }
     dispatch({ type: 'saving' })
     const args: Record<string, unknown> = {
       tenantId: tenant._id,

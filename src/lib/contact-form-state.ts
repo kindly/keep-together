@@ -71,6 +71,8 @@ export type Action =
   /** The user finished an edit (blur, select, checkbox, remove): request a save. */
   | { type: 'commit' }
   | { type: 'saving' }
+  /** A queued save found nothing to submit. */
+  | { type: 'nothingToSave' }
   | {
       type: 'saved'
       submitted: Partial<Slices>
@@ -416,13 +418,23 @@ export function reduce(state: FormState, action: Action): FormState {
         if (was !== undefined && counters[slice] >= was) delete stale[slice]
       }
       Object.assign(stale, action.result.stale)
+      // A refusal names the value submitted. If the user has changed the
+      // slice since (corrected it while the save was in flight), the
+      // problem is about text no longer on screen: drop it and send the
+      // new value. A slice still holding the refused value waits for an edit.
+      const problems = { ...action.result.problems }
+      const refused = (s: SliceName) =>
+        problems[s] !== undefined &&
+        same(clean(s, state.local[s]), action.submitted[s])
+      for (const slice of SLICES)
+        if (problems[slice] && !refused(slice)) delete problems[slice]
       return {
         ...state,
         base,
         dirty,
         conflicts,
         counters,
-        problems: action.result.problems,
+        problems,
         stale,
         status: 'saved',
         savedAt: action.result.saved.length ? action.at : state.savedAt,
@@ -430,10 +442,19 @@ export function reduce(state: FormState, action: Action): FormState {
         // click's own blur) queues it, and if this save took everything a
         // queued save submits nothing and would never clear it, leaving
         // the form `busy` and the leave guard waiting forever.
-        needsSave: SLICES.some((s) => dirty[s] && !action.result.problems[s]),
+        needsSave: SLICES.some((s) => dirty[s] && !refused(s)),
         error: null,
       }
     }
+    case 'nothingToSave':
+      // A queued save found no dirty slice (a remote merge made them all
+      // clean, say). Unqueue it, or the form stays `busy` for good. Kept
+      // if a slice is dirty after all: an edit dispatched after the save
+      // read its state is still to go.
+      return {
+        ...state,
+        needsSave: state.needsSave && SLICES.some((s) => state.dirty[s]),
+      }
     case 'failed':
       return { ...state, status: 'error', error: action.message }
   }

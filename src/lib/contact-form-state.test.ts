@@ -386,6 +386,39 @@ describe('contact form state', () => {
     expect(s.needsSave).toBe(false)
   })
 
+  test('a problem slice corrected during the save is retried, its problem dropped', () => {
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'details',
+      value: { ...slices.details, lastName: '' },
+    })
+    s = reduce(s, { type: 'commit' })
+    const submitted = submission(s)
+    s = reduce(s, { type: 'saving' })
+    // Corrected and blurred while the refused value is in flight.
+    s = reduce(s, {
+      type: 'edit',
+      slice: 'details',
+      value: { ...slices.details, lastName: 'Byron' },
+    })
+    s = reduce(s, { type: 'commit' })
+    s = reduce(s, {
+      type: 'saved',
+      submitted,
+      at: 1,
+      result: {
+        saved: [],
+        problems: { details: [{ field: 'lastName', message: 'needed' }] },
+        stale: {},
+        counters: { ...counters, archive: 0 },
+      },
+    })
+    expect(s.problems.details).toBeUndefined()
+    expect(s.dirty.details).toBe(true)
+    expect(s.needsSave).toBe(true)
+    expect(submission(s).details?.lastName).toBe('Byron')
+  })
+
   describe('the tags slice', () => {
     const tag = (key: string, id: string) => ({
       key,
@@ -688,6 +721,54 @@ describe('the identifiers slice', () => {
     expect(unsavedWork(s)).toBe('clean')
   })
 
+  test('a clash corrected during the save is retried; an untouched one waits', () => {
+    const clashing = row('i2', 'typeOld', 'M9')
+    const refusal = {
+      saved: [],
+      problems: {
+        identifiers: [
+          {
+            field: 'identifiers',
+            message: 'M9 is already used by Ada Byron',
+            key: 'i2',
+            contactId: 'other' as Id<'contacts'>,
+          },
+        ],
+      },
+      stale: {},
+      counters: zeros,
+    }
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'identifiers',
+      value: { identifiers: [old, clashing] },
+    })
+    s = reduce(s, { type: 'commit' })
+    const submitted = submission(s)
+    s = reduce(s, { type: 'saving' })
+    // A commit with nothing new (another field's blur) changes nothing.
+    s = reduce(s, { type: 'commit' })
+    const untouched = reduce(s, {
+      type: 'saved',
+      submitted,
+      at: 1,
+      result: refusal,
+    })
+    expect(untouched.problems.identifiers).toHaveLength(1)
+    expect(untouched.needsSave).toBe(false)
+
+    s = reduce(s, {
+      type: 'edit',
+      slice: 'identifiers',
+      value: { identifiers: [old, { ...clashing, value: 'M10' }] },
+    })
+    s = reduce(s, { type: 'commit' })
+    s = reduce(s, { type: 'saved', submitted, at: 1, result: refusal })
+    expect(s.problems.identifiers).toBeUndefined()
+    expect(s.needsSave).toBe(true)
+    expect(unsavedWork(s)).toBe('busy')
+  })
+
   test('rows added here and elsewhere merge by key, removals stick', () => {
     const theirs = row('t9', 'typeOld', 'M7')
     const mine = row('i2', 'typeOld', 'M2')
@@ -755,6 +836,39 @@ describe('unsavedWork', () => {
     })
     expect(s.needsSave).toBe(false)
     expect(unsavedWork(s)).toBe('clean')
+  })
+
+  test('a queued save a remote merge made moot is unqueued', () => {
+    const nickname = { ...slices.details, nickname: 'Countess' }
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'details',
+      value: nickname,
+    })
+    s = reduce(s, { type: 'commit' })
+    // The same edit, made in another tab, lands before the autosave.
+    s = reduce(s, {
+      type: 'server',
+      slices: { ...slices, details: nickname },
+      counters: { ...counters, details: 1 },
+    })
+    expect(s.dirty.details).toBe(false)
+    expect(submission(s)).toEqual({})
+    // What save() dispatches when it finds nothing to submit.
+    s = reduce(s, { type: 'nothingToSave' })
+    expect(s.needsSave).toBe(false)
+    expect(unsavedWork(s)).toBe('clean')
+  })
+
+  test('nothingToSave keeps a save queued by a later edit', () => {
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'details',
+      value: { ...slices.details, nickname: 'Countess' },
+    })
+    s = reduce(s, { type: 'commit' })
+    s = reduce(s, { type: 'nothingToSave' })
+    expect(s.needsSave).toBe(true)
   })
 
   const typed = (state = initialState(slices, counters)) =>
