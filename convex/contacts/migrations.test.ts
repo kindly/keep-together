@@ -8,6 +8,7 @@ import { scopeWriter } from '../lib/tenancy'
 import { setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
 import { identifierType } from './contracts'
+import { IDENTIFIER_TYPE_LIMIT } from './rules'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
 
@@ -74,6 +75,9 @@ const identifierRevisions = (id: Id<'contacts'>) =>
       (r) => r.entityId === id && r.contract === 'contacts.identifiers',
     ),
   )
+
+const leftoverTotal = () =>
+  f.t.action(internal.platform.migrations.legacyLeftoverTotal, {})
 
 const leftovers = (who: Tenant = f.a) =>
   f.t.query(internal.contacts.migrations.legacyLeftovers, {
@@ -170,8 +174,21 @@ describe('backfillExternalIdentifiers', () => {
         contactId: newer,
         displayName: 'Ada Babbage',
         externalIdentifier: 'legacy-0001 ',
+        reason: `held by Ada Lovelace (${older})`,
       },
     ])
+    expect(await leftoverTotal()).toEqual({
+      total: 1,
+      capped: false,
+      tenants: [
+        {
+          tenantId: f.a.tenantId,
+          slug: expect.any(String),
+          count: 1,
+          capped: false,
+        },
+      ],
+    })
     expect(await leftovers(f.b)).toEqual([])
     expect((await get(other, f.b))?.identifiers).toHaveLength(1)
 
@@ -192,6 +209,23 @@ describe('backfillExternalIdentifiers', () => {
       { value: 'legacy-0001' },
     ])
     expect(await leftovers(f.a)).toEqual([])
+    expect(await leftoverTotal()).toMatchObject({ total: 0, tenants: [] })
+  })
+
+  test('sets the counter even when the contact already holds the value', async () => {
+    const id = await legacyContact(f.a, 'Lovelace', 'LEGACY-0001')
+    await backfill()
+    // The row is there; the old field and a missing counter come back.
+    await f.t.run((ctx) =>
+      ctx.db.patch('contacts', id, {
+        externalIdentifier: 'legacy-0001',
+        identifiersVersion: undefined,
+      }),
+    )
+    await backfill({ cursor: null })
+    expect(await doc(id)).toMatchObject({ identifiersVersion: 0 })
+    expect(await doc(id)).not.toHaveProperty('externalIdentifier')
+    expect((await get(id))?.identifiers).toHaveLength(1)
   })
 
   test('keeps rows a contact already has and uses the counter it has', async () => {
@@ -227,7 +261,40 @@ describe('backfillExternalIdentifiers', () => {
       externalIdentifier: 'LEGACY-0001',
     })
     expect(await typesOf(f.a)).toMatchObject([{ _id: typeId }])
-    expect(await leftovers(f.a)).toHaveLength(1)
+    expect(await leftovers(f.a)).toMatchObject([
+      { contactId: id, reason: '"External reference" type archived' },
+    ])
+    expect((await get(b1, f.b))?.identifiers).toHaveLength(1)
+  })
+
+  test('a tenant at the identifier type limit keeps its values, the run goes on', async () => {
+    await f.t.run(async (ctx) => {
+      for (let i = 0; i < IDENTIFIER_TYPE_LIMIT; i++) {
+        await ctx.db.insert('identifierTypes', {
+          tenantId: f.a.tenantId,
+          name: `Type ${i}`,
+          nameNormalized: `type ${i}`,
+          isActive: true,
+          saveVersion: 0,
+        })
+      }
+    })
+    const id = await legacyContact(f.a, 'Lovelace', 'LEGACY-0001')
+    const b1 = await legacyContact(f.b, 'Herschel', 'LEGACY-0001')
+    expect(await leftovers(f.a)).toMatchObject([
+      { contactId: id, reason: 'not backfilled yet' },
+    ])
+    expect((await backfill()).isDone).toBe(true)
+    expect(await doc(id)).toMatchObject({
+      identifiersVersion: 0,
+      externalIdentifier: 'LEGACY-0001',
+    })
+    expect(await leftovers(f.a)).toMatchObject([
+      {
+        contactId: id,
+        reason: expect.stringContaining('identifier type limit'),
+      },
+    ])
     expect((await get(b1, f.b))?.identifiers).toHaveLength(1)
   })
 
