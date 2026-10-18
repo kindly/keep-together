@@ -12,11 +12,18 @@ import type { Page } from '@playwright/test'
 
 // QC step 8, the notes panel on the contact page (S7): add, edit,
 // pin / unpin, archive / restore, "show archived", the byte budget, and a
-// note archived in one tab while another edits it.
+// note archived in one tab while another edits it. Then saving on blur
+// and the unsaved-changes guard: discard confirm, leaving the page, and
+// closing the tab.
 
 const notes = (page: Page) => section(page, 'Notes')
 const items = (page: Page) => notes(page).locator('li')
 const composer = (page: Page) => notes(page).getByPlaceholder('Add a note…')
+/** Somewhere outside every editor to click: blurs whatever has focus. */
+const away = (page: Page) =>
+  notes(page).getByRole('heading', { name: 'Notes', exact: true })
+const dialog = (page: Page, name: string | RegExp) =>
+  page.getByRole('alertdialog', { name })
 
 /** The note whose body is `body` has a button reading window.__qcWant. */
 function noteButtonIsWant(body: string) {
@@ -65,6 +72,7 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
 
     const top = items(page).nth(0)
     let e = 0
+    // Timed as the edit is normally saved: by clicking away.
     await flow(page, 'contact.note.save', {
       before: async () => {
         await top.getByRole('button', { name: 'edit' }).click()
@@ -72,19 +80,168 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
         await top.getByRole('textbox').fill(body)
         await want(page, body)
       },
-      action: () =>
-        top.getByRole('button', { name: 'Save', exact: true }).click(),
+      action: () => away(page).click(),
       until: noteShowsWant,
     })
     await expect(top.getByText(/· edited /)).toBeVisible()
-
-    // Cancel leaves the body alone.
-    await top.getByRole('button', { name: 'edit' }).click()
-    await top.getByRole('textbox').fill('never saved')
-    await top.getByRole('button', { name: 'cancel' }).click()
-    await expect(top.locator('p')).toHaveText(`edited ${e}`)
     await page.reload()
     await expect(items(page).nth(0).locator('p')).toHaveText(`edited ${e}`)
+
+    // The Save button still saves.
+    await top.getByRole('button', { name: 'edit' }).click()
+    await top.getByRole('textbox').fill('saved by the button')
+    await top.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(top.locator('p')).toHaveText('saved by the button')
+  })
+
+  test('cancel and Escape ask before discarding an edit', async ({
+    page,
+    users,
+  }) => {
+    await createContact(page, users.a.slug, uniqueName('discard'))
+    await addNote(page, 'kept body')
+    const top = items(page).nth(0)
+    const box = top.getByRole('textbox')
+    const discard = dialog(page, 'Discard your changes?')
+
+    // Nothing changed: cancel just closes.
+    await top.getByRole('button', { name: 'edit' }).click()
+    await top.getByRole('button', { name: 'cancel' }).click()
+    await expect(discard).toBeHidden()
+    await expect(box).toBeHidden()
+
+    // Changed: cancel asks; keeping on goes back to the text, unsaved.
+    await top.getByRole('button', { name: 'edit' }).click()
+    await box.fill('never saved')
+    await top.getByRole('button', { name: 'cancel' }).click()
+    await expect(discard).toBeVisible()
+    await discard.getByRole('button', { name: 'Keep editing' }).click()
+    await expect(discard).toBeHidden()
+    await expect(box).toHaveValue('never saved')
+
+    // Escape asks too; discarding leaves the note as it was.
+    await box.press('Escape')
+    await expect(discard).toBeVisible()
+    await discard.getByRole('button', { name: 'Discard' }).click()
+    await expect(box).toBeHidden()
+    await expect(top.locator('p')).toHaveText('kept body')
+    await page.reload()
+    await expect(items(page).nth(0).locator('p')).toHaveText('kept body')
+  })
+
+  test('the composer adds a note when focus leaves it', async ({
+    page,
+    users,
+  }) => {
+    await createContact(page, users.a.slug, uniqueName('compblur'))
+
+    // Empty: leaving adds nothing.
+    await composer(page).click()
+    await away(page).click()
+    await expect(notes(page).getByText('No notes yet.')).toBeVisible()
+
+    // Ticking "pin" is not leaving: the note waits, then is added pinned.
+    await composer(page).fill('added on blur')
+    await notes(page).getByLabel('pin', { exact: true }).check()
+    await expect(notes(page).getByText('No notes yet.')).toBeVisible()
+    await away(page).click()
+    const added = items(page).filter({ hasText: 'added on blur' })
+    await expect(added.getByText('pinned', { exact: true })).toBeVisible()
+    await expect(composer(page)).toHaveValue('')
+    await expect(
+      notes(page).getByLabel('pin', { exact: true }),
+    ).not.toBeChecked()
+
+    // "Add note" takes the click; the blur on the way adds nothing extra.
+    await addNote(page, 'added by the button')
+    await expect(items(page)).toHaveCount(2)
+    await page.reload()
+    await expect(items(page)).toHaveCount(2)
+  })
+
+  test('leaving the page: a blur-saved edit just leaves, unsaved work asks', async ({
+    page,
+    users,
+  }) => {
+    test.info().annotations.push({
+      type: 'route',
+      description: '/t/$slug/tags',
+    })
+    const url = await createContact(page, users.a.slug, uniqueName('leave'))
+    await addNote(page, 'before')
+    const top = items(page).nth(0)
+    const leave = dialog(page, /You have unsaved changes/)
+
+    // Clicking a link blurs the editor: it saves on the way, no question.
+    await top.getByRole('button', { name: 'edit' }).click()
+    await top.getByRole('textbox').fill('saved on the way out')
+    await page.getByRole('link', { name: 'Tags', exact: true }).click()
+    await page.waitForURL(/\/tags$/)
+    await expect(leave).toBeHidden()
+    // Back inside the app (same document, so the router sees it).
+    await page.goBack()
+    await page.waitForURL(url)
+    await expect(items(page).nth(0).locator('p')).toHaveText(
+      'saved on the way out',
+    )
+
+    // Text a blur can't save (over the cap) asks, on Back as on a link;
+    // staying keeps the text.
+    const over = 'x'.repeat(20_001)
+    await top.getByRole('button', { name: 'edit' }).click()
+    await top.getByRole('textbox').fill(over)
+    await page.goBack()
+    await expect(leave).toBeVisible()
+    await leave.getByRole('button', { name: 'Stay' }).click()
+    await expect(leave).toBeHidden()
+    expect(page.url()).toBe(url)
+    await expect(top.getByRole('textbox')).toHaveValue(over)
+
+    await page.getByRole('link', { name: 'Tags', exact: true }).click()
+    await expect(leave).toBeVisible()
+    await leave.getByRole('button', { name: 'Leave anyway' }).click()
+    await page.waitForURL(/\/tags$/)
+    await page.goBack()
+    await page.waitForURL(url)
+    await expect(items(page).nth(0).locator('p')).toHaveText(
+      'saved on the way out',
+    )
+
+    // Back with a plain edit open saves it on the way, as a link does.
+    await top.getByRole('button', { name: 'edit' }).click()
+    await top.getByRole('textbox').fill('saved going back')
+    await page.goBack()
+    await page.waitForURL(/\/contacts\/new$/)
+    await expect(leave).toBeHidden()
+    await page.goForward()
+    await page.waitForURL(url)
+    await expect(items(page).nth(0).locator('p')).toHaveText(
+      'saved going back',
+    )
+  })
+
+  test('closing the tab with unsaved work gets the browser prompt', async ({
+    browser,
+    baseURL,
+    page,
+    users,
+    session,
+  }) => {
+    const url = await createContact(page, users.a.slug, uniqueName('unload'))
+    const other = await secondTab(browser, baseURL!, await session())
+    try {
+      await other.goto(url)
+      await composer(other).click()
+      await composer(other).pressSequentially('not yet a note')
+      const prompt = other.waitForEvent('dialog')
+      await other.close({ runBeforeUnload: true })
+      const d = await prompt
+      expect(d.type()).toBe('beforeunload')
+      await d.dismiss()
+      await expect(composer(other)).toHaveValue('not yet a note')
+    } finally {
+      await other.context().close()
+    }
   })
 
   test('pin and unpin', async ({ page, flow, users }) => {

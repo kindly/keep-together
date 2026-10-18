@@ -4,6 +4,10 @@ import { NOTE_MAX_BYTES } from '../../convex/contacts/rules'
 import {
   budget,
   budgetMessage,
+  composerBlur,
+  composerUnsaved,
+  editorBlur,
+  editorUnsaved,
   failureMessage,
   openDraft,
   rebase,
@@ -137,5 +141,78 @@ describe('withOpenEdits', () => {
       { note: archivedB, gone: 'archived' },
     ])
     expect(withOpenEdits([a], { b }, [])[1].gone).toBe('unlisted')
+  })
+})
+
+describe('leaving an editor', () => {
+  const note = { body: 'hello', bodyVersion: 2 }
+  const typed = (text: string) => ({ ...openDraft(note), text })
+  const plain = { gone: null, saving: false }
+
+  test('a changed, storable body saves on blur', () => {
+    expect(editorBlur(typed('hello world'), plain)).toBe('save')
+  })
+
+  test('unchanged text (whitespace aside) stays open, unsaved', () => {
+    expect(editorBlur(typed('hello'), plain)).toBe('none')
+    expect(editorBlur(typed('  hello\n'), plain)).toBe('none')
+  })
+
+  test('empty or over-cap text is not saved on blur', () => {
+    expect(editorBlur(typed('   '), plain)).toBe('none')
+    expect(editorBlur(typed('x'.repeat(NOTE_MAX_BYTES + 1)), plain)).toBe(
+      'none',
+    )
+  })
+
+  test('a draft needing a decision waits for an explicit save', () => {
+    // Archived meanwhile: saving would restore it.
+    expect(editorBlur(typed('mine'), { gone: 'archived', saving: false })).toBe(
+      'none',
+    )
+    expect(editorBlur(typed('mine'), { gone: 'unlisted', saving: false })).toBe(
+      'none',
+    )
+    // Someone else changed it: saving would replace theirs.
+    const diverged = rebase(typed('mine'), { body: 'theirs', bodyVersion: 3 })
+    expect(editorBlur(diverged, plain)).toBe('none')
+  })
+
+  test('no second save while one is in flight', () => {
+    expect(editorBlur(typed('changed'), { gone: null, saving: true })).toBe(
+      'none',
+    )
+  })
+
+  test('unsaved work: edited text, or a save in flight', () => {
+    expect(editorUnsaved(typed('hello'), false)).toBe('clean')
+    expect(editorUnsaved(typed('changed'), false)).toBe('unsaved')
+    expect(editorUnsaved(typed('changed'), true)).toBe('busy')
+    // A diverged draft whose text is theirs, not saved by us, is clean.
+    expect(
+      editorUnsaved(
+        rebase(typed('theirs'), { body: 'theirs', bodyVersion: 3 }),
+        false,
+      ),
+    ).toBe('clean')
+  })
+})
+
+describe('leaving the composer', () => {
+  test('storable text becomes a note; empty or over-cap does not', () => {
+    expect(composerBlur('a note', { saving: false })).toBe('create')
+    expect(composerBlur('', { saving: false })).toBe('none')
+    expect(composerBlur(' \n ', { saving: false })).toBe('none')
+    expect(
+      composerBlur('x'.repeat(NOTE_MAX_BYTES + 1), { saving: false }),
+    ).toBe('none')
+    expect(composerBlur('a note', { saving: true })).toBe('none')
+  })
+
+  test('unsaved work: any non-blank text, or a create in flight', () => {
+    expect(composerUnsaved('', false)).toBe('clean')
+    expect(composerUnsaved('  ', false)).toBe('clean')
+    expect(composerUnsaved('draft', false)).toBe('unsaved')
+    expect(composerUnsaved('draft', true)).toBe('busy')
   })
 })

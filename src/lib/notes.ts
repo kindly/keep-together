@@ -4,6 +4,7 @@
  */
 import { ConvexError } from 'convex/values'
 import { NOTE_MAX_BYTES } from '../../convex/contacts/rules'
+import type { Unsaved } from './unsaved'
 
 /** From this share of the cap on, the editor shows what is left. */
 export const NEAR_FRACTION = 0.9
@@ -123,4 +124,52 @@ export function withOpenEdits<TNote extends { _id: string }>(
     )
   }
   return out
+}
+
+/** Whether a body can be saved at all: not empty, within the byte cap. */
+export function storable(body: string): boolean {
+  const b = budget(body)
+  return b.bytes > 0 && b.level !== 'over'
+}
+
+/** An open editor holds text the note doesn't. */
+export function edited(draft: Draft): boolean {
+  return draft.text.trim() !== draft.base
+}
+
+/**
+ * What focus leaving an editor does. A plain edit saves, as the contact
+ * form's fields do. Anything that needs a decision stays open for one:
+ * a note someone archived meanwhile (saving would restore it), a body
+ * someone else changed (saving would replace theirs), a body that can't
+ * be stored. Unchanged text leaves the editor open too, so switching
+ * window doesn't close it.
+ */
+export function editorBlur(
+  draft: Draft,
+  ctx: { gone: Gone | null; saving: boolean },
+): 'save' | 'none' {
+  if (ctx.saving || ctx.gone !== null || draft.theirs !== null) return 'none'
+  return edited(draft) && storable(draft.text) ? 'save' : 'none'
+}
+
+/**
+ * What focus leaving the composer does: any storable text becomes a note,
+ * with the pin box as it stands. Empty or over-cap text stays put.
+ */
+export function composerBlur(
+  text: string,
+  ctx: { saving: boolean },
+): 'create' | 'none' {
+  return !ctx.saving && storable(text) ? 'create' : 'none'
+}
+
+/** The editor's share of the page's unsaved work (lib/unsaved). */
+export function editorUnsaved(draft: Draft, saving: boolean): Unsaved {
+  return saving ? 'busy' : edited(draft) ? 'unsaved' : 'clean'
+}
+
+/** The composer's share: any text not yet a note. */
+export function composerUnsaved(text: string, saving: boolean): Unsaved {
+  return saving ? 'busy' : text.trim() !== '' ? 'unsaved' : 'clean'
 }

@@ -10,6 +10,7 @@
  */
 import type { Payloads } from '../../convex/contacts/validators'
 import { same, threeWayMerge } from './merge'
+import type { Unsaved } from './unsaved'
 
 export type SliceName = 'details' | 'methods' | 'addresses' | 'tags'
 export type Slices = {
@@ -338,4 +339,15 @@ export function submission(state: FormState): Partial<Slices> {
   for (const slice of SLICES)
     if (state.dirty[slice]) out[slice] = state.local[slice] as never
   return out
+}
+
+/**
+ * The form's share of the page's unsaved work (lib/unsaved). A save in
+ * flight or queued (after a blur, or a stale retry waiting on the merge)
+ * settles by itself; a dirty slice with nothing queued is an edit still
+ * being typed, or one the server refused or failed to take.
+ */
+export function unsavedWork(state: FormState): Unsaved {
+  if (state.status === 'saving' || state.needsSave) return 'busy'
+  return SLICES.some((s) => state.dirty[s]) ? 'unsaved' : 'clean'
 }

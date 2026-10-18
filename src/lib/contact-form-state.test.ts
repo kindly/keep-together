@@ -8,6 +8,7 @@ import {
   mergeTags,
   rekey,
   submission,
+  unsavedWork,
 } from './contact-form-state'
 
 const slices: Slices = {
@@ -437,5 +438,77 @@ describe('contact form state', () => {
       expect(s.stale).toEqual({})
       expect(s.dirty.tags).toBe(false)
     })
+  })
+})
+
+describe('unsavedWork', () => {
+  const typed = (state = initialState(slices, counters)) =>
+    reduce(state, {
+      type: 'edit',
+      slice: 'details',
+      value: { ...slices.details, nickname: 'Countess' },
+    })
+  const submitted = { details: { ...slices.details, nickname: 'Countess' } }
+  const after = (
+    result: Partial<{
+      saved: Array<'details'>
+      problems: { details?: Array<{ field: string; message: string }> }
+      stale: { details?: number }
+    }>,
+  ) =>
+    reduce(reduce(reduce(typed(), { type: 'commit' }), { type: 'saving' }), {
+      type: 'saved',
+      submitted,
+      at: 1,
+      result: {
+        saved: [],
+        problems: {},
+        stale: {},
+        counters: { ...counters, archive: 0 },
+        ...result,
+      },
+    })
+
+  test('clean when nothing is edited', () => {
+    expect(unsavedWork(initialState(slices, counters))).toBe('clean')
+  })
+
+  test('an edit still being typed is unsaved', () => {
+    expect(unsavedWork(typed())).toBe('unsaved')
+  })
+
+  test('a committed edit (queued save) and a save in flight are busy', () => {
+    const committed = reduce(typed(), { type: 'commit' })
+    expect(unsavedWork(committed)).toBe('busy')
+    expect(unsavedWork(reduce(committed, { type: 'saving' }))).toBe('busy')
+  })
+
+  test('saved is clean again', () => {
+    const s = after({
+      saved: ['details'],
+      // The counter the saved slice now holds.
+    })
+    expect(unsavedWork({ ...s, counters: { ...s.counters, details: 1 } })).toBe(
+      'clean',
+    )
+  })
+
+  test('a stale slice awaiting its retry is busy', () => {
+    expect(unsavedWork(after({ stale: { details: 3 } }))).toBe('busy')
+  })
+
+  test('a refused (invalid) or failed save is unsaved', () => {
+    expect(
+      unsavedWork(
+        after({
+          problems: { details: [{ field: 'nickname', message: 'no' }] },
+        }),
+      ),
+    ).toBe('unsaved')
+    const failed = reduce(
+      reduce(reduce(typed(), { type: 'commit' }), { type: 'saving' }),
+      { type: 'failed', message: 'offline' },
+    )
+    expect(unsavedWork(failed)).toBe('unsaved')
   })
 })

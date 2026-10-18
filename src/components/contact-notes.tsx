@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from 'convex/react'
 import type { Doc, Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
@@ -7,11 +7,18 @@ import type { Draft, Gone } from '../lib/notes'
 import {
   budget,
   budgetMessage,
+  composerBlur,
+  composerUnsaved,
+  edited,
+  editorBlur,
+  editorUnsaved,
   failureMessage,
   openDraft,
   rebase,
   withOpenEdits,
 } from '../lib/notes'
+import { useReportUnsaved } from '../lib/unsaved'
+import { ConfirmDialog } from './confirm-dialog'
 
 type Note = Doc<'contactNotes'>
 type NameOf = (userId: Id<'users'> | undefined) => string
@@ -137,6 +144,11 @@ function NoteList({
   )
 }
 
+/**
+ * Adds a note on "Add note", or when focus leaves the composer with text
+ * in it (`composerBlur`), pinned if the box is ticked. Moving between its
+ * own controls is not leaving it.
+ */
 function Composer({ contactId }: { contactId: Id<'contacts'> }) {
   const tenant = useTenant()
   const create = useMutation(api.contacts.notes.create)
@@ -144,9 +156,14 @@ function Composer({ contactId }: { contactId: Id<'contacts'> }) {
   const [pinned, setPinned] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // A blur and the click that caused it can both ask; one create.
+  const inFlight = useRef(false)
   const b = budget(text)
+  useReportUnsaved(composerUnsaved(text, saving))
 
   const add = async () => {
+    if (inFlight.current) return
+    inFlight.current = true
     setSaving(true)
     setError(null)
     try {
@@ -156,6 +173,7 @@ function Composer({ contactId }: { contactId: Id<'contacts'> }) {
     } catch (err) {
       setError(failureMessage(err))
     } finally {
+      inFlight.current = false
       setSaving(false)
     }
   }
@@ -167,17 +185,25 @@ function Composer({ contactId }: { contactId: Id<'contacts'> }) {
         e.preventDefault()
         void add()
       }}
+      onBlur={(e) => {
+        if (leavesForm(e) && composerBlur(text, { saving }) === 'create')
+          void add()
+      }}
     >
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
+        readOnly={saving}
         placeholder="Add a note…"
         rows={3}
         className="w-full rounded border border-neutral-300 px-3 py-1.5 text-sm"
       />
       <BudgetLine body={text} />
       {error && <p className="text-xs text-red-700">{error}</p>}
-      <div className="flex items-center justify-end gap-3">
+      <div
+        className="flex items-center justify-end gap-3"
+        onMouseDown={keepFocus}
+      >
         <label className="flex items-center gap-1 text-xs text-neutral-600">
           <input
             type="checkbox"
@@ -304,6 +330,10 @@ function NoteItem({
  * follows it, diverging text is kept and flagged with theirs on offer.
  * If the note leaves the live list (`gone`), the draft stays here with a
  * notice: an archived note can be restored and saved in one go.
+ *
+ * Focus leaving the editor saves a plain edit (`editorBlur`) and closes
+ * it if focus is still elsewhere when the save lands. Cancel and Escape
+ * discard, asking first when the text differs from the note.
  */
 function Editor({
   note,
@@ -323,6 +353,11 @@ function Editor({
   const [draft, setDraft] = useState<Draft>(() => openDraft(note))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  // Read by the blur handler in the same event that opens the dialog.
+  const confirmingRef = useRef(false)
+  const inFlight = useRef(false)
+  useReportUnsaved(editorUnsaved(draft, saving))
 
   // While a save is in flight its own echo is on the way; the editor
   // closes on success, so only follow other people's changes.
@@ -332,8 +367,15 @@ function Editor({
 
   const b = budget(draft.text)
 
-  const submit = async () => {
-    if (draft.text.trim() === draft.base && gone !== 'archived') return onDone()
+  /**
+   * `form` is given for a blur: the editor then stays open if focus has
+   * come back into it by the time the save lands (a window switch, or a
+   * click back in), rebased onto what was saved.
+   */
+  const submit = async (form?: HTMLFormElement) => {
+    if (inFlight.current) return
+    if (!edited(draft) && gone !== 'archived') return onDone()
+    inFlight.current = true
     setSaving(true)
     setError(null)
     try {
@@ -345,85 +387,140 @@ function Editor({
           id: note._id,
           archived: false,
         })
-      if (draft.text.trim() !== draft.base)
-        await save({
-          tenantId: tenant._id,
-          id: note._id,
-          expected: draft.baseVersion,
-          body: draft.text,
-        })
-      onDone()
+      const saved = edited(draft)
+        ? await save({
+            tenantId: tenant._id,
+            id: note._id,
+            expected: draft.baseVersion,
+            body: draft.text,
+          })
+        : null
+      if (form?.contains(document.activeElement)) {
+        if (saved)
+          setDraft((d) => ({
+            ...d,
+            base: d.text.trim(),
+            baseVersion: saved.counter,
+          }))
+      } else onDone()
     } catch (err) {
       setError(failureMessage(err))
     } finally {
+      inFlight.current = false
       setSaving(false)
     }
   }
 
+  const close = () => {
+    if (!edited(draft)) return onDone()
+    confirmingRef.current = true
+    setConfirming(true)
+  }
+
   return (
-    <form
-      className="flex flex-col gap-1"
-      onSubmit={(e) => {
-        e.preventDefault()
-        void submit()
-      }}
-    >
-      {gone !== null && (
-        <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800">
-          {gone === 'archived'
-            ? 'Someone archived this note while you were editing. Your text is kept here: restore and save it, or copy it and discard.'
-            : 'This note has left the list while you were editing (archived, or pushed out by newer notes). Your text is kept here: save it, or copy it and discard.'}{' '}
-          <TextButton
-            onClick={() =>
-              void navigator.clipboard
-                .writeText(draft.text)
-                .then(() => setCopied(true))
-            }
-          >
-            {copied ? 'copied' : 'copy text'}
+    <>
+      <form
+        className="flex flex-col gap-1"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit()
+        }}
+        onBlur={(e) => {
+          if (confirmingRef.current || !leavesForm(e)) return
+          if (editorBlur(draft, { gone, saving }) === 'save')
+            void submit(e.currentTarget)
+        }}
+      >
+        {gone !== null && (
+          <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800">
+            {gone === 'archived'
+              ? 'Someone archived this note while you were editing. Your text is kept here: restore and save it, or copy it and discard.'
+              : 'This note has left the list while you were editing (archived, or pushed out by newer notes). Your text is kept here: save it, or copy it and discard.'}{' '}
+            <TextButton
+              onClick={() =>
+                void navigator.clipboard
+                  .writeText(draft.text)
+                  .then(() => setCopied(true))
+              }
+            >
+              {copied ? 'copied' : 'copy text'}
+            </TextButton>
+          </p>
+        )}
+        {draft.theirs !== null && (
+          <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800">
+            {nameOf(note.editedBy)} changed this note while you were editing.
+            Your text is kept and saving will replace theirs.{' '}
+            <TextButton
+              onClick={() =>
+                setDraft((d) => ({ ...d, text: d.base, theirs: null }))
+              }
+            >
+              use their version
+            </TextButton>
+          </p>
+        )}
+        <textarea
+          value={draft.text}
+          onChange={(e) => setDraft((d) => ({ ...d, text: e.target.value }))}
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return
+            e.preventDefault()
+            close()
+          }}
+          readOnly={saving}
+          rows={Math.min(12, Math.max(3, draft.text.split('\n').length + 1))}
+          className="w-full rounded border border-neutral-300 px-3 py-1.5 text-sm"
+          autoFocus
+        />
+        <BudgetLine body={draft.text} />
+        {error && <p className="text-xs text-red-700">{error}</p>}
+        <div className="flex justify-end gap-3" onMouseDown={keepFocus}>
+          <TextButton onClick={close}>
+            {gone === null ? 'cancel' : 'discard'}
           </TextButton>
-        </p>
-      )}
-      {draft.theirs !== null && (
-        <p className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-800">
-          {nameOf(note.editedBy)} changed this note while you were editing. Your
-          text is kept and saving will replace theirs.{' '}
-          <TextButton
-            onClick={() =>
-              setDraft((d) => ({ ...d, text: d.base, theirs: null }))
-            }
+          <button
+            type="submit"
+            disabled={saving || b.bytes === 0 || b.level === 'over'}
+            className="rounded bg-neutral-900 px-2 py-1 text-xs text-white hover:bg-neutral-700 disabled:opacity-50"
           >
-            use their version
-          </TextButton>
-        </p>
-      )}
-      <textarea
-        value={draft.text}
-        onChange={(e) => setDraft((d) => ({ ...d, text: e.target.value }))}
-        rows={Math.min(12, Math.max(3, draft.text.split('\n').length + 1))}
-        className="w-full rounded border border-neutral-300 px-3 py-1.5 text-sm"
-        autoFocus
+            {saving
+              ? 'Saving…'
+              : gone === 'archived'
+                ? 'Restore and save'
+                : 'Save'}
+          </button>
+        </div>
+      </form>
+      {/* Outside the form: its events must not reach the form's onBlur. */}
+      <ConfirmDialog
+        open={confirming}
+        title="Discard your changes?"
+        description="Your edits to this note haven't been saved."
+        confirm="Discard"
+        cancel="Keep editing"
+        onConfirm={onDone}
+        onCancel={() => {
+          confirmingRef.current = false
+          setConfirming(false)
+        }}
       />
-      <BudgetLine body={draft.text} />
-      {error && <p className="text-xs text-red-700">{error}</p>}
-      <div className="flex justify-end gap-3">
-        <TextButton onClick={onDone}>
-          {gone === null ? 'cancel' : 'discard'}
-        </TextButton>
-        <button
-          type="submit"
-          disabled={saving || b.bytes === 0 || b.level === 'over'}
-          className="rounded bg-neutral-900 px-2 py-1 text-xs text-white hover:bg-neutral-700 disabled:opacity-50"
-        >
-          {saving
-            ? 'Saving…'
-            : gone === 'archived'
-              ? 'Restore and save'
-              : 'Save'}
-        </button>
-      </div>
-    </form>
+    </>
   )
+}
+
+/** Focus is moving out of the form, not between its own controls. */
+function leavesForm(e: React.FocusEvent<HTMLFormElement>) {
+  return !e.currentTarget.contains(e.relatedTarget)
+}
+
+/**
+ * On a row of buttons: a press keeps focus where it is. Browsers that
+ * don't focus a pressed button (Safari) would otherwise blur the text
+ * first with nowhere to go, which reads as leaving the form.
+ */
+function keepFocus(e: React.MouseEvent) {
+  e.preventDefault()
 }
 
 function BudgetLine({ body }: { body: string }) {

@@ -12,8 +12,14 @@ import type {
   SliceName,
   Slices,
 } from '../lib/contact-form-state'
-import { initialState, reduce, submission } from '../lib/contact-form-state'
+import {
+  initialState,
+  reduce,
+  submission,
+  unsavedWork,
+} from '../lib/contact-form-state'
 import { useCanWrite, useTenant } from '../lib/tenant'
+import { useReportUnsaved } from '../lib/unsaved'
 
 type Data = NonNullable<FunctionReturnType<typeof api.contacts.queries.get>>
 type Problem = { field: string; message: string }
@@ -156,6 +162,12 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
     const timer = setTimeout(() => void save(), AUTOSAVE_MS)
     return () => clearTimeout(timer)
   }, [state.needsSave, state.status, state.local])
+
+  // Leaving the page starts a queued save now instead of after the pause.
+  useReportUnsaved(unsavedWork(state), () => {
+    const current = latest.current
+    if (current.needsSave && current.status !== 'saving') void save()
+  })
 
   const edit = <TSlice extends SliceName>(
     slice: TSlice,
