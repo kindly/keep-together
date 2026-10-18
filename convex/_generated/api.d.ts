@@ -9,6 +9,8 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as comms_contracts from "../comms/contracts.js";
+import type * as comms_suppressions from "../comms/suppressions.js";
 import type * as contacts_contracts from "../contacts/contracts.js";
 import type * as contacts_history from "../contacts/history.js";
 import type * as contacts_migrations from "../contacts/migrations.js";
@@ -49,6 +51,8 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  "comms/contracts": typeof comms_contracts;
+  "comms/suppressions": typeof comms_suppressions;
   "contacts/contracts": typeof contacts_contracts;
   "contacts/history": typeof contacts_history;
   "contacts/migrations": typeof contacts_migrations;

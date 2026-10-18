@@ -79,6 +79,7 @@ const NOT_TENANT_SCOPED = new Set(['auth:signIn', 'auth:signOut'])
 const ADMIN_ONLY = new Set([
   'platform/preferences:setStaffCanManageTags',
   'platform/preferences:setStaffCanManageIdentifierTypes',
+  'comms/suppressions:release',
 ])
 
 /**

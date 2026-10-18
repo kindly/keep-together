@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { api } from '../_generated/api'
 import schema from '../schema'
 import { contactContracts } from '../contacts/contracts'
+import { commsContracts } from '../comms/contracts'
 import {
   canonical,
   defineContract,
@@ -497,7 +498,10 @@ describe('upcasters (pure)', () => {
 describe('registry invariants (meta-test)', () => {
   test('every contract has its own numeric counter field on its root table', () => {
     const seen = new Map<string, Set<string>>()
-    for (const c of Object.values(contactContracts)) {
+    for (const c of [
+      ...Object.values(contactContracts),
+      ...Object.values(commsContracts),
+    ]) {
       const table = (
         schema.tables as Record<
           string,
@@ -523,7 +527,7 @@ describe('registry invariants (meta-test)', () => {
   // A version bump without its upcaster would otherwise surface only when
   // someone restores an old revision. Every registry restore uses goes
   // in REGISTRIES.
-  const REGISTRIES = { contactContracts }
+  const REGISTRIES = { contactContracts, commsContracts }
   test.each(
     Object.entries(REGISTRIES).flatMap(([registryName, reg]) =>
       Object.values(reg).map((c) => [registryName, c.name, c] as const),

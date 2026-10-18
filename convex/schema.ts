@@ -31,6 +31,16 @@ export const revisionSource = v.union(
   v.literal('seed'),
   v.literal('system'),
   v.literal('test'),
+  v.literal('comms'), // provider events (a hard bounce)
+)
+/**
+ * Why an address is suppressed: only a hard bounce (ADR 0021, rule 5: a
+ * complaint never blocks transactional mail); or `release`: an admin
+ * lifted it.
+ */
+export const suppressionReason = v.union(
+  v.literal('bounce'),
+  v.literal('release'),
 )
 
 export default defineSchema({
@@ -172,7 +182,10 @@ export default defineSchema({
     // behind findByEmail and the shared-email warning
     addressNormalized: v.string(),
     isPrimary: v.boolean(),
-    onHold: v.boolean(), // bounce state, owned by comms; survives every save
+    // Superseded by comms' emailSuppressions (per address, E2a): no longer
+    // written or read; backfillEmailHolds carries a true one over and
+    // unsets it, then the field goes.
+    onHold: v.optional(v.boolean()),
   })
     .index('by_tenant_contact', ['tenantId', 'contactId'])
     .index('by_tenant_key', ['tenantId', 'key'])
@@ -340,4 +353,22 @@ export default defineSchema({
     ])
     // The archived list: newest first regardless of pin.
     .index('by_tenant_contact_archived', ['tenantId', 'contactId', 'archived']),
+
+  // ── comms ─────────────────────────────────────────────────────────────
+  // Suppression per address (domain rule 5: centralised in comms). One row
+  // per (tenant, address) once the address was ever suppressed; never
+  // deleted, a release sets `suppressed: false`. Every send checks it, and
+  // the contact page derives its "on hold" flag from it.
+  //   comms.suppression → everything below but addressNormalized (saveVersion)
+  // `addressNormalized` is the row's identity, immutable.
+  emailSuppressions: defineTable({
+    tenantId: v.id('tenants'),
+    addressNormalized: v.string(), // normaliseEmail(address)
+    suppressed: v.boolean(),
+    reason: suppressionReason,
+    since: v.number(), // when the current state began
+    eventRef: v.optional(v.string()), // the provider event that suppressed it
+    note: v.optional(v.string()), // the admin's reason for a release
+    saveVersion: v.number(),
+  }).index('by_tenant_addressNormalized', ['tenantId', 'addressNormalized']),
 })

@@ -20,9 +20,35 @@
  */
 import { migrations } from '../lib/migrations'
 import { scopeWriter } from '../lib/tenancy'
+import { suppressAddress } from '../comms/suppressions'
 import { projectContactSearch } from './searchProjection'
 
 export const run = migrations.runner()
+
+/**
+ * E2a: holds move from the email row to comms (per address). A row with
+ * `onHold: true` suppresses its address in the tenant, as a bounce (the
+ * only thing that ever set it); every row loses the field. A no-op on
+ * rows without it.
+ *
+ *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillEmailHolds"}'
+ */
+export const backfillEmailHolds = migrations.define({
+  table: 'contactEmails',
+  migrateOne: async (ctx, row) => {
+    if (row.onHold === undefined) return undefined
+    if (row.onHold) {
+      await suppressAddress(
+        { db: scopeWriter(ctx, row.tenantId), userId: null, role: null },
+        {
+          address: row.addressNormalized,
+          note: 'carried over from the email row (E2a)',
+        },
+      )
+    }
+    return { onHold: undefined }
+  },
+})
 
 /**
  * Search Q1: a `contactSearch` row for every contact, built exactly as the

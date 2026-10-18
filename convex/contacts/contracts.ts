@@ -131,8 +131,10 @@ type Row = { key?: string } & Record<string, unknown>
  * Reconcile a child table against the payload by `key`: removed keys are
  * deleted, new keys created, kept keys updated in place — except identity
  * fields (the value the row *is*, e.g. an email address), which are
- * immutable per key because state may hang off them. System-owned fields
- * (email `onHold`) live on the row and simply survive a patch.
+ * immutable per key because state may hang off them. A field the payload
+ * doesn't carry (system-owned) is never patched, so it survives a save.
+ * Whether an address is on hold is not row state: comms keeps it per
+ * address (`emailSuppressions`), so no edit or restore here can lose it.
  */
 async function reconcile(
   ctx: ContractCtx,
@@ -219,7 +221,6 @@ async function reconcile(
         contactId,
         ...(table === 'contactEmails'
           ? {
-              onHold: false,
               // Derived from the identity field, so it never changes per key.
               addressNormalized: normaliseEmail(row.address as string),
             }

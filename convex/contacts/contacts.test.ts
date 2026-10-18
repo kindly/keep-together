@@ -278,17 +278,13 @@ describe('methods (child rows)', () => {
     ])
   })
 
-  test('kept keys leave rows untouched and onHold survives', async () => {
+  test('kept keys leave rows untouched', async () => {
     await saveMethods(0, [email('a@x.com', { key: 'e1' })])
     const before = (await getAda())!.emails[0]
-    await f.t.run(async (ctx) => {
-      await ctx.db.patch('contactEmails', before._id, { onHold: true })
-    })
     await saveMethods(1, [email('a@x.com', { key: 'e1', label: 'work' })])
     const after = (await getAda())!.emails[0]
     expect(after._id).toBe(before._id)
     expect(after.label).toBe('work')
-    expect(after.onHold).toBe(true)
   })
 
   test('identity fields are immutable per key', async () => {
