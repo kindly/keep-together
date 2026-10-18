@@ -29,7 +29,16 @@ export type Source = Doc<'revisions'>['source']
 export type ContractCtx = {
   db: ScopedDatabaseWriter
   userId: Id<'users'> | null
-  /** The caller's role; null in internal functions (trusted, no caller). */
+  /**
+   * The caller's role, which role-gated contracts check (`managesList`:
+   * `requireListManager`). `null` means a trusted internal caller and
+   * skips those checks: only internal mutations with no user behind them
+   * pass it (`internalTenant*`, seeds, migrations, scheduled jobs).
+   *
+   * A public function must never reach a role-gated contract with
+   * `role: null`, e.g. by calling or scheduling an internal mutation that
+   * runs one: carry the caller's role through instead.
+   */
   role: Role | null
   /** Present in tenant mutations; a projection that fans out needs it. */
   scheduler?: ScopedScheduler

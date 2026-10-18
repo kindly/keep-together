@@ -67,7 +67,11 @@ The rule is structural, like rule 6:
   default). Contracts over those lists are marked `managesList`, and
   `executeContract` calls `requireListManager` (`convex/lib/lists.ts`) for
   them on every path, restore included; the roles meta-test lists the
-  save functions in `LIST_MANAGERS`.
+  save functions in `LIST_MANAGERS`. A contract context with `role: null`
+  is a trusted internal caller (internal mutations, seeds, migrations)
+  and skips the check, so a public function must never reach such a
+  contract through an internal mutation with `role: null`: it carries the
+  caller's role instead.
 - A tenant always has at least one admin.
 - Schema: `owner` → `admin` (loosen → backfill → tighten).
 
