@@ -408,6 +408,7 @@ describe('bulk tagging', () => {
             addressesVersion: 0,
             archiveVersion: 0,
             tagsVersion: 0,
+            identifiersVersion: 0,
           }),
         )
       }
@@ -457,6 +458,7 @@ describe('contacts by tag', () => {
           addressesVersion: 0,
           archiveVersion: 0,
           tagsVersion: 0,
+          identifiersVersion: 0,
         })
         await ctx.db.insert('contactTags', {
           tenantId: f.a.tenantId,
@@ -594,6 +596,7 @@ describe('the list filtered by tag', () => {
           addressesVersion: 0,
           archiveVersion: 0,
           tagsVersion: 0,
+          identifiersVersion: 0,
         })
         await ctx.db.insert('contactTags', {
           tenantId: f.a.tenantId,

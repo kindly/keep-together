@@ -119,9 +119,6 @@ export default defineSchema({
     birthDate: v.optional(v.string()), // ISO date
     isDeceased: v.boolean(),
     deceasedDate: v.optional(v.string()),
-    // Owned by no contract since details v2; the X2 backfill moves it into
-    // contactIdentifiers and X3 drops it with its index.
-    externalIdentifier: v.optional(v.string()),
     displayName: v.string(),
     sortName: v.string(),
     archived: v.boolean(),
@@ -130,11 +127,10 @@ export default defineSchema({
     addressesVersion: v.number(),
     archiveVersion: v.number(),
     tagsVersion: v.number(),
-    identifiersVersion: v.optional(v.number()), // required after the X2 backfill
+    identifiersVersion: v.number(),
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
     .index('by_tenant_clientKey', ['tenantId', 'clientKey'])
-    .index('by_tenant_external', ['tenantId', 'externalIdentifier'])
     .searchIndex('search_name', {
       searchField: 'sortName',
       filterFields: ['tenantId', 'archived'],

@@ -38,19 +38,9 @@ import {
 } from './validators'
 import type { Payloads } from './validators'
 
-/**
- * Details args as the SPA sends them. A tab opened before X1 still sends
- * `externalIdentifier`; it is accepted and ignored so those tabs keep
- * saving until reloaded. Remove in X3.
- */
-const detailsArgs = {
-  ...detailsFields,
-  externalIdentifier: v.optional(v.string()), // remove in X3
-}
-
 export const create = tenantMutation({
-  args: detailsArgs,
-  handler: async (ctx, { externalIdentifier: _, ...payload }) => {
+  args: detailsFields,
+  handler: async (ctx, payload) => {
     const { id } = await executeContract(ctx, details, payload, {
       source: 'ui',
     })
@@ -59,8 +49,8 @@ export const create = tenantMutation({
 })
 
 export const saveDetails = tenantMutation({
-  args: { id: v.id('contacts'), expected: v.number(), ...detailsArgs },
-  handler: async (ctx, { id, expected, externalIdentifier: _, ...payload }) =>
+  args: { id: v.id('contacts'), expected: v.number(), ...detailsFields },
+  handler: async (ctx, { id, expected, ...payload }) =>
     executeContract(ctx, details, payload, {
       entityId: id,
       expected,
@@ -253,21 +243,6 @@ const slice = <TFields extends PropertyValidators>(fields: TFields) =>
 
 type Slice = 'details' | 'methods' | 'addresses' | 'tags' | 'identifiers'
 
-/**
- * The contact's `identifiersVersion`. Contacts created before X1 lack it
- * until the X2 backfill; refuse them clearly rather than let
- * `executeContract` throw.
- */
-function identifiersCounter(contact: Doc<'contacts'>): number {
-  if (contact.identifiersVersion === undefined) {
-    throw rejected(
-      'not_migrated',
-      'Identifiers are not available on this contact yet (pending backfill)',
-    )
-  }
-  return contact.identifiersVersion
-}
-
 async function contactIdentifierRows(
   db: ScopedDatabaseReader,
   contactId: Id<'contacts'>,
@@ -377,7 +352,7 @@ export const saveForm = tenantMutation({
   args: {
     id: v.id('contacts'),
     source: v.optional(v.union(v.literal('ui'), v.literal('autosave'))),
-    details: slice(detailsArgs),
+    details: slice(detailsFields),
     methods: slice(methodsFields),
     addresses: slice(addressesFields),
     tags: slice(tagsFields),
@@ -406,16 +381,12 @@ export const saveForm = tenantMutation({
       name: TSlice,
       contract: (typeof contactContracts)[string],
       submitted: ({ expected: number } & Record<string, unknown>) | undefined,
-      // Read only once the slice has changed: an unchanged identifiers
-      // slice must not trip `identifiersCounter` on a contact awaiting X2.
-      counter: () => number,
+      counter: number,
     ) => {
       if (!submitted) return
       const { expected, ...payload } = submitted
       if (name === 'details') {
         delete (payload as { clientKey?: string }).clientKey
-        // remove in X3 (see detailsArgs)
-        delete (payload as { externalIdentifier?: string }).externalIdentifier
       }
       let prepared: unknown
       try {
@@ -431,9 +402,8 @@ export const saveForm = tenantMutation({
         throw e
       }
       if (canonical(prepared) === canonical(current[name])) return
-      const now = counter()
-      if (expected !== now) {
-        stale[name] = now
+      if (expected !== counter) {
+        stale[name] = counter
         return
       }
       changed.push({
@@ -449,17 +419,15 @@ export const saveForm = tenantMutation({
       })
     }
 
-    consider('details', details, args.details, () => contact.detailsVersion)
-    consider('methods', methods, args.methods, () => contact.methodsVersion)
+    consider('details', details, args.details, contact.detailsVersion)
+    consider('methods', methods, args.methods, contact.methodsVersion)
+    consider('addresses', addresses, args.addresses, contact.addressesVersion)
+    consider('tags', tags, args.tags, contact.tagsVersion)
     consider(
-      'addresses',
-      addresses,
-      args.addresses,
-      () => contact.addressesVersion,
-    )
-    consider('tags', tags, args.tags, () => contact.tagsVersion)
-    consider('identifiers', identifiers, args.identifiers, () =>
-      identifiersCounter(contact),
+      'identifiers',
+      identifiers,
+      args.identifiers,
+      contact.identifiersVersion,
     )
 
     // A clash is the contract's refusal too, but caught here it stays on

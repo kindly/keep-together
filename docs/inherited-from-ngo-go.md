@@ -111,7 +111,11 @@ Blocking (contract validator or apply function):
 - Address: country is ISO 3166-1 alpha-2, upper-cased, default `GB`;
   postcode upper-cased and trimmed but **never rejected**.
 - `externalIdentifier` unique per tenant when non-empty (import
-  idempotency key).
+  idempotency key). Here it became external identifiers (X1–X3): any
+  number of `{type, value}` rows per contact in their own slice
+  (`contacts.identifiers`); a (type, value) pair, matched trimmed and
+  case-insensitively, belongs to at most one contact per tenant. Import
+  retries are guarded by `clientKey`; identifiers are the matching key.
 - Relationship is its own aggregate (spans two contacts): the two
   contacts must differ; `endDate` not before `startDate`; the type must
   be active; each side's kind must match the type's `kindA` / `kindB`

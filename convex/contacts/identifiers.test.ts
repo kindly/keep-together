@@ -419,42 +419,6 @@ describe('tenant isolation', () => {
   })
 })
 
-describe('before the X2 backfill', () => {
-  /** A contact as it was before X1: no counter, the old single field. */
-  const legacy = async () => {
-    const id = await createContact(f.a, 'Legacy')
-    await f.t.run((ctx) =>
-      ctx.db.patch(id, {
-        identifiersVersion: undefined,
-        externalIdentifier: 'LEGACY-0001',
-      }),
-    )
-    return id
-  }
-
-  test('an unchanged identifiers slice saves the rest; a changed one is refused', async () => {
-    const id = await legacy()
-    const result = await form(
-      {
-        details: { expected: 0, ...individual('Renamed') },
-        identifiers: { expected: 0, identifiers: [] },
-      },
-      id,
-    )
-    expect(result.saved).toEqual(['details'])
-    expect(
-      await errorData(saveIds(0, [{ typeId: oldCrm, value: 'C-1' }], id)),
-    ).toMatchObject({ reason: 'not_migrated' })
-  })
-
-  test('details saves leave the old field for the backfill', async () => {
-    const id = await legacy()
-    await form({ details: { expected: 0, ...individual('Renamed') } }, id)
-    const contact = await f.t.run((ctx) => ctx.db.get(id))
-    expect(contact?.externalIdentifier).toBe('LEGACY-0001')
-  })
-})
-
 describe('details v2', () => {
   /** A details revision as v1 wrote it, with the old field in its payload. */
   const v1Revision = (lastName: string, externalIdentifier: string) =>
@@ -472,9 +436,6 @@ describe('details v2', () => {
     )
 
   test('a v1 revision restores through the upcaster and leaves identifiers alone', async () => {
-    await f.t.run((ctx) =>
-      ctx.db.patch(ada, { externalIdentifier: 'LEGACY-0001' }),
-    )
     const revisionId = await v1Revision('Byron', 'LEGACY-0001')
     await saveIds(0, [{ key: 'i1', typeId: oldCrm, value: 'C-1' }])
     await f.a.as.mutation(api.contacts.mutations.restoreRevision, {
@@ -486,8 +447,9 @@ describe('details v2', () => {
       lastName: 'Byron',
       detailsVersion: 1,
       identifiersVersion: 1,
-      externalIdentifier: 'LEGACY-0001',
     })
+    // The schema no longer has the field (X3); the upcaster kept it out.
+    expect(got?.contact).not.toHaveProperty('externalIdentifier')
     expect(got?.identifiers.map((r) => r.key)).toEqual(['i1'])
     const latest = (await revisionsOf(ada, 'contacts.details')).at(-1)!
     expect(latest).toMatchObject({
@@ -512,37 +474,6 @@ describe('details v2', () => {
       at: moment,
     })
     expect(result).toEqual({ restored: [], group: null })
-  })
-
-  test('an SPA built before X1 still saves; the old field is ignored (remove in X3)', async () => {
-    const old = { ...individual('Byron'), externalIdentifier: 'OLD-1' }
-    const id = await f.a.as.mutation(api.contacts.mutations.create, {
-      tenantId: f.a.tenantId,
-      ...old,
-    })
-    await f.a.as.mutation(api.contacts.mutations.saveDetails, {
-      tenantId: f.a.tenantId,
-      id,
-      expected: 0,
-      ...old,
-      nickname: 'B',
-    })
-    const result = await form(
-      { details: { expected: 1, ...old, nickname: 'C' } },
-      id,
-    )
-    expect(result.saved).toEqual(['details'])
-    const contact = await f.t.run((ctx) => ctx.db.get(id))
-    expect(contact).toMatchObject({ nickname: 'C', detailsVersion: 2 })
-    expect(contact?.externalIdentifier).toBeUndefined()
-    for (const r of await revisionsOf(id, 'contacts.details')) {
-      expect(r.payload).not.toHaveProperty('externalIdentifier')
-    }
-    // Sending the old field alone is not a change.
-    expect(
-      (await form({ details: { expected: 2, ...old, nickname: 'C' } }, id))
-        .saved,
-    ).toEqual([])
   })
 
   test('the upcaster drops only the old field', () => {

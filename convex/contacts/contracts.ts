@@ -46,8 +46,8 @@ import {
 /**
  * v2 (external identifiers X1): `externalIdentifier` left the payload for
  * the `contacts.identifiers` slice. A v1 revision restores through the
- * upcaster and leaves the contact's identifiers (and any not yet
- * backfilled `externalIdentifier`) as they are.
+ * upcaster and leaves the contact's identifiers as they are. Keep it: old
+ * revisions still carry the field, which the schema dropped in X3.
  */
 export const details = defineContract({
   name: 'contacts.details',
@@ -380,8 +380,6 @@ export async function identifierClashes(
  * The contact's external identifiers. A (type, value) pair belongs to at
  * most one contact. Only active types can be newly added; a kept row keeps
  * an archived type, and a restore may re-add one (same rule as tags).
- * Called only on contacts that have `identifiersVersion` (all of them after
- * the X2 backfill): `executeContract` throws on a missing counter.
  */
 export const identifiers = defineContract({
   name: 'contacts.identifiers',
