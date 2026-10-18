@@ -62,11 +62,7 @@ export const budgets = {
   'contacts.showArchived': repeatable,
   'contacts.create': repeatable,
   'contact.save': repeatable,
-  'contact.addEmail': {
-    ...repeatable,
-    knownOver:
-      'save floor ~95 ms (RTT + save + get/history re-runs + render); perf task pending (human 2026-10-18)',
-  },
+  'contact.addEmail': repeatable,
   'contact.livePropagation': repeatable,
   // Back to a contact opened in the last 2 minutes: the keep-alive cache
   // (perf-storage step 2). Expected well under, at about one frame.
@@ -79,11 +75,7 @@ export const budgets = {
   'contact.note.archive': repeatable,
   'contact.tag.add': repeatable,
   'contact.tag.remove': repeatable,
-  'contact.identifier.add': {
-    ...repeatable,
-    knownOver:
-      'save floor ~95 ms (RTT + save + get/history re-runs + render); perf task pending (human 2026-10-18)',
-  },
+  'contact.identifier.add': repeatable,
   'contact.identifier.remove': repeatable,
   'tags.create': repeatable,
   'tags.rename': repeatable,

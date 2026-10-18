@@ -21,6 +21,7 @@ import type * as contacts_search from "../contacts/search.js";
 import type * as contacts_searchProjection from "../contacts/searchProjection.js";
 import type * as contacts_seed from "../contacts/seed.js";
 import type * as contacts_validators from "../contacts/validators.js";
+import type * as contacts_view from "../contacts/view.js";
 import type * as contacts_warnings from "../contacts/warnings.js";
 import type * as giftaid_actions from "../giftaid/actions.js";
 import type * as giftaid_irmark from "../giftaid/irmark.js";
@@ -60,6 +61,7 @@ declare const fullApi: ApiFromModules<{
   "contacts/searchProjection": typeof contacts_searchProjection;
   "contacts/seed": typeof contacts_seed;
   "contacts/validators": typeof contacts_validators;
+  "contacts/view": typeof contacts_view;
   "contacts/warnings": typeof contacts_warnings;
   "giftaid/actions": typeof giftaid_actions;
   "giftaid/irmark": typeof giftaid_irmark;

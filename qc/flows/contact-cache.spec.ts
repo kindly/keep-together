@@ -219,10 +219,12 @@ test.describe(
       })
       expect(held.length).toBeGreaterThan(0)
       expect(held.length).toBeLessThanOrEqual(20)
-      // 8 contacts × 3 of their own queries is past the cap, so the last
+      // 8 contacts × 5 of their own queries is past the cap, so the last
       // ones left were dropped as they went idle (convex-helpers drops the
-      // newest idle query, not the oldest): not every history is held.
-      expect(count(live, 'contacts/queries:history')).toBeLessThan(names.length)
+      // newest idle query, not the oldest): not every root is held.
+      expect(count(live, 'contacts/queries:getRoot')).toBeLessThan(names.length)
+      // History is fetched, never held: a held one re-runs on every save.
+      expect(count(live, 'contacts/queries:history')).toBe(0)
     })
   },
 )
@@ -243,14 +245,16 @@ test.describe('the cache and tenancy', { annotation: CONTACT_ROUTE }, () => {
     await page.locator(`main a[href="${aContact}"]`).click()
     await expect(page.getByRole('heading', { name: 'Details' })).toBeVisible()
     await toList(page)
-    expect(count(subs.live(), 'contacts/queries:get')).toBe(1)
+    expect(count(subs.live(), 'contacts/queries:getRoot')).toBe(1)
 
     // Sign out in the app (no reload), then in as B.
     await page.getByRole('link', { name: 'keep-together' }).click()
     await page.getByRole('button', { name: 'Sign out' }).click()
     await expect(page.getByPlaceholder('Email')).toBeVisible()
     // Sign-out unmounted the cache, and it let go of A's queries at once.
-    await expect.poll(() => count(subs.live(), 'contacts/queries:get')).toBe(0)
+    await expect
+      .poll(() => count(subs.live(), 'contacts/queries:getRoot'))
+      .toBe(0)
     await page.getByPlaceholder('Email').fill(users.b.email)
     await page.getByPlaceholder('Password').fill(users.b.password)
     await page.getByRole('button', { name: 'Sign in' }).click()

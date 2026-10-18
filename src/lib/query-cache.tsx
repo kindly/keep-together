@@ -3,11 +3,7 @@ import {
   ConvexQueryCacheContext,
   ConvexQueryCacheProvider,
 } from 'convex-helpers/react/cache/provider'
-import { getFunctionName } from 'convex/server'
-import type { FunctionReference } from 'convex/server'
-import { convexToJson } from 'convex/values'
-import type { Value } from 'convex/values'
-import { useCallback, useContext, useEffect } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 
 // The contact page's keep-alive cache (factory/plans/perf-storage.sv,
@@ -23,10 +19,11 @@ export { useQuery } from 'convex-helpers/react/cache/hooks'
 /** How long an unmounted contact page's queries stay subscribed. */
 export const CACHE_EXPIRATION_MS = 120_000
 /**
- * Idle queries held at once. A contact page leaves 3 of its own behind
- * (`get`, newest `history` page, `forContact`; `members`, `tags` and
- * identifier types are shared by every contact), so this is about 6
- * contacts. convex-helpers drops the query that just went idle, not the
+ * Idle queries held at once. A contact page leaves 5 of its own behind
+ * (`getRoot`, `getChannels`, `getTags`, `getIdentifiers`, `forContact`;
+ * `members`, `tags` and identifier types are shared by every contact, and
+ * history is fetched, not subscribed), so this is about 4 contacts (it was
+ * about 6 with one `get`). convex-helpers drops the query that just went idle, not the
  * oldest, once the limit is reached. 20 as confirmed by the human
  * (2026-10-18); ~60 (about 20 contacts) is an open question for them.
  */
@@ -50,7 +47,7 @@ export function ContactQueryCache({ children }: { children: ReactNode }) {
       maxIdleEntries={CACHE_MAX_IDLE}
     >
       <DropOnUnmount />
-      {children}
+      <SessionStoreProvider>{children}</SessionStoreProvider>
     </ConvexQueryCacheProvider>
   )
 }
@@ -81,28 +78,21 @@ function DropOnUnmount() {
 }
 
 /**
- * Release one query the cache holds idle (nothing renders it) at once,
- * instead of after its 2 minutes: for a subscription its component has
- * replaced and that would otherwise keep re-running on every save. A query
- * something still renders is left alone. The key is convex-helpers'
- * (`createQueryKey` in its hooks).
+ * State the contact page keeps outside Convex's subscriptions (the history
+ * panel's fetched pages), as long as the cache lives: a user switch drops
+ * it with the cache.
  */
-export function useDropIdle() {
-  const { registry } = useContext(ConvexQueryCacheContext)
-  return useCallback(
-    (query: FunctionReference<'query'>, args: Record<string, Value>) => {
-      const key = JSON.stringify([getFunctionName(query), convexToJson(args)])
-      const entry = registry?.queries.get(key)
-      if (!registry || !entry || entry.refs.size > 0) return
-      if (entry.evictTimer !== null) {
-        clearTimeout(entry.evictTimer)
-        registry.idle -= 1
-      }
-      entry.unsub()
-      registry.queries.delete(key)
-    },
-    [registry],
-  )
+const SessionStore = createContext<Map<string, unknown> | null>(null)
+
+function SessionStoreProvider({ children }: { children: ReactNode }) {
+  const [store] = useState(() => new Map<string, unknown>())
+  return <SessionStore.Provider value={store}>{children}</SessionStore.Provider>
+}
+
+export function useSessionStore(): Map<string, unknown> {
+  const store = useContext(SessionStore)
+  if (!store) throw new Error('useSessionStore outside ContactQueryCache')
+  return store
 }
 
 /** A JWT's `sub` claim, unverified (only a cache key), or null. */

@@ -135,11 +135,17 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
     () => contactWarnings(data, alsoUsedBy),
     [data, alsoUsedBy],
   )
-  // Active types only: the picker never offers an archived one, and a row
-  // of one names its type from `data.identifiers`.
-  const identifierTypes = useQuery(api.contacts.queries.listIdentifierTypes, {
-    tenantId: tenant._id,
-  })
+  // Archived types too: the page names the contact's rows from the same
+  // subscription. The picker offers active ones only, and a row of an
+  // archived one names its type from `data.identifiers`.
+  const allIdentifierTypes = useQuery(
+    api.contacts.queries.listIdentifierTypes,
+    { tenantId: tenant._id, includeInactive: true },
+  )
+  const identifierTypes = useMemo(
+    () => allIdentifierTypes?.filter((t) => t.isActive),
+    [allIdentifierTypes],
+  )
   const [state, dispatch] = useReducer(reduce, data, (d) =>
     initialState(toSlices(d), toCounters(d)),
   )

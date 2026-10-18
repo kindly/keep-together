@@ -322,6 +322,10 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
         // round adds two moments, and past REANCHOR_AT the newest page is
         // re-subscribed to PAGE whenever the panel isn't being read.
         await expect(moments.first()).toBeVisible()
+        // History is fetched once the root changes, a round trip after the
+        // form: wait for the last round's restore to be on top.
+        if (n > 0)
+          await expect(moments.first().getByText('restored')).toBeVisible()
         const top = await moments.first().getAttribute('data-revision')
         await known.fill(`restore ${++n}`)
         await saveButton(page).click()

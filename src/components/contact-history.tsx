@@ -1,20 +1,28 @@
-import { useMutation, useQueries } from 'convex/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useConvex, useMutation } from 'convex/react'
+import type { FunctionReturnType } from 'convex/server'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { joinMoments } from '../../convex/contacts/history'
 import type { Moment } from '../../convex/contacts/history'
 import { useCanWrite, useTenant } from '../lib/tenant'
-import { useDropIdle, useQuery } from '../lib/query-cache'
+import { useQuery, useSessionStore } from '../lib/query-cache'
 
 /** Revisions per history page (the server caps it at HISTORY_PAGE_LIMIT). */
 const PAGE = 10
 /**
- * Moments the live newest page may grow to before it is re-subscribed
- * afresh (see useHistoryPages).
+ * Moments the newest page may grow to before it is fetched afresh (see
+ * HistoryFeed.reanchor).
  */
 export const REANCHOR_AT = 2 * PAGE
-const NO_CURSORS: Array<string> = []
+/** Contacts whose fetched history the session keeps for a revisit. */
+const FEEDS_KEPT = 20
 // One formatter for every moment: `toLocaleString` with options builds a
 // new one per call, on every render of the page (each save re-renders it).
 const AT = new Intl.DateTimeFormat([], {
@@ -22,93 +30,191 @@ const AT = new Intl.DateTimeFormat([], {
   timeStyle: 'short',
 })
 
-/**
- * The newest page's args. The route prewarms exactly these (generation 0),
- * so they must not vary per mount (which is why this isn't
- * `usePaginatedQuery`: its per-hook pagination id would miss the prewarmed
- * subscription). A later generation is the same page subscribed afresh.
- */
-export function historyFirstPage(
-  tenantId: Id<'tenants'>,
-  id: Id<'contacts'>,
-  generation = 0,
-) {
-  return {
-    tenantId,
-    id,
-    paginationOpts: {
-      numItems: PAGE,
-      cursor: null,
-      ...(generation > 0 && { id: generation }),
-    },
-  }
+type HistoryPage = FunctionReturnType<typeof api.contacts.queries.history>
+type PageOpts = { numItems: number; cursor: string | null; endCursor?: string }
+
+type FeedState = {
+  /** The newest page, as last fetched. */
+  first: HistoryPage | undefined
+  /** Pages "Load older" fetched, each starting where the one above ends. */
+  older: Array<HistoryPage>
+  loadingOlder: boolean
+  /** A fresh newest page is on its way (see `reanchor`). */
+  anchoring: boolean
+  error: Error | null
 }
 
 /**
- * The newest page, live, plus the older pages "Load older" asked for. Each
- * older page starts at the previous page's end; the newest page keeps its
- * end on re-runs (Convex pins a page's range per subscription) and grows
- * as saves land, so pages never leave a gap. Only the newest page re-runs
- * on a save; older ones read ranges a save never touches.
+ * One contact's history, fetched rather than subscribed. A subscribed
+ * newest page re-runs on every save of the contact, and the client sees a
+ * save only once every query it invalidated has re-run, so the history
+ * would hold up "saved" on each one. Revisions never change once written,
+ * so a fetched page stays true; what's new is a revision on top, and every
+ * revision of a contact bumps a counter on its root. The page calls
+ * `refresh` whenever the root changes (its own saves and everyone else's),
+ * which costs the history one round trip after the save, off its path.
  *
- * Every save re-runs the whole newest page, so its growth over a session
- * is paid on each save. Past REANCHOR_AT moments, and only while no older
- * page hangs off its end, it is subscribed afresh (newest PAGE again) and
- * the grown subscription released at once; the grown page stays on screen
- * until the fresh one answers. The swap hides the older half of the
- * moments, so it waits while someone is reading the panel (`atRest`).
+ * The newest page keeps the end its first fetch found (`endCursor`), as a
+ * live paginated subscription would, so it grows as saves land and the
+ * older pages under it never leave a gap. `reanchor` fetches the newest
+ * PAGE afresh, only while no older page hangs off its end.
  */
-function useHistoryPages(id: Id<'contacts'>, atRest: () => boolean) {
+export class HistoryFeed {
+  private state: FeedState = {
+    first: undefined,
+    older: [],
+    loadingOlder: false,
+    anchoring: false,
+    error: null,
+  }
+  /** Where the newest page ends; null until a fetch has pinned it. */
+  private end: { cursor: string; isDone: boolean } | null = null
+  private newestCall = 0
+  private olderCall = 0
+  private readonly listeners = new Set<() => void>()
+
+  constructor(
+    private readonly fetchPage: (opts: PageOpts) => Promise<HistoryPage>,
+  ) {}
+
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  snapshot = () => this.state
+
+  private set(patch: Partial<FeedState>) {
+    this.state = { ...this.state, ...patch }
+    for (const listener of this.listeners) listener()
+  }
+
+  /** Fetch the newest page again, down to its pinned end. */
+  refresh() {
+    const call = ++this.newestCall
+    const end = this.end
+    this.fetchPage({
+      numItems: PAGE,
+      cursor: null,
+      ...(end && { endCursor: end.cursor }),
+    }).then(
+      (page) => {
+        if (call !== this.newestCall) return
+        this.end ??= { cursor: page.continueCursor, isDone: page.isDone }
+        // Its end is pinned, so whether more lie beyond it is what the
+        // pinning fetch found.
+        const first = { ...page, isDone: this.end.isDone }
+        this.set({ first, anchoring: false, error: null })
+      },
+      (error: unknown) => {
+        if (call !== this.newestCall) return
+        this.set({ anchoring: false, error: asError(error) })
+      },
+    )
+  }
+
+  /**
+   * The newest PAGE afresh, its end pinned anew, so a page grown by a long
+   * session costs one page again. The grown page stays on screen until the
+   * fresh one arrives. Not while older pages hang off its end.
+   */
+  reanchor() {
+    if (this.state.older.length > 0 || this.state.loadingOlder) return
+    this.end = null
+    this.set({ anchoring: true })
+    this.refresh()
+  }
+
+  loadOlder() {
+    const { first, older, loadingOlder, anchoring } = this.state
+    const last = older.at(-1) ?? first
+    if (!last || !this.end || loadingOlder || anchoring || last.isDone) return
+    const cursor = older.length > 0 ? last.continueCursor : this.end.cursor
+    const call = ++this.olderCall
+    this.set({ loadingOlder: true })
+    this.fetchPage({ numItems: PAGE, cursor }).then(
+      (page) => {
+        if (call !== this.olderCall) return
+        this.set({ older: [...this.state.older, page], loadingOlder: false })
+      },
+      (error: unknown) => {
+        if (call !== this.olderCall) return
+        this.set({ loadingOlder: false, error: asError(error) })
+      },
+    )
+  }
+
+  /** A new visit starts with the newest page only. */
+  forgetOlder() {
+    this.olderCall++
+    if (this.state.older.length > 0 || this.state.loadingOlder)
+      this.set({ older: [], loadingOlder: false })
+  }
+}
+
+function asError(error: unknown) {
+  return error instanceof Error ? error : new Error(String(error))
+}
+
+/**
+ * The contact's feed, kept for the session so a revisit shows the last
+ * history at once (then fetches it again). Bounded: least recently opened
+ * first out.
+ */
+function useHistoryFeed(id: Id<'contacts'>): HistoryFeed {
   const tenant = useTenant()
-  const [anchor, setAnchor] = useState({ id, generation: 0 })
-  const generation = anchor.id === id ? anchor.generation : 0
-  const live = useQuery(
-    api.contacts.queries.history,
-    historyFirstPage(tenant._id, id, generation),
-  )
-  const shown = useRef<{ id: Id<'contacts'>; page: typeof live }>({
-    id,
-    page: undefined,
-  })
-  if (live !== undefined) shown.current = { id, page: live }
-  const first = shown.current.id === id ? shown.current.page : undefined
-  const [older, setOlder] = useState<{
-    id: Id<'contacts'>
-    cursors: Array<string>
-  }>({ id, cursors: [] })
-  const cursors = older.id === id ? older.cursors : NO_CURSORS
-  // useQueries resubscribes whenever its argument's identity changes, so
-  // the object must only change when the pages do.
-  const queries = useMemo(
-    () =>
-      Object.fromEntries(
-        cursors.map((cursor) => [
-          cursor,
-          {
-            query: api.contacts.queries.history,
-            args: {
-              tenantId: tenant._id,
-              id,
-              paginationOpts: { numItems: PAGE, cursor },
-            },
-          },
-        ]),
-      ),
-    [tenant._id, id, cursors],
-  )
-  const results = useQueries(queries)
-  const dropIdle = useDropIdle()
+  const convex = useConvex()
+  const store = useSessionStore()
+  return useMemo(() => {
+    const key = `history:${tenant._id}:${id}`
+    let feed = store.get(key) as HistoryFeed | undefined
+    store.delete(key)
+    feed ??= new HistoryFeed((paginationOpts) =>
+      convex.query(api.contacts.queries.history, {
+        tenantId: tenant._id,
+        id,
+        paginationOpts,
+      }),
+    )
+    store.set(key, feed)
+    const feeds = [...store.keys()].filter((k) => k.startsWith('history:'))
+    for (const old of feeds.slice(0, -FEEDS_KEPT)) store.delete(old)
+    return feed
+  }, [store, convex, tenant._id, id])
+}
+
+/**
+ * The newest page plus the older pages "Load older" asked for, fetched
+ * again whenever `version` (the root's counters) changes. Past REANCHOR_AT
+ * moments, and only while no older page hangs off its end, the newest page
+ * is fetched afresh; that hides the older half of the moments, so it waits
+ * while someone is reading the panel (`atRest`).
+ */
+function useHistoryPages(
+  id: Id<'contacts'>,
+  version: string,
+  atRest: () => boolean,
+) {
+  const feed = useHistoryFeed(id)
+  const state = useSyncExternalStore(feed.subscribe, feed.snapshot)
+  useEffect(() => feed.forgetOlder(), [feed])
+  useEffect(() => feed.refresh(), [feed, version])
+  const { first, older, error } = state
+  if (error) throw error
   const grown =
-    live !== undefined &&
-    cursors.length === 0 &&
-    live.page.length > REANCHOR_AT
+    first !== undefined &&
+    older.length === 0 &&
+    !state.loadingOlder &&
+    !state.anchoring &&
+    first.page.length > REANCHOR_AT
   useEffect(() => {
     if (!grown) return
-    const reanchor = () => setAnchor({ id, generation: generation + 1 })
-    if (atRest()) return reanchor()
+    if (atRest()) return feed.reanchor()
     // Mid-read: try again whenever that might have ended.
     const retry = () => {
-      if (atRest()) reanchor()
+      if (atRest()) feed.reanchor()
     }
     const later = () => setTimeout(retry)
     const events = ['scroll', 'pointerover', 'focusout'] as const
@@ -116,34 +222,18 @@ function useHistoryPages(id: Id<'contacts'>, atRest: () => boolean) {
     return () => {
       for (const e of events) window.removeEventListener(e, later)
     }
-  }, [grown, id, generation, atRest])
-  // After the useQuery above has moved to the new generation, the old one
-  // is idle in the cache: release it now, not in 2 minutes.
-  useEffect(() => {
-    if (generation > 0)
-      dropIdle(
-        api.contacts.queries.history,
-        historyFirstPage(tenant._id, id, generation - 1),
-      )
-  }, [dropIdle, tenant._id, id, generation])
+  }, [grown, feed, atRest])
   if (first === undefined) return { moments: undefined }
-  const pages = [first]
-  for (const cursor of cursors) {
-    const page: unknown = results[cursor]
-    if (page instanceof Error) throw page
-    if (page === undefined) break
-    pages.push(page as typeof first)
-  }
+  const pages = [first, ...older]
   const last = pages[pages.length - 1]
-  const loading = pages.length < cursors.length + 1
   return {
     moments: joinMoments(pages.flatMap((p) => p.page)),
-    loading,
-    // Not while a re-anchored page loads: older pages start at its end.
+    loading: state.loadingOlder,
+    // Not while a fresh newest page loads: older pages start at its end.
     loadOlder:
-      loading || live === undefined || last.isDone
+      state.loadingOlder || state.anchoring || last.isDone
         ? undefined
-        : () => setOlder({ id, cursors: [...cursors, last.continueCursor] }),
+        : () => feed.loadOlder(),
   }
 }
 
@@ -153,10 +243,13 @@ function useHistoryPages(id: Id<'contacts'>, atRest: () => boolean) {
  */
 export function ContactHistory({
   id,
+  version,
   archived,
   archiveVersion,
 }: {
   id: Id<'contacts'>
+  /** Changes whenever the contact's root does: fetch the history again. */
+  version: string
   archived: boolean
   archiveVersion: number
 }) {
@@ -173,7 +266,7 @@ export function ContactHistory({
       !el.contains(document.activeElement)
     )
   }, [])
-  const { moments, loading, loadOlder } = useHistoryPages(id, atRest)
+  const { moments, loading, loadOlder } = useHistoryPages(id, version, atRest)
   const members = useQuery(api.platform.tenants.members, {
     tenantId: tenant._id,
   })

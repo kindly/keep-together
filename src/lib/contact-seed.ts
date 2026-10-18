@@ -7,8 +7,8 @@ export type ContactView = NonNullable<
 
 // A just-created contact's view, handed from the new-contact form to the
 // contact page so the page renders on the create's own round trip. The
-// page shows it only until its live `get` subscription answers, then
-// drops it: never a cache, never served twice.
+// page shows it only until its live queries answer, then drops it: never
+// a cache, never served twice.
 const seeds = new Map<string, ContactView>()
 
 export function seedContact(id: string, view: ContactView) {

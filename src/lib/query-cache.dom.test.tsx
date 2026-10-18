@@ -4,15 +4,14 @@ import type { ConvexReactClient } from 'convex/react'
 import { getFunctionName } from 'convex/server'
 import { convexToJson } from 'convex/values'
 import type { Value } from 'convex/values'
-import { ConvexQueryCacheProvider } from 'convex-helpers/react/cache/provider'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { api } from '../../convex/_generated/api'
-import { ContactQueryCache, useDropIdle, useQuery } from './query-cache'
+import { ContactQueryCache, useQuery } from './query-cache'
 
-// useDropIdle and DropOnUnmount reach into convex-helpers' cache internals
+// DropOnUnmount reaches into convex-helpers' cache internals
 // (its registry, entries and key format). These run convex-helpers' own
 // hooks against a client that counts live subscriptions, so an upgrade
 // that changes those internals fails here instead of silently leaving
@@ -20,10 +19,11 @@ import { ContactQueryCache, useDropIdle, useQuery } from './query-cache'
 
 vi.mock('@convex-dev/auth/react', () => ({ useAuthToken: () => null }))
 
-;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true
+;(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true
 
-const history = api.contacts.queries.history
+const getRoot = api.contacts.queries.getRoot
 type Args = Record<string, Value>
 const A: Args = { page: 'a' }
 const B: Args = { page: 'b' }
@@ -46,15 +46,12 @@ function countingClient() {
   }
   return {
     client: client as unknown as ConvexReactClient,
-    live: (args: Args) => live.get(key(history, args)) ?? 0,
+    live: (args: Args) => live.get(key(getRoot, args)) ?? 0,
   }
 }
 
-let drop: ReturnType<typeof useDropIdle> = () => {}
-
 function Page({ args }: { args: Args }) {
-  useQuery(history, args as never)
-  drop = useDropIdle()
+  useQuery(getRoot, args as never)
   return null
 }
 
@@ -67,27 +64,6 @@ afterEach(() => {
 })
 
 describe('contact query cache internals', () => {
-  test('useDropIdle releases a replaced query at once, and never a rendered one', () => {
-    const { client, live } = countingClient()
-    const tree = (args: Args) => (
-      <ConvexProvider client={client}>
-        <ConvexQueryCacheProvider expiration={120_000} maxIdleEntries={20}>
-          <Page args={args} />
-        </ConvexQueryCacheProvider>
-      </ConvexProvider>
-    )
-    act(() => root.render(tree(A)))
-    expect(live(A)).toBeGreaterThan(0)
-    act(() => root.render(tree(B)))
-    // Replaced: only the cache's keep-alive watch still holds A.
-    expect(live(A)).toBe(1)
-    act(() => drop(history, A))
-    expect(live(A)).toBe(0)
-    const rendered = live(B)
-    act(() => drop(history, B))
-    expect(live(B)).toBe(rendered)
-  })
-
   test('ContactQueryCache releases its idle queries when it unmounts', () => {
     const { client, live } = countingClient()
     const tree = (args: Args) => (
@@ -100,7 +76,9 @@ describe('contact query cache internals', () => {
     act(() => root.render(tree(A)))
     act(() => root.render(tree(B)))
     expect(live(A)).toBe(1)
-    act(() => root.render(<ConvexProvider client={client}>{null}</ConvexProvider>))
+    act(() =>
+      root.render(<ConvexProvider client={client}>{null}</ConvexProvider>),
+    )
     expect(live(A)).toBe(0)
     expect(live(B)).toBe(0)
   })

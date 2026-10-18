@@ -13,6 +13,8 @@ import { contactKind } from '../schema'
 import { matchesAll, parseSearch } from './search'
 import type { AlsoUsedBy } from './warnings'
 import { groupsToRead, toMoments } from './history'
+import { nameIdentifiers } from './view'
+import type { IdentifierRow } from './view'
 
 function emailRows(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
   return db
@@ -76,6 +78,18 @@ async function tagsOf(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
   )
 }
 
+/** A contact's identifier rows, unnamed (`nameIdentifiers` names them). */
+async function identifierRows(
+  db: ScopedDatabaseReader,
+  contactId: Id<'contacts'>,
+): Promise<Array<IdentifierRow>> {
+  const rows = await db
+    .query('contactIdentifiers')
+    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+    .collect()
+  return rows.map((r) => ({ key: r.key, typeId: r.typeId, value: r.value }))
+}
+
 /**
  * A contact's identifiers with their type names, by type name then value.
  * A row of an archived type says so (`typeActive: false`).
@@ -84,10 +98,7 @@ async function identifiersOf(
   db: ScopedDatabaseReader,
   contactId: Id<'contacts'>,
 ) {
-  const rows = await db
-    .query('contactIdentifiers')
-    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
-    .collect()
+  const rows = await identifierRows(db, contactId)
   // Rows share a few types: read each type once, not once per row (every
   // save re-runs this, and a read costs the same however small).
   const typeIds = [...new Set(rows.map((r) => r.typeId))]
@@ -97,22 +108,7 @@ async function identifiersOf(
       t,
     ]),
   )
-  const out = rows.map((r) => {
-    const type = types.get(r.typeId)
-    return {
-      key: r.key,
-      typeId: r.typeId,
-      value: r.value,
-      typeName: type?.name ?? '?',
-      typeActive: type?.isActive ?? false,
-    }
-  })
-  return out.sort(
-    (a, b) =>
-      normaliseTagName(a.typeName).localeCompare(
-        normaliseTagName(b.typeName),
-      ) || a.value.localeCompare(b.value),
-  )
+  return nameIdentifiers(rows, (id) => types.get(id))
 }
 
 /** How many tags a tenant can hold before the picker list truncates. */
@@ -415,12 +411,12 @@ export const list = tenantQuery({
 })
 
 /**
- * The whole aggregate: root, children and counters. Every read that doesn't
- * depend on another runs concurrently: this query re-runs after every save
- * of the contact, and its time is on the save's critical path (the client
- * sees the save once its queries are current). Advisory warnings are
- * `contactWarnings(view, sharedAddresses)`, computed by the caller, so the
- * shared-address lookup (two more read levels) stays off that path.
+ * The whole aggregate: root, children and counters, with every read that
+ * doesn't depend on another run concurrently. The contact page assembles
+ * the same view from the per-slice queries (`getRoot` …) instead. Advisory
+ * warnings are `contactWarnings(view, sharedAddresses)`, computed by the
+ * caller, so the shared-address lookup (two more read levels) stays off a
+ * save's critical path.
  */
 async function contactView(db: ScopedDatabaseReader, id: Id<'contacts'>) {
   const emails = emailRows(db, id)
@@ -486,6 +482,42 @@ export const sharedAddresses = tenantQuery({
     ),
 })
 
+/**
+ * The contact page reads its contact one slice at a time, through the four
+ * queries below; the SPA assembles `get`'s view from them. The client sees
+ * a save once every query the save invalidated has re-run, so a save should
+ * re-run only the slices whose rows it wrote. Every save bumps its slice's
+ * counter on the root, so `getRoot` re-runs on all of them and reads
+ * nothing else.
+ */
+export const getRoot = tenantQuery({
+  args: { id: v.id('contacts') },
+  handler: async (ctx, { id }) => ctx.db.get(id),
+})
+
+/** Emails, phones and addresses, primary first: methods and addresses saves. */
+export const getChannels = tenantQuery({
+  args: { id: v.id('contacts') },
+  handler: async (ctx, { id }) => children(ctx.db, id, emailRows(ctx.db, id)),
+})
+
+/** The contact's tags with their names, alphabetical. */
+export const getTags = tenantQuery({
+  args: { id: v.id('contacts') },
+  handler: async (ctx, { id }) => tagsOf(ctx.db, id),
+})
+
+/**
+ * The contact's identifier rows, unnamed, so it reads one level: the SPA
+ * names them (`nameIdentifiers`) from `listIdentifierTypes` with archived
+ * types included, which is never truncated.
+ */
+export const getIdentifiers = tenantQuery({
+  args: { id: v.id('contacts') },
+  handler: async (ctx, { id }) => identifierRows(ctx.db, id),
+})
+
+/** The whole view in one query: imports, tests, and `byClientKey`'s shape. */
 export const get = tenantQuery({
   args: { id: v.id('contacts') },
   handler: async (ctx, { id }) => contactView(ctx.db, id),
@@ -514,19 +546,20 @@ export const HISTORY_PAGE_LIMIT = 10
 /**
  * History as *moments*: revisions from one action (sharing a command group)
  * collapse into a single entry listing the slices it touched. Newest first,
- * one page of HISTORY_PAGE_LIMIT revisions when subscribed, so its cost on
- * open doesn't depend on how long the history is. While a subscription
- * lives, Convex keeps the page's end where it was, so the newest page grows
- * by one read per revision saved meanwhile (that's what keeps older pages
- * contiguous); a fresh subscription starts at HISTORY_PAGE_LIMIT again.
+ * one page of HISTORY_PAGE_LIMIT revisions, so its cost on open doesn't
+ * depend on how long the history is. The SPA fetches it rather than
+ * subscribing (a subscribed page would re-run inside every save's wait),
+ * again whenever the contact's root changes, keeping the newest page's
+ * end with `endCursor` as a live subscription would: the page grows by one
+ * read per revision saved meanwhile, and that keeps older pages contiguous.
  * A group can straddle a page boundary: the client joins adjacent moments
  * with the same `key` (`joinMoments`).
  */
 export const history = tenantQuery({
   args: { id: v.id('contacts'), paginationOpts: paginationOptsValidator },
   handler: async (ctx, { id, paginationOpts }) => {
-    // `paginationOpts.id` only tells subscriptions apart (the SPA's history
-    // panel re-anchors its newest page with it); it is not a read option.
+    // `paginationOpts.id` only tells subscriptions apart; it is not a read
+    // option.
     const { id: _subscription, ...opts } = paginationOpts
     const result = await ctx.db
       .query('revisions')
