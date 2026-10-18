@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TSlugRouteImport } from './routes/t.$slug'
+import { Route as TSlugTagsRouteImport } from './routes/t.$slug.tags'
 import { Route as TSlugContactsIndexRouteImport } from './routes/t.$slug.contacts.index'
 import { Route as TSlugContactsContactIdRouteImport } from './routes/t.$slug.contacts.$contactId'
 import { Route as TSlugContactsNewRouteImport } from './routes/t.$slug.contacts.new'
@@ -24,6 +25,11 @@ const TSlugRoute = TSlugRouteImport.update({
   id: '/t/$slug',
   path: '/t/$slug',
   getParentRoute: () => rootRouteImport,
+} as any)
+const TSlugTagsRoute = TSlugTagsRouteImport.update({
+  id: '/tags',
+  path: '/tags',
+  getParentRoute: () => TSlugRoute,
 } as any)
 const TSlugContactsIndexRoute = TSlugContactsIndexRouteImport.update({
   id: '/contacts/',
@@ -44,6 +50,7 @@ const TSlugContactsNewRoute = TSlugContactsNewRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/t/$slug': typeof TSlugRouteWithChildren
+  '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
@@ -51,6 +58,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/t/$slug': typeof TSlugRouteWithChildren
+  '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/contacts': typeof TSlugContactsIndexRoute
@@ -59,6 +67,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/t/$slug': typeof TSlugRouteWithChildren
+  '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
@@ -68,6 +77,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/t/$slug'
+    | '/t/$slug/tags'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/contacts/'
@@ -75,6 +85,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/t/$slug'
+    | '/t/$slug/tags'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/contacts'
@@ -82,6 +93,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/t/$slug'
+    | '/t/$slug/tags'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/contacts/'
@@ -108,6 +120,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/t/$slug/tags': {
+      id: '/t/$slug/tags'
+      path: '/tags'
+      fullPath: '/t/$slug/tags'
+      preLoaderRoute: typeof TSlugTagsRouteImport
+      parentRoute: typeof TSlugRoute
+    }
     '/t/$slug/contacts/': {
       id: '/t/$slug/contacts/'
       path: '/contacts'
@@ -133,12 +152,14 @@ declare module '@tanstack/react-router' {
 }
 
 interface TSlugRouteChildren {
+  TSlugTagsRoute: typeof TSlugTagsRoute
   TSlugContactsContactIdRoute: typeof TSlugContactsContactIdRoute
   TSlugContactsNewRoute: typeof TSlugContactsNewRoute
   TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
 }
 
 const TSlugRouteChildren: TSlugRouteChildren = {
+  TSlugTagsRoute: TSlugTagsRoute,
   TSlugContactsContactIdRoute: TSlugContactsContactIdRoute,
   TSlugContactsNewRoute: TSlugContactsNewRoute,
   TSlugContactsIndexRoute: TSlugContactsIndexRoute,

@@ -64,6 +64,7 @@ function toSlices(data: Data): Slices {
         isPrimary: a.isPrimary,
       })),
     },
+    tags: { tags: data.tags.map((t) => ({ key: t.key, tagId: t.tagId })) },
   }
 }
 
@@ -72,6 +73,7 @@ function toCounters(data: Data): Counters {
     details: data.contact.detailsVersion,
     methods: data.contact.methodsVersion,
     addresses: data.contact.addressesVersion,
+    tags: data.contact.tagsVersion,
   }
 }
 
@@ -82,11 +84,20 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
   const members = useQuery(api.platform.tenants.members, {
     tenantId: tenant._id,
   })
+  // Every tag, archived too: an archived tag a contact still carries needs
+  // its name. One subscription shared with the list and the tags page.
+  const allTags = useQuery(api.contacts.queries.tags, {
+    tenantId: tenant._id,
+    includeInactive: true,
+  })
   const [state, dispatch] = useReducer(reduce, data, (d) =>
     initialState(toSlices(d), toCounters(d)),
   )
   const latest = useRef(state)
   latest.current = state
+  // A tag pick is a whole edit with nothing left to type: save it now, not
+  // after the autosave pause.
+  const saveNow = useRef(false)
 
   // The live query: merge every server change per field (own saves are
   // recognised by counters inside the reducer and ignored).
@@ -99,6 +110,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
   }, [data])
 
   async function save() {
+    saveNow.current = false
     const current = latest.current
     const submitted = submission(current)
     if (Object.keys(submitted).length === 0) return
@@ -115,9 +127,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
       }
     }
     try {
-      // The form submits only its own slices (no `tags` until the tags UI),
-      // so the result names only those.
-      const result = (await saveForm(args as never)) as SaveResult
+      const result: SaveResult = await saveForm(args as never)
       dispatch({ type: 'saved', submitted, result, at: Date.now() })
     } catch (err) {
       const detail =
@@ -135,6 +145,13 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
 
   useEffect(() => {
     if (!state.needsSave || state.status === 'saving') return
+    // Straight away, as the Save button does: effects from a discrete input
+    // run in the input's own task, so the mutation leaves before the next
+    // frame instead of after it.
+    if (saveNow.current) {
+      void save()
+      return
+    }
     const timer = setTimeout(() => void save(), AUTOSAVE_MS)
     return () => clearTimeout(timer)
   }, [state.needsSave, state.status, state.local])
@@ -240,6 +257,17 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
           onChange={(v) => edit('addresses', v)}
           problems={state.problems.addresses ?? []}
           warnings={data.warnings}
+        />
+
+        <TagFields
+          value={state.local.tags}
+          onChange={(v) => {
+            saveNow.current = true
+            edit('tags', v)
+          }}
+          problems={state.problems.tags ?? []}
+          known={data.tags}
+          allTags={allTags}
         />
       </fieldset>
 
@@ -385,12 +413,11 @@ function MethodsFields({
           {value.emails.map((row, i) => (
             <RowShell
               key={row.key}
-              message={
-                problemFor(problems, `emails.${i}`) ??
-                warningFor(warnings, `emails.${i}`) ??
-                warningFor(warnings, `emails#${row.key}`)
-              }
-              tone={problemFor(problems, `emails.${i}`) ? 'error' : 'warning'}
+              messages={rowMessages(
+                problemFor(problems, `emails.${i}`),
+                warnings,
+                [`emails.${i}`, `emails#${row.key}`],
+              )}
               primary={row.isPrimary}
               onPrimary={() =>
                 onChange({
@@ -461,8 +488,11 @@ function MethodsFields({
           {value.phones.map((row, i) => (
             <RowShell
               key={row.key}
-              message={problemFor(problems, `phones.${i}`)}
-              tone="error"
+              messages={rowMessages(
+                problemFor(problems, `phones.${i}`),
+                warnings,
+                [],
+              )}
               primary={row.isPrimary}
               onPrimary={() =>
                 onChange({
@@ -576,11 +606,11 @@ function AddressFields({
         {value.addresses.map((row, i) => (
           <RowShell
             key={row.key}
-            message={
-              problemFor(problems, `addresses.${i}`) ??
-              warningFor(warnings, `addresses.${i}`)
-            }
-            tone={problemFor(problems, `addresses.${i}`) ? 'error' : 'warning'}
+            messages={rowMessages(
+              problemFor(problems, `addresses.${i}`),
+              warnings,
+              [`addresses.${i}`],
+            )}
             primary={row.isPrimary}
             onPrimary={() =>
               onChange({
@@ -613,6 +643,97 @@ function AddressFields({
   )
 }
 
+type TagInfo = { name: string; isActive: boolean }
+
+/**
+ * The contact's tags as chips, and a picker of the active tags it doesn't
+ * carry. An archived tag it still carries shows (marked) and can be
+ * removed, but is never offered.
+ */
+function TagFields({
+  value,
+  onChange,
+  problems,
+  known,
+  allTags,
+}: {
+  value: Payloads['tags']
+  onChange: (v: Payloads['tags']) => void
+  problems: Array<Problem>
+  known: Data['tags']
+  allTags: Array<{ _id: Id<'tags'>; name: string; isActive: boolean }> | undefined
+}) {
+  const info = new Map<string, TagInfo>(
+    known.map((t) => [t.tagId, { name: t.name, isActive: t.isActive }]),
+  )
+  for (const t of allTags ?? []) info.set(t._id, t)
+  const carried = new Set(value.tags.map((t) => t.tagId))
+  const offered = (allTags ?? []).filter(
+    (t) => t.isActive && !carried.has(t._id),
+  )
+  return (
+    <section>
+      <h2 className="mb-3 text-lg font-medium">Tags</h2>
+      <Message message={problemFor(problems, 'tags')} tone="error" />
+      <div className="flex flex-wrap items-center gap-2">
+        {value.tags.length === 0 && (
+          <span className="text-sm text-neutral-500">No tags.</span>
+        )}
+        <ul className="contents">
+          {value.tags.map((row) => {
+            const tag = info.get(row.tagId)
+            const name = tag?.name ?? '…'
+            return (
+              <li
+                key={row.key ?? row.tagId}
+                className={`flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-sm ${tag?.isActive === false ? 'border-dashed border-neutral-300 text-neutral-500' : 'border-neutral-300 bg-white'}`}
+              >
+                <span>{name}</span>
+                {tag?.isActive === false && (
+                  <span className="text-xs">(archived)</span>
+                )}
+                <button
+                  type="button"
+                  aria-label={`remove tag ${name}`}
+                  onClick={() =>
+                    onChange({
+                      tags: value.tags.filter((t) => t !== row),
+                    })
+                  }
+                  className="ml-0.5 text-neutral-500 hover:text-neutral-900"
+                >
+                  ×
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+        {offered.length > 0 && (
+          <select
+            aria-label="Add tag"
+            value=""
+            onChange={(e) => {
+              const tagId = e.target.value as Id<'tags'>
+              if (!tagId) return
+              onChange({
+                tags: [...value.tags, { key: crypto.randomUUID(), tagId }],
+              })
+            }}
+            className="rounded border border-neutral-300 px-2 py-1 text-sm"
+          >
+            <option value="">add tag…</option>
+            {offered.map((t) => (
+              <option key={t._id} value={t._id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+    </section>
+  )
+}
+
 // ── chrome ─────────────────────────────────────────────────────────────────
 
 function problemFor(
@@ -627,11 +748,22 @@ function problemFor(
   )?.message
 }
 
-function warningFor(
+type RowMessage = { text: string; tone: 'error' | 'warning' }
+
+/**
+ * A row's inline messages: its blocking problem alone, or else every
+ * advisory warning on any of its anchors (a malformed address that another
+ * contact also uses shows both).
+ */
+function rowMessages(
+  problem: string | undefined,
   warnings: Data['warnings'],
-  anchor: string,
-): string | undefined {
-  return warnings.find((w) => w.anchor === anchor)?.message
+  anchors: Array<string>,
+): Array<RowMessage> {
+  if (problem) return [{ text: problem, tone: 'error' }]
+  return warnings
+    .filter((w) => anchors.includes(w.anchor))
+    .map((w) => ({ text: w.message, tone: 'warning' }))
 }
 
 function Field({
@@ -661,7 +793,7 @@ function Field({
   )
 }
 
-/** One inline slot per field: an error wins it over a warning. */
+/** One inline message; a row's error hides its warnings (`rowMessages`). */
 function Message({
   message,
   tone,
@@ -708,8 +840,7 @@ function AddButton({ onClick }: { onClick: () => void }) {
 }
 
 function RowShell({
-  message,
-  tone,
+  messages,
   primary,
   onPrimary,
   onRemove,
@@ -717,8 +848,7 @@ function RowShell({
   onLabel,
   children,
 }: {
-  message?: string
-  tone: 'error' | 'warning'
+  messages: Array<RowMessage>
   primary: boolean
   onPrimary: () => void
   onRemove: () => void
@@ -752,7 +882,9 @@ function RowShell({
           remove
         </button>
       </div>
-      <Message message={message} tone={tone} />
+      {messages.map((m) => (
+        <Message key={m.text} message={m.text} tone={m.tone} />
+      ))}
     </li>
   )
 }

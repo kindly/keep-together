@@ -58,6 +58,14 @@ function Resolved({ slug }: { slug: string }) {
             >
               Contacts
             </Link>
+            <Link
+              to="/t/$slug/tags"
+              params={{ slug }}
+              className="text-sm hover:underline"
+              activeProps={{ className: 'text-sm font-medium underline' }}
+            >
+              Tags
+            </Link>
           </nav>
         </header>
         <Outlet />

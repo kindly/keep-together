@@ -166,13 +166,25 @@ export const findByEmail = internalTenantQuery({
   handler: async (ctx, { address }) => contactsWithEmail(ctx.db, address),
 })
 
-/** Searchable list (name, or an exact email address); archived hidden unless asked. Bounded at 100 rows. */
+/** The most rows `list` returns. */
+export const LIST_LIMIT = 100
+/** The most assignments a tag-filtered `list` reads (then sorted by name). */
+export const LIST_TAG_SCAN = 200
+
+/**
+ * Searchable list (name, or an exact email address), optionally only the
+ * contacts carrying one tag; archived hidden unless asked. Bounded at
+ * LIST_LIMIT rows. Each row carries its tag ids (names come from `tags`).
+ * Without a search, a tag filter reads the tag's first LIST_TAG_SCAN
+ * assignments; larger tags page through `byTag`.
+ */
 export const list = tenantQuery({
   args: {
     search: v.optional(v.string()),
     includeArchived: v.optional(v.boolean()),
+    tagId: v.optional(v.id('tags')),
   },
-  handler: async (ctx, { search, includeArchived }) => {
+  handler: async (ctx, { search, includeArchived, tagId }) => {
     const term = search?.trim()
     let rows: Array<Doc<'contacts'>>
     if (term) {
@@ -181,23 +193,43 @@ export const list = tenantQuery({
         ctx.db
           .query('contacts')
           .withSearchIndex('search_name', (q) => q.search('sortName', term))
-          .take(100),
+          .take(LIST_LIMIT),
       ])
       const seen = new Set(byEmail.map((c) => c._id))
       rows = [...byEmail, ...byName.filter((c) => !seen.has(c._id))]
+    } else if (tagId) {
+      const assigned = await ctx.db
+        .query('contactTags')
+        .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId))
+        .take(LIST_TAG_SCAN)
+      const contacts = await Promise.all(
+        assigned.map((r) => ctx.db.get(r.contactId)),
+      )
+      rows = contacts
+        .filter((c) => c !== null)
+        .sort((a, b) => a.sortName.localeCompare(b.sortName))
     } else {
       rows = await ctx.db
         .query('contacts')
         .withIndex('by_tenant_sort')
-        .take(200)
+        .take(2 * LIST_LIMIT)
     }
     const visible = includeArchived ? rows : rows.filter((c) => !c.archived)
-    return Promise.all(
-      visible.slice(0, 100).map(async (c) => {
-        const email = await ctx.db
-          .query('contactEmails')
-          .withIndex('by_tenant_contact', (q) => q.eq('contactId', c._id))
-          .first()
+    // A search with a tag filter checks the tag per hit, so it shapes every
+    // hit before cutting to the limit; otherwise only the rows it returns.
+    const searchingTag = Boolean(term && tagId)
+    const shaped = await Promise.all(
+      (searchingTag ? visible : visible.slice(0, LIST_LIMIT)).map(async (c) => {
+        const [email, tagRows] = await Promise.all([
+          ctx.db
+            .query('contactEmails')
+            .withIndex('by_tenant_contact', (q) => q.eq('contactId', c._id))
+            .first(),
+          ctx.db
+            .query('contactTags')
+            .withIndex('by_tenant_contact', (q) => q.eq('contactId', c._id))
+            .collect(),
+        ])
         return {
           _id: c._id,
           kind: c.kind,
@@ -205,9 +237,13 @@ export const list = tenantQuery({
           sortName: c.sortName,
           archived: c.archived,
           email: email?.address ?? null,
+          tagIds: tagRows.map((r) => r.tagId),
         }
       }),
     )
+    return searchingTag
+      ? shaped.filter((r) => r.tagIds.includes(tagId!)).slice(0, LIST_LIMIT)
+      : shaped
   },
 })
 

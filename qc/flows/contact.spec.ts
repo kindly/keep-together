@@ -242,6 +242,33 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     ).toBeVisible()
   })
 
+  test('a malformed shared email shows both of its warnings', async ({
+    page,
+    users,
+  }) => {
+    // No TLD: storable, but doesn't look like an address (S1 review, L2).
+    const address = `${uniqueName('l2')}@example`.toLowerCase()
+    const addEmail = async () => {
+      await section(page, 'Emails').getByRole('button', { name: 'add' }).click()
+      await rows(page, 'Emails')
+        .nth(0)
+        .getByPlaceholder('email address')
+        .fill(address)
+      await saveButton(page).click()
+      await expect(saved(page)).toBeVisible()
+    }
+    const sharerLast = uniqueName('l2sharer')
+    await createContact(page, users.a.slug, sharerLast)
+    await addEmail()
+    await createContact(page, users.a.slug, uniqueName('l2owner'))
+    await addEmail()
+    const row = rows(page, 'Emails').nth(0)
+    await expect(
+      row.getByText(`“${address}” doesn’t look like an email address`),
+    ).toBeVisible()
+    await expect(row.getByText(`Also used by Qc ${sharerLast}`)).toBeVisible()
+  })
+
   test(
     'archive, and its badge in the list',
     { annotation: [CONTACT_ROUTE, LIST_ROUTE] },

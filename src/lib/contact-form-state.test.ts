@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'vitest'
+import type { Id } from '../../convex/_generated/dataModel'
 import type { Slices } from './contact-form-state'
 import {
   clean,
   initialState,
   reduce,
+  mergeTags,
   rekey,
   submission,
 } from './contact-form-state'
@@ -24,8 +26,9 @@ const slices: Slices = {
     phones: [],
   },
   addresses: { addresses: [] },
+  tags: { tags: [{ key: 't1', tagId: 'tagMember' as Id<'tags'> }] },
 }
-const counters = { details: 0, methods: 0, addresses: 0 }
+const counters = { details: 0, methods: 0, addresses: 0, tags: 0 }
 
 describe('contact form state', () => {
   test('a clean slice follows the server', () => {
@@ -139,7 +142,7 @@ describe('contact form state', () => {
         saved: ['details'],
         problems: {},
         stale: {},
-        counters: { details: 1, methods: 0, addresses: 0, archive: 0 },
+        counters: { details: 1, methods: 0, addresses: 0, archive: 0, tags: 0 },
       },
     })
     expect(s.dirty.details).toBe(false)
@@ -177,7 +180,7 @@ describe('contact form state', () => {
         saved: ['details'],
         problems: {},
         stale: {},
-        counters: { details: 1, methods: 0, addresses: 0, archive: 0 },
+        counters: { details: 1, methods: 0, addresses: 0, archive: 0, tags: 0 },
       },
     })
     expect(s.base.details.nickname).toBe('Coun')
@@ -201,7 +204,7 @@ describe('contact form state', () => {
         saved: [],
         problems: {},
         stale: { methods: 1 },
-        counters: { details: 0, methods: 1, addresses: 0, archive: 0 },
+        counters: { details: 0, methods: 1, addresses: 0, archive: 0, tags: 0 },
       },
     })
     expect(s.stale).toEqual({ methods: 1 })
@@ -239,7 +242,7 @@ describe('contact form state', () => {
       saved,
       problems: {},
       stale,
-      counters: { details, methods: 0, addresses: 0, archive: 0 },
+      counters: { details, methods: 0, addresses: 0, archive: 0, tags: 0 },
     })
 
     // Their change (counter 1) has already reached us when our save, sent
@@ -328,11 +331,112 @@ describe('contact form state', () => {
         saved: [],
         problems: { details: [{ field: 'lastName', message: 'needed' }] },
         stale: {},
-        counters: { details: 0, methods: 0, addresses: 0, archive: 0 },
+        counters: { details: 0, methods: 0, addresses: 0, archive: 0, tags: 0 },
       },
     })
     expect(s.problems.details?.[0].field).toBe('lastName')
     expect(s.dirty.details).toBe(true)
     expect(s.needsSave).toBe(false)
+  })
+
+  describe('the tags slice', () => {
+    const tag = (key: string, id: string) => ({
+      key,
+      tagId: id as Id<'tags'>,
+    })
+    const member = tag('t1', 'tagMember')
+
+    test('a tag added here and one added elsewhere both survive', () => {
+      let s = reduce(initialState(slices, counters), {
+        type: 'edit',
+        slice: 'tags',
+        value: { tags: [member, tag('t2', 'tagVolunteer')] },
+      })
+      s = reduce(s, {
+        type: 'server',
+        slices: { ...slices, tags: { tags: [member, tag('t9', 'tagDonor')] } },
+        counters: { ...counters, tags: 1 },
+      })
+      expect(s.local.tags.tags.map((t) => t.tagId)).toEqual([
+        'tagMember',
+        'tagDonor',
+        'tagVolunteer',
+      ])
+      expect(s.conflicts).toEqual([])
+      expect(s.dirty.tags).toBe(true)
+      expect(s.needsSave).toBe(true)
+    })
+
+    test('a tag removed here stays removed when another tag arrives', () => {
+      const s = mergeTags(
+        { tags: [member] },
+        { tags: [] },
+        { tags: [member, tag('t9', 'tagDonor')] },
+      )
+      expect(s.tags).toEqual([tag('t9', 'tagDonor')])
+    })
+
+    test('both sides adding the same tag keeps the remote row, not dirty', () => {
+      let s = reduce(initialState(slices, counters), {
+        type: 'edit',
+        slice: 'tags',
+        value: { tags: [member, tag('mine', 'tagDonor')] },
+      })
+      s = reduce(s, {
+        type: 'server',
+        slices: {
+          ...slices,
+          tags: { tags: [member, tag('theirs', 'tagDonor')] },
+        },
+        counters: { ...counters, tags: 1 },
+      })
+      expect(s.local.tags.tags).toEqual([member, tag('theirs', 'tagDonor')])
+      expect(s.dirty.tags).toBe(false)
+    })
+
+    test('a stale tags save is noticed and cleared once the retry saves', () => {
+      let s = reduce(initialState(slices, counters), {
+        type: 'edit',
+        slice: 'tags',
+        value: { tags: [] },
+      })
+      const first = submission(s)
+      expect(Object.keys(first)).toEqual(['tags'])
+      s = reduce(s, { type: 'saving' })
+      const theirs = { tags: [member, tag('t9', 'tagDonor')] }
+      s = reduce(s, {
+        type: 'server',
+        slices: { ...slices, tags: theirs },
+        counters: { ...counters, tags: 1 },
+      })
+      s = reduce(s, {
+        type: 'saved',
+        submitted: first,
+        at: 1,
+        result: {
+          saved: [],
+          problems: {},
+          stale: { tags: 1 },
+          counters: { details: 0, methods: 0, addresses: 0, archive: 0, tags: 1 },
+        },
+      })
+      expect(s.stale).toEqual({ tags: 1 })
+      const retry = submission(s)
+      expect(retry.tags).toEqual({ tags: [tag('t9', 'tagDonor')] })
+      s = reduce(s, { type: 'saving' })
+      s = reduce(s, {
+        type: 'saved',
+        submitted: retry,
+        at: 2,
+        result: {
+          saved: ['tags'],
+          problems: {},
+          stale: {},
+          counters: { details: 0, methods: 0, addresses: 0, archive: 0, tags: 2 },
+        },
+      })
+      expect(s.stale).toEqual({})
+      expect(s.dirty.tags).toBe(false)
+    })
   })
 })

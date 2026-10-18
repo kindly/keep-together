@@ -526,6 +526,58 @@ describe('contacts by tag', () => {
   })
 })
 
+describe('the list filtered by tag', () => {
+  const list = (
+    who: Tenant,
+    args: { tagId?: Id<'tags'>; search?: string; includeArchived?: boolean },
+  ) =>
+    who.as.query(api.contacts.queries.list, { tenantId: who.tenantId, ...args })
+
+  test('rows carry their tag ids; a tag filter keeps only its contacts, by name', async () => {
+    const fry = await createContact(f.a, 'Fry')
+    const bob = await createContact(f.a, 'Babbage')
+    await bulkTag([ada, fry], volunteer, 'add')
+    await bulkTag([ada], member, 'add')
+    const all = await list(f.a, {})
+    expect(all.find((r) => r._id === ada)?.tagIds.sort()).toEqual(
+      [member, volunteer].sort(),
+    )
+    expect(all.find((r) => r._id === bob)?.tagIds).toEqual([])
+    expect(
+      (await list(f.a, { tagId: volunteer })).map((r) => r.sortName),
+    ).toEqual(['Fry, Ada', 'Lovelace, Ada'])
+  })
+
+  test('with a search, only hits carrying the tag; archived hidden unless asked', async () => {
+    const fry = await createContact(f.a, 'Fry')
+    await createContact(f.a, 'Fryer')
+    await bulkTag([fry, ada], volunteer, 'add')
+    expect(
+      (await list(f.a, { tagId: volunteer, search: 'Fry' })).map(
+        (r) => r._id,
+      ),
+    ).toEqual([fry])
+    await f.a.as.mutation(api.contacts.mutations.setArchived, {
+      tenantId: f.a.tenantId,
+      id: fry,
+      expected: 0,
+      archived: true,
+    })
+    expect(await list(f.a, { tagId: volunteer, search: 'Fry' })).toEqual([])
+    expect(
+      (await list(f.a, { tagId: volunteer, includeArchived: true })).map(
+        (r) => r._id,
+      ),
+    ).toEqual([fry, ada])
+  })
+
+  test('another tenant’s tag filters to nothing', async () => {
+    await bulkTag([ada], member, 'add')
+    await createContact(f.b, 'Babbage')
+    expect(await list(f.b, { tagId: member })).toEqual([])
+  })
+})
+
 describe('tenant isolation', () => {
   test('tenant A’s tags are invisible and unusable from tenant B', async () => {
     await saveTags(0, [{ tagId: member }])

@@ -11,16 +11,22 @@
 import type { Payloads } from '../../convex/contacts/validators'
 import { same, threeWayMerge } from './merge'
 
-export type SliceName = 'details' | 'methods' | 'addresses'
+export type SliceName = 'details' | 'methods' | 'addresses' | 'tags'
 export type Slices = {
   details: Payloads['details']
   methods: Payloads['methods']
   addresses: Payloads['addresses']
+  tags: Payloads['tags']
 }
 export type Counters = Record<SliceName, number>
 export type Problem = { field: string; message: string }
 
-export const SLICES: Array<SliceName> = ['details', 'methods', 'addresses']
+export const SLICES: Array<SliceName> = [
+  'details',
+  'methods',
+  'addresses',
+  'tags',
+]
 
 export type FormState = {
   base: Slices
@@ -108,6 +114,27 @@ export function rekey(
   }
 }
 
+/**
+ * Tags merge as a set, not per field: our adds and removes (local against
+ * base) are replayed onto the remote rows, so two people tagging one
+ * contact never conflict. A tag both sides added keeps the remote row.
+ */
+export function mergeTags(
+  base: Slices['tags'],
+  local: Slices['tags'],
+  remote: Slices['tags'],
+): Slices['tags'] {
+  const had = new Set(base.tags.map((t) => t.tagId))
+  const has = new Set(local.tags.map((t) => t.tagId))
+  const removed = new Set([...had].filter((id) => !has.has(id)))
+  const kept = remote.tags.filter((t) => !removed.has(t.tagId))
+  const present = new Set(kept.map((t) => t.tagId))
+  const added = local.tags.filter(
+    (t) => !had.has(t.tagId) && !present.has(t.tagId),
+  )
+  return { tags: [...kept, ...added] }
+}
+
 function isDirty<TSlice extends SliceName>(
   slice: TSlice,
   local: Slices[TSlice],
@@ -129,7 +156,7 @@ export function initialState(slices: Slices, counters: Counters): FormState {
     base: slices,
     local: slices,
     counters,
-    dirty: { details: false, methods: false, addresses: false },
+    dirty: { details: false, methods: false, addresses: false, tags: false },
     conflicts: [],
     problems: {},
     stale: {},
@@ -169,11 +196,21 @@ export function reduce(state: FormState, action: Action): FormState {
           put(next.local, slice, remote)
           continue
         }
-        const merged = threeWayMerge(
-          state.base[slice] as Record<string, unknown>,
-          state.local[slice] as Record<string, unknown>,
-          remote as Record<string, unknown>,
-        )
+        const merged =
+          slice === 'tags'
+            ? {
+                value: mergeTags(
+                  state.base.tags,
+                  state.local.tags,
+                  remote as Slices['tags'],
+                ),
+                conflicts: [],
+              }
+            : threeWayMerge(
+                state.base[slice] as Record<string, unknown>,
+                state.local[slice] as Record<string, unknown>,
+                remote as Record<string, unknown>,
+              )
         put(next.base, slice, remote)
         put(next.local, slice, merged.value as Slices[typeof slice])
         conflicts = [

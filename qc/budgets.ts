@@ -8,6 +8,9 @@
 // - oncePerSession: sign-in and the first page load. Their own budgets,
 //   recorded first: 1.5× the worst sample of three `QC_MODE=record` runs
 //   (step 9b). The numbers below are provisional until then.
+// - bulk: an action over many records at once (tagging up to 100 contacts).
+//   Exempt from 100 ms, with a progress state in the UI; its own budget
+//   is recorded like oncePerSession's (human, 2026-10-17).
 //
 // **Raising a budget, or exempting a flow, needs the human's explicit
 // OK.** A flow over budget means fixing the code.
@@ -24,7 +27,7 @@
 // run lists every knownOver flow in a banner, timed or not, so it can't be
 // forgotten. Remove the mark with the fix.
 
-export type FlowKind = 'repeatable' | 'oncePerSession'
+export type FlowKind = 'repeatable' | 'oncePerSession' | 'bulk'
 
 export interface Budget {
   kind: FlowKind
@@ -60,6 +63,14 @@ export const budgets = {
   'contact.note.save': repeatable,
   'contact.note.pin': repeatable,
   'contact.note.archive': repeatable,
+  'contact.tag.add': repeatable,
+  'contact.tag.remove': repeatable,
+  'tags.create': repeatable,
+  'tags.rename': repeatable,
+  'tags.archive': repeatable,
+  'tags.filter': repeatable,
+  // Provisional until step 9b records it.
+  'contacts.bulkTag': { kind: 'bulk', maxMs: 1000 },
 
   // qc/harness.spec.ts: proves the timing path can fail and pass.
   'harness.impossible': { kind: 'repeatable', maxMs: 1, selfTest: true },

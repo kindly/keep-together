@@ -27,6 +27,10 @@ export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
       query: api.platform.tenants.members,
       args: { tenantId: tenant._id },
     })
+    convex.prewarmQuery({
+      query: api.contacts.queries.tags,
+      args: { tenantId: tenant._id, includeInactive: true },
+    })
   },
 })
 
