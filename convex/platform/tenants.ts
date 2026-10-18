@@ -9,6 +9,7 @@ import type { Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
 import { internalMutation, internalQuery, query } from '../_generated/server'
 import { requireMember, roleValidator } from '../lib/tenancy'
+import { mayManageLists, preferencesFor } from './preferences'
 import type { Role } from '../lib/tenancy'
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/
@@ -36,9 +37,21 @@ export const mine = query({
       .collect()
     const tenants = await Promise.all(
       memberships.map(async (m) => {
-        const t = await ctx.db.get(m.tenantId)
+        const [t, prefs] = await Promise.all([
+          ctx.db.get(m.tenantId),
+          preferencesFor(ctx, m.tenantId),
+        ])
         return t && t.status === 'active'
-          ? { _id: t._id, slug: t.slug, name: t.name, role: m.role }
+          ? {
+              _id: t._id,
+              slug: t.slug,
+              name: t.name,
+              role: m.role,
+              // The Settings page's switch, and what it means for this caller.
+              staffCanManageLists: prefs?.staffCanManageLists ?? false,
+              listsVersion: prefs?.listsVersion ?? null,
+              canManageLists: mayManageLists(m.role, prefs),
+            }
           : null
       }),
     )

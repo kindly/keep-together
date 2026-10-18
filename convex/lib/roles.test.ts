@@ -53,7 +53,16 @@ const person = (lastName: string) => ({
 const NOT_TENANT_SCOPED = new Set(['auth:signIn', 'auth:signOut'])
 
 /** Admin-only writes (`minRole: 'admin'`): staff are refused too. */
-const ADMIN_ONLY = new Set(['contacts/mutations:saveIdentifierType'])
+const ADMIN_ONLY = new Set(['platform/preferences:setStaffCanManageLists'])
+
+/**
+ * List management (platform/preferences): admins always; staff only while
+ * the tenant's "staff can manage lists" preference is on.
+ */
+const LIST_MANAGERS = new Set([
+  'contacts/mutations:saveTag',
+  'contacts/mutations:saveIdentifierType',
+])
 
 /** Modules that register no functions and only load in the Convex runtime. */
 const CONFIG_MODULES = new Set(['convex.config', 'auth.config', 'schema'])
@@ -213,12 +222,22 @@ describe('every public mutation and action', () => {
     // Guard against the enumeration silently finding nothing.
     expect(writes.map((w) => w.path)).toContain('contacts/mutations:create')
     expect(writes.map((w) => w.path)).toContain('contacts/notes:save')
-    // A stale ADMIN_ONLY entry (renamed or deleted function) fails here.
-    for (const p of ADMIN_ONLY) {
+    // A stale ADMIN_ONLY / LIST_MANAGERS entry (renamed or deleted
+    // function) fails here.
+    for (const p of [...ADMIN_ONLY, ...LIST_MANAGERS]) {
       expect(
         writes.map((w) => w.path),
-        `ADMIN_ONLY ${p}`,
+        `ADMIN_ONLY / LIST_MANAGERS ${p}`,
       ).toContain(p)
+    }
+    const staffManageLists = async (on: boolean) => {
+      const mine = await a.as.query(api.platform.tenants.mine, {})
+      const prefs = mine.find((m) => m._id === a.tenantId)!
+      await a.as.mutation(api.platform.preferences.setStaffCanManageLists, {
+        tenantId: a.tenantId,
+        expected: prefs.listsVersion ?? undefined,
+        staffCanManageLists: on,
+      })
     }
 
     const checked: Array<string> = []
@@ -250,6 +269,17 @@ describe('every public mutation and action', () => {
       if (ADMIN_ONLY.has(w.path)) {
         expect(await kindOf(staff), `${w.path} as staff`).toBe('forbidden')
         expect(await kindOf(a.as), `${w.path} as admin`).not.toBe('forbidden')
+      } else if (LIST_MANAGERS.has(w.path)) {
+        expect(await kindOf(staff), `${w.path} as staff`).toBe('forbidden')
+        expect(await kindOf(a.as), `${w.path} as admin`).not.toBe('forbidden')
+        await staffManageLists(true)
+        expect(await kindOf(staff), `${w.path} as staff, on`).not.toBe(
+          'forbidden',
+        )
+        expect(await kindOf(viewer), `${w.path} as viewer, on`).toBe(
+          'forbidden',
+        )
+        await staffManageLists(false)
       } else {
         expect(await kindOf(staff), w.path).not.toBe('forbidden')
       }

@@ -10,6 +10,12 @@ export type Tenant = {
   slug: string
   name: string
   role: 'admin' | 'staff' | 'viewer'
+  /** The tenant's "staff can manage tags and identifier types" switch. */
+  staffCanManageLists: boolean
+  /** Its counter, for the switch's save; null until first saved. */
+  listsVersion: number | null
+  /** Whether this caller may manage those lists, given role and switch. */
+  canManageLists: boolean
 }
 
 export const TenantContext = createContext<Tenant | null>(null)
@@ -34,6 +40,15 @@ export function useCanWrite(): boolean {
  */
 export function useIsAdmin(): boolean {
   return useTenant().role === 'admin'
+}
+
+/**
+ * Whether the caller may create, rename and archive tags and identifier
+ * types: admins, and staff when the group allows it. The backend enforces
+ * it (platform/preferences).
+ */
+export function useCanManageLists(): boolean {
+  return useTenant().canManageLists
 }
 
 // The signed-in user's groups, subscribed once above the router so the

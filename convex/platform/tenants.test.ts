@@ -61,6 +61,9 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
       slug: 'anytown-hall',
       name: 'Anytown Village Hall',
       role: 'admin',
+      staffCanManageLists: false,
+      listsVersion: null,
+      canManageLists: true,
     },
   ])
 })

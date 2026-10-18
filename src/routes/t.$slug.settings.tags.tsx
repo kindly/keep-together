@@ -5,7 +5,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Doc } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
-import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
+import { cachedTenant, useCanManageLists, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/tags')({
   component: TagsPage,
@@ -33,17 +33,19 @@ function message(err: unknown): string {
     return data.problems.map((p) => p.message).join('; ')
   if (data?.kind === 'stale')
     return 'Someone else changed this tag just now; check it and try again'
+  if (data?.kind === 'forbidden')
+    return 'You can no longer manage tags in this group'
   return data?.message ?? data?.kind ?? 'Could not save'
 }
 
 /**
- * The tenant's tags: create, rename, archive / reactivate (staff and
- * admins; viewers read). Archiving hides a tag from pickers and keeps
+ * The tenant's tags: create, rename, archive / reactivate (admins, and
+ * staff when the group allows it; everyone else reads). Archiving hides a tag from pickers and keeps
  * every assignment (contact-model plan).
  */
 function TagsPage() {
   const tenant = useTenant()
-  const canWrite = useCanWrite()
+  const canWrite = useCanManageLists()
   const tags = useQuery(api.contacts.queries.tags, {
     tenantId: tenant._id,
     includeInactive: true,
@@ -148,7 +150,7 @@ function TagList({
 
 function TagRow({ tag }: { tag: Doc<'tags'> }) {
   const tenant = useTenant()
-  const canWrite = useCanWrite()
+  const canWrite = useCanManageLists()
   const saveTag = useMutation(api.contacts.mutations.saveTag)
   const [editing, setEditing] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)

@@ -59,6 +59,12 @@ team is named operators with 2FA, and the processor DPA says so.
 The rule is structural, like rule 6:
 - `tenantQuery` defaults to `minRole: 'viewer'` and `tenantMutation` to
   `minRole: 'staff'`; admin-only functions declare `minRole: 'admin'`.
+- One check depends on a tenant preference, so it can't be a static
+  `minRole`: managing the tag and identifier type lists is for admins, and
+  for staff only while the admin switch "staff can manage tags and
+  identifier types" is on (off by default). `saveTag` and
+  `saveIdentifierType` call `requireListManager` (`platform/preferences`)
+  first; the roles meta-test lists them in `LIST_MANAGERS`.
 - A tenant always has at least one admin.
 - Schema: `owner` → `admin` (loosen → backfill → tighten).
 

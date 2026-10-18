@@ -65,6 +65,16 @@ export default defineSchema({
     iv: v.string(),
   }).index('by_tenant_key', ['tenantId', 'key']),
 
+  // Per-tenant preferences: plain, non-secret switches admins set on the
+  // Settings page (convex/platform/preferences.ts). At most one row per
+  // tenant, created on first save; no row means every default.
+  //   tenantPreferences.lists → staffCanManageLists (listsVersion)
+  tenantPreferences: defineTable({
+    tenantId: v.id('tenants'),
+    staffCanManageLists: v.boolean(),
+    listsVersion: v.number(),
+  }).index('by_tenant', ['tenantId']),
+
   // ── command log (ADR 0013 / 0017) ─────────────────────────────────────
   // One row per *action*: several contracts executed in one mutation under
   // a name, so "this restore = these three revisions" is one query.

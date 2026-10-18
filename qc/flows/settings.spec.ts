@@ -51,6 +51,13 @@ function typeRowButtonIsWant(name: string) {
   )
 }
 
+/** The staff-lists switch is on when window.__qcWant is 'on'. */
+function switchIsWant() {
+  const w = (window as unknown as { __qcWant?: string }).__qcWant
+  const s = document.querySelector<HTMLInputElement>('input[role="switch"]')
+  return s !== null && s.checked === (w === 'on')
+}
+
 /** The settings tab headed window.__qcWant has loaded its list. */
 function tabLoaded() {
   const w = (window as unknown as { __qcWant?: string }).__qcWant
@@ -227,14 +234,13 @@ test.describe('settings for staff and viewers', () => {
       await expect(
         other.locator('main li', { hasText: 'Member' }),
       ).toBeVisible()
-      // Staff edit tags; viewers read them.
-      const editable = role === 'staff'
-      await expect(other.getByLabel('New tag name')).toHaveCount(
-        editable ? 1 : 0,
-      )
+      // Read-only: staff manage lists only when an admin allows it (off
+      // here), viewers never; neither sees the switch.
+      await expect(other.getByLabel('New tag name')).toHaveCount(0)
       await expect(
         other.locator('main li', { hasText: 'Member' }).getByRole('button'),
-      ).toHaveCount(editable ? 2 : 0)
+      ).toHaveCount(0)
+      await expect(other.getByRole('switch')).toHaveCount(0)
 
       await other.goto(identifiersPath(user.slug))
       await expect(
@@ -244,4 +250,69 @@ test.describe('settings for staff and viewers', () => {
       await other.context().close()
     })
   }
+})
+
+test.describe('staff can manage lists', () => {
+  test('the admin switch opens tags and identifier types to staff, live', async ({
+    page,
+    browser,
+    baseURL,
+    flow,
+    session,
+    users,
+  }) => {
+    test.info().annotations.push(SETTINGS_ROUTE, TAGS_ROUTE, IDENTIFIERS_ROUTE)
+    const label = 'Staff can manage tags and identifier types'
+    await page.goto(tagsPath(users.a.slug))
+    const sw = page.getByRole('switch', { name: label })
+    // The tenant is shared by the worker's tests: it starts, and is left, off.
+    await expect(sw).not.toBeChecked()
+    const staff = await secondTab(browser, baseURL!, await session(users.staff))
+    try {
+      await staff.goto(tagsPath(users.staff.slug))
+      await expect(
+        staff.locator('main li', { hasText: 'Member' }),
+      ).toBeVisible()
+      await expect(staff.getByLabel('New tag name')).toHaveCount(0)
+
+      // The input is visually hidden; its label takes the (trusted) click.
+      const toggle = page.getByText(label, { exact: true })
+      await flow(page, 'settings.staffLists.toggle', {
+        before: async () => want(page, (await sw.isChecked()) ? 'off' : 'on'),
+        action: () => toggle.click(),
+        until: switchIsWant,
+      })
+      if (!(await sw.isChecked())) await toggle.click()
+      await expect(sw).toBeChecked()
+
+      // Staff's open page follows: both lists become theirs to manage.
+      await expect(tabs(staff).getByRole('link')).toHaveText([
+        'Tags',
+        'Identifier types',
+      ])
+      const tag = uniqueName('staff-tag')
+      await staff.getByLabel('New tag name').fill(tag)
+      await staff.getByRole('button', { name: 'Create tag' }).click()
+      await expect(staff.locator('main li', { hasText: tag })).toBeVisible()
+      await tabs(staff).getByRole('link', { name: 'Identifier types' }).click()
+      const type = uniqueName('staff-type')
+      await staff.getByLabel('New identifier type').fill(type)
+      await staff.getByRole('button', { name: 'Create type' }).click()
+      await expect(staff.locator('main li', { hasText: type })).toBeVisible()
+
+      // Off again: the open identifier types page says admins only.
+      await toggle.click()
+      await expect(sw).not.toBeChecked()
+      await expect(
+        staff.getByText('Only admins of this group can change its settings.'),
+      ).toBeVisible()
+      await expect(tabs(staff).getByRole('link')).toHaveText(['Tags'])
+    } finally {
+      if (await sw.isChecked()) {
+        await page.getByText(label, { exact: true }).click()
+        await expect(sw).not.toBeChecked()
+      }
+      await staff.context().close()
+    }
+  })
 })

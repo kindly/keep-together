@@ -6,13 +6,13 @@ import type { FormEvent } from 'react'
 import type { Doc } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { IDENTIFIER_TYPE_LIMIT } from '../../convex/contacts/rules'
-import { cachedTenant, useIsAdmin, useTenant } from '../lib/tenant'
+import { cachedTenant, useCanManageLists, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/identifiers')({
   component: IdentifierTypesPage,
   loader: ({ context: { convex }, params }) => {
     const tenant = cachedTenant(convex, params.slug)
-    if (tenant?.role !== 'admin') return
+    if (!tenant?.canManageLists) return
     convex.prewarmQuery({
       query: api.contacts.queries.listIdentifierTypes,
       args: { tenantId: tenant._id, includeInactive: true },
@@ -37,29 +37,30 @@ function message(err: unknown): string {
     return data.problems.map((p) => p.message).join('; ')
   if (data?.kind === 'stale')
     return 'Someone else changed this type just now; check it and try again'
-  if (data?.kind === 'forbidden') return 'Only admins can change settings'
+  if (data?.kind === 'forbidden')
+    return 'You can no longer manage identifier types in this group'
   return data?.message ?? data?.kind ?? 'Could not save'
 }
 
 /**
  * The tenant's identifier types (external-ids plan): create, rename,
- * archive / reactivate, admins only. Archiving takes a type out of the
+ * archive / reactivate: admins, and staff when the group allows it. Archiving takes a type out of the
  * contact form's picker; contacts keep its identifiers and lookups still
  * find them. Types are never deleted.
  */
 function IdentifierTypesPage() {
   const tenant = useTenant()
-  const isAdmin = useIsAdmin()
+  const canManage = useCanManageLists()
   const types = useQuery(
     api.contacts.queries.listIdentifierTypes,
-    isAdmin ? { tenantId: tenant._id, includeInactive: true } : 'skip',
+    canManage ? { tenantId: tenant._id, includeInactive: true } : 'skip',
   )
   const save = useMutation(api.contacts.mutations.saveIdentifierType)
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  if (!isAdmin) {
+  if (!canManage) {
     return <p>Only admins of this group can change its settings.</p>
   }
 
