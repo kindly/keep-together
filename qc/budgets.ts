@@ -57,7 +57,7 @@ export const budgets = {
   'contact.note.add': repeatable,
   'contact.note.save': repeatable,
   'contact.note.pin': repeatable,
-  'contact.note.archive': repeatable,
+  'contact.note.archive': perfTaskPending,
 
   // qc/harness.spec.ts: proves the timing path can fail and pass.
   'harness.impossible': { kind: 'repeatable', maxMs: 1, selfTest: true },
