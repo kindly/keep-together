@@ -430,25 +430,35 @@ export const saveForm = tenantMutation({
       contact.identifiersVersion,
     )
 
-    // A clash is the contract's refusal too, but caught here it stays on
-    // its slice: the other slices still save.
+    // A clash or a type archived mid-edit is the contract's refusal too,
+    // but caught here it stays on its row: the other slices still save.
     const ids = changed.findIndex((c) => c.name === 'identifiers')
     if (ids !== -1) {
       const kept = new Set(current.identifiers.identifiers.map((r) => r.key))
-      const rows = (changed[ids].prepared as Payloads['identifiers'])
-        .identifiers
-      const clashes = await identifierClashes(
-        ctx.db,
-        args.id,
-        rows.filter((r) => !kept.has(r.key)),
-      )
-      if (clashes.length) {
-        problems.identifiers = clashes.map((c) => ({
+      const added = (
+        changed[ids].prepared as Payloads['identifiers']
+      ).identifiers.filter((r) => !kept.has(r.key))
+      const [types, clashes] = await Promise.all([
+        Promise.all(added.map((r) => ctx.db.get(r.typeId))),
+        identifierClashes(ctx.db, args.id, added),
+      ])
+      const refused = [
+        ...added
+          .filter((_, i) => !types[i]?.isActive)
+          .map((r) => ({
+            field: 'identifiers',
+            message: 'That type has been archived: choose another',
+            key: r.key!,
+          })),
+        ...clashes.map((c) => ({
           field: 'identifiers',
           message: `${c.value} is already used by ${c.displayName}`,
           key: c.key,
           contactId: c.contactId,
-        }))
+        })),
+      ]
+      if (refused.length) {
+        problems.identifiers = refused
         changed.splice(ids, 1)
       }
     }

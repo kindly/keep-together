@@ -168,6 +168,53 @@ test.describe('identifiers on a contact', { annotation: CONTACT_ROUTE }, () => {
     },
   )
 
+  test(
+    'an archived type stays on its rows, marked, and is not offered',
+    { annotation: [CONTACT_ROUTE, IDENTIFIERS_ROUTE] },
+    async ({ page, users }) => {
+      const type = uniqueName('idretired')
+      await createType(page, users.a.slug, type)
+      // So "add" stays offered whatever else this worker's tenant holds.
+      await createType(page, users.a.slug, uniqueName('idactive'))
+      const url = await createContact(page, users.a.slug, uniqueName('kept'))
+      const value = `${type}-1`
+      await addIdentifier(page, type, value)
+
+      // A value typed before its type is shown as not saved yet.
+      await identifiers(page).getByRole('button', { name: 'add' }).click()
+      await idRows(page).last().getByLabel('Identifier value').fill('later')
+      await idRows(page).last().getByLabel('Identifier value').press('Tab')
+      await expect(
+        idRows(page).last().getByText('Choose a type to save this'),
+      ).toBeVisible()
+      await idRows(page)
+        .last()
+        .getByRole('button', { name: 'remove identifier later' })
+        .click()
+
+      await page.goto(`/t/${users.a.slug}/settings/identifiers`)
+      await page
+        .locator('main li')
+        .filter({ has: page.getByText(type, { exact: true }) })
+        .getByRole('button', { name: 'archive' })
+        .click()
+      await expect(
+        section(page, 'Archived').getByText(type, { exact: true }),
+      ).toBeVisible()
+
+      await page.goto(url)
+      const row = idRows(page).filter({ hasText: value })
+      await expect(row).toContainText('(archived type)')
+      await identifiers(page).getByRole('button', { name: 'add' }).click()
+      await expect(
+        idRows(page)
+          .last()
+          .getByLabel('Identifier type')
+          .locator('option', { hasText: type }),
+      ).toHaveCount(0)
+    },
+  )
+
   test('hidden in a group with no active type', async ({
     browser,
     baseURL,

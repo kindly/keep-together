@@ -186,6 +186,9 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
   }
 
   useEffect(() => {
+    // Nothing to save (say, an unfilled row removed): disarm it, or the
+    // next unrelated edit would skip the pause.
+    if (!state.needsSave && state.status !== 'saving') saveNow.current = false
     if (!state.needsSave || state.status === 'saving') return
     // Straight away, as the Save button does: effects from a discrete input
     // run in the input's own task, so the mutation leaves before the next
@@ -869,6 +872,10 @@ function IdentifierFields({
         {value.identifiers.map((row) => {
           const type = info.get(row.typeId)
           const clash = problems.find((p) => p.key === row.key)
+          // Not submitted without a type, but typed work all the same:
+          // it counts as unsaved (`unsavedWork`), so leaving asks first.
+          const needsType =
+            (row.typeId as string) === '' && row.value.trim() !== ''
           const remove = () => {
             onDone()
             onChange({
@@ -933,6 +940,9 @@ function IdentifierFields({
                   remove
                 </button>
               </div>
+              {needsType && !clash && (
+                <Message message="Choose a type to save this" tone="error" />
+              )}
               {clash &&
                 (clash.contactId ? (
                   <Link

@@ -245,8 +245,22 @@ describe('the identifiers slice', () => {
 
   test('another tenant’s type is unknown', async () => {
     const theirs = (await saveType(f.b, 'Theirs')).id
+    const result = await saveIds(0, [
+      { key: 'x1', typeId: theirs, value: 'T-1' },
+    ])
+    expect(result.saved).toEqual([])
+    expect(result.problems.identifiers).toMatchObject([{ key: 'x1' }])
     expect(
-      await errorData(saveIds(0, [{ typeId: theirs, value: 'T-1' }])),
+      await errorData(
+        runContract(f.a, (ctx) =>
+          executeContract(
+            ctx,
+            identifiers,
+            { identifiers: [{ typeId: theirs, value: 'T-1' }] },
+            { entityId: ada, expected: 0, source: 'test' },
+          ),
+        ),
+      ),
     ).toMatchObject({ reason: 'unknown_identifier_type' })
   })
 })
@@ -328,10 +342,19 @@ describe('archived types', () => {
   test('cannot be newly added; kept rows stay, marked, and are still found', async () => {
     expect(
       await errorData(
-        saveIds(1, [
-          { key: 'i1', typeId: oldCrm, value: 'C-1' },
-          { typeId: oldCrm, value: 'C-2' },
-        ]),
+        runContract(f.a, (ctx) =>
+          executeContract(
+            ctx,
+            identifiers,
+            {
+              identifiers: [
+                { key: 'i1', typeId: oldCrm, value: 'C-1' },
+                { typeId: oldCrm, value: 'C-2' },
+              ],
+            },
+            { entityId: ada, expected: 1, source: 'test' },
+          ),
+        ),
       ),
     ).toMatchObject({ reason: 'unknown_identifier_type' })
     // Adding a row of another type keeps the archived one.
@@ -348,6 +371,28 @@ describe('archived types', () => {
       ['Old CRM', false, 'C-1'],
     ])
     expect((await find(oldCrm, 'c-1'))?._id).toBe(ada)
+  })
+
+  test('archived mid-edit: "to fix" on the row; other slices save', async () => {
+    const result = await form({
+      details: { expected: 0, ...individual('Byron') },
+      identifiers: {
+        expected: 1,
+        identifiers: [
+          { key: 'i1', typeId: oldCrm, value: 'C-1' }, // kept: fine
+          { key: 'i2', typeId: oldCrm, value: 'C-2' },
+        ],
+      },
+    })
+    expect(result.saved).toEqual(['details'])
+    expect(result.problems.identifiers).toEqual([
+      {
+        field: 'identifiers',
+        message: 'That type has been archived: choose another',
+        key: 'i2',
+      },
+    ])
+    expect((await rowsOf(ada)).map((r) => r.key)).toEqual(['i1'])
   })
 
   test('restore re-adds a row of an archived type', async () => {

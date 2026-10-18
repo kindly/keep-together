@@ -502,6 +502,97 @@ describe('contact form state', () => {
   })
 })
 
+describe('unfilled rows', () => {
+  const email = (key: string, address: string) => ({
+    key,
+    label: 'home' as const,
+    address,
+    isPrimary: false,
+  })
+  const a = slices.methods.emails[0]
+  const blank = email('e9', '')
+
+  test('are never submitted, and base stays clean after the save', () => {
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'methods',
+      value: { emails: [a, email('e2', 'b@x.com'), blank], phones: [] },
+    })
+    s = reduce(s, { type: 'commit' })
+    const submitted = submission(s)
+    expect(submitted.methods?.emails).toEqual([a, email('e2', 'b@x.com')])
+    s = reduce(s, { type: 'saving' })
+    s = reduce(s, {
+      type: 'saved',
+      submitted,
+      at: 1,
+      result: {
+        saved: ['methods'],
+        problems: {},
+        stale: {},
+        counters: { ...counters, methods: 1, archive: 0 },
+      },
+    })
+    expect(s.base.methods.emails).toEqual([a, email('e2', 'b@x.com')])
+    expect(s.local.methods.emails).toContain(blank)
+    expect(s.dirty.methods).toBe(false)
+    expect(s.needsSave).toBe(false)
+  })
+
+  test('a blank row on screen never turns a remote change into a conflict', () => {
+    // Emails [A] plus a blank row; a new phone makes methods dirty. Another
+    // tab adds email C. The retry must keep C, not overwrite it with [A].
+    const phone = {
+      key: 'p1',
+      label: 'home' as const,
+      number: '01632',
+      isPrimary: true,
+    }
+    const c = email('e3', 'c@x.com')
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'methods',
+      value: { emails: [a, blank], phones: [phone] },
+    })
+    s = reduce(s, {
+      type: 'server',
+      slices: { ...slices, methods: { emails: [a, c], phones: [] } },
+      counters: { ...counters, methods: 1 },
+    })
+    expect(s.conflicts).toEqual([])
+    expect(s.local.methods).toEqual({ emails: [a, c, blank], phones: [phone] })
+    expect(submission(s).methods).toEqual({ emails: [a, c], phones: [phone] })
+    expect(s.needsSave).toBe(true)
+  })
+})
+
+describe('a slice edited back to its saved state', () => {
+  test('drops its problems (details here)', () => {
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'details',
+      value: { ...slices.details, lastName: '' },
+    })
+    const submitted = submission(s)
+    s = reduce(s, {
+      type: 'saved',
+      submitted,
+      at: 1,
+      result: {
+        saved: [],
+        problems: { details: [{ field: 'lastName', message: 'needed' }] },
+        stale: {},
+        counters: { ...counters, archive: 0 },
+      },
+    })
+    expect(s.problems.details).toHaveLength(1)
+    s = reduce(s, { type: 'edit', slice: 'details', value: slices.details })
+    expect(s.dirty.details).toBe(false)
+    expect(s.problems.details).toBeUndefined()
+    expect(unsavedWork(s)).toBe('clean')
+  })
+})
+
 describe('the identifiers slice', () => {
   const row = (key: string, typeId: string, value: string) => ({
     key,
@@ -533,6 +624,17 @@ describe('the identifiers slice', () => {
     })
     s = reduce(s, { type: 'commit' })
     expect(unsavedWork(s)).toBe('busy')
+  })
+
+  test('a value typed without a type is unsaved work, though not sent', () => {
+    const s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'identifiers',
+      value: { identifiers: [old, row('i2', '', 'M2')] },
+    })
+    expect(s.dirty.identifiers).toBe(false)
+    expect(submission(s)).toEqual({})
+    expect(unsavedWork(s)).toBe('unsaved')
   })
 
   test('a clash stays on its row (by key) until the row is removed', () => {

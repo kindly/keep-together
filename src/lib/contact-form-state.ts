@@ -179,6 +179,50 @@ export function mergeIdentifiers(
   return { identifiers: [...kept, ...added] }
 }
 
+/**
+ * Per-field merge of the rows that would be submitted. base never holds
+ * unfilled rows (`submission` cleans), so merging raw local would read a
+ * blank row left on screen as a local change to its whole list, and the
+ * retry would overwrite the remote rows. The unfilled rows ride along at
+ * the end of their lists.
+ */
+function mergeFilled<TSlice extends SliceName>(
+  slice: TSlice,
+  base: Slices[TSlice],
+  local: Slices[TSlice],
+  remote: Slices[TSlice],
+): { value: Slices[TSlice]; conflicts: Array<string> } {
+  const filled = clean(slice, local) as Record<string, unknown>
+  const merged = threeWayMerge(
+    base as Record<string, unknown>,
+    filled,
+    remote as Record<string, unknown>,
+  )
+  const value: Record<string, unknown> = { ...merged.value }
+  for (const [field, rows] of Object.entries(
+    local as Record<string, unknown>,
+  )) {
+    if (!Array.isArray(rows)) continue
+    const kept = filled[field] as Array<unknown>
+    const unfilled = rows.filter((r) => !kept.includes(r))
+    if (unfilled.length)
+      value[field] = [...(value[field] as Array<unknown>), ...unfilled]
+  }
+  return { value: value as Slices[TSlice], conflicts: merged.conflicts }
+}
+
+/**
+ * Identifier rows with a value but no type yet: not submitted (there is
+ * nothing to save them as), but typed work all the same.
+ */
+export function untyped(
+  value: Slices['identifiers'],
+): Slices['identifiers']['identifiers'] {
+  return value.identifiers.filter(
+    (r) => (r.typeId as string) === '' && r.value.trim() !== '',
+  )
+}
+
 function isDirty<TSlice extends SliceName>(
   slice: TSlice,
   local: Slices[TSlice],
@@ -265,20 +309,21 @@ export function reduce(state: FormState, action: Action): FormState {
                   ),
                   conflicts: [],
                 }
-              : threeWayMerge(
-                  state.base[slice] as Record<string, unknown>,
-                  state.local[slice] as Record<string, unknown>,
-                  remote as Record<string, unknown>,
+              : mergeFilled(
+                  slice,
+                  state.base[slice] as never,
+                  state.local[slice] as never,
+                  remote as never,
                 )
         put(next.base, slice, remote)
-        put(next.local, slice, merged.value as Slices[typeof slice])
+        put(next.local, slice, merged.value)
         conflicts = [
           ...conflicts,
           ...merged.conflicts.map((f) => `${slice}.${f}`),
         ]
         next.dirty[slice] = isDirty(
           slice,
-          merged.value as Slices[typeof slice],
+          merged.value,
           remote,
         )
         if (next.dirty[slice]) needsSave = true // retry the save against the new counter
@@ -413,5 +458,8 @@ export function submission(state: FormState): Partial<Slices> {
  */
 export function unsavedWork(state: FormState): Unsaved {
   if (state.status === 'saving' || state.needsSave) return 'busy'
-  return SLICES.some((s) => state.dirty[s]) ? 'unsaved' : 'clean'
+  return SLICES.some((s) => state.dirty[s]) ||
+    untyped(state.local.identifiers).length > 0
+    ? 'unsaved'
+    : 'clean'
 }
