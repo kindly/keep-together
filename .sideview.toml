@@ -95,3 +95,11 @@ id = "adr-0019-merge"
 label = "ADR 0019: merge"
 category = "docs"
 order = 5
+
+[[pages]]
+path = "qc-report/trend.html"
+id = "qc-trend"
+label = "QC trend"
+category = "factory"
+order = 2
+render = "iframe"
