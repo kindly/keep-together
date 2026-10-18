@@ -4,7 +4,9 @@ Status: accepted (2026-10-18; proposed 2026-10-17) · from the logins & roles pl
 (`factory/plans/auth-roles.sv`, confirmed in grill round 3). Transport
 details are confirmed by spike E1 (`docs/spikes/08-email.md`). **Amended
 2026-10-18 after the email provider plan (`factory/plans/email-provider.sv`)**:
-see "Amendment" at the end. Text it supersedes is marked *[superseded]*.
+see "Amendment" at the end. **Amended 2026-10-19 after the E2a review**:
+suppression is per address in comms; see "Amendment (2026-10-19)". Text
+either supersedes is marked *[superseded]*.
 
 ## Context
 
@@ -15,8 +17,9 @@ Convex has no email of its own. We need mail for two jobs:
 - **bulk:** newsletters and appeals, because comms will grow into a small
   Mailchimp alternative.
 
-Bounces and complaints must feed back automatically. A bounce sets the
-email row's `onHold`, and suppression is centralised in comms (rule 5).
+Bounces and complaints must feed back automatically. ~~A bounce sets the
+email row's `onHold`~~ *[superseded 2026-10-19: a hard bounce suppresses
+the address in comms]*, and suppression is centralised in comms (rule 5).
 
 The margin is pennies per group, so cost at newsletter volume matters.
 
@@ -63,11 +66,12 @@ separate account, `keep-mail-tx`; see Amendment]* and its own subdomain.
 **3. Use one entry point, `comms.send(kind, …)`.** Every message goes
 through it, auth mail included: Convex Auth's or Better Auth's verification
 sender calls it.
-- **`transactional`** ignores marketing consent and still refuses an
-  `onHold` (hard-bounced) address.
-- **`marketing`** requires consent for the purpose, skips `onHold`, and
-  adds List-Unsubscribe headers.
-- **A bounce** sets `onHold` on the email row.
+- **`transactional`** ignores marketing consent and still refuses a
+  ~~`onHold`~~ suppressed (hard-bounced) address.
+- **`marketing`** requires consent for the purpose, skips ~~`onHold`~~
+  suppressed addresses, and adds List-Unsubscribe headers.
+- **A bounce** ~~sets `onHold` on the email row~~ suppresses the address
+  in the tenant *[superseded 2026-10-19; see Amendment (2026-10-19)]*.
 - **A spam complaint on marketing mail** becomes a consent-withdrawal
   event for that purpose (source `complaint`, rule 2). It never blocks
   transactional mail.
@@ -189,11 +193,12 @@ Consequences above:
   `comms.recordEvent`, and never edited, like `revisions`. Anonymising a
   contact blanks its address there. A contact's SES suppression entry is
   kept, because removing it would let mail go out again.
-- **`onHold` is written through a system contract,
+- ~~**`onHold` is written through a system contract,
   `contacts.deliverability`.** Its slice is `onHold` on every email row and
   its counter is `deliverabilityVersion` on `contacts`. Only the system
   writes it, and every hold gets a revision. A hard bounce holds every row
-  with that normalised address in the tagged tenant.
+  with that normalised address in the tagged tenant.~~ *[superseded
+  2026-10-19: never built; see Amendment (2026-10-19)]*
 - **Scope of E2:** transactional mail and event ingestion only.
   `comms.send('marketing', …)` throws until the comms plan. Complaints are
   stored in `emailEvents` and become consent-withdrawal events once the
@@ -205,3 +210,43 @@ Consequences above:
 - **SMS comes later.** `comms.send` takes a `channel` argument now (email
   only). The comms plan will choose the SMS provider; the consent log is
   already per channel.
+
+## Amendment (2026-10-19, E2a review)
+
+The first E2a build kept a hold as `onHold` on the contact's email row,
+written by the system contract `contacts.deliverability`. Review showed the
+hold was lost whenever the row was re-created (restoring a revision or the
+whole contact, removing and re-adding an email, the same address under a
+new key) and never covered another contact using the address. The human
+decided:
+
+- **Suppression is per address, in comms** (rule 5). Table
+  `emailSuppressions`: one row per (tenant, normalised address), never
+  deleted, written only through the contract `comms.suppression` (counter
+  `saveVersion`). Every change has a revision: who (actor), when, and why
+  (reason, the provider event ref, an admin's note). Nothing a user does
+  to a contact touches it.
+- **Only a hard bounce suppresses** (reason `bounce`): the address is dead
+  for every kind of mail. A complaint is not a suppression, because it
+  must never block transactional mail; E2 keeps it in `emailEvents`, and
+  the comms plan turns it into a consent-withdrawal event.
+- **Writers.** `comms/suppressions:suppress` (and `suppressAddress`) is
+  internal and refuses any caller with a role; the SES webhook's ingest
+  runs it. A public function must never call or schedule it. An
+  **admin-only `release`**, which needs a note, lifts the suppression and
+  schedules `releaseAtProvider`, which removes the address from SES's
+  account-level suppression list in `keep-mail-tx` and `keep-prod` (built
+  in E2b).
+- **Release across tenants.** SES's list is account-wide, but a bounce
+  writes a row only in the tenant whose mail bounced. After a release, any
+  tenant without its own row can send to the address again; if it really
+  is dead, each such tenant pays one more bounce (on the shared
+  reputation) before its own row holds it. Accepted, rather than writing
+  the suppression into every tenant that has the address.
+- **The contact email row has no `onHold`.** The contact page reads the
+  flag at query time from `comms/suppressions:held` (it takes the
+  addresses as arguments, so it stays off a save's critical path), and
+  `comms.send` checks `isSuppressed`.
+- **Erasure keeps suppression rows**, ours as well as SES's. They hold
+  only the address and why, and removing them would let mail go out again.
+  (The erasure plan may store a keyed hash of the address instead.)

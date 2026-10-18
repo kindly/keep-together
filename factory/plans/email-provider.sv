@@ -18,8 +18,8 @@
 <sv-prose id="b2">
 ## Design tree
 
-- **Settled before this page (ADR 0020/0021, not reopened):** one entry point `comms.send(kind, …)`, with transactional mail isolated from marketing. Mail goes from a platform sending domain by default (`auth.` / `mail.`), with the group's name as the From name and the group's address as Reply-To; groups' own domains come later. A bounce sets the email's `onHold`. A marketing complaint becomes a consent-withdrawal event (rule 2) and never blocks transactional mail (rule 5).
-- **Domain rules that apply:** 2 (consent log is the truth, so complaints and unsubscribes become events), 5 (centralised suppression, transactional never blocked by marketing), 6 (tenancy is structural, so per-group isolation can't be a filter someone remembers), and 3 (anonymising a contact must also scrub provider-side copies: suppression lists, logs).
+- **Settled before this page (ADR 0020/0021, not reopened):** one entry point `comms.send(kind, …)`, with transactional mail isolated from marketing. Mail goes from a platform sending domain by default (`auth.` / `mail.`), with the group's name as the From name and the group's address as Reply-To; groups' own domains come later. ~~A bounce sets the email's `onHold`.~~ *[superseded 2026-10-19: see "Amendment (2026-10-19)" in the design tree]* A hard bounce suppresses the address in comms. A marketing complaint becomes a consent-withdrawal event (rule 2) and never blocks transactional mail (rule 5).
+- **Domain rules that apply:** 2 (consent log is the truth, so complaints and unsubscribes become events), 5 (centralised suppression, transactional never blocked by marketing), 6 (tenancy is structural, so per-group isolation can't be a filter someone remembers), and 3 ~~(anonymising a contact must also scrub provider-side copies: suppression lists, logs)~~ *[superseded 2026-10-19]* (anonymising a contact blanks its address in logs such as `emailEvents`, but keeps suppressions, ours and SES's, because they are what stops the mail).
 - **AWS layout (settled in chat, 2026-10-18; applies if SES stays):**
   - **Platform domain** `keep-together.org.uk`, registered in Route 53 and hosted there, so every DNS record is scripted.
   - **Accounts:** the existing account is the Organization's management account. IAM Identity Center is already enabled in **eu-west-2**, with an AdministratorAccess permission set, so root is no longer used.
@@ -42,8 +42,15 @@
 - **Round 3 (settled, all as recommended; the plan is confirmed for building):**
   - E2 covers transactional mail and event ingestion only. Marketing, consent events from complaints, and SES tenant provisioning go to the comms plan.
   - `emailEvents` is an append-only log outside contracts. Anonymising a contact blanks its address there.
-  - `onHold` is written through a new system contract, `contacts.deliverability` (counter `deliverabilityVersion`).
+  - ~~`onHold` is written through a new system contract, `contacts.deliverability` (counter `deliverabilityVersion`).~~ *[superseded 2026-10-19: see "Amendment (2026-10-19)" in the design tree]*
   - `keep-dev` sends from `auth.dev.` / `mail.dev.` in the sandbox, with events going to one chosen dev deployment.
+- **Amendment (2026-10-19, after the E2a review; decided by the human):** a hold on the email row was lost whenever the row was re-created (a restore, remove + re-add, the same address under a new key) and never covered another contact using the address. So:
+  - **Suppression is per address, in comms** (rule 5): table `emailSuppressions`, one row per (tenant, normalised address), never deleted, written only through the contract `comms.suppression` (counter `saveVersion`), so every change has a revision: who, when, why (reason, provider event ref, an admin's note).
+  - **Only a hard bounce suppresses** (reason `bounce`). A complaint never blocks transactional mail; E2 keeps it in `emailEvents`, and the comms plan turns it into a consent event.
+  - **Writers:** `comms/suppressions:suppress` (internal, role-null callers only: the SES webhook's ingest); a public function must never call or schedule it. An **admin-only `release`** (with a note) lifts it and schedules `releaseAtProvider`, which removes the address from SES's account-level suppression list (E2b implements it). Because that SES list is account-wide while our rows are per tenant, after a release any tenant without its own row can send to the address again; a dead address costs each such tenant one bounce before it holds there. Accepted rather than writing across tenants.
+  - **The contact email row has no `onHold`.** The contact page reads the flag at query time from `comms/suppressions:held` (addresses as args, off a save's critical path); `comms.send` checks `isSuppressed`.
+  - **Erasure keeps suppression rows**, ours and SES's: they hold only the address and why, and removing them would let mail go out again.
+  - Built as E2a-1 (table, contract, functions; `onHold` loosened and backfilled into suppressions) and E2a-2 (`onHold` removed). `contacts.deliverability` and `deliverabilityVersion` are not built.
 </sv-prose>
 
 <sv-prose id="b3">
@@ -166,14 +173,14 @@ Round 2: SES specifics. After this I'll write the E1/E2 steps and tests in full 
 <sv-prose id="b5">
 ## Brief
 
-**Goal.** Give keep a working email transport. One entry point, `comms.send(kind, channel, …)`, sends transactional mail (sign-in codes, invitations, receipts) through SES London from `auth.keep-together.org.uk`. Bounces and complaints flow back automatically: a hard bounce puts that address `onHold` for its group, and every provider event is kept. Marketing mail has to be able to run on the same transport later without redesign.
+**Goal.** Give keep a working email transport. One entry point, `comms.send(kind, channel, …)`, sends transactional mail (sign-in codes, invitations, receipts) through SES London from `auth.keep-together.org.uk`. Bounces and complaints flow back automatically: a hard bounce ~~puts that address `onHold` for its group~~ *[superseded 2026-10-19]* suppresses that address for its group (`emailSuppressions`), and every provider event is kept. Marketing mail has to be able to run on the same transport later without redesign.
 
 **Out of scope:** sending marketing (it needs the consent log and lists, which come in the comms plan), the newsletter editor, segments, the unsubscribe page, SMS, groups' own domains, the Gmail BCC helper, the Google connector, managed dedicated IPs.
 
 **Domain rules that apply**
 - **2.** A complaint becomes a consent-withdrawal event once the consent log exists. Until then the complaint is kept in `emailEvents`, so nothing is lost.
-- **3.** Anonymising a contact must also blank its rows in `emailEvents`. Its SES suppression entry stays, because it holds only an address and removing it would let mail go out again.
-- **5.** Transactional mail ignores marketing consent and only refuses `onHold` addresses. Transactional and marketing mail go through different accounts and configuration sets.
+- **3.** Anonymising a contact must also blank its rows in `emailEvents`. Its SES suppression entry stays, and so does its `emailSuppressions` row (2026-10-19), because each holds only an address and removing it would let mail go out again.
+- **5.** Transactional mail ignores marketing consent and only refuses ~~`onHold`~~ suppressed addresses (`emailSuppressions`, 2026-10-19). Transactional and marketing mail go through different accounts and configuration sets.
 - **6.** The SES event route is platform-level, because the SES accounts are ours rather than the groups'. It resolves the tenant from the message's `tenantId` tag (set by `comms.send`) and then calls an `internalTenantMutation`, so domain code never sees a tenant.
 - **7.** No money is involved.
 
@@ -193,15 +200,15 @@ Round 2: SES specifics. After this I'll write the E1/E2 steps and tests in full 
      - a poll of `GetAccount` reads the account status.
    - **Report** in `docs/spikes/08-email.md`: what worked, the event payloads (saved as test fixtures), and the per-second send rate each account gets.
    - **Files:** `scripts/aws/ses-setup.sh`, `convex/comms/spike.ts` (deleted after the spike), `convex/http.ts`, `docs/spikes/08-email.md`.
-2. **E2a, the `onHold` write path.** ∥ E1.
-   - A new contract `contacts.deliverability`. Its slice is `onHold` on every email row; its counter is `deliverabilityVersion` on `contacts`. Only the system writes it (internal function, no `expected`, read-modify-write inside the mutation), and it records a revision with source `comms`.
-   - **Schema in two phases:** add `deliverabilityVersion` as optional, deploy, backfill it to 0 (migrations component), then tighten.
+2. **E2a, the ~~`onHold`~~ suppression write path.** ∥ E1. *[superseded 2026-10-19: see "Amendment (2026-10-19)" in the design tree]*
+   - ~~A new contract `contacts.deliverability`. Its slice is `onHold` on every email row; its counter is `deliverabilityVersion` on `contacts`. Only the system writes it (internal function, no `expected`, read-modify-write inside the mutation), and it records a revision with source `comms`.~~ As built: `emailSuppressions` + contract `comms.suppression`, internal `suppress`, admin `release` (+ `releaseAtProvider` stub), query `held`.
+   - **Schema in two phases:** ~~add `deliverabilityVersion` as optional, deploy, backfill it to 0 (migrations component), then tighten.~~ E2a-1 loosens `contactEmails.onHold` and backfills any stored hold into a suppression; E2a-2 removes the field.
    - **Files:** `convex/contacts/contracts.ts`, `convex/contacts/mutations.ts` (internal), `convex/schema.ts`, `convex/contacts/migrations.ts`.
 3. **E2b, `comms.send` and event ingestion.** After E1 and E2a.
    - New `convex/comms/`:
      - `transport/ses.ts`: plain TypeScript, `send` and `parseEvent`, the only file that names SES;
-     - `send.ts`: `comms.send(kind, channel, …)`. Transactional mail checks `onHold` and goes on the Workpool queue; `kind: 'marketing'` throws `notImplemented` until the comms plan;
-     - `events.ts`: `recordEvent` (`internalTenantMutation`). A hard bounce runs `contacts.deliverability` for every row in that tenant with the same `addressNormalized`; every event appends to `emailEvents`.
+     - `send.ts`: `comms.send(kind, channel, …)`. Transactional mail checks ~~`onHold`~~ `isSuppressed` and goes on the Workpool queue; `kind: 'marketing'` throws `notImplemented` until the comms plan;
+     - `events.ts`: `recordEvent` (`internalTenantMutation`). A hard bounce ~~runs `contacts.deliverability` for every row in that tenant with the same `addressNormalized`~~ runs `suppressAddress` for its address in that tenant (2026-10-19); a complaint suppresses nothing; every event appends to `emailEvents`.
    - Install the Workpool component (`convex/convex.config.ts`), throttled under the account's send rate.
    - App env vars for the sender keys and the events API key. These are platform secrets, not `tenantSettings`. Update the comment in `http.ts` to say so.
    - **Schema:** `emailEvents` is a new table, so no loosen/tighten is needed.
@@ -210,9 +217,9 @@ Round 2: SES specifics. After this I'll write the E1/E2 steps and tests in full 
 
 ### Tests
 - **`transport/ses.ts`:** a request signed at a fixed clock and keys matches a known SigV4 signature. `parseEvent` maps the E1 fixtures (bounce Permanent/Transient, complaint, delivery, suppressed) to our event kinds.
-- **`/webhooks/ses`:** a missing or wrong key returns 401 and writes nothing. A valid hard bounce sets `onHold` on matching rows **in the tagged tenant only**: the same address in a second tenant stays untouched. A soft bounce is logged but sets no hold. An unknown tenant tag returns 200, is logged and writes nothing.
-- **`comms.send`:** transactional mail to an `onHold` address is refused, and mail to a contact with no marketing consent still sends. `marketing` throws. The transport is stubbed and receives the `tenantId` tag and the transactional configuration set.
-- **`contacts.deliverability`:** writes a revision and bumps `deliverabilityVersion`. A later `methods` save keeps `onHold` (existing test).
+- **`/webhooks/ses`:** a missing or wrong key returns 401 and writes nothing. A valid hard bounce ~~sets `onHold` on matching rows~~ suppresses the address **in the tagged tenant only**: the same address in a second tenant stays untouched. A soft bounce is logged but sets no hold. An unknown tenant tag returns 200, is logged and writes nothing.
+- **`comms.send`:** transactional mail to a ~~`onHold`~~ suppressed address is refused, and mail to a contact with no marketing consent still sends. `marketing` throws. The transport is stubbed and receives the `tenantId` tag and the transactional configuration set.
+- ~~**`contacts.deliverability`:** writes a revision and bumps `deliverabilityVersion`. A later `methods` save keeps `onHold` (existing test).~~ *[superseded 2026-10-19: `comms/suppressions.test.ts` covers the suppression, its survival across contact edits and restores, and admin release]*
 - **Every fixture has two tenants.** Spike only, not in CI: a live sandbox run where the simulator bounce arrives at the route end to end.
 
 ### ADR 0021 needs updating (yours or the controller's to write; I don't edit ADRs)
