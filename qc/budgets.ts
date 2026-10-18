@@ -69,6 +69,10 @@ export const budgets = {
   'tags.rename': repeatable,
   'tags.archive': repeatable,
   'tags.filter': repeatable,
+  'settings.nav': repeatable,
+  'settings.identifierTypes.create': repeatable,
+  'settings.identifierTypes.rename': repeatable,
+  'settings.identifierTypes.archive': repeatable,
   // Provisional until step 9b records it.
   'contacts.bulkTag': { kind: 'bulk', maxMs: 1000 },
 

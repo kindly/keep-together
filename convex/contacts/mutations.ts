@@ -19,6 +19,7 @@ import {
   contactContracts,
   details,
   identifierClashes,
+  identifierType,
   identifiers,
   methods,
   tag,
@@ -29,6 +30,7 @@ import {
   addressesFields,
   archiveFields,
   detailsFields,
+  identifierTypeFields,
   identifiersFields,
   methodsFields,
   tagFields,
@@ -126,6 +128,32 @@ export const saveTag = tenantMutation({
       ])
     }
     return executeContract(ctx, tag, payload, {
+      entityId: id,
+      expected,
+      source: 'ui',
+    })
+  },
+})
+
+/**
+ * Create an identifier type (no `id`) or rename / archive / reactivate one.
+ * Admin only: types are managed on the settings page; the contact form's
+ * picker only selects (external-ids plan, g2q3). Never deleted.
+ */
+export const saveIdentifierType = tenantMutation({
+  minRole: 'admin',
+  args: {
+    id: v.optional(v.id('identifierTypes')),
+    expected: v.optional(v.number()),
+    ...identifierTypeFields,
+  },
+  handler: async (ctx, { id, expected, ...payload }) => {
+    if (id !== undefined && expected === undefined) {
+      throw invalid([
+        { field: 'expected', message: 'An update needs the version it edits' },
+      ])
+    }
+    return executeContract(ctx, identifierType, payload, {
       entityId: id,
       expected,
       source: 'ui',

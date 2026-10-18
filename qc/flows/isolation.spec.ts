@@ -24,6 +24,15 @@ test.describe('isolation', () => {
     await expect(page.locator('body')).not.toContainText(`Bravo`)
   })
 
+  test("B's settings are not A's to open", async ({ page, users }) => {
+    route('/t/$slug', '/t/$slug/settings/identifiers')
+    await page.goto(`/t/${users.b.slug}/settings/identifiers`)
+    await expect(
+      page.getByText(`No group called “${users.b.slug}” that you belong to.`),
+    ).toBeVisible()
+    await expect(page.getByLabel('New identifier type')).toHaveCount(0)
+  })
+
   test("B's contact is not in A's group", async ({ page, users, world }) => {
     route('/t/$slug', '/t/$slug/contacts/$contactId')
     for (const id of world.tenants[1].contactIds) {

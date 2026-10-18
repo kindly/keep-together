@@ -116,6 +116,24 @@ export const tags = tenantQuery({
   },
 })
 
+/** How many identifier types a tenant can hold before the list truncates. */
+export const IDENTIFIER_TYPE_LIST_LIMIT = 200
+
+/**
+ * The tenant's identifier types, alphabetical; archived ones only when
+ * asked (the settings page). Any member may read.
+ */
+export const listIdentifierTypes = tenantQuery({
+  args: { includeInactive: v.optional(v.boolean()) },
+  handler: async (ctx, { includeInactive }) => {
+    const rows = await ctx.db
+      .query('identifierTypes')
+      .withIndex('by_tenant_nameNormalized')
+      .take(IDENTIFIER_TYPE_LIST_LIMIT)
+    return includeInactive ? rows : rows.filter((t) => t.isActive)
+  },
+})
+
 /** The most assignments one `byTag` page reads (one contact read each). */
 export const BY_TAG_PAGE_LIMIT = 100
 

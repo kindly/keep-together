@@ -52,6 +52,9 @@ const person = (lastName: string) => ({
 /** Functions registered without a tenant (Convex Auth's sign-in flow). */
 const NOT_TENANT_SCOPED = new Set(['auth:signIn', 'auth:signOut'])
 
+/** Admin-only writes (`minRole: 'admin'`): staff are refused too. */
+const ADMIN_ONLY = new Set(['contacts/mutations:saveIdentifierType'])
+
 /** Modules that register no functions and only load in the Convex runtime. */
 const CONFIG_MODULES = new Set(['convex.config', 'auth.config', 'schema'])
 
@@ -168,6 +171,11 @@ describe('every public mutation and action', () => {
       endDate: '',
       description: '',
     })
+    await a.as.mutation(api.contacts.mutations.saveIdentifierType, {
+      tenantId: a.tenantId,
+      name: 'Old CRM id',
+      isActive: true,
+    })
     // Another tenant's rows must never be picked: ids come from tenant A.
     await b.as.mutation(api.contacts.mutations.create, {
       tenantId: b.tenantId,
@@ -181,6 +189,7 @@ describe('every public mutation and action', () => {
         'relationships',
         'relationshipTypes',
         'tags',
+        'identifierTypes',
         'revisions',
       ] as const satisfies ReadonlyArray<TableNames>) {
         const row = (await ctx.db.query(table).collect()).find(
@@ -222,13 +231,21 @@ describe('every public mutation and action', () => {
         throw new Error(`${w.path}: a viewer's call ${e.message}`)
       })
       expect(asViewer, w.path).toEqual({ kind: 'forbidden' })
-      // The same arguments from staff get past the role check (they may
-      // still fail validation further in, but not as forbidden).
-      const asStaff = await call(staff).then(
-        () => null,
-        (e: unknown) => (e as { data?: { kind?: string } }).data?.kind ?? null,
-      )
-      expect(asStaff, w.path).not.toBe('forbidden')
+      // The same arguments from the lowest role allowed get past the role
+      // check (they may still fail validation further in, but not as
+      // forbidden).
+      const kindOf = (as: typeof viewer) =>
+        call(as).then(
+          () => null,
+          (e: unknown) =>
+            (e as { data?: { kind?: string } }).data?.kind ?? null,
+        )
+      if (ADMIN_ONLY.has(w.path)) {
+        expect(await kindOf(staff), `${w.path} as staff`).toBe('forbidden')
+        expect(await kindOf(a.as), `${w.path} as admin`).not.toBe('forbidden')
+      } else {
+        expect(await kindOf(staff), w.path).not.toBe('forbidden')
+      }
       checked.push(w.path)
     }
     expect(checked.length).toBeGreaterThanOrEqual(15)

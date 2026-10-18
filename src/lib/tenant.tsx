@@ -28,6 +28,14 @@ export function useCanWrite(): boolean {
   return useTenant().role !== 'viewer'
 }
 
+/**
+ * Whether the caller is an admin of this tenant: settings are admin only
+ * (ADR 0020). As with useCanWrite, the backend enforces it.
+ */
+export function useIsAdmin(): boolean {
+  return useTenant().role === 'admin'
+}
+
 // The signed-in user's groups, subscribed once above the router so the
 // list stays live (and in the Convex client's cache) across navigation.
 // The groups page lists it; a tenant route resolves its slug from it with

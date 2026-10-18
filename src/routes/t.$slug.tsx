@@ -66,6 +66,16 @@ function Resolved({ slug }: { slug: string }) {
             >
               Tags
             </Link>
+            {tenant.role === 'admin' && (
+              <Link
+                to="/t/$slug/settings/identifiers"
+                params={{ slug }}
+                className="text-sm hover:underline"
+                activeProps={{ className: 'text-sm font-medium underline' }}
+              >
+                Settings
+              </Link>
+            )}
           </nav>
         </header>
         <Outlet />
