@@ -1,0 +1,194 @@
+# QC suite
+
+Playwright drives the production build of the SPA (`vite build` +
+`vite preview`, headless Chromium, 1280×800) against live Convex dev
+deployments, times every user interaction from the input event to the
+result on screen, and fails the run when a flow is over budget, a route
+has no flow, or two tenants can see each other's data.
+
+The design and the reasons behind it: `factory/plans/qc-suite.sv`, ADR
+0018 and `docs/spikes/07-qc-harness.md`. `convex-test` under `pnpm check`
+stays the correctness layer; QC is never part of `pnpm check`.
+
+## Running it
+
+```bash
+pnpm qc                                  # full run: push, build, test, judge
+pnpm qc qc/flows/contacts.spec.ts        # one spec file (a filtered run)
+QC_REPEATS=1 pnpm qc                     # fast functional pass, 1 timed sample per flow
+QC_MODE=record pnpm qc                   # measure and write history, assert nothing
+QC_NO_WAIT=1 pnpm qc                     # fail at once if another run holds the lock
+pnpm qc:instances --reset                # prepare the pool and empty every instance
+```
+
+- **Run it outside the Claude sandbox.** The sandbox's proxy blocks the
+  WebSockets the SPA needs, slows the network enough to skew timings, and
+  `pnpm qc` writes to the main checkout (lock, env files).
+- **The lock.** `pnpm qc` takes `.qc.lock` in the main checkout for the
+  whole run, from push to the last test. A run from another worktree
+  waits its turn; `QC_NO_WAIT=1` (or `--no-wait` to
+  `scripts/qc-instances.mjs`) fails fast instead. A lock whose pid is dead,
+  or that is more than two hours old, is taken over.
+- **No `--reporter`.** `qc/reporter.ts` carries the run's gates, and a
+  command-line `--reporter` would replace it, so `playwright.config.ts`
+  refuses one.
+- **No retries.** A flaky test is a failure to look at.
+
+## The pool
+
+`pnpm qc` runs `scripts/qc-instances.mjs`, which:
+
+1. ensures `dev/qc-1..3` exist (`QC_INSTANCES` changes the count), each
+   with Convex Auth keys and a deploy key in `.env.qc-<i>.local` in the
+   main checkout;
+2. pushes this checkout's code to every instance in parallel with
+   `convex deploy`, never `convex dev`, so `.env.local` is left alone;
+3. builds `dist-qc/qc-<i>` against each instance's URL and writes
+   `qc/.instances.json`;
+4. runs `playwright test` and holds the lock until it exits.
+
+Workers map onto instances by index, about two per instance. Each worker
+seeds fresh tenants (`r<run>w<n>-a|b`) through `platform/qcSeed:fixture`,
+which refuses to run unless the deployment has `QC_SEED_ENABLED=1` (set
+only on the pool). Nothing is wiped between runs, so data accumulates;
+`--reset` replaces every instance's data with an empty snapshot when it
+gets in the way. The human's own dev deployment is never a pool member.
+
+## Reading the output
+
+After the run the reporter prints one row per flow:
+
+| Column | Meaning |
+|---|---|
+| `kind` | `repeat` (repeatable) or `once` (once per session) |
+| `n` | timed samples across all workers |
+| `median`, `p95`, `max` | raw ms, input event to result on screen, network included |
+| `budget` | every sample must be under this |
+| `headroom` | budget − max; negative means over |
+| `over` | samples at or over the budget |
+| `RTT` | median WebSocket round trip of the workers, for context only |
+| last column | `ok`, `OVER`, `KNOWN OVER` / `ok (known over)`, `not judged` (record mode or RTT ceiling), `self-test` |
+
+Banners to look for:
+
+- **`KNOWN OVER`**: every approved exception in `qc/budgets.ts`, listed on
+  every run with its samples, so none is forgotten.
+- **`RTT over 150 ms`**: the link is too slow to judge latency. Behaviour
+  is still checked, but latency asserts were skipped. Rerun on a better
+  link.
+- **`QC RUN FAILED, whatever the test counts above say`**: a gate the
+  tests can't see failed: the coverage gate, a flow in `qc/budgets.ts`
+  that nothing timed, or the worker-setup sign-in over budget.
+
+Each flow also gets one line in `qc-results/history.jsonl` (gitignored,
+local): samples, p50/p95, budget, pass, RTT, git sha and the run's
+Convex server execution times. `pnpm qc:report` renders that history to
+`qc-report/trend.html`: per-flow p50/p95 over the last 30 runs against the
+budget line. The Playwright HTML report is in `qc-report/playwright/`,
+with traces for failed tests.
+
+Server execution times come from `convex logs`: every uncached call of
+our own functions on a user path must take under 100 ms. `auth:*`,
+admin and cached calls are reported, not asserted.
+
+## Budgets
+
+Budgets live in `qc/budgets.ts`. Every time is **raw**: from the input
+event to the result on screen, network included. There's no round-trip
+allowance and no median: **every sample must be under the budget.** Each
+flow call takes one untimed warm-up, then `QC_REPEATS` (default 5) timed
+samples.
+
+| Kind | Applies to | Budget |
+|---|---|---|
+| `repeatable` | anything a user can do more than once in a signed-in session: navigation, search, save, add, archive … | **under 100 ms, every sample** |
+| `oncePerSession` | sign-in, the first page load | its own budget, recorded: 1.5× the worst sample of three `QC_MODE=record` runs |
+| bulk | an action over many records, such as tagging up to 100 contacts | exempt from 100 ms; its own recorded budget, and the UI must show a progress state. The first bulk flow adds the `'bulk'` kind to `qc/budgets.ts` |
+
+Two marks change how a flow is judged:
+
+- **`knownOver: '<reason> (<who> <date>)'`**: an exception the human
+  approved. The flow is still timed and recorded, and listed in the
+  banner on every run, but being over budget doesn't fail the run. It
+  must name the reason, who approved it and the date. Remove it with the
+  fix.
+- **`pending: true`**: no spec times the flow yet; a run that doesn't
+  time it warns instead of failing. Drop it when the spec lands.
+
+**Raising a budget, exempting a flow (a `knownOver` mark, the bulk kind,
+or anything else that stops a sample failing) needs the human's explicit
+OK**, given in the task or on the plan page. A flow over budget means
+fixing the code, not the number. The only budgets set without a further
+OK are the initial recorded ones (plan step 9b).
+
+## Adding a flow
+
+1. **Name it** in `qc/budgets.ts`: `'<area>.<action>'`, with its kind. A
+   new repeatable flow is `repeatable`; anything else needs the human's
+   OK (see Budgets).
+2. **Write the spec** in `qc/flows/<area>.spec.ts`, importing `test` and
+   `expect` from `../fixtures` (they give `page` signed in as user A,
+   `users`, `flow`, `rttMs`). Selectors: `getByRole`, `getByLabel`,
+   `getByPlaceholder`; add a `data-testid` only where the UI is ambiguous.
+3. **Annotate the route** the test exercises, with its full path as in
+   `src/routeTree.gen.ts`:
+
+   ```ts
+   const CONTACT = { type: 'route', description: '/t/$slug/contacts/$contactId' }
+   test('archive', { annotation: CONTACT }, async ({ page, flow, users }) => { … })
+   ```
+
+   An annotation pushed at runtime (`test.info().annotations.push(…)`)
+   counts too. A test that touches several routes annotates each.
+4. **Time the interaction** with `flow()`:
+
+   ```ts
+   await flow(page, 'contact.archive', {
+     before: async () => { /* untimed: reach the start state */ },
+     action: () => page.getByRole('button', { name: 'Archive' }).click(),
+     until: () => document.body.innerText.includes('Archived'),
+   })
+   ```
+
+   `until` runs in the page every animation frame, so it can't close over
+   test variables; pass data through `arg`. `start: 'navigation'` times a
+   page load from navigation start; `inputPage` times propagation from one
+   tab to another. Each test makes the entities it changes: the seeded
+   world is shared by every test in a worker.
+5. **Run** `pnpm qc qc/flows/<area>.spec.ts`, then a full `pnpm qc`.
+
+### The coverage gate
+
+Every route in `src/routeTree.gen.ts` must be covered by at least one test
+that **ran** (not skipped) with a matching `route` annotation, and every
+route annotation must name a real route. `qc/reporter.ts` checks this at
+the end of the run, from the annotations Playwright reports, including
+those pushed at runtime:
+
+- in a full run (assert or record mode) a gap **fails the run**;
+- in a filtered run (spec files, `--grep`, `--last-failed`,
+  `--only-changed`, `--shard`, `--list`) it only warns, since that run
+  skips tests on purpose.
+
+`qc/coverage.test.ts`, under `pnpm check`, gives an earlier and rougher
+warning: every route must appear as a quoted string somewhere in
+`qc/flows/`. So a new route without a flow fails `pnpm check` before
+anyone runs `pnpm qc`.
+
+### Isolation
+
+`qc/flows/isolation.spec.ts` is mandatory and runs on every worker: user
+A must not see tenant B's group, contacts or search results. A new route
+that shows tenant data adds its case there.
+
+## The builder obligation
+
+A builder whose change touches `src/` or `convex/` runs `pnpm qc` before
+reporting DONE and puts the summary table in the report. If it fails,
+fix the code, or report BLOCKED with the first failing lines and the log
+path; never raise a budget to get green.
+
+**Exception:** a branch that changes `convex/schema.ts` doesn't run
+`pnpm qc` until it's merged. The pool is shared, and that schema, plus the
+data the seed writes under it, would stop every main-based run from
+deploying. Say "pnpm qc pending merge" in the report instead.

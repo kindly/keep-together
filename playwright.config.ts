@@ -28,6 +28,17 @@ if (process.env.QC_RUN_PID !== String(process.ppid)) {
   process.env.QC_RUN_PID = String(process.pid)
 }
 
+// `--reporter` on the command line replaces the reporters below, and with
+// them qc/reporter.ts, which carries the run's gates (coverage, untimed
+// flows, worker-setup budgets). Refuse it rather than pass silently.
+if (
+  process.argv.some((a) => a === '--reporter' || a.startsWith('--reporter='))
+) {
+  throw new Error(
+    'pnpm qc takes no --reporter: it would drop qc/reporter.ts and the gates it runs (qc/README.md)',
+  )
+}
+
 // Playwright's browser download is blocked here, so use the system
 // Chromium. QC_CHROMIUM overrides it; with neither (CI) Playwright falls
 // back to its own browser.

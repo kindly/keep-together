@@ -11,6 +11,8 @@ import type {
   FullConfig,
   FullResult,
   Reporter,
+  TestCase,
+  TestResult,
 } from '@playwright/test/reporter'
 import {
   RECORD,
@@ -22,6 +24,7 @@ import {
 } from './timing'
 import type { FlowRecord } from './timing'
 import { budgets } from './budgets'
+import { coverageGaps, readRoutes } from './coverage'
 import { RESULTS_FILE } from './server-timings'
 import type { ServerTimingsFile } from './server-timings'
 import type { Budget, FlowKind, FlowName } from './budgets'
@@ -35,7 +38,10 @@ import type { Budget, FlowKind, FlowName } from './budgets'
 //   flows inside tests already failed their test;
 // - in a full assert run, a flow in qc/budgets.ts that nothing timed,
 //   unless it's marked `pending`. A filtered run (spec files, --grep,
-//   --last-failed …) only warns, since it skips flows on purpose.
+//   --last-failed …) only warns, since it skips flows on purpose;
+// - in a full run (assert or record), a route in src/routeTree.gen.ts
+//   that no test which ran was annotated with, or a route annotation
+//   naming no route (qc/coverage.ts). A filtered run only warns.
 //
 // A `knownOver` flow (an approved exception) never fails the run, but
 // every run lists all of them in a banner with their samples.
@@ -214,13 +220,16 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
   return [fmt(head), ...rows.map(fmt)].join('\n')
 }
 
-// Positional args select spec files; these flags select tests.
+// Positional args select spec files; these flags select tests, or (--list,
+// --shard) don't run them all here.
 const FILTER_FLAGS = [
   '-g',
   '--grep',
   '--grep-invert',
   '--last-failed',
   '--only-changed',
+  '--list',
+  '--shard',
 ]
 
 function isFiltered(argv: Array<string>): boolean {
@@ -255,9 +264,18 @@ const banner = (lines: Array<string>) => {
 
 export default class QcReporter implements Reporter {
   private filtered = false
+  private routes = new Set<string>()
 
   onBegin(config: FullConfig) {
     this.filtered = isFiltered(config.argv)
+  }
+
+  onTestEnd(test: TestCase, result: TestResult) {
+    // A skipped test proves nothing about its route.
+    if (result.status === 'skipped') return
+    for (const a of [...test.annotations, ...result.annotations]) {
+      if (a.type === 'route' && a.description) this.routes.add(a.description)
+    }
   }
 
   async onEnd(
@@ -334,6 +352,22 @@ export default class QcReporter implements Reporter {
       if (RECORD || this.filtered) out.push(`warning: ${msg}`)
       else failures.push(msg)
     }
+
+    const gaps = coverageGaps(readRoutes(), this.routes)
+    const gapMsgs = [
+      ...(gaps.uncovered.length
+        ? [
+            `coverage: no test that ran covers ${gaps.uncovered.join(', ')} (add a flow with a route annotation, qc/README.md)`,
+          ]
+        : []),
+      ...(gaps.unknown.length
+        ? [
+            `coverage: route annotations name no route in src/routeTree.gen.ts: ${gaps.unknown.join(', ')}`,
+          ]
+        : []),
+    ]
+    if (this.filtered) out.push(...gapMsgs.map((m) => `warning: ${m}`))
+    else failures.push(...gapMsgs)
 
     if (failures.length) {
       out.push(
