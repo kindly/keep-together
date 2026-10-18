@@ -1,11 +1,12 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import { ConvexError } from 'convex/values'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { BULK_TAG_LIMIT } from '../../convex/contacts/rules'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
+import { holdList, releaseList } from '../lib/list-hold'
 
 export const Route = createFileRoute('/t/$slug/contacts/')({
   component: ContactList,
@@ -13,14 +14,10 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
   loader: ({ context: { convex }, params }) => {
     const tenant = cachedTenant(convex, params.slug)
     if (!tenant) return
-    // Held 1 s, not the default 5: the page's own useQuery takes over as
-    // it mounts, and every contact save re-runs `list` while anything
-    // holds it, so a contact opened within 5 s of the list would wait on
-    // it at every save (perf-storage lever C).
-    convex.prewarmQuery({
-      query: api.contacts.queries.list,
-      args: { tenantId: tenant._id, search: '', includeArchived: false },
-      extendSubscriptionFor: 1_000,
+    holdList(convex, {
+      tenantId: tenant._id,
+      search: '',
+      includeArchived: false,
     })
     convex.prewarmQuery({
       query: api.contacts.queries.tags,
@@ -58,6 +55,8 @@ function ContactList() {
     ...(tagFilter && { tagId: tagFilter }),
     ...(kind && { kind }),
   })
+  // After the useQuery above: its subscription is in place by now.
+  useEffect(releaseList, [])
   const contacts = listed?.rows
   const tags = useQuery(api.contacts.queries.tags, {
     tenantId: tenant._id,

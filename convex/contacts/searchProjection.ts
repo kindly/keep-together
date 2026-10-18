@@ -79,9 +79,29 @@ function sameRow(
   )
 }
 
-/** The `project` hook of the contact contracts. */
-export const projectContact = (ctx: ContractCtx, id: Id<'contacts'>) =>
-  projectContactSearch(ctx, id)
+/**
+ * The `project` hook of the contact contracts. A contact the command
+ * created (no `before`) has no child rows and no search row yet, so only
+ * the new root is read: create is on the user's path, and each read
+ * skipped is time saved.
+ */
+export async function projectContact(
+  ctx: ContractCtx,
+  id: Id<'contacts'>,
+  before: Doc<'contacts'> | null,
+): Promise<void> {
+  if (before) return projectContactSearch(ctx, id)
+  const contact = await ctx.db.get(id)
+  if (!contact) return
+  const row = searchRow(contact, {
+    emails: [],
+    phones: [],
+    addresses: [],
+    identifiers: [],
+    tagNames: [],
+  })
+  await ctx.db.insert('contactSearch', { contactId: id, ...row })
+}
 
 /** How many contacts one `reindexTag` batch rebuilds. */
 export const REINDEX_TAG_BATCH = 100
