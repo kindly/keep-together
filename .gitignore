@@ -40,3 +40,6 @@ qc/.instances.json
 
 # Factory worker reports
 factory/out/
+
+# sideview page locks
+*.sv.lock
