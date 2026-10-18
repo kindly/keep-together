@@ -17,6 +17,9 @@
  *
  *   npx convex run --deployment <d> platform/qcSeed:fixture \
  *     '{"runId":"12","worker":0,"password":"qc-password-123"}'
+ *
+ * `hold` puts an address on hold in one tenant, as a bounce would: specs
+ * call it per sample, since an admin's release lifts it again.
  */
 import { createAccount } from '@convex-dev/auth/server'
 import { ConvexError, v } from 'convex/values'
@@ -39,6 +42,7 @@ import {
   UK_RELATIONSHIP_TYPES,
 } from '../contacts/seed'
 import { normaliseTagName } from '../contacts/rules'
+import { suppressAddress } from '../comms/suppressions'
 import { insertTenant, tenantForSlug } from './tenants'
 
 const SIDES = [
@@ -277,5 +281,24 @@ export const world = internalMutation({
       out.push({ slug, tenantId, contactIds })
     }
     return out
+  },
+})
+
+/**
+ * Hold `address` in a tenant, as the SES webhook does after a hard bounce
+ * (comms `suppressAddress`, with no user and role null: a seed is a
+ * trusted caller). A no-op if it is already held.
+ */
+export const hold = internalMutation({
+  args: { tenantId: v.id('tenants'), address: v.string() },
+  handler: async (ctx, { tenantId, address }) => {
+    requireEnabled()
+    if (!(await ctx.db.get('tenants', tenantId))) {
+      throw new ConvexError({ kind: 'not_found' as const })
+    }
+    return suppressAddress(
+      { db: scopeWriter(ctx, tenantId), userId: null, role: null },
+      { address, note: 'qc seed' },
+    )
   },
 })

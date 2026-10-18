@@ -1,6 +1,7 @@
 import { convexTest } from 'convex-test'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { api, internal } from '../_generated/api'
+import type { Id } from '../_generated/dataModel'
 import schema from '../schema'
 import { errorData, modules } from '../../test/fixture'
 import { SEED_TAGS, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
@@ -342,4 +343,72 @@ test("identifiers: A finds its own, never B's; B has no active type", async () =
     [tenantB.contactIds[1], bOnly],
     [tenantB.contactIds[2], bReuse],
   ])
+})
+
+test('hold: holds an address in one tenant only, again after a release', async () => {
+  const { t, world } = await seed()
+  const [tenantA, tenantB] = world.tenants
+  const address = 'Ada-r7w1-a@example.com'
+  const heldIn = (tenantId: Id<'tenants'>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query('emailSuppressions').collect())
+        .filter((r) => r.tenantId === tenantId && r.suppressed)
+        .map((r) => r.addressNormalized),
+    )
+  const hold = () =>
+    t.mutation(internal.platform.qcSeed.hold, {
+      tenantId: tenantA.tenantId,
+      address,
+    })
+
+  expect(await hold()).toEqual({ changed: true, counter: 0 })
+  expect(await hold()).toEqual({ changed: false, counter: 0 })
+  expect(await heldIn(tenantA.tenantId)).toEqual(['ada-r7w1-a@example.com'])
+  expect(await heldIn(tenantB.tenantId)).toEqual([])
+
+  const adminId = await t.run(async (ctx) => {
+    const user = await ctx.db
+      .query('users')
+      .withIndex('email', (q) => q.eq('email', world.users[0].email))
+      .unique()
+    return user!._id
+  })
+  const admin = t.withIdentity({ subject: `${adminId}|session` })
+  await admin.mutation(api.comms.suppressions.release, {
+    tenantId: tenantA.tenantId,
+    address,
+    expected: 0,
+    note: '',
+  })
+  expect(await heldIn(tenantA.tenantId)).toEqual([])
+  expect(await hold()).toEqual({ changed: true, counter: 2 })
+})
+
+test('hold refuses unless QC_SEED_ENABLED is "1", and an unknown tenant', async () => {
+  const { t, world } = await seed()
+  const tenantId = world.tenants[0].tenantId
+  vi.stubEnv('QC_SEED_ENABLED', '')
+  expect(
+    await errorData(
+      t.mutation(internal.platform.qcSeed.hold, {
+        tenantId,
+        address: 'x@example.com',
+      }),
+    ),
+  ).toMatchObject({ kind: 'disabled' })
+  vi.stubEnv('QC_SEED_ENABLED', '1')
+  await t.run((ctx) => ctx.db.delete('tenants', tenantId))
+  expect(
+    await errorData(
+      t.mutation(internal.platform.qcSeed.hold, {
+        tenantId,
+        address: 'x@example.com',
+      }),
+    ),
+  ).toMatchObject({ kind: 'not_found' })
+  expect(
+    await t.run(
+      async (ctx) => (await ctx.db.query('emailSuppressions').collect()).length,
+    ),
+  ).toBe(0)
 })

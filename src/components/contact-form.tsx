@@ -26,7 +26,10 @@ import {
 import { useCanWrite, useTenant } from '../lib/tenant'
 import { useQuery } from '../lib/query-cache'
 import { useReportUnsaved } from '../lib/unsaved'
+import { holdOn } from '../lib/email-hold'
+import type { Held } from '../lib/email-hold'
 import { useHistoryHold } from './contact-history'
+import { EmailHold } from './email-hold'
 
 type Data = NonNullable<FunctionReturnType<typeof api.contacts.queries.get>>
 type Label = 'home' | 'work' | 'other'
@@ -134,6 +137,22 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
   const sharedLast = useRef(sharedNow)
   if (sharedNow !== undefined) sharedLast.current = sharedNow
   const alsoUsedBy = sharedNow ?? sharedLast.current
+  // Holds on the saved addresses (comms suppressions, ADR 0021), not
+  // cached for the same reason. Keyed by address, so a row shows its hold
+  // whichever contact it is on; the last answer stands meanwhile, so
+  // removing and re-adding a held address still shows it held.
+  const heldNow = useLiveQuery(
+    api.comms.suppressions.held,
+    data.emails.length === 0
+      ? 'skip'
+      : {
+          tenantId: tenant._id,
+          addresses: data.emails.map((e) => e.address),
+        },
+  )
+  const heldLast = useRef(heldNow)
+  if (heldNow !== undefined) heldLast.current = heldNow
+  const held = heldNow ?? heldLast.current
   const warnings = useMemo(
     () => contactWarnings(data, alsoUsedBy),
     [data, alsoUsedBy],
@@ -336,6 +355,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
           onChange={(v) => edit('methods', v)}
           problems={state.problems.methods ?? []}
           warnings={warnings}
+          held={held}
         />
 
         <AddressFields
@@ -474,11 +494,13 @@ function MethodsFields({
   onChange,
   problems,
   warnings,
+  held,
 }: {
   value: Payloads['methods']
   onChange: (v: Payloads['methods']) => void
   problems: Array<Problem>
   warnings: Array<Warning>
+  held: Held | undefined
 }) {
   return (
     <>
@@ -512,6 +534,12 @@ function MethodsFields({
                 warnings,
                 [`emails.${i}`, `emails#${row.key}`],
               )}
+              footer={
+                <EmailHold
+                  address={row.address}
+                  hold={holdOn(row.address, held)}
+                />
+              }
               primary={row.isPrimary}
               onPrimary={() =>
                 onChange({
@@ -1103,6 +1131,7 @@ function RowShell({
   onRemove,
   label,
   onLabel,
+  footer,
   children,
 }: {
   messages: Array<RowMessage>
@@ -1111,6 +1140,8 @@ function RowShell({
   onRemove: () => void
   label: Label
   onLabel: (label: Label) => void
+  /** Under the row's messages: an email row's hold. */
+  footer?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
@@ -1142,6 +1173,7 @@ function RowShell({
       {messages.map((m) => (
         <Message key={m.text} message={m.text} tone={m.tone} />
       ))}
+      {footer}
     </li>
   )
 }

@@ -81,6 +81,7 @@ export const budgets = {
   'contact.tag.remove': repeatable,
   'contact.identifier.add': repeatable,
   'contact.identifier.remove': repeatable,
+  'contact.hold.release': repeatable,
   'tags.create': repeatable,
   'tags.rename': repeatable,
   'tags.archive': repeatable,
