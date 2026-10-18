@@ -62,7 +62,11 @@ export const budgets = {
   'contacts.showArchived': repeatable,
   'contacts.create': repeatable,
   'contact.save': repeatable,
-  'contact.addEmail': repeatable,
+  'contact.addEmail': {
+    ...repeatable,
+    knownOver:
+      'save floor ~95 ms; mutation network leg drifted (58–75 ms), 104–111 ms some runs (human 2026-10-18)',
+  },
   'contact.livePropagation': repeatable,
   // Back to a contact opened in the last 2 minutes: the keep-alive cache
   // (perf-storage step 2). Expected well under, at about one frame.
