@@ -32,7 +32,7 @@ import {
   loadKeyFile,
   verifyDeployKey,
 } from './convex-instance.mjs'
-import { readLock, tryLock as tryLockFile } from './lockfile.mjs'
+import { newToken, releaseLock, tryLock as tryLockFile } from './lockfile.mjs'
 
 const PROJECT = 'mr-raznick:keep-together'
 const BASE_PORT = 4100
@@ -106,10 +106,17 @@ const ms = (start) => `${Math.round(performance.now() - start)} ms`
 
 // ── lock ────────────────────────────────────────────────────────────────
 
+const lockToken = newToken()
+
 function tryLock() {
   return tryLockFile(
     lockPath,
-    { pid: process.pid, worktree: root, startedAt: new Date().toISOString() },
+    {
+      pid: process.pid,
+      worktree: root,
+      startedAt: new Date().toISOString(),
+      token: lockToken,
+    },
     { maxAgeMs: LOCK_MAX_AGE_MS, label: 'QC lock' },
   )
 }
@@ -126,7 +133,7 @@ async function acquireLock(wait) {
     await new Promise((r) => setTimeout(r, 2000))
   }
   const release = () => {
-    if (readLock(lockPath)?.pid === process.pid) unlinkSync(lockPath)
+    releaseLock(lockPath, (lock) => lock?.token === lockToken)
   }
   process.on('exit', release)
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
@@ -175,6 +182,8 @@ function createInstance(i) {
     siteUrl: `http://localhost:${BASE_PORT + i}`,
     envFile: envFile(i),
     comment: `dev/qc-${i}: QC pool instance (scripts/qc-instances.mjs)`,
+    cwd: root,
+    onSpawn: track,
   })
 }
 

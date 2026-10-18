@@ -28,13 +28,7 @@
 // Must run outside the Claude sandbox: it writes to the main checkout,
 // and the Convex CLI needs WebSockets.
 import { execFileSync, spawn } from 'node:child_process'
-import {
-  existsSync,
-  readFileSync,
-  readdirSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import {
   createInstance,
@@ -45,7 +39,14 @@ import {
   readEnv,
   verifyDeployKey,
 } from './convex-instance.mjs'
-import { isStale, readLock, tryLock } from './lockfile.mjs'
+import {
+  isStale,
+  newToken,
+  readLock,
+  refreshLock,
+  releaseLock,
+  tryLock,
+} from './lockfile.mjs'
 
 const PROJECT = 'mr-raznick:keep-together'
 const SLOTS = [1, 2]
@@ -87,9 +88,10 @@ function deniedDeployments() {
     if (!/^\.env(\..+)?\.local$/.test(name)) continue
     if (/^\.env\.rehearsal-\d+\.local$/.test(name)) continue
     const env = readEnv(path.join(mainCheckout, name))
+    // The CLI writes `dev:<name> # team: …, project: …`.
     const deployment =
       keyDeployment(env.CONVEX_DEPLOY_KEY) ??
-      env.CONVEX_DEPLOYMENT?.match(/^dev:([a-z0-9-]+)$/)?.[1]
+      env.CONVEX_DEPLOYMENT?.match(/^dev:([a-z0-9-]+)(\s|$)/)?.[1]
     if (deployment) denied.add(deployment)
   }
   return denied
@@ -150,7 +152,16 @@ function describe(pid) {
   return argv ? `${path.basename(argv[0])} pid ${pid}` : `pid ${pid}`
 }
 
+function pidArg(value) {
+  const pid = Number(value)
+  if (!Number.isInteger(pid) || pid < 1) {
+    throw new Error(`--pid must be a positive integer, not ${value}`)
+  }
+  return pid
+}
+
 function heldBy(lock) {
+  if (!lock) return 'an unreadable lock'
   return `${describe(lock.pid)}, ${lock.worktree ?? '?'}, since ${lock.startedAt ?? '?'}`
 }
 
@@ -169,13 +180,12 @@ function requireHeld(n) {
   return lock
 }
 
-// Push the lock's 2 h expiry forward. Rewrites in place: only the holder
-// calls this, so nothing races it.
-function touch(n, lock) {
-  writeFileSync(
-    lockPath(n),
-    JSON.stringify({ ...lock, usedAt: new Date().toISOString() }) + '\n',
-  )
+// Push the lock's 2 h expiry forward, unless it was taken over (or
+// released and claimed) since `token` read it: then throw.
+function touch(n, token) {
+  if (!refreshLock(lockPath(n), token, { usedAt: new Date().toISOString() })) {
+    throw new Error(`rehearsal-${n} was taken over or released meanwhile`)
+  }
 }
 
 // ── instance ────────────────────────────────────────────────────────────
@@ -216,17 +226,35 @@ async function claim(argv) {
   let pid = null
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--slot') slots = [slotArg(argv[++i])]
-    else if (argv[i] === '--pid') pid = Number(argv[++i])
+    else if (argv[i] === '--pid') pid = pidArg(argv[++i])
     else throw new Error(`unknown argument ${argv[i]}`)
   }
   pid ??= ownerPid()
+  // Claiming again while holding a slot hands back that slot (untouched)
+  // rather than taking a second one.
+  const held = slots.find((s) => {
+    const lock = readLock(lockPath(s))
+    return (
+      !isStale(lock, LOCK_MAX_AGE_MS) &&
+      lock.worktree === root &&
+      lock.pid === pid
+    )
+  })
+  if (held) {
+    console.log(
+      `✔ you already hold rehearsal-${held} (${readEnv(envFile(held)).VITE_CONVEX_URL}); ` +
+        `not reset. To start from empty: pnpm rehearsal:release ${held} && pnpm rehearsal:claim --slot ${held}`,
+    )
+    return
+  }
   const now = new Date().toISOString()
+  const token = newToken()
   const holders = []
   let n
   for (const s of slots) {
     const holder = tryLock(
       lockPath(s),
-      { slot: s, pid, worktree: root, startedAt: now, usedAt: now },
+      { slot: s, pid, worktree: root, startedAt: now, usedAt: now, token },
       { maxAgeMs: LOCK_MAX_AGE_MS, label: `rehearsal-${s} lock` },
     )
     if (!holder) {
@@ -249,9 +277,12 @@ async function claim(argv) {
         siteUrl: 'http://localhost:3000',
         envFile: envFile(n),
         comment: `dev/rehearsal-${n}: rehearsal slot (scripts/rehearsal.mjs)`,
+        cwd: root,
       })
     }
     const inst = await loadSlot(n)
+    // Last check before wiping: the slot is still ours.
+    touch(n, token)
     const zip = emptySnapshot(`rehearsal-${n}`)
     console.log(`▸ rehearsal-${n}: resetting data`)
     try {
@@ -272,7 +303,7 @@ async function claim(argv) {
            (no lock check: only while you hold the slot)
   release: pnpm rehearsal:release ${n}`)
   } catch (err) {
-    unlinkSync(lockPath(n))
+    releaseLock(lockPath(n), (lock) => lock?.token === token)
     throw err
   }
 }
@@ -296,9 +327,10 @@ async function runIn(argv) {
   }
   const retarget = args.find((a) => RETARGET_FLAGS.test(a))
   if (retarget) throw new Error(`${retarget} would leave the slot; refused`)
-  const lock = requireHeld(n)
+  const { token } = requireHeld(n)
   const inst = await loadSlot(n)
-  touch(n, lock)
+  // Re-checked after loadSlot's wait: the slot may have changed hands.
+  touch(n, token)
   const { code } = await run(args, inst.key, { cwd, inherit: true })
   process.exit(code ?? 1)
 }
@@ -306,18 +338,18 @@ async function runIn(argv) {
 function release(argv) {
   const n = slotArg(argv[0])
   const force = argv.includes('--force')
-  const lock = readLock(lockPath(n))
-  if (!lock) {
-    console.log(`rehearsal-${n} is not claimed`)
-    return
-  }
-  if (lock.worktree !== root && !isStale(lock, LOCK_MAX_AGE_MS) && !force) {
+  let holder
+  const outcome = releaseLock(lockPath(n), (lock) => {
+    holder = lock
+    return force || isStale(lock, LOCK_MAX_AGE_MS) || lock.worktree === root
+  })
+  if (outcome === 'absent') console.log(`rehearsal-${n} is not claimed`)
+  else if (outcome === 'released') console.log(`✔ released rehearsal-${n}`)
+  else {
     throw new Error(
-      `rehearsal-${n} is held by ${heldBy(lock)}; --force to release it anyway`,
+      `rehearsal-${n} is held by ${heldBy(holder)}; --force to release it anyway`,
     )
   }
-  unlinkSync(lockPath(n))
-  console.log(`✔ released rehearsal-${n}`)
 }
 
 function status() {
@@ -326,10 +358,10 @@ function status() {
     const url = existsSync(envFile(n))
       ? readEnv(envFile(n)).VITE_CONVEX_URL
       : '(not created yet)'
-    const state = !lock
+    const state = !existsSync(lockPath(n))
       ? 'free'
       : isStale(lock, LOCK_MAX_AGE_MS)
-        ? `free (stale lock: ${heldBy(lock)})`
+        ? `free (stale: ${heldBy(lock)})`
         : `held by ${heldBy(lock)}`
     console.log(`rehearsal-${n}  ${url}  ${state}`)
   }

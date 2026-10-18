@@ -21,13 +21,20 @@ import { pathToFileURL } from 'node:url'
 // Run `npx convex …`. Resolves { code, stdout, stderr }; `tee` copies the
 // child's output to our stderr as it arrives. A timeout kills the child
 // and rejects: `convex env list` hangs forever inside the Claude sandbox.
-export function convex(args, { env, tee = false, timeoutMs, cwd } = {}) {
+// `onSpawn` gets the child, which then runs in its own process group so
+// the caller can signal it (and its children) on Ctrl-C.
+export function convex(
+  args,
+  { env, tee = false, timeoutMs, cwd, onSpawn } = {},
+) {
   return new Promise((resolve, reject) => {
     const child = spawn('npx', ['convex', ...args], {
       cwd,
       env: env ?? process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: Boolean(onSpawn),
     })
+    onSpawn?.(child)
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (d) => {
@@ -194,7 +201,9 @@ export function keyEnv(key) {
 }
 
 // Create `ref` (`team:project:dev/<name>`) with auth keys and a deploy key
-// named `tokenName`, saved to `envFile` (mode 600) under `comment`. The env
+// named `tokenName`, saved to `envFile` (mode 600) under `comment`. `cwd`
+// (the repo root) and `onSpawn` apply to the URL probe, a dry-run deploy
+// that bundles the checkout and can take minutes. The env
 // file is written last, so an interrupted creation is redone on the next
 // run: the deployment is then reused (each retry leaves an extra
 // `tokenName` key to delete from the dashboard).
@@ -204,6 +213,8 @@ export async function createInstance({
   siteUrl,
   envFile,
   comment,
+  cwd,
+  onSpawn,
 }) {
   console.log(`▸ creating ${ref}`)
   let url
@@ -240,7 +251,7 @@ export async function createInstance({
         'disable',
         '-y',
       ],
-      { env: keyEnv(key), timeoutMs: 5 * 60_000 },
+      { env: keyEnv(key), timeoutMs: 5 * 60_000, cwd, onSpawn },
     )
     url = (out.stdout + out.stderr).match(
       /https:\/\/[a-z0-9.-]*\.convex\.cloud/,

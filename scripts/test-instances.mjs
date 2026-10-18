@@ -162,6 +162,7 @@ function createInstance(name) {
     siteUrl: INSTANCES[name].siteUrl,
     envFile: envFile(name),
     comment: `dev/${name}: manual-test instance (scripts/test-instances.mjs)`,
+    cwd: root,
   })
 }
 

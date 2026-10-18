@@ -118,7 +118,9 @@ pnpm rehearsal:status              # who holds what
 - **The lock** belongs to the process that claimed: the Claude session or
   interactive shell above the command (`--pid` to name another). It is
   stale once that process dies or 2 h after the last claim or `run`, and
-  the next claim takes it over. A live holder blocks every other claim.
+  the next claim takes it over (as it does an empty or corrupt lock). A
+  live holder blocks every other claim; claiming again while you hold a
+  slot hands back that slot, not reset.
 - **`run`** passes `deploy`, `run`, `import`, `export`, `data`, `env`,
   `logs` and `function-spec` to `npx convex` with the slot's key, for the
   worktree holding the slot only, and refuses flags that would pick

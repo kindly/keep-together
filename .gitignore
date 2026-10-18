@@ -32,7 +32,9 @@ qc-results/
 qc-report/
 test-results/
 .qc.lock
+.qc.lock.*
 .rehearsal-*.lock
+.rehearsal-*.lock.*
 qc/.instances.json
 
 # Manual-test instances' preview build (pnpm instances:sync)
