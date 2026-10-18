@@ -15,6 +15,7 @@
 - **Latency** (*revised by the human 2026-10-17; supersedes the round-trip-adjusted median rule and the server p95 rule*)
   - **Anything a user can do more than once per logged-in session: every sample < 100 ms, raw**, i.e. from the input event to the result on screen, network included. No round-trip allowance, no median: K=5 repeats, all under 100 ms.
   - **Once-per-session flows** (sign-in, first page load) keep their own budgets, recorded first (3 runs, 1.5× the worst sample). Reports may get exceptions when they exist.
+  - **Spikes:** a flow with any sample at or over budget is re-measured once (K samples); it fails only if the re-measure is also over. Both sets are recorded and shown (*human, 2026-10-18; Convex dev deployments occasionally stall*).
   - **Bulk actions** (e.g. tagging up to 100 contacts) are exempt from 100 ms and get their own recorded budget, with a progress state in the UI (*human, 2026-10-17*).
   - **Server: every uncached call of our own functions on user paths < 100 ms** (no percentile). `auth:*`, admin and cached calls are reported, not asserted.
   - **Raising a budget, or exempting a flow, needs your explicit OK.** Otherwise the builder fixes the code.

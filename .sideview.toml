@@ -103,3 +103,10 @@ label = "QC trend"
 category = "factory"
 order = 2
 render = "iframe"
+
+[[pages]]
+path = "factory/out/planner-extid-adr-0019-amendment.md"
+id = "adr-0019-amendment"
+label = "ADR 0019 amendment (proposed)"
+category = "plans"
+order = 11
