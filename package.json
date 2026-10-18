@@ -22,7 +22,7 @@
     "qc:instances": "node scripts/qc-instances.mjs",
     "instances:sync": "node scripts/test-instances.mjs",
     "instances:serve": "node scripts/test-instances.mjs serve",
-    "qc:report": "echo 'qc:report: not yet (QC plan step 10)' && exit 1"
+    "qc:report": "node scripts/qc-report.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.96",
