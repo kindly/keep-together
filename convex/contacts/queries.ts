@@ -176,7 +176,9 @@ export const LIST_TAG_SCAN = 200
  * contacts carrying one tag; archived hidden unless asked. Bounded at
  * LIST_LIMIT rows. Each row carries its tag ids (names come from `tags`).
  * Without a search, a tag filter reads the tag's first LIST_TAG_SCAN
- * assignments; larger tags page through `byTag`.
+ * assignments; larger tags page through `byTag`. `truncated` says more
+ * contacts may match than `rows` holds (the cap or the tag scan was hit),
+ * so the UI can say it shows only some of them.
  */
 export const list = tenantQuery({
   args: {
@@ -187,6 +189,8 @@ export const list = tenantQuery({
   handler: async (ctx, { search, includeArchived, tagId }) => {
     const term = search?.trim()
     let rows: Array<Doc<'contacts'>>
+    // A read that hit its cap: more contacts may match than it saw.
+    let scanFull = false
     if (term) {
       const [byEmail, byName] = await Promise.all([
         contactsWithEmail(ctx.db, term).then((r) => r.contacts),
@@ -197,11 +201,13 @@ export const list = tenantQuery({
       ])
       const seen = new Set(byEmail.map((c) => c._id))
       rows = [...byEmail, ...byName.filter((c) => !seen.has(c._id))]
+      scanFull = byName.length === LIST_LIMIT
     } else if (tagId) {
       const assigned = await ctx.db
         .query('contactTags')
         .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId))
         .take(LIST_TAG_SCAN)
+      scanFull = assigned.length === LIST_TAG_SCAN
       const contacts = await Promise.all(
         assigned.map((r) => ctx.db.get(r.contactId)),
       )
@@ -213,6 +219,7 @@ export const list = tenantQuery({
         .query('contacts')
         .withIndex('by_tenant_sort')
         .take(2 * LIST_LIMIT)
+      scanFull = rows.length === 2 * LIST_LIMIT
     }
     const visible = includeArchived ? rows : rows.filter((c) => !c.archived)
     // A search with a tag filter checks the tag per hit, so it shapes every
@@ -241,9 +248,15 @@ export const list = tenantQuery({
         }
       }),
     )
-    return searchingTag
-      ? shaped.filter((r) => r.tagIds.includes(tagId!)).slice(0, LIST_LIMIT)
+    const matching = searchingTag
+      ? shaped.filter((r) => r.tagIds.includes(tagId!))
       : shaped
+    return {
+      rows: matching.slice(0, LIST_LIMIT),
+      truncated:
+        scanFull ||
+        (searchingTag ? matching.length : visible.length) > LIST_LIMIT,
+    }
   },
 })
 

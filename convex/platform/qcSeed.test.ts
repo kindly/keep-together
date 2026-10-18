@@ -86,9 +86,11 @@ test('contacts are scoped to their tenant and carry distinctive names', async ()
     t.withIdentity({ subject: `${await userIdOf(email)}|session` })
 
   const asA = await as('qc-r7w1-a@example.com')
-  const listA = await asA.query(api.contacts.queries.list, {
-    tenantId: tenantA.tenantId,
-  })
+  const listA = await asA
+    .query(api.contacts.queries.list, {
+      tenantId: tenantA.tenantId,
+    })
+    .then((r) => r.rows)
   const namesA = listA.map((c) => c.displayName)
   expect(namesA).toHaveLength(3)
   expect(namesA.every((n) => n.includes('Alpha-7'))).toBe(true)
@@ -96,7 +98,9 @@ test('contacts are scoped to their tenant and carry distinctive names', async ()
 
   // A cannot read tenant B, nor B's contact through tenant A.
   await expect(
-    asA.query(api.contacts.queries.list, { tenantId: tenantB.tenantId }),
+    asA
+      .query(api.contacts.queries.list, { tenantId: tenantB.tenantId })
+      .then((r) => r.rows),
   ).rejects.toThrow()
   expect(
     await asA.query(api.contacts.queries.get, {

@@ -387,10 +387,12 @@ describe('email lookup', () => {
 
   test('the list finds a contact by exact email', async () => {
     await saveMethods(0, [email('countess@analytical.org')])
-    const list = await f.a.as.query(api.contacts.queries.list, {
-      tenantId: f.a.tenantId,
-      search: ' Countess@Analytical.org',
-    })
+    const list = await f.a.as
+      .query(api.contacts.queries.list, {
+        tenantId: f.a.tenantId,
+        search: ' Countess@Analytical.org',
+      })
+      .then((r) => r.rows)
     expect(list.map((c) => c._id)).toEqual([ada])
   })
 
@@ -431,10 +433,12 @@ describe('email lookup', () => {
       (await findByEmail(f.a, 'Ann@Example.com')).map((c) => c._id),
     ).toEqual([ada])
     expect((await getAda())!.warnings).toEqual([])
-    const bList = await f.b.as.query(api.contacts.queries.list, {
-      tenantId: f.b.tenantId,
-      search: 'ann@example.com',
-    })
+    const bList = await f.b.as
+      .query(api.contacts.queries.list, {
+        tenantId: f.b.tenantId,
+        search: 'ann@example.com',
+      })
+      .then((r) => r.rows)
     expect(bList.map((c) => c._id)).toEqual([inB])
   })
 })
@@ -492,11 +496,13 @@ describe('email lookup edges', () => {
     includeArchived = false,
   ) =>
     (
-      await tenant.as.query(api.contacts.queries.list, {
-        tenantId: tenant.tenantId,
-        search,
-        includeArchived,
-      })
+      await tenant.as
+        .query(api.contacts.queries.list, {
+          tenantId: tenant.tenantId,
+          search,
+          includeArchived,
+        })
+        .then((r) => r.rows)
     ).map((c) => c._id)
   const createWithEmail = async (
     tenant: Fixture['a'],
@@ -682,10 +688,12 @@ describe('email lookup edges', () => {
     expect(await findIds(f.b, 'ANN@example.com')).toEqual([inB])
     // B's member cannot search A's tenant.
     const forbidden = await errorData(
-      f.b.as.query(api.contacts.queries.list, {
-        tenantId: f.a.tenantId,
-        search: 'ann@example.com',
-      }),
+      f.b.as
+        .query(api.contacts.queries.list, {
+          tenantId: f.a.tenantId,
+          search: 'ann@example.com',
+        })
+        .then((r) => r.rows),
     )
     expect(forbidden.kind).toBe('forbidden')
   })
@@ -765,14 +773,18 @@ describe('counters and conflicts', () => {
       archived: true,
     })
     expect((await getAda())?.contact.archived).toBe(true)
-    const list = await f.a.as.query(api.contacts.queries.list, {
-      tenantId: f.a.tenantId,
-    })
+    const list = await f.a.as
+      .query(api.contacts.queries.list, {
+        tenantId: f.a.tenantId,
+      })
+      .then((r) => r.rows)
     expect(list.map((c) => c._id)).not.toContain(ada)
-    const all = await f.a.as.query(api.contacts.queries.list, {
-      tenantId: f.a.tenantId,
-      includeArchived: true,
-    })
+    const all = await f.a.as
+      .query(api.contacts.queries.list, {
+        tenantId: f.a.tenantId,
+        includeArchived: true,
+      })
+      .then((r) => r.rows)
     expect(all.map((c) => c._id)).toContain(ada)
   })
 })
@@ -977,10 +989,12 @@ describe('tenant isolation', () => {
     })
     expect(await snapshot(f.t, f.b.tenantId)).toBe(bSnapshot)
     expect(
-      await f.b.as.query(api.contacts.queries.list, {
-        tenantId: f.b.tenantId,
-        includeArchived: true,
-      }),
+      await f.b.as
+        .query(api.contacts.queries.list, {
+          tenantId: f.b.tenantId,
+          includeArchived: true,
+        })
+        .then((r) => r.rows),
     ).toEqual([])
     expect(
       await f.b.as.query(api.contacts.queries.get, {

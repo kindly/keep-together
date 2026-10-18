@@ -3,8 +3,8 @@ import type { Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
-import { BULK_TAG_LIMIT } from './mutations'
-import { BY_TAG_PAGE_LIMIT } from './queries'
+import { BULK_TAG_LIMIT } from './rules'
+import { BY_TAG_PAGE_LIMIT, LIST_LIMIT, LIST_TAG_SCAN } from './queries'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
 
@@ -531,7 +531,9 @@ describe('the list filtered by tag', () => {
     who: Tenant,
     args: { tagId?: Id<'tags'>; search?: string; includeArchived?: boolean },
   ) =>
-    who.as.query(api.contacts.queries.list, { tenantId: who.tenantId, ...args })
+    who.as
+      .query(api.contacts.queries.list, { tenantId: who.tenantId, ...args })
+      .then((r) => r.rows)
 
   test('rows carry their tag ids; a tag filter keeps only its contacts, by name', async () => {
     const fry = await createContact(f.a, 'Fry')
@@ -553,9 +555,7 @@ describe('the list filtered by tag', () => {
     await createContact(f.a, 'Fryer')
     await bulkTag([fry, ada], volunteer, 'add')
     expect(
-      (await list(f.a, { tagId: volunteer, search: 'Fry' })).map(
-        (r) => r._id,
-      ),
+      (await list(f.a, { tagId: volunteer, search: 'Fry' })).map((r) => r._id),
     ).toEqual([fry])
     await f.a.as.mutation(api.contacts.mutations.setArchived, {
       tenantId: f.a.tenantId,
@@ -569,6 +569,46 @@ describe('the list filtered by tag', () => {
         (r) => r._id,
       ),
     ).toEqual([fry, ada])
+  })
+
+  test('truncated says when the cap or the tag scan was hit', async () => {
+    const full = (args: { tagId?: Id<'tags'> }) =>
+      f.a.as.query(api.contacts.queries.list, {
+        tenantId: f.a.tenantId,
+        ...args,
+      })
+    await bulkTag([ada], member, 'add')
+    expect(await full({ tagId: member })).toMatchObject({ truncated: false })
+    expect(await full({})).toMatchObject({ truncated: false })
+    // LIST_TAG_SCAN volunteers, half of them archived: the scan is full, and
+    // fewer than LIST_LIMIT rows show although more may exist.
+    await f.t.run(async (ctx) => {
+      for (let i = 0; i < LIST_TAG_SCAN; i++) {
+        const contactId = await ctx.db.insert('contacts', {
+          tenantId: f.a.tenantId,
+          ...individual(`Scan ${i}`),
+          displayName: `Ada Scan ${i}`,
+          sortName: `Scan ${i}, Ada`,
+          archived: i % 2 === 0,
+          detailsVersion: 0,
+          methodsVersion: 0,
+          addressesVersion: 0,
+          archiveVersion: 0,
+          tagsVersion: 0,
+        })
+        await ctx.db.insert('contactTags', {
+          tenantId: f.a.tenantId,
+          contactId,
+          key: `scan-${i}`,
+          tagId: volunteer,
+        })
+      }
+    })
+    const tagged = await full({ tagId: volunteer })
+    expect(tagged.rows).toHaveLength(LIST_LIMIT)
+    expect(tagged.truncated).toBe(true)
+    // Unfiltered: more than LIST_LIMIT live contacts.
+    expect(await full({})).toMatchObject({ truncated: true })
   })
 
   test('another tenant’s tag filters to nothing', async () => {

@@ -22,6 +22,7 @@ import {
   tag,
   tags,
 } from './contracts'
+import { BULK_TAG_LIMIT } from './rules'
 import {
   addressesFields,
   archiveFields,
@@ -117,8 +118,6 @@ export const saveTag = tenantMutation({
   },
 })
 
-/** The most contacts one `bulkTag` call changes; larger selections are batched by the caller. */
-export const BULK_TAG_LIMIT = 100
 
 async function contactTagRows(
   db: ScopedDatabaseReader,

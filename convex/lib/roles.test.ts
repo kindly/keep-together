@@ -253,9 +253,11 @@ describe('roles on contacts', () => {
 
     for (const role of ['admin', 'staff', 'viewer'] as const) {
       const as = roles[role]
-      const list = await as.query(api.contacts.queries.list, {
-        tenantId: a.tenantId,
-      })
+      const list = await as
+        .query(api.contacts.queries.list, {
+          tenantId: a.tenantId,
+        })
+        .then((r) => r.rows)
       expect(
         list.map((c) => c._id),
         role,
@@ -271,7 +273,9 @@ describe('roles on contacts', () => {
       ).toBe(contactId)
       expect(
         await errorData(
-          as.query(api.contacts.queries.list, { tenantId: b.tenantId }),
+          as
+            .query(api.contacts.queries.list, { tenantId: b.tenantId })
+            .then((r) => r.rows),
         ),
         role,
       ).toEqual({ kind: 'forbidden' })
@@ -316,9 +320,11 @@ describe('roles on contacts', () => {
       'note by staff',
     ])
     // B still has only its own contact.
-    const bList = await b.as.query(api.contacts.queries.list, {
-      tenantId: b.tenantId,
-    })
+    const bList = await b.as
+      .query(api.contacts.queries.list, {
+        tenantId: b.tenantId,
+      })
+      .then((r) => r.rows)
     expect(bList.map((c) => c._id)).toEqual([bContact])
   })
 })

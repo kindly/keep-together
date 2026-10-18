@@ -4,6 +4,7 @@ import { ConvexError } from 'convex/values'
 import { useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
+import { BULK_TAG_LIMIT } from '../../convex/contacts/rules'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/contacts/')({
@@ -23,9 +24,6 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
   },
 })
 
-/** BULK_TAG_LIMIT in convex/contacts/mutations.ts (a server module). */
-const BULK_BATCH = 100
-
 type Bulk =
   | { state: 'idle' }
   | { state: 'running'; op: 'add' | 'remove'; done: number; total: number }
@@ -38,12 +36,13 @@ function ContactList() {
   const [search, setSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
   const [tagFilter, setTagFilter] = useState<Id<'tags'> | ''>('')
-  const contacts = useQuery(api.contacts.queries.list, {
+  const listed = useQuery(api.contacts.queries.list, {
     tenantId: tenant._id,
     search,
     includeArchived,
     ...(tagFilter && { tagId: tagFilter }),
   })
+  const contacts = listed?.rows
   const tags = useQuery(api.contacts.queries.tags, {
     tenantId: tenant._id,
     includeInactive: true,
@@ -113,6 +112,8 @@ function ContactList() {
         <BulkBar
           chosen={chosen.map((c) => c._id)}
           allChosen={allChosen}
+          shown={contacts.length}
+          truncated={listed?.truncated ?? false}
           onAll={(all) =>
             setSelected(new Set(all ? contacts.map((c) => c._id) : []))
           }
@@ -120,10 +121,19 @@ function ContactList() {
           allTags={tags ?? []}
         />
       )}
+      {listed?.truncated && (
+        <p className="mt-3 text-sm text-amber-800">
+          Showing the first {contacts?.length} contacts
+          {tagFilter ? ' with this tag' : ''}; there are more. Narrow the search
+          to see them.
+        </p>
+      )}
       {contacts === undefined ? (
         <p className="mt-6 text-sm text-neutral-500">Loading…</p>
       ) : contacts.length === 0 ? (
-        <p className="mt-6 text-sm text-neutral-500">No contacts yet.</p>
+        <p className="mt-6 text-sm text-neutral-500">
+          {tagFilter ? 'No contacts with this tag.' : 'No contacts yet.'}
+        </p>
       ) : (
         <ul className="mt-3 divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
           {contacts.map((c) => (
@@ -173,6 +183,21 @@ function ContactList() {
   )
 }
 
+/** A user-facing line for a failed `bulkTag`. */
+function bulkFailure(err: unknown): string {
+  if (!(err instanceof ConvexError)) return 'Could not change tags'
+  const d = err.data as {
+    kind?: string
+    message?: string
+    problems?: Array<{ message: string }>
+  }
+  if (d.kind === 'invalid' && d.problems?.length)
+    return d.problems.map((p) => p.message).join('; ')
+  if (d.kind === 'stale')
+    return 'Someone else changed one of these contacts just now; try again'
+  return d.message ?? d.kind ?? 'Could not change tags'
+}
+
 /**
  * Add or remove one tag on the selected rows. Each batch is one
  * all-or-nothing `bulkTag` (one command group); the bar shows progress
@@ -181,12 +206,16 @@ function ContactList() {
 function BulkBar({
   chosen,
   allChosen,
+  shown,
+  truncated,
   onAll,
   tags,
   allTags,
 }: {
   chosen: Array<Id<'contacts'>>
   allChosen: boolean
+  shown: number
+  truncated: boolean
   onAll: (all: boolean) => void
   tags: Array<{ _id: Id<'tags'>; name: string }>
   allTags: Array<{ _id: Id<'tags'>; name: string }>
@@ -207,8 +236,8 @@ function BulkBar({
     let changed = 0
     setBulk({ state: 'running', op, done: 0, total: ids.length })
     try {
-      for (let i = 0; i < ids.length; i += BULK_BATCH) {
-        const batch = ids.slice(i, i + BULK_BATCH)
+      for (let i = 0; i < ids.length; i += BULK_TAG_LIMIT) {
+        const batch = ids.slice(i, i + BULK_TAG_LIMIT)
         const result = await bulkTag({
           tenantId: tenant._id,
           contactIds: batch,
@@ -232,16 +261,8 @@ function BulkBar({
             : `Removed “${name}” from ${n}`,
       })
     } catch (err) {
-      const data =
-        err instanceof ConvexError
-          ? (err.data as { message?: string; kind?: string })
-          : null
-      const soFar =
-        changed > 0 ? ` (${changed} changed before it stopped)` : ''
-      setBulk({
-        state: 'failed',
-        message: `${data?.message ?? data?.kind ?? 'Could not change tags'}${soFar}`,
-      })
+      const soFar = changed > 0 ? ` (${changed} changed before it stopped)` : ''
+      setBulk({ state: 'failed', message: `${bulkFailure(err)}${soFar}` })
     }
   }
 
@@ -254,7 +275,7 @@ function BulkBar({
           disabled={running}
           onChange={(e) => onAll(e.target.checked)}
         />
-        select all shown
+        select all {shown} shown{truncated ? ' (not the ones beyond)' : ''}
       </label>
       {chosen.length > 0 && (
         <>

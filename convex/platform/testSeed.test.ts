@@ -140,13 +140,17 @@ test('100 donors land in the seeded tenant only, through contracts', async () =>
     return user!._id
   })
   const asAdmin = t.withIdentity({ subject: `${admin}|session` })
-  const list = await asAdmin.query(api.contacts.queries.list, {
-    tenantId: world.tenantId,
-  })
+  const list = await asAdmin
+    .query(api.contacts.queries.list, {
+      tenantId: world.tenantId,
+    })
+    .then((r) => r.rows)
   expect(list.length).toBeGreaterThan(0)
   // The seeded admin can't see the fixture's tenants.
   await expect(
-    asAdmin.query(api.contacts.queries.list, { tenantId: a.tenantId }),
+    asAdmin
+      .query(api.contacts.queries.list, { tenantId: a.tenantId })
+      .then((r) => r.rows),
   ).rejects.toThrow()
 
   const { contacts, revisions, notes, links } = await t.run(async (ctx) => {

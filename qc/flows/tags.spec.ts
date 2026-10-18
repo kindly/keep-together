@@ -21,9 +21,7 @@ const tagsPath = (slug: string) => `/t/${slug}/tags`
 
 /** The tags page's row for a tag. */
 const tagRow = (page: Page, name: string) =>
-  page
-    .locator('main li')
-    .filter({ has: page.getByText(name, { exact: true }) })
+  page.locator('main li').filter({ has: page.getByText(name, { exact: true }) })
 
 async function createTag(page: Page, slug: string, name: string) {
   await page.goto(tagsPath(slug))
@@ -133,7 +131,9 @@ test.describe('tags page', { annotation: TAGS_ROUTE }, () => {
     let r = 0
     await flow(page, 'tags.rename', {
       before: async () => {
-        await tagRow(page, current).getByRole('button', { name: 'rename' }).click()
+        await tagRow(page, current)
+          .getByRole('button', { name: 'rename' })
+          .click()
         current = `${base}-renamed-${++r}`
         await page.getByLabel(/^Rename /).fill(current)
         await want(page, current)
@@ -289,8 +289,15 @@ test.describe('tags on the contacts list', { annotation: LIST_ROUTE }, () => {
       const links = page.locator('main ul li a')
       await expect(links.nth(1)).toBeVisible()
 
+      // A tag nobody carries yet says so (not "No contacts yet").
+      const filter = page.getByLabel('Filter by tag')
+      await filter.selectOption({ label: tag })
+      await expect(page.getByText('No contacts with this tag.')).toBeVisible()
+      await filter.selectOption('')
+      await expect(links.nth(1)).toBeVisible()
+
       // Every contact in the worker's tenant, up to the list's 100.
-      await page.getByLabel('select all shown').check()
+      await page.getByLabel(/^select all \d+ shown/).check()
       const shown = await links.count()
       await expect(page.getByText(`${shown} selected`)).toBeVisible()
       await page.getByLabel('Tag to change').selectOption({ label: tag })
@@ -313,11 +320,11 @@ test.describe('tags on the contacts list', { annotation: LIST_ROUTE }, () => {
           `Added “${tag}” to ${shown} contacts`,
         )
       }
-      await page.getByLabel('Filter by tag').selectOption({ label: tag })
+      await filter.selectOption({ label: tag })
       await expect(links).toHaveCount(shown)
 
       // Adding again changes nothing: one revision per contact that changes.
-      await page.getByLabel('select all shown').check()
+      await page.getByLabel(/^select all \d+ shown/).check()
       await page.getByLabel('Tag to change').selectOption({ label: tag })
       await page.getByRole('button', { name: 'Add tag' }).click()
       await expect(page.getByRole('status')).toHaveText(

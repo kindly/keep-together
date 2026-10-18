@@ -230,6 +230,12 @@ export function prepareTags(p: Payloads['tags']): Payloads['tags'] {
 }
 
 /**
+ * The most contacts one `bulkTag` call changes; larger selections are
+ * batched by the caller (the SPA imports it from here).
+ */
+export const BULK_TAG_LIMIT = 100
+
+/**
  * The uniqueness form of a tag name: names compare case-insensitively
  * (`Volunteer` and `volunteer` are the same tag). Applied to a prepared
  * name, so whitespace is already tidied.
