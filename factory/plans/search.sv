@@ -27,6 +27,22 @@
 Rollout: Q1 merge → deploy everywhere → run the backfill → Q2 merge → deploy.
 </sv-prose>
 
+
+<sv-prose id="built">
+## Built overnight: what changed from the design
+
+Merged as Q1 `90ab5a7` (projection + backfill, run on every dev deployment) and Q2 `bdd9311` (the switch). Review: `factory/out/reviewer-ui-search.md`; builder report: `factory/out/builder-search-search-q1q2.md`.
+
+- **"All words must match" is done after the search.** Convex full-text search matches *any* word, so the list reads up to 200 hits and keeps those holding every word. If the 200 hits fill up and none match fully, the empty state says **"Too many partial matches: add another word."** instead of "No contacts match."
+- **Exact phone** uses a stored `phones` field on the projection; a phone-shaped search is treated as one normalised number.
+- **Renaming a tag** re-indexes its contacts in a scheduled background job (batches of 100). That needed a tenant-scoped `ctx.scheduler` in tenant mutations (reviewed: it stamps and enforces the tenant).
+- **Kind filter** uses a new index `contacts.by_tenant_kind_sort` when there's no search text.
+- The box is labelled "Search contacts", with the hint line underneath.
+- **Cost:** the projection adds ~4–6 ms (p50) to every contact save and makes bulk tagging ~2× slower server-side (bulk is exempt: its own 1000 ms limit). Search itself: 38–52 ms max per kind in QC, server p95 ~25 ms. `contacts.create` has been near or over 100 ms since Q1 under load; builder-perf2 is on it.
+- **Still to do:** drop the old `search_name` index once you're happy (a one-line schema change).
+- A real bug surfaced while QC-ing Q2 (the form's needsSave could stick and the leave guard then blocked navigation; live on the demo ~03:10–04:14). It's fixed in `0471141` and `9bc2436`.
+</sv-prose>
+
 <sv-ask id="s1q1" round="1">
 **What one search box finds.**
 - * names, all emails (incl. parts), phones (digits, last 6), postcodes, address line 1 + town, identifier values, tag names
