@@ -20,17 +20,11 @@ export const STAFF_SWITCH = {
   identifierTypes: 'staffCanManageIdentifierTypes',
 } as const satisfies Record<ListKind, keyof Doc<'tenantPreferences'>>
 
-type Prefs = Pick<
-  Doc<'tenantPreferences'>,
-  (typeof STAFF_SWITCH)[ListKind] | 'staffCanManageLists'
->
+type Prefs = Pick<Doc<'tenantPreferences'>, (typeof STAFF_SWITCH)[ListKind]>
 
-/**
- * Whether the tenant lets staff manage `kind`. A row the split backfill
- * hasn't reached yet still carries the old single switch, which meant both.
- */
+/** Whether the tenant lets staff manage `kind` (no row: the default, no). */
 export function staffMayManage(prefs: Prefs | null, kind: ListKind): boolean {
-  return prefs?.[STAFF_SWITCH[kind]] ?? prefs?.staffCanManageLists ?? false
+  return prefs?.[STAFF_SWITCH[kind]] ?? false
 }
 
 /** Whether `role` may manage `kind`, given the tenant's preferences. */

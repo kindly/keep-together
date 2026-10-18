@@ -71,17 +71,12 @@ export default defineSchema({
   //   tenantPreferences.tags → staffCanManageTags (tagsVersion)
   //   tenantPreferences.identifierTypes → staffCanManageIdentifierTypes
   //     (identifierTypesVersion)
-  // Mid two-phase change: the new fields are optional until
-  // platform/migrations:splitStaffCanManageLists has copied the old single
-  // switch (staffCanManageLists / listsVersion) into both and unset it.
   tenantPreferences: defineTable({
     tenantId: v.id('tenants'),
-    staffCanManageTags: v.optional(v.boolean()),
-    tagsVersion: v.optional(v.number()),
-    staffCanManageIdentifierTypes: v.optional(v.boolean()),
-    identifierTypesVersion: v.optional(v.number()),
-    staffCanManageLists: v.optional(v.boolean()),
-    listsVersion: v.optional(v.number()),
+    staffCanManageTags: v.boolean(),
+    tagsVersion: v.number(),
+    staffCanManageIdentifierTypes: v.boolean(),
+    identifierTypesVersion: v.number(),
   }).index('by_tenant', ['tenantId']),
 
   // ── command log (ADR 0013 / 0017) ─────────────────────────────────────

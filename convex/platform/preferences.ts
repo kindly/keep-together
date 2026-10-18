@@ -15,9 +15,7 @@ import { ConvexError, v } from 'convex/values'
 import type { Doc } from '../_generated/dataModel'
 import type { QueryCtx } from '../_generated/server'
 import { defineContract, executeContract } from '../lib/contracts'
-import type { ContractCtx } from '../lib/contracts'
 import { tenantPreferences } from '../lib/lists'
-import type { ScopedDatabaseWriter } from '../lib/tenancy'
 import { tenantMutation } from '../lib/tenancy'
 
 /** A new row: every switch at its default, every counter at 0. */
@@ -74,63 +72,6 @@ export async function preferencesFor(
     .unique()
 }
 
-/**
- * Two-phase split, step (a): copy a row's old single switch
- * (`staffCanManageLists`, which covered both lists) into both new ones,
- * each through its contract with source `system` so the copy has a
- * revision, then unset the old fields. Each counter starts at 0 ("row
- * exists, no revision of this slice yet"), as a create leaves the other
- * slice's. False on a row with nothing to split. Run by
- * platform/migrations:splitStaffCanManageLists, and by a save that reaches
- * a row before the migration does. Goes with the tightening.
- */
-export async function splitStaffCanManageLists(
-  db: ScopedDatabaseWriter,
-  row: Doc<'tenantPreferences'>,
-): Promise<boolean> {
-  if (row.staffCanManageLists === undefined && row.listsVersion === undefined)
-    return false
-  const on = row.staffCanManageLists ?? false
-  const ctx: ContractCtx = { db, userId: null, role: null }
-  const opts = { entityId: row._id, expected: 0, source: 'system' as const }
-  if (row.tagsVersion === undefined) {
-    await db.patch('tenantPreferences', row._id, { tagsVersion: 0 })
-    await executeContract(ctx, tags, { staffCanManageTags: on }, opts)
-  }
-  if (row.identifierTypesVersion === undefined) {
-    await db.patch('tenantPreferences', row._id, { identifierTypesVersion: 0 })
-    await executeContract(
-      ctx,
-      identifierTypes,
-      { staffCanManageIdentifierTypes: on },
-      opts,
-    )
-  }
-  await db.patch('tenantPreferences', row._id, {
-    staffCanManageLists: undefined,
-    listsVersion: undefined,
-  })
-  return true
-}
-
-/**
- * Read the row for a switch save. A row the split hasn't reached yet is
- * split first; its caller saw the old switch, which the split carried over
- * unchanged, so a save that sent no `expected` edits the split's state.
- */
-async function rowForSave(
-  db: ScopedDatabaseWriter,
-  counter: 'tagsVersion' | 'identifierTypesVersion',
-  expected: number | undefined,
-) {
-  const row = await tenantPreferences(db)
-  if (!row || !(await splitStaffCanManageLists(db, row))) {
-    return { row, expected }
-  }
-  const split = (await tenantPreferences(db))!
-  return { row: split, expected: expected ?? split[counter] }
-}
-
 /** The caller saw no row (the default), but another admin saved first. */
 function staleIfUnseen(
   row: Doc<'tenantPreferences'> | null,
@@ -147,8 +88,8 @@ function staleIfUnseen(
 export const setStaffCanManageTags = tenantMutation({
   minRole: 'admin',
   args: { expected: v.optional(v.number()), ...tagsFields },
-  handler: async (ctx, { expected: sent, ...payload }) => {
-    const { row, expected } = await rowForSave(ctx.db, 'tagsVersion', sent)
+  handler: async (ctx, { expected, ...payload }) => {
+    const row = await tenantPreferences(ctx.db)
     staleIfUnseen(row, expected, tags.name, row?.tagsVersion)
     return executeContract(ctx, tags, payload, {
       entityId: row?._id,
@@ -162,12 +103,8 @@ export const setStaffCanManageTags = tenantMutation({
 export const setStaffCanManageIdentifierTypes = tenantMutation({
   minRole: 'admin',
   args: { expected: v.optional(v.number()), ...identifierTypesFields },
-  handler: async (ctx, { expected: sent, ...payload }) => {
-    const { row, expected } = await rowForSave(
-      ctx.db,
-      'identifierTypesVersion',
-      sent,
-    )
+  handler: async (ctx, { expected, ...payload }) => {
+    const row = await tenantPreferences(ctx.db)
     staleIfUnseen(
       row,
       expected,
