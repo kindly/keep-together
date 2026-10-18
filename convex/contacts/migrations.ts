@@ -20,3 +20,21 @@
 import { migrations } from '../lib/migrations'
 
 export const run = migrations.runner()
+
+/**
+ * perf-storage step 1: `revisions.groupName`, copied from the revision's
+ * command group, on revisions written before `executeContract` stamped it.
+ * Envelope, not payload. A no-op on rows without a group or already stamped.
+ * The field stays optional (no tightening); once this is done everywhere,
+ * `history`'s fallback read never fires.
+ */
+export const backfillRevisionGroupName = migrations.define({
+  table: 'revisions',
+  migrateOne: async (ctx, revision) => {
+    if (revision.group === undefined || revision.groupName !== undefined) {
+      return undefined
+    }
+    const group = await ctx.db.get('commandGroups', revision.group)
+    return group ? { groupName: group.name } : undefined
+  },
+})
