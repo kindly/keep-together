@@ -26,7 +26,7 @@ describe('contact query cache', () => {
   test('only the contact page imports the cached useQuery', () => {
     const src = path.resolve(__dirname, '..')
     const users = sources(src)
-      .filter((f) => !f.endsWith('.test.ts'))
+      .filter((f) => !/\.test\.tsx?$/.test(f))
       .filter((f) =>
         /import \{[^}]*\buseQuery\b[^}]*\} from '[^']*\/query-cache'/.test(
           readFileSync(f, 'utf8'),
@@ -38,6 +38,7 @@ describe('contact query cache', () => {
     // Nothing reaches convex-helpers' cache around the wrapper.
     for (const f of sources(src)) {
       if (f.endsWith(path.join('lib', 'query-cache.tsx'))) continue
+      if (/\.test\.tsx?$/.test(f)) continue // query-cache.dom.test.tsx pins its internals
       expect(readFileSync(f, 'utf8')).not.toMatch(
         /convex-helpers\/react\/cache/,
       )

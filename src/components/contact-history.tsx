@@ -1,5 +1,5 @@
 import { useMutation, useQueries } from 'convex/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { joinMoments } from '../../convex/contacts/history'
@@ -55,9 +55,10 @@ export function historyFirstPage(
  * is paid on each save. Past REANCHOR_AT moments, and only while no older
  * page hangs off its end, it is subscribed afresh (newest PAGE again) and
  * the grown subscription released at once; the grown page stays on screen
- * until the fresh one answers.
+ * until the fresh one answers. The swap hides the older half of the
+ * moments, so it waits while someone is reading the panel (`atRest`).
  */
-function useHistoryPages(id: Id<'contacts'>) {
+function useHistoryPages(id: Id<'contacts'>, atRest: () => boolean) {
   const tenant = useTenant()
   const [anchor, setAnchor] = useState({ id, generation: 0 })
   const generation = anchor.id === id ? anchor.generation : 0
@@ -102,8 +103,20 @@ function useHistoryPages(id: Id<'contacts'>) {
     cursors.length === 0 &&
     live.page.length > REANCHOR_AT
   useEffect(() => {
-    if (grown) setAnchor({ id, generation: generation + 1 })
-  }, [grown, id, generation])
+    if (!grown) return
+    const reanchor = () => setAnchor({ id, generation: generation + 1 })
+    if (atRest()) return reanchor()
+    // Mid-read: try again whenever that might have ended.
+    const retry = () => {
+      if (atRest()) reanchor()
+    }
+    const later = () => setTimeout(retry)
+    const events = ['scroll', 'pointerover', 'focusout'] as const
+    for (const e of events) window.addEventListener(e, later, { passive: true })
+    return () => {
+      for (const e of events) window.removeEventListener(e, later)
+    }
+  }, [grown, id, generation, atRest])
   // After the useQuery above has moved to the new generation, the old one
   // is idle in the cache: release it now, not in 2 minutes.
   useEffect(() => {
@@ -149,7 +162,18 @@ export function ContactHistory({
 }) {
   const tenant = useTenant()
   const canWrite = useCanWrite()
-  const { moments, loading, loadOlder } = useHistoryPages(id)
+  const panel = useRef<HTMLElement>(null)
+  const atRest = useCallback(() => {
+    const el = panel.current
+    if (!el) return true
+    // Not scrolled past the panel's top, not under the pointer, no focus.
+    return (
+      el.getBoundingClientRect().top >= 0 &&
+      !el.matches(':hover') &&
+      !el.contains(document.activeElement)
+    )
+  }, [])
+  const { moments, loading, loadOlder } = useHistoryPages(id, atRest)
   const members = useQuery(api.platform.tenants.members, {
     tenantId: tenant._id,
   })
@@ -158,7 +182,7 @@ export function ContactHistory({
   const name = (userId: Id<'users'> | null) =>
     members?.find((m) => m.userId === userId)?.name ?? 'system'
   return (
-    <aside className="flex flex-col gap-4 text-sm">
+    <aside ref={panel} className="flex flex-col gap-4 text-sm">
       {canWrite && (
         <button
           type="button"

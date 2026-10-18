@@ -57,6 +57,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "convex-test": "^0.0.62",
     "eslint": "^9.20.0",
+    "happy-dom": "^21.0.3",
     "prettier": "^3.8.1",
     "typescript": "^6.0.2",
     "vite": "^8.0.0",
