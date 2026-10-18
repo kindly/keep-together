@@ -163,8 +163,9 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         const page = await context.newPage()
         // One sign-in per user and worker, no warm-up: each is its own
         // one-sample record, judged by the same rule (every sample under
-        // budget). The reporter judges them, so a slow sign-in fails the
-        // run without failing every test in this worker.
+        // budget, one re-measure after a spike). The reporter judges them,
+        // so a slow sign-in fails the run without failing every test in
+        // this worker.
         await runFlow(
           {
             page,
@@ -178,6 +179,18 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           {
             before: async () => {
               await page.goto('/')
+              // A re-measure starts signed in: drop the session (the saved
+              // storageState is the one taken after the last sign-in).
+              if (
+                await page.evaluate(() =>
+                  Object.keys(localStorage).some((k) =>
+                    k.startsWith('__convexAuth'),
+                  ),
+                )
+              ) {
+                await page.evaluate(() => localStorage.clear())
+                await page.goto('/')
+              }
               await page.getByPlaceholder('Email').fill(email)
               await page.getByPlaceholder('Password').fill(password)
             },

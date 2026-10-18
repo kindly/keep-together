@@ -18,7 +18,10 @@ export interface Run {
 }
 
 export interface FlowPoint {
+  /** Of the judged samples; after a spike, the re-measure. */
   maxMs: number
+  /** A spike: the max of the first set, which was re-measured. */
+  firstMaxMs?: number
   p50Ms: number
   budgetMs: number
   n: number
@@ -39,6 +42,8 @@ export interface ServerPoint {
   p50Ms: number
   p95Ms: number
   maxMs: number
+  /** One call over budget, the others under: passed. */
+  spike?: true
 }
 
 export interface ServerSeries {
@@ -65,6 +70,7 @@ export interface LatestRow {
   pass: boolean | null
   knownOver?: string
   rttOver: boolean
+  firstMaxMs?: number
 }
 
 export interface Trend {
@@ -150,7 +156,13 @@ export function shapeTrend(
       points: serverByRun.map((s) => {
         const f = s?.functions.find((x) => x.fn === fn)
         return f
-          ? { n: f.n, p50Ms: f.p50Ms, p95Ms: f.p95Ms, maxMs: f.maxMs }
+          ? {
+              n: f.n,
+              p50Ms: f.p50Ms,
+              p95Ms: f.p95Ms,
+              maxMs: f.maxMs,
+              ...(f.spike && { spike: true as const }),
+            }
           : null
       }),
     }))
@@ -181,6 +193,7 @@ export function shapeTrend(
         pass: p.pass,
         ...(p.knownOver && { knownOver: p.knownOver }),
         rttOver: p.rttOver,
+        ...(p.firstMaxMs !== undefined && { firstMaxMs: p.firstMaxMs }),
       }
     })
     .sort(
@@ -200,6 +213,7 @@ function flowPoint(l: HistoryLine): FlowPoint {
     pass: l.pass,
     ...(l.knownOver && { knownOver: l.knownOver }),
     rttOver: l.rttOver,
+    ...(l.firstSamplesMs && { firstMaxMs: Math.max(...l.firstSamplesMs) }),
   }
 }
 
@@ -214,11 +228,15 @@ const worst = (points: Array<ServerPoint | null>) =>
 
 /** Why a flow point is marked: the first that applies. */
 export function flowMark(
-  p: Pick<FlowPoint, 'maxMs' | 'budgetMs' | 'pass' | 'knownOver' | 'rttOver'>,
-): 'rtt' | 'known' | 'over' | 'ok' {
+  p: Pick<
+    FlowPoint,
+    'maxMs' | 'budgetMs' | 'pass' | 'knownOver' | 'rttOver' | 'firstMaxMs'
+  >,
+): 'rtt' | 'known' | 'over' | 'spike' | 'ok' {
   if (p.rttOver) return 'rtt'
   if (p.knownOver) return 'known'
   if (p.maxMs >= p.budgetMs || p.pass === false) return 'over'
+  if (p.firstMaxMs !== undefined) return 'spike'
   return 'ok'
 }
 
@@ -328,6 +346,7 @@ const MARK_TEXT = {
   ok: 'ok',
   over: 'OVER',
   known: 'known over',
+  spike: 're-measured',
   rtt: 'RTT over ceiling',
 } as const
 
@@ -343,6 +362,9 @@ function flowCard(s: FlowSeries, runs: Array<Run>): string {
       title: [
         `${when(r)} · ${r.runId} · ${shortSha(r)}`,
         `max ${ms(p.maxMs)} · median ${ms(p.p50Ms)} · budget < ${p.budgetMs} · n ${p.n}`,
+        ...(p.firstMaxMs !== undefined
+          ? [`spike: 1st set max ${ms(p.firstMaxMs)}, re-measured`]
+          : []),
         MARK_TEXT[m] + (p.knownOver ? `: ${p.knownOver}` : ''),
       ].join('\n'),
     }
@@ -371,13 +393,20 @@ function serverCard(s: ServerSeries, runs: Array<Run>): string {
   const marks = s.points.map((p, i) => {
     if (!p) return null
     const r = runs[i]
-    const over = s.asserted && p.maxMs >= SERVER_BUDGET_MS
+    const over = s.asserted && p.maxMs >= SERVER_BUDGET_MS && !p.spike
+    const spike = s.asserted && p.spike === true
     return {
-      cls: over ? 'over' : s.asserted ? 'ok' : 'info',
+      cls: over ? 'over' : spike ? 'spike' : s.asserted ? 'ok' : 'info',
       title: [
         `${when(r)} · ${r.runId} · ${shortSha(r)}`,
         `max ${ms(p.maxMs)} · p95 ${ms(p.p95Ms)} · median ${ms(p.p50Ms)} · n ${p.n}`,
-        s.asserted ? (over ? 'OVER' : 'ok') : 'reported, not asserted',
+        s.asserted
+          ? over
+            ? 'OVER'
+            : spike
+              ? 'spike: one call over, the rest under'
+              : 'ok'
+          : 'reported, not asserted',
       ].join('\n'),
     }
   })
@@ -405,7 +434,9 @@ function latestTable(t: Trend): string {
         ? 'ok (known over)'
         : r.pass === null && m === 'ok'
           ? 'not judged'
-          : MARK_TEXT[m]
+          : m === 'spike'
+            ? `ok (re-measured: 1st max ${ms(r.firstMaxMs!)})`
+            : MARK_TEXT[m]
     const pct = Math.round(r.headroomRatio * 100)
     const bar = Math.max(0, Math.min(100, pct))
     return `<tr class="${m}">
@@ -440,13 +471,13 @@ export function renderTrend(t: Trend, generatedAt: string): string {
 ${latestTable(t)}
 
 <h2>Flows over runs</h2>
-<p class="muted"><span class="tag over">OVER</span> failed · <span class="tag known">known over</span> approved exception (qc/budgets.ts) · <span class="tag rtt">RTT over ceiling</span> samples measured the link; latency not asserted · dashed line: budget</p>
+<p class="muted"><span class="tag over">OVER</span> failed · <span class="tag known">known over</span> approved exception (qc/budgets.ts) · <span class="tag spike">re-measured</span> a spike over budget, passed on its one re-measure (the point is the re-measure; hover for the first) · <span class="tag rtt">RTT over ceiling</span> samples measured the link; latency not asserted · dashed line: budget</p>
 <div class="grid">
 ${t.flows.map((s) => flowCard(s, t.runs)).join('\n')}
 </div>
 
 <h2>Server functions over runs</h2>
-<p class="muted">Uncached executions from the Convex log stream. Asserted calls must each be under ${SERVER_BUDGET_MS} ms.</p>
+<p class="muted">Uncached executions from the Convex log stream. Asserted calls must each be under ${SERVER_BUDGET_MS} ms, bar one spike per function per run when its other calls are under (ringed point).</p>
 <div class="grid">
 ${asserted.map((s) => serverCard(s, t.runs)).join('\n')}
 </div>
@@ -485,6 +516,7 @@ const CSS = `
   --max: #2f5fb3; --p50: #9db4dc; --p95: #d08a2e; --budget: #c0392b;
   --ok: #2f5fb3; --over: #c0392b; --known: #b7791f; --rtt: #8a8a85; --info: #8a8a85;
   --over-bg: #fbe9e7; --known-bg: #fdf3e1; --rtt-bg: #eeeeec;
+  --spike: #7b4bb3; --spike-bg: #f1eaf9;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -492,6 +524,7 @@ const CSS = `
     --max: #7aa2f7; --p50: #3d5585; --p95: #e0a458; --budget: #ef6f61;
     --ok: #7aa2f7; --over: #ef6f61; --known: #e0a458; --rtt: #8a8a85; --info: #8a8a85;
     --over-bg: #3a1f1c; --known-bg: #362a17; --rtt-bg: #2a2a28;
+    --spike: #b48ef0; --spike-bg: #2c2238;
   }
 }
 * { box-sizing: border-box; }
@@ -508,6 +541,7 @@ code { font: 12.5px ui-monospace, monospace; }
 .tag.over { background: var(--over-bg); color: var(--over); font-weight: 600; }
 .tag.known { background: var(--known-bg); color: var(--known); }
 .tag.rtt { background: var(--rtt-bg); color: var(--rtt); }
+.tag.spike { background: var(--spike-bg); color: var(--spike); }
 .tag.ok { color: var(--ok); background: transparent; }
 table.latest { border-collapse: collapse; width: 100%; max-width: 980px; margin-top: 8px;
   font-variant-numeric: tabular-nums; }
@@ -517,6 +551,7 @@ table.latest { border-collapse: collapse; width: 100%; max-width: 980px; margin-
 .latest .num { text-align: right; }
 .latest tr.over td:first-child { box-shadow: inset 3px 0 var(--over); padding-left: 8px; }
 .latest tr.known td:first-child { box-shadow: inset 3px 0 var(--known); padding-left: 8px; }
+.latest tr.spike td:first-child { box-shadow: inset 3px 0 var(--spike); padding-left: 8px; }
 .latest td:first-child { padding-left: 8px; }
 .hr { width: 160px; position: relative; }
 .hr .bar { display: inline-block; height: 8px; border-radius: 2px; background: var(--max);
@@ -547,6 +582,7 @@ figcaption { font-size: 13px; }
 .pt.ok { fill: var(--ok); }
 .pt.over { fill: var(--over); }
 .pt.known { fill: var(--known); }
+.pt.spike { fill: var(--card); stroke: var(--spike); stroke-width: 2; }
 .pt.rtt { fill: var(--card); stroke: var(--rtt); stroke-width: 1.5; stroke-dasharray: 2 1.5; }
 .pt.info { fill: var(--info); }
 footer { margin-top: 40px; font-size: 12px; }

@@ -67,7 +67,7 @@ After the run the reporter prints one row per flow:
 | `headroom` | budget − max; negative means over |
 | `over` | samples at or over the budget |
 | `RTT` | median WebSocket round trip of the workers, for context only |
-| last column | `ok`, `OVER`, `KNOWN OVER` / `ok (known over)`, `not judged` (record mode or RTT ceiling), `self-test` |
+| last column | `ok`, `OVER`, `KNOWN OVER` / `ok (known over)`, `not judged` (record mode or RTT ceiling), `self-test`; `(re-measured: 1st max N)` after a spike |
 
 Banners to look for:
 
@@ -76,6 +76,9 @@ Banners to look for:
 - **`RTT over 150 ms`**: the link is too slow to judge latency. Behaviour
   is still checked, but latency asserts were skipped. Rerun on a better
   link.
+- **`SPIKES`**: flows that were over budget once and judged on their
+  re-measure, with both sample sets, and server functions that passed
+  with one slow call.
 - **`QC RUN FAILED, whatever the test counts above say`**: a gate the
   tests can't see failed: the coverage gate, a flow in `qc/budgets.ts`
   that nothing timed, or the worker-setup sign-in over budget.
@@ -88,8 +91,9 @@ budget line. The Playwright HTML report is in `qc-report/playwright/`,
 with traces for failed tests.
 
 Server execution times come from `convex logs`: every uncached call of
-our own functions on a user path must take under 100 ms. `auth:*`,
-admin and cached calls are reported, not asserted.
+our own functions on a user path must take under 100 ms, bar one spike
+per function (see Budgets). `auth:*`, admin and cached calls are
+reported, not asserted.
 
 ## Budgets
 
@@ -98,6 +102,29 @@ event to the result on screen, network included. There's no round-trip
 allowance and no median: **every sample must be under the budget.** Each
 flow call takes one untimed warm-up, then `QC_REPEATS` (default 5) timed
 samples.
+
+**Spikes.** Convex dev deployments occasionally stall (server time jumps
+from ~15 ms to 120–160 ms), so a judged flow with any sample at or over
+budget is **re-measured once**, straight away in the same test, with K
+fresh samples. Only the re-measure is judged: the flow fails if it has a
+sample at or over budget too. This covers both kinds; the one-sample
+sign-in in the worker fixture re-measures by signing in again. Record
+mode and runs over the RTT ceiling judge nothing, so they never
+re-measure. Functional assertions never retry.
+
+Spikes stay visible. The table says `ok (re-measured: 1st max 137)`, a
+`SPIKES` banner lists both sample sets of every re-measured flow, and the
+history line carries `remeasured: true` and `firstSamplesMs` (its
+`samplesMs` are the judged re-measure). The trend report rings those
+points. A flow that spikes run after run is slow, not unlucky: look at it.
+
+The server rule has the same shape: each asserted function may have
+**one** call at or over 100 ms in a run, as long as it has other calls
+and all of them are under. A second slow call fails, and so does a
+function whose only call was slow, since nothing re-measured it. The
+function's other calls in the run are its re-measure: the server can't
+replay a call, and a stall is one moment, so one slow call per function
+is what it looks like. Server spikes are in the same banner.
 
 | Kind | Applies to | Budget |
 |---|---|---|

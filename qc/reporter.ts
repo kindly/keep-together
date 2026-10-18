@@ -25,7 +25,7 @@ import {
 import type { FlowRecord } from './timing'
 import { budgets } from './budgets'
 import { coverageGaps, readRoutes } from './coverage'
-import { RESULTS_FILE } from './server-timings'
+import { BUDGET_MS, RESULTS_FILE, budgetMiss } from './server-timings'
 import type { ServerTimingsFile } from './server-timings'
 import type { Budget, FlowKind, FlowName } from './budgets'
 
@@ -44,7 +44,9 @@ import type { Budget, FlowKind, FlowName } from './budgets'
 //   naming no route (qc/coverage.ts). A filtered run only warns.
 //
 // A `knownOver` flow (an approved exception) never fails the run, but
-// every run lists all of them in a banner with their samples.
+// every run lists all of them in a banner with their samples. So does
+// every spike: a flow that passed only on its re-measure (qc/timing.ts),
+// or a server function that passed with one slow call.
 
 const HISTORY = path.join('qc-results', 'history.jsonl')
 
@@ -57,8 +59,12 @@ export interface HistoryLine {
   flow: FlowName
   kind: FlowKind
   n: number
-  /** Raw: input event to result on screen, network included. */
+  /** Raw: input event to result on screen, network included. Judged. */
   samplesMs: Array<number>
+  /** Some call spiked and was re-measured; its judged set is in samplesMs. */
+  remeasured?: true
+  /** The first sets of the re-measured calls, each with a sample ≥ budget. */
+  firstSamplesMs?: Array<number>
   p50Ms: number
   p95Ms: number
   maxMs: number
@@ -82,8 +88,10 @@ export interface HistoryLine {
 }
 
 export interface ServerSummary {
-  /** No stream was lost and no asserted call reached the budget. */
+  /** No stream was lost and no asserted function broke the budget rule. */
   pass: boolean
+  /** Asserted functions that passed with one call over budget. */
+  spikes?: Array<string>
   /** Uncached executions only; `asserted` ones are judged. */
   functions: Array<{
     fn: string
@@ -93,6 +101,8 @@ export interface ServerSummary {
     p50Ms: number
     p95Ms: number
     maxMs: number
+    /** Asserted, one call over budget, the rest under: passed. */
+    spike?: true
   }>
 }
 
@@ -102,17 +112,24 @@ function readServer(dir: string): ServerSummary | null {
   const t = JSON.parse(readFileSync(file, 'utf8')) as ServerTimingsFile
   return {
     pass: t.errors.length === 0 && t.failures.length === 0,
+    spikes: t.spikes,
     functions: t.functions
       .filter((f) => !f.cached)
-      .map((f) => ({
-        fn: f.identifier,
-        type: f.udfType,
-        asserted: f.asserted,
-        n: f.n,
-        p50Ms: f.p50,
-        p95Ms: f.p95,
-        maxMs: f.max,
-      })),
+      .map((f) => {
+        const budget = BUDGET_MS[f.udfType as keyof typeof BUDGET_MS]
+        const spike =
+          f.asserted && f.max >= budget && budgetMiss(f, budget) === null
+        return {
+          fn: f.identifier,
+          type: f.udfType,
+          asserted: f.asserted,
+          n: f.n,
+          p50Ms: f.p50,
+          p95Ms: f.p95,
+          maxMs: f.max,
+          ...(spike && { spike: true as const }),
+        }
+      }),
   }
 }
 
@@ -149,12 +166,17 @@ function summarise(
       const samplesMs = rs.flatMap((r) => r.samplesMs)
       const budgetMs = rs[0].budgetMs
       const judged = rs.filter((r) => r.pass !== null)
+      const firstSamplesMs = rs.flatMap((r) => r.firstSamplesMs ?? [])
       return {
         ...base,
         flow,
         kind: rs[0].kind,
         n: samplesMs.length,
         samplesMs,
+        ...(firstSamplesMs.length && {
+          remeasured: true as const,
+          firstSamplesMs,
+        }),
         p50Ms: median(samplesMs),
         p95Ms: percentile(samplesMs, 95),
         maxMs: Math.max(...samplesMs),
@@ -193,7 +215,7 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
     `${Math.round(l.budgetMs - l.maxMs)}`,
     `${l.overBudget}`,
     `${Math.round(l.rttMs)}`,
-    selfTest.has(l.flow)
+    (selfTest.has(l.flow)
       ? 'self-test'
       : l.pass === null
         ? 'not judged'
@@ -203,7 +225,10 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
             : 'ok'
           : l.knownOver
             ? 'KNOWN OVER'
-            : 'OVER',
+            : 'OVER') +
+      (l.firstSamplesMs
+        ? ` (re-measured: 1st max ${Math.round(Math.max(...l.firstSamplesMs))})`
+        : ''),
   ])
   const widths = head.map((h, i) =>
     Math.max(h.length, ...rows.map((r) => r[i].length)),
@@ -254,6 +279,25 @@ function knownOverBanner(lines: Array<HistoryLine>): Array<string> {
         : 'not timed this run'
       return `${name}: KNOWN OVER, not failing: ${b.knownOver} · ${samples}`
     }),
+  ])
+}
+
+/** Flows that spiked and were re-measured, and server functions with one slow call. */
+function spikeBanner(
+  lines: Array<HistoryLine>,
+  selfTest: Set<FlowName>,
+  server: ServerSummary | null,
+): Array<string> {
+  const flows = lines.filter((l) => l.firstSamplesMs && !selfTest.has(l.flow))
+  const fns = server?.spikes ?? []
+  if (!flows.length && !fns.length) return []
+  return banner([
+    `${flows.length + fns.length} SPIKES: over budget once, judged on the re-measure (qc/README.md).`,
+    ...flows.map(
+      (l) =>
+        `${l.flow}: 1st ${l.firstSamplesMs!.join(', ')} ms · re-measured ${l.samplesMs.join(', ')} ms · budget < ${l.budgetMs} · ${l.pass ? 'passed' : 'FAILED'}`,
+    ),
+    ...fns.map((f) => `server ${f}`),
   ])
 }
 
@@ -316,6 +360,7 @@ export default class QcReporter implements Reporter {
       }
       summary = lines
       out.push(table(lines, selfTest))
+      out.push(...spikeBanner(lines, selfTest, lines[0]?.server ?? null))
       const real = lines.filter((l) => !selfTest.has(l.flow))
       mkdirSync(path.dirname(HISTORY), { recursive: true })
       appendFileSync(
@@ -328,7 +373,7 @@ export default class QcReporter implements Reporter {
       for (const r of records) {
         if (r.where === 'worker setup' && r.pass === false && !r.knownOver) {
           failures.push(
-            `${r.flow} over budget in worker ${r.worker} setup: ${r.samplesMs.join(', ')} ms, budget < ${r.budgetMs}`,
+            `${r.flow} over budget twice in worker ${r.worker} setup: ${r.samplesMs.join(', ')} ms, re-measured after ${r.firstSamplesMs?.join(', ')} ms, budget < ${r.budgetMs}`,
           )
         }
       }

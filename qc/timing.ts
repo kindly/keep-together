@@ -26,6 +26,13 @@ import type { FlowKind, FlowName } from './budgets'
 // Samples are judged raw: every one must be under the flow's maxMs
 // (qc/budgets.ts). The worker's WebSocket RTT (probeRtt) is recorded for
 // context, and above RTT_CEILING_MS the run skips the latency asserts.
+//
+// Spikes (human, 2026-10-18): Convex dev deployments occasionally stall,
+// so a judged flow with any sample at or over budget is re-measured once,
+// at once, with a full K samples. Only the second set is judged; the first
+// is kept as `firstSamplesMs` and shown in the table, history and trend.
+// Record mode and runs over the RTT ceiling judge nothing, so they never
+// re-measure. Functional asserts never retry.
 
 /** Timed samples per flow call; QC_REPEATS=1 is a fast functional run. */
 export const REPEATS = Number(process.env.QC_REPEATS ?? 5)
@@ -61,8 +68,10 @@ export interface FlowRecord {
   /** Title path of the test, or "worker setup" for fixture flows. */
   where: string
   kind: FlowKind
-  /** Input event to result on screen, network included. */
+  /** Input event to result on screen, network included. The judged set. */
   samplesMs: Array<number>
+  /** A spike: the first set, which had a sample at or over budget. */
+  firstSamplesMs?: Array<number>
   /** Context only: the worker's median WebSocket round trip. */
   rttMs: number
   /** rttMs over RTT_CEILING_MS: these samples measure a bad link. */
@@ -234,17 +243,26 @@ export async function runFlow<TArg>(
     await measureOnce(ctx.page, name, step, timeoutMs)
     warmed.add(name)
   }
-  const samplesMs: Array<number> = []
-  for (let i = 0; i < (ctx.repeats ?? REPEATS); i++) {
-    samplesMs.push(round1(await measureOnce(ctx.page, name, step, timeoutMs)))
+  const measureSet = async () => {
+    const set: Array<number> = []
+    for (let i = 0; i < (ctx.repeats ?? REPEATS); i++) {
+      set.push(round1(await measureOnce(ctx.page, name, step, timeoutMs)))
+    }
+    return set
   }
-  const { medianMs, maxMs, pass } = judge(samplesMs, budget.maxMs)
   const rttOver = ctx.rttMs > RTT_CEILING_MS
   const skipped = RECORD
     ? ('record' as const)
     : rttOver
       ? ('rtt' as const)
       : undefined
+  let samplesMs = await measureSet()
+  let firstSamplesMs: Array<number> | undefined
+  if (!skipped && !judge(samplesMs, budget.maxMs).pass) {
+    firstSamplesMs = samplesMs
+    samplesMs = await measureSet()
+  }
+  const { medianMs, maxMs, pass } = judge(samplesMs, budget.maxMs)
   const record: FlowRecord = {
     runId: runId(),
     flow: name,
@@ -252,6 +270,7 @@ export async function runFlow<TArg>(
     where: ctx.where,
     kind: budget.kind,
     samplesMs,
+    ...(firstSamplesMs && { firstSamplesMs }),
     rttMs: ctx.rttMs,
     rttOver,
     budgetMs: budget.maxMs,
@@ -276,7 +295,8 @@ export class OverBudgetError extends Error {}
 export function assertFlow(record: FlowRecord) {
   if (record.pass !== false || record.knownOver) return
   throw new OverBudgetError(
-    `flow ${record.flow} over budget: samples ${record.samplesMs.join(', ')} ms, ` +
+    `flow ${record.flow} over budget twice: samples ${record.samplesMs.join(', ')} ms, ` +
+      `re-measured after ${record.firstSamplesMs?.join(', ')} ms; ` +
       `every one must be under ${record.budgetMs} ms (RTT ${record.rttMs} ms)`,
   )
 }

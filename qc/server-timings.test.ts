@@ -1,6 +1,12 @@
 // @vitest-environment node
 import { describe, expect, test } from 'vitest'
-import { aggregate, budgetMiss, checkBudgets, isPing } from './server-timings'
+import {
+  aggregate,
+  budgetMiss,
+  checkBudgets,
+  isPing,
+  spikes,
+} from './server-timings'
 import type { LogEvent } from './server-timings'
 
 const ev = (over: Partial<LogEvent> & { ms?: number }): LogEvent => ({
@@ -57,10 +63,11 @@ describe('aggregate', () => {
 })
 
 describe('budgets', () => {
-  test('flags an asserted function with any call ≥ 100 ms, and nothing else', () => {
+  test('flags an asserted function with two calls ≥ 100 ms, and nothing else', () => {
     const functions = aggregate([
       ...Array.from({ length: 30 }, () => ev({ ms: 10 })),
       ev({ ms: 100 }),
+      ev({ ms: 120 }),
       ev({ ms: 300, cachedResult: true, identifier: 'platform/tenants:mine' }),
       ev({ ms: 300, identifier: 'auth:store', udfType: 'Mutation' }),
       ev({
@@ -76,14 +83,35 @@ describe('budgets', () => {
       }),
     ])
     expect(checkBudgets({ functions })).toEqual([
-      'Query contacts/queries:list: max 100 ms ≥ 100 ms (n=31)',
+      'Query contacts/queries:list: two calls ≥ 100 ms: 120 and 100 ms (n=32)',
     ])
   })
 
-  test('the rule is every call < budget, at any n', () => {
+  test('every call < budget, bar one spike among other calls under it', () => {
     const [f] = aggregate([ev({ ms: 99.9 })])
     expect(budgetMiss(f, 100)).toBeNull()
-    expect(budgetMiss(f, 99.9)).toMatch(/max 99.9 ms ≥ 99.9 ms \(n=1\)/)
+    expect(budgetMiss(f, 99.9)).toMatch(/only call took 99.9 ms .*n=1/)
+
+    const [spiked] = aggregate([
+      ev({ ms: 140 }),
+      ev({ ms: 20 }),
+      ev({ ms: 30 }),
+    ])
+    expect(spiked.second).toBe(30)
+    expect(budgetMiss(spiked, 100)).toBeNull()
+    expect(spikes({ functions: [spiked] })).toEqual([
+      'Query contacts/queries:list: one call 140 ms, the other 2 under (next slowest 30 ms)',
+    ])
+
+    const [twice] = aggregate([
+      ev({ ms: 140 }),
+      ev({ ms: 100 }),
+      ev({ ms: 20 }),
+    ])
+    expect(budgetMiss(twice, 100)).toBe(
+      'two calls ≥ 100 ms: 140 and 100 ms (n=3)',
+    )
+    expect(spikes({ functions: [twice] })).toEqual([])
   })
 })
 

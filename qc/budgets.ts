@@ -16,6 +16,9 @@
 // (qc/reporter.ts). `pending: true` marks one whose spec isn't written yet
 // (QC steps 6–8): untimed, it only warns. Drop the mark with the spec.
 //
+// A judged flow with any sample at or over budget is re-measured once (K
+// fresh samples) and fails only if that set is over too (qc/timing.ts).
+//
 // `knownOver` is an exception the human approved: the flow is still timed
 // and recorded in full, but being over budget doesn't fail the run. Every
 // run lists every knownOver flow in a banner, timed or not, so it can't be
@@ -58,6 +61,9 @@ export const budgets = {
   // qc/harness.spec.ts: proves the timing path can fail and pass.
   'harness.impossible': { kind: 'repeatable', maxMs: 1, selfTest: true },
   'harness.generous': { kind: 'repeatable', maxMs: 60_000, selfTest: true },
+  // A spike forced into the first set: passes on the re-measure, or fails
+  // when forced into both.
+  'harness.spike': { kind: 'repeatable', maxMs: 1000, selfTest: true },
 } satisfies Record<string, Budget>
 
 export type FlowName = keyof typeof budgets

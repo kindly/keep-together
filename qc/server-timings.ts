@@ -11,7 +11,12 @@ import type { ChildProcess } from 'node:child_process'
 // identifier, udfType, executionTime (seconds), cachedResult and caller.
 // stop() aggregates p50/p95/max per function; checkBudgets() asserts
 // that every call of our own queries and mutations took < 100 ms (a max,
-// not a percentile: the human's rule, 2026-10-17).
+// not a percentile: the human's rule, 2026-10-17), except for one spike:
+// a function may have a single call at or over budget if it has other
+// calls in the run and all of those are under (human, 2026-10-18; dev
+// deployments occasionally stall). That is the server form of the
+// flows' one re-measure: the function's other calls are its re-measure.
+// The spike is still listed (spikes()) so it stays visible.
 //
 // Not asserted: cached queries (~0 ms, served without running), `auth:*`
 // (Convex Auth hashes passwords in JS: auth:store is ~150 ms p95),
@@ -73,6 +78,8 @@ export interface FunctionStats {
   p50: number
   p95: number
   max: number
+  /** The second-slowest call; null when n = 1. */
+  second: number | null
 }
 
 export interface ServerTimings {
@@ -358,6 +365,7 @@ export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
         p50: round(percentile(ms, 0.5)),
         p95: round(percentile(ms, 0.95)),
         max: round(ms[ms.length - 1]),
+        second: ms.length > 1 ? round(ms[ms.length - 2]) : null,
       }
     })
     .sort(
@@ -372,11 +380,32 @@ export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
 
 /**
  * The pass rule, kept in one place so it can be swapped: every uncached
- * call must take < `budget` ms, so the max decides, at any n. Null when
- * `f` passes, otherwise why not.
+ * call must take < `budget` ms, bar one spike when the function's other
+ * calls (at least one) are all under. Null when `f` passes, otherwise why
+ * not.
  */
 export function budgetMiss(f: FunctionStats, budget: number): string | null {
-  return f.max >= budget ? `max ${f.max} ms ≥ ${budget} ms (n=${f.n})` : null
+  if (f.max < budget) return null
+  if (f.second === null)
+    return `its only call took ${f.max} ms ≥ ${budget} ms (n=1, nothing to re-measure)`
+  if (f.second >= budget)
+    return `two calls ≥ ${budget} ms: ${f.max} and ${f.second} ms (n=${f.n})`
+  return null
+}
+
+/** Asserted functions that passed with one spike, for the banner. */
+export function spikes(t: Pick<ServerTimings, 'functions'>): Array<string> {
+  return t.functions
+    .filter(
+      (f) =>
+        f.asserted &&
+        f.max >= BUDGET_MS[f.udfType as keyof typeof BUDGET_MS] &&
+        budgetMiss(f, BUDGET_MS[f.udfType as keyof typeof BUDGET_MS]) === null,
+    )
+    .map(
+      (f) =>
+        `${f.udfType} ${f.identifier}: one call ${f.max} ms, the other ${f.n - 1} under (next slowest ${f.second} ms)`,
+    )
 }
 
 /** One message per asserted function over its budget. */
@@ -422,6 +451,8 @@ export const RESULTS_FILE = 'server-timings.json'
 export type ServerTimingsFile = ServerTimings & {
   budgetMs: typeof BUDGET_MS
   failures: Array<string>
+  /** Functions that passed with one call over budget. */
+  spikes: Array<string>
 }
 
 /** Writes server-timings.{json,txt} into `dir` (the run's runDir()). */
@@ -431,6 +462,7 @@ export function writeResults(t: ServerTimings, dir: string) {
     ...t,
     budgetMs: BUDGET_MS,
     failures: checkBudgets(t),
+    spikes: spikes(t),
   }
   writeFileSync(
     path.join(dir, RESULTS_FILE),

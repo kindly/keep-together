@@ -1,12 +1,22 @@
 import { expect, test } from './fixtures'
-import { OverBudgetError, RECORD, RTT_CEILING_MS, runId } from './timing'
+import {
+  OverBudgetError,
+  RECORD,
+  REPEATS,
+  RTT_CEILING_MS,
+  assertFlow,
+  runFlow,
+  runId,
+} from './timing'
 import type { Page } from '@playwright/test'
 import type { FlowStep } from './timing'
 
 // The harness's self-test (factory/plans/qc-suite.sv): the same real flow
 // under an impossible 1 ms budget must fail, and under a generous one must
 // pass, so the timing path is live end to end (seed, UI sign-in, RTT,
-// in-page measurement, the pass rule).
+// in-page measurement, the pass rule). Two more prove the spike rule: a
+// sample forced over budget in the first set is re-measured and passes,
+// and one forced into both sets fails.
 
 function openContacts(page: Page, slug: string): FlowStep<string> {
   return {
@@ -17,6 +27,38 @@ function openContacts(page: Page, slug: string): FlowStep<string> {
     action: () => page.locator(`a[href="/t/${slug}/contacts"]`).click(),
     until: (name) => document.body.innerText.includes(name),
     arg: `Alpha-${runId()}`,
+  }
+}
+
+interface Held {
+  __qcHoldUntil?: number
+}
+
+/**
+ * openContacts, with the timed calls numbered in `forced` held to at least
+ * 1.5 s: `until` waits for a deadline set just before the click. The
+ * `before` reloads the page, which clears it for the next call.
+ */
+function spiked(
+  page: Page,
+  slug: string,
+  forced: Array<number>,
+): FlowStep<string> {
+  const base = openContacts(page, slug)
+  let call = 0
+  return {
+    ...base,
+    action: async () => {
+      if (forced.includes(++call)) {
+        await page.evaluate(() => {
+          ;(window as unknown as Held).__qcHoldUntil = performance.now() + 1500
+        })
+      }
+      await base.action()
+    },
+    until: (name) =>
+      document.body.innerText.includes(name) &&
+      performance.now() >= ((window as unknown as Held).__qcHoldUntil ?? 0),
   }
 }
 
@@ -41,5 +83,51 @@ test.describe('harness', () => {
     expect(record.pass).toBe(judged ? true : null)
     // Real samples: a client navigation plus a query takes milliseconds.
     expect(Math.min(...record.samplesMs)).toBeGreaterThan(1)
+  })
+
+  test.describe('spikes', () => {
+    test.beforeEach(({ rttMs }) => {
+      test.skip(RECORD, 'record mode never re-measures')
+      test.skip(rttMs > RTT_CEILING_MS, 'RTT over the ceiling: not judged')
+    })
+
+    // runFlow directly, without a warm-up, so the timed calls are numbered
+    // from 1: the first set is 1..K, the re-measure K+1..2K.
+    const ctx = (page: Page, rttMs: number) => ({
+      page,
+      rttMs,
+      worker: test.info().parallelIndex,
+      where: test.info().titlePath.join(' › '),
+      warmUp: false,
+    })
+
+    test('one over in the first set: re-measured, passes', async ({
+      page,
+      users,
+      rttMs,
+    }) => {
+      const record = await runFlow(
+        ctx(page, rttMs),
+        'harness.spike',
+        spiked(page, users.a.slug, [1]),
+      )
+      expect(record.firstSamplesMs?.[0]).toBeGreaterThanOrEqual(1000)
+      expect(record.samplesMs).toHaveLength(REPEATS)
+      expect(Math.max(...record.samplesMs)).toBeLessThan(1000)
+      expect(record.pass).toBe(true)
+      expect(() => assertFlow(record)).not.toThrow()
+    })
+
+    test('over in both sets: fails', async ({ page, users, rttMs }) => {
+      const record = await runFlow(
+        ctx(page, rttMs),
+        'harness.spike',
+        spiked(page, users.a.slug, [1, REPEATS + 1]),
+      )
+      expect(record.firstSamplesMs?.[0]).toBeGreaterThanOrEqual(1000)
+      expect(record.samplesMs[0]).toBeGreaterThanOrEqual(1000)
+      expect(record.pass).toBe(false)
+      expect(() => assertFlow(record)).toThrow(OverBudgetError)
+    })
   })
 })

@@ -167,6 +167,43 @@ describe('flowMark', () => {
     expect(flowMark({ ...p, maxMs: 120, knownOver: 'x' })).toBe('known')
     expect(flowMark({ ...p, knownOver: 'x', rttOver: true })).toBe('rtt')
   })
+
+  test('a re-measured spike that passed is its own mark; failing twice is over', () => {
+    expect(flowMark({ ...p, firstMaxMs: 137 })).toBe('spike')
+    expect(flowMark({ ...p, maxMs: 120, pass: false, firstMaxMs: 137 })).toBe(
+      'over',
+    )
+  })
+})
+
+describe('spikes', () => {
+  const t = shapeTrend(
+    [
+      line({ firstSamplesMs: [80, 137, 81], remeasured: true }),
+      line({
+        flow: 'contacts.nav',
+        server: {
+          ...server([['contacts/queries:list', true, 40, 130]]),
+          spikes: ['Query contacts/queries:list: one call 130 ms'],
+        },
+      }),
+    ],
+    { lastRuns: 30 },
+  )
+
+  test('carry the first set max to the point and the latest row', () => {
+    const save = t.flows.find((f) => f.flow === 'contact.save')!
+    expect(save.points[0]?.firstMaxMs).toBe(137)
+    expect(t.latest.find((r) => r.flow === 'contact.save')?.firstMaxMs).toBe(
+      137,
+    )
+  })
+
+  test('render with a distinct marker and status', () => {
+    const html = renderTrend(t, 'now')
+    expect(html).toContain('class="pt spike"')
+    expect(html).toContain('ok (re-measured: 1st max 137)')
+  })
 })
 
 describe('renderTrend', () => {
