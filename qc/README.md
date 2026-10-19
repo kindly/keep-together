@@ -60,7 +60,7 @@ After the run the reporter prints one row per flow:
 
 | Column | Meaning |
 |---|---|
-| `kind` | `repeat` (repeatable) or `once` (once per session) |
+| `kind` | `repeat` (repeatable), `infreq` (infrequent), `once` (once per session) or `bulk` |
 | `n` | timed samples across all workers |
 | `median`, `p95`, `max` | raw ms, input event to result on screen, network included |
 | `budget` | every sample must be under this |
@@ -129,6 +129,7 @@ is what it looks like. Server spikes are in the same banner.
 | Kind | Applies to | Budget |
 |---|---|---|
 | `repeatable` | anything a user can do more than once in a signed-in session: navigation, search, save, add, archive … | **under 100 ms, every sample** |
+| `infrequent` | creating a record (a new contact); every later edit of it is `repeatable` | **under 150 ms, every sample** (human, 2026-10-19) |
 | `oncePerSession` | sign-in, the first page load | its own budget, recorded: 1.5× the worst sample of three `QC_MODE=record` runs |
 | bulk | an action over many records, such as tagging up to 100 contacts | exempt from 100 ms; its own recorded budget, and the UI must show a progress state. The first bulk flow adds the `'bulk'` kind to `qc/budgets.ts` |
 

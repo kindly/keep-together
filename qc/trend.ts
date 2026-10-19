@@ -1,5 +1,19 @@
 import { BULK_FUNCTIONS } from './budgets.ts'
+import type { FlowKind } from './budgets.ts'
 import type { HistoryLine } from './reporter'
+
+const KIND_TEXT: Record<FlowKind, string> = {
+  repeatable: 'repeatable',
+  infrequent: 'infrequent',
+  oncePerSession: 'once per session',
+  bulk: 'bulk',
+}
+const KIND_SHORT: Record<FlowKind, string> = {
+  repeatable: 'repeat',
+  infrequent: 'infreq',
+  oncePerSession: 'once',
+  bulk: 'bulk',
+}
 
 // QC trend report (factory/plans/qc-suite.sv step 10): shapes
 // qc-results/history.jsonl into per-flow and per-server-function series
@@ -375,7 +389,7 @@ function flowCard(s: FlowSeries, runs: Array<Run>): string {
     .map((m) => `<span class="tag ${m}">${MARK_TEXT[m]}</span>`)
     .join(' ')
   return `<figure class="card">
-<figcaption><b>${esc(s.flow)}</b> <span class="muted">${s.kind === 'repeatable' ? 'repeatable' : 'once per session'}</span> ${flags}
+<figcaption><b>${esc(s.flow)}</b> <span class="muted">${KIND_TEXT[s.kind]}</span> ${flags}
 <span class="legend"><i class="sw max"></i>max <i class="sw p50"></i>median${budgets.size > 1 ? ' · <b>budget changed</b>' : ''}</span></figcaption>
 ${chart({
   runs,
@@ -444,7 +458,7 @@ function latestTable(t: Trend): string {
     const bar = Math.max(0, Math.min(100, pct))
     return `<tr class="${m}">
 <td><b>${esc(r.flow)}</b>${r.current ? '' : ` <span class="tag stale" title="not timed in the latest run">${esc(when(r.run))}</span>`}</td>
-<td class="muted">${r.kind === 'repeatable' ? 'repeat' : 'once'}</td>
+<td class="muted">${KIND_SHORT[r.kind]}</td>
 <td class="num">${ms(r.p50Ms)}</td>
 <td class="num">${ms(r.maxMs)}</td>
 <td class="num">&lt;${r.budgetMs}</td>

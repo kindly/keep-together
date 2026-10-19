@@ -207,7 +207,7 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
   ]
   const rows = lines.map((l) => [
     l.flow,
-    { repeatable: 'repeat', oncePerSession: 'once', bulk: 'bulk' }[l.kind],
+    { repeatable: 'repeat', infrequent: 'infreq', oncePerSession: 'once', bulk: 'bulk' }[l.kind],
     String(l.n),
     `${Math.round(l.p50Ms)}`,
     `${Math.round(l.p95Ms)}`,
