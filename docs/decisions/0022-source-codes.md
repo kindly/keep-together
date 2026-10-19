@@ -142,6 +142,9 @@ archived codes and codes under an archived parent are hidden,
 out-of-date ones are listed lower and marked). The contact page shows
 the full code. The contacts list filters by category, detail or version
 (e.g. "everyone recruited by Street"), with or without search text.
+Creating a contact with a code is an *infrequent* QC flow (150 ms, ADR
+0018 as amended 2026-10-19); setting or changing the code afterwards is
+repeatable (100 ms).
 
 **8. Funds live on the code** *(g1q12, g3q1)*. A source code says *how
 the money came in*. A fund says *what it may be spent on*. At Amnesty

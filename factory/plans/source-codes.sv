@@ -1,9 +1,11 @@
-<sv-page label="plan: source codes" category="plans">
+<sv-page label="plan: source codes" category="archive">
 
 <sv-prose id="b1">
 # Plan: source codes
 
 **Status:** confirmed by the human (round 4, 2026-10-19). Ready to build. Planner `planner-sources`, 2026-10-19.
+
+**Complete 2026-10-19: all steps merged, last commit `0c7c37d`.** ADR 0022. Creating a contact with a code is an infrequent QC flow (150 ms, human 2026-10-19). Follow-up: list filters take 200 rows before dropping archived/kind.
 
 ## Design tree
 
