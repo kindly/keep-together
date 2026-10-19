@@ -1,5 +1,5 @@
 /**
- * Contact contracts (ADR 0014). Six partitioned slices on the Contact
+ * Contact contracts (ADR 0014). Seven partitioned slices on the Contact
  * root, plus Tag, IdentifierType, RelationshipType, Relationship and
  * ContactNote (two slices) as their own aggregates.
  * Apply functions are pure state application — restore re-runs them.
@@ -27,7 +27,9 @@ import {
   prepareTag,
   prepareTags,
 } from './rules'
+import { describe, markUsed } from '../sources/code'
 import {
+  acquisitionFields,
   addressesFields,
   archiveFields,
   detailsFields,
@@ -42,7 +44,11 @@ import {
   tagFields,
   tagsFields,
 } from './validators'
-import { projectContact, projectTag } from './searchProjection'
+import {
+  projectAcquisition,
+  projectContact,
+  projectTag,
+} from './searchProjection'
 
 /**
  * v2 (external identifiers X1): `externalIdentifier` left the payload for
@@ -322,6 +328,52 @@ export const tags = defineContract({
       }
     }
     await reconcile(ctx, 'contactTags', root._id, p.tags, ['tagId'], existing)
+    return root._id
+  },
+})
+
+/**
+ * How the contact was recruited: a source code at version level, or none
+ * (source codes plan, g1q7). Set at creation or later and editable, every
+ * change in history. A new code must be a version of this tenant and not
+ * archived (out of date is fine), and its first assignment marks it used.
+ * A kept code stays even once archived, and a restore may bring one back
+ * (it was assigned before, so it is already marked).
+ */
+export const acquisition = defineContract({
+  name: 'contacts.acquisition',
+  entity: 'contacts',
+  version: 1,
+  counter: 'acquisitionVersion',
+  project: projectAcquisition,
+  fields: acquisitionFields,
+  apply: async (ctx, p, root, command) => {
+    if (!root)
+      throw rejected(
+        'no_root',
+        'contacts.acquisition targets an existing contact',
+      )
+    if (p.codeId !== null && p.codeId !== root.acquisitionCodeId) {
+      const code = await describe(ctx.db, p.codeId)
+      if (!code) {
+        throw rejected(
+          'unknown_source_code',
+          'The source code must be a full code (category, detail and version)',
+        )
+      }
+      if (command.source !== 'restore') {
+        if (!code.isActive) {
+          throw rejected(
+            'archived_source_code',
+            `${code.code} is archived: choose another`,
+          )
+        }
+        await markUsed(ctx, p.codeId)
+      }
+    }
+    await ctx.db.patch('contacts', root._id, {
+      acquisitionCodeId: p.codeId ?? undefined,
+    })
     return root._id
   },
 })
@@ -623,6 +675,7 @@ export const contactContracts = registry(
   tags,
   tag,
   identifiers,
+  acquisition,
   identifierType,
   relationshipType,
   relationship,

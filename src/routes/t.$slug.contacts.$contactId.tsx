@@ -48,6 +48,7 @@ const SLICE_QUERIES = [
   api.contacts.queries.getChannels,
   api.contacts.queries.getTags,
   api.contacts.queries.getIdentifiers,
+  api.contacts.queries.getAcquisition,
 ] as const
 
 /**
@@ -68,6 +69,7 @@ function useContactView(
   const channels = useQuery(api.contacts.queries.getChannels, args)
   const tags = useQuery(api.contacts.queries.getTags, args)
   const identifiers = useQuery(api.contacts.queries.getIdentifiers, args)
+  const acquisition = useQuery(api.contacts.queries.getAcquisition, args)
   // Shared with the form's type picker (archived types included).
   const types = useQuery(api.contacts.queries.listIdentifierTypes, {
     tenantId,
@@ -80,11 +82,19 @@ function useContactView(
       channels === undefined ||
       tags === undefined ||
       identifiers === undefined ||
+      acquisition === undefined ||
       types === undefined
     )
       return undefined
-    return assembleView({ root, channels, tags, identifiers, types })
-  }, [root, channels, tags, identifiers, types])
+    return assembleView({
+      root,
+      channels,
+      tags,
+      identifiers,
+      types,
+      acquisition,
+    })
+  }, [root, channels, tags, identifiers, acquisition, types])
 }
 
 /**

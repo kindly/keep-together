@@ -71,6 +71,14 @@ export const identifierRow = v.object({
 
 export const identifiersFields = { identifiers: v.array(identifierRow) }
 
+/**
+ * The contact's acquisition code: a `sourceCodes` version id, or null for
+ * uncoded.
+ */
+export const acquisitionFields = {
+  codeId: v.union(v.id('sourceCodes'), v.null()),
+}
+
 export const identifierTypeFields = { name: v.string(), isActive: v.boolean() }
 
 export const relationshipTypeFields = {
@@ -107,6 +115,7 @@ export type Payloads = {
   tag: ObjectType<typeof tagFields>
   identifiers: ObjectType<typeof identifiersFields>
   identifierType: ObjectType<typeof identifierTypeFields>
+  acquisition: ObjectType<typeof acquisitionFields>
   relationshipType: ObjectType<typeof relationshipTypeFields>
   relationship: ObjectType<typeof relationshipFields>
   note: ObjectType<typeof noteFields>

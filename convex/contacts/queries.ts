@@ -13,6 +13,7 @@ import { contactKind } from '../schema'
 import { matchesAll, parseSearch } from './search'
 import type { AlsoUsedBy } from './warnings'
 import { groupsToRead, toMoments } from './history'
+import { describe } from '../sources/code'
 import { nameIdentifiers } from './view'
 import type { IdentifierRow } from './view'
 
@@ -432,7 +433,22 @@ async function contactView(db: ScopedDatabaseReader, id: Id<'contacts'>) {
     ...kids,
     tags: tagList,
     identifiers: identifierList,
+    acquisition: await acquisitionOf(db, contact),
   }
+}
+
+/**
+ * The contact's acquisition code described (its three names, the full
+ * code, whether it is archived), or null when uncoded. Names are read
+ * live, so a renamed part shows its new name.
+ */
+async function acquisitionOf(
+  db: ScopedDatabaseReader,
+  contact: Doc<'contacts'>,
+) {
+  return contact.acquisitionCodeId
+    ? describe(db, contact.acquisitionCodeId)
+    : null
 }
 
 /**
@@ -483,7 +499,7 @@ export const sharedAddresses = tenantQuery({
 })
 
 /**
- * The contact page reads its contact one slice at a time, through the four
+ * The contact page reads its contact one slice at a time, through the five
  * queries below; the SPA assembles `get`'s view from them. The client sees
  * a save once every query the save invalidated has re-run, so a save should
  * re-run only the slices whose rows it wrote. Every save bumps its slice's
@@ -515,6 +531,19 @@ export const getTags = tenantQuery({
 export const getIdentifiers = tenantQuery({
   args: { id: v.id('contacts') },
   handler: async (ctx, { id }) => identifierRows(ctx.db, id),
+})
+
+/**
+ * The contact's acquisition code, described (`get`'s `acquisition`). It
+ * reads the root, so it re-runs on every save of the contact, but only
+ * reads the code's three rows again when the contact carries one.
+ */
+export const getAcquisition = tenantQuery({
+  args: { id: v.id('contacts') },
+  handler: async (ctx, { id }) => {
+    const contact = await ctx.db.get(id)
+    return contact && acquisitionOf(ctx.db, contact)
+  },
 })
 
 /** The whole view in one query: imports, tests, and `byClientKey`'s shape. */

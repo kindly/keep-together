@@ -11,7 +11,59 @@ import type { Doc, Id } from '../_generated/dataModel'
 import { internal } from '../_generated/api'
 import type { ContractCtx } from '../lib/contracts'
 import { internalTenantMutation } from '../lib/tenancy'
+import type { ScopedDatabaseReader } from '../lib/tenancy'
+import { describe } from '../sources/code'
 import { searchRow } from './search'
+
+type AcquisitionIds = Pick<
+  Doc<'contactSearch'>,
+  'acquisitionCodeId' | 'acquisitionDetailId' | 'acquisitionCategoryId'
+>
+
+/**
+ * The contact's acquisition code with its detail and category, for the
+ * list's filters. A code's parents never change (a version stays under its
+ * detail, a detail under its category), so the ids the row already holds
+ * for the same code are reused without a read.
+ */
+async function acquisitionIds(
+  db: ScopedDatabaseReader,
+  codeId: Id<'sourceCodes'> | undefined,
+  existing: Doc<'contactSearch'> | null,
+): Promise<AcquisitionIds> {
+  if (!codeId) {
+    return {
+      acquisitionCodeId: undefined,
+      acquisitionDetailId: undefined,
+      acquisitionCategoryId: undefined,
+    }
+  }
+  if (
+    existing?.acquisitionCodeId === codeId &&
+    existing.acquisitionDetailId &&
+    existing.acquisitionCategoryId
+  ) {
+    return {
+      acquisitionCodeId: codeId,
+      acquisitionDetailId: existing.acquisitionDetailId,
+      acquisitionCategoryId: existing.acquisitionCategoryId,
+    }
+  }
+  const code = await describe(db, codeId)
+  return {
+    acquisitionCodeId: codeId,
+    acquisitionDetailId: code?.detailId,
+    acquisitionCategoryId: code?.categoryId,
+  }
+}
+
+function sameIds(existing: Doc<'contactSearch'>, ids: AcquisitionIds) {
+  return (
+    existing.acquisitionCodeId === ids.acquisitionCodeId &&
+    existing.acquisitionDetailId === ids.acquisitionDetailId &&
+    existing.acquisitionCategoryId === ids.acquisitionCategoryId
+  )
+}
 
 /**
  * Rebuild one contact's `contactSearch` row from its current state; writes
@@ -52,17 +104,23 @@ export async function projectContactSearch(
         .unique(),
     ])
   if (!contact) return
-  const tags = await Promise.all(tagRows.map((r) => db.get(r.tagId)))
-  const row = searchRow(contact, {
-    emails: emails.map((e) => e.address),
-    phones: phones.map((p) => p.number),
-    addresses,
-    identifiers: idRows.map((r) => r.value),
-    tagNames: tags.flatMap((t) => (t ? [t.name] : [])),
-  })
+  const [tags, ids] = await Promise.all([
+    Promise.all(tagRows.map((r) => db.get(r.tagId))),
+    acquisitionIds(db, contact.acquisitionCodeId, existing),
+  ])
+  const row = {
+    ...searchRow(contact, {
+      emails: emails.map((e) => e.address),
+      phones: phones.map((p) => p.number),
+      addresses,
+      identifiers: idRows.map((r) => r.value),
+      tagNames: tags.flatMap((t) => (t ? [t.name] : [])),
+    }),
+    ...ids,
+  }
   if (!existing) {
     await db.insert('contactSearch', { contactId, ...row })
-  } else if (!sameRow(existing, row)) {
+  } else if (!sameRow(existing, row) || !sameIds(existing, ids)) {
     await db.patch('contactSearch', existing._id, row)
   }
 }
@@ -102,6 +160,30 @@ export async function projectContact(
     tagNames: [],
   })
   await ctx.db.insert('contactSearch', { contactId: id, ...row })
+}
+
+/**
+ * The `project` hook of `contacts.acquisition`: only the row's acquisition
+ * ids can have changed, so it reads the root and the row, not the
+ * children. A contact with no row yet gets a full build.
+ */
+export async function projectAcquisition(
+  ctx: ContractCtx,
+  id: Id<'contacts'>,
+): Promise<void> {
+  const [contact, existing] = await Promise.all([
+    ctx.db.get(id),
+    ctx.db
+      .query('contactSearch')
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
+      .unique(),
+  ])
+  if (!contact) return
+  if (!existing) return projectContactSearch(ctx, id)
+  const ids = await acquisitionIds(ctx.db, contact.acquisitionCodeId, existing)
+  if (!sameIds(existing, ids)) {
+    await ctx.db.patch('contactSearch', existing._id, ids)
+  }
 }
 
 /** How many contacts one `reindexTag` batch rebuilds. */

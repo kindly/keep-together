@@ -56,6 +56,18 @@ export function groupsToRead(
 }
 
 /**
+ * How a moment names a slice: the contract's name within the module,
+ * unless it reads badly to staff.
+ */
+const SLICE_LABELS: Record<string, string> = {
+  'contacts.acquisition': 'acquisition code',
+}
+
+export function sliceLabel(contract: string): string {
+  return SLICE_LABELS[contract] ?? contract.replace(/^contacts\./, '')
+}
+
+/**
  * One page of revisions (newest first) as moments: revisions sharing a
  * command group collapse into one entry listing the slices it touched.
  * `groupNames` holds what `groupsToRead` asked for.
@@ -68,7 +80,7 @@ export function toMoments(
   const index = new Map<string, number>()
   for (const r of revisions) {
     const key = r.group ?? r._id
-    const slice = r.contract.replace(/^contacts\./, '')
+    const slice = sliceLabel(r.contract)
     const at = index.get(key)
     if (at !== undefined) {
       const m = moments[at]

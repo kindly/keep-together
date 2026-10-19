@@ -13,7 +13,9 @@ import {
 import type { CommandGroup, ContractCtx, Problem } from '../lib/contracts'
 import { tenantMutation } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
+import { describe } from '../sources/code'
 import {
+  acquisition,
   addresses,
   archive,
   contactContracts,
@@ -27,6 +29,7 @@ import {
 } from './contracts'
 import { BULK_TAG_LIMIT } from './rules'
 import {
+  acquisitionFields,
   addressesFields,
   archiveFields,
   detailsFields,
@@ -38,12 +41,31 @@ import {
 } from './validators'
 import type { Payloads } from './validators'
 
+/**
+ * Create a contact, with its acquisition code when the new-contact form
+ * picked one: then both slices run as one "new contact" action.
+ */
 export const create = tenantMutation({
-  args: detailsFields,
-  handler: async (ctx, payload) => {
+  args: {
+    ...detailsFields,
+    acquisitionCodeId: v.optional(v.id('sourceCodes')),
+  },
+  handler: async (ctx, { acquisitionCodeId, ...payload }) => {
+    const group = acquisitionCodeId
+      ? await commandGroup(ctx, 'new contact')
+      : undefined
     const { id } = await executeContract(ctx, details, payload, {
       source: 'ui',
+      group,
     })
+    if (acquisitionCodeId) {
+      await executeContract(
+        ctx,
+        acquisition,
+        { codeId: acquisitionCodeId },
+        { entityId: id, expected: 0, source: 'ui', group },
+      )
+    }
     return id
   },
 })
@@ -86,6 +108,35 @@ export const setArchived = tenantMutation({
       expected,
       source: 'ui',
     }),
+})
+
+/**
+ * Set or clear the contact's acquisition code. A change runs as an action
+ * named after the code, so history keeps the code as it read then, even
+ * after a part is renamed; re-sending the current code is a no-op.
+ */
+export const setAcquisition = tenantMutation({
+  args: { id: v.id('contacts'), expected: v.number(), ...acquisitionFields },
+  handler: async (ctx, { id, expected, codeId }) => {
+    const contact = await ctx.db.get(id)
+    if (!contact) throw new ConvexError({ kind: 'not_found' as const })
+    if ((contact.acquisitionCodeId ?? null) === codeId) {
+      return { id, counter: contact.acquisitionVersion ?? 0 }
+    }
+    // A stale `expected` or a refused code throws in the contract, which
+    // rolls the group back with it.
+    const code = codeId && (await describe(ctx.db, codeId))
+    const group = await commandGroup(
+      ctx,
+      code ? `acquisition code ${code.code}` : 'acquisition code cleared',
+    )
+    return executeContract(
+      ctx,
+      acquisition,
+      { codeId },
+      { entityId: id, expected, source: 'ui', group },
+    )
+  },
 })
 
 // ── tags ───────────────────────────────────────────────────────────────────

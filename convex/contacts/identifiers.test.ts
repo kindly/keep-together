@@ -508,11 +508,12 @@ describe("the contact page's per-slice queries", () => {
   /** What the contact page assembles from its per-slice queries. */
   const assembled = async (who: Tenant, tenantId: Id<'tenants'>, id = ada) => {
     const args = { tenantId, id }
-    const [root, channels, tags, rows, types] = await Promise.all([
+    const [root, channels, tags, rows, acquisition, types] = await Promise.all([
       who.as.query(api.contacts.queries.getRoot, args),
       who.as.query(api.contacts.queries.getChannels, args),
       who.as.query(api.contacts.queries.getTags, args),
       who.as.query(api.contacts.queries.getIdentifiers, args),
+      who.as.query(api.contacts.queries.getAcquisition, args),
       who.as.query(api.contacts.queries.listIdentifierTypes, {
         tenantId,
         includeInactive: true,
@@ -523,9 +524,17 @@ describe("the contact page's per-slice queries", () => {
       channels,
       tags,
       identifiers: rows,
+      acquisition,
       view:
         root &&
-        assembleView({ root, channels, tags, identifiers: rows, types }),
+        assembleView({
+          root,
+          channels,
+          tags,
+          identifiers: rows,
+          types,
+          acquisition,
+        }),
     }
   }
 
@@ -586,6 +595,7 @@ describe("the contact page's per-slice queries", () => {
       channels: { emails: [], phones: [], addresses: [] },
       tags: [],
       identifiers: [],
+      acquisition: null,
       view: null,
     })
     // B naming A's tenant: refused, by every one of them.
@@ -594,6 +604,7 @@ describe("the contact page's per-slice queries", () => {
       api.contacts.queries.getChannels,
       api.contacts.queries.getTags,
       api.contacts.queries.getIdentifiers,
+      api.contacts.queries.getAcquisition,
     ]) {
       const data = await errorData(
         f.b.as.query(query, { tenantId: f.a.tenantId, id: ada }),

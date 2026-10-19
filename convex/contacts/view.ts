@@ -4,6 +4,7 @@
  * queries do the reads.
  */
 import type { Id } from '../_generated/dataModel'
+import type { SourceCodeDescription } from '../sources/code'
 import { normaliseTagName } from './rules'
 
 export type IdentifierRow = {
@@ -43,8 +44,9 @@ export function nameIdentifiers(
 
 /**
  * `get`'s view from the contact page's per-slice queries (`getRoot`,
- * `getChannels`, `getTags`, `getIdentifiers`), naming identifier rows from
- * the tenant's identifier types, archived ones included.
+ * `getChannels`, `getTags`, `getIdentifiers`, `getAcquisition`), naming
+ * identifier rows from the tenant's identifier types, archived ones
+ * included.
  */
 export function assembleView<TRoot, TChannels extends object, TTag>(parts: {
   root: TRoot
@@ -52,6 +54,7 @@ export function assembleView<TRoot, TChannels extends object, TTag>(parts: {
   tags: Array<TTag>
   identifiers: Array<IdentifierRow>
   types: Array<{ _id: Id<'identifierTypes'>; name: string; isActive: boolean }>
+  acquisition: SourceCodeDescription | null
 }) {
   const types = new Map(parts.types.map((t) => [t._id, t]))
   return {
@@ -59,5 +62,6 @@ export function assembleView<TRoot, TChannels extends object, TTag>(parts: {
     ...parts.channels,
     tags: parts.tags,
     identifiers: nameIdentifiers(parts.identifiers, (id) => types.get(id)),
+    acquisition: parts.acquisition,
   }
 }
