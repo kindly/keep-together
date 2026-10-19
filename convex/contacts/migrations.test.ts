@@ -27,62 +27,9 @@ const createContact = (who: Tenant, lastName: string) =>
   })
 
 const run = (
-  fn:
-    | typeof internal.contacts.migrations.backfillAcquisitionVersion
-    | typeof internal.contacts.migrations.backfillContactSearch,
+  fn: typeof internal.contacts.migrations.backfillContactSearch,
   opts: { batchSize?: number; cursor?: null } = {},
 ) => f.t.run((ctx) => runToCompletion(ctx, components.migrations, fn, opts))
-
-describe('backfillAcquisitionVersion', () => {
-  /** Contacts lose `acquisitionVersion`, as if created before step 1. */
-  const unbackfill = () =>
-    f.t.run(async (ctx) => {
-      for (const c of await ctx.db.query('contacts').collect()) {
-        await ctx.db.patch('contacts', c._id, { acquisitionVersion: undefined })
-      }
-    })
-
-  const contacts = () => f.t.run((ctx) => ctx.db.query('contacts').collect())
-
-  test('a new contact is created with 0', async () => {
-    await createContact(f.a, 'Lovelace')
-    expect((await contacts()).map((c) => c.acquisitionVersion)).toEqual([0])
-  })
-
-  test('sets 0 on every tenant’s contacts, in batches, and nothing else', async () => {
-    await createContact(f.a, 'Lovelace')
-    await createContact(f.a, 'Babbage')
-    await createContact(f.b, 'Herschel')
-    await unbackfill()
-    const before = await contacts()
-    expect(before.every((c) => c.acquisitionVersion === undefined)).toBe(true)
-    expect(new Set(before.map((c) => c.tenantId)).size).toBe(2)
-
-    const status = await run(
-      internal.contacts.migrations.backfillAcquisitionVersion,
-      { batchSize: 1 },
-    )
-    expect(status.isDone).toBe(true)
-    expect(status.processed).toBe(3)
-    expect(await contacts()).toEqual(
-      before.map((c) => ({ ...c, acquisitionVersion: 0 })),
-    )
-  })
-
-  test('a rerun from the start changes nothing', async () => {
-    await createContact(f.a, 'Lovelace')
-    await createContact(f.b, 'Herschel')
-    await unbackfill()
-    await run(internal.contacts.migrations.backfillAcquisitionVersion)
-    const done = await contacts()
-    const status = await run(
-      internal.contacts.migrations.backfillAcquisitionVersion,
-      { cursor: null },
-    )
-    expect(status.isDone).toBe(true)
-    expect(await contacts()).toEqual(done)
-  })
-})
 
 describe('backfillContactSearch fills contactSearch.sortName', () => {
   const rows = () => f.t.run((ctx) => ctx.db.query('contactSearch').collect())

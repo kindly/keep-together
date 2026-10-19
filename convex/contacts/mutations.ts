@@ -130,7 +130,7 @@ export const setAcquisition = tenantMutation({
     const contact = await ctx.db.get(id)
     if (!contact) throw new ConvexError({ kind: 'not_found' as const })
     if ((contact.acquisitionCodeId ?? null) === codeId) {
-      return { id, counter: contact.acquisitionVersion ?? 0 }
+      return { id, counter: contact.acquisitionVersion }
     }
     // A stale `expected` or a refused code throws in the contract, which
     // rolls the group back with it.

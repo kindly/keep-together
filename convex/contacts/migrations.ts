@@ -15,7 +15,7 @@
  * deletes the backfill and its test (convex-test can no longer build the
  * old shape). Past backfills: `addressNormalized` (S2), `tagsVersion` (S4),
  * `externalIdentifier` → identifier rows (X2), `contactEmails.onHold` →
- * comms' emailSuppressions (E2a);
+ * comms' emailSuppressions (E2a), `acquisitionVersion` (source codes);
  * see git log. `backfillContactSearch` is not a two-phase step: it fills a
  * new derived table, and stays (rerunnable) as the way to rebuild it.
  */
@@ -58,21 +58,4 @@ export const backfillRevisionGroupName = migrations.define({
     const group = await ctx.db.get('commandGroups', revision.group)
     return group ? { groupName: group.name } : undefined
   },
-})
-
-/**
- * Source codes step 1: `acquisitionVersion = 0` on contacts created before
- * the `contacts.acquisition` slice existed (0 is what a create writes: no
- * acquisition revision yet). A no-op on contacts that have it.
- *
- *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillAcquisitionVersion"}'
- *
- * Then rerun `backfillContactSearch`, which fills `contactSearch.sortName`.
- */
-export const backfillAcquisitionVersion = migrations.define({
-  table: 'contacts',
-  migrateOne: (_ctx, contact) =>
-    contact.acquisitionVersion === undefined
-      ? { acquisitionVersion: 0 }
-      : undefined,
 })

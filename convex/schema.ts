@@ -83,17 +83,14 @@ export default defineSchema({
   //     (identifierTypesVersion)
   //   tenantPreferences.sourceCodes → staffCanManageSourceCodes
   //     (sourceCodesVersion)
-  // Mid two-phase change (source codes step 1): the source-codes pair is
-  // optional until platform/migrations:backfillSourceCodesPreference has
-  // run everywhere; step 6 makes it required.
   tenantPreferences: defineTable({
     tenantId: v.id('tenants'),
     staffCanManageTags: v.boolean(),
     tagsVersion: v.number(),
     staffCanManageIdentifierTypes: v.boolean(),
     identifierTypesVersion: v.number(),
-    staffCanManageSourceCodes: v.optional(v.boolean()),
-    sourceCodesVersion: v.optional(v.number()),
+    staffCanManageSourceCodes: v.boolean(),
+    sourceCodesVersion: v.number(),
   }).index('by_tenant', ['tenantId']),
 
   // ── command log (ADR 0013 / 0017) ─────────────────────────────────────
@@ -144,9 +141,6 @@ export default defineSchema({
   //   contacts.identifiers → contactIdentifiers rows (identifiersVersion)
   //   contacts.acquisition → acquisitionCodeId (acquisitionVersion)
   // System-managed (no contract): displayName / sortName, counters.
-  // Mid two-phase change (source codes step 1): `acquisitionVersion` is
-  // optional until contacts/migrations:backfillAcquisitionVersion has run
-  // everywhere; step 6 makes it required.
   contacts: defineTable({
     tenantId: v.id('tenants'),
     clientKey: v.optional(v.string()), // client-minted on create → idempotent double submits / retried imports
@@ -171,7 +165,7 @@ export default defineSchema({
     // How the contact was recruited: a `sourceCodes` row at level
     // 'version' (the source code). Optional for good: absent = uncoded.
     acquisitionCodeId: v.optional(v.id('sourceCodes')),
-    acquisitionVersion: v.optional(v.number()),
+    acquisitionVersion: v.number(),
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
     .index('by_tenant_acquisition', ['tenantId', 'acquisitionCodeId'])
