@@ -373,6 +373,33 @@ test('only comms calls the system writer', () => {
   expect(
     callersOf(/suppressAddress\b|comms\.suppressions\.suppress\b/),
   ).toEqual(['../platform/qcSeed.ts', './suppressions.ts'])
+  // In qcSeed, one call: `hold`'s.
+  expect(qcSeedSource().match(/suppressAddress\(/g)).toHaveLength(1)
+})
+
+const qcSeedSource = () =>
+  Object.values(
+    import.meta.glob<string>('../platform/qcSeed.ts', {
+      query: '?raw',
+      import: 'default',
+      eager: true,
+    }),
+  )[0]
+
+// qcSeed:hold holds an address with no role: nothing the app runs may
+// reach it, so only the QC harness (outside convex/ and src/) names it.
+test('nothing in the app calls qcSeed.hold', () => {
+  expect(callersOf(/qcSeed[.:]hold\b/)).toEqual([])
+  const spa = Object.entries(
+    import.meta.glob<string>('../../src/**/*.{ts,tsx}', {
+      query: '?raw',
+      import: 'default',
+      eager: true,
+    }),
+  )
+    .filter(([, text]) => /qcSeed/.test(text))
+    .map(([file]) => file)
+  expect(spa).toEqual([])
 })
 
 test('only comms/suppressions runs the suppression contract', () => {

@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest'
 import { ConvexError } from 'convex/values'
-import { holdLine, holdOn, releaseFailure } from './email-hold'
+import {
+  holdKey,
+  holdLine,
+  holdOn,
+  isNotHeld,
+  releaseFailure,
+} from './email-hold'
 import type { Held } from './email-hold'
 
 const hold = {
@@ -66,4 +72,27 @@ describe('releaseFailure', () => {
       'Could not release the address',
     )
   })
+})
+
+describe('holdKey', () => {
+  test('the same for the same address and hold, in any case', () => {
+    expect(holdKey(' Ada@Example.com', hold)).toBe(
+      holdKey('ada@example.com', { ...hold }),
+    )
+  })
+
+  test('changes with the address, a release, or a new hold', () => {
+    const k = holdKey('ada@example.com', hold)
+    expect(holdKey('bob@example.com', hold)).not.toBe(k)
+    expect(holdKey('ada@example.com', undefined)).not.toBe(k)
+    expect(holdKey('ada@example.com', { ...hold, saveVersion: 4 })).not.toBe(k)
+  })
+})
+
+test('isNotHeld: only the not_held rejection', () => {
+  expect(
+    isNotHeld(new ConvexError({ kind: 'rejected', reason: 'not_held' })),
+  ).toBe(true)
+  expect(isNotHeld(new ConvexError({ kind: 'stale', current: 1 }))).toBe(false)
+  expect(isNotHeld(new Error('not_held'))).toBe(false)
 })

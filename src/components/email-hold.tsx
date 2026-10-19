@@ -1,8 +1,15 @@
 import { useMutation } from 'convex/react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { api } from '../../convex/_generated/api'
+import { SUPPRESSION_NOTE_MAX } from '../../convex/comms/rules'
 import type { Hold } from '../lib/email-hold'
-import { holdLine, releaseFailure } from '../lib/email-hold'
+import {
+  NO_LONGER_HELD,
+  holdKey,
+  holdLine,
+  isNotHeld,
+  releaseFailure,
+} from '../lib/email-hold'
 import { useIsAdmin, useTenant } from '../lib/tenant'
 import {
   AlertDialog,
@@ -20,6 +27,9 @@ import {
  * Release button with a confirm dialog (ADR 0021). Rendered for every
  * email row, held or not, so a release's error outlives the badge it
  * removed. No optimistic update: the badge goes when `held` says so.
+ *
+ * An error belongs to the hold it was about (`holdKey`): it shows until
+ * the row's address or hold changes, or the admin tries again or cancels.
  */
 export function EmailHold({
   address,
@@ -33,12 +43,32 @@ export function EmailHold({
   const release = useMutation(api.comms.suppressions.release)
   const [open, setOpen] = useState(false)
   const [note, setNote] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{ text: string; key: string } | null>(null)
+  const [pending, setPending] = useState(false)
+  // Synchronous, unlike `pending`: a second click on the closing dialog
+  // must not send a second release.
+  const inFlight = useRef(false)
+  const key = holdKey(address, hold)
+  const current = useRef(key)
+  current.current = key
+
+  // The hold went while the dialog was open (released elsewhere, or the
+  // address edited): close it and say so, rather than a dead button.
+  if (open && !hold && !pending) {
+    setOpen(false)
+    setError({ text: NO_LONGER_HELD, key })
+  }
 
   async function confirm() {
-    if (!hold) return
+    if (inFlight.current) return
     setOpen(false)
     setError(null)
+    if (!hold) {
+      setError({ text: NO_LONGER_HELD, key })
+      return
+    }
+    inFlight.current = true
+    setPending(true)
     try {
       await release({
         tenantId: tenant._id,
@@ -48,7 +78,12 @@ export function EmailHold({
       })
       setNote('')
     } catch (err) {
-      setError(releaseFailure(err))
+      // Not held any more: what the admin asked for, whoever did it.
+      if (isNotHeld(err)) setNote('')
+      else setError({ text: releaseFailure(err), key: current.current })
+    } finally {
+      inFlight.current = false
+      setPending(false)
     }
   }
 
@@ -66,7 +101,11 @@ export function EmailHold({
           {isAdmin && (
             <button
               type="button"
-              onClick={() => setOpen(true)}
+              disabled={pending}
+              onClick={() => {
+                setError(null)
+                setOpen(true)
+              }}
               className="ml-auto text-neutral-600 underline"
             >
               Release
@@ -74,12 +113,18 @@ export function EmailHold({
           )}
         </div>
       )}
-      {error && (
+      {error?.key === key && (
         <span role="alert" className="text-xs text-red-700">
-          {error}
+          {error.text}
         </span>
       )}
-      <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialog
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o)
+          if (!o) setError(null)
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Release {address}?</AlertDialogTitle>
@@ -93,6 +138,7 @@ export function EmailHold({
             <input
               type="text"
               value={note}
+              maxLength={SUPPRESSION_NOTE_MAX}
               placeholder="They've fixed their mailbox"
               onChange={(e) => setNote(e.target.value)}
               className="rounded border border-neutral-300 px-3 py-1.5"
@@ -101,6 +147,7 @@ export function EmailHold({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              disabled={pending}
               // Not a close: confirm closes it itself.
               onClick={(e) => {
                 e.preventDefault()

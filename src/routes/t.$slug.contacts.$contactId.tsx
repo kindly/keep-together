@@ -118,7 +118,10 @@ function ContactPage() {
     <UnsavedWorkProvider work={work}>
       <main className="mx-auto grid max-w-5xl gap-8 p-6 md:grid-cols-[1fr_18rem]">
         <div className="flex flex-col gap-8">
-          <ContactForm id={id} data={data} />
+          {/* A new instance per group and contact: its reducer and the
+              last held / shared answers belong to the contact they came
+              from, and must never show on the next one. */}
+          <ContactForm key={`${tenant._id}:${id}`} id={id} data={data} />
           <ContactNotes contactId={id} />
         </div>
         <ContactHistory

@@ -33,6 +33,24 @@ export function holdLine(hold: Hold): string {
   return `Bounced on ${ON.format(hold.since)}: we won't send to this address`
 }
 
+/**
+ * What a row's hold is, as one string: a release error is about this and
+ * goes when it changes (another address, released, held again).
+ */
+export function holdKey(address: string, hold: Hold | undefined): string {
+  const at = hold ? `${hold.since}:${hold.saveVersion}` : 'none'
+  return `${normaliseEmail(address)}|${at}`
+}
+
+export const NO_LONGER_HELD = 'This address is no longer on hold'
+
+/** The release found the address already released (by anyone). */
+export function isNotHeld(err: unknown): boolean {
+  if (!(err instanceof ConvexError)) return false
+  const d = err.data as { kind?: string; reason?: string }
+  return d.kind === 'rejected' && d.reason === 'not_held'
+}
+
 /** A user-facing line for a failed release. */
 export function releaseFailure(err: unknown): string {
   if (!(err instanceof ConvexError)) return 'Could not release the address'
@@ -44,8 +62,7 @@ export function releaseFailure(err: unknown): string {
   }
   if (d.kind === 'stale')
     return 'This hold changed just now. Check it, then release again.'
-  if (d.kind === 'rejected' && d.reason === 'not_held')
-    return 'This address is no longer on hold'
+  if (isNotHeld(err)) return NO_LONGER_HELD
   if (d.kind === 'forbidden') return 'Only admins can release an address'
   if (d.kind === 'invalid')
     return d.problems?.map((p) => p.message).join('; ') ?? 'Invalid note'

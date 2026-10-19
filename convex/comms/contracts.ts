@@ -8,9 +8,7 @@ import type { ObjectType } from 'convex/values'
 import { defineContract, invalid, registry, rejected } from '../lib/contracts'
 import { suppressionReason } from '../schema'
 import { normaliseEmail } from '../contacts/rules'
-
-/** The longest note an admin can give for a release. */
-export const SUPPRESSION_NOTE_MAX = 500
+import { SUPPRESSION_NOTE_MAX } from './rules'
 
 export const suppressionFields = {
   addressNormalized: v.string(),
