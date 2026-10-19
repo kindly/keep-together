@@ -267,6 +267,15 @@ describe('sources.code', () => {
     expect(await problem(create(a, '  ', categoryId))).toBe('name')
     expect(await problem(create(a, 'Wes-ser', categoryId))).toBe('name')
     expect(await problem(create(a, 'x'.repeat(41), categoryId))).toBe('name')
+    expect(
+      await problem(
+        create(a, 'Long', categoryId, { description: 'x'.repeat(1001) }),
+      ),
+    ).toBe('description')
+    const { id: wordy } = await create(a, 'Wordy', categoryId, {
+      description: ` ${'x'.repeat(1000)} `,
+    })
+    expect((await part(a, wordy)).description).toHaveLength(1000)
     expect(await problem(create(a, ' wESSER ', categoryId))).toBe(
       'duplicate_source_name',
     )
@@ -387,6 +396,13 @@ describe('describe', () => {
       isActive: true,
       startDate: '2026-01-01',
       endDate: '2026-12-31',
+    })
+    // Undated, a version shows its detail's dates, bound by bound.
+    await save(a, detailId, { startDate: '2025-06-01', endDate: '2027-01-31' })
+    await save(a, versionId, { startDate: '', endDate: '2026-11-30' })
+    expect(await describeIn(a, versionId)).toMatchObject({
+      startDate: '2025-06-01',
+      endDate: '2026-11-30',
     })
     expect(await describeIn(a, detailId)).toBeNull()
     expect(await describeIn(a, categoryId)).toBeNull()

@@ -44,6 +44,13 @@ export const SOURCE_CODE_LIMIT = 2000
 /** The longest a part's name can be: it is part of a printed code. */
 export const SOURCE_NAME_MAX = 40
 
+/**
+ * The longest a description can be. The tree and the picker read every
+ * part in one pass (SOURCE_CODE_LIMIT rows), which must stay well inside
+ * Convex's per-function read limit.
+ */
+export const SOURCE_DESCRIPTION_MAX = 1000
+
 /** Sibling names are unique case-insensitively. */
 export function normaliseSourceName(name: string): string {
   return name.toLowerCase()
@@ -82,6 +89,12 @@ export function prepareSourceCode(p: SourceCodePayload): SourceCodePayload {
     problems.push({
       field: 'name',
       message: `At most ${SOURCE_NAME_MAX} characters`,
+    })
+  }
+  if (out.description && out.description.length > SOURCE_DESCRIPTION_MAX) {
+    problems.push({
+      field: 'description',
+      message: `At most ${SOURCE_DESCRIPTION_MAX} characters`,
     })
   }
   for (const field of ['startDate', 'endDate'] as const) {

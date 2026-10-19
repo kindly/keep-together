@@ -135,7 +135,10 @@ export type SourceCodeDescription = {
   categoryName: string
   /** False if the version or either parent is archived. */
   isActive: boolean
-  /** The version's own dates. */
+  /**
+   * The version's dates, each bound falling back to its detail's: what the
+   * picker's "ended" / "not started" uses.
+   */
   startDate?: string
   endDate?: string
 }
@@ -176,8 +179,7 @@ export async function describe(
     detailName: detail.name,
     categoryName: category.name,
     isActive: version.isActive && detail.isActive && category.isActive,
-    startDate: version.startDate,
-    endDate: version.endDate,
+    ...effectiveDates(version, detail),
   }
 }
 
