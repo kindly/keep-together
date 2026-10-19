@@ -19,7 +19,7 @@ until its backfill has run, so a skipped step fails loudly, not silently.
 | 9 | `c07a706` (source codes 1, loosen) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillAcquisitionVersion"}'`, then `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillContactSearch"}'` (fills `contactSearch.sortName`), then `npx convex run platform/migrations:run '{"fn":"platform/migrations:backfillSourceCodesPreference"}'` | isDone for all three. The first and third were deleted in `f4b1571`: run them from this commit (they exist up to `7379b19`) |
 | 10 | `a4eba31` (source codes 2 + review fixes, `sources` module) | `npx convex run sources/migrations:run '{"fn":"sources/migrations:seedCategories"}'` (the seven starter categories for existing tenants) | isDone. This push drops `sourceCodes.codeNormalized` and `by_tenant_code`, which is safe only because nothing writes `sourceCodes` before it |
 | 11 | `f4b1571` (source codes 6, tighten) | — | refuses to deploy unless row 9's `backfillAcquisitionVersion` and `backfillSourceCodesPreference` are isDone (ADR 0022) |
-| 12 | `main` | (perf step 1's revision `groupName` backfill, once merged: optional, history falls back without it) | — |
+| 12 | `main` | optional: `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillRevisionGroupName"}'` (perf-storage 1b, `e50916c`; history falls back without it) | — |
 
 Rehearse the sequence on a rehearsal slot first (README "Rehearsal
 slots"): `pnpm rehearsal:claim`, then `pnpm rehearsal:run <n> --cwd
