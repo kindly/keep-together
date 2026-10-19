@@ -59,3 +59,20 @@ export const backfillRevisionGroupName = migrations.define({
     return group ? { groupName: group.name } : undefined
   },
 })
+
+/**
+ * Source codes step 1: `acquisitionVersion = 0` on contacts created before
+ * the `contacts.acquisition` slice existed (0 is what a create writes: no
+ * acquisition revision yet). A no-op on contacts that have it.
+ *
+ *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillAcquisitionVersion"}'
+ *
+ * Then rerun `backfillContactSearch`, which fills `contactSearch.sortName`.
+ */
+export const backfillAcquisitionVersion = migrations.define({
+  table: 'contacts',
+  migrateOne: (_ctx, contact) =>
+    contact.acquisitionVersion === undefined
+      ? { acquisitionVersion: 0 }
+      : undefined,
+})

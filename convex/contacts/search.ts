@@ -106,11 +106,13 @@ export function searchRow(
   archived: boolean
   kind: Kind
   phones: Array<string>
+  sortName: string
 } {
   return {
     text: searchText(contact, children),
     archived: contact.archived,
     kind: contact.kind,
+    sortName: contact.sortName,
     phones: [...new Set(children.phones.map(normalisePhone).filter(Boolean))],
   }
 }

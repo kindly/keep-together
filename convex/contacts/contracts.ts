@@ -103,6 +103,7 @@ export const details = defineContract({
         archiveVersion: 0,
         tagsVersion: 0,
         identifiersVersion: 0,
+        acquisitionVersion: 0,
       })
     }
     if (root.kind !== p.kind) {

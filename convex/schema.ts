@@ -81,12 +81,19 @@ export default defineSchema({
   //   tenantPreferences.tags → staffCanManageTags (tagsVersion)
   //   tenantPreferences.identifierTypes → staffCanManageIdentifierTypes
   //     (identifierTypesVersion)
+  //   tenantPreferences.sourceCodes → staffCanManageSourceCodes
+  //     (sourceCodesVersion)
+  // Mid two-phase change (source codes step 1): the source-codes pair is
+  // optional until platform/migrations:backfillSourceCodesPreference has
+  // run everywhere; step 6 makes it required.
   tenantPreferences: defineTable({
     tenantId: v.id('tenants'),
     staffCanManageTags: v.boolean(),
     tagsVersion: v.number(),
     staffCanManageIdentifierTypes: v.boolean(),
     identifierTypesVersion: v.number(),
+    staffCanManageSourceCodes: v.optional(v.boolean()),
+    sourceCodesVersion: v.optional(v.number()),
   }).index('by_tenant', ['tenantId']),
 
   // ── command log (ADR 0013 / 0017) ─────────────────────────────────────
@@ -135,7 +142,11 @@ export default defineSchema({
   //   contacts.archive   → archived (archiveVersion)
   //   contacts.tags      → contactTags rows (tagsVersion)
   //   contacts.identifiers → contactIdentifiers rows (identifiersVersion)
+  //   contacts.acquisition → acquisitionCodeId (acquisitionVersion)
   // System-managed (no contract): displayName / sortName, counters.
+  // Mid two-phase change (source codes step 1): `acquisitionVersion` is
+  // optional until contacts/migrations:backfillAcquisitionVersion has run
+  // everywhere; step 6 makes it required.
   contacts: defineTable({
     tenantId: v.id('tenants'),
     clientKey: v.optional(v.string()), // client-minted on create → idempotent double submits / retried imports
@@ -157,8 +168,13 @@ export default defineSchema({
     archiveVersion: v.number(),
     tagsVersion: v.number(),
     identifiersVersion: v.number(),
+    // How the contact was recruited: a `sourceCodes` row at level
+    // 'version' (the source code). Optional for good: absent = uncoded.
+    acquisitionCodeId: v.optional(v.id('sourceCodes')),
+    acquisitionVersion: v.optional(v.number()),
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
+    .index('by_tenant_acquisition', ['tenantId', 'acquisitionCodeId'])
     .index('by_tenant_kind_sort', ['tenantId', 'kind', 'sortName']) // list's kind filter
     .index('by_tenant_clientKey', ['tenantId', 'clientKey'])
     // Superseded by contactSearch.search_text (search Q2); dropped once Q2
@@ -265,11 +281,44 @@ export default defineSchema({
     archived: v.boolean(),
     kind: contactKind,
     phones: v.array(v.string()), // normalisePhone() of each number (exact-phone ranking)
+    // The contact's sortName, for the acquisition indexes below. Optional
+    // for good, like the three ids: backfillContactSearch fills it on rows
+    // projected before source codes step 1.
+    sortName: v.optional(v.string()),
+    // The acquisition code (a version) and its detail and category, for the
+    // contacts list's source filter. Ids only, so a rename never touches
+    // these rows.
+    acquisitionCodeId: v.optional(v.id('sourceCodes')),
+    acquisitionDetailId: v.optional(v.id('sourceCodes')),
+    acquisitionCategoryId: v.optional(v.id('sourceCodes')),
   })
     .index('by_tenant_contact', ['tenantId', 'contactId'])
+    // The source filter without search text: one level's id, by name.
+    .index('by_tenant_acquisitionCode_sort', [
+      'tenantId',
+      'acquisitionCodeId',
+      'sortName',
+    ])
+    .index('by_tenant_acquisitionDetail_sort', [
+      'tenantId',
+      'acquisitionDetailId',
+      'sortName',
+    ])
+    .index('by_tenant_acquisitionCategory_sort', [
+      'tenantId',
+      'acquisitionCategoryId',
+      'sortName',
+    ])
     .searchIndex('search_text', {
       searchField: 'text',
-      filterFields: ['tenantId', 'archived', 'kind'],
+      filterFields: [
+        'tenantId',
+        'archived',
+        'kind',
+        'acquisitionCodeId',
+        'acquisitionDetailId',
+        'acquisitionCategoryId',
+      ],
     }),
 
   // Its own aggregate (`contacts.identifierType`, saveVersion), like tags:
@@ -351,6 +400,43 @@ export default defineSchema({
     ])
     // The archived list: newest first regardless of pin.
     .index('by_tenant_contact_archived', ['tenantId', 'contactId', 'archived']),
+
+  // ── sources (source codes plan) ───────────────────────────────────────
+  // One row per part of a source code, at any of three levels: a category
+  // (how we reached them), a detail under it (which agency / event) and a
+  // version under that (which run). Its own aggregate (`sources.code`,
+  // saveVersion). Only a version is assignable, and its id IS the source
+  // code: contacts and gifts store that id and derive the rest. The full
+  // code is the three names joined by hyphens (`Street-Wesser-001`); a name
+  // has no hyphen and is unique among its siblings case-insensitively, so
+  // the full code is unique per tenant. A part's parent never changes.
+  // Archive = `isActive: false` (hides it and everything under it from the
+  // picker). System-owned: `used`, set by `sources.markUsed` the first
+  // time a code goes on a contact or gift, on the version and both parents,
+  // never cleared; the contract preserves it, and only unused parts can be
+  // deleted.
+  sourceCodes: defineTable({
+    tenantId: v.id('tenants'),
+    level: v.union(
+      v.literal('category'),
+      v.literal('detail'),
+      v.literal('version'),
+    ),
+    parentId: v.optional(v.id('sourceCodes')), // absent on a category
+    name: v.string(), // as typed (trimmed)
+    nameNormalized: v.string(), // sibling uniqueness
+    codeNormalized: v.string(), // the full code from the root down, normalised (picker)
+    description: v.optional(v.string()),
+    startDate: v.optional(v.string()), // ISO date; detail and version only
+    endDate: v.optional(v.string()),
+    isActive: v.boolean(),
+    used: v.boolean(),
+    saveVersion: v.number(),
+  })
+    // Prefix `parentId` = a part's children (categories: parentId absent);
+    // both = a sibling by name.
+    .index('by_tenant_parent', ['tenantId', 'parentId', 'nameNormalized'])
+    .index('by_tenant_code', ['tenantId', 'codeNormalized']),
 
   // ── comms ─────────────────────────────────────────────────────────────
   // Suppression per address (domain rule 5: centralised in comms). One row

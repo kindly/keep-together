@@ -75,6 +75,7 @@ function sameRow(
     existing.text === row.text &&
     existing.archived === row.archived &&
     existing.kind === row.kind &&
+    existing.sortName === row.sortName &&
     existing.phones.join(' ') === row.phones.join(' ')
   )
 }
