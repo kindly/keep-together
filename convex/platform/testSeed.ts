@@ -46,9 +46,14 @@ import {
   UK_RELATIONSHIP_TYPES,
 } from '../contacts/seed'
 import schema from '../schema'
-import { DONOR_COUNT, generateDonors, IDENTIFIER_TYPES } from './testSeedData'
+import {
+  DONOR_COUNT,
+  generateDonors,
+  IDENTIFIER_TYPES,
+  SOURCE_DETAILS,
+} from './testSeedData'
 import { insertTenant, tenantForSlug } from './tenants'
-import { ensureSeedCategories } from '../sources/seed'
+import { ensureSeedCategories, seedDetails } from '../sources/seed'
 
 const role = schema.tables.memberships.validator.fields.role
 
@@ -205,6 +210,7 @@ export const tenant = internalMutation({
     }
     await seedTags(scoped)
     await ensureSeedCategories(scoped)
+    await seedDetails(scoped, SOURCE_DETAILS)
     await ensureIdentifierTypes(scoped, IDENTIFIER_TYPES)
     return tenantId
   },

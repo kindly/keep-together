@@ -4,6 +4,7 @@ import { useConvexAuth, useQuery } from 'convex/react'
 import type { ConvexReactClient } from 'convex/react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
+import type { ListKind } from '../../convex/lib/lists'
 
 export type Tenant = {
   _id: Id<'tenants'>
@@ -18,10 +19,16 @@ export type Tenant = {
   staffCanManageIdentifierTypes: boolean
   /** Its counter, for the switch's save; null until first saved. */
   identifierTypesVersion: number | null
+  /** The tenant's "staff can manage source codes" switch. */
+  staffCanManageSourceCodes: boolean
+  /** Its counter, for the switch's save; null until first saved. */
+  sourceCodesVersion: number | null
   /** Whether this caller may manage tags, given role and switch. */
   canManageTags: boolean
   /** Whether this caller may manage identifier types, given role and switch. */
   canManageIdentifierTypes: boolean
+  /** Whether this caller may manage source codes, given role and switch. */
+  canManageSourceCodes: boolean
 }
 
 export const TenantContext = createContext<Tenant | null>(null)
@@ -49,15 +56,17 @@ export function useIsAdmin(): boolean {
 }
 
 /**
- * Whether the caller may create, rename and archive the tenant's tags, or
- * its identifier types: admins, and staff when the group allows it for
- * that list. The backend enforces it (lib/lists).
+ * Whether the caller may create, rename and archive the tenant's tags,
+ * its identifier types or its source codes: admins, and staff when the
+ * group allows it for that list. The backend enforces it (lib/lists).
  */
-export function useCanManageList(kind: 'tags' | 'identifierTypes'): boolean {
+export function useCanManageList(kind: ListKind): boolean {
   const tenant = useTenant()
-  return kind === 'tags'
-    ? tenant.canManageTags
-    : tenant.canManageIdentifierTypes
+  return {
+    tags: tenant.canManageTags,
+    identifierTypes: tenant.canManageIdentifierTypes,
+    sourceCodes: tenant.canManageSourceCodes,
+  }[kind]
 }
 
 // The signed-in user's groups, subscribed once above the router so the

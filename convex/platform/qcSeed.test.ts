@@ -6,7 +6,7 @@ import schema from '../schema'
 import { errorData, modules } from '../../test/fixture'
 import { SEED_TAGS, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import { SEED_CATEGORIES } from '../sources/rules'
-import { IDENTIFIER_TYPE, qcIdentifiers } from './qcSeed'
+import { IDENTIFIER_TYPE, qcIdentifiers, qcSourceDetail } from './qcSeed'
 
 // 12+ characters: auth.ts may gain a minimum-length password check.
 const password = 'qc-password-123'
@@ -177,6 +177,7 @@ test('every seeded write went through a contract and left a revision', async () 
       UK_RELATIONSHIP_TYPES.length +
         SEED_TAGS.length +
         SEED_CATEGORIES.length +
+        2 + // the side's Street detail and its version 001
         contactIds.length * 2 +
         extra.flat().length +
         typeRevisions,
@@ -413,4 +414,17 @@ test('hold refuses unless QC_SEED_ENABLED is "1", and an unknown tenant', async 
       async (ctx) => (await ctx.db.query('emailSuppressions').collect()).length,
     ),
   ).toBe(0)
+})
+
+test("each side's Street category holds its own detail, and only that", async () => {
+  const { t, world } = await seed()
+  for (const [i, label] of ['Alpha', 'Bravo'].entries()) {
+    const rows = (await t.run((ctx) => ctx.db.query('sourceCodes').collect()))
+      .filter((r) => r.tenantId === world.tenants[i].tenantId)
+      .filter((r) => r.level !== 'category')
+    expect(rows.map((r) => [r.level, r.name])).toEqual([
+      ['detail', qcSourceDetail(label, '7')],
+      ['version', '001'],
+    ])
+  }
 })

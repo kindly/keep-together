@@ -44,7 +44,7 @@ import {
 import { normaliseTagName } from '../contacts/rules'
 import { suppressAddress } from '../comms/suppressions'
 import { insertTenant, tenantForSlug } from './tenants'
-import { ensureSeedCategories } from '../sources/seed'
+import { ensureSeedCategories, seedDetails } from '../sources/seed'
 
 const SIDES = [
   { suffix: 'a', label: 'Alpha' },
@@ -67,6 +67,10 @@ export const qcIdentifiers = (runId: string, worker: number) => {
   const base = prefix(runId, worker)
   return { shared: `ID${base}`, bOnly: `IDB${base}`, bReuse: `IDR${base}` }
 }
+
+/** The detail each side's Street category gets (names carry no hyphen). */
+export const qcSourceDetail = (label: string, runId: string) =>
+  `${label}${runId}`
 
 function requireEnabled() {
   if (env.QC_SEED_ENABLED !== '1') {
@@ -197,6 +201,19 @@ export const world = internalMutation({
       }
       await seedTags(scoped, group)
       await ensureSeedCategories(scoped, group)
+      // One detail per side, named for it: the isolation spec looks for
+      // B's in A's Source codes tab.
+      await seedDetails(
+        scoped,
+        [
+          {
+            category: 'Street',
+            name: qcSourceDetail(label, runId),
+            versions: [],
+          },
+        ],
+        group,
+      )
       const name = `${label}-${runId}`
       const contacts = [
         { kind: 'individual', firstName: 'Ada', lastName: name, name: '' },

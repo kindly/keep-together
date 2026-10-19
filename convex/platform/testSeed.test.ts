@@ -5,7 +5,12 @@ import { errorData, setup, snapshot } from '../../test/fixture'
 import { contactWarnings } from '../contacts/warnings'
 import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import { TEST_TENANT, TEST_USERS } from './testSeed'
-import { DONOR_COUNT, generateDonors, IDENTIFIER_TYPES } from './testSeedData'
+import {
+  DONOR_COUNT,
+  generateDonors,
+  IDENTIFIER_TYPES,
+  SOURCE_DETAILS,
+} from './testSeedData'
 
 const passwords = {
   admin: 'admin-password-123',
@@ -47,6 +52,7 @@ const count = (t: Awaited<ReturnType<typeof setup>>['t']) =>
       contactIdentifiers: await n('contactIdentifiers'),
       commandGroups: await n('commandGroups'),
       revisions: await n('revisions'),
+      sourceCodes: await n('sourceCodes'),
     }
   })
 
@@ -234,6 +240,45 @@ test('a rerun creates nothing and leaves the data alone', async () => {
   expect(again.tenantId).toBe(world.tenantId)
   expect(again.donorsCreated).toBe(0)
   expect(await count(t)).toEqual(counts)
+})
+
+test('demo source codes land under the seeded categories, in the seeded tenant only', async () => {
+  const { t, a, world } = await seeded()
+  const admin = await t.run(async (ctx) => {
+    const user = await ctx.db
+      .query('users')
+      .withIndex('email', (q) => q.eq('email', TEST_USERS.admin.email))
+      .unique()
+    return user!._id
+  })
+  const asAdmin = t.withIdentity({ subject: `${admin}|session` })
+  const tree = await asAdmin.query(api.sources.queries.tree, {
+    tenantId: world.tenantId,
+  })
+  const codes = tree.filter((p) => p.level === 'version').map((p) => p.code)
+  expect(codes).toEqual(
+    expect.arrayContaining([
+      'Street-Wesser-001',
+      'Street-Wesser-002',
+      'Direct mail-Xmas25-Warm',
+      'Direct mail-Xmas25-Lapsed',
+      'Event-Gala26-001',
+    ]),
+  )
+  expect(tree.filter((p) => p.level === 'detail')).toHaveLength(
+    SOURCE_DETAILS.length,
+  )
+  const bath = tree.find((p) => p.code === 'Event-BathHalf25-001')!
+  expect(bath).toMatchObject({ isActive: true, visible: false })
+  const spring = tree.find((p) => p.code === 'Street-Wesser-001')!
+  expect(spring).toMatchObject({
+    description: 'Spring run',
+    endDate: '2026-05-31',
+  })
+  const other = await t.run((ctx) => ctx.db.query('sourceCodes').collect())
+  expect(
+    other.filter((r) => r.tenantId === a.tenantId && r.level !== 'category'),
+  ).toEqual([])
 })
 
 test('a changed password replaces the stored one; the same one keeps it', async () => {

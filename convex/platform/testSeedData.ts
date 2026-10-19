@@ -12,8 +12,79 @@
  * holding both.
  */
 import type { Payloads } from '../contacts/validators'
+import type { SeedDetail } from '../sources/seed'
 
 export const DONOR_COUNT = 100
+
+/**
+ * Source codes under the seeded categories: an agency with two runs, an
+ * appeal letter split by audience, a one-night event, and an ended
+ * campaign that is archived.
+ */
+export const SOURCE_DETAILS: Array<SeedDetail> = [
+  {
+    category: 'Street',
+    name: 'Wesser',
+    description: 'Wesser street fundraising agency, Bristol and Bath pitches',
+    startDate: '2026-03-01',
+    endDate: '2026-11-30',
+    versions: [
+      { name: '001', description: 'Spring run', endDate: '2026-05-31' },
+      { name: '002', description: 'Autumn run', startDate: '2026-09-01' },
+    ],
+  },
+  {
+    category: 'Door to door',
+    name: 'Hometown',
+    description: 'Hometown Fundraising, door to door across Leeds',
+    versions: [{ name: '001' }],
+  },
+  {
+    category: 'Online',
+    name: 'Website',
+    description: 'The donate page on our own website',
+    versions: [{ name: '001' }],
+  },
+  {
+    category: 'Online',
+    name: 'JustGiving',
+    versions: [{ name: '001' }],
+  },
+  {
+    category: 'Direct mail',
+    name: 'Xmas25',
+    description: 'Christmas 2025 appeal letter',
+    startDate: '2025-11-01',
+    endDate: '2026-01-31',
+    versions: [
+      { name: 'Warm', description: 'Gave in the last two years' },
+      { name: 'Lapsed', description: 'Last gift more than two years ago' },
+    ],
+  },
+  {
+    category: 'Event',
+    name: 'Gala26',
+    description: 'Spring gala dinner at the Assembly Rooms',
+    startDate: '2026-04-18',
+    endDate: '2026-04-18',
+    versions: [{ name: '001' }],
+  },
+  {
+    category: 'Event',
+    name: 'BathHalf25',
+    description: 'Bath Half Marathon 2025 charity places',
+    startDate: '2025-01-01',
+    endDate: '2025-03-16',
+    versions: [{ name: '001' }],
+    archived: true,
+  },
+  {
+    category: 'Telephone',
+    name: 'Reactivation',
+    description: 'Calls to lapsed regular givers',
+    versions: [{ name: '001' }],
+  },
+]
 
 /**
  * The identifier types the donors' rows use. "External reference" is the

@@ -44,6 +44,14 @@ function SettingsLayout() {
           >
             Identifier types
           </Link>
+          <Link
+            to="/t/$slug/settings/sources"
+            params={{ slug }}
+            className={tab}
+            activeProps={{ className: activeTab }}
+          >
+            Source codes
+          </Link>
         </nav>
         <div className="min-w-0 flex-1">
           <Outlet />

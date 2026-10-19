@@ -93,6 +93,11 @@ export const budgets = {
   'settings.identifierTypes.create': repeatable,
   'settings.identifierTypes.rename': repeatable,
   'settings.identifierTypes.archive': repeatable,
+  'settings.staffSourceCodes.toggle': repeatable,
+  'settings.sourceCodes.open': repeatable,
+  'settings.sourceCodes.addDetail': repeatable,
+  'settings.sourceCodes.rename': repeatable,
+  'settings.sourceCodes.archive': repeatable,
   // Recorded with auth.signIn above.
   'contacts.bulkTag': { kind: 'bulk', maxMs: 500 },
 

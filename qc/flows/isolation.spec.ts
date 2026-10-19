@@ -42,6 +42,23 @@ test.describe('isolation', () => {
     await expect(page.getByLabel('New identifier type')).toHaveCount(0)
   })
 
+  test("A's source codes show none of B's", async ({ page, users }) => {
+    route('/t/$slug', '/t/$slug/settings/sources')
+    await page.goto(`/t/${users.a.slug}/settings/sources`)
+    // A's own seeded detail is there, so the tree has loaded.
+    await expect(
+      page.locator('main li code').getByText(`Street-Alpha${runId()}`, {
+        exact: true,
+      }),
+    ).toBeVisible()
+    await expect(page.locator('body')).not.toContainText('Bravo')
+    await page.goto(`/t/${users.b.slug}/settings/sources`)
+    await expect(
+      page.getByText(`No group called “${users.b.slug}” that you belong to.`),
+    ).toBeVisible()
+    await expect(page.locator('body')).not.toContainText('Bravo')
+  })
+
   test("B's contact is not in A's group", async ({ page, users, world }) => {
     route('/t/$slug', '/t/$slug/contacts/$contactId')
     for (const id of world.tenants[1].contactIds) {

@@ -261,6 +261,7 @@ test.describe('settings for staff and viewers', () => {
       await expect(tabs(other).getByRole('link')).toHaveText([
         'Tags',
         'Identifier types',
+        'Source codes',
       ])
       await expect(
         other.locator('main li', { hasText: 'Member' }),

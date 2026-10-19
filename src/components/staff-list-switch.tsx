@@ -2,6 +2,7 @@ import { useMutation } from 'convex/react'
 import { ConvexError } from 'convex/values'
 import { useState } from 'react'
 import { api } from '../../convex/_generated/api'
+import type { ListKind } from '../../convex/lib/lists'
 import { useIsAdmin, useTenant } from '../lib/tenant'
 
 const LABELS = {
@@ -13,18 +14,18 @@ const LABELS = {
     label: 'Staff can manage identifier types',
     help: 'When off, only admins create, rename and archive identifier types. Staff can always add identifiers to contacts.',
   },
-}
+  sourceCodes: {
+    label: 'Staff can manage source codes',
+    help: 'When off, only admins add, rename, archive and delete source codes. Staff can always put a code on a contact.',
+  },
+} satisfies Record<ListKind, { label: string; help: string }>
 
 /**
  * One list's admin-only "staff can manage …" switch, at the top of that
  * list's settings tab; renders nothing for anyone else. Each list has its
  * own switch and counter, so they never conflict.
  */
-export function StaffListSwitch({
-  kind,
-}: {
-  kind: 'tags' | 'identifierTypes'
-}) {
+export function StaffListSwitch({ kind }: { kind: ListKind }) {
   const isAdmin = useIsAdmin()
   const tenant = useTenant()
   const [error, setError] = useState<string | null>(null)
@@ -34,12 +35,16 @@ export function StaffListSwitch({
   const saveTypes = useMutation(
     api.platform.preferences.setStaffCanManageIdentifierTypes,
   )
+  const saveCodes = useMutation(
+    api.platform.preferences.setStaffCanManageSourceCodes,
+  )
   if (!isAdmin) return null
 
-  const checked =
-    kind === 'tags'
-      ? tenant.staffCanManageTags
-      : tenant.staffCanManageIdentifierTypes
+  const checked = {
+    tags: tenant.staffCanManageTags,
+    identifierTypes: tenant.staffCanManageIdentifierTypes,
+    sourceCodes: tenant.staffCanManageSourceCodes,
+  }[kind]
 
   async function toggle(on: boolean) {
     setError(null)
@@ -50,11 +55,17 @@ export function StaffListSwitch({
           expected: tenant.tagsVersion ?? undefined,
           staffCanManageTags: on,
         })
-      } else {
+      } else if (kind === 'identifierTypes') {
         await saveTypes({
           tenantId: tenant._id,
           expected: tenant.identifierTypesVersion ?? undefined,
           staffCanManageIdentifierTypes: on,
+        })
+      } else {
+        await saveCodes({
+          tenantId: tenant._id,
+          expected: tenant.sourceCodesVersion ?? undefined,
+          staffCanManageSourceCodes: on,
         })
       }
     } catch (err) {
