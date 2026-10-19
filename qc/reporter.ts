@@ -22,10 +22,12 @@ import {
   runDir,
   runId,
 } from './timing'
-import type { FlowRecord } from './timing'
+import type { FlowRecord, SampleDetail } from './timing'
 import { budgets } from './budgets'
 import { coverageGaps, readRoutes } from './coverage'
 import { BUDGET_MS, RESULTS_FILE, budgetMiss } from './server-timings'
+import { LINK_FILE, STALL_MS, linkDuring } from './link.setup'
+import type { LinkFile } from './link.setup'
 import type { ServerTimingsFile } from './server-timings'
 import type { Budget, FlowKind, FlowName } from './budgets'
 
@@ -42,6 +44,11 @@ import type { Budget, FlowKind, FlowName } from './budgets'
 // - in a full run (assert or record), a route in src/routeTree.gen.ts
 //   that no test which ran was annotated with, or a route annotation
 //   naming no route (qc/coverage.ts). A filtered run only warns.
+//
+// Each sample's legs (qc/timing.ts) go on its history line, with the worst
+// first-hop round trip during it (qc/link.setup.ts); a LINK banner lists
+// the over-budget samples that overlapped a first-hop stall. Context only:
+// they're judged like any other.
 //
 // A `knownOver` flow (an approved exception) never fails the run, but
 // every run lists all of them in a banner with their samples. So does
@@ -65,6 +72,10 @@ export interface HistoryLine {
   remeasured?: true
   /** The first sets of the re-measured calls, each with a sample ≥ budget. */
   firstSamplesMs?: Array<number>
+  /** Per sample, aligned with samplesMs: when, where and its legs (qc/timing.ts). */
+  detail?: Array<SampleWhere>
+  /** The same, aligned with firstSamplesMs. */
+  firstDetail?: Array<SampleWhere>
   p50Ms: number
   p95Ms: number
   maxMs: number
@@ -85,6 +96,20 @@ export interface HistoryLine {
    * same on every line of a run; null when the collector wrote nothing.
    */
   server: ServerSummary | null
+}
+
+export type SampleWhere = SampleDetail & {
+  worker: number
+  instance?: string
+  /** Worst first-hop round trip during the sample; absent without a monitor. */
+  linkMs?: number | null
+}
+
+function readLink(dir: string): LinkFile | null {
+  const file = path.join(dir, LINK_FILE)
+  return existsSync(file)
+    ? (JSON.parse(readFileSync(file, 'utf8')) as LinkFile)
+    : null
 }
 
 export interface ServerSummary {
@@ -145,7 +170,7 @@ function git(args: Array<string>) {
 function readRecords(dir: string): Array<FlowRecord> {
   if (!existsSync(dir)) return []
   return readdirSync(dir)
-    .filter((f) => f.endsWith('.jsonl'))
+    .filter((f) => f.startsWith('pid-') && f.endsWith('.jsonl'))
     .flatMap((f) =>
       readFileSync(path.join(dir, f), 'utf8')
         .split('\n')
@@ -157,6 +182,7 @@ function readRecords(dir: string): Array<FlowRecord> {
 function summarise(
   records: Array<FlowRecord>,
   base: Pick<HistoryLine, 'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'server'>,
+  link: LinkFile | null,
 ): Array<HistoryLine> {
   const byFlow = new Map<FlowName, Array<FlowRecord>>()
   for (const r of records)
@@ -168,6 +194,15 @@ function summarise(
       const budgetMs = rs[0].budgetMs
       const judged = rs.filter((r) => r.pass !== null)
       const firstSamplesMs = rs.flatMap((r) => r.firstSamplesMs ?? [])
+      const where = (r: FlowRecord, d: Array<SampleDetail> | undefined) =>
+        (d ?? []).map((x): SampleWhere => ({
+          worker: r.worker,
+          instance: r.instance,
+          ...x,
+          ...(link && { linkMs: linkDuring(link, x.at, x.at + x.endMs) }),
+        }))
+      const detail = rs.flatMap((r) => where(r, r.detail))
+      const firstDetail = rs.flatMap((r) => where(r, r.firstDetail))
       return {
         ...base,
         flow,
@@ -178,6 +213,8 @@ function summarise(
           remeasured: true as const,
           firstSamplesMs,
         }),
+        ...(detail.length && { detail }),
+        ...(firstDetail.length && { firstDetail }),
         p50Ms: median(samplesMs),
         p95Ms: percentile(samplesMs, 95),
         maxMs: Math.max(...samplesMs),
@@ -207,7 +244,12 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
   ]
   const rows = lines.map((l) => [
     l.flow,
-    { repeatable: 'repeat', infrequent: 'infreq', oncePerSession: 'once', bulk: 'bulk' }[l.kind],
+    {
+      repeatable: 'repeat',
+      infrequent: 'infreq',
+      oncePerSession: 'once',
+      bulk: 'bulk',
+    }[l.kind],
     String(l.n),
     `${Math.round(l.p50Ms)}`,
     `${Math.round(l.p95Ms)}`,
@@ -302,6 +344,31 @@ function spikeBanner(
   ])
 }
 
+/** Over-budget samples that overlapped a first-hop stall. */
+function linkBanner(
+  lines: Array<HistoryLine>,
+  selfTest: Set<FlowName>,
+  link: LinkFile | null,
+): Array<string> {
+  if (!link) return []
+  const hits = lines
+    .filter((l) => !selfTest.has(l.flow))
+    .flatMap((l) =>
+      [...(l.firstDetail ?? []), ...(l.detail ?? [])]
+        .filter((d) => d.endMs >= l.budgetMs && (d.linkMs ?? 0) >= STALL_MS)
+        .map(
+          (d) =>
+            `${l.flow}: ${d.endMs} ms with the first hop at ${d.linkMs} ms (w${d.worker} ${d.instance ?? '?'}, ${new Date(d.at).toISOString().slice(11, 23)})`,
+        ),
+    )
+  if (!hits.length) return []
+  return banner([
+    `LINK: ${hits.length} samples at or over budget overlapped a first-hop stall (ping ${link.gateway} ≥ ${STALL_MS} ms; usually 2–5 ms).`,
+    'Judged as usual; the network between this machine and its router held them up.',
+    ...hits,
+  ])
+}
+
 const banner = (lines: Array<string>) => {
   const bar = '!'.repeat(72)
   return [bar, ...lines.map((l) => `!! ${l}`), bar]
@@ -336,14 +403,19 @@ export default class QcReporter implements Reporter {
       const selfTest = new Set(
         records.filter((r) => r.selfTest).map((r) => r.flow),
       )
-      const lines = summarise(records, {
-        runId: id,
-        at: new Date().toISOString(),
-        sha: git(['rev-parse', 'HEAD']),
-        dirty: git(['status', '--porcelain']) !== '',
-        mode: RECORD ? 'record' : 'assert',
-        server: readServer(runDir(id)),
-      })
+      const link = readLink(runDir(id))
+      const lines = summarise(
+        records,
+        {
+          runId: id,
+          at: new Date().toISOString(),
+          sha: git(['rev-parse', 'HEAD']),
+          dirty: git(['status', '--porcelain']) !== '',
+          mode: RECORD ? 'record' : 'assert',
+          server: readServer(runDir(id)),
+        },
+        link,
+      )
       const rtts = [...new Set(records.map((r) => `w${r.worker} ${r.rttMs}`))]
       out.push(
         `qc ${id} · ${RECORD ? 'RECORD MODE (nothing asserted)' : 'asserting'} · raw ms, input to screen; every sample must be under budget; headroom = budget − max · RTT by worker: ${rtts.sort().join(', ')}`,
@@ -362,6 +434,7 @@ export default class QcReporter implements Reporter {
       summary = lines
       out.push(table(lines, selfTest))
       out.push(...spikeBanner(lines, selfTest, lines[0]?.server ?? null))
+      out.push(...linkBanner(lines, selfTest, link))
       const real = lines.filter((l) => !selfTest.has(l.flow))
       mkdirSync(path.dirname(HISTORY), { recursive: true })
       appendFileSync(

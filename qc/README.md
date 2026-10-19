@@ -79,13 +79,31 @@ Banners to look for:
 - **`SPIKES`**: flows that were over budget once and judged on their
   re-measure, with both sample sets, and server functions that passed
   with one slow call.
+- **`LINK`**: samples at or over budget while this machine's first hop
+  (a `ping` to the default gateway every 100 ms, `qc/link.setup.ts`) was
+  at 50 ms or more instead of its usual 2–5 ms. On Wi-Fi the link to
+  the router freezes for 200–600 ms now and then, or crawls at 50–130 ms
+  for a few seconds, and every flow on every instance waits it out
+  (factory/out/builder-qcstall.md). They're judged as usual: the banner
+  says where the time went, it doesn't excuse it. A wired link avoids it.
 - **`QC RUN FAILED, whatever the test counts above say`**: a gate the
   tests can't see failed: the coverage gate, a flow in `qc/budgets.ts`
   that nothing timed, or the worker-setup sign-in over budget.
 
 Each flow also gets one line in `qc-results/history.jsonl` (gitignored,
 local): samples, p50/p95, budget, pass, RTT, git sha and the run's
-Convex server execution times. `pnpm qc:report` renders that history to
+Convex server execution times. Its `detail` (and `firstDetail` for a
+re-measure) has one entry per sample: wall-clock time, worker and
+instance, and the sample's legs from a tap on the page's WebSocket:
+when the Mutation went out, when the server committed it (server
+clock), when its MutationResponse and the Transition carrying it came
+back, plus long tasks, host CPU, load and the first hop's worst round
+trip (`linkMs`). A slow sample's legs say whose time it was: a late
+commit with the first hop slow is the link; a late response or
+Transition with a clean link is the deployment. The run directory
+(`qc-results/runs/<id>/`) also keeps every server call
+(`server-calls.jsonl`), each worker's RTT every 2 s from Node
+(`rtt-*.jsonl`) and the first-hop pings (`link.json`). `pnpm qc:report` renders that history to
 `qc-report/trend.html`: per-flow p50/p95 over the last 30 runs against the
 budget line. The Playwright HTML report is in `qc-report/playwright/`,
 with traces for failed tests.

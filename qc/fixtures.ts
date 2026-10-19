@@ -1,12 +1,19 @@
 import { execFile } from 'node:child_process'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
 import { ConvexHttpClient } from 'convex/browser'
 import type { BrowserContext, Page } from '@playwright/test'
 import { api } from '../convex/_generated/api'
-import { assertFlow, probeRtt, runFlow, runId } from './timing'
+import {
+  assertFlow,
+  probeRtt,
+  runDir,
+  runFlow,
+  runId,
+  startRttMonitor,
+} from './timing'
 import type { FlowName } from './budgets'
 import type { FlowRecord, FlowStep } from './timing'
 
@@ -108,6 +115,8 @@ type Flow = <TArg = undefined>(
 interface WorkerFixtures {
   instance: Instance
   rttMs: number
+  /** Probes the RTT every 2 s for the life of the worker (context only). */
+  rttMonitor: void
   world: World
   users: { a: QcUser; b: QcUser; staff: QcUser; viewer: QcUser }
 }
@@ -139,6 +148,31 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       await use(await probeRtt(instance.url))
     },
     { scope: 'worker' },
+  ],
+
+  // Written to the run directory as rtt-<pid>.jsonl, next to the flow
+  // records, so a stall can be set against the link at that moment.
+  rttMonitor: [
+    async ({ instance }, use, workerInfo) => {
+      const dir = runDir()
+      mkdirSync(dir, { recursive: true })
+      const file = path.join(dir, `rtt-${process.pid}.jsonl`)
+      const stop = startRttMonitor(instance.url, 2_000, (at, ms, lagMs) =>
+        appendFileSync(
+          file,
+          JSON.stringify({
+            at,
+            ms,
+            lagMs,
+            worker: workerInfo.parallelIndex,
+            instance: instance.name,
+          }) + '\n',
+        ),
+      )
+      await use()
+      await stop()
+    },
+    { scope: 'worker', auto: true },
   ],
 
   world: [
@@ -180,6 +214,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
             page,
             rttMs,
             worker: workerInfo.parallelIndex,
+            instance: instance.name,
             where: 'worker setup',
             repeats: 1,
             warmUp: false,
@@ -274,13 +309,14 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     await use(await session())
   },
 
-  flow: async ({ rttMs }, use, testInfo) => {
+  flow: async ({ instance, rttMs }, use, testInfo) => {
     await use(async (page, name, step) => {
       const record = await runFlow(
         {
           page,
           rttMs,
           worker: testInfo.parallelIndex,
+          instance: instance.name,
           where: testInfo.titlePath.join(' › '),
         },
         name,

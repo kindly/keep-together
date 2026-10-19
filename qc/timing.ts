@@ -1,4 +1,5 @@
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { loadavg } from 'node:os'
 import path from 'node:path'
 import { BaseConvexClient } from 'convex/browser'
 import type { QueryToken } from 'convex/browser'
@@ -33,6 +34,13 @@ import type { FlowKind, FlowName } from './budgets'
 // is kept as `firstSamplesMs` and shown in the table, history and trend.
 // Record mode and runs over the RTT ceiling judge nothing, so they never
 // re-measure. Functional asserts never retry.
+//
+// Every sample also carries its legs (SampleDetail), for finding where a
+// slow one spent its time: a tap on the page's WebSocket notes when the
+// first message went out after the input, when the server committed and
+// answered, and when the Transition carrying the result came back; the
+// page's long tasks and the host's CPU cover the local side. Context only:
+// nothing is judged on them.
 
 /** Timed samples per flow call; QC_REPEATS=1 is a fast functional run. */
 export const REPEATS = Number(process.env.QC_REPEATS ?? 5)
@@ -60,11 +68,46 @@ export function runDir(id = runId()): string {
   return path.join('qc-results', 'runs', id)
 }
 
+/**
+ * Where one sample's time went. Offsets are ms from the input event (t0);
+ * null when the sample had no such message. `commitMs` is on the server's
+ * clock (Convex timestamps), so it's only as good as the two clocks agree.
+ */
+export interface SampleDetail {
+  /** Wall clock (epoch ms) of the input event. */
+  at: number
+  /** First Mutation, Action or ModifyQuerySet the page sent after t0. */
+  sendMs: number | null
+  sent: string | null
+  /** The mutation's commit timestamp, from its MutationResponse. */
+  commitMs: number | null
+  /** Its MutationResponse arrived. */
+  responseMs: number | null
+  /** The Transition that carries the commit (or, without one, the first after the send). */
+  transitionMs: number | null
+  /** The last server message before the result was on screen. */
+  lastInMs: number | null
+  /** The result was on screen: the sample. */
+  endMs: number
+  /** Main-thread long tasks overlapping the sample, summed. */
+  longTaskMs: number
+  /** WebSockets the page opened during the sample (a reconnect). */
+  connects: number
+  /** The page wasn't visible (rAF and timers throttled). */
+  hidden: boolean
+  /** Host CPU busy fraction over the sample (Linux /proc/stat), else null. */
+  hostCpu: number | null
+  /** The host's 1-minute load average. */
+  load1: number
+}
+
 export interface FlowRecord {
   runId: string
   flow: FlowName
   /** Playwright parallelIndex of the worker. */
   worker: number
+  /** The pool instance the worker uses (qc-1 …), when known. */
+  instance?: string
   /** Title path of the test, or "worker setup" for fixture flows. */
   where: string
   kind: FlowKind
@@ -72,6 +115,9 @@ export interface FlowRecord {
   samplesMs: Array<number>
   /** A spike: the first set, which had a sample at or over budget. */
   firstSamplesMs?: Array<number>
+  /** One per sample, in order. */
+  detail: Array<SampleDetail>
+  firstDetail?: Array<SampleDetail>
   /** Context only: the worker's median WebSocket round trip. */
   rttMs: number
   /** rttMs over RTT_CEILING_MS: these samples measure a bad link. */
@@ -121,6 +167,7 @@ export interface FlowContext {
   page: Page
   rttMs: number
   worker: number
+  instance?: string
   where: string
   repeats?: number
   /** One untimed iteration first, once per flow per worker (default true). */
@@ -147,16 +194,32 @@ export function judge(samplesMs: Array<number>, budgetMs: number) {
   return { medianMs: median(samplesMs), maxMs, pass: maxMs < budgetMs }
 }
 
+type WireEntry = [
+  t: number,
+  dir: 'out' | 'in' | 'open',
+  type: string,
+  requestId: number | null,
+  tsMs: number | null,
+]
+
 interface QcWindow {
   __qcListening?: boolean
   __qcArmed?: boolean
   __qcT0?: number
+  __qcWire?: Array<WireEntry>
+  __qcLong?: Array<[start: number, duration: number]>
 }
 
 // Capture-phase listeners record the timestamp of each trusted input event
 // after arming; the last one wins (see the top of this file).
 // Event.timeStamp shares performance.now()'s time base, so t0 is when the
 // browser saw the input, not when Playwright sent it.
+//
+// The first arm also taps the page's WebSockets through
+// WebSocket.prototype.send, so a socket opened before the tap (the SPA's,
+// on page load) is caught by its first send after it; the server messages
+// before that belong to no sample. Messages are only sniffed for their
+// type, request id and timestamp; a Transition's body isn't parsed.
 function arm() {
   const w = window as unknown as QcWindow
   if (!w.__qcListening) {
@@ -176,6 +239,66 @@ function arm() {
         { capture: true },
       )
     }
+    const wire: Array<WireEntry> = (w.__qcWire = [])
+    const longs: Array<[number, number]> = (w.__qcLong = [])
+    // Convex timestamps: u64 nanoseconds, little-endian, base64.
+    const tsMs = (b64: string | undefined) => {
+      if (!b64) return null
+      const b = atob(b64)
+      let n = 0n
+      for (let i = b.length - 1; i >= 0; i--)
+        n = (n << 8n) | BigInt(b.charCodeAt(i))
+      return Number(n / 1_000_000n)
+    }
+    const note = (e: WireEntry) => {
+      wire.push(e)
+      if (wire.length > 2_000) wire.splice(0, 1_000)
+    }
+    const tapped = new WeakSet<WebSocket>()
+    const send = WebSocket.prototype.send
+    WebSocket.prototype.send = function (data) {
+      const t = performance.now()
+      if (!tapped.has(this)) {
+        tapped.add(this)
+        this.addEventListener('message', (ev: MessageEvent) => {
+          const at = performance.now()
+          if (typeof ev.data !== 'string') return
+          const head = ev.data.slice(0, 600)
+          const type = /"type":"(\w+)"/.exec(head)?.[1] ?? '?'
+          let ts: number | null = null
+          let requestId: number | null = null
+          if (type === 'Transition') {
+            ts = tsMs(/"endVersion":\{[^}]*"ts":"([^"]+)"/.exec(head)?.[1])
+            if (ts === null) ts = tsMs(JSON.parse(ev.data).endVersion?.ts)
+          } else if (type === 'MutationResponse') {
+            const m = JSON.parse(ev.data)
+            requestId = m.requestId ?? null
+            ts = tsMs(m.ts)
+          } else if (type === 'ActionResponse') {
+            requestId = JSON.parse(ev.data).requestId ?? null
+          }
+          note([at, 'in', type, requestId, ts])
+        })
+      }
+      if (typeof data === 'string') {
+        const type = /"type":"(\w+)"/.exec(data.slice(0, 200))?.[1] ?? '?'
+        if (type === 'Connect') note([t, 'open', type, null, null])
+        const requestId =
+          type === 'Mutation' || type === 'Action'
+            ? (JSON.parse(data).requestId ?? null)
+            : null
+        note([t, 'out', type, requestId, null])
+      }
+      return send.call(this, data)
+    }
+    try {
+      new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) longs.push([e.startTime, e.duration])
+        if (longs.length > 500) longs.splice(0, 250)
+      }).observe({ type: 'longtask', buffered: true })
+    } catch {
+      // No long-task timing in this browser: longTaskMs reads 0.
+    }
   }
   w.__qcT0 = undefined
   w.__qcArmed = true
@@ -187,12 +310,87 @@ function readT0() {
   return w.__qcT0 ?? null
 }
 
+type Legs = Omit<SampleDetail, 'at' | 'endMs' | 'hostCpu' | 'load1'>
+
+// In the page: the legs of the sample [t0, t1], both performance.now().
+// `out` reads the input side (the page the action hit), `in` the side
+// whose screen is watched; for one page they're the same.
+function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
+  const w = window as unknown as QcWindow
+  // A checkbox click's trusted `input` event fires inside the click, as the
+  // mutation is sent: allow the send a millisecond before t0.
+  const wire = (w.__qcWire ?? []).filter(([t]) => t >= t0 - 1 && t <= t1)
+  const rel = (t: number | null | undefined) =>
+    t === null || t === undefined ? null : Math.round((t - t0) * 10) / 10
+  const origin = performance.timeOrigin
+  const legs: Partial<Legs> & { commitAt?: number | null } = {}
+  if (side !== 'in') {
+    // The request the action makes, if any; else the query change.
+    const first =
+      wire.find(
+        ([, d, type]) =>
+          d === 'out' && (type === 'Mutation' || type === 'Action'),
+      ) ?? wire.find(([, d, type]) => d === 'out' && type === 'ModifyQuerySet')
+    legs.sendMs = rel(first?.[0])
+    legs.sent = first?.[2] ?? null
+    const resp =
+      first && first[3] !== null
+        ? wire.find(
+            ([t, d, type, id]) =>
+              d === 'in' &&
+              t >= first[0] &&
+              id === first[3] &&
+              type.endsWith('Response'),
+          )
+        : undefined
+    legs.responseMs = rel(resp?.[0])
+    legs.commitAt = resp?.[4] ?? null
+    legs.commitMs =
+      resp?.[4] != null ? Math.round(resp[4] - (origin + t0)) : null
+    legs.connects = wire.filter(([, d]) => d === 'open').length
+  }
+  if (side !== 'out') {
+    const ins = wire.filter(([, d]) => d === 'in')
+    legs.lastInMs = rel(ins.at(-1)?.[0])
+    legs.longTaskMs = Math.round(
+      (w.__qcLong ?? [])
+        .filter(([s, d]) => s + d >= t0 && s <= t1)
+        .reduce(
+          (sum, [s, d]) => sum + Math.min(s + d, t1) - Math.max(s, t0),
+          0,
+        ),
+    )
+    legs.hidden = document.visibilityState !== 'visible'
+  }
+  const ins = wire
+    .filter(([, d]) => d === 'in')
+    .map(([t, d, type, id, ts]): WireEntry => [rel(t)!, d, type, id, ts])
+  return { legs, ins }
+}
+
+// Host CPU (all cores) from /proc/stat: [busy, total] jiffies.
+function cpuTicks(): [number, number] | null {
+  try {
+    const f = readFileSync('/proc/stat', 'utf8')
+      .split('\n')[0]
+      .trim()
+      .split(/\s+/)
+      .slice(1)
+      .map(Number)
+    const idle = f[3] + (f[4] ?? 0)
+    const total = f.reduce((a, b) => a + b, 0)
+    return [total - idle, total]
+  } catch {
+    return null
+  }
+}
+
 async function measureOnce<TArg>(
   page: Page,
   name: FlowName,
   step: FlowStep<TArg>,
   timeoutMs: number,
-): Promise<number> {
+): Promise<{ ms: number; detail: SampleDetail }> {
   await step.before?.()
   const pred = `(${step.until.toString()})(${JSON.stringify(step.arg ?? null)})`
   if (await page.evaluate(pred)) {
@@ -202,7 +400,10 @@ async function measureOnce<TArg>(
   }
   const start = step.start ?? 'input'
   const inputPage = step.inputPage ?? page
-  if (start === 'input') await inputPage.evaluate(arm)
+  // The tap goes on both pages, so their sockets are caught before t0.
+  await inputPage.evaluate(arm)
+  if (inputPage !== page) await page.evaluate(arm)
+  const cpu0 = cpuTicks()
   await step.action()
   // The predicate and the clock read happen in the same frame callback.
   const handle = await page.waitForFunction(
@@ -212,16 +413,85 @@ async function measureOnce<TArg>(
   )
   const t1 = (await handle.jsonValue()) as number
   await handle.dispose()
-  if (start === 'navigation') return t1
-  const t0 = await inputPage.evaluate(readT0)
+  const cpu1 = cpuTicks()
+  const hostCpu =
+    cpu0 && cpu1 && cpu1[1] > cpu0[1]
+      ? Math.round(((cpu1[0] - cpu0[0]) / (cpu1[1] - cpu0[1])) * 100) / 100
+      : null
+  const t0 = start === 'navigation' ? 0 : await inputPage.evaluate(readT0)
   if (t0 === null) {
     throw new Error(
       `flow ${name}: the action dispatched no input event; a page load needs start: 'navigation'`,
     )
   }
-  if (inputPage === page) return t1 - t0
+  // Both ends on one time base (epoch ms), then each page reads its own
+  // side of the window [T0, T1] on its own clock.
   const origin = (p: Page) => p.evaluate(() => performance.timeOrigin)
-  return (await origin(page)) + t1 - ((await origin(inputPage)) + t0)
+  const oIn = await origin(inputPage)
+  const oOut = inputPage === page ? oIn : await origin(page)
+  const T0 = oIn + t0
+  const T1 = oOut + t1
+  const ms = start === 'navigation' ? t1 : T1 - T0
+  type Read = Awaited<ReturnType<typeof readLegs>>
+  const read = (
+    p: Page,
+    o: number,
+    side: 'out' | 'in' | 'both',
+  ): Promise<Read> =>
+    p.evaluate(readLegs, [T0 - o, T1 - o, side] as [
+      number,
+      number,
+      typeof side,
+    ])
+  const [out, inn] =
+    inputPage === page
+      ? await read(page, oOut, 'both').then((r) => [r, r])
+      : [await read(inputPage, oIn, 'out'), await read(page, oOut, 'in')]
+  const { commitAt, ...legs } = {
+    ...out.legs,
+    ...inn.legs,
+    commitAt: out.legs.commitAt,
+  }
+  return {
+    ms,
+    detail: {
+      at: Math.round(T0),
+      sendMs: legs.sendMs ?? null,
+      sent: legs.sent ?? null,
+      commitMs: legs.commitMs ?? null,
+      responseMs: legs.responseMs ?? null,
+      transitionMs: pickTransition(
+        inn.ins,
+        legs.sendMs ?? null,
+        commitAt ?? null,
+      ),
+      lastInMs: legs.lastInMs ?? null,
+      endMs: round1(ms),
+      longTaskMs: legs.longTaskMs ?? 0,
+      connects: legs.connects ?? 0,
+      hidden: legs.hidden ?? false,
+      hostCpu,
+      load1: round1(loadavg()[0]),
+    },
+  }
+}
+
+// The Transition that carries the result: the first whose end timestamp
+// reaches the commit; without a commit, the first after the send. Offsets
+// are already from t0.
+function pickTransition(
+  ins: Array<WireEntry>,
+  sendMs: number | null,
+  commitAt: number | null,
+): number | null {
+  const tr = ins.filter(([, , type]) => type === 'Transition')
+  const hit =
+    commitAt !== null
+      ? tr.find(([, , , , ts]) => ts !== null && ts >= commitAt)
+      : sendMs !== null
+        ? tr.find(([t]) => t >= sendMs)
+        : undefined
+  return hit ? hit[0] : null
 }
 
 // Per worker process: flows that already had their untimed warm-up.
@@ -245,10 +515,13 @@ export async function runFlow<TArg>(
   }
   const measureSet = async () => {
     const set: Array<number> = []
+    const detail: Array<SampleDetail> = []
     for (let i = 0; i < (ctx.repeats ?? REPEATS); i++) {
-      set.push(round1(await measureOnce(ctx.page, name, step, timeoutMs)))
+      const sample = await measureOnce(ctx.page, name, step, timeoutMs)
+      set.push(round1(sample.ms))
+      detail.push(sample.detail)
     }
-    return set
+    return { set, detail }
   }
   const rttOver = ctx.rttMs > RTT_CEILING_MS
   const skipped = RECORD
@@ -256,21 +529,26 @@ export async function runFlow<TArg>(
     : rttOver
       ? ('rtt' as const)
       : undefined
-  let samplesMs = await measureSet()
+  let { set: samplesMs, detail } = await measureSet()
   let firstSamplesMs: Array<number> | undefined
+  let firstDetail: Array<SampleDetail> | undefined
   if (!skipped && !judge(samplesMs, budget.maxMs).pass) {
     firstSamplesMs = samplesMs
-    samplesMs = await measureSet()
+    firstDetail = detail
+    ;({ set: samplesMs, detail } = await measureSet())
   }
   const { medianMs, maxMs, pass } = judge(samplesMs, budget.maxMs)
   const record: FlowRecord = {
     runId: runId(),
     flow: name,
     worker: ctx.worker,
+    ...(ctx.instance && { instance: ctx.instance }),
     where: ctx.where,
     kind: budget.kind,
     samplesMs,
     ...(firstSamplesMs && { firstSamplesMs }),
+    detail,
+    ...(firstDetail && { firstDetail }),
     rttMs: ctx.rttMs,
     rttOver,
     budgetMs: budget.maxMs,
@@ -313,12 +591,71 @@ export function assertFlow(record: FlowRecord) {
  * from its local cache without touching the network.
  */
 export async function probeRtt(url: string, samples = 10): Promise<number> {
+  const probe = openProbe(url)
+  const pause = () => new Promise((r) => setTimeout(r, 20))
+  try {
+    // Connects the socket and warms the server's cache.
+    await probe.roundTrip()
+    const times: Array<number> = []
+    for (let i = 0; i < samples; i++) {
+      // Lets the unsubscribe go out on its own, not batched with the next add.
+      await pause()
+      times.push(await probe.roundTrip())
+    }
+    if (median(times) < 1) {
+      throw new Error(
+        `RTT probe answered locally (${times.join(', ')} ms), not over the socket`,
+      )
+    }
+    return round1(median(times))
+  } finally {
+    await probe.close()
+  }
+}
+
+/**
+ * The same probe every `everyMs` for the life of the worker, from Node
+ * rather than the browser, so a slow sample can be set against the link at
+ * that moment: if this slows too, the time went to the network or the
+ * deployment, not to Chrome. `onSample` gets the wall clock, the ms, and
+ * how late this process's last timer fired (`lagMs`): a busy event loop
+ * here inflates the RTT too. The first round trip connects the socket and
+ * isn't reported.
+ */
+export function startRttMonitor(
+  url: string,
+  everyMs: number,
+  onSample: (at: number, ms: number, lagMs: number) => void,
+): () => Promise<void> {
+  const probe = openProbe(url)
+  const state = { stopped: false }
+  const loop = (async () => {
+    await probe.roundTrip()
+    let lagMs = 0
+    while (!state.stopped) {
+      const at = Date.now()
+      const ms = await probe.roundTrip()
+      onSample(at, round1(ms), lagMs)
+      const t = performance.now()
+      await new Promise((r) => setTimeout(r, everyMs))
+      lagMs = round1(performance.now() - t - everyMs)
+    }
+  })()
+  return async () => {
+    state.stopped = true
+    await probe.close()
+    await Promise.race([loop, new Promise((r) => setTimeout(r, 1_000))])
+  }
+}
+
+function openProbe(url: string) {
   let pending: { token: QueryToken; done: () => void } | null = null
   const client = new BaseConvexClient(url, (updated) => {
     if (pending && updated.includes(pending.token)) pending.done()
   })
   const roundTrip = () =>
-    new Promise<void>((resolve) => {
+    new Promise<number>((resolve) => {
+      const t0 = performance.now()
       const sub = client.subscribe(
         getFunctionName(api.platform.tenants.mine),
         {},
@@ -328,29 +665,9 @@ export async function probeRtt(url: string, samples = 10): Promise<number> {
         done: () => {
           pending = null
           sub.unsubscribe()
-          resolve()
+          resolve(performance.now() - t0)
         },
       }
     })
-  const pause = () => new Promise((r) => setTimeout(r, 20))
-  try {
-    // Connects the socket and warms the server's cache.
-    await roundTrip()
-    const times: Array<number> = []
-    for (let i = 0; i < samples; i++) {
-      // Lets the unsubscribe go out on its own, not batched with the next add.
-      await pause()
-      const t0 = performance.now()
-      await roundTrip()
-      times.push(performance.now() - t0)
-    }
-    if (median(times) < 1) {
-      throw new Error(
-        `RTT probe answered locally (${times.join(', ')} ms), not over the socket`,
-      )
-    }
-    return round1(median(times))
-  } finally {
-    await client.close()
-  }
+  return { roundTrip, close: () => client.close() }
 }

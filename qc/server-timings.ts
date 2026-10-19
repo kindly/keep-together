@@ -98,6 +98,19 @@ export interface ServerTimings {
   functions: Array<FunctionStats>
   /** Streams that died or went deaf; their instance's numbers are partial. */
   errors: Array<string>
+  /**
+   * Every call, for setting a slow flow sample against the server at that
+   * moment: `at` is the server's completion time (epoch ms). Written to
+   * server-calls.jsonl, not the JSON.
+   */
+  calls?: Array<{
+    instance: string
+    at: number
+    fn: string
+    type: string
+    ms: number
+    cached?: true
+  }>
 }
 
 // ── stream ──────────────────────────────────────────────────────────────
@@ -162,7 +175,7 @@ export async function startServerTimings(
   // deployment's buffer on the first poll, so nothing between spawn and
   // that poll is lost; the timestamp filter drops the older entries.
   const startedAt = Date.now()
-  const events: Array<LogEvent> = []
+  const events: Array<LogEvent & { instance: string }> = []
   let stopping = false
   let interrupted: string | null = null
 
@@ -205,7 +218,7 @@ export async function startServerTimings(
           continue
         }
         if (ev.timestamp * 1000 < startedAt) continue
-        events.push(ev)
+        events.push({ ...ev, instance: inst.name })
         stream.events++
       }
     })
@@ -302,6 +315,14 @@ export async function startServerTimings(
         events: events.length,
         functions: aggregate(events),
         errors,
+        calls: events.map((e) => ({
+          instance: e.instance,
+          at: Math.round(e.timestamp * 1000),
+          fn: e.identifier,
+          type: e.udfType,
+          ms: round(e.executionTime * 1000),
+          ...(e.cachedResult && { cached: true }),
+        })),
       }
     },
   }
@@ -467,8 +488,13 @@ export type ServerTimingsFile = ServerTimings & {
 /** Writes server-timings.{json,txt} into `dir` (the run's runDir()). */
 export function writeResults(t: ServerTimings, dir: string) {
   mkdirSync(dir, { recursive: true })
+  const { calls, ...rest } = t
+  writeFileSync(
+    path.join(dir, 'server-calls.jsonl'),
+    (calls ?? []).map((c) => JSON.stringify(c) + '\n').join(''),
+  )
   const file: ServerTimingsFile = {
-    ...t,
+    ...rest,
     budgetMs: BUDGET_MS,
     failures: checkBudgets(t),
     spikes: spikes(t),
