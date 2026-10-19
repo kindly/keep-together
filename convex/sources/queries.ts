@@ -5,6 +5,7 @@
 import { v } from 'convex/values'
 import { tenantQuery } from '../lib/tenancy'
 import { describe as describeCode, pickerEntries, resolveAll } from './code'
+import type { ResolvedPart } from './code'
 import { codeMatches, pickerOrder } from './rules'
 
 /**
@@ -44,16 +45,24 @@ export const PICKER_LIMIT = 50
  */
 export const picker = tenantQuery({
   args: { today: v.string(), search: v.optional(v.string()) },
-  handler: async (ctx, { today, search }) => {
-    const matches = pickerEntries(await resolveAll(ctx.db), today)
-      .filter((e) => codeMatches(e.code, search ?? ''))
-      .sort(pickerOrder)
-    return {
-      codes: matches.slice(0, PICKER_LIMIT),
-      truncated: matches.length > PICKER_LIMIT,
-    }
-  },
+  handler: async (ctx, { today, search }) =>
+    pickerResult(await resolveAll(ctx.db), today, search ?? ''),
 })
+
+/** `picker`'s answer from the resolved parts: no reads of its own. */
+export function pickerResult(
+  parts: Array<ResolvedPart>,
+  today: string,
+  search: string,
+) {
+  const matches = pickerEntries(parts, today)
+    .filter((e) => codeMatches(e.code, search))
+    .sort(pickerOrder)
+  return {
+    codes: matches.slice(0, PICKER_LIMIT),
+    truncated: matches.length > PICKER_LIMIT,
+  }
+}
 
 /** One code by its version id (null: not a version of this tenant). */
 export const describe = tenantQuery({

@@ -1,5 +1,6 @@
 import { paginationOptsValidator } from 'convex/server'
 import { v } from 'convex/values'
+import type { Infer } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
 import { internalTenantQuery, tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
@@ -277,9 +278,56 @@ export const LIST_TAG_SCAN = 200
  */
 export const LIST_SEARCH_SCAN = 2 * LIST_LIMIT
 
+/** The contacts list's source filter: one part of a code, at its level. */
+const sourceFilter = v.object({
+  level: v.union(
+    v.literal('category'),
+    v.literal('detail'),
+    v.literal('version'),
+  ),
+  id: v.id('sourceCodes'),
+})
+type SourceFilter = Infer<typeof sourceFilter>
+
+/** The `contactSearch` field a source filter's level matches on. */
+const SOURCE_FIELD = {
+  category: 'acquisitionCategoryId',
+  detail: 'acquisitionDetailId',
+  version: 'acquisitionCodeId',
+} as const
+
+/** The `contactSearch` index serving a source filter without search text. */
+const SOURCE_INDEX = {
+  category: 'by_tenant_acquisitionCategory_sort',
+  detail: 'by_tenant_acquisitionDetail_sort',
+  version: 'by_tenant_acquisitionCode_sort',
+} as const
+
 /**
- * Searchable list, optionally only the contacts carrying one tag and of
- * one kind; archived hidden unless asked. Bounded at LIST_LIMIT rows. Each
+ * Whether a contact's acquisition code falls under `source`, for the
+ * exact matches (email, identifier) that bypass the search index. Each
+ * distinct code is described once per call.
+ */
+function underSource(db: ScopedDatabaseReader, source: SourceFilter) {
+  const described = new Map<string, ReturnType<typeof describe>>()
+  return async (c: Doc<'contacts'>) => {
+    const codeId = c.acquisitionCodeId
+    if (!codeId) return false
+    if (source.level === 'version') return codeId === source.id
+    let d = described.get(codeId)
+    if (!d) described.set(codeId, (d = describe(db, codeId)))
+    const code = await d
+    return (
+      (source.level === 'detail' ? code?.detailId : code?.categoryId) ===
+      source.id
+    )
+  }
+}
+
+/**
+ * Searchable list, optionally only the contacts carrying one tag, of one
+ * kind, and recruited under one part of a source code (`source`: a
+ * category, detail or version); archived hidden unless asked. Bounded at LIST_LIMIT rows. Each
  * row carries its tag ids (names come from `tags`).
  *
  * A search finds a contact by anything in its `contactSearch` text (names,
@@ -288,8 +336,11 @@ export const LIST_SEARCH_SCAN = 2 * LIST_LIMIT
  * first: an email address, then an identifier, then a phone number
  * (normalised), then the rest in Convex's relevance order.
  *
- * Without a search, a tag filter reads the tag's first LIST_TAG_SCAN
- * assignments; larger tags page through `byTag`. `truncated` says more
+ * Without a search, a source filter reads its level's `contactSearch`
+ * index in name order (2 × LIST_LIMIT rows, then a tag filter checks each);
+ * otherwise a tag filter reads the tag's first LIST_TAG_SCAN
+ * assignments; larger tags page through `byTag`. With a search, the
+ * source filter is a search-index filter. `truncated` says more
  * contacts may match than `rows` holds (a cap or scan limit was hit), so
  * the UI can say it shows only some of them. `tooBroad` says the search
  * read LIST_SEARCH_SCAN hits and none held every word: a full match may
@@ -302,8 +353,9 @@ export const list = tenantQuery({
     includeArchived: v.optional(v.boolean()),
     tagId: v.optional(v.id('tags')),
     kind: v.optional(contactKind),
+    source: v.optional(sourceFilter),
   },
-  handler: async (ctx, { search, includeArchived, tagId, kind }) => {
+  handler: async (ctx, { search, includeArchived, tagId, kind, source }) => {
     const term = search?.trim()
     let rows: Array<Doc<'contacts'>>
     // A read that hit its cap: more contacts may match than it saw.
@@ -321,7 +373,10 @@ export const list = tenantQuery({
               .withSearchIndex('search_text', (q) => {
                 const s = q.search('text', terms.join(' '))
                 const live = includeArchived ? s : s.eq('archived', false)
-                return kind ? live.eq('kind', kind) : live
+                const ofKind = kind ? live.eq('kind', kind) : live
+                return source
+                  ? ofKind.eq(SOURCE_FIELD[source.level], source.id)
+                  : ofKind
               })
               .take(LIST_SEARCH_SCAN)
           : Promise.resolve([]),
@@ -338,16 +393,39 @@ export const list = tenantQuery({
       const seen = new Set<Id<'contacts'>>()
       const once = (id: Id<'contacts'>) =>
         !seen.has(id) && Boolean(seen.add(id))
-      const exact = [...byEmail, ...byIdentifier].filter(
-        (c) =>
-          (!kind || c.kind === kind) &&
-          (includeArchived || !c.archived) &&
-          once(c._id),
+      const inSource = source ? underSource(ctx.db, source) : null
+      const candidates = [...byEmail, ...byIdentifier].filter(
+        (c) => (!kind || c.kind === kind) && (includeArchived || !c.archived),
+      )
+      const sourced = inSource
+        ? await Promise.all(candidates.map(inSource))
+        : null
+      const exact = candidates.filter(
+        (c, i) => (!sourced || sourced[i]) && once(c._id),
       )
       const rest = [...byPhone, ...matched].map((h) => h.contactId).filter(once)
       const wanted = tagId ? rest : rest.slice(0, LIST_LIMIT + 1 - exact.length)
       const found = await Promise.all(wanted.map((id) => ctx.db.get(id)))
       rows = [...exact, ...found.filter((c) => c !== null)]
+    } else if (source) {
+      const hits = await ctx.db
+        .query('contactSearch')
+        .withIndex(SOURCE_INDEX[source.level], (q) =>
+          q.eq(SOURCE_FIELD[source.level], source.id),
+        )
+        .take(2 * LIST_LIMIT)
+      scanFull = hits.length === 2 * LIST_LIMIT
+      // The row knows the kind and archived state: read only the contacts
+      // that can show.
+      const wanted = hits.filter(
+        (h) => (!kind || h.kind === kind) && (includeArchived || !h.archived),
+      )
+      const found = await Promise.all(
+        (tagId ? wanted : wanted.slice(0, LIST_LIMIT + 1)).map((h) =>
+          ctx.db.get(h.contactId),
+        ),
+      )
+      rows = found.filter((c) => c !== null)
     } else if (tagId) {
       const assigned = await ctx.db
         .query('contactTags')
@@ -372,9 +450,10 @@ export const list = tenantQuery({
       scanFull = rows.length === 2 * LIST_LIMIT
     }
     const visible = includeArchived ? rows : rows.filter((c) => !c.archived)
-    // A search with a tag filter checks the tag per hit, so it shapes every
-    // hit before cutting to the limit; otherwise only the rows it returns.
-    const searchingTag = Boolean(term && tagId)
+    // A search or source filter with a tag filter checks the tag per row,
+    // so it shapes every row before cutting to the limit; otherwise only
+    // the rows it returns.
+    const searchingTag = Boolean((term || source) && tagId)
     const shaped = await Promise.all(
       (searchingTag ? visible : visible.slice(0, LIST_LIMIT)).map(async (c) => {
         const [email, tagRows] = await Promise.all([
@@ -419,21 +498,31 @@ export const list = tenantQuery({
  * caller, so the shared-address lookup (two more read levels) stays off a
  * save's critical path.
  */
-async function contactView(db: ScopedDatabaseReader, id: Id<'contacts'>) {
+async function contactView(
+  db: ScopedDatabaseReader,
+  id: Id<'contacts'>,
+  /** The contact, when the caller has read it: its code is read alongside. */
+  known?: Doc<'contacts'>,
+) {
   const emails = emailRows(db, id)
-  const [contact, kids, tagList, identifierList] = await Promise.all([
-    db.get(id),
-    children(db, id, emails),
-    tagsOf(db, id),
-    identifiersOf(db, id),
-  ])
+  const [contact, kids, tagList, identifierList, knownAcquisition] =
+    await Promise.all([
+      known ?? db.get(id),
+      children(db, id, emails),
+      tagsOf(db, id),
+      identifiersOf(db, id),
+      known && acquisitionOf(db, known.acquisitionCodeId),
+    ])
   if (!contact) return null
   return {
     contact,
     ...kids,
     tags: tagList,
     identifiers: identifierList,
-    acquisition: await acquisitionOf(db, contact.acquisitionCodeId),
+    acquisition:
+      knownAcquisition !== undefined
+        ? knownAcquisition
+        : await acquisitionOf(db, contact.acquisitionCodeId),
   }
 }
 
@@ -562,7 +651,7 @@ export const byClientKey = tenantQuery({
       .query('contacts')
       .withIndex('by_tenant_clientKey', (q) => q.eq('clientKey', clientKey))
       .unique()
-    return contact && contactView(ctx.db, contact._id)
+    return contact && contactView(ctx.db, contact._id, contact)
   },
 })
 

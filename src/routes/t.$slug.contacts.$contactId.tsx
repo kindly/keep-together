@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { assembleView } from '../../convex/contacts/view'
@@ -81,7 +81,12 @@ function useContactView(
     tenantId,
     includeInactive: true,
   })
-  return useMemo(() => {
+  // The last whole view: a save that changes the code moves the root a
+  // moment before the new code's description may answer (the picker
+  // subscribes to it before saving, so usually not); show the last view
+  // meanwhile, not "Loading…".
+  const last = useRef<{ id: Id<'contacts'>; view: ContactView } | null>(null)
+  const view = useMemo(() => {
     if (root === null) return null
     if (
       root === undefined ||
@@ -101,6 +106,11 @@ function useContactView(
       acquisition,
     })
   }, [root, channels, tags, identifiers, acquisition, types])
+  if (view) last.current = { id, view }
+  if (view === undefined && last.current?.id === id && root?._id === id) {
+    return last.current.view
+  }
+  return view
 }
 
 /**

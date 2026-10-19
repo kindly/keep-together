@@ -6,7 +6,12 @@ import schema from '../schema'
 import { errorData, modules } from '../../test/fixture'
 import { SEED_TAGS, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import { SEED_CATEGORIES } from '../sources/rules'
-import { IDENTIFIER_TYPE, qcIdentifiers, qcSourceDetail } from './qcSeed'
+import {
+  IDENTIFIER_TYPE,
+  QC_EVENT_DETAIL,
+  qcIdentifiers,
+  qcSourceDetail,
+} from './qcSeed'
 
 // 12+ characters: auth.ts may gain a minimum-length password check.
 const password = 'qc-password-123'
@@ -153,13 +158,18 @@ test('every seeded write went through a contract and left a revision', async () 
     }))
     expect(types).toHaveLength(UK_RELATIONSHIP_TYPES.length)
     const isA = tenantId === world.tenants[0].tenantId
-    // A: Ada's identifier and tag. B: Ada's and Charles's identifiers.
+    // A: Ada's identifier and tag. B: every contact's identifier. Both:
+    // Charles's and the Trust's acquisition code.
     const extra = isA
-      ? [['contacts.identifiers', 'contacts.tags'], []]
+      ? [
+          ['contacts.identifiers', 'contacts.tags'],
+          ['contacts.acquisition'],
+          ['contacts.acquisition'],
+        ]
       : [
           ['contacts.identifiers'],
-          ['contacts.identifiers'],
-          ['contacts.identifiers'],
+          ['contacts.identifiers', 'contacts.acquisition'],
+          ['contacts.identifiers', 'contacts.acquisition'],
         ]
     for (const [i, contactId] of contactIds.entries()) {
       expect(
@@ -177,7 +187,9 @@ test('every seeded write went through a contract and left a revision', async () 
       UK_RELATIONSHIP_TYPES.length +
         SEED_TAGS.length +
         SEED_CATEGORIES.length +
-        2 + // the side's Street detail and its version 001
+        // The side's Street detail and Event's Gala, each with its 001
+        // and a 002.
+        2 * 3 +
         contactIds.length * 2 +
         extra.flat().length +
         typeRevisions,
@@ -416,7 +428,7 @@ test('hold refuses unless QC_SEED_ENABLED is "1", and an unknown tenant', async 
   ).toBe(0)
 })
 
-test("each side's Street category holds its own detail, and only that", async () => {
+test("each side's Street category holds its own detail; Event holds Gala; nothing else", async () => {
   const { t, world } = await seed()
   for (const [i, label] of ['Alpha', 'Bravo'].entries()) {
     const rows = (await t.run((ctx) => ctx.db.query('sourceCodes').collect()))
@@ -425,6 +437,56 @@ test("each side's Street category holds its own detail, and only that", async ()
     expect(rows.map((r) => [r.level, r.name])).toEqual([
       ['detail', qcSourceDetail(label, '7')],
       ['version', '001'],
+      ['version', '002'],
+      ['detail', QC_EVENT_DETAIL],
+      ['version', '001'],
+      ['version', '002'],
     ])
+  }
+})
+
+test('source codes: Charles and the Trust coded under Street; Event-Gala free', async () => {
+  const { t, world } = await seed()
+  for (const [i, tenant] of world.tenants.entries()) {
+    const id = await t.run(async (ctx) => {
+      const user = await ctx.db
+        .query('users')
+        .withIndex('email', (q) => q.eq('email', world.users[i].email))
+        .unique()
+      return user!._id
+    })
+    const as = t.withIdentity({ subject: `${id}|session` })
+    const detail = qcSourceDetail(i === 0 ? 'Alpha' : 'Bravo', '7')
+    const { codes } = await as.query(api.sources.queries.picker, {
+      tenantId: tenant.tenantId,
+      today: '2026-10-19',
+    })
+    expect(codes.map((c) => c.code)).toEqual(
+      expect.arrayContaining([
+        `Event-${QC_EVENT_DETAIL}-001`,
+        `Event-${QC_EVENT_DETAIL}-002`,
+        `Street-${detail}-001`,
+        `Street-${detail}-002`,
+      ]),
+    )
+    const byCode = new Map(codes.map((c) => [c.code, c.versionId]))
+    const [, charles, trust] = tenant.contactIds
+    const coded = await Promise.all(
+      [charles, trust].map((contactId) =>
+        as.query(api.contacts.queries.get, {
+          tenantId: tenant.tenantId,
+          id: contactId,
+        }),
+      ),
+    )
+    expect(coded.map((c) => c?.acquisition?.code)).toEqual([
+      `Street-${detail}-001`,
+      `Street-${detail}-002`,
+    ])
+    const version = await as.query(api.contacts.queries.list, {
+      tenantId: tenant.tenantId,
+      source: { level: 'version', id: byCode.get(`Street-${detail}-002`)! },
+    })
+    expect(version.rows.map((r) => r._id)).toEqual([trust])
   }
 })

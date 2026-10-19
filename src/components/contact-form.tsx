@@ -30,6 +30,7 @@ import { holdOn } from '../lib/email-hold'
 import type { Held } from '../lib/email-hold'
 import { useHistoryHold } from './contact-history'
 import { EmailHold } from './email-hold'
+import { ContactAcquisition } from './contact-acquisition'
 
 type Data = NonNullable<FunctionReturnType<typeof api.contacts.queries.get>>
 type Label = 'home' | 'work' | 'other'
@@ -349,6 +350,13 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
               .map((c) => c.slice(8))}
           />
         </section>
+
+        <ContactAcquisition
+          id={id}
+          counter={data.contact.acquisitionVersion}
+          acquisition={data.acquisition}
+          disabled={!canWrite}
+        />
 
         <MethodsFields
           value={state.local.methods}

@@ -217,6 +217,8 @@ test.describe(
             'platform/tenants:mine',
             'contacts/queries:list',
             'contacts/queries:tags',
+            // The list's source filter options.
+            'sources/queries:tree',
           ].includes(p),
       )
       test.info().annotations.push({

@@ -95,6 +95,7 @@ export const code = defineContract({
       endDate: p.endDate,
       isActive: p.isActive,
     }
+    forgetParts()
     if (root) {
       await ctx.db.patch('sourceCodes', root._id, fields)
       return root._id
@@ -143,6 +144,51 @@ export type SourceCodeDescription = {
   endDate?: string
 }
 
+// ── reads memoised per call ────────────────────────────────────────────────
+
+/**
+ * Parts `chain` has read, per scoped database. A scoped database is made
+ * per function call, so nothing outlives the transaction. A contact save
+ * that sets a code walks its chain up to four times (the action's name,
+ * the contract's check, `markUsed`, the search projection), three reads in
+ * a row each, which put a create with a code over the 100 ms budget.
+ *
+ * Every write to `sourceCodes` is in this file and calls `forgetParts`
+ * first, which bumps `generation`: entries from before it are not served.
+ * The generation is module-wide, so a write through any database object
+ * (or in another call sharing the isolate) only ever causes a miss.
+ */
+const partsRead = new WeakMap<
+  object,
+  {
+    generation: number
+    parts: Map<Id<'sourceCodes'>, Promise<Doc<'sourceCodes'> | null>>
+  }
+>()
+let generation = 0
+
+function readPart(
+  db: ScopedDatabaseReader,
+  id: Id<'sourceCodes'>,
+): Promise<Doc<'sourceCodes'> | null> {
+  let memo = partsRead.get(db)
+  if (memo?.generation !== generation) {
+    memo = { generation, parts: new Map() }
+    partsRead.set(db, memo)
+  }
+  let part = memo.parts.get(id)
+  if (!part) {
+    part = db.get(id)
+    memo.parts.set(id, part)
+  }
+  return part
+}
+
+/** Before any write to `sourceCodes`: no memoised read is served after it. */
+function forgetParts() {
+  generation++
+}
+
 /** A version and its two parents, or null if `id` isn't this tenant's version. */
 async function chain(
   db: ScopedDatabaseReader,
@@ -150,11 +196,11 @@ async function chain(
 ): Promise<
   [Doc<'sourceCodes'>, Doc<'sourceCodes'>, Doc<'sourceCodes'>] | null
 > {
-  const version = await db.get(id)
+  const version = await readPart(db, id)
   if (!version || version.level !== 'version' || !version.parentId) return null
-  const detail = await db.get(version.parentId)
+  const detail = await readPart(db, version.parentId)
   if (!detail?.parentId) return null
-  const category = await db.get(detail.parentId)
+  const category = await readPart(db, detail.parentId)
   return category ? [version, detail, category] : null
 }
 
@@ -214,6 +260,7 @@ export async function markUsed(
       { field: 'sourceCode', message: 'That source code is archived' },
     ])
   }
+  if (parts.some((p) => !p.used)) forgetParts()
   for (const part of parts) {
     if (!part.used) await ctx.db.patch('sourceCodes', part._id, { used: true })
   }
@@ -240,10 +287,18 @@ export type ResolvedPart = Doc<'sourceCodes'> & {
 export async function resolveAll(
   db: ScopedDatabaseReader,
 ): Promise<Array<ResolvedPart>> {
-  const rows = await db
-    .query('sourceCodes')
-    .withIndex('by_tenant_parent')
-    .take(SOURCE_CODE_LIMIT)
+  return resolveParts(
+    await db
+      .query('sourceCodes')
+      .withIndex('by_tenant_parent')
+      .take(SOURCE_CODE_LIMIT),
+  )
+}
+
+/** `resolveAll`'s pass over rows already read: no reads of its own. */
+export function resolveParts(
+  rows: Array<Doc<'sourceCodes'>>,
+): Array<ResolvedPart> {
   const children = new Map<string, Array<Doc<'sourceCodes'>>>()
   for (const row of rows) {
     const key = row.parentId ?? ''
@@ -360,6 +415,7 @@ export async function deletePart(
       'This code has been used, so it can only be archived',
     )
   }
+  forgetParts()
   for (const p of doomed.reverse()) await ctx.db.delete('sourceCodes', p._id)
   return { deleted: doomed.length }
 }

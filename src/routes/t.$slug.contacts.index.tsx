@@ -1,5 +1,6 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
+import type { FunctionReturnType } from 'convex/server'
 import { ConvexError } from 'convex/values'
 import { useEffect, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
@@ -23,8 +24,31 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
       query: api.contacts.queries.tags,
       args: { tenantId: tenant._id, includeInactive: true },
     })
+    convex.prewarmQuery({
+      query: api.sources.queries.tree,
+      args: { tenantId: tenant._id },
+    })
   },
 })
+
+type Part = FunctionReturnType<typeof api.sources.queries.tree>[number]
+
+/** The source filter's choice per level; '' is "all". */
+type SourcePick = {
+  category: Id<'sourceCodes'> | ''
+  detail: Id<'sourceCodes'> | ''
+  version: Id<'sourceCodes'> | ''
+}
+
+const NO_SOURCE: SourcePick = { category: '', detail: '', version: '' }
+
+/** The deepest level picked, as `list`'s `source` argument. */
+function sourceArg(pick: SourcePick) {
+  if (pick.version) return { level: 'version' as const, id: pick.version }
+  if (pick.detail) return { level: 'detail' as const, id: pick.detail }
+  if (pick.category) return { level: 'category' as const, id: pick.category }
+  return undefined
+}
 
 // 'household' is a valid kind but dormant: nothing creates one, so no chip.
 type Kind = 'individual' | 'organization'
@@ -48,12 +72,15 @@ function ContactList() {
   const [includeArchived, setIncludeArchived] = useState(false)
   const [tagFilter, setTagFilter] = useState<Id<'tags'> | ''>('')
   const [kind, setKind] = useState<Kind | ''>('')
+  const [sourcePick, setSourcePick] = useState<SourcePick>(NO_SOURCE)
+  const source = sourceArg(sourcePick)
   const listed = useQuery(api.contacts.queries.list, {
     tenantId: tenant._id,
     search,
     includeArchived,
     ...(tagFilter && { tagId: tagFilter }),
     ...(kind && { kind }),
+    ...(source && { source }),
   })
   // After the useQuery above: its subscription is in place by now. After
   // every render, not just the first: navigating to the list from the list
@@ -126,6 +153,7 @@ function ContactList() {
             </option>
           ))}
         </select>
+        <SourceFilter value={sourcePick} onChange={setSourcePick} />
         <label className="flex items-center gap-2 text-sm text-neutral-600">
           <input
             type="checkbox"
@@ -163,8 +191,9 @@ function ContactList() {
       {listed?.truncated && (contacts?.length ?? 0) > 0 && (
         <p className="mt-3 text-sm text-amber-800">
           Showing the first {contacts?.length} contacts
-          {tagFilter ? ' with this tag' : ''}; there are more. Narrow the search
-          to see them.
+          {tagFilter ? ' with this tag' : ''}
+          {source ? ' with this source code' : ''}; there are more. Narrow the
+          search to see them.
         </p>
       )}
       {contacts === undefined ? (
@@ -175,11 +204,13 @@ function ContactList() {
             ? 'Too many partial matches: add another word.'
             : search.trim()
               ? 'No contacts match.'
-              : tagFilter
-                ? 'No contacts with this tag.'
-                : kind
-                  ? 'No contacts of this kind.'
-                  : 'No contacts yet.'}
+              : source
+                ? 'No contacts with this source code.'
+                : tagFilter
+                  ? 'No contacts with this tag.'
+                  : kind
+                    ? 'No contacts of this kind.'
+                    : 'No contacts yet.'}
         </p>
       ) : (
         <ul className="mt-3 divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
@@ -227,6 +258,75 @@ function ContactList() {
         </ul>
       )}
     </main>
+  )
+}
+
+/**
+ * The source filter: category, then one of its details, then one of that
+ * detail's versions, each "all" until picked; a pick clears the levels
+ * below it. Archived parts are offered (marked): contacts keep codes
+ * archived since.
+ */
+function SourceFilter({
+  value,
+  onChange,
+}: {
+  value: SourcePick
+  onChange: (pick: SourcePick) => void
+}) {
+  const tenant = useTenant()
+  const parts = useQuery(api.sources.queries.tree, { tenantId: tenant._id })
+  const under = (level: Part['level'], parentId: Id<'sourceCodes'> | '') =>
+    (parts ?? []).filter(
+      (p) => p.level === level && (p.parentId ?? '') === parentId,
+    )
+  const select = (
+    level: keyof SourcePick,
+    label: string,
+    all: string,
+    options: Array<Part>,
+    pick: (id: Id<'sourceCodes'> | '') => SourcePick,
+  ) => (
+    <select
+      aria-label={label}
+      value={value[level]}
+      onChange={(e) => onChange(pick(e.target.value as Id<'sourceCodes'> | ''))}
+      className="rounded border border-neutral-300 px-2 py-1.5 text-sm"
+    >
+      <option value="">{all}</option>
+      {options.map((p) => (
+        <option key={p._id} value={p._id}>
+          {p.isActive ? p.name : `${p.name} (archived)`}
+        </option>
+      ))}
+    </select>
+  )
+  return (
+    <div role="group" aria-label="Filter by source code" className="flex gap-2">
+      {select(
+        'category',
+        'Filter by source category',
+        'all sources',
+        under('category', ''),
+        (category) => ({ ...NO_SOURCE, category }),
+      )}
+      {value.category &&
+        select(
+          'detail',
+          'Filter by source detail',
+          'all details',
+          under('detail', value.category),
+          (detail) => ({ ...value, detail, version: '' }),
+        )}
+      {value.detail &&
+        select(
+          'version',
+          'Filter by source version',
+          'all versions',
+          under('version', value.detail),
+          (version) => ({ ...value, version }),
+        )}
+    </div>
   )
 }
 

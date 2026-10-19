@@ -29,6 +29,7 @@ import { env, internalAction, internalMutation } from '../_generated/server'
 import { commandGroup, executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
 import {
+  acquisition,
   details,
   identifiers,
   identifierType,
@@ -68,7 +69,17 @@ export const qcIdentifiers = (runId: string, worker: number) => {
   return { shared: `ID${base}`, bOnly: `IDB${base}`, bReuse: `IDR${base}` }
 }
 
-/** The detail each side's Street category gets (names carry no hyphen). */
+/**
+ * The detail under Event each side gets, with versions 001 and 002, which
+ * no seeded contact carries: specs that set codes use it, so the Street
+ * filter's answer stays put.
+ */
+export const QC_EVENT_DETAIL = 'Gala'
+
+/**
+ * The detail each side's Street category gets (names carry no hyphen),
+ * with versions 001 and 002: Charles carries 001 and the Trust 002.
+ */
 export const qcSourceDetail = (label: string, runId: string) =>
   `${label}${runId}`
 
@@ -203,14 +214,16 @@ export const world = internalMutation({
       await ensureSeedCategories(scoped, group)
       // One detail per side, named for it: the isolation spec looks for
       // B's in A's Source codes tab.
+      const twoVersions = [{ name: '001' }, { name: '002' }]
       await seedDetails(
         scoped,
         [
           {
             category: 'Street',
             name: qcSourceDetail(label, runId),
-            versions: [],
+            versions: twoVersions,
           },
+          { category: 'Event', name: QC_EVENT_DETAIL, versions: twoVersions },
         ],
         group,
       )
@@ -296,6 +309,30 @@ export const world = internalMutation({
           identifierType,
           { name: IDENTIFIER_TYPE, isActive: false },
           { entityId: typeId, expected: 0, source: 'seed', group },
+        )
+      }
+      // Charles on Street-<side>-001, the Trust on -002.
+      const part = async (parentId: Id<'sourceCodes'> | undefined, n: string) =>
+        (await scoped.db
+          .query('sourceCodes')
+          .withIndex('by_tenant_parent', (q) =>
+            q.eq('parentId', parentId).eq('nameNormalized', n.toLowerCase()),
+          )
+          .unique())!._id
+      const street = await part(
+        await part(undefined, 'Street'),
+        qcSourceDetail(label, runId),
+      )
+      const coded: Array<[Id<'contacts'>, string]> = [
+        [contactIds[1], '001'],
+        [contactIds[2], '002'],
+      ]
+      for (const [contactId, version] of coded) {
+        await executeContract(
+          scoped,
+          acquisition,
+          { codeId: await part(street, version) },
+          { entityId: contactId, expected: 0, source: 'seed', group },
         )
       }
       out.push({ slug, tenantId, contactIds })

@@ -11,12 +11,17 @@ import { api, components, internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
 import type schema from '../schema'
 import type { MutationCtx } from '../_generated/server'
-import { restore } from '../lib/contracts'
+import { executeContract, restore } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
 import type { Role } from '../lib/tenancy'
 import { errorData, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
-import { describe as describeCode, markUsed, sourceContracts } from './code'
+import {
+  code,
+  describe as describeCode,
+  markUsed,
+  sourceContracts,
+} from './code'
 import { SEED_CATEGORIES, codeMatches, dateStatus, pickerOrder } from './rules'
 
 type T = TestConvex<typeof schema>
@@ -422,6 +427,36 @@ describe('describe', () => {
         id: versionId,
       }),
     ).toBeNull()
+  })
+  test('within one call, a write is seen by the next describe', async () => {
+    const { t, a } = await setup()
+    const { detailId, versionId } = await street(a)
+    const seen = await t.run(async (ctx) => {
+      const c = scoped(ctx, a.tenantId)
+      const before = await describeCode(c.db, versionId)
+      // Read twice: the second comes from the call's memo.
+      await describeCode(c.db, versionId)
+      await executeContract(
+        c,
+        code,
+        { name: 'Wessex', isActive: false },
+        { entityId: detailId, expected: 0, source: 'ui' },
+      )
+      const after = await describeCode(c.db, versionId)
+      await markUsed(c, versionId, { allowArchived: true })
+      const used = await describeCode(c.db, versionId)
+      return { before, after, used, row: await c.db.get(detailId) }
+    })
+    expect([seen.before?.code, seen.before?.isActive]).toEqual([
+      'Street-Wesser-001',
+      true,
+    ])
+    expect([seen.after?.code, seen.after?.isActive]).toEqual([
+      'Street-Wessex-001',
+      false,
+    ])
+    expect(seen.used?.code).toBe('Street-Wessex-001')
+    expect(seen.row?.used).toBe(true)
   })
 })
 

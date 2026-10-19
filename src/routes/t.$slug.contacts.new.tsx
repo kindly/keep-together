@@ -7,6 +7,8 @@ import { api } from '../../convex/_generated/api'
 import { useCanWrite, useTenant } from '../lib/tenant'
 import { seedContact } from '../lib/contact-seed'
 import { DetailsFields } from '../components/contact-form'
+import { SourceCodePicker } from '../components/source-code-picker'
+import type { PickerEntry } from '../components/source-code-picker'
 import type { Payloads } from '../../convex/contacts/validators'
 
 export const Route = createFileRoute('/t/$slug/contacts/new')({
@@ -54,6 +56,7 @@ function NewContact() {
     })
   }
   const [details, setDetails] = useState(blank('individual'))
+  const [code, setCode] = useState<PickerEntry | null>(null)
   const [problems, setProblems] = useState<
     Array<{ field: string; message: string }>
   >([])
@@ -64,7 +67,12 @@ function NewContact() {
     setError(null)
     try {
       await toContact(
-        await create({ tenantId: tenant._id, clientKey, ...details }),
+        await create({
+          tenantId: tenant._id,
+          clientKey,
+          ...details,
+          ...(code && { acquisitionCodeId: code.versionId }),
+        }),
       )
     } catch (err) {
       const data =
@@ -112,6 +120,26 @@ function NewContact() {
           problems={problems}
           conflicts={[]}
         />
+        <section className="flex flex-col gap-1">
+          <h2 className="text-sm text-neutral-600">
+            Source code{' '}
+            <span className="text-xs text-neutral-500">
+              (how they were recruited)
+            </span>
+          </h2>
+          <SourceCodePicker
+            value={code && { ...code, isActive: true }}
+            onPick={setCode}
+            onClear={() => setCode(null)}
+          />
+          {problems
+            .filter((p) => p.field === 'sourceCode')
+            .map((p) => (
+              <span key={p.message} className="text-xs text-red-700">
+                {p.message}
+              </span>
+            ))}
+        </section>
         {error && <p className="text-sm text-red-700">{error}</p>}
         <button
           type="submit"
