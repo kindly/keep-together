@@ -12,7 +12,10 @@ until its backfill has run, so a skipped step fails loudly, not silently.
 | 2 | `a19344b` (R1a) | `npx convex run platform/migrations:run '{"fn":"platform/migrations:ownerToAdmin"}'` | isDone |
 | 3 | `3034c32` (S4a) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillTagsVersion"}'` | isDone |
 | 4 | `c94194c` (X2) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillExternalIdentifiers"}'` | isDone, and `npx convex run platform/migrations:legacyLeftoverTotal` → total 0 (resolve any leftover first) |
-| 5 | `main` | (perf step 1's revision `groupName` backfill, once merged: optional, history falls back without it) | — |
+| 5 | `c07a706` (source codes 1, loosen) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillAcquisitionVersion"}'`, then `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillContactSearch"}'` (fills `contactSearch.sortName`), then `npx convex run platform/migrations:run '{"fn":"platform/migrations:backfillSourceCodesPreference"}'` | isDone for all three. The first and third were deleted in `f4b1571`: run them from this commit (they exist up to `7379b19`) |
+| 6 | `81866f6` (source codes 2, `sources` module) | `npx convex run sources/migrations:run '{"fn":"sources/migrations:seedCategories"}'` (the seven starter categories for existing tenants) | isDone. This push drops `sourceCodes.codeNormalized` and `by_tenant_code`, which is safe only because nothing writes `sourceCodes` before it |
+| 7 | `f4b1571` (source codes 6, tighten) | — | refuses to deploy unless row 5's `backfillAcquisitionVersion` and `backfillSourceCodesPreference` are isDone (ADR 0022) |
+| 8 | `main` | (perf step 1's revision `groupName` backfill, once merged: optional, history falls back without it) | — |
 
 Rehearse the sequence on a rehearsal slot first (README "Rehearsal
 slots"): `pnpm rehearsal:claim`, then `pnpm rehearsal:run <n> --cwd

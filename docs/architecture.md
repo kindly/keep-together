@@ -86,6 +86,7 @@ modules), one tenant inside, registered with the shared platform.
 | `giftaid` | Declaration chain, claims, HMRC submission (GovTalk + IRmark in a Node action) |
 | `consent` | Immutable consent log; derived communication preferences |
 | `comms` | Activities, transactional-vs-marketing suppression, mailing |
+| `sources` | Source codes (category → detail → version; the version id is the code), the `used` marker; exports `describe` / `markUsed` (ADR 0022) |
 | `platform` | Everything cross-tenant; never imported by domain modules |
 
 These mirror the CiviCRM entity groupings analysed in research.md

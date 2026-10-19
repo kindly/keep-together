@@ -85,6 +85,11 @@ Initial classification:
   contact identifiers (re-parented, see decision 2; lookup by an old id
   lands on the survivor directly).
 - **Tags** are merged by union into the survivor's `tags` slice.
+- **The acquisition code** (`contacts.acquisitionCodeId`, ADR 0022) is
+  a field on the contact, not a referencing entity: staff choose which
+  code the survivor keeps in the merge UI (default: the code of whichever
+  contact was created first), and it goes through the survivor's
+  `contacts.acquisition` contract. The dedupe/merge plan carries it.
 
 **6. Domain consequences.**
 - **Gift Aid (rule 1):** a contribution's eligibility is evaluated

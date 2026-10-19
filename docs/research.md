@@ -133,6 +133,7 @@ This is the part most worth internalising, because it's the distilled shape of a
 - **CiviMember** — membership types, terms, statuses, automated renewals and reminders, self-service. Essential if you serve membership charities.
 - **CiviEvent** — event calendar, registration flows, priced options, participant management.
 - **CiviCampaign** — ties mailings, events, activities, and contributions to a campaign/appeal with goals; also runs surveys and petitions. This is your "appeal" abstraction for attributing income.
+  *keep-together:* attribution is source codes (category → detail → version), not CiviCampaign's free hierarchy; gifts split across codes by pence allocations, and funds are a separate axis mapped on the code. See [ADR 0022](decisions/0022-source-codes.md).
 - **CiviCase** — structured sequences of activities (case management), relevant if you ever cross into service-delivery charities.
 - **CiviGrant / CiviPledge** — grant applications and pledges respectively.
 - **CiviMail** — bulk email with segmentation, templates, tracking, and bounce handling; respects the communication-preference flags (see B5).

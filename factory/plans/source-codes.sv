@@ -91,7 +91,7 @@ The full notes, with a URL on every claim, are in `factory/out/planner-sources-r
 <sv-prose id="b6">
 ## Steps
 
-1. **Schema loosen + backfill.** Add the `sourceCodes` table; the optional fields on `contacts`, `contactSearch` and `tenantPreferences`; and the backfills (`acquisitionVersion: 0`, the preference switch and its counter). Seed the starter categories for existing tenants. Files: `convex/schema.ts`, `convex/contacts/migrations.ts`, `convex/platform/migrations.ts`.
+1. **Schema loosen + backfill.** Add the `sourceCodes` table; the optional fields on `contacts`, `contactSearch` and `tenantPreferences`; and the backfills (`acquisitionVersion: 0`, the preference switch and its counter). *(As built: the starter categories for existing tenants are seeded by step 2's `sources/migrations:seedCategories`, not here, because seeds go through the `sources.code` contract, which arrives in step 2.)* Files: `convex/schema.ts`, `convex/contacts/migrations.ts`, `convex/platform/migrations.ts`.
 2. **`sources` module backend.** Files: `convex/sources/*`, `convex/lib/lists.ts`, `convex/platform/preferences.ts`, tenant creation seeds. It covers:
    - the contract `sources.code` (create, rename, describe, dates, archive / reactivate). Creating a detail also creates version `001`, and the contract preserves the `used` marker.
    - `delete`, which works only while unmarked and cascades to unmarked children.
