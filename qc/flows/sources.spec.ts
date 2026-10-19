@@ -43,6 +43,18 @@ async function addDetail(page: Page, name: string) {
   await expect(row(page, `Online-${name}-001`)).toBeVisible()
 }
 
+/** Delete an unused detail under Online and wait until it's gone. */
+async function deleteDetail(page: Page, name: string) {
+  await row(page, `Online-${name}`)
+    .getByRole('button', { name: 'delete' })
+    .click()
+  await page
+    .getByRole('alertdialog')
+    .getByRole('button', { name: 'Delete' })
+    .click()
+  await expect(row(page, `Online-${name}`)).toHaveCount(0)
+}
+
 // ── in-page predicates (serialised: no closures, no imports) ──────────────
 
 /** The Source codes tab has loaded its tree. */
@@ -138,8 +150,11 @@ test.describe('source codes', { annotation: SOURCES_ROUTE }, () => {
     await page.goto(sourcesPath(users.a.slug))
     await expect(row(page, 'Online')).toBeVisible()
     let name = ''
+    // Each sample deletes the last one's detail first (untimed), so every
+    // sample reads the same tree, however many repeats ran before.
     await flow(page, 'settings.sourceCodes.addDetail', {
       before: async () => {
+        if (name) await deleteDetail(page, name)
         name = detailName('add')
         const field = page.getByLabel('New detail under Online')
         if (!(await field.isVisible())) {
@@ -288,32 +303,54 @@ test.describe('source codes', { annotation: SOURCES_ROUTE }, () => {
     await addDetail(page, name)
     const code = `Online-${name}`
     await row(page, code).getByRole('button', { name: 'edit' }).click()
+    // The row with this tab's open editor, whatever its code reads.
+    const mine = page
+      .locator('main li')
+      .filter({ has: page.getByRole('button', { name: 'Save', exact: true }) })
+    const ours = detailName('mrg')
+    await mine.getByLabel(/^Name of /).fill(ours)
 
+    // Another admin renames it differently, describes it, then archives it.
+    const theirs = detailName('mrg')
     const other = await secondTab(browser, baseURL!, await session(users.a))
     try {
       await other.goto(sourcesPath(users.a.slug))
       await row(other, code).getByRole('button', { name: 'edit' }).click()
+      await row(other, code).getByLabel(`Name of ${code}`).fill(theirs)
       await row(other, code)
         .getByLabel('Description')
         .fill('From the other tab')
       await row(other, code)
         .getByRole('button', { name: 'Save', exact: true })
         .click()
-      await expect(row(other, code)).toContainText('From the other tab')
+      await expect(row(other, `Online-${theirs}`)).toContainText(
+        'From the other tab',
+      )
+      await row(other, `Online-${theirs}`)
+        .getByRole('button', { name: 'archive', exact: true })
+        .click()
+      await expect(row(other, `Online-${theirs}`)).toHaveCount(0)
     } finally {
       await other.context().close()
     }
-    // This editor took their description and kept its own open form.
-    const mine = row(page, code)
+    // This editor took their description, kept and flagged its own name,
+    // and stays open on the archived row, saying so.
     await expect(mine.getByLabel('Description')).toHaveValue(
       'From the other tab',
     )
-    const renamed = detailName('mrg')
-    await mine.getByLabel(`Name of ${code}`).fill(renamed)
+    await expect(mine.getByLabel(/^Name of /)).toHaveValue(ours)
+    await expect(mine).toContainText(`changed by someone else to “${theirs}”`)
+    await expect(mine.getByRole('status')).toContainText(
+      'Archived by someone else',
+    )
     await mine.getByRole('button', { name: 'Save', exact: true }).click()
-    await expect(row(page, `Online-${renamed}`)).toContainText(
+    // Saved, still archived, so hidden until shown.
+    await expect(row(page, `Online-${ours}`)).toHaveCount(0)
+    await page.getByLabel(/^Show archived/).check()
+    await expect(row(page, `Online-${ours}`)).toContainText(
       'From the other tab',
     )
+    await expect(row(page, `Online-${ours}`)).toContainText('archived')
   })
 })
 

@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
@@ -12,6 +12,7 @@ import { ConfirmDialog } from '../components/confirm-dialog'
 import { StaffListSwitch } from '../components/staff-list-switch'
 import {
   childNoun,
+  conflictsOf,
   dateRange,
   deleteBlocked,
   deleteCount,
@@ -51,14 +52,27 @@ const LEVEL_NAME = {
  * when the group allows it, add parts, edit a part's name, description and
  * dates, archive / reactivate it, and delete it while it has never been
  * used; everyone else reads. Archived parts, and everything under them,
- * are hidden unless "Show archived" is on, and then dimmed.
+ * are hidden unless "Show archived" is on, and then dimmed; a row with an
+ * open editor or add form stays until it closes, whatever is archived
+ * meanwhile.
  */
 function SourceCodesPage() {
   const tenant = useTenant()
   const canManage = useCanManageList('sourceCodes')
   const parts = useQuery(api.sources.queries.tree, { tenantId: tenant._id })
   const [showArchived, setShowArchived] = useState(false)
-  const shown = parts ? shownParts(parts, showArchived) : []
+  // Rows with an editor or add form open, which stay shown (shownParts).
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
+  const markOpen = useCallback((id: string, isOpen: boolean) => {
+    setOpen((prev) => {
+      if (prev.has(id) === isOpen) return prev
+      const next = new Set(prev)
+      if (isOpen) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+  const shown = parts ? shownParts(parts, showArchived, open) : []
   const hidden = parts ? parts.length - shown.length : 0
 
   return (
@@ -95,7 +109,13 @@ function SourceCodesPage() {
           ) : (
             <ul className="divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
               {shown.map((p) => (
-                <PartRow key={p._id} part={p} all={parts} />
+                <PartRow
+                  key={p._id}
+                  part={p}
+                  all={parts}
+                  kept={!showArchived && !p.visible}
+                  markOpen={markOpen}
+                />
               ))}
             </ul>
           )}
@@ -151,6 +171,7 @@ function AddPart({
           aria-label={label}
           maxLength={SOURCE_NAME_MAX}
           autoFocus={!!under}
+          disabled={busy}
           className="min-w-0 flex-1 rounded border border-neutral-300 px-3 py-1.5"
         />
         <button
@@ -184,7 +205,18 @@ function AddPart({
   )
 }
 
-function PartRow({ part, all }: { part: Part; all: Array<Part> }) {
+function PartRow({
+  part,
+  all,
+  kept,
+  markOpen,
+}: {
+  part: Part
+  all: Array<Part>
+  /** Archived (or under an archived part) and shown only while open. */
+  kept: boolean
+  markOpen: (id: string, isOpen: boolean) => void
+}) {
   const tenant = useTenant()
   const canManage = useCanManageList('sourceCodes')
   const save = useMutation(api.sources.mutations.save)
@@ -198,6 +230,13 @@ function PartRow({ part, all }: { part: Part; all: Array<Part> }) {
   const blocked = deleteBlocked(part)
   const dates = dateRange(part)
   const dim = part.visible ? '' : 'opacity-60'
+  const isOpen = editing || adding
+
+  useEffect(() => {
+    if (!isOpen) return
+    markOpen(part._id, true)
+    return () => markOpen(part._id, false)
+  }, [isOpen, part._id, markOpen])
 
   async function toggleArchive() {
     setError(null)
@@ -210,7 +249,7 @@ function PartRow({ part, all }: { part: Part; all: Array<Part> }) {
         ...payload(fieldsOf(part), !part.isActive),
       })
     } catch (err) {
-      setError(failureMessage(err))
+      setError(failureMessage(err, 'row'))
     } finally {
       setBusy(false)
     }
@@ -227,7 +266,7 @@ function PartRow({ part, all }: { part: Part; all: Array<Part> }) {
         expected: part.saveVersion,
       })
     } catch (err) {
-      setError(failureMessage(err))
+      setError(failureMessage(err, 'row'))
       setBusy(false)
     }
   }
@@ -315,6 +354,12 @@ function PartRow({ part, all }: { part: Part; all: Array<Part> }) {
           )}
         </div>
       )}
+      {kept && (
+        <span role="status" className="text-xs text-amber-700">
+          Archived by someone else while this was open. It stays here until you
+          close it, then hides with the other archived codes.
+        </span>
+      )}
       {editing && <EditPart part={part} onDone={() => setEditing(false)} />}
       {adding && child && (
         <AddPart
@@ -364,7 +409,9 @@ function EditPart({ part, onDone }: { part: Part; onDone: () => void }) {
   }, [part])
 
   const set = (field: keyof Fields) => (value: string) =>
-    setDraft((d) => ({ ...d, fields: { ...d.fields, [field]: value } }))
+    setDraft((d) =>
+      conflictsOf({ ...d, fields: { ...d.fields, [field]: value } }),
+    )
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -395,81 +442,85 @@ function EditPart({ part, onDone }: { part: Part; onDone: () => void }) {
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-2 py-1">
-      <label className="flex flex-col gap-1 text-sm">
-        <span>Name</span>
-        <input
-          type="text"
-          value={draft.fields.name}
-          onChange={(e) => set('name')(e.target.value)}
-          aria-label={`Name of ${part.code}`}
-          maxLength={SOURCE_NAME_MAX}
-          autoFocus
-          className="rounded border border-neutral-300 px-2 py-1"
-        />
-        {flag('name')}
-      </label>
-      <label className="flex flex-col gap-1 text-sm">
-        <span>Description</span>
-        <textarea
-          value={draft.fields.description}
-          onChange={(e) => set('description')(e.target.value)}
-          maxLength={SOURCE_DESCRIPTION_MAX}
-          rows={2}
-          className="rounded border border-neutral-300 px-2 py-1"
-        />
-        {flag('description')}
-      </label>
-      {dated && (
-        <div className="flex flex-wrap gap-4">
-          <label className="flex flex-col gap-1 text-sm">
-            <span>Start date</span>
-            <input
-              type="date"
-              value={draft.fields.startDate}
-              onChange={(e) => set('startDate')(e.target.value)}
-              className="rounded border border-neutral-300 px-2 py-1"
-            />
-            {flag('startDate')}
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            <span>End date</span>
-            <input
-              type="date"
-              value={draft.fields.endDate}
-              onChange={(e) => set('endDate')(e.target.value)}
-              className="rounded border border-neutral-300 px-2 py-1"
-            />
-            {flag('endDate')}
-          </label>
+      {/* Disabled while saving: typing then would be lost when the
+          editor closes on the save it isn't part of. */}
+      <fieldset disabled={busy} className="flex min-w-0 flex-col gap-2">
+        <label className="flex flex-col gap-1 text-sm">
+          <span>Name</span>
+          <input
+            type="text"
+            value={draft.fields.name}
+            onChange={(e) => set('name')(e.target.value)}
+            aria-label={`Name of ${part.code}`}
+            maxLength={SOURCE_NAME_MAX}
+            autoFocus
+            className="rounded border border-neutral-300 px-2 py-1"
+          />
+          {flag('name')}
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          <span>Description</span>
+          <textarea
+            value={draft.fields.description}
+            onChange={(e) => set('description')(e.target.value)}
+            maxLength={SOURCE_DESCRIPTION_MAX}
+            rows={2}
+            className="rounded border border-neutral-300 px-2 py-1"
+          />
+          {flag('description')}
+        </label>
+        {dated && (
+          <div className="flex flex-wrap gap-4">
+            <label className="flex flex-col gap-1 text-sm">
+              <span>Start date</span>
+              <input
+                type="date"
+                value={draft.fields.startDate}
+                onChange={(e) => set('startDate')(e.target.value)}
+                className="rounded border border-neutral-300 px-2 py-1"
+              />
+              {flag('startDate')}
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span>End date</span>
+              <input
+                type="date"
+                value={draft.fields.endDate}
+                onChange={(e) => set('endDate')(e.target.value)}
+                className="rounded border border-neutral-300 px-2 py-1"
+              />
+              {flag('endDate')}
+            </label>
+          </div>
+        )}
+        {dated && (
+          <span className="text-xs text-neutral-500">
+            Dates guide the picker (codes in date come first); they never stop a
+            code being used.
+          </span>
+        )}
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded bg-neutral-900 px-2 py-1 text-xs text-white hover:bg-neutral-700"
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={onDone}
+            className="text-xs text-neutral-500 underline"
+          >
+            cancel
+          </button>
         </div>
-      )}
-      {dated && (
-        <span className="text-xs text-neutral-500">
-          Dates guide the picker (codes in date come first); they never stop a
-          code being used.
-        </span>
-      )}
-      <div className="flex gap-2">
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded bg-neutral-900 px-2 py-1 text-xs text-white hover:bg-neutral-700"
-        >
-          Save
-        </button>
-        <button
-          type="button"
-          onClick={onDone}
-          className="text-xs text-neutral-500 underline"
-        >
-          cancel
-        </button>
-      </div>
-      {error && (
-        <span role="alert" className="text-xs text-red-700">
-          {error}
-        </span>
-      )}
+        {error && (
+          <span role="alert" className="text-xs text-red-700">
+            {error}
+          </span>
+        )}
+      </fieldset>
     </form>
   )
 }

@@ -23,13 +23,18 @@ export function childNoun(level: Level): 'detail' | 'version' | null {
 /**
  * The rows the tree shows. Without "show archived", a part that is
  * archived or under an archived parent (`visible` false) is left out, as
- * the picker leaves it out.
+ * the picker leaves it out, unless it is in `open`: a row with an open
+ * editor or add form stays until that closes, so an archive made
+ * elsewhere never silently discards what someone is typing.
  */
 export function shownParts(
   parts: ReadonlyArray<Part>,
   showArchived: boolean,
+  open: ReadonlySet<string> = new Set(),
 ): Array<Part> {
-  return showArchived ? [...parts] : parts.filter((p) => p.visible)
+  return showArchived
+    ? [...parts]
+    : parts.filter((p) => p.visible || open.has(p._id))
 }
 
 /** Why a part can't be deleted, or null if it can. */
@@ -96,12 +101,26 @@ export function rebase(draft: Draft, live: Part): Draft {
   if (live.saveVersion <= draft.baseVersion) return draft
   const remote = fieldsOf(live)
   const { value, conflicts } = threeWayMerge(draft.base, draft.fields, remote)
-  return {
+  return conflictsOf({
     base: remote,
     baseVersion: live.saveVersion,
     fields: value,
     conflicts: [...new Set([...draft.conflicts, ...conflicts])],
-  }
+  })
+}
+
+/**
+ * The draft with only its live conflicts: a flagged field whose value
+ * matches theirs again (retyped, or they changed it back) is no longer
+ * one.
+ */
+export function conflictsOf(draft: Draft): Draft {
+  const conflicts = draft.conflicts.filter(
+    (f) => draft.fields[f] !== draft.base[f],
+  )
+  return conflicts.length === draft.conflicts.length
+    ? draft
+    : { ...draft, conflicts }
 }
 
 /** The `sources.code` payload for a draft; the archive switch is the part's own. */
@@ -134,8 +153,16 @@ export function dateRange(p: {
   return null
 }
 
-/** A failed source-code mutation as one line for the user. */
-export function failureMessage(err: unknown): string {
+/**
+ * A failed source-code mutation as one line for the user. `from` is where
+ * it was sent: the edit form (a stale save there has been merged, so the
+ * user checks and saves again) or a row's archive / delete (nothing to
+ * merge: the user tries again).
+ */
+export function failureMessage(
+  err: unknown,
+  from: 'form' | 'row' = 'form',
+): string {
   const data =
     err instanceof ConvexError
       ? (err.data as {
@@ -147,7 +174,9 @@ export function failureMessage(err: unknown): string {
   if (data?.kind === 'invalid' && data.problems?.length)
     return data.problems.map((p) => p.message).join('; ')
   if (data?.kind === 'stale')
-    return 'Someone else changed this code just now. Their changes are merged in: check, then save again.'
+    return from === 'form'
+      ? 'Someone else changed this code just now. Their changes are merged in: check, then save again.'
+      : 'Someone else changed this code just now; check it and try again.'
   if (data?.kind === 'forbidden')
     return 'You can no longer manage source codes in this group'
   if (data?.kind === 'not_found') return 'This code no longer exists'

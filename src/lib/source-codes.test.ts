@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import type { Id } from '../../convex/_generated/dataModel'
 import {
   childNoun,
+  conflictsOf,
   dateRange,
   deleteBlocked,
   deleteCount,
@@ -176,4 +177,35 @@ test('failures read as one line', () => {
     ),
   ).toBe('Only archive')
   expect(failureMessage(new Error('boom'))).toBe('Could not save')
+})
+
+test('a row with an editor open stays shown when archived elsewhere', () => {
+  expect(shownParts(TREE, false, new Set(['w1'])).map((p) => p._id)).toEqual([
+    'w1',
+    'online',
+    'web',
+    'o1',
+  ])
+})
+
+test('a flag clears once the field matches theirs again', () => {
+  const base = { name: 'Wesser2', description: '', startDate: '', endDate: '' }
+  const flagged = {
+    base,
+    baseVersion: 4,
+    fields: { ...base, name: 'Wessex' },
+    conflicts: ['name' as const],
+  }
+  expect(conflictsOf(flagged)).toBe(flagged)
+  expect(
+    conflictsOf({ ...flagged, fields: { ...base, name: 'Wesser2' } }).conflicts,
+  ).toEqual([])
+})
+
+test('a stale archive or delete asks for a retry, not a re-save', () => {
+  const stale = new ConvexError({ kind: 'stale', current: 2 })
+  expect(failureMessage(stale, 'row')).toBe(
+    'Someone else changed this code just now; check it and try again.',
+  )
+  expect(failureMessage(stale, 'form')).toMatch(/merged in/)
 })
