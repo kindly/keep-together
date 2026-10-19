@@ -31,47 +31,46 @@ type Code = {
 }
 
 /**
- * A category, detail and version, written raw: the `sources` contracts are
- * step 2's (builder-src2). Only the fields `describe` / `markUsed` read
- * matter here.
+ * A category (the seeded one when it exists), a detail and a version,
+ * through the sources mutations. A new detail comes with version `001`;
+ * any other version name, or version fields, makes a version of its own.
  */
 async function code(
   who: Tenant,
   names: [string, string, string],
-  version: Partial<Doc<'sourceCodes'>> = {},
+  version: { startDate?: string; endDate?: string } = {},
 ): Promise<Code> {
-  return f.t.run(async (ctx) => {
-    const row = (
-      level: Doc<'sourceCodes'>['level'],
-      name: string,
-      parentId: Id<'sourceCodes'> | undefined,
-      codeNormalized: string,
-    ) => ({
+  const [c, d, v] = names
+  const create = (
+    parentId: Id<'sourceCodes'> | undefined,
+    name: string,
+    fields: { startDate?: string; endDate?: string } = {},
+  ) =>
+    who.as.mutation(api.sources.mutations.create, {
       tenantId: who.tenantId,
-      level,
       parentId,
       name,
-      nameNormalized: name.toLowerCase(),
-      codeNormalized,
       isActive: true,
-      used: false,
-      saveVersion: 0,
+      ...fields,
     })
-    const [c, d, v] = names
-    const category = await ctx.db.insert(
-      'sourceCodes',
-      row('category', c, undefined, c.toLowerCase()),
-    )
-    const detail = await ctx.db.insert(
-      'sourceCodes',
-      row('detail', d, category, `${c}-${d}`.toLowerCase()),
-    )
-    const versionId = await ctx.db.insert('sourceCodes', {
-      ...row('version', v, detail, `${c}-${d}-${v}`.toLowerCase()),
-      ...version,
-    })
-    return { category, detail, version: versionId }
-  })
+  const seeded = await f.t.run((ctx) =>
+    ctx.db
+      .query('sourceCodes')
+      .withIndex('by_tenant_parent', (q) =>
+        q
+          .eq('tenantId', who.tenantId)
+          .eq('parentId', undefined)
+          .eq('nameNormalized', c.toLowerCase()),
+      )
+      .unique(),
+  )
+  const category = seeded?._id ?? (await create(undefined, c)).id
+  const detail = await create(category, d)
+  const fresh = v !== '001' || Object.keys(version).length > 0
+  const versionId = fresh
+    ? (await create(detail.id, v, version)).id
+    : detail.versionId!
+  return { category, detail: detail.id, version: versionId }
 }
 
 const patchCode = (
@@ -238,8 +237,38 @@ describe('setting and clearing', () => {
         paginationOpts: { numItems: 10, cursor: null },
       })
     ).page
-    expect(moment.groupName).toBe('new contact')
+    expect(moment.groupName).toBe(
+      'new contact, acquisition code Street-Wesser-001',
+    )
     expect(moment.slices.sort()).toEqual(['acquisition code', 'details'])
+  })
+
+  test("getAcquisition: the page's view equals get's; nothing across tenants", async () => {
+    await set(street.version, 0)
+    const root = await f.a.as.query(api.contacts.queries.getRoot, {
+      tenantId: f.a.tenantId,
+      id: ada,
+    })
+    const described = await f.a.as.query(api.contacts.queries.getAcquisition, {
+      tenantId: f.a.tenantId,
+      codeId: root!.acquisitionCodeId!,
+    })
+    expect(described).toEqual((await get())!.acquisition)
+    // B, in its own tenant, with A's code id: nothing; naming A's tenant:
+    // refused.
+    expect(
+      await f.b.as.query(api.contacts.queries.getAcquisition, {
+        tenantId: f.b.tenantId,
+        codeId: street.version,
+      }),
+    ).toBeNull()
+    const data = await errorData(
+      f.b.as.query(api.contacts.queries.getAcquisition, {
+        tenantId: f.a.tenantId,
+        codeId: street.version,
+      }),
+    )
+    expect(data.kind).toBe('forbidden')
   })
 
   test('a viewer cannot set it', async () => {

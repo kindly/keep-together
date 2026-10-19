@@ -433,7 +433,7 @@ async function contactView(db: ScopedDatabaseReader, id: Id<'contacts'>) {
     ...kids,
     tags: tagList,
     identifiers: identifierList,
-    acquisition: await acquisitionOf(db, contact),
+    acquisition: await acquisitionOf(db, contact.acquisitionCodeId),
   }
 }
 
@@ -444,11 +444,9 @@ async function contactView(db: ScopedDatabaseReader, id: Id<'contacts'>) {
  */
 async function acquisitionOf(
   db: ScopedDatabaseReader,
-  contact: Doc<'contacts'>,
+  codeId: Id<'sourceCodes'> | undefined,
 ) {
-  return contact.acquisitionCodeId
-    ? describe(db, contact.acquisitionCodeId)
-    : null
+  return codeId ? describe(db, codeId) : null
 }
 
 /**
@@ -499,8 +497,8 @@ export const sharedAddresses = tenantQuery({
 })
 
 /**
- * The contact page reads its contact one slice at a time, through the five
- * queries below; the SPA assembles `get`'s view from them. The client sees
+ * The contact page reads its contact one slice at a time, through the four
+ * queries below (and `getAcquisition` when it carries a code); the SPA assembles `get`'s view from them. The client sees
  * a save once every query the save invalidated has re-run, so a save should
  * re-run only the slices whose rows it wrote. Every save bumps its slice's
  * counter on the root, so `getRoot` re-runs on all of them and reads
@@ -534,16 +532,15 @@ export const getIdentifiers = tenantQuery({
 })
 
 /**
- * The contact's acquisition code, described (`get`'s `acquisition`). It
- * reads the root, so it re-runs on every save of the contact, but only
- * reads the code's three rows again when the contact carries one.
+ * A code described (`get`'s `acquisition`), by the id the contact page
+ * takes from `getRoot`'s `acquisitionCodeId`: it reads only the code's
+ * three rows, so it re-runs on a rename or archive of that code, never on
+ * a save of the contact. Null for an id that isn't a version of this
+ * tenant.
  */
 export const getAcquisition = tenantQuery({
-  args: { id: v.id('contacts') },
-  handler: async (ctx, { id }) => {
-    const contact = await ctx.db.get(id)
-    return contact && acquisitionOf(ctx.db, contact)
-  },
+  args: { codeId: v.id('sourceCodes') },
+  handler: async (ctx, { codeId }) => acquisitionOf(ctx.db, codeId),
 })
 
 /** The whole view in one query: imports, tests, and `byClientKey`'s shape. */

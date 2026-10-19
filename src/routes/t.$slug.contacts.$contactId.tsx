@@ -48,7 +48,6 @@ const SLICE_QUERIES = [
   api.contacts.queries.getChannels,
   api.contacts.queries.getTags,
   api.contacts.queries.getIdentifiers,
-  api.contacts.queries.getAcquisition,
 ] as const
 
 /**
@@ -69,7 +68,14 @@ function useContactView(
   const channels = useQuery(api.contacts.queries.getChannels, args)
   const tags = useQuery(api.contacts.queries.getTags, args)
   const identifiers = useQuery(api.contacts.queries.getIdentifiers, args)
-  const acquisition = useQuery(api.contacts.queries.getAcquisition, args)
+  // By the code's id, not the contact's, so a contact save doesn't re-run
+  // it; an uncoded contact subscribes to nothing.
+  const codeId = root?.acquisitionCodeId
+  const described = useQuery(
+    api.contacts.queries.getAcquisition,
+    codeId ? { tenantId, codeId } : 'skip',
+  )
+  const acquisition = codeId ? described : null
   // Shared with the form's type picker (archived types included).
   const types = useQuery(api.contacts.queries.listIdentifierTypes, {
     tenantId,

@@ -43,7 +43,8 @@ import type { Payloads } from './validators'
 
 /**
  * Create a contact, with its acquisition code when the new-contact form
- * picked one: then both slices run as one "new contact" action.
+ * picked one: then both slices run as one action named after the code, so
+ * history keeps the code as it read then (as `setAcquisition` does).
  */
 export const create = tenantMutation({
   args: {
@@ -51,8 +52,16 @@ export const create = tenantMutation({
     acquisitionCodeId: v.optional(v.id('sourceCodes')),
   },
   handler: async (ctx, { acquisitionCodeId, ...payload }) => {
+    // An unknown code is refused by the contract, rolling back the group
+    // and the contact with it.
+    const code = acquisitionCodeId
+      ? await describe(ctx.db, acquisitionCodeId)
+      : null
     const group = acquisitionCodeId
-      ? await commandGroup(ctx, 'new contact')
+      ? await commandGroup(
+          ctx,
+          code ? `new contact, acquisition code ${code.code}` : 'new contact',
+        )
       : undefined
     const { id } = await executeContract(ctx, details, payload, {
       source: 'ui',

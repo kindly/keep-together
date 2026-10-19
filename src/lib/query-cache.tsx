@@ -19,11 +19,11 @@ export { useQuery } from 'convex-helpers/react/cache/hooks'
 /** How long an unmounted contact page's queries stay subscribed. */
 export const CACHE_EXPIRATION_MS = 120_000
 /**
- * Idle queries held at once. A contact page leaves 6 of its own behind
- * (`getRoot`, `getChannels`, `getTags`, `getIdentifiers`, `getAcquisition`,
- * `forContact`;
+ * Idle queries held at once. A contact page leaves 5 of its own behind
+ * (`getRoot`, `getChannels`, `getTags`, `getIdentifiers`, `forContact`,
+ * plus `getAcquisition` for a coded contact;
  * `members`, `tags` and identifier types are shared by every contact, and
- * history is fetched, not subscribed), so this is about 16 contacts.
+ * history is fetched, not subscribed), so this is about 20 contacts.
  * convex-helpers drops the query that just went idle, not the oldest, once
  * the limit is reached. 100 as decided by the human (2026-10-18).
  */
