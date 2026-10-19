@@ -356,8 +356,8 @@ function PartRow({
       )}
       {kept && (
         <span role="status" className="text-xs text-amber-700">
-          Archived by someone else while this was open. It stays here until you
-          close it, then hides with the other archived codes.
+          Archived while this was open. It stays here until you close it, then
+          hides with the other archived codes.
         </span>
       )}
       {editing && <EditPart part={part} onDone={() => setEditing(false)} />}

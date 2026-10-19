@@ -341,7 +341,7 @@ test.describe('source codes', { annotation: SOURCES_ROUTE }, () => {
     await expect(mine.getByLabel(/^Name of /)).toHaveValue(ours)
     await expect(mine).toContainText(`changed by someone else to “${theirs}”`)
     await expect(mine.getByRole('status')).toContainText(
-      'Archived by someone else',
+      'Archived while this was open',
     )
     await mine.getByRole('button', { name: 'Save', exact: true }).click()
     // Saved, still archived, so hidden until shown.
