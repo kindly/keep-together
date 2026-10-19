@@ -1,38 +1,40 @@
-import { readFileSync, readdirSync } from 'node:fs'
-import path from 'node:path'
+/// <reference types="vite/client" />
 import { expect, test } from 'vitest'
 
 // code.ts memoises the parts a call reads (`readPart`) and drops the memo
 // before every write it makes. That is only sound while every write to
 // `sourceCodes` is in code.ts, so this test holds the line: a writer
 // anywhere else fails here, not as a stale read in production.
+//
+// Read through Vite, not node:fs: Convex typechecks everything under
+// convex/ without Node's types when it deploys.
 
-const ROOT = path.resolve(__dirname, '..')
 const HOME = 'sources/code.ts'
 
-/** Every non-test, non-generated .ts file under convex/, relative to it. */
-function sources(): Array<string> {
-  return (readdirSync(ROOT, { recursive: true }) as Array<string>)
-    .map((f) => f.split(path.sep).join('/'))
-    .filter(
-      (f) =>
-        f.endsWith('.ts') &&
-        !f.endsWith('.test.ts') &&
-        !f.startsWith('_generated/'),
-    )
-}
+/** Every non-test, non-generated .ts file under convex/, by path from it. */
+const FILES = Object.entries(
+  import.meta.glob<string>(
+    ['/convex/**/*.ts', '!/convex/**/*.test.ts', '!/convex/_generated/**'],
+    {
+      query: '?raw',
+      import: 'default',
+      eager: true,
+    },
+  ),
+).map(([file, text]) => ({ file: file.replace(/^\/convex\//, ''), text }))
 
 /** `file:line` for each line matching `pattern`. */
 function hits(pattern: RegExp): Array<string> {
-  return sources().flatMap((f) =>
-    readFileSync(path.join(ROOT, f), 'utf8')
+  return FILES.flatMap(({ file, text }) =>
+    text
       .split('\n')
-      .flatMap((line, i) => (pattern.test(line) ? [`${f}:${i + 1}`] : [])),
+      .flatMap((line, i) => (pattern.test(line) ? [`${file}:${i + 1}`] : [])),
   )
 }
 
 test('every write to sourceCodes is in sources/code.ts', () => {
   const writes = hits(/\.(insert|patch|replace|delete)\(\s*'sourceCodes'/)
+  expect(FILES.length).toBeGreaterThan(20) // the glob found the module tree
   expect(writes.length).toBeGreaterThan(0)
   expect(writes.filter((w) => !w.startsWith(`${HOME}:`))).toEqual([])
 })
@@ -57,8 +59,8 @@ const DYNAMIC_WRITES = {
 test('every write with a variable table is one checked by hand', () => {
   // `db.patch(id, …)` (no table) or `db.patch(table, …)` would write
   // sourceCodes unseen by the grep above.
-  const found = sources().flatMap((f) =>
-    readFileSync(path.join(ROOT, f), 'utf8')
+  const found = FILES.flatMap(({ file: f, text }) =>
+    text
       .split('\n')
       .map((line) => line.trim())
       .filter((line) =>
