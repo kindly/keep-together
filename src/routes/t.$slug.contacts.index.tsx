@@ -25,13 +25,13 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
       args: { tenantId: tenant._id, includeInactive: true },
     })
     convex.prewarmQuery({
-      query: api.sources.queries.tree,
+      query: api.sources.queries.filterOptions,
       args: { tenantId: tenant._id },
     })
   },
 })
 
-type Part = FunctionReturnType<typeof api.sources.queries.tree>[number]
+type Part = FunctionReturnType<typeof api.sources.queries.filterOptions>[number]
 
 /** The source filter's choice per level; '' is "all". */
 type SourcePick = {
@@ -275,7 +275,9 @@ function SourceFilter({
   onChange: (pick: SourcePick) => void
 }) {
   const tenant = useTenant()
-  const parts = useQuery(api.sources.queries.tree, { tenantId: tenant._id })
+  const parts = useQuery(api.sources.queries.filterOptions, {
+    tenantId: tenant._id,
+  })
   const under = (level: Part['level'], parentId: Id<'sourceCodes'> | '') =>
     (parts ?? []).filter(
       (p) => p.level === level && (p.parentId ?? '') === parentId,

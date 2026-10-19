@@ -263,3 +263,34 @@ describe('tenancy', () => {
     expect(await ids(list(theirs, {}, f.b))).toEqual([bContact])
   })
 })
+
+describe('filter options', () => {
+  test('every part, archived too, with only what the selects show; per tenant', async () => {
+    await f.a.as.mutation(api.sources.mutations.save, {
+      tenantId: f.a.tenantId,
+      id: street.detail,
+      expected: 0,
+      name: 'Wesser',
+      isActive: false,
+    })
+    const options = await f.a.as.query(api.sources.queries.filterOptions, {
+      tenantId: f.a.tenantId,
+    })
+    const wesser = options.find((o) => o._id === street.detail)
+    expect(wesser).toEqual({
+      _id: street.detail,
+      level: 'detail',
+      parentId: street.category,
+      name: 'Wesser',
+      isActive: false,
+    })
+    expect(
+      options.filter((o) => o.parentId === street.detail).map((o) => o.name),
+    ).toEqual(['001', '002'])
+    const theirs = await f.b.as.query(api.sources.queries.filterOptions, {
+      tenantId: f.b.tenantId,
+    })
+    const ours = new Set(options.map((o) => o._id))
+    expect(theirs.some((o) => ours.has(o._id))).toBe(false)
+  })
+})

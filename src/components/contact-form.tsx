@@ -354,6 +354,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
         <ContactAcquisition
           id={id}
           counter={data.contact.acquisitionVersion}
+          codeId={data.contact.acquisitionCodeId}
           acquisition={data.acquisition}
           disabled={!canWrite}
         />

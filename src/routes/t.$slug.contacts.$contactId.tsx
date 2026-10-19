@@ -7,6 +7,7 @@ import { cachedTenant, useTenant } from '../lib/tenant'
 import { useQuery } from '../lib/query-cache'
 import { contactSeed, dropContactSeed } from '../lib/contact-seed'
 import type { ContactView } from '../lib/contact-seed'
+import type { SourceCodeDescription } from '../../convex/sources/code'
 import { ContactForm } from '../components/contact-form'
 import { ContactHistory } from '../components/contact-history'
 import { ContactNotes } from '../components/contact-notes'
@@ -75,18 +76,29 @@ function useContactView(
     api.contacts.queries.getAcquisition,
     codeId ? { tenantId, codeId } : 'skip',
   )
-  const acquisition = codeId ? described : null
+  // The code's description last shown on this contact. A save that
+  // changes the code moves the root a moment before the new description
+  // may answer (the picker subscribes to it before saving, so usually
+  // not): meanwhile the page keeps the last one rather than dropping to
+  // "Loading…". Only the description is held, never the root or other
+  // slices, so counters stay current; the picker shows its pending code
+  // until the description catches up with the root (ContactAcquisition).
+  const lastAcquisition = useRef<{
+    id: Id<'contacts'>
+    acquisition: SourceCodeDescription | null
+  } | null>(null)
+  const live = codeId ? described : null
+  if (live !== undefined) lastAcquisition.current = { id, acquisition: live }
+  const acquisition =
+    live === undefined && lastAcquisition.current?.id === id
+      ? lastAcquisition.current.acquisition
+      : live
   // Shared with the form's type picker (archived types included).
   const types = useQuery(api.contacts.queries.listIdentifierTypes, {
     tenantId,
     includeInactive: true,
   })
-  // The last whole view: a save that changes the code moves the root a
-  // moment before the new code's description may answer (the picker
-  // subscribes to it before saving, so usually not); show the last view
-  // meanwhile, not "Loading…".
-  const last = useRef<{ id: Id<'contacts'>; view: ContactView } | null>(null)
-  const view = useMemo(() => {
+  return useMemo(() => {
     if (root === null) return null
     if (
       root === undefined ||
@@ -106,11 +118,6 @@ function useContactView(
       acquisition,
     })
   }, [root, channels, tags, identifiers, acquisition, types])
-  if (view) last.current = { id, view }
-  if (view === undefined && last.current?.id === id && root?._id === id) {
-    return last.current.view
-  }
-  return view
 }
 
 /**

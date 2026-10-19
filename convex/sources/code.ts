@@ -155,6 +155,9 @@ export type SourceCodeDescription = {
  *
  * Every write to `sourceCodes` is in this file and calls `forgetParts`
  * first, which bumps `generation`: entries from before it are not served.
+ * (Bar one: executeContract's counter bump writes `saveVersion` after the
+ * apply, a field nothing read through the memo uses.) writers.test.ts
+ * fails on a writer anywhere else.
  * The generation is module-wide, so a write through any database object
  * (or in another call sharing the isolate) only ever causes a miss.
  */

@@ -218,7 +218,7 @@ test.describe(
             'contacts/queries:list',
             'contacts/queries:tags',
             // The list's source filter options.
-            'sources/queries:tree',
+            'sources/queries:filterOptions',
           ].includes(p),
       )
       test.info().annotations.push({

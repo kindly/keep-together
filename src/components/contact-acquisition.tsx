@@ -1,6 +1,6 @@
 import { useConvex, useMutation } from 'convex/react'
 import { ConvexError } from 'convex/values'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import type { SourceCodeDescription } from '../../convex/sources/code'
@@ -33,11 +33,15 @@ function failure(err: unknown): string {
 export function ContactAcquisition({
   id,
   counter,
+  codeId: carried,
   acquisition,
   disabled,
 }: {
   id: Id<'contacts'>
   counter: number
+  /** The code the contact's root carries now. */
+  codeId: Id<'sourceCodes'> | undefined
+  /** Its description, which may lag the root by a moment after a save. */
   acquisition: SourceCodeDescription | null
   disabled: boolean
 }) {
@@ -45,18 +49,29 @@ export function ContactAcquisition({
   const convex = useConvex()
   const setAcquisition = useMutation(api.contacts.mutations.setAcquisition)
   const history = useHistoryHold(id)
-  // The pick being saved: shown until the contact carries it.
-  const [pending, setPending] = useState<{ shown: ShownCode | null } | null>(
-    null,
-  )
+  // The pick being saved, shown until the save has landed and the code's
+  // description has caught up with the root: the page holds the last
+  // description while the new one loads, and showing that would flip
+  // new → old → new.
+  // `savedAt` is the counter the save left on the root, once it landed.
+  const [pending, setPending] = useState<{
+    shown: ShownCode | null
+    savedAt: number | null
+  } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const caughtUp = (acquisition?.versionId ?? null) === (carried ?? null)
+  const settled =
+    pending?.savedAt != null && counter >= pending.savedAt && caughtUp
+  useEffect(() => {
+    if (settled) setPending(null)
+  }, [settled])
 
   async function save(
     codeId: Id<'sourceCodes'> | null,
     shown: ShownCode | null,
   ) {
     setError(null)
-    setPending({ shown })
+    setPending({ shown, savedAt: null })
     // The page reads the new code's description by its id once the root
     // carries it: subscribe now, so it is there when the save lands.
     if (codeId) {
@@ -69,29 +84,34 @@ export function ContactAcquisition({
     // ContactForm's save).
     history.hold()
     try {
-      await setAcquisition({
+      const result = await setAcquisition({
         tenantId: tenant._id,
         id,
         expected: counter,
         codeId,
       })
+      // An unchanged code bumps nothing: there is nothing to wait for.
+      setPending(
+        result.counter === counter ? null : { shown, savedAt: result.counter },
+      )
     } catch (err) {
       setError(failure(err))
+      setPending(null)
     } finally {
       history.release()
-      setPending(null)
     }
   }
 
-  const shown = pending ? pending.shown : acquisition
+  const showPending = pending !== null && !settled
+  const shown = showPending ? pending.shown : acquisition
   return (
     <section>
       <h2 className="mb-3 text-lg font-medium">Source code</h2>
       <p className="mb-2 text-xs text-neutral-500">How they were recruited.</p>
       <SourceCodePicker
         value={shown}
-        pending={pending !== null}
-        disabled={disabled || pending !== null}
+        pending={showPending}
+        disabled={disabled || showPending}
         onPick={(entry) =>
           void save(entry.versionId, {
             code: entry.code,

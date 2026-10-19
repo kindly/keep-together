@@ -33,6 +33,24 @@ export const tree = tenantQuery({
     })),
 })
 
+/**
+ * Every part in tree order with only what the contacts list's source
+ * filter shows: id, level, parent, name, archived or not. Archived parts
+ * are included (contacts keep codes archived since). Slimmer than `tree`,
+ * which carries Settings' editing fields to every open list page.
+ */
+export const filterOptions = tenantQuery({
+  args: {},
+  handler: async (ctx) =>
+    (await resolveAll(ctx.db)).map((p) => ({
+      _id: p._id,
+      level: p.level,
+      parentId: p.parentId,
+      name: p.name,
+      isActive: p.isActive,
+    })),
+})
+
 /** The most codes one picker call returns. */
 export const PICKER_LIMIT = 50
 
