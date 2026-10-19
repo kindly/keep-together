@@ -409,7 +409,9 @@ export default defineSchema({
   // code: contacts and gifts store that id and derive the rest. The full
   // code is the three names joined by hyphens (`Street-Wesser-001`); a name
   // has no hyphen and is unique among its siblings case-insensitively, so
-  // the full code is unique per tenant. A part's parent never changes.
+  // the full code is unique per tenant. A part's parent never changes. The
+  // full code is not stored: a rename would have to rewrite every row under
+  // the part, so it is joined from the names at read time (sources/code).
   // Archive = `isActive: false` (hides it and everything under it from the
   // picker). System-owned: `used`, set by `sources.markUsed` the first
   // time a code goes on a contact or gift, on the version and both parents,
@@ -425,7 +427,6 @@ export default defineSchema({
     parentId: v.optional(v.id('sourceCodes')), // absent on a category
     name: v.string(), // as typed (trimmed)
     nameNormalized: v.string(), // sibling uniqueness
-    codeNormalized: v.string(), // the full code from the root down, normalised (picker)
     description: v.optional(v.string()),
     startDate: v.optional(v.string()), // ISO date; detail and version only
     endDate: v.optional(v.string()),
@@ -435,8 +436,7 @@ export default defineSchema({
   })
     // Prefix `parentId` = a part's children (categories: parentId absent);
     // both = a sibling by name.
-    .index('by_tenant_parent', ['tenantId', 'parentId', 'nameNormalized'])
-    .index('by_tenant_code', ['tenantId', 'codeNormalized']),
+    .index('by_tenant_parent', ['tenantId', 'parentId', 'nameNormalized']),
 
   // ── comms ─────────────────────────────────────────────────────────────
   // Suppression per address (domain rule 5: centralised in comms). One row

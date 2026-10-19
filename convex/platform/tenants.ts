@@ -57,12 +57,15 @@ export const mine = query({
                 'identifierTypes',
               ),
               identifierTypesVersion: prefs?.identifierTypesVersion ?? null,
+              staffCanManageSourceCodes: staffMayManage(prefs, 'sourceCodes'),
+              sourceCodesVersion: prefs?.sourceCodesVersion ?? null,
               canManageTags: mayManageList(m.role, prefs, 'tags'),
               canManageIdentifierTypes: mayManageList(
                 m.role,
                 prefs,
                 'identifierTypes',
               ),
+              canManageSourceCodes: mayManageList(m.role, prefs, 'sourceCodes'),
             }
           : null
       }),
@@ -181,6 +184,9 @@ export async function insertTenant(
     tenantId,
   })
   await ctx.scheduler.runAfter(0, internal.contacts.seed.tags, { tenantId })
+  await ctx.scheduler.runAfter(0, internal.sources.seed.categories, {
+    tenantId,
+  })
   return tenantId
 }
 

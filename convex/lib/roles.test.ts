@@ -48,7 +48,7 @@ async function staffManage(who: Tenant, kind: ListKind, on: boolean) {
       expected: prefs.tagsVersion ?? undefined,
       staffCanManageTags: on,
     })
-  } else {
+  } else if (kind === 'identifierTypes') {
     await who.as.mutation(
       api.platform.preferences.setStaffCanManageIdentifierTypes,
       {
@@ -57,8 +57,23 @@ async function staffManage(who: Tenant, kind: ListKind, on: boolean) {
         staffCanManageIdentifierTypes: on,
       },
     )
+  } else {
+    await who.as.mutation(
+      api.platform.preferences.setStaffCanManageSourceCodes,
+      {
+        tenantId: who.tenantId,
+        expected: prefs.sourceCodesVersion ?? undefined,
+        staffCanManageSourceCodes: on,
+      },
+    )
   }
 }
+
+const LIST_KINDS = [
+  'tags',
+  'identifierTypes',
+  'sourceCodes',
+] as const satisfies ReadonlyArray<ListKind>
 
 const person = (lastName: string) => ({
   kind: 'individual' as const,
@@ -79,6 +94,7 @@ const NOT_TENANT_SCOPED = new Set(['auth:signIn', 'auth:signOut'])
 const ADMIN_ONLY = new Set([
   'platform/preferences:setStaffCanManageTags',
   'platform/preferences:setStaffCanManageIdentifierTypes',
+  'platform/preferences:setStaffCanManageSourceCodes',
   'comms/suppressions:release',
 ])
 
@@ -90,6 +106,9 @@ const ADMIN_ONLY = new Set([
 const LIST_MANAGERS = new Map<string, ListKind>([
   ['contacts/mutations:saveTag', 'tags'],
   ['contacts/mutations:saveIdentifierType', 'identifierTypes'],
+  ['sources/mutations:create', 'sourceCodes'],
+  ['sources/mutations:save', 'sourceCodes'],
+  ['sources/mutations:remove', 'sourceCodes'],
 ])
 
 /** Modules that register no functions and only load in the Convex runtime. */
@@ -227,6 +246,7 @@ describe('every public mutation and action', () => {
         'relationshipTypes',
         'tags',
         'identifierTypes',
+        'sourceCodes',
         'revisions',
       ] as const satisfies ReadonlyArray<TableNames>) {
         const row = (await ctx.db.query(table).collect()).find(
@@ -259,9 +279,7 @@ describe('every public mutation and action', () => {
       ).toContain(p)
     }
     // Tenant B's switches are all on, and must not reach tenant A.
-    for (const kind of ['tags', 'identifierTypes'] as const) {
-      await staffManage(b, kind, true)
-    }
+    for (const kind of LIST_KINDS) await staffManage(b, kind, true)
 
     const checked: Array<string> = []
     for (const w of writes) {
@@ -294,12 +312,12 @@ describe('every public mutation and action', () => {
         expect(await kindOf(a.as), `${w.path} as admin`).not.toBe('forbidden')
       } else if (LIST_MANAGERS.has(w.path)) {
         const kind = LIST_MANAGERS.get(w.path)!
-        const other = kind === 'tags' ? 'identifierTypes' : 'tags'
+        const others = LIST_KINDS.filter((k) => k !== kind)
         expect(await kindOf(staff), `${w.path} as staff`).toBe('forbidden')
         expect(await kindOf(a.as), `${w.path} as admin`).not.toBe('forbidden')
-        // The other list's switch alone opens nothing here.
-        await staffManage(a, other, true)
-        expect(await kindOf(staff), `${w.path} as staff, ${other} on`).toBe(
+        // The other lists' switches alone open nothing here.
+        for (const other of others) await staffManage(a, other, true)
+        expect(await kindOf(staff), `${w.path} as staff, others on`).toBe(
           'forbidden',
         )
         await staffManage(a, kind, true)
@@ -309,11 +327,11 @@ describe('every public mutation and action', () => {
         expect(await kindOf(viewer), `${w.path} as viewer, ${kind} on`).toBe(
           'forbidden',
         )
-        // Only its own switch: the other off again changes nothing.
-        await staffManage(a, other, false)
+        // Only its own switch: the others off again changes nothing.
+        for (const other of others) await staffManage(a, other, false)
         expect(
           await kindOf(staff),
-          `${w.path} as staff, ${kind} on, ${other} off`,
+          `${w.path} as staff, ${kind} on, others off`,
         ).not.toBe('forbidden')
         await staffManage(a, kind, false)
         expect(await kindOf(staff), `${w.path} as staff, both off`).toBe(

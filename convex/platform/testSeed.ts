@@ -48,6 +48,7 @@ import {
 import schema from '../schema'
 import { DONOR_COUNT, generateDonors, IDENTIFIER_TYPES } from './testSeedData'
 import { insertTenant, tenantForSlug } from './tenants'
+import { ensureSeedCategories } from '../sources/seed'
 
 const role = schema.tables.memberships.validator.fields.role
 
@@ -185,7 +186,7 @@ export const tenant = internalMutation({
       }
     }
     // Seeded inline so the donors can link at once; the jobs insertTenant
-    // schedules then find the types and tags and do nothing.
+    // schedules then find the types, tags and source codes and do nothing.
     const scoped = { db: scopeWriter(ctx, tenantId), userId: null, role: null }
     const types = await scoped.db
       .query('relationshipTypes')
@@ -203,6 +204,7 @@ export const tenant = internalMutation({
       }
     }
     await seedTags(scoped)
+    await ensureSeedCategories(scoped)
     await ensureIdentifierTypes(scoped, IDENTIFIER_TYPES)
     return tenantId
   },

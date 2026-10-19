@@ -39,6 +39,9 @@ export async function setup() {
       tenantId: ids.tenantId,
     })
     await t.mutation(internal.contacts.seed.tags, { tenantId: ids.tenantId })
+    await t.mutation(internal.sources.seed.categories, {
+      tenantId: ids.tenantId,
+    })
     return {
       ...ids,
       // Convex Auth encodes `${userId}|${sessionId}` in the JWT subject.

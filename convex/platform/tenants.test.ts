@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 import { api, internal } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
 import { create } from './tenants'
+import { SEED_CATEGORIES } from '../sources/rules'
 
 async function signedUp(
   t: Awaited<ReturnType<typeof setup>>['t'],
@@ -28,7 +29,7 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
   })
   await t.finishAllScheduledFunctions(() => {})
 
-  const { tenant, memberships, types } = await t.run(async (ctx) => ({
+  const { tenant, memberships, types, sources } = await t.run(async (ctx) => ({
     tenant: await ctx.db.get(tenantId),
     memberships: await ctx.db
       .query('memberships')
@@ -37,6 +38,10 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
     types: await ctx.db
       .query('relationshipTypes')
       .withIndex('by_tenant', (q) => q.eq('tenantId', tenantId))
+      .collect(),
+    sources: await ctx.db
+      .query('sourceCodes')
+      .withIndex('by_tenant_parent', (q) => q.eq('tenantId', tenantId))
       .collect(),
   }))
   expect(tenant).toMatchObject({
@@ -54,6 +59,11 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
     types.filter((t) => t.kindA === 'household' || t.kindB === 'household'),
   ).toEqual([])
 
+  // The seven starter source-code categories.
+  expect(sources.map((s) => [s.level, s.name]).sort()).toEqual(
+    SEED_CATEGORIES.map((name) => ['category', name]).sort(),
+  )
+
   const jo = t.withIdentity({ subject: `${userId}|session-jo` })
   expect(await jo.query(api.platform.tenants.mine, {})).toEqual([
     {
@@ -65,8 +75,11 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
       tagsVersion: null,
       staffCanManageIdentifierTypes: false,
       identifierTypesVersion: null,
+      staffCanManageSourceCodes: false,
+      sourceCodesVersion: null,
       canManageTags: true,
       canManageIdentifierTypes: true,
+      canManageSourceCodes: true,
     },
   ])
 })

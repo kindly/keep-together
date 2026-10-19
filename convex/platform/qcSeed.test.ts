@@ -5,6 +5,7 @@ import type { Id } from '../_generated/dataModel'
 import schema from '../schema'
 import { errorData, modules } from '../../test/fixture'
 import { SEED_TAGS, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import { SEED_CATEGORIES } from '../sources/rules'
 import { IDENTIFIER_TYPE, qcIdentifiers } from './qcSeed'
 
 // 12+ characters: auth.ts may gain a minimum-length password check.
@@ -175,6 +176,7 @@ test('every seeded write went through a contract and left a revision', async () 
     expect(revisions).toHaveLength(
       UK_RELATIONSHIP_TYPES.length +
         SEED_TAGS.length +
+        SEED_CATEGORIES.length +
         contactIds.length * 2 +
         extra.flat().length +
         typeRevisions,

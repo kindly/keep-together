@@ -44,6 +44,7 @@ import {
 import { normaliseTagName } from '../contacts/rules'
 import { suppressAddress } from '../comms/suppressions'
 import { insertTenant, tenantForSlug } from './tenants'
+import { ensureSeedCategories } from '../sources/seed'
 
 const SIDES = [
   { suffix: 'a', label: 'Alpha' },
@@ -181,7 +182,8 @@ export const world = internalMutation({
         }
       }
       // Seeded inline so the world is complete on return; the jobs
-      // insertTenant schedules then find the types and tags and do nothing.
+      // insertTenant schedules then find the types, tags and source codes
+      // and do nothing.
 
       const scoped = { db: scopeWriter(ctx, tenantId), userId, role: null }
       const group = await commandGroup(scoped, 'qc seed')
@@ -194,6 +196,7 @@ export const world = internalMutation({
         )
       }
       await seedTags(scoped, group)
+      await ensureSeedCategories(scoped, group)
       const name = `${label}-${runId}`
       const contacts = [
         { kind: 'individual', firstName: 'Ada', lastName: name, name: '' },

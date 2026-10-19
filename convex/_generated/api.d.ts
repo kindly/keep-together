@@ -43,6 +43,13 @@ import type * as platform_qcSeed from "../platform/qcSeed.js";
 import type * as platform_tenants from "../platform/tenants.js";
 import type * as platform_testSeed from "../platform/testSeed.js";
 import type * as platform_testSeedData from "../platform/testSeedData.js";
+import type * as sources_code from "../sources/code.js";
+import type * as sources_migrations from "../sources/migrations.js";
+import type * as sources_mutations from "../sources/mutations.js";
+import type * as sources_queries from "../sources/queries.js";
+import type * as sources_rules from "../sources/rules.js";
+import type * as sources_seed from "../sources/seed.js";
+import type * as sources_validators from "../sources/validators.js";
 
 import type {
   ApiFromModules,
@@ -86,6 +93,13 @@ declare const fullApi: ApiFromModules<{
   "platform/tenants": typeof platform_tenants;
   "platform/testSeed": typeof platform_testSeed;
   "platform/testSeedData": typeof platform_testSeedData;
+  "sources/code": typeof sources_code;
+  "sources/migrations": typeof sources_migrations;
+  "sources/mutations": typeof sources_mutations;
+  "sources/queries": typeof sources_queries;
+  "sources/rules": typeof sources_rules;
+  "sources/seed": typeof sources_seed;
+  "sources/validators": typeof sources_validators;
 }>;
 
 /**
