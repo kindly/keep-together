@@ -23,54 +23,63 @@ const FILES = Object.entries(
   ),
 ).map(([file, text]) => ({ file: file.replace(/^\/convex\//, ''), text }))
 
-/** `file:line` for each line matching `pattern`. */
-function hits(pattern: RegExp): Array<string> {
-  return FILES.flatMap(({ file, text }) =>
-    text
-      .split('\n')
-      .flatMap((line, i) => (pattern.test(line) ? [`${file}:${i + 1}`] : [])),
-  )
+/**
+ * Every database write in `text`, as its first argument: a quoted table
+ * name (`'sourceCodes'`) or the expression in its place (`table`, `id`).
+ * Matched over the whole text, so a call prettier wraps across lines
+ * (`ctx.db\n  .patch(\n    'sourceCodes', …`) is found too.
+ */
+function writes(text: string): Array<string> {
+  const call = /\bdb\s*\.\s*(?:insert|patch|replace|delete)\s*\(\s*([^,)]*)/g
+  return [...text.matchAll(call)].map((m) => m[1].trim())
 }
 
+/** `file: first argument` for every write in the module tree. */
+const ALL = FILES.flatMap(({ file, text }) =>
+  writes(text).map((arg) => ({ file, arg })),
+)
+
+test('the matcher finds wrapped calls and the table-less form', () => {
+  expect(
+    writes(`await ctx.db.patch(
+      'sourceCodes',
+      id,
+      { used: true },
+    )
+    await ctx.db
+      .insert('sourceCodes', {})
+    ctx.db.delete(id)
+    db.replace(\n  table, id, doc)
+    ctx.db.get('sourceCodes', id)`),
+  ).toEqual(["'sourceCodes'", "'sourceCodes'", 'id', 'table'])
+})
+
 test('every write to sourceCodes is in sources/code.ts', () => {
-  const writes = hits(/\.(insert|patch|replace|delete)\(\s*'sourceCodes'/)
   expect(FILES.length).toBeGreaterThan(20) // the glob found the module tree
-  expect(writes.length).toBeGreaterThan(0)
-  expect(writes.filter((w) => !w.startsWith(`${HOME}:`))).toEqual([])
+  const sourceCodes = ALL.filter((w) => w.arg === "'sourceCodes'")
+  expect(sourceCodes.length).toBeGreaterThan(0)
+  expect(sourceCodes.filter((w) => w.file !== HOME)).toEqual([])
 })
 
 /**
- * Writes whose table is a variable, so the grep above can't see which
- * table they hit. Each is checked by hand; a new one fails here until it
- * is. Matched by text within the line, so a moved line still matches.
+ * Writes whose table is a variable, so the check above can't see which
+ * table they hit: each checked by hand, by file and first argument. A new
+ * one fails here until it is.
  */
 const DYNAMIC_WRITES = {
   // reconcile(): `table` is a ChildTable, a contact child table.
-  'contacts/contracts.ts': [
-    'ctx.db.delete(table, doc._id)',
-    'ctx.db.insert(table, {',
-    'ctx.db.patch(table, id, changes as never)',
-  ],
+  'contacts/contracts.ts': ['table'],
   // executeContract's counter bump: on `sources.code` it writes
   // `saveVersion`, which no memoised reader uses (code.ts, `readPart`).
-  'lib/contracts.ts': ['ctx.db.patch(contract.entity, id, {'],
+  'lib/contracts.ts': ['contract.entity'],
 } as Partial<Record<string, Array<string>>>
 
 test('every write with a variable table is one checked by hand', () => {
   // `db.patch(id, …)` (no table) or `db.patch(table, …)` would write
-  // sourceCodes unseen by the grep above.
-  const found = FILES.flatMap(({ file: f, text }) =>
-    text
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) =>
-        /\bdb\.(insert|patch|replace|delete)\(\s*[^'\s)]/.test(line),
-      )
-      .map((line) => [f, line] as const),
-  )
+  // sourceCodes unseen by the check above.
   expect(
-    found.filter(
-      ([f, line]) => !DYNAMIC_WRITES[f]?.some((known) => line.includes(known)),
+    ALL.filter(
+      (w) => !w.arg.startsWith("'") && !DYNAMIC_WRITES[w.file]?.includes(w.arg),
     ),
   ).toEqual([])
 })
