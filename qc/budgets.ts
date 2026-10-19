@@ -87,7 +87,7 @@ export const budgets = {
   'contact.identifier.remove': repeatable,
   'contact.hold.release': repeatable,
   'contact.acquisition.set': repeatable,
-  'contacts.createWithCode': repeatable,
+  'contacts.createWithCode': infrequent,
   'contacts.filter.sourceCategory': repeatable,
   'contacts.filter.sourceVersion': repeatable,
   'tags.create': repeatable,
