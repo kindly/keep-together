@@ -132,9 +132,16 @@ The `contactSearch` projection carries `acquisitionCodeId`,
 rebuilt by the contract's `project` hook (`projectAcquisition`), never
 written anywhere else. The three ids are filter fields on `search_text`,
 and three `(tenantId, acquisition…Id, sortName)` indexes serve the
-contacts list's category / detail / version filter when there's no
-search text *(g3q4)*. A rename doesn't touch the projection, because it
-stores only ids, and a part's parent never changes.
+contacts list's filter when there's no search text. A rename doesn't
+touch the projection, because it stores only ids, and a part's parent
+never changes.
+
+**In the UI** *(g1q7, g3q4)*, a picker on the new-contact form and on
+the contact page offers the assignable codes (decision 5's order:
+archived codes and codes under an archived parent are hidden,
+out-of-date ones are listed lower and marked). The contact page shows
+the full code. The contacts list filters by category, detail or version
+(e.g. "everyone recruited by Street"), with or without search text.
 
 **8. Funds live on the code** *(g1q12, g3q1)*. A source code says *how
 the money came in*. A fund says *what it may be spent on*. At Amnesty
@@ -216,10 +223,6 @@ the build is authoritative:
   and budget labels on a code *(g1q6)*; codes on mailings, activities,
   consent events or Gift Aid declarations; importing codes from a
   spreadsheet; any shared cross-tenant code list.
-- **Plan step 5** (the picker on the new-contact form and the contact
-  page, and the category / detail / version filter on the contacts list)
-  isn't on `main` yet. The backend side (the projection fields and
-  indexes, `setAcquisition`, `contacts.get`'s described code) is.
 - Setting the acquisition code from imports, online forms and the first
   gift comes with those features. Choosing it in the merge UI comes with
   the dedupe/merge plan.
