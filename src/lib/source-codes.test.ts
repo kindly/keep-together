@@ -78,12 +78,14 @@ test('a used part can only be archived; an unused one deletes with its subtree',
   expect(deleteCount(TREE, id('w1'))).toBe(1)
 })
 
-test('archiving counts the details and versions it newly hides', () => {
+test('archiving counts the versions it takes out of the picker, and their details', () => {
   const tree = [
     ...TREE,
     part({ _id: id('app'), level: 'detail', parentId: id('online') }),
     part({ _id: id('a1'), level: 'version', parentId: id('app') }),
     part({ _id: id('a2'), level: 'version', parentId: id('app') }),
+    // No versions: nothing of it is in the picker.
+    part({ _id: id('empty'), level: 'detail', parentId: id('online') }),
     // Already hidden by its own archive, and its version with it.
     part({
       _id: id('old'),
@@ -100,7 +102,8 @@ test('archiving counts the details and versions it newly hides', () => {
     }),
   ]
   expect(archiveHides(tree, id('online'))).toEqual({ details: 2, versions: 3 })
-  expect(archiveHides(tree, id('app'))).toEqual({ details: 0, versions: 2 })
+  expect(archiveHides(tree, id('app'))).toEqual({ details: 1, versions: 2 })
+  expect(archiveHides(tree, id('empty'))).toEqual({ details: 0, versions: 0 })
   expect(archiveHides(tree, id('street'))).toEqual({ details: 0, versions: 0 })
 })
 

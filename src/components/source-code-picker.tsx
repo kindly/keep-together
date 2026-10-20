@@ -1,12 +1,11 @@
 import { useQuery as useLiveQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
 import { useId, useRef, useState } from 'react'
-import type { KeyboardEvent } from 'react'
+import type { KeyboardEvent, Ref } from 'react'
 import { api } from '../../convex/_generated/api'
 import { dateStatus } from '../../convex/sources/rules'
 import type { DateStatus } from '../../convex/sources/rules'
 import { useTenant } from '../lib/tenant'
-import { ConfirmDialog } from './confirm-dialog'
 
 export type PickerEntry = FunctionReturnType<
   typeof api.sources.queries.picker
@@ -52,9 +51,9 @@ function Hint({ children }: { children: React.ReactNode }) {
  * It sits inside forms: Enter picks the highlighted code and never
  * submits. Options take the click without the input losing focus.
  *
- * With `confirmClear` a set code is hard to change by accident: it shows
- * with no search box, and the clear button asks first. The search box
- * comes back once the code is gone.
+ * With `lockWhenSet` a set code shows with no search box, so it can't be
+ * changed by a stray pick: it is cleared first (the owner may ask before
+ * it does), then the search box comes back.
  */
 export function SourceCodePicker({
   value,
@@ -63,7 +62,8 @@ export function SourceCodePicker({
   pending,
   disabled,
   label = 'Source code',
-  confirmClear,
+  lockWhenSet,
+  inputRef,
 }: {
   value: ShownCode | null
   onPick: (entry: PickerEntry) => void
@@ -72,15 +72,15 @@ export function SourceCodePicker({
   pending?: boolean
   disabled?: boolean
   label?: string
-  /** The question the clear button asks before clearing a set code. */
-  confirmClear?: { title: string; description: string }
+  /** No search box while a code is set. */
+  lockWhenSet?: boolean
+  inputRef?: Ref<HTMLInputElement>
 }) {
   const tenant = useTenant()
   const listId = useId()
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
-  const [confirming, setConfirming] = useState(false)
   const today = localToday()
   // Not cached (lib/query-cache): the args change with every keystroke.
   // Until the new answer comes, the last one stands.
@@ -118,7 +118,7 @@ export function SourceCodePicker({
   }
 
   const status = value ? dateStatus(value, today) : null
-  const locked = confirmClear !== undefined && value !== null
+  const locked = lockWhenSet === true && value !== null
   return (
     <div className="flex flex-col gap-2 text-sm">
       <div
@@ -138,7 +138,7 @@ export function SourceCodePicker({
               <button
                 type="button"
                 aria-label={`clear ${label.toLowerCase()}`}
-                onClick={() => (confirmClear ? setConfirming(true) : onClear())}
+                onClick={onClear}
                 disabled={disabled}
                 className="text-neutral-500 hover:text-neutral-900"
               >
@@ -152,23 +152,10 @@ export function SourceCodePicker({
           </span>
         )}
       </div>
-      {confirmClear && (
-        <ConfirmDialog
-          open={confirming}
-          title={confirmClear.title}
-          description={confirmClear.description}
-          confirm="Remove"
-          cancel="Cancel"
-          onConfirm={() => {
-            setConfirming(false)
-            onClear()
-          }}
-          onCancel={() => setConfirming(false)}
-        />
-      )}
       {!locked && (
         <div className="relative max-w-md">
           <input
+            ref={inputRef}
             type="text"
             role="combobox"
             aria-label={label}

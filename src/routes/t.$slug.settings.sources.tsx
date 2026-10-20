@@ -216,9 +216,9 @@ function hiddenUnder({
   details: number
   versions: number
 }): string {
-  if (details + versions === 0)
+  if (versions === 0)
     return 'Nothing under it is in the source code picker now.'
-  return `This hides its ${plural(details, 'detail')} and ${plural(versions, 'version')} from the source code picker.`
+  return `This hides its ${plural(versions, 'version')}, in ${plural(details, 'detail')}, from the source code picker.`
 }
 
 function PartRow({
@@ -240,7 +240,10 @@ function PartRow({
   const [editing, setEditing] = useState(false)
   const [adding, setAdding] = useState(false)
   const [confirming, setConfirming] = useState(false)
-  const [confirmingArchive, setConfirmingArchive] = useState(false)
+  // The counter the archive confirm opened on; null while it is closed.
+  // Confirming archives against it, so an archive or reactivate made
+  // meanwhile refuses as stale rather than being flipped back.
+  const [archiving, setArchiving] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const child = childNoun(part.level)
@@ -255,16 +258,16 @@ function PartRow({
     return () => markOpen(part._id, false)
   }, [isOpen, part._id, markOpen])
 
-  async function toggleArchive() {
-    setConfirmingArchive(false)
+  async function setActive(isActive: boolean, expected: number) {
+    setArchiving(null)
     setError(null)
     setBusy(true)
     try {
       await save({
         tenantId: tenant._id,
         id: part._id,
-        expected: part.saveVersion,
-        ...payload(fieldsOf(part), !part.isActive),
+        expected,
+        ...payload(fieldsOf(part), isActive),
       })
     } catch (err) {
       setError(failureMessage(err, 'row'))
@@ -343,8 +346,8 @@ function PartRow({
               // picker, so it asks first; the rest are one click.
               onClick={() =>
                 part.level === 'category' && part.isActive
-                  ? setConfirmingArchive(true)
-                  : void toggleArchive()
+                  ? setArchiving(part.saveVersion)
+                  : void setActive(!part.isActive, part.saveVersion)
               }
               className="text-xs text-neutral-600 underline"
             >
@@ -414,13 +417,13 @@ function PartRow({
       />
       {part.level === 'category' && (
         <ConfirmDialog
-          open={confirmingArchive}
+          open={archiving !== null}
           title={`Archive ${part.code}?`}
           description={`${hiddenUnder(hides)} You can reactivate it later.`}
           confirm="Archive"
           cancel="Keep it"
-          onConfirm={() => void toggleArchive()}
-          onCancel={() => setConfirmingArchive(false)}
+          onConfirm={() => void setActive(false, archiving ?? part.saveVersion)}
+          onCancel={() => setArchiving(null)}
         />
       )}
     </li>

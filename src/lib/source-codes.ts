@@ -58,24 +58,26 @@ export function deleteCount(
 }
 
 /**
- * The details and versions under `id` that archiving it would hide: those
- * shown now (`visible`), so ones already hidden by an archive don't count.
+ * What archiving `id` takes out of the picker, which lists versions: the
+ * versions under it shown now (`visible`; ones already hidden by an
+ * archive don't count), and how many details they sit in.
  */
 export function archiveHides(
   parts: ReadonlyArray<Pick<Part, '_id' | 'parentId' | 'level' | 'visible'>>,
   id: Part['_id'],
 ): { details: number; versions: number } {
   const under = new Set<string>([id])
-  const hides = { details: 0, versions: 0 }
+  const details = new Set<string>()
+  let versions = 0
   // Tree order lists every child after its parent, as in deleteCount.
   for (const p of parts) {
     if (!p.parentId || !under.has(p.parentId)) continue
     under.add(p._id)
-    if (!p.visible) continue
-    if (p.level === 'detail') hides.details++
-    else if (p.level === 'version') hides.versions++
+    if (p.level !== 'version' || !p.visible) continue
+    versions++
+    details.add(p.parentId)
   }
-  return hides
+  return { details: details.size, versions }
 }
 
 /** The editable fields as the form holds them: blank, never absent. */

@@ -276,6 +276,9 @@ test.describe('source codes', { annotation: SOURCES_ROUTE }, () => {
 
   test('archiving a category asks first, counting what it hides', async ({
     page,
+    browser,
+    baseURL,
+    session,
     users,
   }) => {
     await page.goto(sourcesPath(users.a.slug))
@@ -295,7 +298,7 @@ test.describe('source codes', { annotation: SOURCES_ROUTE }, () => {
     const dialog = page.getByRole('alertdialog')
     await archive().click()
     await expect(dialog).toContainText(`Archive ${category}?`)
-    await expect(dialog).toContainText('1 detail and 1 version')
+    await expect(dialog).toContainText('its 1 version, in 1 detail,')
     await dialog.getByRole('button', { name: 'Keep it' }).click()
     await expect(dialog).toHaveCount(0)
     await expect(row(page, `${category}-One-001`)).toBeVisible()
@@ -305,14 +308,41 @@ test.describe('source codes', { annotation: SOURCES_ROUTE }, () => {
     await expect(row(page, category)).toHaveCount(0)
     await expect(row(page, `${category}-One-001`)).toHaveCount(0)
 
-    // Reactivating is one click; then tidy it away (never used).
+    // Reactivating is one click.
     await page.getByLabel(/^Show archived/).check()
+    const badge = row(page, category).getByText('archived', { exact: true })
     await row(page, category)
       .getByRole('button', { name: 'reactivate' })
       .click()
-    await expect(
-      row(page, category).getByText('archived', { exact: true }),
-    ).toHaveCount(0)
+    await expect(badge).toHaveCount(0)
+
+    // Archived in another tab while this tab's confirm is open: Archive
+    // here goes against the counter it opened on, so it refuses as stale
+    // rather than flipping the category back to active.
+    await archive().click()
+    await expect(dialog).toBeVisible()
+    const other = await secondTab(browser, baseURL!, await session(users.a))
+    try {
+      await other.goto(sourcesPath(users.a.slug))
+      await row(other, category)
+        .getByRole('button', { name: 'archive', exact: true })
+        .click()
+      await other
+        .getByRole('alertdialog')
+        .getByRole('button', { name: 'Archive' })
+        .click()
+      await expect(row(other, category)).toHaveCount(0)
+    } finally {
+      await other.context().close()
+    }
+    await expect(badge).toBeVisible()
+    await dialog.getByRole('button', { name: 'Archive' }).click()
+    await expect(row(page, category).getByRole('alert')).toContainText(
+      'Someone else changed this code just now',
+    )
+    await expect(badge).toBeVisible()
+
+    // Tidy it away (never used).
     await row(page, category).getByRole('button', { name: 'delete' }).click()
     await dialog.getByRole('button', { name: 'Delete' }).click()
     await expect(row(page, category)).toHaveCount(0)

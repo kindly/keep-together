@@ -1,10 +1,11 @@
 import { useConvex, useMutation } from 'convex/react'
 import { ConvexError } from 'convex/values'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import type { SourceCodeDescription } from '../../convex/sources/code'
 import { useTenant } from '../lib/tenant'
+import { ConfirmDialog } from './confirm-dialog'
 import { useHistoryHold } from './contact-history'
 import { SourceCodePicker } from './source-code-picker'
 import type { ShownCode } from './source-code-picker'
@@ -18,7 +19,7 @@ function failure(err: unknown): string {
     problems?: Array<{ message: string }>
   }
   if (d.kind === 'stale')
-    return 'Someone else changed the source code just now: check it and pick again'
+    return 'Someone else changed the source code just now: check it, then try again'
   if (d.kind === 'invalid' && d.problems?.length)
     return d.problems.map((p) => p.message).join('; ')
   return d.message ?? d.kind ?? 'Could not save the source code'
@@ -30,6 +31,8 @@ function failure(err: unknown): string {
  * the form's autosave: it is one choice, never typed into, and its own
  * named action in history. A code archived since still shows, marked.
  * A set code is changed by removing it (after a confirm), then picking.
+ * The remove goes against the counter the confirm opened on, so a code
+ * changed meanwhile, which the user hasn't seen, refuses as stale.
  */
 export function ContactAcquisition({
   id,
@@ -60,6 +63,12 @@ export function ContactAcquisition({
     savedAt: number | null
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The counter the remove confirm opened on; null while it is closed.
+  const [removing, setRemoving] = useState<number | null>(null)
+  // After a remove, the search box takes focus once it can: the clear
+  // button the confirm would return focus to is gone.
+  const input = useRef<HTMLInputElement>(null)
+  const [focusSearch, setFocusSearch] = useState(false)
   const caughtUp = (acquisition?.versionId ?? null) === (carried ?? null)
   const settled =
     pending?.savedAt != null && counter >= pending.savedAt && caughtUp
@@ -70,6 +79,7 @@ export function ContactAcquisition({
   async function save(
     codeId: Id<'sourceCodes'> | null,
     shown: ShownCode | null,
+    expected = counter,
   ) {
     setError(null)
     setPending({ shown, savedAt: null })
@@ -88,7 +98,7 @@ export function ContactAcquisition({
       const result = await setAcquisition({
         tenantId: tenant._id,
         id,
-        expected: counter,
+        expected,
         codeId,
       })
       // An unchanged code bumps nothing: there is nothing to wait for.
@@ -98,6 +108,7 @@ export function ContactAcquisition({
     } catch (err) {
       setError(failure(err))
       setPending(null)
+      setFocusSearch(false)
     } finally {
       history.release()
     }
@@ -105,6 +116,11 @@ export function ContactAcquisition({
 
   const showPending = pending !== null && !settled
   const shown = showPending ? pending.shown : acquisition
+  useEffect(() => {
+    if (!focusSearch || !input.current || input.current.disabled) return
+    input.current.focus()
+    setFocusSearch(false)
+  })
   return (
     <section>
       <h2 className="mb-3 text-lg font-medium">Source code</h2>
@@ -121,12 +137,23 @@ export function ContactAcquisition({
             endDate: entry.endDate,
           })
         }
-        onClear={() => void save(null, null)}
-        confirmClear={{
-          title: "Remove this contact's source code?",
-          description:
-            'It records how they were recruited and is used in reports.',
+        onClear={() => setRemoving(counter)}
+        lockWhenSet
+        inputRef={input}
+      />
+      <ConfirmDialog
+        open={removing !== null}
+        title="Remove this contact's source code?"
+        description="It records how they were recruited and is used in reports."
+        confirm="Remove"
+        cancel="Cancel"
+        onConfirm={() => {
+          const expected = removing ?? counter
+          setRemoving(null)
+          setFocusSearch(true)
+          void save(null, null, expected)
         }}
+        onCancel={() => setRemoving(null)}
       />
       {error && (
         <p role="alert" className="mt-2 text-xs text-red-700">

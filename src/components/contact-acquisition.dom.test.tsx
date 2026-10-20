@@ -116,6 +116,41 @@ test('a set code shows no search box; it is replaced by removing, then picking',
   expect(el.querySelector('input')).toBeNull()
 })
 
+test('after a remove, the search box takes focus once it is enabled', async () => {
+  render('old', described('old', 'Street-Alpha-001'))
+  setAcquisition.mockResolvedValue({ id: 'c1', counter: 2 })
+  await remove()
+  render(undefined, null, 2)
+  expect(document.activeElement).toBe(el.querySelector('input'))
+})
+
+test('a code changed under the open confirm: Remove is stale, the new code stays', async () => {
+  const { ConvexError } = await import('convex/values')
+  render('old', described('old', 'Street-Alpha-001'))
+  await act(async () =>
+    el
+      .querySelector<HTMLButtonElement>(
+        'button[aria-label="clear source code"]',
+      )!
+      .click(),
+  )
+  // Someone else sets another code while the confirm is open.
+  render('other', described('other', 'Event-Gala-002'), 2)
+  setAcquisition.mockRejectedValue(
+    new ConvexError({ kind: 'stale', current: 2 }),
+  )
+  await act(async () => button('Remove').click())
+  // Sent against the counter the confirm opened on, so the server refuses.
+  expect(setAcquisition).toHaveBeenLastCalledWith(
+    expect.objectContaining({ expected: 1, codeId: null }),
+  )
+  expect(shown()).toContain('Event-Gala-002')
+  expect(el.querySelector('[role="alert"]')?.textContent).toContain(
+    'Someone else changed the source code',
+  )
+  expect(document.activeElement).not.toBe(el.querySelector('input'))
+})
+
 test('a refused save keeps the code and says why', async () => {
   const { ConvexError } = await import('convex/values')
   render('old', described('old', 'Street-Alpha-001'))

@@ -124,40 +124,25 @@ test('a click on an option picks it', async () => {
   expect(onPick).toHaveBeenCalledWith(CODES[2])
 })
 
-test('with confirmClear, a set code has no search box and clears only once confirmed', async () => {
-  const button = (name: string) =>
-    [...document.querySelectorAll('button')].find((b) => b.textContent === name)
-  const dialog = () => document.querySelector('[role="alertdialog"]')
-  const guarded = (value: ShownCode | null) =>
+test('with lockWhenSet, a set code has no search box until cleared', async () => {
+  const locked = (value: ShownCode | null) =>
     act(() =>
       root.render(
         <SourceCodePicker
           value={value}
           onPick={onPick}
           onClear={onClear}
-          confirmClear={{ title: 'Remove it?', description: 'Really.' }}
+          lockWhenSet
         />,
       ),
     )
-  guarded({ code: 'Street-Wesser-001', isActive: true })
+  locked({ code: 'Street-Wesser-001', isActive: true })
   expect(el.querySelector('input')).toBeNull()
-
-  const clear = () =>
-    act(async () =>
-      el.querySelector<HTMLButtonElement>('button[aria-label]')!.click(),
-    )
-  await clear()
-  expect(dialog()?.textContent).toContain('Remove it?')
-  await act(async () => button('Cancel')!.click())
-  expect(dialog()).toBeNull()
-  expect(onClear).not.toHaveBeenCalled()
-
-  await clear()
-  await act(async () => button('Remove')!.click())
+  await act(async () =>
+    el.querySelector<HTMLButtonElement>('button[aria-label]')!.click(),
+  )
   expect(onClear).toHaveBeenCalledOnce()
-  expect(dialog()).toBeNull()
 
-  // Gone: the search box is back, to pick a new one.
-  guarded(null)
+  locked(null)
   expect(input()).not.toBeNull()
 })
