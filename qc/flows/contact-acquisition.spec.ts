@@ -23,6 +23,20 @@ const picker = (page: Page) =>
   page.getByRole('combobox', { name: 'Source code' })
 const shownCode = (page: Page) => page.getByTestId('source-code')
 
+const clear = (page: Page) =>
+  page.getByRole('button', { name: 'clear source code' })
+
+/** Clear the contact's code, through the confirm, until the box is back. */
+async function remove(page: Page) {
+  await clear(page).click()
+  await page
+    .getByRole('alertdialog')
+    .getByRole('button', { name: 'Remove' })
+    .click()
+  await expect(shownCode(page)).toHaveText('No source code.')
+  await expect(picker(page)).toBeEnabled()
+}
+
 /** Type into the picker and wait for `code` among the matches. */
 async function search(page: Page, term: string, code: string) {
   await picker(page).fill(term)
@@ -58,13 +72,11 @@ test.describe('acquisition code', () => {
       ).toBeVisible()
       await expect(shownCode(page)).toHaveText('No source code.')
 
+      // A set code is replaced by removing it, through a confirm, then
+      // picking: the confirm is untimed, in `before`; the pick is timed.
       await flow(page, 'contact.acquisition.set', {
         before: async () => {
-          const clear = page.getByRole('button', { name: 'clear source code' })
-          if (await clear.isVisible()) {
-            await clear.click()
-            await expect(shownCode(page)).toHaveText('No source code.')
-          }
+          if (await clear(page).isVisible()) await remove(page)
           await search(page, 'gala-001', 'Event-Gala-001')
         },
         action: () =>
@@ -78,6 +90,16 @@ test.describe('acquisition code', () => {
           )
         },
       })
+      // Set, the code has no search box; Cancel on the confirm keeps it.
+      await expect(picker(page)).toHaveCount(0)
+      await clear(page).click()
+      await expect(page.getByRole('alertdialog')).toContainText(
+        'used in reports',
+      )
+      await page.getByRole('button', { name: 'Cancel' }).click()
+      await expect(page.getByRole('alertdialog')).toHaveCount(0)
+      await expect(shownCode(page)).toContainText('Event-Gala-001')
+      await expect(picker(page)).toHaveCount(0)
       // History names the action after the code.
       await expect(
         page.getByText('acquisition code Event-Gala-001').first(),
@@ -101,6 +123,8 @@ test.describe('acquisition code', () => {
           await search(page, 'GALA-002', 'Event-Gala-002')
           await page.getByRole('option', { name: 'Event-Gala-002' }).click()
           await expect(shownCode(page)).toContainText('Event-Gala-002')
+          // The new form keeps the plain picker: no confirm to change it.
+          await expect(picker(page)).toBeVisible()
           await page.evaluate((n) => {
             ;(window as unknown as { __qcName: string }).__qcName = n
           }, `Nia ${lastName}`)

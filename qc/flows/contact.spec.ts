@@ -54,6 +54,31 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     await expect(page.getByLabel('Known as')).toHaveValue(`save ${n}`)
   })
 
+  test('Deceased toggles from its box and text, not the empty cell', async ({
+    page,
+    users,
+  }) => {
+    await createContact(page, users.a.slug, uniqueName('dead'))
+    const box = page.getByRole('checkbox', { name: 'Deceased' })
+    await expect(box).not.toBeChecked()
+    // The empty space to the right of "Deceased", in its grid cell.
+    const label = page.locator('label').filter({ has: box })
+    const cell = label.locator('xpath=..')
+    const l = (await label.boundingBox())!
+    const c = (await cell.boundingBox())!
+    expect(c.x + c.width - (l.x + l.width)).toBeGreaterThan(40)
+    await page.mouse.click(l.x + l.width + 30, l.y + l.height / 2)
+    await expect(box).not.toBeChecked()
+    // Above it, where the cell lines up with the field labels beside it.
+    await page.mouse.click(l.x + 5, c.y + 2)
+    await expect(box).not.toBeChecked()
+    // The text is still its label.
+    await label.getByText('Deceased').click()
+    await expect(box).toBeChecked()
+    await box.click()
+    await expect(box).not.toBeChecked()
+  })
+
   test('emails: add, label, primary, remove', async ({ page, flow, users }) => {
     const last = uniqueName('emails')
     await createContact(page, users.a.slug, last)

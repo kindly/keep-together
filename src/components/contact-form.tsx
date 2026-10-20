@@ -476,11 +476,12 @@ export function DetailsFields({
           {text('nickname', 'Known as')}
           {date('birthDate', 'Date of birth')}
           <Field
+            as="div"
             label=""
             message={problemFor(problems, 'isDeceased')}
             conflict={conflicts.includes('isDeceased')}
           >
-            <label className="flex items-center gap-2 pt-6 text-sm">
+            <label className="mt-6 flex w-fit items-center gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={value.isDeceased}
@@ -1061,18 +1062,22 @@ function rowMessages(
 }
 
 function Field({
+  as: Wrapper = 'label',
   label,
   message,
   conflict,
   children,
 }: {
+  /** `div` when the control brings its own label, as a checkbox does: a
+      wrapping label would make the whole cell click it. */
+  as?: 'label' | 'div'
   label: string
   message?: string
   conflict: boolean
   children: React.ReactNode
 }) {
   return (
-    <label className="flex flex-col gap-1 text-sm">
+    <Wrapper className="flex flex-col gap-1 text-sm">
       <span className="text-neutral-600">
         {label}
         {conflict && (
@@ -1083,7 +1088,7 @@ function Field({
       </span>
       {children}
       <Message message={message} tone="error" />
-    </label>
+    </Wrapper>
   )
 }
 

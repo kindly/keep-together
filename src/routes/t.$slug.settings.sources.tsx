@@ -11,6 +11,7 @@ import {
 import { ConfirmDialog } from '../components/confirm-dialog'
 import { StaffListSwitch } from '../components/staff-list-switch'
 import {
+  archiveHides,
   childNoun,
   conflictsOf,
   dateRange,
@@ -205,6 +206,21 @@ function AddPart({
   )
 }
 
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
+
+/** What archiving a category takes out of the picker, as a sentence. */
+function hiddenUnder({
+  details,
+  versions,
+}: {
+  details: number
+  versions: number
+}): string {
+  if (details + versions === 0)
+    return 'Nothing under it is in the source code picker now.'
+  return `This hides its ${plural(details, 'detail')} and ${plural(versions, 'version')} from the source code picker.`
+}
+
 function PartRow({
   part,
   all,
@@ -224,6 +240,7 @@ function PartRow({
   const [editing, setEditing] = useState(false)
   const [adding, setAdding] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [confirmingArchive, setConfirmingArchive] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const child = childNoun(part.level)
@@ -239,6 +256,7 @@ function PartRow({
   }, [isOpen, part._id, markOpen])
 
   async function toggleArchive() {
+    setConfirmingArchive(false)
     setError(null)
     setBusy(true)
     try {
@@ -272,6 +290,7 @@ function PartRow({
   }
 
   const under = deleteCount(all, part._id) - 1
+  const hides = archiveHides(all, part._id)
 
   return (
     <li
@@ -320,7 +339,13 @@ function PartRow({
             <button
               type="button"
               disabled={busy}
-              onClick={() => void toggleArchive()}
+              // Archiving a category hides everything under it from the
+              // picker, so it asks first; the rest are one click.
+              onClick={() =>
+                part.level === 'category' && part.isActive
+                  ? setConfirmingArchive(true)
+                  : void toggleArchive()
+              }
               className="text-xs text-neutral-600 underline"
             >
               {part.isActive ? 'archive' : 'reactivate'}
@@ -387,6 +412,17 @@ function PartRow({
         onConfirm={() => void confirmDelete()}
         onCancel={() => setConfirming(false)}
       />
+      {part.level === 'category' && (
+        <ConfirmDialog
+          open={confirmingArchive}
+          title={`Archive ${part.code}?`}
+          description={`${hiddenUnder(hides)} You can reactivate it later.`}
+          confirm="Archive"
+          cancel="Keep it"
+          onConfirm={() => void toggleArchive()}
+          onCancel={() => setConfirmingArchive(false)}
+        />
+      )}
     </li>
   )
 }

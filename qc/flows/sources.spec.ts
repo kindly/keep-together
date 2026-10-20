@@ -274,6 +274,51 @@ test.describe('source codes', { annotation: SOURCES_ROUTE }, () => {
     await expect(row(page, `${code}-001`)).toBeVisible()
   })
 
+  test('archiving a category asks first, counting what it hides', async ({
+    page,
+    users,
+  }) => {
+    await page.goto(sourcesPath(users.a.slug))
+    // A category of its own: the starters are shared by the worker's tests.
+    const category = detailName('cat')
+    await page.getByLabel('New category', { exact: true }).fill(category)
+    await page.getByRole('button', { name: 'Add category' }).click()
+    await row(page, category)
+      .getByRole('button', { name: 'add detail', exact: true })
+      .click()
+    await page.getByLabel(`New detail under ${category}`).fill('One')
+    await page.getByRole('button', { name: 'Add detail', exact: true }).click()
+    await expect(row(page, `${category}-One-001`)).toBeVisible()
+
+    const archive = () =>
+      row(page, category).getByRole('button', { name: 'archive', exact: true })
+    const dialog = page.getByRole('alertdialog')
+    await archive().click()
+    await expect(dialog).toContainText(`Archive ${category}?`)
+    await expect(dialog).toContainText('1 detail and 1 version')
+    await dialog.getByRole('button', { name: 'Keep it' }).click()
+    await expect(dialog).toHaveCount(0)
+    await expect(row(page, `${category}-One-001`)).toBeVisible()
+
+    await archive().click()
+    await dialog.getByRole('button', { name: 'Archive' }).click()
+    await expect(row(page, category)).toHaveCount(0)
+    await expect(row(page, `${category}-One-001`)).toHaveCount(0)
+
+    // Reactivating is one click; then tidy it away (never used).
+    await page.getByLabel(/^Show archived/).check()
+    await row(page, category)
+      .getByRole('button', { name: 'reactivate' })
+      .click()
+    await expect(
+      row(page, category).getByText('archived', { exact: true }),
+    ).toHaveCount(0)
+    await row(page, category).getByRole('button', { name: 'delete' }).click()
+    await dialog.getByRole('button', { name: 'Delete' }).click()
+    await expect(row(page, category)).toHaveCount(0)
+    await page.getByLabel(/^Show archived/).uncheck()
+  })
+
   test('delete an unused detail, with its versions', async ({
     page,
     users,

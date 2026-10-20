@@ -57,6 +57,27 @@ export function deleteCount(
   return doomed.size
 }
 
+/**
+ * The details and versions under `id` that archiving it would hide: those
+ * shown now (`visible`), so ones already hidden by an archive don't count.
+ */
+export function archiveHides(
+  parts: ReadonlyArray<Pick<Part, '_id' | 'parentId' | 'level' | 'visible'>>,
+  id: Part['_id'],
+): { details: number; versions: number } {
+  const under = new Set<string>([id])
+  const hides = { details: 0, versions: 0 }
+  // Tree order lists every child after its parent, as in deleteCount.
+  for (const p of parts) {
+    if (!p.parentId || !under.has(p.parentId)) continue
+    under.add(p._id)
+    if (!p.visible) continue
+    if (p.level === 'detail') hides.details++
+    else if (p.level === 'version') hides.versions++
+  }
+  return hides
+}
+
 /** The editable fields as the form holds them: blank, never absent. */
 export type Fields = {
   name: string

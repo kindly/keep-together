@@ -60,43 +60,69 @@ const render = (
   )
 const shown = () => el.querySelector('[data-testid="source-code"]')!.textContent
 
-test('after a save, the old code never shows while the new one loads', async () => {
-  const old = described('old', 'Street-Alpha-001')
-  render('old', old)
-  expect(shown()).toContain('Street-Alpha-001')
-
-  setAcquisition.mockResolvedValue({ id: 'c1', counter: 2 })
+const button = (name: string) =>
+  [...document.querySelectorAll('button')].find((b) => b.textContent === name)!
+/** The clear button, then the confirm's Remove. */
+async function remove() {
+  await act(async () =>
+    el
+      .querySelector<HTMLButtonElement>(
+        'button[aria-label="clear source code"]',
+      )!
+      .click(),
+  )
+  await act(async () => button('Remove').click())
+}
+async function pickNew() {
   await act(async () => el.querySelector('input')!.focus())
   await act(async () =>
     el.querySelector<HTMLElement>('[role="option"]')!.click(),
   )
-  expect(setAcquisition).toHaveBeenCalledWith(
-    expect.objectContaining({ expected: 1, codeId: 'new' }),
+}
+
+test('a set code shows no search box; it is replaced by removing, then picking', async () => {
+  const old = described('old', 'Street-Alpha-001')
+  render('old', old)
+  expect(shown()).toContain('Street-Alpha-001')
+  expect(el.querySelector('input')).toBeNull()
+
+  setAcquisition.mockResolvedValue({ id: 'c1', counter: 2 })
+  await remove()
+  expect(setAcquisition).toHaveBeenLastCalledWith(
+    expect.objectContaining({ expected: 1, codeId: null }),
   )
-  // Saved: the root carries the new code, but the page still holds the
-  // old description. The pick stays on screen, still saving.
-  render('new', old, 2)
+  // Saved, but the page still holds the old description: still saving,
+  // and the old code never comes back meanwhile.
+  render(undefined, old, 2)
+  expect(shown()).not.toContain('Street-Alpha-001')
+  expect(shown()).toContain('saving…')
+  render(undefined, null, 2)
+  expect(shown()).toBe('No source code.')
+
+  setAcquisition.mockResolvedValue({ id: 'c1', counter: 3 })
+  await pickNew()
+  expect(setAcquisition).toHaveBeenLastCalledWith(
+    expect.objectContaining({ expected: 2, codeId: 'new' }),
+  )
+  // The root carries the new code before its description loads.
+  render('new', null, 3)
   expect(shown()).toContain('Event-Gala-001')
   expect(shown()).toContain('saving…')
-  // The description catches up: the saved code, with its clear button.
-  render('new', described('new', 'Event-Gala-001'), 2)
-  expect(shown()).toContain('Event-Gala-001')
+  render('new', described('new', 'Event-Gala-001'), 3)
   expect(shown()).not.toContain('saving…')
   expect(
     el.querySelector('button[aria-label="clear source code"]'),
   ).not.toBeNull()
+  expect(el.querySelector('input')).toBeNull()
 })
 
-test('a refused save drops the pick and says why', async () => {
+test('a refused save keeps the code and says why', async () => {
   const { ConvexError } = await import('convex/values')
   render('old', described('old', 'Street-Alpha-001'))
   setAcquisition.mockRejectedValue(
     new ConvexError({ kind: 'stale', current: 3 }),
   )
-  await act(async () => el.querySelector('input')!.focus())
-  await act(async () =>
-    el.querySelector<HTMLElement>('[role="option"]')!.click(),
-  )
+  await remove()
   expect(shown()).toContain('Street-Alpha-001')
   expect(shown()).not.toContain('saving…')
   expect(el.querySelector('[role="alert"]')?.textContent).toContain(

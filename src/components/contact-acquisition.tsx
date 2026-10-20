@@ -29,6 +29,7 @@ function failure(err: unknown): string {
  * were recruited. Saved on pick or clear through `setAcquisition`, outside
  * the form's autosave: it is one choice, never typed into, and its own
  * named action in history. A code archived since still shows, marked.
+ * A set code is changed by removing it (after a confirm), then picking.
  */
 export function ContactAcquisition({
   id,
@@ -121,6 +122,11 @@ export function ContactAcquisition({
           })
         }
         onClear={() => void save(null, null)}
+        confirmClear={{
+          title: "Remove this contact's source code?",
+          description:
+            'It records how they were recruited and is used in reports.',
+        }}
       />
       {error && (
         <p role="alert" className="mt-2 text-xs text-red-700">

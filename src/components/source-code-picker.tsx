@@ -6,6 +6,7 @@ import { api } from '../../convex/_generated/api'
 import { dateStatus } from '../../convex/sources/rules'
 import type { DateStatus } from '../../convex/sources/rules'
 import { useTenant } from '../lib/tenant'
+import { ConfirmDialog } from './confirm-dialog'
 
 export type PickerEntry = FunctionReturnType<
   typeof api.sources.queries.picker
@@ -50,6 +51,10 @@ function Hint({ children }: { children: React.ReactNode }) {
  *
  * It sits inside forms: Enter picks the highlighted code and never
  * submits. Options take the click without the input losing focus.
+ *
+ * With `confirmClear` a set code is hard to change by accident: it shows
+ * with no search box, and the clear button asks first. The search box
+ * comes back once the code is gone.
  */
 export function SourceCodePicker({
   value,
@@ -58,6 +63,7 @@ export function SourceCodePicker({
   pending,
   disabled,
   label = 'Source code',
+  confirmClear,
 }: {
   value: ShownCode | null
   onPick: (entry: PickerEntry) => void
@@ -66,12 +72,15 @@ export function SourceCodePicker({
   pending?: boolean
   disabled?: boolean
   label?: string
+  /** The question the clear button asks before clearing a set code. */
+  confirmClear?: { title: string; description: string }
 }) {
   const tenant = useTenant()
   const listId = useId()
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
+  const [confirming, setConfirming] = useState(false)
   const today = localToday()
   // Not cached (lib/query-cache): the args change with every keystroke.
   // Until the new answer comes, the last one stands.
@@ -109,6 +118,7 @@ export function SourceCodePicker({
   }
 
   const status = value ? dateStatus(value, today) : null
+  const locked = confirmClear !== undefined && value !== null
   return (
     <div className="flex flex-col gap-2 text-sm">
       <div
@@ -128,7 +138,7 @@ export function SourceCodePicker({
               <button
                 type="button"
                 aria-label={`clear ${label.toLowerCase()}`}
-                onClick={onClear}
+                onClick={() => (confirmClear ? setConfirming(true) : onClear())}
                 disabled={disabled}
                 className="text-neutral-500 hover:text-neutral-900"
               >
@@ -142,70 +152,86 @@ export function SourceCodePicker({
           </span>
         )}
       </div>
-      <div className="relative max-w-md">
-        <input
-          type="text"
-          role="combobox"
-          aria-label={label}
-          aria-expanded={open}
-          aria-controls={listId}
-          aria-autocomplete="list"
-          autoComplete="off"
-          value={search}
-          disabled={disabled}
-          placeholder={value ? 'Change code…' : 'Type to search codes'}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setActive(0)
-            setOpen(true)
+      {confirmClear && (
+        <ConfirmDialog
+          open={confirming}
+          title={confirmClear.title}
+          description={confirmClear.description}
+          confirm="Remove"
+          cancel="Cancel"
+          onConfirm={() => {
+            setConfirming(false)
+            onClear()
           }}
-          onFocus={() => setOpen(true)}
-          onBlur={() => setOpen(false)}
-          onKeyDown={onKeyDown}
-          className="w-full rounded border border-neutral-300 px-3 py-1.5"
+          onCancel={() => setConfirming(false)}
         />
-        {open && found && (
-          <ul
-            id={listId}
-            role="listbox"
-            aria-label={`${label} matches`}
-            className="absolute z-10 mt-1 max-h-72 w-full overflow-auto rounded border border-neutral-200 bg-white shadow"
-          >
-            {codes.length === 0 && (
-              <li className="px-3 py-2 text-neutral-500">No codes match.</li>
-            )}
-            {codes.map((entry, i) => (
-              <li
-                key={entry.versionId}
-                role="option"
-                aria-selected={i === active}
-                // Keep focus in the input, so the click lands as a pick.
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => pick(entry)}
-                onMouseEnter={() => setActive(i)}
-                className={`flex cursor-pointer flex-col px-3 py-1.5 ${i === active ? 'bg-neutral-100' : ''}`}
-              >
-                <span className="flex items-center gap-2">
-                  <span className="font-mono">{entry.code}</span>
-                  {STATUS_HINT[entry.status] && (
-                    <Hint>{STATUS_HINT[entry.status]}</Hint>
-                  )}
-                </span>
-                {entry.description && (
-                  <span className="truncate text-xs text-neutral-500">
-                    {entry.description}
+      )}
+      {!locked && (
+        <div className="relative max-w-md">
+          <input
+            type="text"
+            role="combobox"
+            aria-label={label}
+            aria-expanded={open}
+            aria-controls={listId}
+            aria-autocomplete="list"
+            autoComplete="off"
+            value={search}
+            disabled={disabled}
+            placeholder={value ? 'Change code…' : 'Type to search codes'}
+            onChange={(e) => {
+              setSearch(e.target.value)
+              setActive(0)
+              setOpen(true)
+            }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => setOpen(false)}
+            onKeyDown={onKeyDown}
+            className="w-full rounded border border-neutral-300 px-3 py-1.5"
+          />
+          {open && found && (
+            <ul
+              id={listId}
+              role="listbox"
+              aria-label={`${label} matches`}
+              className="absolute z-10 mt-1 max-h-72 w-full overflow-auto rounded border border-neutral-200 bg-white shadow"
+            >
+              {codes.length === 0 && (
+                <li className="px-3 py-2 text-neutral-500">No codes match.</li>
+              )}
+              {codes.map((entry, i) => (
+                <li
+                  key={entry.versionId}
+                  role="option"
+                  aria-selected={i === active}
+                  // Keep focus in the input, so the click lands as a pick.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pick(entry)}
+                  onMouseEnter={() => setActive(i)}
+                  className={`flex cursor-pointer flex-col px-3 py-1.5 ${i === active ? 'bg-neutral-100' : ''}`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="font-mono">{entry.code}</span>
+                    {STATUS_HINT[entry.status] && (
+                      <Hint>{STATUS_HINT[entry.status]}</Hint>
+                    )}
                   </span>
-                )}
-              </li>
-            ))}
-            {found.truncated && (
-              <li className="px-3 py-1.5 text-xs text-neutral-500">
-                More codes match: type more to narrow.
-              </li>
-            )}
-          </ul>
-        )}
-      </div>
+                  {entry.description && (
+                    <span className="truncate text-xs text-neutral-500">
+                      {entry.description}
+                    </span>
+                  )}
+                </li>
+              ))}
+              {found.truncated && (
+                <li className="px-3 py-1.5 text-xs text-neutral-500">
+                  More codes match: type more to narrow.
+                </li>
+              )}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   )
 }

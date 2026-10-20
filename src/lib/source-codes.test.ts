@@ -2,6 +2,7 @@ import { ConvexError } from 'convex/values'
 import { describe, expect, test } from 'vitest'
 import type { Id } from '../../convex/_generated/dataModel'
 import {
+  archiveHides,
   childNoun,
   conflictsOf,
   dateRange,
@@ -75,6 +76,32 @@ test('a used part can only be archived; an unused one deletes with its subtree',
   expect(deleteCount(TREE, id('street'))).toBe(3)
   expect(deleteCount(TREE, id('wesser'))).toBe(2)
   expect(deleteCount(TREE, id('w1'))).toBe(1)
+})
+
+test('archiving counts the details and versions it newly hides', () => {
+  const tree = [
+    ...TREE,
+    part({ _id: id('app'), level: 'detail', parentId: id('online') }),
+    part({ _id: id('a1'), level: 'version', parentId: id('app') }),
+    part({ _id: id('a2'), level: 'version', parentId: id('app') }),
+    // Already hidden by its own archive, and its version with it.
+    part({
+      _id: id('old'),
+      level: 'detail',
+      parentId: id('online'),
+      isActive: false,
+      visible: false,
+    }),
+    part({
+      _id: id('x1'),
+      level: 'version',
+      parentId: id('old'),
+      visible: false,
+    }),
+  ]
+  expect(archiveHides(tree, id('online'))).toEqual({ details: 2, versions: 3 })
+  expect(archiveHides(tree, id('app'))).toEqual({ details: 0, versions: 2 })
+  expect(archiveHides(tree, id('street'))).toEqual({ details: 0, versions: 0 })
 })
 
 test('blank form fields become absent in the payload', () => {
