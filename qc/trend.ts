@@ -5,12 +5,14 @@ import type { HistoryLine } from './reporter'
 const KIND_TEXT: Record<FlowKind, string> = {
   repeatable: 'repeatable',
   infrequent: 'infrequent',
+  rare: 'rare',
   oncePerSession: 'once per session',
   bulk: 'bulk',
 }
 const KIND_SHORT: Record<FlowKind, string> = {
   repeatable: 'repeat',
   infrequent: 'infreq',
+  rare: 'rare',
   oncePerSession: 'once',
   bulk: 'bulk',
 }

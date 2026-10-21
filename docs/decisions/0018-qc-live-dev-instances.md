@@ -11,7 +11,9 @@ only if over twice; both sets are recorded. Bulk actions and
 once-per-session flows have their own recorded budgets.
 **Amended 2026-10-19 (human):** creating a record (a new contact, with or
 without a source code) is *infrequent*: every sample under 150 ms. Every
-edit after it stays repeatable, under 100 ms. Approved
+edit after it stays repeatable, under 100 ms.
+**Amended 2026-10-21 (human):** restoring a contact from its history is
+*rare*: every sample under 200 ms. Approved
 exceptions are marked `knownOver` with a reason and date. Raising a
 budget or adding an exception needs the human's OK. Details:
 `factory/plans/qc-suite.sv`, `qc/README.md`.

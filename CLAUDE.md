@@ -44,11 +44,11 @@ on where the SPA is served from. No SSR, no Node server of our own.
 
 | Path | Owns |
 |---|---|
-| `convex/schema.ts` | every table; all domain tables have `tenantId` and tenantId-first indexes |
+| `convex/lib/appSchema.ts` | every app table; all domain tables have `tenantId` and tenantId-first indexes. `convex/schema.ts` composes it with Convex Auth's `authTables` |
 | `convex/lib/tenancy.ts` | `tenantQuery` / `tenantMutation` / `tenantAction` (+ `internal*`) — the only way to declare domain functions. Handlers get a **scoped db**: inserts stamped, every `withIndex` range starts *after* `tenantId`, no unindexed `query()` |
 | `convex/lib/contracts.ts` | `executeContract`: counter check, pure apply, revision append |
 | `convex/platform/` | control plane: tenants, memberships, settings, routing, billing. **Only place raw `query`/`mutation`/`action` may be imported** |
-| `convex/{contacts,giving,giftaid,consent,comms}/` | domain modules (boundaries in docs/architecture.md) |
+| `convex/{contacts,giving,giftaid,consent,comms,sources}/` | domain modules (boundaries in docs/architecture.md) |
 | `convex/auth.ts`, `auth.config.ts`, `http.ts` | Convex Auth + HTTP routes (webhooks register here) |
 | `src/routes/` | file-based routes; `src/components/ui/` is shadcn (generated, edit freely) |
 | `src/lib/` | Convex client + auth provider, tenant resolution from hostname |
@@ -75,7 +75,8 @@ deployment). Run `pnpm convex` and `pnpm dev` side by side.
   root's contract payload and **carry ids** (ADR 0014): reconciled by id,
   identity fields (email address, phone number) immutable per id — change
   = remove + add; addresses fully editable in place. Handlers preserve
-  system-owned child fields (e.g. email `onHold`) across every reconcile.
+  system-owned fields no payload carries (e.g. a source code's `used`)
+  across every save, reconcile and restore.
 - **Derived projections** (`contactSearch`) are the one exception to
   "writes go through contracts": rebuilt from the root's current state by
   the contract's `project` hook inside the same transaction, never

@@ -11,6 +11,8 @@
 // - infrequent: creating a record (a new contact). Done less often than the
 //   edits that follow it, so 150 ms; every later edit of that record is
 //   repeatable, 100 ms (human, 2026-10-19).
+// - rare: done seldom enough that 200 ms is fine (restoring a contact from
+//   its history) (human, 2026-10-21).
 // - bulk: an action over many records at once (tagging up to 100 contacts).
 //   Exempt from 100 ms, with a progress state in the UI; its own budget
 //   is recorded like oncePerSession's (human, 2026-10-17).
@@ -30,7 +32,7 @@
 // run lists every knownOver flow in a banner, timed or not, so it can't be
 // forgotten. Remove the mark with the fix.
 
-export type FlowKind = 'repeatable' | 'infrequent' | 'oncePerSession' | 'bulk'
+export type FlowKind = 'repeatable' | 'infrequent' | 'rare' | 'oncePerSession' | 'bulk'
 
 export interface Budget {
   kind: FlowKind
@@ -46,6 +48,7 @@ export interface Budget {
 
 const repeatable = { kind: 'repeatable', maxMs: 100 } as const
 const infrequent = { kind: 'infrequent', maxMs: 150 } as const
+const rare = { kind: 'rare', maxMs: 200 } as const
 
 export const budgets = {
   // Step 9b, recorded 2026-10-18 in runs tn357fbu, tn35ew84, tn35t6tx
@@ -76,7 +79,7 @@ export const budgets = {
   // (perf-storage step 2). Expected well under, at about one frame.
   'contact.revisit': repeatable,
   'contact.archive': repeatable,
-  'contact.restore': repeatable,
+  'contact.restore': rare,
   'contact.note.add': repeatable,
   'contact.note.save': repeatable,
   'contact.note.pin': repeatable,

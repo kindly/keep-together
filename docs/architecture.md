@@ -66,7 +66,7 @@ modules), one tenant inside, registered with the shared platform.
 
 | Path | What lives there |
 |---|---|
-| `convex/schema.ts` | all tables; `tenants`, `memberships`, `tenantSettings`, `revisions`, domain tables |
+| `convex/lib/appSchema.ts` | all app tables; `tenants`, `memberships`, `tenantSettings`, `revisions`, domain tables (`convex/schema.ts` adds Convex Auth's `authTables`) |
 | `convex/lib/tenancy.ts` | `tenantQuery`/`tenantMutation`/`tenantAction` + internal variants; membership check; tenant-wrapped `db` |
 | `convex/lib/contracts.ts` | `executeContract`, counter/`expected` handling, revision append, restore + upcaster chain |
 | `convex/platform/` | the only module allowed to import raw `query`/`mutation`/`action`: tenant lifecycle, memberships, routing HTTP action, billing rollups |

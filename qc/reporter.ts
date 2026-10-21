@@ -249,6 +249,7 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
     {
       repeatable: 'repeat',
       infrequent: 'infreq',
+      rare: 'rare',
       oncePerSession: 'once',
       bulk: 'bulk',
     }[l.kind],
