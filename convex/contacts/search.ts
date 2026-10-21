@@ -58,8 +58,24 @@ export type SearchChildren = {
 }
 
 /**
+ * The joined forms of a name, so it is found however its punctuation and
+ * spaces are typed: each word with its inner punctuation dropped
+ * ("Smith-Jones" → "smithjones", "O’Brien" → "obrien") and the whole
+ * field run together ("de la Cruz" → "delacruz"). Forms under two
+ * characters are dropped; `searchText` de-duplicates the rest.
+ */
+function joinedForms(name: string): Array<string> {
+  const forms = fold(name)
+    .split(/\s+/)
+    .map((word) => tokens(word).join(''))
+  forms.push(tokens(name).join(''))
+  return forms.filter((form) => form.length >= 2)
+}
+
+/**
  * Everything a contact is found by, as de-duplicated folded words:
- * names (given, family, nickname, organisation, sort name), each email
+ * names (given, family, nickname, organisation, sort name) plus the
+ * joined forms of all but the sort name, each email
  * whole and split at `@` and `.`, each phone as digits and its last
  * PHONE_TAIL digits, each postcode compact and spaced, address line 1 and
  * town, identifier values, tag names. Not notes, not relationships.
@@ -75,6 +91,14 @@ export function searchText(
     contact.name,
     contact.sortName,
   ]
+  for (const name of [
+    contact.firstName,
+    contact.lastName,
+    contact.nickname,
+    contact.name,
+  ]) {
+    parts.push(...joinedForms(name))
+  }
   for (const email of children.emails) {
     const whole = email.trim()
     parts.push(whole, whole.replace(/[@.]/g, ' '))

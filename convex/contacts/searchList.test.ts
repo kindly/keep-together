@@ -160,6 +160,26 @@ describe('what one search box finds', () => {
     expect(await ids('zoe london')).toEqual([])
   })
 
+  test('a hyphenated, apostrophe or multi-word name however it is typed; own tenant only', async () => {
+    const sj = await contact(f.a, { first: 'Ann', last: 'Smith-Jones' })
+    const ob = await contact(f.a, { first: 'Liam', last: 'O’Brien' })
+    const dc = await contact(f.a, { first: 'Rosa', last: 'de la Cruz' })
+    await contact(f.a, { first: 'Ann', last: 'Smith' })
+    await contact(f.b, { first: 'Ann', last: 'Smith-Jones' })
+    await contact(f.b, { first: 'Liam', last: "O'Brien" })
+    for (const typed of ['smith-jones', 'smithjones', 'smithj', 'ann smithjones']) {
+      expect(await ids(typed), typed).toEqual([sj])
+    }
+    for (const typed of ["o'brien", 'o’brien', 'obrien', 'liam obri']) {
+      expect(await ids(typed), typed).toEqual([ob])
+    }
+    for (const typed of ['delacruz', 'de la cruz', 'rosa dela']) {
+      expect(await ids(typed), typed).toEqual([dc])
+    }
+    expect((await ids('smithjones', {}, f.b)).length).toBe(1)
+    expect(await ids('smithjones', {}, f.b)).not.toContain(sj)
+  })
+
   test('a tag name', async () => {
     const id = await contact(f.a, { last: 'Achebe' })
     const tags = await f.a.as.query(api.contacts.queries.tags, {

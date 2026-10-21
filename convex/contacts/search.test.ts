@@ -68,7 +68,47 @@ describe('searchText', () => {
       'bank',
       'food',
       'riverside',
+      'riversidefoodbank',
     ])
+  })
+
+  test('names also joined: hyphens, apostrophes, multi-word family names', () => {
+    const named = (lastName: string, firstName = 'Ann') =>
+      words(
+        searchText(
+          { ...person, firstName, lastName, nickname: '', sortName: '' },
+          none,
+        ),
+      )
+    expect(named('Smith-Jones')).toEqual(
+      expect.arrayContaining(['smith-jones', 'smithjones']),
+    )
+    expect(named("O'Brien")).toEqual(expect.arrayContaining(['obrien']))
+    expect(named('O’Brien')).toEqual(expect.arrayContaining(['obrien']))
+    expect(named('de la Cruz')).toEqual(
+      expect.arrayContaining(['de', 'la', 'cruz', 'delacruz']),
+    )
+    expect(named('van der Berg')).toEqual(
+      expect.arrayContaining(['vanderberg']),
+    )
+    expect(named("Mary-Jane O'Neil-Ward", '')).toEqual(
+      expect.arrayContaining(['maryjane', 'oneilward', 'maryjaneoneilward']),
+    )
+  })
+
+  test('a joined form that is short or already a word adds nothing', () => {
+    expect(
+      words(searchText({ ...person, nickname: "J'" }, none)).sort(),
+    ).toEqual(['j\'', 'ndiaye', 'zoe'].sort())
+    const text = searchText(
+      { ...person, lastName: 'Smith-Jones', nickname: 'smithjones' },
+      none,
+    )
+    expect(words(text)).toEqual([...new Set(words(text))])
+  })
+
+  test('the sort name is not joined', () => {
+    expect(words(searchText(person, none))).not.toContain('ndiayezoe')
   })
 
   test('emails whole and split at @ and .', () => {
@@ -198,5 +238,21 @@ describe('matchesAll', () => {
     expect(matchesAll(text, ['zoe', 'n', 'example'])).toBe(true)
     expect(matchesAll(text, ['gl5', '1ab'])).toBe(true)
     expect(matchesAll(text, [])).toBe(false)
+  })
+
+  test('a joined name matches however it is typed', () => {
+    const t = (lastName: string) =>
+      searchText({ ...person, lastName, sortName: '' }, none)
+    const q = (typed: string) => parseSearch(typed).terms
+    for (const typed of ['smith-jones', 'smith jones', 'smithjones', 'smithj']) {
+      expect(matchesAll(t('Smith-Jones'), q(typed)), typed).toBe(true)
+    }
+    for (const typed of ["o'brien", 'o’brien', 'obrien', 'o brien', 'obr']) {
+      expect(matchesAll(t('O’Brien'), q(typed)), typed).toBe(true)
+    }
+    for (const typed of ['de la cruz', 'delacruz', 'zoe delac']) {
+      expect(matchesAll(t('de la Cruz'), q(typed)), typed).toBe(true)
+    }
+    expect(matchesAll(t('Smith-Jones'), q('smithjonas'))).toBe(false)
   })
 })
