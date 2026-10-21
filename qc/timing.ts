@@ -47,6 +47,11 @@ export const REPEATS = Number(process.env.QC_REPEATS ?? 5)
 /** QC_MODE=record measures and writes history but never asserts. */
 export const RECORD = process.env.QC_MODE === 'record'
 /**
+ * QC_LEGS=0 leaves the WebSocket tap off: samples carry no legs. For an
+ * A/B of the tap's own cost on the same commit.
+ */
+export const LEGS = process.env.QC_LEGS !== '0'
+/**
  * Above this median RTT, raw timings measure the link, not the app: assert
  * runs skip the latency asserts, and every run flags the samples (the
  * banner, and `rttOver` in history) so step 9b can drop them.
@@ -194,6 +199,11 @@ export function judge(samplesMs: Array<number>, budgetMs: number) {
   return { medianMs: median(samplesMs), maxMs, pass: maxMs < budgetMs }
 }
 
+// What the tap keeps while a sample runs: the time and the frame itself,
+// a reference to the string, nothing parsed. readLegs parses after t1.
+type RawEntry = [t: number, dir: 'out' | 'in', data: string]
+
+// A frame after parsing (in readLegs, outside the timed window).
 type WireEntry = [
   t: number,
   dir: 'out' | 'in' | 'open',
@@ -206,8 +216,9 @@ interface QcWindow {
   __qcListening?: boolean
   __qcArmed?: boolean
   __qcT0?: number
-  __qcWire?: Array<WireEntry>
+  __qcWire?: Array<RawEntry>
   __qcLong?: Array<[start: number, duration: number]>
+  __qcVis?: Array<number>
 }
 
 // Capture-phase listeners record the timestamp of each trusted input event
@@ -215,12 +226,15 @@ interface QcWindow {
 // Event.timeStamp shares performance.now()'s time base, so t0 is when the
 // browser saw the input, not when Playwright sent it.
 //
-// The first arm also taps the page's WebSockets through
+// With `legs`, the first arm also taps the page's WebSockets through
 // WebSocket.prototype.send, so a socket opened before the tap (the SPA's,
 // on page load) is caught by its first send after it; the server messages
-// before that belong to no sample. Messages are only sniffed for their
-// type, request id and timestamp; a Transition's body isn't parsed.
-function arm() {
+// before that belong to no sample. Inside the timed window the tap only
+// pushes [time, direction, string] (no parsing, no regex); an incoming
+// frame's time is its MessageEvent.timeStamp, set when the message was
+// dispatched, so the SPA's own handler, which runs first, isn't counted
+// in it. Each arm empties the buffer, so it holds one sample's frames.
+function arm(legs: boolean) {
   const w = window as unknown as QcWindow
   if (!w.__qcListening) {
     w.__qcListening = true
@@ -239,67 +253,43 @@ function arm() {
         { capture: true },
       )
     }
-    const wire: Array<WireEntry> = (w.__qcWire = [])
-    const longs: Array<[number, number]> = (w.__qcLong = [])
-    // Convex timestamps: u64 nanoseconds, little-endian, base64.
-    const tsMs = (b64: string | undefined) => {
-      if (!b64) return null
-      const b = atob(b64)
-      let n = 0n
-      for (let i = b.length - 1; i >= 0; i--)
-        n = (n << 8n) | BigInt(b.charCodeAt(i))
-      return Number(n / 1_000_000n)
-    }
-    const note = (e: WireEntry) => {
-      wire.push(e)
-      if (wire.length > 2_000) wire.splice(0, 1_000)
-    }
-    const tapped = new WeakSet<WebSocket>()
-    const send = WebSocket.prototype.send
-    WebSocket.prototype.send = function (data) {
-      const t = performance.now()
-      if (!tapped.has(this)) {
-        tapped.add(this)
-        this.addEventListener('message', (ev: MessageEvent) => {
-          const at = performance.now()
-          if (typeof ev.data !== 'string') return
-          const head = ev.data.slice(0, 600)
-          const type = /"type":"(\w+)"/.exec(head)?.[1] ?? '?'
-          let ts: number | null = null
-          let requestId: number | null = null
-          if (type === 'Transition') {
-            ts = tsMs(/"endVersion":\{[^}]*"ts":"([^"]+)"/.exec(head)?.[1])
-            if (ts === null) ts = tsMs(JSON.parse(ev.data).endVersion?.ts)
-          } else if (type === 'MutationResponse') {
-            const m = JSON.parse(ev.data)
-            requestId = m.requestId ?? null
-            ts = tsMs(m.ts)
-          } else if (type === 'ActionResponse') {
-            requestId = JSON.parse(ev.data).requestId ?? null
-          }
-          note([at, 'in', type, requestId, ts])
-        })
+    if (legs) {
+      w.__qcWire = []
+      const longs: Array<[number, number]> = (w.__qcLong = [])
+      const vis: Array<number> = (w.__qcVis = [])
+      document.addEventListener('visibilitychange', (e) =>
+        vis.push(e.timeStamp),
+      )
+      // Between flows nothing arms, so cap what an idle page collects.
+      const note = (e: RawEntry) => {
+        const wire = w.__qcWire!
+        wire.push(e)
+        if (wire.length > 500) wire.splice(0, 250)
       }
-      if (typeof data === 'string') {
-        const type = /"type":"(\w+)"/.exec(data.slice(0, 200))?.[1] ?? '?'
-        if (type === 'Connect') note([t, 'open', type, null, null])
-        const requestId =
-          type === 'Mutation' || type === 'Action'
-            ? (JSON.parse(data).requestId ?? null)
-            : null
-        note([t, 'out', type, requestId, null])
+      const tapped = new WeakSet<WebSocket>()
+      const send = WebSocket.prototype.send
+      WebSocket.prototype.send = function (data) {
+        if (!tapped.has(this)) {
+          tapped.add(this)
+          this.addEventListener('message', (ev: MessageEvent) => {
+            if (typeof ev.data === 'string') note([ev.timeStamp, 'in', ev.data])
+          })
+        }
+        if (typeof data === 'string') note([performance.now(), 'out', data])
+        return send.call(this, data)
       }
-      return send.call(this, data)
-    }
-    try {
-      new PerformanceObserver((list) => {
-        for (const e of list.getEntries()) longs.push([e.startTime, e.duration])
-        if (longs.length > 500) longs.splice(0, 250)
-      }).observe({ type: 'longtask', buffered: true })
-    } catch {
-      // No long-task timing in this browser: longTaskMs reads 0.
+      try {
+        new PerformanceObserver((list) => {
+          for (const e of list.getEntries())
+            longs.push([e.startTime, e.duration])
+          if (longs.length > 500) longs.splice(0, 250)
+        }).observe({ type: 'longtask', buffered: true })
+      } catch {
+        // No long-task timing in this browser: longTaskMs reads 0.
+      }
     }
   }
+  if (w.__qcWire) w.__qcWire.length = 0
   w.__qcT0 = undefined
   w.__qcArmed = true
 }
@@ -312,14 +302,55 @@ function readT0() {
 
 type Legs = Omit<SampleDetail, 'at' | 'endMs' | 'hostCpu' | 'load1'>
 
-// In the page: the legs of the sample [t0, t1], both performance.now().
-// `out` reads the input side (the page the action hit), `in` the side
-// whose screen is watched; for one page they're the same.
+// In the page, after the sample: parse the frames of [t0, t1] (both
+// performance.now()) and read its legs. `out` reads the input side (the
+// page the action hit), `in` the side whose screen is watched; for one
+// page they're the same. Null legs when the tap is off.
 function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
   const w = window as unknown as QcWindow
+  if (!w.__qcWire) return null
+  // Convex timestamps: u64 nanoseconds, little-endian, base64.
+  const tsMs = (b64: string | undefined) => {
+    if (!b64) return null
+    const b = atob(b64)
+    let n = 0n
+    for (let i = b.length - 1; i >= 0; i--)
+      n = (n << 8n) | BigInt(b.charCodeAt(i))
+    return Number(n / 1_000_000n)
+  }
+  const parse = ([t, d, data]: RawEntry): Array<WireEntry> => {
+    const type = /"type":"(\w+)"/.exec(data.slice(0, 200))?.[1] ?? '?'
+    if (d === 'out') {
+      const id =
+        type === 'Mutation' || type === 'Action'
+          ? ((JSON.parse(data) as { requestId?: number }).requestId ?? null)
+          : null
+      return type === 'Connect'
+        ? [
+            [t, 'open', type, null, null],
+            [t, 'out', type, null, null],
+          ]
+        : [[t, 'out', type, id, null]]
+    }
+    if (type === 'Transition') {
+      const head = /"endVersion":\{[^}]*"ts":"([^"]+)"/.exec(data.slice(0, 600))
+      const ts = head
+        ? tsMs(head[1])
+        : tsMs(
+            (JSON.parse(data) as { endVersion?: { ts?: string } }).endVersion
+              ?.ts,
+          )
+      return [[t, 'in', type, null, ts]]
+    }
+    if (type === 'MutationResponse' || type === 'ActionResponse') {
+      const m = JSON.parse(data) as { requestId?: number; ts?: string }
+      return [[t, 'in', type, m.requestId ?? null, tsMs(m.ts)]]
+    }
+    return [[t, 'in', type, null, null]]
+  }
   // A checkbox click's trusted `input` event fires inside the click, as the
   // mutation is sent: allow the send a millisecond before t0.
-  const wire = (w.__qcWire ?? []).filter(([t]) => t >= t0 - 1 && t <= t1)
+  const wire = w.__qcWire.filter(([t]) => t >= t0 - 1 && t <= t1).flatMap(parse)
   const rel = (t: number | null | undefined) =>
     t === null || t === undefined ? null : Math.round((t - t0) * 10) / 10
   const origin = performance.timeOrigin
@@ -360,7 +391,10 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
           0,
         ),
     )
-    legs.hidden = document.visibilityState !== 'visible'
+    // Hidden at any point in the sample: now, or a change during it.
+    legs.hidden =
+      document.visibilityState !== 'visible' ||
+      (w.__qcVis ?? []).some((t) => t >= t0 && t <= t1)
   }
   const ins = wire
     .filter(([, d]) => d === 'in')
@@ -401,8 +435,8 @@ async function measureOnce<TArg>(
   const start = step.start ?? 'input'
   const inputPage = step.inputPage ?? page
   // The tap goes on both pages, so their sockets are caught before t0.
-  await inputPage.evaluate(arm)
-  if (inputPage !== page) await page.evaluate(arm)
+  await inputPage.evaluate(arm, LEGS)
+  if (inputPage !== page) await page.evaluate(arm, LEGS)
   const cpu0 = cpuTicks()
   await step.action()
   // The predicate and the clock read happen in the same frame callback.
@@ -448,9 +482,9 @@ async function measureOnce<TArg>(
       ? await read(page, oOut, 'both').then((r) => [r, r])
       : [await read(inputPage, oIn, 'out'), await read(page, oOut, 'in')]
   const { commitAt, ...legs } = {
-    ...out.legs,
-    ...inn.legs,
-    commitAt: out.legs.commitAt,
+    ...out?.legs,
+    ...inn?.legs,
+    commitAt: out?.legs.commitAt,
   }
   return {
     ms,
@@ -461,7 +495,7 @@ async function measureOnce<TArg>(
       commitMs: legs.commitMs ?? null,
       responseMs: legs.responseMs ?? null,
       transitionMs: pickTransition(
-        inn.ins,
+        inn?.ins ?? [],
         legs.sendMs ?? null,
         commitAt ?? null,
       ),
@@ -580,10 +614,11 @@ export function assertFlow(record: FlowRecord) {
 }
 
 /**
- * Median WebSocket round trip to a deployment: subscribe to a signed-out
- * `platform/tenants:mine` over the Convex sync protocol (the same socket
- * path the SPA uses) and wait for the transition that answers it. Signed
- * out it returns [] from Convex's query cache, so the server adds ~0 ms
+ * Median WebSocket round trip to a deployment: subscribe to
+ * `platform/qcProbe:rtt` over the Convex sync protocol (the same socket
+ * path the SPA uses) and wait for the transition that answers it. It
+ * reads nothing, so Convex answers it from its query cache and the server
+ * adds ~0 ms; its own name keeps it out of the app's server-timing rows
  * (spike 07 f: the socket reads ~27 ms where an HTTP query reads ~45 ms,
  * so an HTTP probe would overstate it).
  *
@@ -635,12 +670,19 @@ export function startRttMonitor(
     while (!state.stopped) {
       const at = Date.now()
       const ms = await probe.roundTrip()
-      onSample(at, round1(ms), lagMs)
+      // Context only: a sample that can't be written is lost, not an error.
+      try {
+        onSample(at, round1(ms), lagMs)
+      } catch (err) {
+        console.warn(`qc: RTT monitor sample not written: ${String(err)}`)
+      }
       const t = performance.now()
       await new Promise((r) => setTimeout(r, everyMs))
       lagMs = round1(performance.now() - t - everyMs)
     }
-  })()
+  })().catch((err: unknown) => {
+    console.warn(`qc: RTT monitor stopped: ${String(err)}`)
+  })
   return async () => {
     state.stopped = true
     await probe.close()
@@ -657,7 +699,7 @@ function openProbe(url: string) {
     new Promise<number>((resolve) => {
       const t0 = performance.now()
       const sub = client.subscribe(
-        getFunctionName(api.platform.tenants.mine),
+        getFunctionName(api.platform.qcProbe.rtt),
         {},
       )
       pending = {

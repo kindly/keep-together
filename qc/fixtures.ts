@@ -152,8 +152,10 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 
   // Written to the run directory as rtt-<pid>.jsonl, next to the flow
   // records, so a stall can be set against the link at that moment.
+  // After rttMs (it depends on it), so its probes never overlap the
+  // worker's RTT measurement, which decides whether flows are judged.
   rttMonitor: [
-    async ({ instance }, use, workerInfo) => {
+    async ({ instance, rttMs: _ }, use, workerInfo) => {
       const dir = runDir()
       mkdirSync(dir, { recursive: true })
       const file = path.join(dir, `rtt-${process.pid}.jsonl`)

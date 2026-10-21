@@ -39,6 +39,7 @@ import type * as lib_tenancy from "../lib/tenancy.js";
 import type * as platform_devSeed from "../platform/devSeed.js";
 import type * as platform_migrations from "../platform/migrations.js";
 import type * as platform_preferences from "../platform/preferences.js";
+import type * as platform_qcProbe from "../platform/qcProbe.js";
 import type * as platform_qcSeed from "../platform/qcSeed.js";
 import type * as platform_tenants from "../platform/tenants.js";
 import type * as platform_testSeed from "../platform/testSeed.js";
@@ -89,6 +90,7 @@ declare const fullApi: ApiFromModules<{
   "platform/devSeed": typeof platform_devSeed;
   "platform/migrations": typeof platform_migrations;
   "platform/preferences": typeof platform_preferences;
+  "platform/qcProbe": typeof platform_qcProbe;
   "platform/qcSeed": typeof platform_qcSeed;
   "platform/tenants": typeof platform_tenants;
   "platform/testSeed": typeof platform_testSeed;

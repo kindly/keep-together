@@ -199,7 +199,9 @@ function summarise(
           worker: r.worker,
           instance: r.instance,
           ...x,
-          ...(link && { linkMs: linkDuring(link, x.at, x.at + x.endMs) }),
+          ...(link?.watched && {
+            linkMs: linkDuring(link, x.at, x.at + x.endMs),
+          }),
         }))
       const detail = rs.flatMap((r) => where(r, r.detail))
       const firstDetail = rs.flatMap((r) => where(r, r.firstDetail))
@@ -350,7 +352,12 @@ function linkBanner(
   selfTest: Set<FlowName>,
   link: LinkFile | null,
 ): Array<string> {
-  if (!link) return []
+  // No banner must never read as a clean link: say when it wasn't watched.
+  if (!link?.watched) {
+    return [
+      `link: first hop not watched (${link?.why ?? `no ${LINK_FILE}`}); the absence of a LINK banner says nothing about the network`,
+    ]
+  }
   const hits = lines
     .filter((l) => !selfTest.has(l.flow))
     .flatMap((l) =>
@@ -358,7 +365,7 @@ function linkBanner(
         .filter((d) => d.endMs >= l.budgetMs && (d.linkMs ?? 0) >= STALL_MS)
         .map(
           (d) =>
-            `${l.flow}: ${d.endMs} ms with the first hop at ${d.linkMs} ms (w${d.worker} ${d.instance ?? '?'}, ${new Date(d.at).toISOString().slice(11, 23)})`,
+            `${l.flow}: ${d.endMs} ms with the first hop at ${d.linkMs} ms (w${d.worker} ${d.instance ?? '?'}, ${new Date(d.at).toISOString().slice(11, 23)} UTC)`,
         ),
     )
   if (!hits.length) return []

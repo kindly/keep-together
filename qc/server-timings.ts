@@ -36,7 +36,8 @@ import { BULK_FUNCTIONS } from './budgets'
 // ping also flushes the stream, since its events arrive in order. A
 // stream that misses either ping fails the run. With every stream proven
 // live, zero events from an instance means no spec used it (a smoke-only
-// run), not a lost stream. Ping events are left out of the stats.
+// run), not a lost stream. Ping events are left out of the stats, and so
+// are the RTT probes (`platform/qcProbe:rtt`).
 //
 // Deploy keys come from each instance's env file in the main checkout
 // (scripts/qc-instances.mjs writes and verifies them) and are never printed.
@@ -132,6 +133,9 @@ function readKey(inst: Instance): string {
   return key
 }
 
+/** The harness's RTT probes (qc/timing.ts), over the socket. */
+const PROBE = 'platform/qcProbe:rtt'
+
 /** Our own liveness pings: never part of the stats. */
 export const isPing = (ev: LogEvent) =>
   ev.caller === 'HttpApi' && ev.identifier === PING
@@ -217,6 +221,8 @@ export async function startServerTimings(
           stream.pings++
           continue
         }
+        // The RTT probes aren't the app: no row, no assert.
+        if (ev.identifier === PROBE) continue
         if (ev.timestamp * 1000 < startedAt) continue
         events.push({ ...ev, instance: inst.name })
         stream.events++

@@ -18,6 +18,7 @@ pnpm qc qc/flows/contacts.spec.ts        # one spec file (a filtered run)
 QC_REPEATS=1 pnpm qc                     # fast functional pass, 1 timed sample per flow
 QC_MODE=record pnpm qc                   # measure and write history, assert nothing
 QC_NO_WAIT=1 pnpm qc                     # fail at once if another run holds the lock
+QC_LEGS=0 pnpm qc                        # no WebSocket tap: samples carry no legs (A/B its cost)
 pnpm qc:instances --reset                # prepare the pool and empty every instance
 ```
 
@@ -103,7 +104,26 @@ commit with the first hop slow is the link; a late response or
 Transition with a clean link is the deployment. The run directory
 (`qc-results/runs/<id>/`) also keeps every server call
 (`server-calls.jsonl`), each worker's RTT every 2 s from Node
-(`rtt-*.jsonl`) and the first-hop pings (`link.json`). `pnpm qc:report` renders that history to
+(`rtt-*.jsonl`, probing `platform/qcProbe:rtt`, which server timings
+leave out) and the first-hop pings (`link.json`).
+
+How the legs are taken, and their limits:
+
+- Inside the timed window the tap only keeps each frame's string and
+  time; it's parsed after the result is on screen. An incoming frame's
+  time is its `MessageEvent.timeStamp`, so the SPA's own handling of it
+  isn't counted in the leg. Measured cost of the tap: see
+  factory/out/builder-qcstall.md (the A/B, `QC_LEGS=0` against 1).
+- `commitMs` is on the server's clock, so it's only as good as the two
+  clocks agree (a few ms).
+- `linkMs` counts an unanswered echo from its send until the link
+  answered again. Without a gateway or a working `ping` the reporter
+  prints `link: first hop not watched`, so a missing LINK banner never
+  means a clean link.
+- On a checkbox click, t0 is the trusted `input` event fired inside the
+  click, a few ms after the press.
+
+`pnpm qc:report` renders that history to
 `qc-report/trend.html`: per-flow p50/p95 over the last 30 runs against the
 budget line. The Playwright HTML report is in `qc-report/playwright/`,
 with traces for failed tests.
