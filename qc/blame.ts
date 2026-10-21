@@ -38,20 +38,37 @@ export const FN_SLOW_MS = 50
 export const PROBE_SLOW = { ratio: 1.5, plusMs: 20 } as const
 /**
  * A Convex-wide slow spell: calls at or over the server budget
- * (`callMs`) on at least `instances` other pool instances within
- * `windowMs` of the sample. The probe runs every 2 s and misses most of
- * them; a spell slows our own function too. Seeds, bulk functions and
- * `auth:*` (password hashing) are slow by design: left out.
+ * (`callMs`) of at least `fns` different functions, on at least
+ * `instances` other pool instances, within `windowMs` of the sample. The
+ * probe runs every 2 s and misses most of them; a spell slows our own
+ * function too. Seeds, bulk functions and `auth:*` (password hashing) are
+ * slow by design: left out. So are the sample's own functions, and one
+ * function alone is no spell: a regression of our code is slow on every
+ * instance at once, and that is `ours`.
  */
-export const SPELL = { callMs: 100, windowMs: 500, instances: 2 } as const
+export const SPELL = {
+  callMs: 100,
+  windowMs: 500,
+  instances: 2,
+  fns: 2,
+} as const
 /** Probes this close to the sample's window count as "at that moment". */
 export const PROBE_NEAR_MS = 1_000
 /**
- * Slack on the server clock when matching a call to a sample. A call's
- * log time is its completion, about 15 ms before its MutationResponse
- * reaches the page (measured on run tn9ttz4a: 12–25 ms).
+ * Slack when matching a call to a sample. Without a commit (a query
+ * change, an action) the window is send → screen message on the page's
+ * clock, widened by this. A call's log time is its completion, about
+ * 15 ms before its MutationResponse reaches the page (run tn9ttz4a:
+ * 12–25 ms).
  */
 export const MATCH_SLACK_MS = 10
+/**
+ * A mutation is matched on the server clock alone: its log time lands
+ * after the commit timestamp the page saw, 5–91 ms (median ~9) over five
+ * runs, so no clock skew can move it out of the window or another
+ * worker's call into it.
+ */
+export const COMMIT_MATCH = { beforeMs: 10, afterMs: 100 } as const
 
 export type Verdict = 'ours' | 'link' | 'convex/network' | 'unclear'
 export const VERDICTS: Array<Verdict> = [
@@ -84,6 +101,8 @@ export interface Probe {
 export interface BlameContext {
   calls: Array<ServerCall>
   probes: Array<Probe>
+  /** Lines that didn't parse (a worker killed mid-write), skipped. */
+  skipped?: number
 }
 
 /** A slow sample: its legs, and where it ran. */
@@ -120,14 +139,14 @@ export interface Blame {
   probeMs: Array<number>
   /** The worker's run median probe. */
   probeMedianMs: number | null
-  /** Other instances with a call ≥ SPELL.callMs near the sample. */
+  /** Other instances slow near the sample, when that's a spell (SPELL). */
   slowElsewhere: Array<string>
   linkMs: number | null
 }
 
 const r1 = (x: number) => Math.round(x * 10) / 10
 
-/** The calls of `fns` that completed in [from, to] (epoch ms) on `instance`. */
+/** The calls of `fns` that completed in [from, to] (epoch ms, slack included) on `instance`. */
 function matchCalls(
   calls: Array<ServerCall>,
   instance: string | undefined,
@@ -144,8 +163,8 @@ function matchCalls(
       (c) =>
         c.instance === instance &&
         c.fn === fn &&
-        c.at >= from - MATCH_SLACK_MS &&
-        c.at <= to + MATCH_SLACK_MS,
+        c.at >= from &&
+        c.at <= to,
     )
     // Two workers share an instance: two candidates is a guess, so don't.
     if (hits.length !== 1) {
@@ -181,28 +200,38 @@ function probesNear(
   }
 }
 
-/** Other instances where Convex was slow within SPELL.windowMs of [from, to]. */
+/**
+ * Other instances where Convex was slow within SPELL.windowMs of [from,
+ * to], when that's a spell (SPELL); else none.
+ */
 function slowElsewhere(
   calls: Array<ServerCall>,
-  instance: string | undefined,
+  s: BlameSample,
   from: number,
   to: number,
 ): Array<string> {
   const where = new Set<string>()
+  const fns = new Set<string>()
+  const own = new Set(s.fns ?? [])
   for (const c of calls) {
     if (
-      c.instance !== instance &&
+      c.instance !== s.instance &&
       !c.cached &&
+      !own.has(c.fn) &&
       c.ms >= SPELL.callMs &&
       !(c.fn in BULK_FUNCTIONS) &&
       !c.fn.startsWith('platform/qcSeed:') &&
       !c.fn.startsWith('auth:') &&
       c.at >= from - SPELL.windowMs &&
       c.at <= to + SPELL.windowMs
-    )
+    ) {
       where.add(c.instance)
+      fns.add(c.fn)
+    }
   }
-  return [...where].sort()
+  return where.size >= SPELL.instances && fns.size >= SPELL.fns
+    ? [...where].sort()
+    : []
 }
 
 export function probeElevated(ms: number, medianMs: number): boolean {
@@ -226,13 +255,21 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
   const match =
     s.sendMs === null || answerAt === null
       ? { ms: null, how: 'unmatched: no request in the sample' }
-      : matchCalls(
-          ctx.calls,
-          s.instance,
-          s.fns,
-          s.at + s.sendMs,
-          s.at + (s.responseMs ?? screenAt ?? end),
-        )
+      : s.commitMs !== null
+        ? matchCalls(
+            ctx.calls,
+            s.instance,
+            s.fns,
+            s.at + s.commitMs - COMMIT_MATCH.beforeMs,
+            s.at + s.commitMs + COMMIT_MATCH.afterMs,
+          )
+        : matchCalls(
+            ctx.calls,
+            s.instance,
+            s.fns,
+            s.at + s.sendMs - MATCH_SLACK_MS,
+            s.at + (s.responseMs ?? screenAt ?? end) + MATCH_SLACK_MS,
+          )
   const fn = match.ms ?? 0
   const split =
     s.sendMs !== null && s.commitMs !== null && s.responseMs !== null
@@ -259,7 +296,7 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
   const elevated =
     probe.medianMs !== null &&
     probe.near.some((ms) => probeElevated(ms, probe.medianMs!))
-  const elsewhere = slowElsewhere(ctx.calls, s.instance, s.at, s.at + end)
+  const elsewhere = slowElsewhere(ctx.calls, s, s.at, s.at + end)
 
   const verdict = ((): [Verdict, string] => {
     if (linkMs !== null && linkMs >= STALL_MS)
@@ -272,7 +309,7 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
         'convex/network',
         `probe ${Math.max(...probe.near)} ms against a run median of ${probe.medianMs}`,
       ]
-    if (elsewhere.length >= SPELL.instances)
+    if (elsewhere.length)
       return [
         'convex/network',
         `Convex slow on ${elsewhere.join(', ')} at that moment too`,
@@ -340,21 +377,49 @@ export function formatBlame(endMs: number, b: Blame): string {
   return `${Math.round(endMs)} = ${parts.join(' · ')} → ${b.verdict} (${b.why})`
 }
 
-/** Server calls and probes from a run directory; empty when absent. */
+/**
+ * Server calls and probes from a run directory; empty when absent. Never
+ * throws: it runs in the reporter's onEnd, so a torn line (a worker killed
+ * mid-append) or an unreadable file is skipped and counted, and blame
+ * degrades to `unclear` rather than losing the run's table and gates.
+ */
 export function readBlameContext(dir: string): BlameContext {
-  const jsonl = <T>(file: string): Array<T> =>
-    readFileSync(file, 'utf8')
+  let skipped = 0
+  const jsonl = <T>(file: string): Array<T> => {
+    let text: string
+    try {
+      text = readFileSync(file, 'utf8')
+    } catch {
+      skipped++
+      return []
+    }
+    return text
       .split('\n')
       .filter(Boolean)
-      .map((l) => JSON.parse(l) as T)
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l) as T]
+        } catch {
+          skipped++
+          return []
+        }
+      })
+  }
   const callsFile = path.join(dir, 'server-calls.jsonl')
+  let rtts: Array<string> = []
+  try {
+    rtts = existsSync(dir)
+      ? readdirSync(dir).filter(
+          (f) => f.startsWith('rtt-') && f.endsWith('.jsonl'),
+        )
+      : []
+  } catch {
+    skipped++
+  }
   return {
     calls: existsSync(callsFile) ? jsonl<ServerCall>(callsFile) : [],
-    probes: existsSync(dir)
-      ? readdirSync(dir)
-          .filter((f) => f.startsWith('rtt-') && f.endsWith('.jsonl'))
-          .flatMap((f) => jsonl<Probe>(path.join(dir, f)))
-      : [],
+    probes: rtts.flatMap((f) => jsonl<Probe>(path.join(dir, f))),
+    skipped,
   }
 }
 

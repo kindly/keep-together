@@ -137,6 +137,7 @@ describe('blame on recorded samples', () => {
       ms: 120,
     })
     expect(blame(c.sample, { calls, probes: c.probes }).verdict).toBe('ours')
+    // Two instances, one function: a regression of that function, no spell.
     calls.push({
       instance: 'qc-3',
       at,
@@ -144,9 +145,42 @@ describe('blame on recorded samples', () => {
       type: 'Query',
       ms: 120,
     })
+    expect(blame(c.sample, { calls, probes: c.probes }).verdict).toBe('ours')
+    calls.push({
+      instance: 'qc-3',
+      at,
+      fn: 'contacts/queries:byClientKey',
+      type: 'Query',
+      ms: 120,
+    })
     expect(blame(c.sample, { calls, probes: c.probes }).verdict).toBe(
       'convex/network',
     )
+  })
+
+  test('our own function slow on every instance is ours, not a spell (review M1)', () => {
+    const c = cases.slowFunction
+    // A regressed saveForm: 150 ms on qc-1 (this sample) and on qc-2 and
+    // qc-3, plus an unrelated slow query on qc-2.
+    const calls: Array<ServerCall> = [
+      ...c.calls.map((x) =>
+        x.fn === 'contacts/mutations:saveForm' && x.instance === 'qc-1'
+          ? { ...x, ms: 150 }
+          : x,
+      ),
+      ...['qc-2', 'qc-3'].map((instance) => ({
+        instance,
+        at: c.sample.at + 80,
+        fn: 'contacts/mutations:saveForm',
+        type: 'Mutation',
+        ms: 150,
+      })),
+    ]
+    const b = blame(c.sample, { calls, probes: c.probes })
+    expect(b.fnMs).toBe(150)
+    expect(b.slowElsewhere).toEqual([])
+    expect(b.verdict).toBe('ours')
+    expect(b.why).toBe('function 150 ms (≥ 50)')
   })
 
   test('the elevated probe wins over a slow function at that moment', () => {
@@ -172,6 +206,20 @@ describe('matching the function', () => {
       'unmatched: 2 contacts/mutations:setAcquisition calls in the window',
     )
     expect(b.verdict).toBe('unclear')
+  })
+
+  test('a mutation matches on the server clock: skew moves the commit and the call together (review L1)', () => {
+    // The server clock 40 ms ahead of the page's: the commit timestamp
+    // and every log time shift; the page's own legs don't.
+    const c = cases.normal
+    const skew = 40
+    const calls = c.calls.map((x) => ({ ...x, at: x.at + skew }))
+    const b = blame(
+      { ...c.sample, commitMs: c.sample.commitMs! + skew },
+      { calls, probes: c.probes },
+    )
+    expect(b.fnMs).toBe(30.3)
+    expect(b.fnMatch).toBe('contacts/mutations:setAcquisition')
   })
 
   test('history from before `fns` is unmatched, never guessed', () => {

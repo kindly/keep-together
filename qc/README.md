@@ -139,14 +139,14 @@ verdict next to the failures (all slow samples, then each failed flow).
 |---|---|
 | page | input → send, plus the Transition (or last message) → result on screen; long tasks shown when any |
 | to Convex ≈ | send → commit, less our function (server clock) |
-| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance, completed between the send and the response (the screen message for a query change) ± 10 ms. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
+| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance. A mutation's call must complete from 10 ms before to 100 ms after its commit timestamp, both on the server clock, so clock skew can't move it; without a commit (a query change, an action), between the send and the response or screen message ± 10 ms on the page's clock. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
 | back ≈ | commit → response (server clock) |
 | Transition | response → the Transition carrying the result |
 | Convex + network | send → screen message, less our function, when there's no commit to split it (a query change) |
 | overhead beyond the probe | send → screen message, less our function and the probe: what a no-op round trip at that moment wouldn't take. Derived, it overlaps the legs |
 | probe | the worker's `qcProbe:rtt` samples within 1 s of the sample, and its run median |
 | link | the first hop's worst round trip during the sample |
-| Convex slow on … | other instances with a call at or over 100 ms within 500 ms of the sample |
+| Convex slow on … | a spell: other instances with a call at or over 100 ms within 500 ms of the sample (rule 4) |
 
 The legs before `overhead` add up to the sample. `≈` legs rest on
 `commitMs`, so they're as good as the two clocks agree; a call's log time
@@ -159,11 +159,13 @@ The verdict is the first rule that holds:
 3. `ours`: page time 40 ms or more. Before the probe, since the page's
    time doesn't depend on the server.
 4. `convex/network`: a probe at that moment at 1.5× the worker's run
-   median and 20 ms over it, or Convex slow on two other instances
-   within 500 ms (a call at or over 100 ms; seeds, bulk functions and
-   `auth:*` don't count). The probe runs every 2 s and misses most
-   stalls; the other instances catch them. Before the function: a stall
-   slows our function too.
+   median and 20 ms over it, or a spell: calls at or over 100 ms on two
+   other instances within 500 ms, of at least two different functions.
+   Seeds, bulk functions, `auth:*` and the sample's own functions don't
+   count, so a regression of our code, slow on every instance at once,
+   stays `ours`. The probe runs every 2 s and misses most stalls; the
+   other instances catch them. Before the function: a stall slows our
+   function too.
 5. `unclear`: our function unmatched.
 6. `ours`: our function 50 ms or more (half the server budget).
 7. `convex/network`: function and page normal, so the excess is in the

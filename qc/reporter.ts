@@ -194,7 +194,8 @@ function readRecords(dir: string): Array<FlowRecord> {
     )
 }
 
-function summarise(
+/** Exported for qc/reporter.test.ts. */
+export function summarise(
   records: Array<FlowRecord>,
   base: Pick<HistoryLine, 'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'server'>,
   link: LinkFile | null,
@@ -479,6 +480,7 @@ export default class QcReporter implements Reporter {
         records.filter((r) => r.selfTest).map((r) => r.flow),
       )
       const link = readLink(runDir(id))
+      const blameCtx = readBlameContext(runDir(id))
       const lines = summarise(
         records,
         {
@@ -490,7 +492,7 @@ export default class QcReporter implements Reporter {
           server: readServer(runDir(id)),
         },
         link,
-        readBlameContext(runDir(id)),
+        blameCtx,
       )
       const rtts = [...new Set(records.map((r) => `w${r.worker} ${r.rttMs}`))]
       out.push(
@@ -512,6 +514,11 @@ export default class QcReporter implements Reporter {
       out.push(...spikeBanner(lines, selfTest, lines[0]?.server ?? null))
       out.push(...linkBanner(lines, selfTest, link))
       out.push(...blameList(lines, selfTest))
+      if (blameCtx.skipped) {
+        out.push(
+          `blame: ${blameCtx.skipped} unreadable lines or files in server-calls.jsonl / rtt-*.jsonl skipped`,
+        )
+      }
       blameLines = blameSummary(lines, selfTest)
       const real = lines.filter((l) => !selfTest.has(l.flow))
       mkdirSync(path.dirname(HISTORY), { recursive: true })
