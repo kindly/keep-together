@@ -350,7 +350,14 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
   }
   // A checkbox click's trusted `input` event fires inside the click, as the
   // mutation is sent: allow the send a millisecond before t0.
-  const wire = w.__qcWire.filter(([t]) => t >= t0 - 1 && t <= t1).flatMap(parse)
+  // Context only: a frame that won't parse (a protocol change) costs the
+  // sample its legs, never the flow.
+  let wire: Array<WireEntry>
+  try {
+    wire = w.__qcWire.filter(([t]) => t >= t0 - 1 && t <= t1).flatMap(parse)
+  } catch {
+    return null
+  }
   const rel = (t: number | null | undefined) =>
     t === null || t === undefined ? null : Math.round((t - t0) * 10) / 10
   const origin = performance.timeOrigin

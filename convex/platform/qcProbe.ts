@@ -6,9 +6,11 @@
  * probes out of the app's rows in QC's server timings
  * (qc/server-timings.ts drops it like its liveness pings).
  */
+import { v } from 'convex/values'
 import { query } from '../_generated/server'
 
 export const rtt = query({
   args: {},
+  returns: v.null(),
   handler: () => null,
 })
