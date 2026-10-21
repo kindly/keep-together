@@ -58,22 +58,23 @@ async function children(
   }
 }
 
-/** A contact's tags with their names, alphabetical. */
+/**
+ * A contact's tags with their names, alphabetical. The name is the copy on
+ * the `contactTags` row, so no tag is read (a row not yet backfilled reads
+ * its tag; step B drops that). Whether a tag is archived is not here: the
+ * form takes it from the tenant's tag list (`tags`, archived included).
+ */
 async function tagsOf(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
   const rows = await db
     .query('contactTags')
     .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
     .collect()
   const out = await Promise.all(
-    rows.map(async (r) => {
-      const tag = await db.get(r.tagId)
-      return {
-        key: r.key,
-        tagId: r.tagId,
-        name: tag?.name ?? '?',
-        isActive: tag?.isActive ?? false,
-      }
-    }),
+    rows.map(async (r) => ({
+      key: r.key,
+      tagId: r.tagId,
+      name: r.name ?? (await db.get(r.tagId))?.name ?? '?',
+    })),
   )
   return out.sort((a, b) =>
     normaliseTagName(a.name).localeCompare(normaliseTagName(b.name)),

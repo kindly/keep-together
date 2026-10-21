@@ -178,7 +178,7 @@ describe('contacts.tags slice', () => {
     expect(result.counter).toBe(1)
     const got = await get()
     expect(got?.tags.map((t) => t.name)).toEqual(['Member', 'Volunteer'])
-    expect(got?.tags.every((t) => t.key && t.isActive)).toBe(true)
+    expect(got?.tags.every((t) => t.key)).toBe(true)
     const revs = (await revisionsOf(ada)).filter(
       (r) => r.contract === 'contacts.tags',
     )
@@ -264,13 +264,15 @@ describe('contacts.tags slice', () => {
       name: 'Volunteer',
       isActive: false,
     })
-    // Kept: still visible, marked inactive, and other saves keep it.
+    // Kept: still visible, and other saves keep it. (The form marks it
+    // archived from the tag list, not from the contact's tags.)
     await saveTags(1, [{ key: 'k1', tagId: volunteer }, { tagId: member }])
     const got = await get()
     expect(got?.tags).toMatchObject([
-      { name: 'Member', isActive: true },
-      { key: 'k1', name: 'Volunteer', isActive: false },
+      { name: 'Member' },
+      { key: 'k1', name: 'Volunteer' },
     ])
+    expect(got?.tags[0]).not.toHaveProperty('isActive')
     // A fresh row for the archived tag is refused.
     const bob = await createContact(f.a, 'Babbage')
     expect(
@@ -281,6 +283,8 @@ describe('contacts.tags slice', () => {
   test('renaming a tag renames it on every contact', async () => {
     await saveTags(0, [{ tagId: member }])
     await saveTag({ id: member, expected: 0, name: 'Paid-up member' })
+    // The contact's copy of the name follows once the re-index reaches it.
+    await f.t.finishAllScheduledFunctions(() => {})
     expect((await get())?.tags.map((t) => t.name)).toEqual(['Paid-up member'])
   })
 
@@ -325,7 +329,7 @@ describe('contacts.tags slice', () => {
       revisionId: first._id,
     })
     expect((await get())?.tags).toMatchObject([
-      { key: 'k1', name: 'Volunteer', isActive: false },
+      { key: 'k1', name: 'Volunteer' },
     ])
     expect((await tagList(f.a)).map((t) => t.name)).toEqual(['Member'])
     // A whole-contact restore never fails on tags either.

@@ -455,8 +455,8 @@ export async function currentPayloads(
 
 /**
  * First level, beside `currentPayloads`: the projection's row, and the
- * submitted tags' documents (the tags contract checks the new ones, and
- * the projection names them all).
+ * submitted tags' documents (the tags contract checks the new ones and
+ * copies their names; which are new isn't known yet).
  */
 async function prefetchSearchRow(
   db: ScopedDatabaseReader,
@@ -475,9 +475,9 @@ async function prefetchSearchRow(
 /**
  * Second level, once the current rows are known: what `reconcile` will
  * look up for the changed slices (only keys new to the contact for tags
- * and identifiers, which pass it their rows; every key for the others),
- * and the kept tags' documents the projection names when tags didn't
- * change.
+ * and identifiers, which pass it their rows; every key for the others).
+ * The projection names tags from the `contactTags` rows, so it reads no
+ * tag documents.
  */
 async function prefetchChanged(
   db: ScopedDatabaseReader,
@@ -519,9 +519,6 @@ async function prefetchChanged(
       for (const r of newKeys(p.identifiers, current.identifiers.identifiers))
         lookup('contactIdentifiers', r.key)
     }
-  }
-  if (changed.length > 0 && !changed.some((c) => c.name === 'tags')) {
-    for (const r of current.tags.tags) reads.push(db.get(r.tagId))
   }
   await Promise.all(reads)
 }

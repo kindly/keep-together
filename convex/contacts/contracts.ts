@@ -319,15 +319,22 @@ export const tags = defineContract({
       .withIndex('by_tenant_contact', (q) => q.eq('contactId', root._id))
       .collect()
     const kept = new Set(existing.map((r) => r.key))
+    // A new row is inserted with its tag's name (derived, not payload); a
+    // kept row's name is not in the payload, so reconcile never patches it.
+    const rows = []
     for (const row of p.tags) {
-      if (kept.has(row.key!)) continue
+      if (kept.has(row.key!)) {
+        rows.push(row)
+        continue
+      }
       // Another tenant's id reads as null through the scoped db.
       const tag = await ctx.db.get(row.tagId)
       if (!tag || (!tag.isActive && command.source !== 'restore')) {
         throw rejected('unknown_tag', 'Tag must exist and be active')
       }
+      rows.push({ ...row, name: tag.name })
     }
-    await reconcile(ctx, 'contactTags', root._id, p.tags, ['tagId'], existing)
+    await reconcile(ctx, 'contactTags', root._id, rows, ['tagId'], existing)
     return root._id
   },
 })

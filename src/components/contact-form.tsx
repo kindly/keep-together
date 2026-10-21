@@ -775,7 +775,7 @@ function AddressFields({
   )
 }
 
-type TagInfo = { name: string; isActive: boolean }
+type TagInfo = { name: string; isActive?: boolean }
 
 /**
  * The contact's tags as chips, and a picker of the active tags it doesn't
@@ -796,8 +796,12 @@ function TagFields({
   allTags:
     Array<{ _id: Id<'tags'>; name: string; isActive: boolean }> | undefined
 }) {
+  // The contact's own rows name its tags; whether one is archived comes
+  // only from `allTags`. A tag past TAG_LIST_LIMIT (or before `allTags`
+  // loads) shows without its "archived" mark: an accepted edge, as the
+  // contact's tags no longer read each tag document.
   const info = new Map<string, TagInfo>(
-    known.map((t) => [t.tagId, { name: t.name, isActive: t.isActive }]),
+    known.map((t) => [t.tagId, { name: t.name }]),
   )
   for (const t of allTags ?? []) info.set(t._id, t)
   const carried = new Set(value.tags.map((t) => t.tagId))

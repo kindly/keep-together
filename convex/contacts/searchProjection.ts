@@ -66,9 +66,22 @@ function sameIds(existing: Doc<'contactSearch'>, ids: AcquisitionIds) {
 }
 
 /**
+ * A tag link's name: the copy on the row. A row written before the copy
+ * existed reads the tag (until `backfillContactTagName` is done; step B
+ * drops this fallback).
+ */
+async function tagName(
+  db: ScopedDatabaseReader,
+  row: Doc<'contactTags'>,
+): Promise<string | null> {
+  if (row.name !== undefined) return row.name
+  return (await db.get(row.tagId))?.name ?? null
+}
+
+/**
  * Rebuild one contact's `contactSearch` row from its current state; writes
- * only if the row changed. Every read but the tag names runs at once: this
- * is on the save path.
+ * only if the row changed. Every read runs at once (bar the tag names of
+ * rows not yet backfilled): this is on the save path.
  */
 export async function projectContactSearch(
   ctx: Pick<ContractCtx, 'db'>,
@@ -104,8 +117,8 @@ export async function projectContactSearch(
         .unique(),
     ])
   if (!contact) return
-  const [tags, ids] = await Promise.all([
-    Promise.all(tagRows.map((r) => db.get(r.tagId))),
+  const [tagNames, ids] = await Promise.all([
+    Promise.all(tagRows.map((r) => tagName(db, r))),
     acquisitionIds(db, contact.acquisitionCodeId, existing),
   ])
   const row = {
@@ -114,7 +127,7 @@ export async function projectContactSearch(
       phones: phones.map((p) => p.number),
       addresses,
       identifiers: idRows.map((r) => r.value),
-      tagNames: tags.flatMap((t) => (t ? [t.name] : [])),
+      tagNames: tagNames.flatMap((n) => (n === null ? [] : [n])),
     }),
     ...ids,
   }
@@ -216,14 +229,29 @@ export async function projectTag(
   )
 }
 
-/** One batch of a tag rename's re-index; schedules the next. */
+/**
+ * One batch of a tag rename's re-index; schedules the next. Each batch
+ * copies the tag's current name onto its `contactTags` rows, then rebuilds
+ * those contacts' search rows from them. Reading the name per batch (not
+ * passing it along) means a second rename mid-run still ends on the latest.
+ */
 export const reindexTag = internalTenantMutation({
   args: { tagId: v.id('tags'), cursor: v.union(v.string(), v.null()) },
   handler: async (ctx, { tagId, cursor }) => {
-    const page = await ctx.db
-      .query('contactTags')
-      .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId))
-      .paginate({ numItems: REINDEX_TAG_BATCH, cursor })
+    const [tag, page] = await Promise.all([
+      ctx.db.get(tagId),
+      ctx.db
+        .query('contactTags')
+        .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId))
+        .paginate({ numItems: REINDEX_TAG_BATCH, cursor }),
+    ])
+    if (tag) {
+      await Promise.all(
+        page.page
+          .filter((r) => r.name !== tag.name)
+          .map((r) => ctx.db.patch('contactTags', r._id, { name: tag.name })),
+      )
+    }
     await Promise.all(
       page.page.map((r) => projectContactSearch(ctx, r.contactId)),
     )

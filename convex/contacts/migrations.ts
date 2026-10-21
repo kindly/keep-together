@@ -59,3 +59,20 @@ export const backfillRevisionGroupName = migrations.define({
     return group ? { groupName: group.name } : undefined
   },
 })
+
+/**
+ * Tag name step A: `contactTags.name`, the copy of the tag's name, on links
+ * made before the contract wrote it. A no-op on rows already named (a rename
+ * refreshes those). Step B makes the field required and drops this, its
+ * test and the readers' fallback.
+ *
+ *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillContactTagName"}'
+ */
+export const backfillContactTagName = migrations.define({
+  table: 'contactTags',
+  migrateOne: async (ctx, row) => {
+    if (row.name !== undefined) return undefined
+    const tag = await ctx.db.get('tags', row.tagId)
+    return tag ? { name: tag.name } : undefined
+  },
+})
