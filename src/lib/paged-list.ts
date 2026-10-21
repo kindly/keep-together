@@ -1,6 +1,6 @@
 import { useQueries } from 'convex/react'
 import type { FunctionArgs, FunctionReturnType } from 'convex/server'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../convex/_generated/api'
 
 /**
@@ -87,17 +87,24 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
           },
         }
   }
-  const queries: Parameters<typeof useQueries>[0] = {}
+  const request: Record<string, ListArgs> = {}
   if (filters !== 'skip') {
     for (const s of slots) {
-      for (const r of [s, ...(s.halves ?? [])]) {
-        queries[rangeKey(r)] = {
-          query: api.contacts.queries.list,
-          args: argsOf(r),
-        }
-      }
+      for (const r of [s, ...(s.halves ?? [])]) request[rangeKey(r)] = argsOf(r)
     }
   }
+  // `useQueries` re-subscribes whenever this object is a new one, and its
+  // results are new each time, so a fresh object per render never settles
+  // ("too many re-renders"). Same requests, same object.
+  const requestKey = JSON.stringify(request)
+  const queries = useMemo(() => {
+    const args = JSON.parse(requestKey) as Record<string, ListArgs>
+    const out: Parameters<typeof useQueries>[0] = {}
+    for (const [k, a] of Object.entries(args)) {
+      out[k] = { query: api.contacts.queries.list, args: a }
+    }
+    return out
+  }, [requestKey])
   const results = useQueries(queries)
   // A page re-subscribing (pinned, or the filters changed back) shows what
   // it last showed rather than blinking to "Loading…": by its range, or for
