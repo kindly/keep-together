@@ -9,6 +9,8 @@ import {
 import type { BlameSample, Probe, ServerCall } from './blame'
 import recorded from './blame.fixture.json'
 
+const r1 = (x: number) => Math.round(x * 10) / 10
+
 // Recorded slow samples (qc-results of runs tn9ttz4a, tn9g1x25 and
 // tn9vwfeq), each with every Convex call on the pool within 600 ms of it
 // and every RTT probe of its worker in that run. The first four predate
@@ -33,11 +35,11 @@ const legsSum = (b: ReturnType<typeof blame>) =>
   b.pageMs! + b.toConvexMs! + b.fnMs! + b.backMs! + b.transitionMs!
 
 describe('blame on recorded samples', () => {
-  test('function and page normal: the time is in the legs between, convex/network', () => {
+  test('function and page normal, no evidence elsewhere: unclear, which counts as ours', () => {
     const c = cases.normal
     const b = run(c)
     expect(b).toMatchObject({
-      verdict: 'convex/network',
+      verdict: 'unclear',
       fnMs: 30.3,
       fnMatch: 'contacts/mutations:setAcquisition',
       pageMs: 17.6,
@@ -50,7 +52,7 @@ describe('blame on recorded samples', () => {
     // The legs partition the sample.
     expect(legsSum(b)).toBeCloseTo(c.sample.endMs, 5)
     expect(formatBlame(c.sample.endMs, b)).toBe(
-      '128 = page 18 · to Convex ≈21 · our function 30 (contacts/mutations:setAcquisition) · back ≈46 · Transition 13 · overhead beyond the probe 49 · probe 30 ms @ that moment (run median 33) · link 1 ms → convex/network (function 30.3 ms and page 17.6 ms normal)',
+      '128 = page 18 · to Convex ≈21 · our function 30 (contacts/mutations:setAcquisition) · back ≈46 · Transition 13 · overhead beyond the probe 49 · probe 30 ms @ that moment (run median 33) · link 1 ms → unclear (function 30.3 ms and page 17.6 ms normal, no evidence elsewhere)',
     )
   })
 
@@ -276,6 +278,73 @@ describe('matching the function', () => {
       pageMs: 12,
       verdict: 'ours',
     })
+  })
+})
+
+describe('our share: page + function + the re-runs the sample waited for', () => {
+  // The recorded setAcquisition save: commit at +53, Transition at +111.8.
+  // On its instance getRoot re-ran in between (9.9 ms); history completed
+  // after the Transition; the rest of the window is other instances.
+  const c = cases.normal
+  const subs = [
+    'contacts/queries:getRoot',
+    'contacts/queries:history',
+    'contacts/queries:getIdentifiers',
+    'sources/queries:picker',
+  ]
+
+  test("the page's re-run queries are attributed and the slowest counts", () => {
+    const b = run(c, { subs })
+    expect(b.reruns).toEqual([{ fn: 'contacts/queries:getRoot', ms: 9.9 }])
+    expect(b.rerunMaxMs).toBe(9.9)
+    expect(b.ourShareMs).toBe(57.8) // 17.6 page + 30.3 mutation + 9.9
+  })
+
+  test("a query the page isn't subscribed to is not ours to wait for", () => {
+    const b = run(c, { subs: ['contacts/queries:history'] })
+    expect(b.reruns).toEqual([])
+    expect(b.ourShareMs).toBe(47.9)
+  })
+
+  test('no subscriptions recorded: no re-runs and no share, never understated', () => {
+    const b = run(c)
+    expect(b.reruns).toBeNull()
+    expect(b.ourShareMs).toBeNull()
+  })
+
+  test('re-runs run side by side: max is the critical path, union and sum shown', () => {
+    const commit = c.sample.at + c.sample.commitMs!
+    const q = (fn: string, start: number, ms: number): ServerCall => ({
+      instance: 'qc-2',
+      at: commit + start + ms,
+      fn,
+      type: 'Query',
+      ms,
+    })
+    const calls = [
+      ...c.calls.filter((x) => x.type !== 'Query'),
+      q('a:one', 5, 12), // [5, 17]
+      q('a:two', 8, 10), // [8, 18], overlaps one
+      q('a:three', 30, 6), // [30, 36]
+      q('a:early', -40, 30), // started before the commit: not a re-run
+      q('a:other', 5, 20), // not subscribed
+    ]
+    const b = blame(
+      { ...c.sample, subs: ['a:one', 'a:two', 'a:three', 'a:early'] },
+      { calls, probes: c.probes },
+    )
+    expect(b.reruns!.map((r) => r.fn)).toEqual(['a:one', 'a:two', 'a:three'])
+    expect(b.rerunMaxMs).toBe(12)
+    expect(b.rerunUnionMs).toBe(19) // 13 + 6
+    expect(b.rerunSumMs).toBe(28)
+    expect(b.ourShareMs).toBe(r1(17.6 + 30.3 + 12))
+  })
+
+  test('the mutation itself is never a re-run', () => {
+    const b = run(c, { subs: [...subs, 'contacts/mutations:setAcquisition'] })
+    expect(b.reruns!.map((r) => r.fn)).not.toContain(
+      'contacts/mutations:setAcquisition',
+    )
   })
 })
 

@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { median, runDir } from './timing'
 import type { QcHook } from './global-setup'
@@ -20,6 +20,13 @@ import type { QcHook } from './global-setup'
 // never reads as a clean link.
 
 export const LINK_FILE = 'link.json'
+/**
+ * Written as pings come back, for the workers' live blame (qc/live.ts):
+ * `[seq, sent at, round trip ms]` per reply, `[seq, sent at, null]` per
+ * echo still unanswered after one interval (a late reply follows with the
+ * same seq).
+ */
+export const LIVE_LINK_FILE = 'link.live.jsonl'
 
 export interface LinkFile {
   gateway: string | null
@@ -66,6 +73,16 @@ export const linkHook: QcHook = {
       }
     }
     // -O reports an unanswered request one interval after it went out.
+    mkdirSync(runDir(), { recursive: true })
+    const live = path.join(runDir(), LIVE_LINK_FILE)
+    // Context only: a lost line costs live blame a ping, never the run.
+    const tell = (x: [number, number, number | null]) => {
+      try {
+        appendFileSync(live, JSON.stringify(x) + '\n')
+      } catch {
+        // dropped
+      }
+    }
     const replies = new Map<number, [number, number]>()
     const unanswered = new Map<number, number>()
     let died: string | null = null
@@ -107,8 +124,10 @@ export const linkHook: QcHook = {
           // -D stamps the reply; the request went out rtt earlier.
           replies.set(seq, [Math.round(at - rtt), rtt])
           unanswered.delete(seq)
+          tell([seq, Math.round(at - rtt), rtt])
         } else if (line.includes('no answer yet')) {
           unanswered.set(seq, Math.round(at - INTERVAL_MS))
+          tell([seq, Math.round(at - INTERVAL_MS), null])
         }
       }
     })

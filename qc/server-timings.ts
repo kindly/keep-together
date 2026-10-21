@@ -1,5 +1,11 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ChildProcess } from 'node:child_process'
@@ -169,8 +175,17 @@ export interface Collector {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+/**
+ * Written as events arrive, for the workers' live blame (qc/live.ts): one
+ * line per Completion event, the same shape as server-calls.jsonl, pings
+ * and probes included as `mark: true` lines. A mark says the instance's
+ * stream has got this far.
+ */
+export const LIVE_CALLS_FILE = 'server-calls.live.jsonl'
+
 export async function startServerTimings(
   instances: Array<Instance>,
+  liveFile?: string,
 ): Promise<Collector> {
   // Every key is checked before anything is spawned.
   const keys = instances.map(readKey)
@@ -217,6 +232,28 @@ export async function startServerTimings(
           continue
         }
         if (ev.kind !== 'Completion') continue
+        if (liveFile) {
+          const mark = isPing(ev) || ev.identifier === PROBE
+          // Context only: a lost line costs live blame a call, never the run.
+          try {
+            appendFileSync(
+              liveFile,
+              JSON.stringify({
+                instance: inst.name,
+                at: Math.round(ev.timestamp * 1000),
+                fn: ev.identifier,
+                type: ev.udfType,
+                ms: round(ev.executionTime * 1000),
+                ...(ev.cachedResult && { cached: true }),
+                ...(mark && { mark: true }),
+                // When it got here: the stream's lag is got − at.
+                got: Date.now(),
+              }) + '\n',
+            )
+          } catch {
+            // ignore
+          }
+        }
         if (isPing(ev)) {
           stream.pings++
           continue

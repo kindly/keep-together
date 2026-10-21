@@ -90,6 +90,15 @@ export interface SampleDetail {
    * `convex logs`). Absent on history from before it was recorded.
    */
   fns?: Array<string>
+  /**
+   * The queries the watched page was subscribed to at the end of the
+   * sample (canonical `module:name`): the re-runs it may have waited for.
+   */
+  subs?: Array<string>
+  /** Characters (≈ bytes) of server frames the watched page got in the sample. */
+  bytesIn?: number
+  /** Mutations, actions and query changes the page sent in the sample. */
+  requests?: number
   /** The mutation's commit timestamp, from its MutationResponse. */
   commitMs: number | null
   /** Its MutationResponse arrived. */
@@ -226,6 +235,10 @@ interface QcWindow {
   __qcWire?: Array<RawEntry>
   __qcLong?: Array<[start: number, duration: number]>
   __qcVis?: Array<number>
+  /** Every frame the page sent, kept across samples until readLegs folds it into __qcSubs. */
+  __qcOut?: Array<[t: number, data: string]>
+  /** The page's live subscriptions: queryId → udfPath. */
+  __qcSubs?: Record<string, string>
 }
 
 // Capture-phase listeners record the timestamp of each trusted input event
@@ -262,6 +275,8 @@ function arm(legs: boolean) {
     }
     if (legs) {
       w.__qcWire = []
+      w.__qcOut = []
+      w.__qcSubs = {}
       const longs: Array<[number, number]> = (w.__qcLong = [])
       const vis: Array<number> = (w.__qcVis = [])
       document.addEventListener('visibilitychange', (e) =>
@@ -282,7 +297,11 @@ function arm(legs: boolean) {
             if (typeof ev.data === 'string') note([ev.timeStamp, 'in', ev.data])
           })
         }
-        if (typeof data === 'string') note([performance.now(), 'out', data])
+        if (typeof data === 'string') {
+          const t = performance.now()
+          note([t, 'out', data])
+          w.__qcOut!.push([t, data])
+        }
         return send.call(this, data)
       }
       try {
@@ -416,6 +435,48 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
   if (side !== 'out') {
     const ins = wire.filter(([, d]) => d === 'in')
     legs.lastInMs = rel(ins.at(-1)?.[0])
+    // What the server sent this page during the sample, in characters of
+    // JSON (≈ bytes), and how many requests the page made.
+    legs.bytesIn = w.__qcWire
+      .filter(([t, d]) => d === 'in' && t >= t0 - 1 && t <= t1)
+      .reduce((n, [, , data]) => n + data.length, 0)
+    legs.requests = wire.filter(
+      ([, d, type]) =>
+        d === 'out' &&
+        (type === 'Mutation' || type === 'Action' || type === 'ModifyQuerySet'),
+    ).length
+    // The page's subscriptions as of t1: every frame it sent so far, folded
+    // in order. A Connect starts the set again (the client re-adds them).
+    const subs = (w.__qcSubs ??= {})
+    const out = w.__qcOut ?? []
+    let done = 0
+    try {
+      for (const [t, data] of out) {
+        if (t > t1) break
+        done++
+        const type = /"type":"(\w+)"/.exec(data.slice(0, 200))?.[1]
+        if (type === 'Connect') {
+          for (const k of Object.keys(subs)) delete subs[k]
+        } else if (type === 'ModifyQuerySet') {
+          const m = JSON.parse(data) as {
+            modifications?: Array<{
+              type: string
+              queryId: number
+              udfPath?: string
+            }>
+          }
+          for (const x of m.modifications ?? []) {
+            if (x.type === 'Add' && x.udfPath) subs[x.queryId] = x.udfPath
+            else if (x.type === 'Remove') delete subs[x.queryId]
+          }
+        }
+      }
+    } catch {
+      // A frame that won't parse: the subscriptions are unknown from here.
+      for (const k of Object.keys(subs)) delete subs[k]
+    }
+    out.splice(0, done)
+    legs.subs = [...new Set(Object.values(subs))].sort()
     legs.longTaskMs = Math.round(
       (w.__qcLong ?? [])
         .filter(([s, d]) => s + d >= t0 && s <= t1)
@@ -526,6 +587,9 @@ async function measureOnce<TArg>(
       sendMs: legs.sendMs ?? null,
       sent: legs.sent ?? null,
       ...(legs.fns && { fns: legs.fns }),
+      ...(legs.subs && { subs: legs.subs }),
+      ...(legs.bytesIn !== undefined && { bytesIn: legs.bytesIn }),
+      ...(legs.requests !== undefined && { requests: legs.requests }),
       commitMs: legs.commitMs ?? null,
       responseMs: legs.responseMs ?? null,
       transitionMs: pickTransition(

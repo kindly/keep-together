@@ -142,6 +142,27 @@ export interface Blame {
   /** Other instances slow near the sample, when that's a spell (SPELL). */
   slowElsewhere: Array<string>
   linkMs: number | null
+  /**
+   * The page's queries that re-ran after the commit and completed before
+   * the Transition carrying it: what the sample waited for besides our
+   * mutation. Null without a commit, a Transition or the page's
+   * subscriptions (history before `subs`).
+   */
+  reruns: Array<{ fn: string; ms: number }> | null
+  /** Their critical path: they run side by side, the slowest decides. */
+  rerunMaxMs: number | null
+  /** The union of their [start, end] intervals (≥ max; = max when they overlap). */
+  rerunUnionMs: number | null
+  rerunSumMs: number | null
+  /**
+   * Page + our function + the re-runs' critical path: the time that is
+   * ours whoever else was slow. Null when the function is unmatched.
+   */
+  ourShareMs: number | null
+  /** Send → commit, less the probe: how long Convex took to commit. Server clock. */
+  commitLatencyMs: number | null
+  bytesIn: number | null
+  requests: number | null
 }
 
 const r1 = (x: number) => Math.round(x * 10) / 10
@@ -161,10 +182,7 @@ function matchCalls(
   for (const fn of new Set(fns)) {
     const hits = calls.filter(
       (c) =>
-        c.instance === instance &&
-        c.fn === fn &&
-        c.at >= from &&
-        c.at <= to,
+        c.instance === instance && c.fn === fn && c.at >= from && c.at <= to,
     )
     // Two workers share an instance: two candidates is a guess, so don't.
     if (hits.length !== 1) {
@@ -177,6 +195,48 @@ function matchCalls(
   }
   // Queries a ModifyQuerySet adds run side by side: the slowest decides.
   return { ms: Math.max(...times), how: [...new Set(fns)].join(', ') }
+}
+
+/**
+ * The page's subscribed queries that re-ran after the commit and completed
+ * by the Transition (± slack); null when that can't be told.
+ */
+function rerunCalls(
+  calls: Array<ServerCall>,
+  s: BlameSample,
+): Array<ServerCall> | null {
+  if (!s.instance || !s.subs || s.commitMs === null || s.transitionMs === null)
+    return null
+  const subs = new Set(s.subs)
+  const own = new Set(s.fns ?? [])
+  const commit = s.at + s.commitMs
+  return calls
+    .filter(
+      (c) =>
+        c.instance === s.instance &&
+        c.type === 'Query' &&
+        subs.has(c.fn) &&
+        !own.has(c.fn) &&
+        c.at - c.ms >= commit - COMMIT_MATCH.beforeMs &&
+        c.at <= s.at + s.transitionMs! + MATCH_SLACK_MS,
+    )
+    .sort((a, b) => a.at - b.at)
+}
+
+/** Total length of the calls' [start, end] intervals, overlaps counted once. */
+function unionMs(calls: Array<ServerCall>): number {
+  const spans = calls
+    .map((c): [number, number] => [c.at - c.ms, c.at])
+    .sort((a, b) => a[0] - b[0])
+  let total = 0
+  let cur: [number, number] | null = null
+  for (const [a, b] of spans) {
+    if (!cur || a > cur[1]) {
+      if (cur) total += cur[1] - cur[0]
+      cur = [a, b]
+    } else cur[1] = Math.max(cur[1], b)
+  }
+  return cur ? total + cur[1] - cur[0] : total
 }
 
 /** The worker's probes whose round trip is within PROBE_NEAR_MS of [from, to]. */
@@ -297,6 +357,19 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
     probe.medianMs !== null &&
     probe.near.some((ms) => probeElevated(ms, probe.medianMs!))
   const elsewhere = slowElsewhere(ctx.calls, s, s.at, s.at + end)
+  const rr = rerunCalls(ctx.calls, s)
+  const rerunMaxMs = rr ? Math.max(0, ...rr.map((c) => c.ms)) : null
+  // A save whose re-runs can't be told has no share: it would understate.
+  const ourShareMs =
+    pageMs === null ||
+    match.ms === null ||
+    (s.commitMs !== null && rerunMaxMs === null)
+      ? null
+      : r1(pageMs + match.ms + (rerunMaxMs ?? 0))
+  const commitLatencyMs =
+    s.commitMs !== null && s.sendMs !== null && probeRef !== null
+      ? r1(s.commitMs - s.sendMs - probeRef)
+      : null
 
   const verdict = ((): [Verdict, string] => {
     if (linkMs !== null && linkMs >= STALL_MS)
@@ -317,9 +390,11 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
     if (match.ms === null) return ['unclear', `function ${match.how}`]
     if (match.ms >= FN_SLOW_MS)
       return ['ours', `function ${match.ms} ms (≥ ${FN_SLOW_MS})`]
+    // Function and page normal, the excess in the legs between: that is
+    // no evidence against us (human, 2026-10-21). Unclear counts as ours.
     return [
-      'convex/network',
-      `function ${match.ms} ms and page ${pageMs} ms normal`,
+      'unclear',
+      `function ${match.ms} ms and page ${pageMs} ms normal, no evidence elsewhere`,
     ]
   })()
 
@@ -340,6 +415,14 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
     probeMedianMs: probe.medianMs,
     slowElsewhere: elsewhere,
     linkMs,
+    reruns: rr?.map((c) => ({ fn: c.fn, ms: c.ms })) ?? null,
+    rerunMaxMs,
+    rerunUnionMs: rr ? r1(unionMs(rr)) : null,
+    rerunSumMs: rr ? r1(rr.reduce((n, c) => n + c.ms, 0)) : null,
+    ourShareMs,
+    commitLatencyMs,
+    bytesIn: s.bytesIn ?? null,
+    requests: s.requests ?? null,
   }
 }
 
@@ -362,6 +445,10 @@ export function formatBlame(endMs: number, b: Blame): string {
       ? `our function ${b.fnMatch}`
       : `our function ${ms(b.fnMs)} (${b.fnMatch})`,
   )
+  if (b.reruns?.length)
+    parts.push(
+      `re-runs ${b.reruns.map((r) => `${r.fn.split(':')[1]} ${Math.round(r.ms)}`).join(', ')} (critical ${ms(b.rerunMaxMs)})`,
+    )
   if (b.backMs !== null) parts.push(`back ${ms(b.backMs, b.approx)}`)
   if (b.transitionMs !== null) parts.push(`Transition ${ms(b.transitionMs)}`)
   if (b.overheadMs !== null)
@@ -374,6 +461,7 @@ export function formatBlame(endMs: number, b: Blame): string {
   if (b.slowElsewhere.length)
     parts.push(`Convex slow on ${b.slowElsewhere.join(', ')} too`)
   parts.push(b.linkMs === null ? 'link ?' : `link ${Math.round(b.linkMs)} ms`)
+  if (b.ourShareMs !== null) parts.push(`our share ${ms(b.ourShareMs)}`)
   return `${Math.round(endMs)} = ${parts.join(' · ')} → ${b.verdict} (${b.why})`
 }
 
