@@ -12,9 +12,13 @@ import type { Blame, Verdict } from './blame'
 //   attempt (page + our function + the critical path of the re-runs it
 //   waited for) is judged against the budget less SHARE_MARGIN_MS.
 //
+// An attempt whose logs didn't catch up (qc/live.ts) is unclear, so ours.
+//
 // Retries are capped per run (RETRY_CAP_PER_RUN, across all workers);
 // past the cap a sample is judged as today, over budget fails, and the
-// rule says so. Self-test flows are always judged as today.
+// rule says so. Self-test and knownOver flows are never judged this way:
+// a self-test checks today's rule, and a knownOver flow can't fail, so it
+// mustn't spend the run's retries.
 
 /** Our share must be under the budget less this. */
 export const SHARE_MARGIN_MS = 50
@@ -79,18 +83,22 @@ export async function judgeSlowSample<TDetail>(
   let cur = first
   for (;;) {
     const { blame, caughtUp } = await deps.blame(cur)
+    // Logs behind: calls may be missing, so the function or its re-runs
+    // may be understated. Unclear, so ours (review M2, qc/ours).
+    const verdict = caughtUp ? blame.verdict : 'unclear'
+    const why = caughtUp ? blame.why : `logs behind (was ${blame.verdict})`
     attempts.push({
       ms: cur.ms,
-      verdict: blame.verdict,
-      why: blame.why,
+      verdict,
+      why,
       ourShareMs: blame.ourShareMs,
       caughtUp,
       blame,
     })
-    if (isOurs(blame.verdict)) {
+    if (isOurs(verdict)) {
       return {
         pass: false,
-        rule: blame.verdict === 'ours' ? 'failed: ours' : 'failed: unclear',
+        rule: verdict === 'ours' ? 'failed: ours' : 'failed: unclear',
         attempts,
       }
     }

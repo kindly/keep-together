@@ -3,7 +3,7 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { LiveRun } from './live'
+import { LOST_CAP_MS, LiveRun } from './live'
 import { LIVE_LINK_FILE } from './link.setup'
 import { LIVE_CALLS_FILE } from './server-timings'
 
@@ -116,5 +116,39 @@ describe('LiveRun.linkMs', () => {
       [2, 1100, 180],
     ])
     expect(new LiveRun(dir, pool).linkMs(1150, 1200)).toBe(180)
+  })
+})
+
+describe('the link when the monitor goes quiet (review L1, qc/ours)', () => {
+  const link = (lines: Array<[number, number, number | null]>) =>
+    appendFileSync(
+      path.join(dir, LIVE_LINK_FILE),
+      lines.map((l) => JSON.stringify(l) + '\n').join(''),
+    )
+
+  test('an echo never answered counts as lost for at most LOST_CAP_MS', () => {
+    // The monitor died after seq 2 went unanswered.
+    link([
+      [1, 1000, 2],
+      [2, 1100, null],
+    ])
+    expect(new LiveRun(dir, pool).linkMs(5000, 5100)).toBeNull()
+    expect(new LiveRun(dir, pool).linkMs(1150, 1200)).toBe(LOST_CAP_MS)
+  })
+
+  test('no reply after the sample: not watched, so no link evidence', async () => {
+    link([
+      [1, 1000, 2],
+      [2, 1100, null],
+    ])
+    await expect(new LiveRun(dir, pool).linkPast(1050, 200)).resolves.toBe(
+      false,
+    )
+    link([[3, 1200, 3]])
+    await expect(new LiveRun(dir, pool).linkPast(1050, 200)).resolves.toBe(true)
+  })
+
+  test('no monitor file: not watched', async () => {
+    await expect(new LiveRun(dir, pool).linkPast(0, 50)).resolves.toBe(false)
   })
 })

@@ -125,14 +125,18 @@ whose time a slow sample was and judge on that:
   elevated at that moment, or a Convex-wide spell (two other instances,
   two distinct functions, the sample's own functions excluded).
   Leftover time in the overhead legs alone is `unclear`.
+- **Ours evidence wins:** a page of 40 ms or more, our function or our
+  re-runs at 50 ms or more make a sample ours whatever the link, probe
+  or spell show. An attempt whose log streams didn't catch up is
+  `unclear`.
 - A sample that isn't ours is **retried**, up to two more attempts
   (10 per run). Still over and not ours: it passes only if **our share**
   is under **budget − 50 ms**. Budget numbers are unchanged.
 - **Our share = page + our mutation + the critical path of the page's
-  own re-run queries** between the commit and the Transition. Re-runs
-  that overlap count their slowest, and sequential groups add up. The
-  sum was rejected: Convex re-runs them side by side and the Transition
-  waits for the slowest. On recorded data (1,031 saves) the median
+  own re-run queries** between the commit and the Transition, taken as
+  the union of their intervals: side by side they count once (≈ the
+  slowest), one after another they add up. The sum was rejected: Convex
+  re-runs them side by side and the Transition waits for the slowest. On recorded data (1,031 saves) the median
   page + mutation was 28 ms, and 39 ms with the critical path.
 - Hidden-ours signals are tracked per flow, not judged: bytes received,
   requests, and commit latency. The trend report flags a flow that

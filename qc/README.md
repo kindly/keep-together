@@ -148,32 +148,34 @@ blame, computed live in the worker for the judged set (see Ours).
 | probe | the worker's `qcProbe:rtt` samples within 1 s of the sample, and its run median |
 | link | the first hop's worst round trip during the sample |
 | Convex slow on … | a spell: other instances with a call at or over 100 ms within 500 ms of the sample (rule 4) |
-| re-runs | the page's own subscribed queries (`subs`, tracked by the tap from the page's first script) that started after the commit (−10 ms) and completed by the Transition (+10 ms) on that instance: what the sample waited for besides our mutation. Their **critical path**: re-runs whose intervals overlap run side by side, so each overlapping group counts its slowest, and groups one after another add up (human, 2026-10-21). Max, union and sum are kept too |
+| re-runs | the page's own subscribed queries (`subs`, tracked by the tap from the page's first script) that started after the commit (−10 ms) and completed by the Transition (+10 ms) on that instance: what the sample waited for besides our mutation. Their **critical path** is the union of their intervals (human, 2026-10-21): re-runs side by side count once (≈ the slowest), ones after another add up, and a chain of overlaps counts all it covers. Max and sum are kept too |
 | our share | page + our function + the re-runs' critical path. None for a save whose re-runs can't be told (no `subs`), so it never understates |
 
 The legs before `overhead` add up to the sample. `≈` legs rest on
 `commitMs`, so they're as good as the two clocks agree; a call's log time
 lands about 15 ms before its response reaches the page.
 
-The verdict is the first rule that holds:
+The verdict is the first rule that holds. **Ours evidence comes first**
+(human, 2026-10-21): a link stall, a slow probe or a spell doesn't make
+our page, function or re-runs slower, so not ours only when every part
+of ours is known and normal.
 
-1. `link`: the first hop was at 50 ms or more (the LINK rule).
-2. `unclear`: no legs (`QC_LEGS=0`, or the page sent nothing).
-3. `ours`: page time 40 ms or more. Before the probe, since the page's
-   time doesn't depend on the server.
-4. `convex/network`: a probe at that moment at 1.5× the worker's run
+1. `unclear`: no legs (`QC_LEGS=0`, or the page sent nothing).
+2. `ours`: page time 40 ms or more.
+3. `ours`: our function 50 ms or more (half the server budget).
+4. `ours`: the re-runs' critical path 50 ms or more.
+5. `unclear`: our function unmatched, or a save's re-runs unknown (no
+   `subs`): ours isn't known to be normal.
+6. `link`: the first hop was at 50 ms or more (the LINK rule).
+7. `convex/network`: a probe at that moment at 1.5× the worker's run
    median and 20 ms over it, or a spell: calls at or over 100 ms on two
    other instances within 500 ms, of at least two different functions.
    Seeds, bulk functions, `auth:*` and the sample's own functions don't
    count, so a regression of our code, slow on every instance at once,
    stays `ours`. The probe runs every 2 s and misses most stalls; the
-   other instances catch them. Before the function: a stall slows our
-   function too.
-5. `unclear`: our function unmatched.
-6. `ours`: our function 50 ms or more (half the server budget).
-7. `unclear`: function and page normal, the excess in the legs between
-   them. That is no evidence it wasn't ours (human, 2026-10-21), and
-   unclear counts as ours (see Ours).
+   other instances catch them.
+8. `unclear`: ours all normal, the excess in the legs between them. That
+   is no evidence it wasn't ours, and unclear counts as ours (see Ours).
 
 ### Ours
 
@@ -190,16 +192,27 @@ over budget is blamed live in the worker (`qc/live.ts`, `qc/judge.ts`):
 - **Retry cap:** 10 extra attempts per run, across all workers (files in
   `qc-results/runs/<id>/retries/`). Past it a sample is judged as today
   (over budget fails) as `failed: retry cap`.
-- **Self-test flows** (`harness.*`) are always judged as today.
+- **Self-test and knownOver flows** are judged as before this rule (any
+  sample over budget in the judged set fails the flow; a knownOver flow
+  still doesn't fail the run) and never spend the run's retries.
 - **Live data.** The log collector and the link monitor append
   `server-calls.live.jsonl` and `link.live.jsonl` in the run directory as
   they go. Before blaming, the worker pings every instance with the probe
   query and waits until each log stream has passed the sample's window
   plus 500 ms (the spell window), at most 8 s; `convex logs` lags 30 ms at
-  the median, under 100 ms at p99. A stream that doesn't catch up leaves
-  calls missing, so the function goes unmatched, the verdict unclear,
-  and the sample fails: waiting costs time, never excuses a sample.
-  `[logs behind]` marks it.
+  the median, under 100 ms at p99. **An attempt whose streams didn't
+  catch up is `unclear`, so ours, whatever the partial data said**: calls
+  may be missing, so the function or its re-runs could be understated.
+  `[logs behind]` marks it. The first hop is read the same way: if the
+  monitor answered no ping sent after the sample within 2 s (it died, or
+  the gateway stopped answering ICMP), the link counts as not watched
+  for that sample, never as a stall; an echo never answered counts as
+  lost until the next reply, at most 1 s.
+- **Without the run's data** (no log collector, no link monitor) a slow
+  sample is usually `unclear` and fails as before; but the worker's own
+  RTT probe is always there, so an elevated probe can still give
+  `convex/network` and a retry. Each such sample waits out the 8 s
+  catch-up.
 - **Reading it:** the table's last column adds `(1 passed on retry, …)`;
   a `JUDGED` list after `BLAME` shows each judged sample's attempts,
   verdicts and our share; and next to the failures,

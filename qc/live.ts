@@ -33,6 +33,12 @@ import { LIVE_CALLS_FILE } from './server-timings'
 /** How long a slow sample may wait for the log streams to catch up. */
 export const CATCH_UP_TIMEOUT_MS = 8_000
 const POLL_MS = 100
+/**
+ * An echo never answered counts as lost until the next reply came back,
+ * but no longer than this: a monitor that died or a gateway that stopped
+ * answering ICMP must not read as a stall that never ends.
+ */
+export const LOST_CAP_MS = 1_000
 const PROBE = 'platform/qcProbe:rtt'
 
 type LiveCall = ServerCall & { mark?: true }
@@ -121,15 +127,20 @@ export class LiveRun {
     return true
   }
 
-  /** Wait until the first hop has answered a ping sent after `until`. */
-  async linkPast(until: number, timeoutMs = 2_000) {
-    if (!existsSync(path.join(this.dir, LIVE_LINK_FILE))) return
+  /**
+   * Wait until the first hop has answered a ping sent after `until`. False
+   * when none did in time: the monitor is gone or the gateway stopped
+   * answering, so the link wasn't watched for this sample.
+   */
+  async linkPast(until: number, timeoutMs = 2_000): Promise<boolean> {
+    if (!existsSync(path.join(this.dir, LIVE_LINK_FILE))) return false
     const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
+    for (;;) {
       if (
         this.link.read().some(([, sent, rtt]) => rtt !== null && sent > until)
       )
-        return
+        return true
+      if (Date.now() >= deadline) return false
       await new Promise((r) => setTimeout(r, POLL_MS))
     }
   }
@@ -150,7 +161,15 @@ export class LiveRun {
     const lost = all.flatMap(([seq, sent, rtt]): Array<[number, number]> =>
       rtt !== null || answered.has(seq)
         ? []
-        : [[sent, backs.find((b) => b > sent) ?? Date.now()]],
+        : [
+            [
+              sent,
+              Math.min(
+                backs.find((b) => b > sent) ?? Infinity,
+                sent + LOST_CAP_MS,
+              ),
+            ],
+          ],
     )
     return linkDuring({ pings, lost }, from, to)
   }
@@ -177,11 +196,12 @@ export class LiveRun {
   ): Promise<{ blame: Blame; caughtUp: boolean; waitedMs: number }> {
     const t = Date.now()
     const end = s.at + s.endMs
-    const [caughtUp] = await Promise.all([
+    const [caughtUp, watched] = await Promise.all([
       this.catchUp(end + SPELL.windowMs),
       this.linkPast(end),
     ])
-    const linkMs = this.linkMs(s.at, end)
+    // Not watched: no link evidence either way (never an invented stall).
+    const linkMs = watched ? this.linkMs(s.at, end) : null
     return {
       blame: blame({ ...s, linkMs }, this.context()),
       caughtUp,

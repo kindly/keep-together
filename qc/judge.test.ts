@@ -13,10 +13,9 @@ import {
 } from './judge'
 import type { JudgeDeps, Measured } from './judge'
 import { takeRetry } from './timing'
-import recorded from './blame.fixture.json'
+import { cases } from './blame.fixture'
 
 type Fixture = { sample: BlameSample } & BlameContext
-const cases = recorded as unknown as Record<string, Fixture>
 
 // A blame with only what the judge reads.
 const verdict = (v: Verdict, ourShareMs: number | null = 40): Blame =>
@@ -112,6 +111,38 @@ describe('judgeSlowSample', () => {
     const j = await judgeSlowSample(first, 100, deps)
     expect(j).toMatchObject({ pass: false, rule: 'failed: ours' })
     expect(j.attempts.map((a) => a.verdict)).toEqual(['link', 'ours'])
+  })
+
+  test('logs behind: unclear, so ours, whatever the verdict was (review M2)', async () => {
+    const calls = { measure: 0 }
+    const j = await judgeSlowSample(first, 100, {
+      blame: () =>
+        Promise.resolve({ blame: verdict('link', 10), caughtUp: false }),
+      measure: () => {
+        calls.measure++
+        return Promise.resolve({ ms: 80, detail: null })
+      },
+      takeRetry: () => true,
+    })
+    expect(j).toMatchObject({ pass: false, rule: 'failed: unclear' })
+    expect(j.attempts[0]).toMatchObject({
+      verdict: 'unclear',
+      why: 'logs behind (was link)',
+      caughtUp: false,
+    })
+    expect(calls.measure).toBe(0)
+  })
+
+  test('logs behind on the last attempt: never judged on its share', async () => {
+    const spell = verdict('convex/network', 10)
+    let n = 0
+    const j = await judgeSlowSample(first, 100, {
+      blame: () => Promise.resolve({ blame: spell, caughtUp: n++ < 2 }),
+      measure: () => Promise.resolve({ ms: 120, detail: null }),
+      takeRetry: () => true,
+    })
+    expect(j).toMatchObject({ pass: false, rule: 'failed: unclear' })
+    expect(j.attempts).toHaveLength(3)
   })
 
   test('past the run cap: judged as today, and the rule says so', async () => {

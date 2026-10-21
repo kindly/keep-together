@@ -728,7 +728,7 @@ export async function runFlow<TArg>(
   const { medianMs, maxMs } = judged
   let pass = judged.pass
   // Over budget in the judged set: whose time was it? (qc/judge.ts)
-  if (!skipped && !pass && !budget.selfTest) {
+  if (!skipped && !pass && !budget.selfTest && !budget.knownOver) {
     pass = true
     for (let i = 0; i < samplesMs.length && pass; i++) {
       if (samplesMs[i] < budget.maxMs) continue
