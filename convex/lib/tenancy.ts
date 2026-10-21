@@ -308,15 +308,25 @@ function scopedWriter(
   }
 }
 
+// A table with no rule is denied, not allowed: `rules` names every table
+// from a list (`ALL_TABLES`), and one missing from it must fail closed.
+const rlsConfig = { defaultPolicy: 'deny' } as const
+
 export function scopeReader(ctx: QueryCtx, tenantId: Id<'tenants'>) {
-  return scopedReader(tenantId, wrapDatabaseReader({ tenantId }, ctx.db, rules))
+  return scopedReader(
+    tenantId,
+    wrapDatabaseReader({ tenantId }, ctx.db, rules, rlsConfig),
+  )
 }
 
 export function scopeWriter(
   ctx: { db: DatabaseWriter },
   tenantId: Id<'tenants'>,
 ) {
-  return scopedWriter(tenantId, wrapDatabaseWriter({ tenantId }, ctx.db, rules))
+  return scopedWriter(
+    tenantId,
+    wrapDatabaseWriter({ tenantId }, ctx.db, rules, rlsConfig),
+  )
 }
 
 // ── membership ─────────────────────────────────────────────────────────────
