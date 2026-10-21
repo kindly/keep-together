@@ -1,15 +1,12 @@
-import schema from '../schema'
+import { appTables } from './appSchema'
 
 /**
- * Tables the control plane owns. Everything else is a domain table and must
- * be tenant-scoped (tenantId field, tenantId-first indexes). Auth tables
- * come from @convex-dev/auth and are global by nature.
+ * @convex-dev/auth's tables, global by nature. Named here rather than read
+ * from `authTables`, so the tenancy rules can deny them without importing
+ * the auth library (`appSchema.ts` says why); `tables.test.ts` checks the
+ * list against the real schema.
  */
-export const PLATFORM_TABLES = new Set<string>([
-  'tenants',
-  'memberships',
-  'tenantSettings',
-  // @convex-dev/auth
+export const AUTH_TABLES = [
   'users',
   'authSessions',
   'authAccounts',
@@ -17,9 +14,20 @@ export const PLATFORM_TABLES = new Set<string>([
   'authVerificationCodes',
   'authVerifiers',
   'authRateLimits',
+]
+
+/**
+ * Tables the control plane owns. Everything else is a domain table and must
+ * be tenant-scoped (tenantId field, tenantId-first indexes).
+ */
+export const PLATFORM_TABLES = new Set<string>([
+  'tenants',
+  'memberships',
+  'tenantSettings',
+  ...AUTH_TABLES,
 ])
 
-export const ALL_TABLES = Object.keys(schema.tables)
+export const ALL_TABLES = [...Object.keys(appTables), ...AUTH_TABLES]
 
 export const DOMAIN_TABLES = ALL_TABLES.filter((t) => !PLATFORM_TABLES.has(t))
 
@@ -33,18 +41,21 @@ type TableLike = {
   export: () => ExportedTable
 }
 
-function table(name: string): TableLike {
-  return (schema.tables as Record<string, unknown>)[name] as TableLike
+// Domain tables are all app tables; an auth table has no tenantId.
+function table(name: string): TableLike | undefined {
+  return (appTables as Record<string, unknown>)[name] as TableLike | undefined
 }
 
 /** Does this table's document validator declare a `tenantId` field? */
 export function hasTenantId(name: string): boolean {
-  return 'tenantId' in (table(name).validator.fields ?? {})
+  return 'tenantId' in (table(name)?.validator.fields ?? {})
 }
 
 /** Indexes whose first field is not `tenantId` (empty for a well-formed domain table). */
 export function unscopedIndexes(name: string): Array<string> {
-  const exported = table(name).export()
+  const t = table(name)
+  if (!t) return [`unknown table ${name}`]
+  const exported = t.export()
   const bad = exported.indexes
     .filter((i) => i.fields[0] !== 'tenantId')
     .map((i) => i.indexDescriptor)

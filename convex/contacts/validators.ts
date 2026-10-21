@@ -4,7 +4,7 @@
  */
 import { v } from 'convex/values'
 import type { ObjectType } from 'convex/values'
-import { channelLabel, contactKind } from '../schema'
+import { channelLabel, contactKind } from '../lib/appSchema'
 
 export const detailsFields = {
   clientKey: v.optional(v.string()), // create only; idempotency key

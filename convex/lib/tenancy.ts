@@ -29,7 +29,7 @@
  * Raw `query` / `mutation` / `action` may only be imported under
  * `convex/platform/` — ESLint enforces this.
  */
-import { getAuthUserId } from '@convex-dev/auth/server'
+import { getAuthUserId } from './authUser'
 import {
   customAction,
   customMutation,

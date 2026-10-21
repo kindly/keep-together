@@ -11,6 +11,7 @@ import {
   restoreEntityTo,
 } from '../lib/contracts'
 import type { CommandGroup, ContractCtx, Problem } from '../lib/contracts'
+import { tenantPreferences } from '../lib/lists'
 import { tenantMutation } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { describe } from '../sources/code'
@@ -27,7 +28,11 @@ import {
   tag,
   tags,
 } from './contracts'
-import { BULK_TAG_LIMIT } from './rules'
+import {
+  BULK_TAG_LIMIT,
+  IDENTIFIER_TYPE_LIMIT,
+  normaliseTagName,
+} from './rules'
 import {
   acquisitionFields,
   addressesFields,
@@ -164,6 +169,36 @@ export const saveTags = tenantMutation({
 })
 
 /**
+ * A tag or identifier type save's reads, all at once: the list-manager
+ * switch, the row, the name clash and, for a new type, the cap. The
+ * contract then finds them cached (the save-path prefetch, by `saveForm`).
+ */
+async function prefetchListSave(
+  db: ScopedDatabaseReader,
+  table: 'tags' | 'identifierTypes',
+  id: Id<'tags'> | Id<'identifierTypes'> | undefined,
+  name: string,
+) {
+  const nameNormalized = normaliseTagName(name)
+  await Promise.all([
+    tenantPreferences(db),
+    id ? db.get(id) : null,
+    db
+      .query(table)
+      .withIndex('by_tenant_nameNormalized', (q) =>
+        q.eq('nameNormalized', nameNormalized),
+      )
+      .first(),
+    table === 'identifierTypes' && !id
+      ? db
+          .query(table)
+          .withIndex('by_tenant_nameNormalized')
+          .take(IDENTIFIER_TYPE_LIMIT)
+      : null,
+  ])
+}
+
+/**
  * Create a tag (no `id`) or rename / archive / reactivate one. Admins, and
  * staff when the tenant lets them manage tags (the contract is
  * `managesList: 'tags'`; lib/lists).
@@ -181,6 +216,7 @@ export const saveTag = tenantMutation({
         { field: 'expected', message: 'An update needs the version it edits' },
       ])
     }
+    await prefetchListSave(ctx.db, 'tags', id, payload.name)
     return executeContract(ctx, tag, payload, {
       entityId: id,
       expected,
@@ -208,6 +244,7 @@ export const saveIdentifierType = tenantMutation({
         { field: 'expected', message: 'An update needs the version it edits' },
       ])
     }
+    await prefetchListSave(ctx.db, 'identifierTypes', id, payload.name)
     return executeContract(ctx, identifierType, payload, {
       entityId: id,
       expected,
@@ -404,6 +441,91 @@ export async function currentPayloads(
   return { contact, current }
 }
 
+// ── save-path prefetch ─────────────────────────────────────────────────────
+//
+// A contract re-reads what it needs inside its own transaction, and the
+// search projection rebuilds from fresh reads after the writes: that is
+// what keeps them correct, so they stay as they are. But each sequential
+// level of *fresh* reads costs a deployment ~2.5 ms, while a repeat of a
+// read the transaction already made costs ~0.1 ms. So `saveForm` makes
+// those reads early and at once, and discards the results: the contracts
+// and the projection then find them cached, and a save is two read levels
+// after auth instead of five or six. Nothing here decides anything; a read
+// left out (or one too many) only costs time.
+
+/**
+ * First level, beside `currentPayloads`: the projection's row, and the
+ * submitted tags' documents (the tags contract checks the new ones, and
+ * the projection names them all).
+ */
+async function prefetchSearchRow(
+  db: ScopedDatabaseReader,
+  contactId: Id<'contacts'>,
+  submittedTags: Array<{ tagId: Id<'tags'> }> | undefined,
+) {
+  await Promise.all([
+    db
+      .query('contactSearch')
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+      .unique(),
+    ...(submittedTags ?? []).map((r) => db.get(r.tagId)),
+  ])
+}
+
+/**
+ * Second level, once the current rows are known: what `reconcile` will
+ * look up for the changed slices (only keys new to the contact for tags
+ * and identifiers, which pass it their rows; every key for the others),
+ * and the kept tags' documents the projection names when tags didn't
+ * change.
+ */
+async function prefetchChanged(
+  db: ScopedDatabaseReader,
+  found: NonNullable<Awaited<ReturnType<typeof currentPayloads>>>,
+  changed: Array<{ name: Slice; prepared: unknown }>,
+) {
+  const { current } = found
+  const reads: Array<Promise<unknown>> = []
+  const lookup = (table: Parameters<typeof db.query>[0], key?: string) => {
+    if (key === undefined) return
+    reads.push(
+      db
+        .query(table as 'contactTags')
+        .withIndex('by_tenant_key', (q) => q.eq('key', key))
+        .first(),
+    )
+  }
+  const newKeys = (
+    rows: Array<{ key?: string }>,
+    kept: Array<{ key?: string }>,
+  ) => {
+    const have = new Set(kept.map((r) => r.key))
+    return rows.filter((r) => !have.has(r.key))
+  }
+  for (const { name, prepared } of changed) {
+    if (name === 'methods') {
+      const p = prepared as Payloads['methods']
+      for (const r of p.emails) lookup('contactEmails', r.key)
+      for (const r of p.phones) lookup('contactPhones', r.key)
+    } else if (name === 'addresses') {
+      const p = prepared as Payloads['addresses']
+      for (const r of p.addresses) lookup('contactAddresses', r.key)
+    } else if (name === 'tags') {
+      const p = prepared as Payloads['tags']
+      for (const r of newKeys(p.tags, current.tags.tags))
+        lookup('contactTags', r.key)
+    } else if (name === 'identifiers') {
+      const p = prepared as Payloads['identifiers']
+      for (const r of newKeys(p.identifiers, current.identifiers.identifiers))
+        lookup('contactIdentifiers', r.key)
+    }
+  }
+  if (changed.length > 0 && !changed.some((c) => c.name === 'tags')) {
+    for (const r of current.tags.tags) reads.push(db.get(r.tagId))
+  }
+  await Promise.all(reads)
+}
+
 /**
  * Single endpoint behind autosave and the Save button. Every provided slice
  * is diffed against current state and only the changed ones execute: a
@@ -424,7 +546,10 @@ export const saveForm = tenantMutation({
     identifiers: slice(identifiersFields),
   },
   handler: async (ctx, args) => {
-    const found = await currentPayloads(ctx.db, args.id)
+    const [found] = await Promise.all([
+      currentPayloads(ctx.db, args.id),
+      prefetchSearchRow(ctx.db, args.id, args.tags?.tags),
+    ])
     if (!found) throw new ConvexError({ kind: 'not_found' as const })
     const { contact, current } = found
     const source = args.source ?? 'ui'
@@ -495,6 +620,9 @@ export const saveForm = tenantMutation({
       contact.identifiersVersion,
     )
 
+    // Not awaited yet: its reads go out alongside the identifier check's.
+    const prefetched = prefetchChanged(ctx.db, found, changed)
+
     // A clash or a type archived mid-edit is the contract's refusal too,
     // but caught here it stays on its row: the other slices still save.
     const ids = changed.findIndex((c) => c.name === 'identifiers')
@@ -528,6 +656,7 @@ export const saveForm = tenantMutation({
       }
     }
 
+    await prefetched
     const group =
       changed.length > 1
         ? await commandGroup(ctx, 'contact form save')

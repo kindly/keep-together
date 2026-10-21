@@ -177,12 +177,15 @@ export async function executeContract<
   input: ObjectType<TFields>,
   opts: ExecuteOptions<TRoot>,
 ): Promise<ExecuteResult<TRoot>> {
-  if (contract.managesList && ctx.role !== null) {
-    await requireListManager(
-      { db: ctx.db, role: ctx.role },
-      contract.managesList,
-    )
-  }
+  // The list-manager check and the root read go out together: each is a
+  // read level on the deployment (~2.5 ms). The check still decides first.
+  const role = ctx.role
+  const [, maybeRoot] = await Promise.all([
+    contract.managesList && role !== null
+      ? requireListManager({ db: ctx.db, role }, contract.managesList)
+      : undefined,
+    opts.entityId !== undefined ? ctx.db.get<TRoot>(opts.entityId) : undefined,
+  ])
   // Shape check matters for restore (stored payloads re-enter here); for
   // live calls the mutation's args validator has already run.
   validate(v.object(contract.fields), input, { throw: true })
@@ -193,7 +196,7 @@ export async function executeContract<
   if (opts.entityId !== undefined) {
     // Fresh read inside the transaction: a handler must never work from a
     // document the client sent (it may predate another command).
-    root = await ctx.db.get<TRoot>(opts.entityId)
+    root = maybeRoot ?? null
     if (!root) throw new ConvexError({ kind: 'not_found' as const })
     const current = (root as Record<string, unknown>)[contract.counter]
     if (typeof current !== 'number') {

@@ -6,7 +6,7 @@
 import { v } from 'convex/values'
 import type { ObjectType } from 'convex/values'
 import { defineContract, invalid, registry, rejected } from '../lib/contracts'
-import { suppressionReason } from '../schema'
+import { suppressionReason } from '../lib/appSchema'
 import { normaliseEmail } from '../contacts/rules'
 import { SUPPRESSION_NOTE_MAX } from './rules'
 

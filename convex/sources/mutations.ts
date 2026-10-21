@@ -8,10 +8,14 @@ import { v } from 'convex/values'
 import type { Id } from '../_generated/dataModel'
 import { commandGroup, executeContract } from '../lib/contracts'
 import type { CommandGroup, ContractCtx, Source } from '../lib/contracts'
-import { requireListManager } from '../lib/lists'
+import { requireListManager, tenantPreferences } from '../lib/lists'
 import { tenantMutation } from '../lib/tenancy'
 import { code, deletePart } from './code'
-import { FIRST_VERSION_NAME } from './rules'
+import {
+  FIRST_VERSION_NAME,
+  SOURCE_CODE_LIMIT,
+  normaliseSourceName,
+} from './rules'
 import { sourceCodeFields } from './validators'
 import type { SourceCodePayload } from './validators'
 
@@ -27,7 +31,10 @@ export async function createPart(
   source: Source,
   inGroup?: CommandGroup,
 ): Promise<{ id: Id<'sourceCodes'>; versionId?: Id<'sourceCodes'> }> {
-  const parent = parentId ? await ctx.db.get(parentId) : null
+  const [parent] = await Promise.all([
+    parentId ? ctx.db.get(parentId) : null,
+    prefetchCreate(ctx, parentId, payload.name),
+  ])
   if (parent?.level !== 'category') {
     const { id } = await executeContract(ctx, code, payload, {
       source,
@@ -50,6 +57,34 @@ export async function createPart(
     { source, group, createWith: { parentId: id } },
   )
   return { id, versionId }
+}
+
+/**
+ * The reads the `code` contract makes for a new part under `parentId`,
+ * made beside the parent's and discarded: the contract then finds them in
+ * the transaction's cache instead of paying a deployment read level each
+ * (~2.5 ms), the save-path prefetch of `contacts/mutations.ts`. Nothing
+ * here decides anything.
+ */
+async function prefetchCreate(
+  ctx: ContractCtx,
+  parentId: Id<'sourceCodes'> | undefined,
+  name: string,
+) {
+  const nameNormalized = normaliseSourceName(name)
+  await Promise.all([
+    tenantPreferences(ctx.db),
+    ctx.db
+      .query('sourceCodes')
+      .withIndex('by_tenant_parent', (q) =>
+        q.eq('parentId', parentId).eq('nameNormalized', nameNormalized),
+      )
+      .first(),
+    ctx.db
+      .query('sourceCodes')
+      .withIndex('by_tenant_parent')
+      .take(SOURCE_CODE_LIMIT),
+  ])
 }
 
 /** Add a category, a detail (with version `001`) or a version. */

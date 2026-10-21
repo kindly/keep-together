@@ -2,7 +2,7 @@
  * Control plane: tenant lifecycle and membership. This folder is the only
  * place raw `query` / `mutation` may be imported.
  */
-import { getAuthUserId } from '@convex-dev/auth/server'
+import { getAuthUserId } from '../lib/authUser'
 import { ConvexError, v } from 'convex/values'
 import { internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'

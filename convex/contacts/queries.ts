@@ -10,7 +10,7 @@ import {
   normaliseIdentifier,
   normaliseTagName,
 } from './rules'
-import { contactKind } from '../schema'
+import { contactKind } from '../lib/appSchema'
 import { matchesAll, parseSearch } from './search'
 import type { AlsoUsedBy } from './warnings'
 import { groupsToRead, toMoments } from './history'
