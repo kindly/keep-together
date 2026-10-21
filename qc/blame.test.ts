@@ -1,0 +1,204 @@
+import { describe, expect, test } from 'vitest'
+import {
+  blame,
+  countVerdicts,
+  formatBlame,
+  formatCounts,
+  probeElevated,
+} from './blame'
+import type { BlameSample, Probe, ServerCall } from './blame'
+import recorded from './blame.fixture.json'
+
+// Recorded slow samples (qc-results of runs tn9ttz4a and tn9g1x25), each
+// with the Convex calls on its instance around it and every RTT probe of
+// its worker in that run. The samples predate `fns`, so each fixture adds
+// the function its flow calls (the one call of it in the window).
+interface Case {
+  run: string
+  flow: string
+  budgetMs: number
+  sample: BlameSample
+  calls: Array<ServerCall>
+  probes: Array<Probe>
+}
+const cases = recorded as unknown as Record<
+  'normal' | 'slowFunction' | 'linkStall' | 'slowSpell',
+  Case
+>
+const run = (c: Case, s: Partial<BlameSample> = {}) =>
+  blame({ ...c.sample, ...s }, { calls: c.calls, probes: c.probes })
+
+const legsSum = (b: ReturnType<typeof blame>) =>
+  b.pageMs! + b.toConvexMs! + b.fnMs! + b.backMs! + b.transitionMs!
+
+describe('blame on recorded samples', () => {
+  test('function and page normal: the time is in the legs between, convex/network', () => {
+    const c = cases.normal
+    const b = run(c)
+    expect(b).toMatchObject({
+      verdict: 'convex/network',
+      fnMs: 30.3,
+      fnMatch: 'contacts/mutations:setAcquisition',
+      pageMs: 17.6,
+      toConvexMs: 21,
+      backMs: 46.1,
+      transitionMs: 12.7,
+      approx: true,
+      probeMs: [30.4],
+    })
+    // The legs partition the sample.
+    expect(legsSum(b)).toBeCloseTo(c.sample.endMs, 5)
+    expect(formatBlame(c.sample.endMs, b)).toBe(
+      '128 = page 18 · to Convex ≈21 · our function 30 (contacts/mutations:setAcquisition) · back ≈46 · Transition 13 · overhead beyond the probe 49 · probe 30 ms @ that moment (run median 33) · link 1 ms → convex/network (function 30.3 ms and page 17.6 ms normal)',
+    )
+  })
+
+  test('a slow function is ours', () => {
+    const c = cases.slowFunction
+    const b = run(c)
+    expect(b.verdict).toBe('ours')
+    expect(b.fnMs).toBe(50.5)
+    expect(b.why).toMatch(/function 50.5 ms/)
+    expect(legsSum(b)).toBeCloseTo(c.sample.endMs, 5)
+  })
+
+  test('a first-hop stall is the link, whatever else was slow', () => {
+    const c = cases.linkStall
+    expect(c.sample.linkMs).toBe(192)
+    const b = run(c)
+    expect(b.verdict).toBe('link')
+    // Still split: the stall sits before the commit.
+    expect(b.fnMs).toBe(14.7)
+    expect(b.toConvexMs).toBeGreaterThan(150)
+  })
+
+  test('a Convex-wide slow spell: the probe was elevated, convex/network', () => {
+    const c = cases.slowSpell
+    const b = run(c)
+    expect(b.verdict).toBe('convex/network')
+    expect(b.probeMs).toContain(83.7)
+    expect(b.why).toMatch(/^probe 83.7 ms/)
+    // The first hop was slowish (43.7 ms), under the stall line.
+    expect(b.linkMs).toBeLessThan(50)
+  })
+
+  test('the elevated probe wins over a slow function at that moment', () => {
+    const c = cases.slowSpell
+    const calls = c.calls.map((x) =>
+      x.fn === 'sources/mutations:create' ? { ...x, ms: 90 } : x,
+    )
+    const b = blame(c.sample, { calls, probes: c.probes })
+    expect(b.fnMs).toBe(90)
+    expect(b.verdict).toBe('convex/network')
+  })
+})
+
+describe('matching the function', () => {
+  test('two candidate calls (two workers on one instance) is unmatched, unclear', () => {
+    const c = cases.normal
+    const mine = c.calls.find((x) => x.ms === 30.3)!
+    const calls = [...c.calls, { ...mine, at: mine.at + 5, ms: 12 }]
+    const b = blame(c.sample, { calls, probes: c.probes })
+    expect(b.fnMs).toBeNull()
+    expect(b.fnMatch).toBe(
+      'unmatched: 2 contacts/mutations:setAcquisition calls in the window',
+    )
+    expect(b.verdict).toBe('unclear')
+  })
+
+  test('history from before `fns` is unmatched, never guessed', () => {
+    const b = run(cases.normal, { fns: undefined })
+    expect(b.fnMatch).toBe('unmatched: sample has no function name')
+    expect(b.verdict).toBe('unclear')
+  })
+
+  test('a call outside the window is not matched', () => {
+    const c = cases.normal
+    const calls = c.calls.map((x) =>
+      x.fn === 'contacts/mutations:setAcquisition'
+        ? { ...x, at: x.at + 500 }
+        : x,
+    )
+    const b = blame(c.sample, { calls, probes: c.probes })
+    expect(b.fnMatch).toMatch(/^unmatched: 0 /)
+  })
+
+  test('a call on another instance is not matched', () => {
+    const b = run(cases.normal, { instance: 'qc-9' })
+    expect(b.fnMatch).toMatch(/^unmatched: 0 /)
+  })
+
+  test('a query change takes the slowest of the queries it adds', () => {
+    const s: BlameSample = {
+      worker: 0,
+      instance: 'qc-1',
+      at: 10_000,
+      sendMs: 2,
+      sent: 'ModifyQuerySet',
+      fns: ['a:list', 'a:count'],
+      commitMs: null,
+      responseMs: null,
+      transitionMs: 95,
+      lastInMs: 96,
+      endMs: 105,
+      longTaskMs: 0,
+      connects: 0,
+      hidden: false,
+      hostCpu: null,
+      load1: 1,
+      linkMs: 2,
+    }
+    const calls: Array<ServerCall> = [
+      { instance: 'qc-1', at: 10_060, fn: 'a:list', type: 'Query', ms: 62 },
+      { instance: 'qc-1', at: 10_040, fn: 'a:count', type: 'Query', ms: 8 },
+    ]
+    const b = blame(s, { calls, probes: [] })
+    expect(b).toMatchObject({
+      fnMs: 62,
+      convexNetworkMs: 31,
+      toConvexMs: null,
+      pageMs: 12,
+      verdict: 'ours',
+    })
+  })
+})
+
+describe('verdict rules', () => {
+  test('a slow page is ours, even with the probe elevated', () => {
+    const c = cases.slowSpell
+    // The result reached the screen 60 ms after its Transition.
+    const b = run(c, { endMs: c.sample.transitionMs! + 60 })
+    expect(b.pageMs).toBeGreaterThanOrEqual(40)
+    expect(b.verdict).toBe('ours')
+  })
+
+  test('no legs (QC_LEGS=0, or nothing sent) is unclear', () => {
+    const b = run(cases.normal, {
+      sendMs: null,
+      sent: null,
+      commitMs: null,
+      responseMs: null,
+      transitionMs: null,
+      lastInMs: null,
+    })
+    expect(b.verdict).toBe('unclear')
+    expect(b.why).toBe('no legs (nothing sent)')
+  })
+
+  test('a probe is elevated at 1.5× and 20 ms over the median', () => {
+    expect(probeElevated(50, 30)).toBe(true)
+    expect(probeElevated(49, 30)).toBe(false)
+    // 1.5× of a 10 ms median is only 5 ms over: not enough.
+    expect(probeElevated(15, 10)).toBe(false)
+  })
+})
+
+test('counts by verdict', () => {
+  const c = countVerdicts([
+    { verdict: 'ours' },
+    { verdict: 'link' },
+    { verdict: 'ours' },
+  ])
+  expect(formatCounts(c)).toBe('ours 2, link 1')
+  expect(formatCounts({})).toBe('none')
+})

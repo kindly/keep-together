@@ -29,6 +29,14 @@ import { BUDGET_MS, RESULTS_FILE, budgetMiss } from './server-timings'
 import { LINK_FILE, STALL_MS, linkDuring } from './link.setup'
 import type { LinkFile } from './link.setup'
 import type { ServerTimingsFile } from './server-timings'
+import {
+  blame,
+  countVerdicts,
+  formatBlame,
+  formatCounts,
+  readBlameContext,
+} from './blame'
+import type { Blame, BlameContext } from './blame'
 import type { Budget, FlowKind, FlowName } from './budgets'
 
 // QC reporter: gathers every flow record the workers wrote for this run
@@ -49,6 +57,11 @@ import type { Budget, FlowKind, FlowName } from './budgets'
 // first-hop round trip during it (qc/link.setup.ts); a LINK banner lists
 // the over-budget samples that overlapped a first-hop stall. Context only:
 // they're judged like any other.
+//
+// Every sample at or over budget also gets a breakdown and a verdict
+// (qc/blame.ts: ours, link, convex/network, unclear) on its history line
+// as `blame`, a BLAME list, and a count by verdict next to the failures.
+// They explain; they never change a pass or a fail.
 //
 // A `knownOver` flow (an approved exception) never fails the run, but
 // every run lists all of them in a banner with their samples. So does
@@ -103,6 +116,8 @@ export type SampleWhere = SampleDetail & {
   instance?: string
   /** Worst first-hop round trip during the sample; absent without a monitor. */
   linkMs?: number | null
+  /** At or over budget: whose time it was (qc/blame.ts). */
+  blame?: Blame
 }
 
 function readLink(dir: string): LinkFile | null {
@@ -183,6 +198,7 @@ function summarise(
   records: Array<FlowRecord>,
   base: Pick<HistoryLine, 'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'server'>,
   link: LinkFile | null,
+  ctx: BlameContext,
 ): Array<HistoryLine> {
   const byFlow = new Map<FlowName, Array<FlowRecord>>()
   for (const r of records)
@@ -195,14 +211,17 @@ function summarise(
       const judged = rs.filter((r) => r.pass !== null)
       const firstSamplesMs = rs.flatMap((r) => r.firstSamplesMs ?? [])
       const where = (r: FlowRecord, d: Array<SampleDetail> | undefined) =>
-        (d ?? []).map((x): SampleWhere => ({
-          worker: r.worker,
-          instance: r.instance,
-          ...x,
-          ...(link?.watched && {
-            linkMs: linkDuring(link, x.at, x.at + x.endMs),
-          }),
-        }))
+        (d ?? []).map((x): SampleWhere => {
+          const s: SampleWhere = {
+            worker: r.worker,
+            instance: r.instance,
+            ...x,
+            ...(link?.watched && {
+              linkMs: linkDuring(link, x.at, x.at + x.endMs),
+            }),
+          }
+          return x.endMs >= r.budgetMs ? { ...s, blame: blame(s, ctx) } : s
+        })
       const detail = rs.flatMap((r) => where(r, r.detail))
       const firstDetail = rs.flatMap((r) => where(r, r.firstDetail))
       return {
@@ -377,6 +396,53 @@ function linkBanner(
   ])
 }
 
+/** Every slow sample's breakdown, by flow. */
+function blameList(
+  lines: Array<HistoryLine>,
+  selfTest: Set<FlowName>,
+): Array<string> {
+  const rows = lines
+    .filter((l) => !selfTest.has(l.flow))
+    .flatMap((l) => {
+      const slow = (set: string, d: Array<SampleWhere> | undefined) =>
+        (d ?? [])
+          .filter((x) => x.blame)
+          .map(
+            (x) =>
+              `  ${set} w${x.worker} ${x.instance ?? '?'} ${new Date(x.at).toISOString().slice(11, 23)}: ${formatBlame(x.endMs, x.blame!)}`,
+          )
+      const all = [...slow('1st', l.firstDetail), ...slow('   ', l.detail)]
+      return all.length ? [`${l.flow} (budget < ${l.budgetMs}):`, ...all] : []
+    })
+  if (!rows.length) return []
+  return [
+    'BLAME: samples at or over budget, split into legs (qc/README.md "Blame"; ≈ = server clock; context only, judged as usual):',
+    ...rows,
+  ]
+}
+
+/** Slow samples by verdict, and the verdicts of each failed flow's samples. */
+function blameSummary(
+  lines: Array<HistoryLine>,
+  selfTest: Set<FlowName>,
+): Array<string> {
+  const real = lines.filter((l) => !selfTest.has(l.flow))
+  const blames = (l: HistoryLine) =>
+    [...(l.firstDetail ?? []), ...(l.detail ?? [])].flatMap((d) =>
+      d.blame ? [d.blame] : [],
+    )
+  const all = real.flatMap(blames)
+  if (!all.length) return []
+  const failed = real.filter((l) => l.pass === false)
+  return [
+    `blame: ${all.length} samples at or over budget: ${formatCounts(countVerdicts(all))}`,
+    ...failed.map(
+      (l) =>
+        `blame: ${l.flow} ${l.knownOver ? 'KNOWN OVER' : 'OVER'}: ${formatCounts(countVerdicts(blames(l)))}`,
+    ),
+  ]
+}
+
 const banner = (lines: Array<string>) => {
   const bar = '!'.repeat(72)
   return [bar, ...lines.map((l) => `!! ${l}`), bar]
@@ -406,6 +472,7 @@ export default class QcReporter implements Reporter {
     const out = ['']
     const failures: Array<string> = []
     let summary: Array<HistoryLine> = []
+    let blameLines: Array<string> = []
 
     if (records.length) {
       const selfTest = new Set(
@@ -423,6 +490,7 @@ export default class QcReporter implements Reporter {
           server: readServer(runDir(id)),
         },
         link,
+        readBlameContext(runDir(id)),
       )
       const rtts = [...new Set(records.map((r) => `w${r.worker} ${r.rttMs}`))]
       out.push(
@@ -443,6 +511,8 @@ export default class QcReporter implements Reporter {
       out.push(table(lines, selfTest))
       out.push(...spikeBanner(lines, selfTest, lines[0]?.server ?? null))
       out.push(...linkBanner(lines, selfTest, link))
+      out.push(...blameList(lines, selfTest))
+      blameLines = blameSummary(lines, selfTest)
       const real = lines.filter((l) => !selfTest.has(l.flow))
       mkdirSync(path.dirname(HISTORY), { recursive: true })
       appendFileSync(
@@ -496,6 +566,8 @@ export default class QcReporter implements Reporter {
     if (this.filtered) out.push(...gapMsgs.map((m) => `warning: ${m}`))
     else failures.push(...gapMsgs)
 
+    // Next to the failures, so a failed run says whose time it was.
+    out.push(...blameLines)
     if (failures.length) {
       out.push(
         ...banner([

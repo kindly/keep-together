@@ -123,6 +123,48 @@ How the legs are taken, and their limits:
 - On a checkbox click, t0 is the trusted `input` event fired inside the
   click, a few ms after the press.
 
+### Blame
+
+Every sample at or over budget, in both sets of a re-measure, gets a
+breakdown and a verdict (`qc/blame.ts`). They go on its history line as
+`detail[i].blame`, in a `BLAME` list after the table, and as counts by
+verdict next to the failures (all slow samples, then each failed flow).
+**Context only: a verdict never turns a failure into a pass.**
+
+```
+128 = page 18 · to Convex ≈21 · our function 30 (contacts/mutations:setAcquisition) · back ≈46 · Transition 13 · overhead beyond the probe 49 · probe 30 ms @ that moment (run median 33) · link 1 ms → convex/network (…)
+```
+
+| Leg | From the sample |
+|---|---|
+| page | input → send, plus the Transition (or last message) → result on screen; long tasks shown when any |
+| to Convex ≈ | send → commit, less our function (server clock) |
+| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance, completed between the send and the response (the screen message for a query change) ± 10 ms. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
+| back ≈ | commit → response (server clock) |
+| Transition | response → the Transition carrying the result |
+| Convex + network | send → screen message, less our function, when there's no commit to split it (a query change) |
+| overhead beyond the probe | send → screen message, less our function and the probe: what a no-op round trip at that moment wouldn't take. Derived, it overlaps the legs |
+| probe | the worker's `qcProbe:rtt` samples within 1 s of the sample, and its run median |
+| link | the first hop's worst round trip during the sample |
+
+The legs before `overhead` add up to the sample. `≈` legs rest on
+`commitMs`, so they're as good as the two clocks agree; a call's log time
+lands about 15 ms before its response reaches the page.
+
+The verdict is the first rule that holds:
+
+1. `link`: the first hop was at 50 ms or more (the LINK rule).
+2. `unclear`: no legs (`QC_LEGS=0`, or the page sent nothing).
+3. `ours`: page time 40 ms or more. Before the probe, since the page's
+   time doesn't depend on the server.
+4. `convex/network`: a probe at that moment at 1.5× the worker's run
+   median and 20 ms over it. Before the function: a Convex stall slows
+   our function too.
+5. `unclear`: our function unmatched.
+6. `ours`: our function 50 ms or more (half the server budget).
+7. `convex/network`: function and page normal, so the excess is in the
+   legs between them.
+
 `pnpm qc:report` renders that history to
 `qc-report/trend.html`: per-flow p50/p95 over the last 30 runs against the
 budget line. The Playwright HTML report is in `qc-report/playwright/`,
