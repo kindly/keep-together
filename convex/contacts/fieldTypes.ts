@@ -120,12 +120,28 @@ export type FieldDefinition = {
   deletable: boolean
 }
 
-/** What `resolveFieldValue` found: the slot a value goes in. */
-export type ResolvedFieldValue = {
-  slot: FieldSlot
-  field: Doc<'contactFields'>
-  option: Doc<'contactFieldOptions'>
-}
+/**
+ * What `resolveFieldValue` found: the slot a value goes in, or (restore
+ * only) a value to leave out, and why, for the restore to report:
+ * `retired` (the field has no slot any more) or `wrong_kind` (the field no
+ * longer applies to the contact's kind).
+ */
+export type ResolvedFieldValue =
+  | {
+      outcome: 'set'
+      slot: FieldSlot
+      field: Doc<'contactFields'>
+      option: Doc<'contactFieldOptions'>
+    }
+  | {
+      outcome: 'skipped'
+      reason: FieldValueSkip
+      field: Doc<'contactFields'>
+      option: Doc<'contactFieldOptions'>
+    }
+
+/** Why a restore leaves a value out. */
+export type FieldValueSkip = 'retired' | 'wrong_kind'
 
 // ── pure rules ─────────────────────────────────────────────────────────────
 
@@ -194,18 +210,24 @@ export type FieldValueMode = 'save' | 'restore'
 
 export type FieldValueVerdict =
   | { ok: true }
-  | { ok: false; retired: true }
-  | { ok: false; retired: false; reason: string; message: string }
+  | { ok: false; skip: FieldValueSkip }
+  | { ok: false; skip: null; reason: string; message: string }
 
 /**
  * The tier-1 rule for one value, given the field and option it names (null:
  * missing or another tenant's) and the option already in the field's slot
- * on the contact (`current`). Always: both exist and the option is the
- * field's. A retired field (no slot) is its own verdict: a save refuses
- * it, a restore skips the value and says so. Only for a value newly set
- * (not `current`): the field applies to `kind` (narrowing a field's kinds
- * never blocks a contact that already has a value) and, on a save, the
- * field and the option are both active.
+ * on the contact (`current`). In both modes: both exist and the option is
+ * the field's. Then, by mode:
+ *   - a retired field (no slot): a save refuses it, a restore skips the
+ *     value (`skip: 'retired'`);
+ *   - a value already on the contact (`current`) is fine whatever else
+ *     changed, so narrowing a field's kinds or archiving never blocks a
+ *     contact's save;
+ *   - a value newly set must be on a field that applies to `kind`: a save
+ *     refuses one that doesn't, a restore skips it (`skip: 'wrong_kind'`);
+ *   - on a save, a newly set value's field and option must both be active.
+ *     A restore may put back an archived option or a value on an archived
+ *     field, as it may re-add an archived tag.
  */
 export function fieldValueVerdict(
   field: Pick<
@@ -222,7 +244,7 @@ export function fieldValueVerdict(
 ): FieldValueVerdict {
   const no = (reason: string, message: string): FieldValueVerdict => ({
     ok: false,
-    retired: false,
+    skip: null,
     reason,
     message,
   })
@@ -235,13 +257,16 @@ export function fieldValueVerdict(
       `${option.label} is not an option of ${field.label}`,
     )
   }
-  if (field.slot === undefined) return { ok: false, retired: true }
+  if (field.slot === undefined) {
+    return mode === 'restore'
+      ? { ok: false, skip: 'retired' }
+      : no('retired_field', `${field.label} has been retired`)
+  }
   if (option._id === current) return { ok: true }
   if (!field.appliesTo.includes(kind)) {
-    return no(
-      'field_kind',
-      `${field.label} doesn’t apply to this kind of contact`,
-    )
+    return mode === 'restore'
+      ? { ok: false, skip: 'wrong_kind' }
+      : no('field_kind', `${field.label} doesn’t apply to this kind of contact`)
   }
   if (mode === 'save' && !field.isActive) {
     return no('archived_field', `${field.label} is archived`)

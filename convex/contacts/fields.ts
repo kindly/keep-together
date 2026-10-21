@@ -34,9 +34,11 @@ export async function fieldInSlot(
  * The tier-1 checks for one value on a contact of `kind`
  * (`fieldValueVerdict` in fieldTypes.ts; `current` is the option already
  * in the field's slot on the contact). Throws `rejected(...)` on a failed
- * check. Returns null when the field is retired (no slot): a save rejects
- * that, a restore skips the value and says so. Does not mark the option
- * used: the apply calls `markOptionUsed` for each value it newly sets.
+ * check. A save gets `outcome: 'set'` or a throw; a restore may also get
+ * `outcome: 'skipped'` (the field was retired, or no longer applies to
+ * the kind), to leave the value out and report it. Does not mark the
+ * option used: the apply calls `markOptionUsed` for each value it newly
+ * sets.
  */
 export async function resolveFieldValue(
   _db: ScopedDatabaseReader,
@@ -44,7 +46,7 @@ export async function resolveFieldValue(
   _kind: ContactKind,
   _current: Id<'contactFieldOptions'> | undefined,
   _mode: FieldValueMode = 'save',
-): Promise<ResolvedFieldValue | null> {
+): Promise<ResolvedFieldValue> {
   throw notBuilt()
 }
 
