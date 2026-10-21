@@ -3,7 +3,7 @@ import type { Doc, Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
 import { setup } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
-import { LIST_LIMIT, LIST_SCAN_CAP } from './queries'
+import { LIST_LIMIT, LIST_PAGE_MAX_ROWS, LIST_SCAN_CAP } from './queries'
 
 // A filtered contacts list never says "none" while matching contacts
 // exist: the window or page must not fill with rows the filter then hides.
@@ -326,4 +326,38 @@ describe('the paged list (browsing)', () => {
       await pages({ source: { level: 'version', id: code.version } }, f.b),
     ).toEqual([[]])
   })
+})
+
+test('a scan that ends on the cap knows it has seen everything', async () => {
+  await bulk(f.a, LIST_SCAN_CAP, 'Aaa', { archived: true, tagId: member })
+  expect(await list({ tagId: member })).toMatchObject({
+    rows: [],
+    truncated: false,
+    tooBroad: false,
+  })
+})
+
+test('a pinned page whose range has grown comes back split, not oversized', async () => {
+  await bulk(f.a, 2, 'Aaa')
+  await bulk(f.a, 2, 'Zed')
+  const page = (cursor: string | null, endCursor?: string) =>
+    f.a.as.query(api.contacts.queries.list, {
+      tenantId: f.a.tenantId,
+      paginationOpts: { numItems: 2, cursor, endCursor },
+    })
+  const first = await page(null)
+  const second = await page(first.continueCursor)
+  // Many contacts land inside the second page's range (an import, say).
+  await bulk(f.a, LIST_PAGE_MAX_ROWS + 50, 'Mmm')
+  await bulk(f.b, 3, 'Mmm')
+  const pinned = await page(first.continueCursor, second.continueCursor)
+  expect(pinned.page.length).toBeLessThanOrEqual(LIST_PAGE_MAX_ROWS)
+  expect(pinned.pageStatus).toBe('SplitRequired')
+  // Its halves, each pinned, hold the whole range between them.
+  const a = await page(first.continueCursor, pinned.splitCursor!)
+  const b = await page(pinned.splitCursor!, second.continueCursor)
+  const names = [...a.page, ...b.page].map((r) => r.sortName)
+  expect(a.pageStatus ?? null).not.toBe('SplitRequired')
+  expect(names).toHaveLength(LIST_PAGE_MAX_ROWS + 52)
+  expect(names.slice(-2)).toEqual(['Zed 0000', 'Zed 0001'])
 })

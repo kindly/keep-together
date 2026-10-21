@@ -230,7 +230,7 @@ function ContactList() {
             ? search.trim()
               ? `No match in the first ${listed.checked} results; there may be more. Add another word.`
               : `None of the first ${listed.checked} contacts checked match; there may be more. Add a search word to narrow it.`
-            : paged.status === 'more' && !searching
+            : paged.status !== 'done' && !searching
               ? 'None among the contacts checked so far; there may be more.'
               : search.trim()
                 ? 'No contacts match.'

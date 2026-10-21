@@ -1,6 +1,6 @@
 import { useQueries } from 'convex/react'
 import type { FunctionArgs, FunctionReturnType } from 'convex/server'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../../convex/_generated/api'
 
 /**
@@ -9,8 +9,12 @@ import { api } from '../../convex/_generated/api'
  * arguments, so the route's hold (list-hold.ts) could never name the same
  * subscription. Page 0 here is exactly `firstPage(args)`; each later page
  * starts at the one before's `continueCursor`, and once it is asked for,
- * the page before is pinned to end there (`endCursor`), as
- * `usePaginatedQuery` does, so pages stay contiguous while rows come and go.
+ * the page before is pinned to end there (`endCursor`), so pages stay
+ * contiguous while rows come and go. A pinned page whose range grows is
+ * split in two at its `splitCursor`, as `usePaginatedQuery` does: the old
+ * page stays on screen until both halves have loaded, except one marked
+ * `SplitRequired`, which is incomplete, so the list stops there (and says
+ * it is loading) until the halves arrive.
  */
 
 type ListArgs = FunctionArgs<typeof api.contacts.queries.list>
@@ -39,6 +43,13 @@ export function firstPage(filters: ListFilters): ListArgs {
   }
 }
 
+/** One page's range: from `cursor`, to `end` once pinned. */
+type Range = { cursor: string | null; end?: string }
+/** A page, and the two halves replacing it while a split loads. */
+type Slot = Range & { halves?: [Range, Range] }
+
+const rangeKey = (r: Range) => JSON.stringify([r.cursor, r.end ?? null])
+
 export type PagedList = {
   /** Undefined until page 0 has loaded. */
   rows: Array<ListRow> | undefined
@@ -47,57 +58,139 @@ export type PagedList = {
   loadMore: () => void
 }
 
+/** A Convex error saying a cursor no longer exists (the index changed). */
+function invalidCursor(e: Error) {
+  const data = (e as { data?: { paginationError?: string } }).data
+  return (
+    e.message.includes('InvalidCursor') ||
+    data?.paginationError === 'InvalidCursor'
+  )
+}
+
 export function usePagedList(filters: ListFilters | 'skip'): PagedList {
   const key = filters === 'skip' ? 'skip' : JSON.stringify(listFilters(filters))
-  // ends[i]: the cursor page i is pinned to end at (page i + 1's start).
-  const [state, setState] = useState<{ key: string; ends: Array<string> }>({
+  const [state, setState] = useState<{ key: string; slots: Array<Slot> }>({
     key,
-    ends: [],
+    slots: [{ cursor: null }],
   })
-  const ends = state.key === key ? state.ends : []
+  const slots = state.key === key ? state.slots : [{ cursor: null }]
+  const argsOf = (r: Range): ListArgs => {
+    const first = firstPage(filters as ListFilters)
+    return r.cursor === null && r.end === undefined
+      ? first
+      : {
+          ...first,
+          paginationOpts: {
+            numItems: LIST_PAGE_SIZE,
+            cursor: r.cursor,
+            ...(r.end !== undefined && { endCursor: r.end }),
+          },
+        }
+  }
   const queries: Parameters<typeof useQueries>[0] = {}
   if (filters !== 'skip') {
-    const first = firstPage(filters)
-    for (let i = 0; i <= ends.length; i++) {
-      queries[i] = {
-        query: api.contacts.queries.list,
-        args:
-          i === 0 && ends.length === 0
-            ? first
-            : {
-                ...first,
-                paginationOpts: {
-                  numItems: LIST_PAGE_SIZE,
-                  cursor: i === 0 ? null : ends[i - 1],
-                  ...(i < ends.length && { endCursor: ends[i] }),
-                },
-              },
+    for (const s of slots) {
+      for (const r of [s, ...(s.halves ?? [])]) {
+        queries[rangeKey(r)] = {
+          query: api.contacts.queries.list,
+          args: argsOf(r),
+        }
       }
     }
   }
   const results = useQueries(queries)
   // A page re-subscribing (pinned, or the filters changed back) shows what
-  // it last showed rather than blinking to "Loading…".
+  // it last showed rather than blinking to "Loading…": by its range, or for
+  // a page just pinned, by where it starts (halves never stand in).
   const last = useRef(new Map<string, Page>())
-  const pages: Array<Page | undefined> = []
-  for (let i = 0; i <= ends.length && filters !== 'skip'; i++) {
-    const r = results[i] as Page | Error | undefined
-    if (r instanceof Error) throw r
-    const pageKey = `${key}#${i}`
-    if (r) last.current.set(pageKey, r)
-    pages.push(r ?? last.current.get(pageKey))
+  const resultOf = (r: Range, slot = true): Page | undefined => {
+    const exact = `${key}#${rangeKey(r)}`
+    const start = `${key}@${r.cursor}`
+    const got = results[rangeKey(r)] as Page | Error | undefined
+    if (got instanceof Error) {
+      if (invalidCursor(got)) return undefined
+      throw got
+    }
+    if (got) {
+      last.current.set(exact, got)
+      if (slot) last.current.set(start, got)
+      return got
+    }
+    return (
+      last.current.get(exact) ?? (slot ? last.current.get(start) : undefined)
+    )
   }
-  const loaded = pages.every((p) => p !== undefined)
-  const tail = pages[pages.length - 1]
+
+  // Walk the pages in order: rows up to the first one not loaded (or
+  // incomplete), and what each page needs doing (pin, split, swap halves).
+  const rows: Array<ListRow> = []
+  let tail: Page | undefined
+  let complete = filters !== 'skip'
+  let reset = false
+  const next: Array<Slot> = []
+  let changed = false
+  for (const s of slots) {
+    if (!complete) {
+      next.push(s)
+      continue
+    }
+    const got = results[rangeKey(s)]
+    if (got instanceof Error && invalidCursor(got)) reset = true
+    const page = resultOf(s)
+    if (s.halves) {
+      const [a, b] = s.halves.map((h) => resultOf(h, false))
+      if (a && b) {
+        // Both halves are in: they replace the page.
+        next.push(s.halves[0], s.halves[1])
+        changed = true
+        rows.push(...a.page, ...b.page)
+        tail = b
+        continue
+      }
+      // Until then the page stands (or, if incomplete, holds the list).
+      next.push(s)
+    } else if (
+      page?.splitCursor &&
+      (page.pageStatus === 'SplitRecommended' ||
+        page.pageStatus === 'SplitRequired' ||
+        page.page.length > 2 * LIST_PAGE_SIZE)
+    ) {
+      next.push({
+        ...s,
+        halves: [
+          { cursor: s.cursor, end: page.splitCursor },
+          { cursor: page.splitCursor, end: s.end ?? page.continueCursor },
+        ],
+      })
+      changed = true
+    } else {
+      next.push(s)
+    }
+    if (!page || page.pageStatus === 'SplitRequired') {
+      complete = false
+      continue
+    }
+    rows.push(...page.page)
+    tail = page
+  }
+  useEffect(() => {
+    if (reset) setState({ key, slots: [{ cursor: null }] })
+    else if (changed) setState({ key, slots: next })
+  })
+
+  const status = !complete || !tail ? 'loading' : tail.isDone ? 'done' : 'more'
+  const first = filters === 'skip' ? undefined : resultOf(slots[0])
   return {
-    rows:
-      filters === 'skip' || pages[0] === undefined
-        ? undefined
-        : pages.flatMap((p) => p?.page ?? []),
-    status: !loaded || !tail ? 'loading' : tail.isDone ? 'done' : 'more',
+    rows: first === undefined ? undefined : rows,
+    status,
     loadMore: () => {
-      if (!loaded || !tail || tail.isDone) return
-      setState({ key, ends: [...ends, tail.continueCursor] })
+      if (status !== 'more' || !tail) return
+      const pinned = slots.map((s, i) =>
+        i === slots.length - 1 && s.end === undefined
+          ? { ...s, end: tail.continueCursor }
+          : s,
+      )
+      setState({ key, slots: [...pinned, { cursor: tail.continueCursor }] })
     },
   }
 }

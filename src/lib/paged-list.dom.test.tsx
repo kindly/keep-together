@@ -10,74 +10,142 @@ import type { ListFilters, PagedList } from './paged-list'
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 type Request = Record<string, { args: Record<string, unknown> }>
+type Result = {
+  page: Array<{ _id: string }>
+  isDone: boolean
+  continueCursor: string
+  splitCursor?: string
+  pageStatus?: 'SplitRecommended' | 'SplitRequired'
+}
 const useQueries = vi.fn()
 vi.mock('convex/react', () => ({
   useQueries: (q: Request) => useQueries(q),
 }))
 
 const tenantId = 'tenantA' as Id<'tenants'>
+const filters = { tenantId, includeArchived: false }
 const row = (id: string) => ({ _id: id })
+/** The hook's key for the page from `cursor` (to `end`, once pinned). */
+const at = (cursor: string | null, end?: string) =>
+  JSON.stringify([cursor, end ?? null])
 let root: Root
 let el: HTMLDivElement
 let got: PagedList
+/** What the server holds, by page key; anything else is still loading. */
+let server: Record<string, Result>
 
-function Probe({ filters }: { filters: ListFilters | 'skip' }) {
-  got = usePagedList(filters)
+function Probe({ filters: f }: { filters: ListFilters | 'skip' }) {
+  got = usePagedList(f)
   return null
 }
-const render = (filters: ListFilters | 'skip') =>
-  act(() => root.render(<Probe filters={filters} />))
+const render = (f: ListFilters | 'skip' = filters) =>
+  act(() => root.render(<Probe filters={f} />))
 const lastRequest = (): Request => useQueries.mock.lastCall![0]
+const asked = () => Object.keys(lastRequest())
 
 beforeEach(() => {
   el = document.createElement('div')
   root = createRoot(el)
+  server = {}
   useQueries.mockReset()
+  useQueries.mockImplementation((q: Request) =>
+    Object.fromEntries(Object.keys(q).map((k) => [k, server[k]])),
+  )
 })
 afterEach(() => act(() => root.unmount()))
 
 test("page 0's args are the hold's, byte for byte, whatever order the page builds filters in", async () => {
-  useQueries.mockReturnValue({})
   await render({ includeArchived: false, tenantId })
-  expect(JSON.stringify(lastRequest()[0].args)).toBe(
+  expect(JSON.stringify(lastRequest()[at(null)].args)).toBe(
     JSON.stringify(firstPage({ tenantId, includeArchived: false })),
   )
   expect(got).toMatchObject({ rows: undefined, status: 'loading' })
 })
 
 test('load more starts at the cursor and pins the page before to end there', async () => {
-  useQueries.mockReturnValue({
-    0: { page: [row('a')], isDone: false, continueCursor: 'c1' },
-  })
-  await render({ tenantId, includeArchived: false })
+  server[at(null)] = { page: [row('a')], isDone: false, continueCursor: 'c1' }
+  await render()
   expect(got).toMatchObject({ rows: [row('a')], status: 'more' })
-  // While page 0 re-subscribes pinned and page 1 loads, page 0 still shows.
-  useQueries.mockReturnValue({})
   await act(() => got.loadMore())
   const req = lastRequest()
-  expect(req[0].args.paginationOpts).toEqual({
+  expect(req[at(null, 'c1')].args.paginationOpts).toEqual({
     numItems: 100,
     cursor: null,
     endCursor: 'c1',
   })
-  expect(req[1].args.paginationOpts).toEqual({ numItems: 100, cursor: 'c1' })
-  expect(got).toMatchObject({ rows: [row('a')], status: 'loading' })
-  useQueries.mockReturnValue({
-    0: { page: [row('a')], isDone: false, continueCursor: 'c1' },
-    1: { page: [row('b')], isDone: true, continueCursor: 'c2' },
+  expect(req[at('c1')].args.paginationOpts).toEqual({
+    numItems: 100,
+    cursor: 'c1',
   })
-  await render({ tenantId, includeArchived: false })
+  // Page 0 re-subscribes pinned and page 1 loads: page 0 still shows.
+  expect(got).toMatchObject({ rows: [row('a')], status: 'loading' })
+  server[at(null, 'c1')] = server[at(null)]
+  server[at('c1')] = { page: [row('b')], isDone: true, continueCursor: 'c2' }
+  await render()
   expect(got).toMatchObject({ rows: [row('a'), row('b')], status: 'done' })
 })
 
-test('new filters start again from one page; skip asks for nothing', async () => {
-  useQueries.mockReturnValue({
-    0: { page: [], isDone: false, continueCursor: 'c1' },
+test('a page marked SplitRequired holds the list until its halves replace it', async () => {
+  server[at(null)] = { page: [row('a')], isDone: false, continueCursor: 'c1' }
+  await render()
+  await act(() => got.loadMore())
+  server[at('c1')] = { page: [row('z')], isDone: true, continueCursor: 'c2' }
+  // Rows arrived in page 0's pinned range: it read its cap and stopped.
+  server[at(null, 'c1')] = {
+    page: [row('a'), row('b')],
+    isDone: false,
+    continueCursor: 'c1',
+    splitCursor: 's',
+    pageStatus: 'SplitRequired',
+  }
+  await render()
+  // Incomplete: nothing past its start shows, and the list is loading.
+  expect(got).toMatchObject({ rows: [], status: 'loading' })
+  expect(asked()).toEqual(
+    expect.arrayContaining([at(null, 's'), at('s', 'c1'), at('c1')]),
+  )
+  server[at(null, 's')] = {
+    page: [row('a'), row('b')],
+    isDone: false,
+    continueCursor: 's',
+  }
+  server[at('s', 'c1')] = {
+    page: [row('c')],
+    isDone: false,
+    continueCursor: 'c1',
+  }
+  await render()
+  expect(got).toMatchObject({
+    rows: [row('a'), row('b'), row('c'), row('z')],
+    status: 'done',
   })
-  await render({ tenantId, includeArchived: false })
+  // The halves now are the pages; the split page is gone.
+  expect(asked().sort()).toEqual(
+    [at(null, 's'), at('s', 'c1'), at('c1')].sort(),
+  )
+})
+
+test('a page marked SplitRecommended keeps showing while its halves load', async () => {
+  server[at(null)] = {
+    page: [row('a'), row('b')],
+    isDone: true,
+    continueCursor: 'end',
+    splitCursor: 's',
+    pageStatus: 'SplitRecommended',
+  }
+  await render()
+  expect(got).toMatchObject({ rows: [row('a'), row('b')], status: 'done' })
+  expect(asked()).toEqual(
+    expect.arrayContaining([at(null), at(null, 's'), at('s', 'end')]),
+  )
+})
+
+test('new filters start again from one page; skip asks for nothing', async () => {
+  server[at(null)] = { page: [], isDone: false, continueCursor: 'c1' }
+  await render()
   await act(() => got.loadMore())
   await render({ tenantId, includeArchived: true })
-  expect(Object.keys(lastRequest())).toEqual(['0'])
+  expect(asked()).toEqual([at(null)])
   await render('skip')
   expect(lastRequest()).toEqual({})
   expect(got.rows).toBeUndefined()

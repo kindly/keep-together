@@ -263,8 +263,13 @@ async function contactsWithIdentifier(
   return contacts.filter((c) => c !== null)
 }
 
-/** The most rows `list` returns. */
+/** The most rows `list` returns, and `list` asks for a page. */
 export const LIST_LIMIT = 100
+/**
+ * The most rows one `list` page reads. A page pinned to a range that has
+ * grown past it comes back incomplete, marked `SplitRequired`.
+ */
+export const LIST_PAGE_MAX_ROWS = 2 * LIST_LIMIT
 /**
  * How many matching contacts a tag-filtered `list` collects (then sorts by
  * name), reading assignments in the order they were made.
@@ -286,7 +291,8 @@ export const LIST_SCAN_CAP = 1000
  * Read `rows` until `want` of them pass `keep` or LIST_SCAN_CAP have been
  * read. `keep` takes a batch, so its reads run concurrently; a batch is
  * the rows still wanted, so with nothing filtered out this reads `want`
- * rows, as `take(want)` would. `exhausted`: every row was read; `capped`:
+ * rows, as `take(want)` would, plus one to see if any are left.
+ * `exhausted`: every row was read; `capped`:
  * the cap stopped it short of `want`, so a match may lie beyond.
  */
 async function scan<TRow, TKept>(
@@ -312,6 +318,9 @@ async function scan<TRow, TKept>(
     read += batch.length
     for (const k of await keep(batch)) if (k !== null) kept.push(k)
   }
+  // Stopped on the last row? One more index row says, so "may be more"
+  // is never claimed of a list that is all here.
+  if (!exhausted && (await it.next()).done) exhausted = true
   return {
     kept,
     read,
@@ -480,6 +489,10 @@ export const list = tenantQuery({
     const opts = {
       ...paginationOpts,
       numItems: Math.min(paginationOpts.numItems, LIST_LIMIT),
+      // A page pinned with `endCursor` reads its whole range however many
+      // rows have arrived in it since; past this it stops short with
+      // `SplitRequired` and a `splitCursor`, and the client splits it.
+      maximumRowsRead: LIST_PAGE_MAX_ROWS,
     }
     let result: { page: Array<Doc<'contacts'>> } & Omit<
       PaginationResult<unknown>,
