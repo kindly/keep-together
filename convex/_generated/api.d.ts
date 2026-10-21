@@ -33,6 +33,7 @@ import type * as lib_appSchema from "../lib/appSchema.js";
 import type * as lib_authErrors from "../lib/authErrors.js";
 import type * as lib_authUser from "../lib/authUser.js";
 import type * as lib_contracts from "../lib/contracts.js";
+import type * as lib_fieldSlots from "../lib/fieldSlots.js";
 import type * as lib_lists from "../lib/lists.js";
 import type * as lib_migrations from "../lib/migrations.js";
 import type * as lib_password from "../lib/password.js";
@@ -86,6 +87,7 @@ declare const fullApi: ApiFromModules<{
   "lib/authErrors": typeof lib_authErrors;
   "lib/authUser": typeof lib_authUser;
   "lib/contracts": typeof lib_contracts;
+  "lib/fieldSlots": typeof lib_fieldSlots;
   "lib/lists": typeof lib_lists;
   "lib/migrations": typeof lib_migrations;
   "lib/password": typeof lib_password;

@@ -1,5 +1,6 @@
 import { defineTable } from 'convex/server'
 import { v } from 'convex/values'
+import { SLOT_FIELD_NAMES, slotFields, withSlotIndexes } from './fieldSlots'
 
 /**
  * Every domain table carries `tenantId` and every index on it starts with
@@ -87,6 +88,7 @@ export const appTables = {
   //     (identifierTypesVersion)
   //   tenantPreferences.sourceCodes → staffCanManageSourceCodes
   //     (sourceCodesVersion)
+  //   tenantPreferences.fields → staffCanManageFields (fieldsVersion)
   tenantPreferences: defineTable({
     tenantId: v.id('tenants'),
     staffCanManageTags: v.boolean(),
@@ -95,6 +97,10 @@ export const appTables = {
     identifierTypesVersion: v.number(),
     staffCanManageSourceCodes: v.boolean(),
     sourceCodesVersion: v.number(),
+    // Dropdown fields step 1: optional until the tighten (step 9); rows
+    // created before are backfilled (platform/migrations).
+    staffCanManageFields: v.optional(v.boolean()),
+    fieldsVersion: v.optional(v.number()),
   }).index('by_tenant', ['tenantId']),
 
   // ── command log (ADR 0013 / 0017) ─────────────────────────────────────
@@ -144,6 +150,7 @@ export const appTables = {
   //   contacts.tags      → contactTags rows (tagsVersion)
   //   contacts.identifiers → contactIdentifiers rows (identifiersVersion)
   //   contacts.acquisition → acquisitionCodeId (acquisitionVersion)
+  //   contacts.fields    → field1…fieldN (fieldsVersion; lib/fieldSlots)
   // System-managed (no contract): displayName / sortName, counters.
   contacts: defineTable({
     tenantId: v.id('tenants'),
@@ -170,6 +177,13 @@ export const appTables = {
     // 'version' (the source code). Optional for good: absent = uncoded.
     acquisitionCodeId: v.optional(v.id('sourceCodes')),
     acquisitionVersion: v.number(),
+    // Dropdown field values: the option chosen for the field in slot N
+    // (lib/fieldSlots). Optional for good: absent = not set. Ids only, so
+    // renaming an option never rewrites contacts.
+    ...slotFields(v.optional(v.id('contactFieldOptions'))),
+    // Optional until the tighten (dropdown fields step 9); contacts created
+    // before step 1 are backfilled (contacts/migrations).
+    fieldsVersion: v.optional(v.number()),
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
     .index('by_tenant_acquisition', ['tenantId', 'acquisitionCodeId'])
@@ -285,73 +299,115 @@ export const appTables = {
   // aggregate: no contract, no counter, no revisions (history lives on the
   // contact). That hook and the backfill are the only writers; nothing else
   // may insert or patch these rows.
-  contactSearch: defineTable({
-    tenantId: v.id('tenants'),
-    contactId: v.id('contacts'),
-    text: v.string(), // searchText(): folded, de-duplicated words
-    archived: v.boolean(),
-    kind: contactKind,
-    phones: v.array(v.string()), // normalisePhone() of each number (exact-phone ranking)
-    // The contact's sortName, for the acquisition indexes below. Optional
-    // for good, like the three ids: backfillContactSearch fills it on rows
-    // projected before source codes step 1.
-    sortName: v.optional(v.string()),
-    // The acquisition code (a version) and its detail and category, for the
-    // contacts list's source filter. Ids only, so a rename never touches
-    // these rows.
-    acquisitionCodeId: v.optional(v.id('sourceCodes')),
-    acquisitionDetailId: v.optional(v.id('sourceCodes')),
-    acquisitionCategoryId: v.optional(v.id('sourceCodes')),
-  })
-    .index('by_tenant_contact', ['tenantId', 'contactId'])
-    // The source filter without search text: one level's id, by name.
-    .index('by_tenant_acquisitionCode_sort', [
-      'tenantId',
-      'acquisitionCodeId',
-      'sortName',
-    ])
-    .index('by_tenant_acquisitionDetail_sort', [
-      'tenantId',
-      'acquisitionDetailId',
-      'sortName',
-    ])
-    .index('by_tenant_acquisitionCategory_sort', [
-      'tenantId',
-      'acquisitionCategoryId',
-      'sortName',
-    ])
-    // The same without archived contacts (the list's default), so a page
-    // holds only rows that show. A kind is checked per row instead: four
-    // indexes per level would tax every contact save.
-    .index('by_tenant_acquisitionCode_archived_sort', [
-      'tenantId',
-      'acquisitionCodeId',
-      'archived',
-      'sortName',
-    ])
-    .index('by_tenant_acquisitionDetail_archived_sort', [
-      'tenantId',
-      'acquisitionDetailId',
-      'archived',
-      'sortName',
-    ])
-    .index('by_tenant_acquisitionCategory_archived_sort', [
-      'tenantId',
-      'acquisitionCategoryId',
-      'archived',
-      'sortName',
-    ])
-    .searchIndex('search_text', {
-      searchField: 'text',
-      filterFields: [
+  // The field filter's index pairs come from withSlotIndexes: 2 per slot.
+  contactSearch: withSlotIndexes(
+    defineTable({
+      tenantId: v.id('tenants'),
+      contactId: v.id('contacts'),
+      text: v.string(), // searchText(): folded, de-duplicated words
+      archived: v.boolean(),
+      kind: contactKind,
+      phones: v.array(v.string()), // normalisePhone() of each number (exact-phone ranking)
+      // The contact's sortName, for the acquisition indexes below. Optional
+      // for good, like the three ids: backfillContactSearch fills it on rows
+      // projected before source codes step 1.
+      sortName: v.optional(v.string()),
+      // The acquisition code (a version) and its detail and category, for the
+      // contacts list's source filter. Ids only, so a rename never touches
+      // these rows.
+      acquisitionCodeId: v.optional(v.id('sourceCodes')),
+      acquisitionDetailId: v.optional(v.id('sourceCodes')),
+      acquisitionCategoryId: v.optional(v.id('sourceCodes')),
+      // The contact's dropdown field values, slot by slot, for the list's
+      // field filters. Optional for good, like on the contact.
+      ...slotFields(v.optional(v.id('contactFieldOptions'))),
+    })
+      .index('by_tenant_contact', ['tenantId', 'contactId'])
+      // The source filter without search text: one level's id, by name.
+      .index('by_tenant_acquisitionCode_sort', [
         'tenantId',
-        'archived',
-        'kind',
         'acquisitionCodeId',
+        'sortName',
+      ])
+      .index('by_tenant_acquisitionDetail_sort', [
+        'tenantId',
         'acquisitionDetailId',
+        'sortName',
+      ])
+      .index('by_tenant_acquisitionCategory_sort', [
+        'tenantId',
         'acquisitionCategoryId',
-      ],
-    }),
+        'sortName',
+      ])
+      // The same without archived contacts (the list's default), so a page
+      // holds only rows that show. A kind is checked per row instead: four
+      // indexes per level would tax every contact save.
+      .index('by_tenant_acquisitionCode_archived_sort', [
+        'tenantId',
+        'acquisitionCodeId',
+        'archived',
+        'sortName',
+      ])
+      .index('by_tenant_acquisitionDetail_archived_sort', [
+        'tenantId',
+        'acquisitionDetailId',
+        'archived',
+        'sortName',
+      ])
+      .index('by_tenant_acquisitionCategory_archived_sort', [
+        'tenantId',
+        'acquisitionCategoryId',
+        'archived',
+        'sortName',
+      ])
+      .searchIndex('search_text', {
+        searchField: 'text',
+        filterFields: [
+          'tenantId',
+          'archived',
+          'kind',
+          'acquisitionCodeId',
+          'acquisitionDetailId',
+          'acquisitionCategoryId',
+          ...SLOT_FIELD_NAMES,
+        ],
+      }),
+  ),
+
+  // Dropdown fields (plan: dropdown fields). Its own aggregate
+  // (`contacts.field`, saveVersion): one row per field definition. Labels
+  // unique per tenant case-insensitively (`labelNormalized`). `appliesTo`:
+  // the contact kinds the field is shown for and may be set on. Archive =
+  // `isActive: false` (hidden; values and slot kept). System-owned: `slot`,
+  // 1…FIELD_SLOTS, the lowest free one assigned on create and preserved by
+  // the contract; absent once the field is retired (every value cleared),
+  // which frees it. Retired rows stay so history can name them.
+  contactFields: defineTable({
+    tenantId: v.id('tenants'),
+    label: v.string(),
+    labelNormalized: v.string(),
+    appliesTo: v.array(contactKind),
+    isActive: v.boolean(),
+    slot: v.optional(v.number()),
+    saveVersion: v.number(),
+  }).index('by_tenant_slot', ['tenantId', 'slot']),
+
+  // One option of a dropdown field, its own aggregate (`contacts.fieldOption`,
+  // saveVersion), like a source-code part. `fieldId` never changes; labels
+  // unique within the field; `position` is the admin's order. Archive =
+  // `isActive: false` (out of the dropdown; contacts keep it). System-owned:
+  // `used`, set the first time the option goes on a contact, never cleared;
+  // the contract preserves it, and only an unused option can be deleted.
+  contactFieldOptions: defineTable({
+    tenantId: v.id('tenants'),
+    fieldId: v.id('contactFields'),
+    label: v.string(),
+    labelNormalized: v.string(),
+    position: v.number(),
+    isActive: v.boolean(),
+    used: v.boolean(),
+    saveVersion: v.number(),
+  }).index('by_tenant_field_position', ['tenantId', 'fieldId', 'position']),
 
   // Its own aggregate (`contacts.identifierType`, saveVersion), like tags:
   // names unique per tenant case-insensitively; archive = `isActive: false`

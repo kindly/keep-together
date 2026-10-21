@@ -27,6 +27,8 @@ const DEFAULTS = {
   identifierTypesVersion: 0,
   staffCanManageSourceCodes: false,
   sourceCodesVersion: 0,
+  staffCanManageFields: false,
+  fieldsVersion: 0,
 }
 
 export const tagsFields = { staffCanManageTags: v.boolean() }

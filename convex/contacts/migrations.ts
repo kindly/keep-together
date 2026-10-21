@@ -60,3 +60,17 @@ export const backfillRevisionGroupName = migrations.define({
     return group ? { groupName: group.name } : undefined
   },
 })
+
+/**
+ * Dropdown fields step 1: `fieldsVersion = 0` on contacts created before
+ * the `contacts.fields` slice existed (0 is what a create writes: no fields
+ * revision yet). A no-op on contacts that have it. The `fieldN` values need
+ * no backfill: absent means not set, here and on `contactSearch`.
+ *
+ *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillFieldsVersion"}'
+ */
+export const backfillFieldsVersion = migrations.define({
+  table: 'contacts',
+  migrateOne: (_ctx, contact) =>
+    contact.fieldsVersion === undefined ? { fieldsVersion: 0 } : undefined,
+})

@@ -110,6 +110,7 @@ export const details = defineContract({
         tagsVersion: 0,
         identifiersVersion: 0,
         acquisitionVersion: 0,
+        fieldsVersion: 0,
       })
     }
     if (root.kind !== p.kind) {
