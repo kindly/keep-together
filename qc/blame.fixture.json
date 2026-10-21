@@ -1,0 +1,4096 @@
+{
+  "normal": {
+    "run": "tn9ttz4a",
+    "flow": "contact.acquisition.set",
+    "budgetMs": 100,
+    "sample": {
+      "worker": 1,
+      "instance": "qc-2",
+      "at": 1792608852944,
+      "sendMs": 1.7,
+      "sent": "Mutation",
+      "commitMs": 53,
+      "responseMs": 99.1,
+      "transitionMs": 111.8,
+      "lastInMs": 114,
+      "endMs": 127.7,
+      "longTaskMs": 0,
+      "connects": 0,
+      "hidden": false,
+      "hostCpu": 0.34,
+      "load1": 2.6,
+      "linkMs": 1.31,
+      "fns": ["contacts/mutations:setAcquisition"]
+    },
+    "calls": [
+      {
+        "instance": "qc-3",
+        "at": 1792608852369,
+        "fn": "contacts/notes:create",
+        "type": "Mutation",
+        "ms": 14.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852359,
+        "fn": "contacts/queries:getAcquisition",
+        "type": "Query",
+        "ms": 21.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852362,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 24.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608852403,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 28.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852429,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 30.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852610,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 73.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852628,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 14.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608852679,
+        "fn": "contacts/notes:create",
+        "type": "Mutation",
+        "ms": 36.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852657,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 42.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608852734,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 51.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852733,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 39.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852740,
+        "fn": "contacts/mutations:setAcquisition",
+        "type": "Mutation",
+        "ms": 39.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852764,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 21.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852816,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 14.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608852846,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 185.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852832,
+        "fn": "sources/queries:picker",
+        "type": "Query",
+        "ms": 13.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608852893,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 9.5
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608852911,
+        "fn": "contacts/notes:create",
+        "type": "Mutation",
+        "ms": 23.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852918,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 45.4
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608852894,
+        "fn": "auth:signIn",
+        "type": "Action",
+        "ms": 246.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852926,
+        "fn": "sources/queries:picker",
+        "type": "Query",
+        "ms": 18.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608852932,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 17.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852930,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 8.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852930,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 8.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608852982,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 14.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608852976,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 13.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853027,
+        "fn": "contacts/mutations:setAcquisition",
+        "type": "Mutation",
+        "ms": 30.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853039,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 9.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608853096,
+        "fn": "contacts/notes:create",
+        "type": "Mutation",
+        "ms": 10.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853093,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 10.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608853120,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 20.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853169,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 25.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853182,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853190,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 18.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853238,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 11.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853292,
+        "fn": "contacts/mutations:setAcquisition",
+        "type": "Mutation",
+        "ms": 23
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853306,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 11.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853359,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 16
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853361,
+        "fn": "sources/queries:picker",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853380,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 19.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853392,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 9.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853395,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 13.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853445,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 14.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608853495,
+        "fn": "platform/qcSeed:hold",
+        "type": "Mutation",
+        "ms": 15.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853458,
+        "fn": "sources/queries:picker",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608853518,
+        "fn": "comms/suppressions:held",
+        "type": "Query",
+        "ms": 21.1
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608853328,
+        "fn": "contacts/notes:create",
+        "type": "Mutation",
+        "ms": 23.1
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608853359,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 28.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608853565,
+        "fn": "contacts/notes:create",
+        "type": "Mutation",
+        "ms": 17
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853605,
+        "fn": "contacts/mutations:setAcquisition",
+        "type": "Mutation",
+        "ms": 30.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608853581,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 13.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853617,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 8.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608853664,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 16.8
+      }
+    ],
+    "probes": [
+      {
+        "at": 1792608860184,
+        "ms": 31.5,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608862232,
+        "ms": 30.6,
+        "lagMs": 17.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608864263,
+        "ms": 31.6,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608866296,
+        "ms": 35.3,
+        "lagMs": 1.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608868332,
+        "ms": 31.3,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608870362,
+        "ms": 32.5,
+        "lagMs": -0.6,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608872395,
+        "ms": 31.7,
+        "lagMs": -0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608874426,
+        "ms": 28.7,
+        "lagMs": -0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608876455,
+        "ms": 31.2,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608878487,
+        "ms": 31,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608880518,
+        "ms": 256.7,
+        "lagMs": 0.3,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608882775,
+        "ms": 33.3,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608884809,
+        "ms": 33.4,
+        "lagMs": 0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608886843,
+        "ms": 33.2,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608888877,
+        "ms": 31.6,
+        "lagMs": 1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608890908,
+        "ms": 41.3,
+        "lagMs": -0.6,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608892950,
+        "ms": 40.7,
+        "lagMs": 0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608894991,
+        "ms": 33.6,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608897025,
+        "ms": 36.8,
+        "lagMs": 0.3,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608899062,
+        "ms": 32.6,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608901095,
+        "ms": 39.5,
+        "lagMs": -0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608903134,
+        "ms": 31.8,
+        "lagMs": -0.3,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608905165,
+        "ms": 30.1,
+        "lagMs": -0.5,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608907195,
+        "ms": 34.6,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608909230,
+        "ms": 48.3,
+        "lagMs": -0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608911279,
+        "ms": 38.1,
+        "lagMs": 0.3,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608913317,
+        "ms": 39,
+        "lagMs": 0.3,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608915357,
+        "ms": 35.4,
+        "lagMs": 0.5,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608917393,
+        "ms": 38.7,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608919432,
+        "ms": 33.4,
+        "lagMs": 0.9,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608921466,
+        "ms": 58.4,
+        "lagMs": 0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608923525,
+        "ms": 36.6,
+        "lagMs": 0.7,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608845144,
+        "ms": 38.8,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608847188,
+        "ms": 29.2,
+        "lagMs": 5.7,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608849218,
+        "ms": 34.8,
+        "lagMs": 0.7,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608851255,
+        "ms": 42.8,
+        "lagMs": 1.5,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608853298,
+        "ms": 30.4,
+        "lagMs": 0.5,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608855329,
+        "ms": 30.3,
+        "lagMs": -0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792608857359,
+        "ms": 31.5,
+        "lagMs": 0.5,
+        "worker": 1,
+        "instance": "qc-2"
+      }
+    ]
+  },
+  "slowFunction": {
+    "run": "tn9ttz4a",
+    "flow": "contact.addEmail",
+    "budgetMs": 100,
+    "sample": {
+      "worker": 0,
+      "instance": "qc-1",
+      "at": 1792608867344,
+      "sendMs": 4.9,
+      "sent": "Mutation",
+      "commitMs": 75,
+      "responseMs": 115.3,
+      "transitionMs": 153.2,
+      "lastInMs": 153.2,
+      "endMs": 159.9,
+      "longTaskMs": 0,
+      "connects": 0,
+      "hidden": false,
+      "hostCpu": 0.36,
+      "load1": 3.7,
+      "linkMs": 2.07,
+      "fns": ["contacts/mutations:saveForm"]
+    },
+    "calls": [
+      {
+        "instance": "qc-3",
+        "at": 1792608866794,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 24.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608866765,
+        "fn": "comms/suppressions:releaseAtProvider",
+        "type": "Action",
+        "ms": 4.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608866765,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 63.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608866781,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 13.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608866791,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 23.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866818,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 21.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608866842,
+        "fn": "comms/suppressions:held",
+        "type": "Query",
+        "ms": 14.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866850,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 35.1
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866875,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 11.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608866854,
+        "fn": "contacts/queries:sharedAddresses",
+        "type": "Query",
+        "ms": 27.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608866856,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 29.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866871,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 17.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866875,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866887,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866887,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 9.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866888,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 9.8
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866888,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 10
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866888,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 10.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866898,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 20.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866899,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 20.8
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608866911,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 10.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866923,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 14.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866926,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 0.1,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866926,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866926,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866934,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 8.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866935,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 8.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866935,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 9.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866935,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 9.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866945,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 19
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866945,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 19.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608866962,
+        "fn": "contacts/queries:getAcquisition",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608867014,
+        "fn": "contacts/notes:create",
+        "type": "Mutation",
+        "ms": 16.5
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608867040,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 24
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867059,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 26.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867085,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 24
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867111,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 28.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867128,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 9.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867131,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867139,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 8.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867140,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 9.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867140,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 9.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867142,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 11.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867142,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 11.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867148,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 17.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867123,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867128,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 14.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867160,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 9.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867179,
+        "fn": "contacts/queries:sharedAddresses",
+        "type": "Query",
+        "ms": 13.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867193,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 12.4
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867198,
+        "fn": "comms/suppressions:held",
+        "type": "Query",
+        "ms": 17.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867202,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608867238,
+        "fn": "contacts/notes:save",
+        "type": "Mutation",
+        "ms": 15.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867241,
+        "fn": "sources/queries:filterOptions",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867243,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867256,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 13
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608867254,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 13.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867333,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 19.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608867359,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 9.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867346,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867346,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 10.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867404,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 11.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867413,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 7.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867443,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 50.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867453,
+        "fn": "sources/queries:picker",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867461,
+        "fn": "sources/queries:picker",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867474,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 28.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867479,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 33.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867530,
+        "fn": "contacts/queries:sharedAddresses",
+        "type": "Query",
+        "ms": 11.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867546,
+        "fn": "comms/suppressions:held",
+        "type": "Query",
+        "ms": 13.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867550,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 17.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867670,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 30.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867688,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 16.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867735,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 8.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867737,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867737,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867737,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867746,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 9.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867746,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 9.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867747,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 10
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867750,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 13.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867757,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 19.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867805,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 36.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867778,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867820,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 12.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867822,
+        "fn": "contacts/queries:sharedAddresses",
+        "type": "Query",
+        "ms": 14.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867822,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 15.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867824,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867870,
+        "fn": "contacts/queries:sharedAddresses",
+        "type": "Query",
+        "ms": 12.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867887,
+        "fn": "comms/suppressions:held",
+        "type": "Query",
+        "ms": 13.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608867889,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 16.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867953,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867989,
+        "fn": "sources/queries:filterOptions",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608867991,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608868011,
+        "fn": "contacts/mutations:saveIdentifierType",
+        "type": "Mutation",
+        "ms": 19.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608868028,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 36.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608868029,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 15.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608868072,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 10.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608868101,
+        "fn": "platform/qcSeed:hold",
+        "type": "Mutation",
+        "ms": 20.1
+      }
+    ],
+    "probes": [
+      {
+        "at": 1792608845238,
+        "ms": 35.7,
+        "lagMs": 0,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608847274,
+        "ms": 31.9,
+        "lagMs": 0.1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608849306,
+        "ms": 34.1,
+        "lagMs": 0.2,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608851341,
+        "ms": 30.7,
+        "lagMs": 0.3,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608853372,
+        "ms": 29.3,
+        "lagMs": 0.1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608855402,
+        "ms": 32.1,
+        "lagMs": 1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608857436,
+        "ms": 40.2,
+        "lagMs": 1.2,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608859475,
+        "ms": 32.6,
+        "lagMs": -0.6,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608861508,
+        "ms": 29.3,
+        "lagMs": 0.3,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608863538,
+        "ms": 31,
+        "lagMs": 0.5,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608865571,
+        "ms": 30.7,
+        "lagMs": 1.4,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608867601,
+        "ms": 30.7,
+        "lagMs": -0.1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608869631,
+        "ms": 29.5,
+        "lagMs": -0.8,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608871661,
+        "ms": 30.8,
+        "lagMs": -0.4,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608873692,
+        "ms": 41.5,
+        "lagMs": 0.6,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608875734,
+        "ms": 34.9,
+        "lagMs": 0.4,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608877769,
+        "ms": 31.6,
+        "lagMs": -0.2,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608879801,
+        "ms": 31,
+        "lagMs": 0.2,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608881832,
+        "ms": 33.1,
+        "lagMs": -0.2,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608883865,
+        "ms": 29.8,
+        "lagMs": 0,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608885894,
+        "ms": 35.6,
+        "lagMs": -0.4,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608887930,
+        "ms": 34.6,
+        "lagMs": -0.2,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608889965,
+        "ms": 38.4,
+        "lagMs": 0.7,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608892004,
+        "ms": 42.3,
+        "lagMs": 0.1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608894047,
+        "ms": 30.2,
+        "lagMs": 0.6,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608896076,
+        "ms": 37.8,
+        "lagMs": -0.8,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608898114,
+        "ms": 33.7,
+        "lagMs": 0.2,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608900149,
+        "ms": 42.3,
+        "lagMs": 0.9,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608902193,
+        "ms": 36.6,
+        "lagMs": 1.5,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608904230,
+        "ms": 40.9,
+        "lagMs": 0.1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608906271,
+        "ms": 34.8,
+        "lagMs": 0.4,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608908308,
+        "ms": 43,
+        "lagMs": 1.9,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608910351,
+        "ms": 30,
+        "lagMs": -0.4,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608912381,
+        "ms": 42.3,
+        "lagMs": 0.2,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608914424,
+        "ms": 44.8,
+        "lagMs": 0.8,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608916470,
+        "ms": 37,
+        "lagMs": 0.9,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608918507,
+        "ms": 30.5,
+        "lagMs": 0.1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608920538,
+        "ms": 36.7,
+        "lagMs": 0.1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608922575,
+        "ms": 31.5,
+        "lagMs": 0,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608924607,
+        "ms": 36,
+        "lagMs": 1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608926643,
+        "ms": 35.4,
+        "lagMs": -0.1,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608928678,
+        "ms": 31.7,
+        "lagMs": -0.3,
+        "worker": 0,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792608930711,
+        "ms": 45,
+        "lagMs": 0.4,
+        "worker": 0,
+        "instance": "qc-1"
+      }
+    ]
+  },
+  "linkStall": {
+    "run": "tn9ttz4a",
+    "flow": "contact.note.archive",
+    "budgetMs": 100,
+    "sample": {
+      "worker": 5,
+      "instance": "qc-3",
+      "at": 1792608880578,
+      "sendMs": 2.5,
+      "sent": "Mutation",
+      "commitMs": 194,
+      "responseMs": 214.1,
+      "transitionMs": 228.9,
+      "lastInMs": 231.2,
+      "endMs": 242.3,
+      "longTaskMs": 0,
+      "connects": 0,
+      "hidden": false,
+      "hostCpu": 0.43,
+      "load1": 6.2,
+      "linkMs": 192,
+      "fns": ["contacts/notes:setArchived"]
+    },
+    "calls": [
+      {
+        "instance": "qc-1",
+        "at": 1792608879985,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 9.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608879985,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 9.4
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608879986,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 10.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608879993,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 13.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608879992,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 16.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880004,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 9.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880037,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 13.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880053,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 12.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608880089,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 151.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880101,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 9.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880114,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 10.4
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880114,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 10.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880114,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 10.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880115,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 10.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880115,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 11.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608880105,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 7.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608880107,
+        "fn": "auth:signIn",
+        "type": "Action",
+        "ms": 174.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880151,
+        "fn": "contacts/notes:setArchived",
+        "type": "Mutation",
+        "ms": 12.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880119,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 15.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880121,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 16.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880133,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 9.8
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880166,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 12.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880168,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 20.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880180,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880181,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 10.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880234,
+        "fn": "contacts/queries:sharedAddresses",
+        "type": "Query",
+        "ms": 12.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880239,
+        "fn": "comms/suppressions:held",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880251,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 12.5
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880298,
+        "fn": "contacts/notes:archivedForContact",
+        "type": "Query",
+        "ms": 17.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880293,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 18.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880307,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880307,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 10.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608880327,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 9.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880359,
+        "fn": "contacts/queries:sharedAddresses",
+        "type": "Query",
+        "ms": 11.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608880404,
+        "fn": "sources/queries:tree",
+        "type": "Query",
+        "ms": 12.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880372,
+        "fn": "comms/suppressions:held",
+        "type": "Query",
+        "ms": 9.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880373,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 10.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880449,
+        "fn": "contacts/notes:setArchived",
+        "type": "Mutation",
+        "ms": 13.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880480,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 151.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880461,
+        "fn": "contacts/notes:archivedForContact",
+        "type": "Query",
+        "ms": 9.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880465,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 13.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880503,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608880504,
+        "fn": "auth:signIn",
+        "type": "Action",
+        "ms": 182.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880777,
+        "fn": "contacts/notes:setArchived",
+        "type": "Mutation",
+        "ms": 14.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880791,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 11.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880794,
+        "fn": "contacts/notes:archivedForContact",
+        "type": "Query",
+        "ms": 13.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608880913,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880934,
+        "fn": "contacts/notes:setArchived",
+        "type": "Mutation",
+        "ms": 12
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608880945,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 7.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880945,
+        "fn": "contacts/notes:archivedForContact",
+        "type": "Query",
+        "ms": 9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608880947,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 11.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608881006,
+        "fn": "sources/queries:filterOptions",
+        "type": "Query",
+        "ms": 9.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608881017,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 8.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792608881026,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 17.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608881080,
+        "fn": "contacts/notes:setArchived",
+        "type": "Mutation",
+        "ms": 11.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881086,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 9.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608881093,
+        "fn": "contacts/notes:archivedForContact",
+        "type": "Query",
+        "ms": 11.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608881095,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 12.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881152,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 10.1
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608881234,
+        "fn": "contacts/notes:setArchived",
+        "type": "Mutation",
+        "ms": 12.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608881250,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 13.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608881251,
+        "fn": "contacts/notes:archivedForContact",
+        "type": "Query",
+        "ms": 14.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881291,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 17.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881307,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 12.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881353,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 9.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608881399,
+        "fn": "contacts/notes:setArchived",
+        "type": "Mutation",
+        "ms": 12.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881368,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 11.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881368,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 11.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881368,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 12.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881368,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 12.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881368,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 12.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881369,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 12.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881370,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 14.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792608881372,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 16.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608881416,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 14.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792608881418,
+        "fn": "contacts/notes:archivedForContact",
+        "type": "Query",
+        "ms": 16.4
+      }
+    ],
+    "probes": [
+      {
+        "at": 1792608856466,
+        "ms": 37.2,
+        "lagMs": 0,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608858503,
+        "ms": 32.5,
+        "lagMs": -0.3,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608860537,
+        "ms": 32.7,
+        "lagMs": 1.4,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608862570,
+        "ms": 29.5,
+        "lagMs": 0,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608864600,
+        "ms": 35.3,
+        "lagMs": 0.4,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608866636,
+        "ms": 29.6,
+        "lagMs": 0.9,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608868665,
+        "ms": 33,
+        "lagMs": -0.5,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608870699,
+        "ms": 30.6,
+        "lagMs": 0.7,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608872730,
+        "ms": 32.5,
+        "lagMs": 0.3,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608874763,
+        "ms": 29.4,
+        "lagMs": 0.4,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608876793,
+        "ms": 36,
+        "lagMs": 0.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608878828,
+        "ms": 29.8,
+        "lagMs": -0.7,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608880860,
+        "ms": 30.9,
+        "lagMs": 2.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608882892,
+        "ms": 31.4,
+        "lagMs": 0.8,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608884924,
+        "ms": 33,
+        "lagMs": 0.3,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608886957,
+        "ms": 37.4,
+        "lagMs": 0.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608888994,
+        "ms": 31.9,
+        "lagMs": 0,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608891026,
+        "ms": 37.4,
+        "lagMs": -0.2,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608893064,
+        "ms": 36.9,
+        "lagMs": -0.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608895100,
+        "ms": 32.1,
+        "lagMs": -0.2,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608897133,
+        "ms": 35.9,
+        "lagMs": 0.2,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608899169,
+        "ms": 37.8,
+        "lagMs": 0.3,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608901207,
+        "ms": 32.1,
+        "lagMs": 0.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608903240,
+        "ms": 39.7,
+        "lagMs": 0.6,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608905279,
+        "ms": 38,
+        "lagMs": -0.3,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608907317,
+        "ms": 35.3,
+        "lagMs": -0.2,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608909353,
+        "ms": 39.8,
+        "lagMs": 0.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608911392,
+        "ms": 29.8,
+        "lagMs": -0.5,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608913424,
+        "ms": 41.8,
+        "lagMs": 2,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608915466,
+        "ms": 29.4,
+        "lagMs": -0.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608917497,
+        "ms": 32.8,
+        "lagMs": 1.7,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608919530,
+        "ms": 29.8,
+        "lagMs": -0.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608921559,
+        "ms": 33.6,
+        "lagMs": -0.5,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608923593,
+        "ms": 40,
+        "lagMs": 0.2,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608925633,
+        "ms": 32.3,
+        "lagMs": 0.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608845076,
+        "ms": 38.3,
+        "lagMs": 0,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608847121,
+        "ms": 36.6,
+        "lagMs": 6.6,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608849158,
+        "ms": 34.7,
+        "lagMs": -0.1,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608851193,
+        "ms": 41.5,
+        "lagMs": 0.2,
+        "worker": 5,
+        "instance": "qc-3"
+      },
+      {
+        "at": 1792608853234,
+        "ms": 43.7,
+        "lagMs": 0,
+        "worker": 5,
+        "instance": "qc-3"
+      }
+    ]
+  },
+  "slowSpell": {
+    "run": "tn9g1x25",
+    "flow": "settings.sourceCodes.addDetail",
+    "budgetMs": 100,
+    "sample": {
+      "worker": 1,
+      "instance": "qc-2",
+      "at": 1792591032056,
+      "sendMs": 2.7,
+      "sent": "Mutation",
+      "commitMs": 35,
+      "responseMs": 135.6,
+      "transitionMs": 136,
+      "lastInMs": 136.5,
+      "endMs": 145.3,
+      "longTaskMs": 0,
+      "connects": 0,
+      "hidden": false,
+      "hostCpu": 0.15,
+      "load1": 4.2,
+      "linkMs": 43.7,
+      "fns": ["sources/mutations:create"]
+    },
+    "calls": [
+      {
+        "instance": "qc-1",
+        "at": 1792591031574,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 15.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031577,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 10.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031583,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591031587,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 11.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591031735,
+        "fn": "contacts/mutations:saveIdentifierType",
+        "type": "Mutation",
+        "ms": 11.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591031734,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 15.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031728,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031740,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 10
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031740,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 9.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591031762,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 23.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591031774,
+        "fn": "sources/mutations:remove",
+        "type": "Mutation",
+        "ms": 21.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591031790,
+        "fn": "sources/queries:tree",
+        "type": "Query",
+        "ms": 14.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031755,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 25.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031759,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 29.5
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031880,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591031797,
+        "fn": "platform/qcSeed:hold",
+        "type": "Mutation",
+        "ms": 20.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591031810,
+        "fn": "comms/suppressions:held",
+        "type": "Query",
+        "ms": 10.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031911,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 13.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031922,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 9.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031922,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 9.5
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591031924,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 11.1
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032043,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591032077,
+        "fn": "contacts/mutations:saveIdentifierType",
+        "type": "Mutation",
+        "ms": 16.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591032079,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 22.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032073,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 19.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032086,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032086,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032097,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 21.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032211,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 0.1,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591032095,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 12.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591032088,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 9.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591032102,
+        "fn": "sources/mutations:create",
+        "type": "Mutation",
+        "ms": 17.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591032114,
+        "fn": "sources/queries:tree",
+        "type": "Query",
+        "ms": 9.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591032222,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 13.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591032246,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 150.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032219,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032222,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032374,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591032266,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 8.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591032267,
+        "fn": "auth:signIn",
+        "type": "Action",
+        "ms": 176.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591032456,
+        "fn": "sources/mutations:remove",
+        "type": "Mutation",
+        "ms": 59.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032381,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 10.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792591032538,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 0.1,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591032477,
+        "fn": "sources/queries:tree",
+        "type": "Query",
+        "ms": 15
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591032568,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 17.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591032581,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591032748,
+        "fn": "sources/mutations:create",
+        "type": "Mutation",
+        "ms": 15.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792591032729,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 13.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792591032760,
+        "fn": "sources/queries:tree",
+        "type": "Query",
+        "ms": 9.2
+      }
+    ],
+    "probes": [
+      {
+        "at": 1792590987189,
+        "ms": 32.7,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792590989227,
+        "ms": 29.8,
+        "lagMs": 5.5,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792590991258,
+        "ms": 32.7,
+        "lagMs": 0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792590993290,
+        "ms": 30.4,
+        "lagMs": -0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792590995321,
+        "ms": 30.8,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792590997352,
+        "ms": 28.3,
+        "lagMs": 0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792590999381,
+        "ms": 28.7,
+        "lagMs": 0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591001409,
+        "ms": 31.2,
+        "lagMs": 0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591003440,
+        "ms": 38.5,
+        "lagMs": -0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591005479,
+        "ms": 29.8,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591007509,
+        "ms": 29.3,
+        "lagMs": 0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591009539,
+        "ms": 30.4,
+        "lagMs": 0.3,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591011569,
+        "ms": 29.4,
+        "lagMs": -0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591013599,
+        "ms": 30.1,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591015629,
+        "ms": 45.5,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591017674,
+        "ms": 32.8,
+        "lagMs": -0.5,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591019708,
+        "ms": 38.5,
+        "lagMs": 0.8,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591021747,
+        "ms": 29.2,
+        "lagMs": -0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591023776,
+        "ms": 29.4,
+        "lagMs": -0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591025806,
+        "ms": 31.1,
+        "lagMs": 0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591027837,
+        "ms": 31.7,
+        "lagMs": 0.3,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591029870,
+        "ms": 101.5,
+        "lagMs": 1.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591031972,
+        "ms": 83.7,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591034056,
+        "ms": 30.9,
+        "lagMs": 0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591036088,
+        "ms": 31.2,
+        "lagMs": 0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591038119,
+        "ms": 33.3,
+        "lagMs": 0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591040153,
+        "ms": 32.9,
+        "lagMs": 0.3,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591042186,
+        "ms": 34,
+        "lagMs": 0,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591044219,
+        "ms": 32.3,
+        "lagMs": -0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591046251,
+        "ms": 29.6,
+        "lagMs": -0.5,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591048280,
+        "ms": 31.9,
+        "lagMs": -0.7,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591050313,
+        "ms": 33.5,
+        "lagMs": 0.4,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591052347,
+        "ms": 33.7,
+        "lagMs": 0.7,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591054381,
+        "ms": 30.1,
+        "lagMs": -0.1,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591056411,
+        "ms": 31.3,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      },
+      {
+        "at": 1792591058442,
+        "ms": 30.4,
+        "lagMs": 0.2,
+        "worker": 1,
+        "instance": "qc-2"
+      }
+    ]
+  },
+  "stallElsewhere": {
+    "run": "tn9vwfeq",
+    "flow": "settings.identifierTypes.rename",
+    "budgetMs": 100,
+    "sample": {
+      "worker": 3,
+      "instance": "qc-1",
+      "at": 1792611567884,
+      "sendMs": 1.7,
+      "sent": "Mutation",
+      "fns": ["contacts/mutations:saveIdentifierType"],
+      "commitMs": 164,
+      "responseMs": 223.6,
+      "transitionMs": 260.9,
+      "lastInMs": 262.2,
+      "endMs": 263.5,
+      "longTaskMs": 0,
+      "connects": 0,
+      "hidden": false,
+      "hostCpu": 0.2,
+      "load1": 8.8,
+      "linkMs": 2.84
+    },
+    "calls": [
+      {
+        "instance": "qc-3",
+        "at": 1792611567311,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 7.8
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611567313,
+        "fn": "auth:signIn",
+        "type": "Action",
+        "ms": 370.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611567355,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 284.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611567352,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 65.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567382,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 154.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611567381,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 7.1
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611567382,
+        "fn": "auth:signIn",
+        "type": "Action",
+        "ms": 317.4
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567513,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 97.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567526,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 10.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567527,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 10.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567527,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 11.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567616,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 100
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567617,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 101.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567620,
+        "fn": "contacts/mutations:saveIdentifierType",
+        "type": "Mutation",
+        "ms": 150.3
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567669,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 152
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567678,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 161.1
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567684,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 60.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611567688,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 170.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611567668,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 454.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611567691,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 20.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611567838,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 120.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568022,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 50.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568029,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 188.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568067,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 61.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568093,
+        "fn": "contacts/mutations:saveIdentifierType",
+        "type": "Mutation",
+        "ms": 141.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568078,
+        "fn": "platform/tenants:mine",
+        "type": "Query",
+        "ms": 23.4
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568094,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 24.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568094,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 26
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568101,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 17.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568093,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 202.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568129,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 33
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568133,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 9.7
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568134,
+        "fn": "sources/queries:tree",
+        "type": "Query",
+        "ms": 20.2
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568136,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568121,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 25.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568136,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 12.8
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568138,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 14.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568138,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 14.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568139,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 15
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568141,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 17.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568142,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 18.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568131,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 34.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568179,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 43
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568179,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 42.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568179,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 43.1
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568170,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 46.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568171,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 47.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568205,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 38.8
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568200,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 63.5
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568204,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 67.6
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568209,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 72.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568249,
+        "fn": "contacts/mutations:create",
+        "type": "Mutation",
+        "ms": 45.3
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568260,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 12.1
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568271,
+        "fn": "contacts/queries:byClientKey",
+        "type": "Query",
+        "ms": 20.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568297,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 25.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568311,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 11.8
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568314,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 14.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568332,
+        "fn": "contacts/mutations:saveIdentifierType",
+        "type": "Mutation",
+        "ms": 17
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568334,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 12
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568347,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 9.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568347,
+        "fn": "contacts/queries:getChannels",
+        "type": "Query",
+        "ms": 10.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568347,
+        "fn": "contacts/queries:tags",
+        "type": "Query",
+        "ms": 10.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568348,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 11
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568348,
+        "fn": "contacts/queries:getTags",
+        "type": "Query",
+        "ms": 11
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568350,
+        "fn": "contacts/notes:forContact",
+        "type": "Query",
+        "ms": 13.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568350,
+        "fn": "contacts/queries:getIdentifiers",
+        "type": "Query",
+        "ms": 13.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568351,
+        "fn": "platform/tenants:members",
+        "type": "Query",
+        "ms": 14.2
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568344,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 16.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568345,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 10.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568369,
+        "fn": "contacts/queries:sharedAddresses",
+        "type": "Query",
+        "ms": 19.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568388,
+        "fn": "comms/suppressions:held",
+        "type": "Query",
+        "ms": 16.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568388,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 16.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568377,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 29.2
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568401,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 23.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568416,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 25.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568419,
+        "fn": "sources/queries:filterOptions",
+        "type": "Query",
+        "ms": 15.4
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568429,
+        "fn": "sources/queries:filterOptions",
+        "type": "Query",
+        "ms": 9.8
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568419,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 9.7
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568510,
+        "fn": "contacts/mutations:saveIdentifierType",
+        "type": "Mutation",
+        "ms": 13.1
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568525,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 21.6
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568523,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 9.9
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568537,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 14.6
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568585,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 151.5
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568550,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.3
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568602,
+        "fn": "auth:store",
+        "type": "Mutation",
+        "ms": 7.9
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568603,
+        "fn": "auth:signIn",
+        "type": "Action",
+        "ms": 174.7
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568614,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568592,
+        "fn": "contacts/queries:history",
+        "type": "Query",
+        "ms": 9.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568660,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 23.4
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568689,
+        "fn": "contacts/mutations:saveIdentifierType",
+        "type": "Mutation",
+        "ms": 12.9
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568662,
+        "fn": "sources/queries:filterOptions",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-2",
+        "at": 1792611568693,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 19.8
+      },
+      {
+        "instance": "qc-3",
+        "at": 1792611568724,
+        "fn": "contacts/queries:list",
+        "type": "Query",
+        "ms": 0,
+        "cached": true
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568702,
+        "fn": "contacts/queries:listIdentifierTypes",
+        "type": "Query",
+        "ms": 10
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568724,
+        "fn": "contacts/mutations:saveForm",
+        "type": "Mutation",
+        "ms": 14.4
+      },
+      {
+        "instance": "qc-1",
+        "at": 1792611568738,
+        "fn": "contacts/queries:getRoot",
+        "type": "Query",
+        "ms": 10.5
+      }
+    ],
+    "probes": [
+      {
+        "at": 1792611525203,
+        "ms": 39,
+        "lagMs": 0,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611527249,
+        "ms": 32.2,
+        "lagMs": 7.1,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611529282,
+        "ms": 31,
+        "lagMs": 0.4,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611531313,
+        "ms": 29,
+        "lagMs": 0.2,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611533343,
+        "ms": 40.7,
+        "lagMs": 0.3,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611535383,
+        "ms": 32.6,
+        "lagMs": 0.1,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611537417,
+        "ms": 38.9,
+        "lagMs": 1,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611539457,
+        "ms": 30.1,
+        "lagMs": 0.9,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611541488,
+        "ms": 29.3,
+        "lagMs": 0.2,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611543518,
+        "ms": 32.7,
+        "lagMs": 1,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611545551,
+        "ms": 33.3,
+        "lagMs": 0.2,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611547585,
+        "ms": 38.6,
+        "lagMs": 0.6,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611549624,
+        "ms": 31.9,
+        "lagMs": 0.3,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611551657,
+        "ms": 34,
+        "lagMs": 0.6,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611553691,
+        "ms": 36.8,
+        "lagMs": 0,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611555729,
+        "ms": 44.7,
+        "lagMs": 1.1,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611557773,
+        "ms": 29.7,
+        "lagMs": -0.4,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611559804,
+        "ms": 32.5,
+        "lagMs": 1,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611561838,
+        "ms": 35.2,
+        "lagMs": 1.4,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611563874,
+        "ms": 28.3,
+        "lagMs": 0,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611565901,
+        "ms": 39,
+        "lagMs": -0.6,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611567941,
+        "ms": 40.2,
+        "lagMs": 0.4,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611569980,
+        "ms": 32.6,
+        "lagMs": -0.8,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611572013,
+        "ms": 42.6,
+        "lagMs": -0.3,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611574056,
+        "ms": 36,
+        "lagMs": 1,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611576093,
+        "ms": 33.5,
+        "lagMs": 0.4,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611578127,
+        "ms": 32.3,
+        "lagMs": 0.7,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611580160,
+        "ms": 30.6,
+        "lagMs": 0.3,
+        "worker": 3,
+        "instance": "qc-1"
+      },
+      {
+        "at": 1792611582190,
+        "ms": 33.3,
+        "lagMs": -0.2,
+        "worker": 3,
+        "instance": "qc-1"
+      }
+    ]
+  }
+}

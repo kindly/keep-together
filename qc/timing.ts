@@ -84,6 +84,12 @@ export interface SampleDetail {
   /** First Mutation, Action or ModifyQuerySet the page sent after t0. */
   sendMs: number | null
   sent: string | null
+  /**
+   * What that message runs: the Mutation's or Action's function, or the
+   * queries a ModifyQuerySet adds (canonical `module:name`, as in
+   * `convex logs`). Absent on history from before it was recorded.
+   */
+  fns?: Array<string>
   /** The mutation's commit timestamp, from its MutationResponse. */
   commitMs: number | null
   /** Its MutationResponse arrived. */
@@ -210,6 +216,7 @@ type WireEntry = [
   type: string,
   requestId: number | null,
   tsMs: number | null,
+  fns?: Array<string>,
 ]
 
 interface QcWindow {
@@ -321,16 +328,34 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
   const parse = ([t, d, data]: RawEntry): Array<WireEntry> => {
     const type = /"type":"(\w+)"/.exec(data.slice(0, 200))?.[1] ?? '?'
     if (d === 'out') {
-      const id =
-        type === 'Mutation' || type === 'Action'
-          ? ((JSON.parse(data) as { requestId?: number }).requestId ?? null)
-          : null
+      if (type === 'Mutation' || type === 'Action') {
+        const m = JSON.parse(data) as { requestId?: number; udfPath?: string }
+        return [
+          [
+            t,
+            'out',
+            type,
+            m.requestId ?? null,
+            null,
+            m.udfPath ? [m.udfPath] : [],
+          ],
+        ]
+      }
+      if (type === 'ModifyQuerySet') {
+        const m = JSON.parse(data) as {
+          modifications?: Array<{ type: string; udfPath?: string }>
+        }
+        const adds = (m.modifications ?? []).flatMap((x) =>
+          x.type === 'Add' && x.udfPath ? [x.udfPath] : [],
+        )
+        return [[t, 'out', type, null, null, adds]]
+      }
       return type === 'Connect'
         ? [
             [t, 'open', type, null, null],
             [t, 'out', type, null, null],
           ]
-        : [[t, 'out', type, id, null]]
+        : [[t, 'out', type, null, null]]
     }
     if (type === 'Transition') {
       const head = /"endVersion":\{[^}]*"ts":"([^"]+)"/.exec(data.slice(0, 600))
@@ -371,6 +396,7 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
       ) ?? wire.find(([, d, type]) => d === 'out' && type === 'ModifyQuerySet')
     legs.sendMs = rel(first?.[0])
     legs.sent = first?.[2] ?? null
+    legs.fns = first?.[5] ?? []
     const resp =
       first && first[3] !== null
         ? wire.find(
@@ -499,6 +525,7 @@ async function measureOnce<TArg>(
       at: Math.round(T0),
       sendMs: legs.sendMs ?? null,
       sent: legs.sent ?? null,
+      ...(legs.fns && { fns: legs.fns }),
       commitMs: legs.commitMs ?? null,
       responseMs: legs.responseMs ?? null,
       transitionMs: pickTransition(
