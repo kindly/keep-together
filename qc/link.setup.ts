@@ -166,12 +166,14 @@ export function linkDuring(
   to: number,
 ): number | null {
   let worst: number | null = null
+  // [sent, back, ms]: a reply's ms is its own round trip, not back − sent,
+  // which floating point would blur (69.199951171875).
   const spans = [
-    ...link.pings.map(([sent, rtt]): [number, number] => [sent, sent + rtt]),
-    ...(link.lost ?? []),
+    ...link.pings.map(([sent, rtt]) => [sent, sent + rtt, rtt]),
+    ...(link.lost ?? []).map(([sent, back]) => [sent, back, back - sent]),
   ]
-  for (const [sent, back] of spans) {
-    if (sent <= to && back >= from) worst = Math.max(worst ?? 0, back - sent)
+  for (const [sent, back, ms] of spans) {
+    if (sent <= to && back >= from) worst = Math.max(worst ?? 0, ms)
   }
   return worst
 }

@@ -56,3 +56,8 @@ describe('linkDuring with unanswered echoes', () => {
     expect(linkDuring(shuffled, 1490, 1510)).toBe(2)
   })
 })
+
+test('a reply reports its own round trip exactly', () => {
+  const link = { pings: [[1792573184487, 69.2]] as Array<[number, number]> }
+  expect(linkDuring(link, 1792573184500, 1792573184510)).toBe(69.2)
+})
