@@ -15,8 +15,9 @@
  * deletes the backfill and its test (convex-test can no longer build the
  * old shape). Past backfills: `addressNormalized` (S2), `tagsVersion` (S4),
  * `externalIdentifier` → identifier rows (X2), `contactEmails.onHold` →
- * comms' emailSuppressions (E2a), `acquisitionVersion` (source codes);
- * see git log. `backfillContactSearch` is not a two-phase step: it fills a
+ * comms' emailSuppressions (E2a), `acquisitionVersion` (source codes),
+ * `backfillContactTagName` (`contactTags.name`, perf tag name); see git
+ * log. `backfillContactSearch` is not a two-phase step: it fills a
  * new derived table, and stays (rerunnable) as the way to rebuild it.
  */
 import { migrations } from '../lib/migrations'
@@ -57,22 +58,5 @@ export const backfillRevisionGroupName = migrations.define({
     }
     const group = await ctx.db.get('commandGroups', revision.group)
     return group ? { groupName: group.name } : undefined
-  },
-})
-
-/**
- * Tag name step A: `contactTags.name`, the copy of the tag's name, on links
- * made before the contract wrote it. A no-op on rows already named (a rename
- * refreshes those). Step B makes the field required and drops this, its
- * test and the readers' fallback.
- *
- *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillContactTagName"}'
- */
-export const backfillContactTagName = migrations.define({
-  table: 'contactTags',
-  migrateOne: async (ctx, row) => {
-    if (row.name !== undefined) return undefined
-    const tag = await ctx.db.get('tags', row.tagId)
-    return tag ? { name: tag.name } : undefined
   },
 })

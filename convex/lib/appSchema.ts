@@ -235,14 +235,13 @@ export const appTables = {
   // identity field — immutable per key; re-tagging is remove + add.
   // `name` is a derived copy of the tag's name, so readers needn't fetch the
   // tag: not in the contract payload or revisions, set on insert and
-  // refreshed by a rename's `reindexTag` batches. Optional until the
-  // `backfillContactTagName` backfill is done everywhere (two-phase, step A).
+  // refreshed by a rename's `reindexTag` batches.
   contactTags: defineTable({
     tenantId: v.id('tenants'),
     contactId: v.id('contacts'),
     key: v.string(),
     tagId: v.id('tags'),
-    name: v.optional(v.string()),
+    name: v.string(),
   })
     .index('by_tenant_contact', ['tenantId', 'contactId'])
     .index('by_tenant_key', ['tenantId', 'key'])

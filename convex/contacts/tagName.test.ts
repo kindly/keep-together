@@ -299,38 +299,21 @@ describe('readers', () => {
       { key: 'k1', tagId: member, name: 'Copied' },
     ])
   })
-})
 
-describe('rows without a name (before the backfill)', () => {
-  test('getTags falls back to the tag document', async () => {
+  test('search names tags from the rows, not the tag documents', async () => {
     await saveTags(0, [{ key: 'k1', tagId: member }])
     await f.t.run(async (ctx) => {
       const [r] = await ctx.db.query('contactTags').collect()
-      await ctx.db.patch('contactTags', r._id, { name: undefined })
+      await ctx.db.patch('contactTags', r._id, { name: 'Copied' })
     })
-    expect(await getTags()).toEqual([
-      { key: 'k1', tagId: member, name: 'Member' },
-    ])
-  })
-
-  test('search still names the tag from the tag document', async () => {
-    await saveTags(0, [{ key: 'k1', tagId: member }])
-    await f.t.run(async (ctx) => {
-      for (const r of await ctx.db.query('contactTags').collect()) {
-        await ctx.db.patch('contactTags', r._id, { name: undefined })
-      }
-    })
-    // A save that rebuilds search without touching the tag row.
+    // A save that rebuilds search without touching the k1 row.
     await saveTags(1, [
       { key: 'k1', tagId: member },
       { key: 'k2', tagId: volunteer },
     ])
     const words = await searchWords()
-    expect(words).toContain('member')
+    expect(words).toContain('copied')
+    expect(words).not.toContain('member')
     expect(words).toContain('volunteer')
-    expect(await namesOn()).toEqual([
-      ['k1', undefined],
-      ['k2', 'Volunteer'],
-    ])
   })
 })

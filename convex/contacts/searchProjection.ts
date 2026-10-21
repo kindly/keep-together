@@ -66,22 +66,9 @@ function sameIds(existing: Doc<'contactSearch'>, ids: AcquisitionIds) {
 }
 
 /**
- * A tag link's name: the copy on the row. A row written before the copy
- * existed reads the tag (until `backfillContactTagName` is done; step B
- * drops this fallback).
- */
-async function tagName(
-  db: ScopedDatabaseReader,
-  row: Doc<'contactTags'>,
-): Promise<string | null> {
-  if (row.name !== undefined) return row.name
-  return (await db.get(row.tagId))?.name ?? null
-}
-
-/**
  * Rebuild one contact's `contactSearch` row from its current state; writes
- * only if the row changed. Every read runs at once (bar the tag names of
- * rows not yet backfilled): this is on the save path.
+ * only if the row changed. Every read runs at once (tags are named by the
+ * copy on their `contactTags` rows): this is on the save path.
  */
 export async function projectContactSearch(
   ctx: Pick<ContractCtx, 'db'>,
@@ -117,17 +104,14 @@ export async function projectContactSearch(
         .unique(),
     ])
   if (!contact) return
-  const [tagNames, ids] = await Promise.all([
-    Promise.all(tagRows.map((r) => tagName(db, r))),
-    acquisitionIds(db, contact.acquisitionCodeId, existing),
-  ])
+  const ids = await acquisitionIds(db, contact.acquisitionCodeId, existing)
   const row = {
     ...searchRow(contact, {
       emails: emails.map((e) => e.address),
       phones: phones.map((p) => p.number),
       addresses,
       identifiers: idRows.map((r) => r.value),
-      tagNames: tagNames.flatMap((n) => (n === null ? [] : [n])),
+      tagNames: tagRows.map((r) => r.name),
     }),
     ...ids,
   }

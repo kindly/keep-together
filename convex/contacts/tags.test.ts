@@ -486,6 +486,7 @@ describe('contacts by tag', () => {
           contactId,
           key: `page-${i}`,
           tagId: member,
+          name: 'Member',
         })
       }
     })
@@ -625,6 +626,7 @@ describe('the list filtered by tag', () => {
           contactId,
           key: `scan-${i}`,
           tagId: volunteer,
+          name: 'Volunteer',
         })
       }
     })

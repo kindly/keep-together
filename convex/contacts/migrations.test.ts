@@ -27,9 +27,7 @@ const createContact = (who: Tenant, lastName: string) =>
   })
 
 const run = (
-  fn:
-    | typeof internal.contacts.migrations.backfillContactSearch
-    | typeof internal.contacts.migrations.backfillContactTagName,
+  fn: typeof internal.contacts.migrations.backfillContactSearch,
   opts: { batchSize?: number; cursor?: null } = {},
 ) => f.t.run((ctx) => runToCompletion(ctx, components.migrations, fn, opts))
 
@@ -64,50 +62,5 @@ describe('backfillContactSearch fills contactSearch.sortName', () => {
       cursor: null,
     })
     expect(await rows()).toEqual(done)
-  })
-})
-
-describe('backfillContactTagName copies the tag name onto its links', () => {
-  const links = () => f.t.run((ctx) => ctx.db.query('contactTags').collect())
-  const tagNamed = async (who: Tenant, name: string) =>
-    (
-      await who.as.query(api.contacts.queries.tags, { tenantId: who.tenantId })
-    ).find((t) => t.name === name)!._id
-
-  test('unnamed links get their tag’s name, per tenant; named ones and a rerun are no-ops', async () => {
-    const tag = async (who: Tenant, lastName: string, name: string) =>
-      who.as.mutation(api.contacts.mutations.saveTags, {
-        tenantId: who.tenantId,
-        id: await createContact(who, lastName),
-        expected: 0,
-        tags: [{ tagId: await tagNamed(who, name) }],
-      })
-    await tag(f.a, 'Lovelace', 'Member')
-    await tag(f.a, 'Byron', 'Volunteer')
-    await tag(f.b, 'Herschel', 'Member')
-    const want = await links()
-
-    // As written before step A: no name; and one already named (a
-    // sentinel, to show the backfill leaves named rows alone).
-    await f.t.run(async (ctx) => {
-      for (const r of want) {
-        await ctx.db.patch('contactTags', r._id, {
-          name: r === want[1] ? 'Kept' : undefined,
-        })
-      }
-    })
-    await run(internal.contacts.migrations.backfillContactTagName, {
-      batchSize: 2,
-    })
-    const done = await links()
-    expect(done.map((r) => [r.tenantId, r.name])).toEqual([
-      [want[0].tenantId, want[0].name],
-      [want[1].tenantId, 'Kept'],
-      [f.b.tenantId, 'Member'],
-    ])
-    await run(internal.contacts.migrations.backfillContactTagName, {
-      cursor: null,
-    })
-    expect(await links()).toEqual(done)
   })
 })
