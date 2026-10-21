@@ -364,7 +364,7 @@ describe('roles on contacts', () => {
     for (const role of ['admin', 'staff', 'viewer'] as const) {
       const as = roles[role]
       const list = await as
-        .query(api.contacts.queries.list, {
+        .query(api.contacts.queries.search, {
           tenantId: a.tenantId,
         })
         .then((r) => r.rows)
@@ -384,7 +384,7 @@ describe('roles on contacts', () => {
       expect(
         await errorData(
           as
-            .query(api.contacts.queries.list, { tenantId: b.tenantId })
+            .query(api.contacts.queries.search, { tenantId: b.tenantId })
             .then((r) => r.rows),
         ),
         role,
@@ -431,7 +431,7 @@ describe('roles on contacts', () => {
     ])
     // B still has only its own contact.
     const bList = await b.as
-      .query(api.contacts.queries.list, {
+      .query(api.contacts.queries.search, {
         tenantId: b.tenantId,
       })
       .then((r) => r.rows)

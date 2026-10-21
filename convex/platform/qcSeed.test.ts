@@ -109,7 +109,7 @@ test('contacts are scoped to their tenant and carry distinctive names', async ()
 
   const asA = await as('qc-r7w1-a@example.com')
   const listA = await asA
-    .query(api.contacts.queries.list, {
+    .query(api.contacts.queries.search, {
       tenantId: tenantA.tenantId,
     })
     .then((r) => r.rows)
@@ -121,7 +121,7 @@ test('contacts are scoped to their tenant and carry distinctive names', async ()
   // A cannot read tenant B, nor B's contact through tenant A.
   await expect(
     asA
-      .query(api.contacts.queries.list, { tenantId: tenantB.tenantId })
+      .query(api.contacts.queries.search, { tenantId: tenantB.tenantId })
       .then((r) => r.rows),
   ).rejects.toThrow()
   expect(
@@ -323,7 +323,7 @@ test("identifiers: A finds its own, never B's; B has no active type", async () =
   const asViewer = t.withIdentity({ subject: `${viewer}|session` })
   const search = (term: string) =>
     asViewer
-      .query(api.contacts.queries.list, {
+      .query(api.contacts.queries.search, {
         tenantId: tenantA.tenantId,
         search: term,
       })
@@ -483,7 +483,7 @@ test('source codes: Charles and the Trust coded under Street; Event-Gala free', 
       `Street-${detail}-001`,
       `Street-${detail}-002`,
     ])
-    const version = await as.query(api.contacts.queries.list, {
+    const version = await as.query(api.contacts.queries.search, {
       tenantId: tenant.tenantId,
       source: { level: 'version', id: byCode.get(`Street-${detail}-002`)! },
     })

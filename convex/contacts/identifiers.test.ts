@@ -463,14 +463,14 @@ describe('lookup', () => {
   test('the list search finds an exact identifier of any type', async () => {
     await createContact(f.a, 'M7 Smith') // a name match ranks after the exact one
     await saveIds(0, [{ typeId: membership, value: 'M7' }])
-    const list = await f.a.as.query(api.contacts.queries.list, {
+    const list = await f.a.as.query(api.contacts.queries.search, {
       tenantId: f.a.tenantId,
       search: ' m7 ',
     })
     expect(list.rows[0]._id).toBe(ada)
     // Values are in the full-text search too (search Q2): a prefix finds
     // them, with no exact match to rank first.
-    const partial = await f.a.as.query(api.contacts.queries.list, {
+    const partial = await f.a.as.query(api.contacts.queries.search, {
       tenantId: f.a.tenantId,
       search: 'M',
     })
@@ -490,7 +490,7 @@ describe('tenant isolation', () => {
     expect((await find(bType, 'C-1', f.b))?._id).toBe(bAda)
     // A's type id means nothing in B.
     expect(await find(oldCrm, 'C-1', f.b)).toBeNull()
-    const bList = await f.b.as.query(api.contacts.queries.list, {
+    const bList = await f.b.as.query(api.contacts.queries.search, {
       tenantId: f.b.tenantId,
       search: 'C-1',
     })

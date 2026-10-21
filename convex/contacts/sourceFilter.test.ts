@@ -86,7 +86,7 @@ const list = (
   } = {},
   who: Tenant = f.a,
 ) =>
-  who.as.query(api.contacts.queries.list, {
+  who.as.query(api.contacts.queries.search, {
     tenantId: who.tenantId,
     ...(source && { source }),
     ...extra,

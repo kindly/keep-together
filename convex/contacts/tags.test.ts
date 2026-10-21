@@ -555,7 +555,7 @@ describe('the list filtered by tag', () => {
     args: { tagId?: Id<'tags'>; search?: string; includeArchived?: boolean },
   ) =>
     who.as
-      .query(api.contacts.queries.list, { tenantId: who.tenantId, ...args })
+      .query(api.contacts.queries.search, { tenantId: who.tenantId, ...args })
       .then((r) => r.rows)
 
   test('rows carry their tag ids; a tag filter keeps only its contacts, by name', async () => {
@@ -596,17 +596,17 @@ describe('the list filtered by tag', () => {
 
   test('truncated says when the cap or the tag scan was hit', async () => {
     const full = (args: { tagId?: Id<'tags'> }) =>
-      f.a.as.query(api.contacts.queries.list, {
+      f.a.as.query(api.contacts.queries.search, {
         tenantId: f.a.tenantId,
         ...args,
       })
     await bulkTag([ada], member, 'add')
     expect(await full({ tagId: member })).toMatchObject({ truncated: false })
     expect(await full({})).toMatchObject({ truncated: false })
-    // LIST_TAG_SCAN volunteers, half of them archived: the scan is full, and
-    // fewer than LIST_LIMIT rows show although more may exist.
+    // LIST_TAG_SCAN + 2 volunteers, half of them archived: the scan reads
+    // past the archived ones and finds LIST_LIMIT + 1 live ones.
     await f.t.run(async (ctx) => {
-      for (let i = 0; i < LIST_TAG_SCAN; i++) {
+      for (let i = 0; i < LIST_TAG_SCAN + 2; i++) {
         const contactId = await ctx.db.insert('contacts', {
           tenantId: f.a.tenantId,
           ...individual(`Scan ${i}`),

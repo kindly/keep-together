@@ -174,6 +174,15 @@ export const appTables = {
     .index('by_tenant_sort', ['tenantId', 'sortName'])
     .index('by_tenant_acquisition', ['tenantId', 'acquisitionCodeId'])
     .index('by_tenant_kind_sort', ['tenantId', 'kind', 'sortName']) // list's kind filter
+    // The list without archived contacts: every filter in the index range,
+    // so a page holds only rows it shows.
+    .index('by_tenant_archived_sort', ['tenantId', 'archived', 'sortName'])
+    .index('by_tenant_kind_archived_sort', [
+      'tenantId',
+      'kind',
+      'archived',
+      'sortName',
+    ])
     .index('by_tenant_clientKey', ['tenantId', 'clientKey'])
     // Superseded by contactSearch.search_text (search Q2); dropped once Q2
     // has rolled out everywhere.
@@ -309,6 +318,27 @@ export const appTables = {
     .index('by_tenant_acquisitionCategory_sort', [
       'tenantId',
       'acquisitionCategoryId',
+      'sortName',
+    ])
+    // The same without archived contacts (the list's default), so a page
+    // holds only rows that show. A kind is checked per row instead: four
+    // indexes per level would tax every contact save.
+    .index('by_tenant_acquisitionCode_archived_sort', [
+      'tenantId',
+      'acquisitionCodeId',
+      'archived',
+      'sortName',
+    ])
+    .index('by_tenant_acquisitionDetail_archived_sort', [
+      'tenantId',
+      'acquisitionDetailId',
+      'archived',
+      'sortName',
+    ])
+    .index('by_tenant_acquisitionCategory_archived_sort', [
+      'tenantId',
+      'acquisitionCategoryId',
+      'archived',
       'sortName',
     ])
     .searchIndex('search_text', {

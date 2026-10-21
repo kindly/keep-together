@@ -8,6 +8,7 @@ import { api } from '../../convex/_generated/api'
 import { BULK_TAG_LIMIT } from '../../convex/contacts/rules'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
 import { holdList, releaseList } from '../lib/list-hold'
+import { usePagedList } from '../lib/paged-list'
 
 export const Route = createFileRoute('/t/$slug/contacts/')({
   component: ContactList,
@@ -15,11 +16,7 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
   loader: ({ context: { convex }, params }) => {
     const tenant = cachedTenant(convex, params.slug)
     if (!tenant) return
-    holdList(convex, {
-      tenantId: tenant._id,
-      search: '',
-      includeArchived: false,
-    })
+    holdList(convex, { tenantId: tenant._id, includeArchived: false })
     convex.prewarmQuery({
       query: api.contacts.queries.tags,
       args: { tenantId: tenant._id, includeInactive: true },
@@ -74,19 +71,42 @@ function ContactList() {
   const [kind, setKind] = useState<Kind | ''>('')
   const [sourcePick, setSourcePick] = useState<SourcePick>(NO_SOURCE)
   const source = sourceArg(sourcePick)
-  const listed = useQuery(api.contacts.queries.list, {
-    tenantId: tenant._id,
-    search,
-    includeArchived,
-    ...(tagFilter && { tagId: tagFilter }),
-    ...(kind && { kind }),
-    ...(source && { source }),
-  })
-  // After the useQuery above: its subscription is in place by now. After
+  // Search text or a tag: one window (`search`). Otherwise browse a page at
+  // a time (`list`).
+  const searching = search.trim() !== '' || tagFilter !== ''
+  const listed = useQuery(
+    api.contacts.queries.search,
+    searching
+      ? {
+          tenantId: tenant._id,
+          search,
+          includeArchived,
+          ...(tagFilter && { tagId: tagFilter }),
+          ...(kind && { kind }),
+          ...(source && { source }),
+        }
+      : 'skip',
+  )
+  const paged = usePagedList(
+    searching
+      ? 'skip'
+      : {
+          tenantId: tenant._id,
+          includeArchived,
+          ...(kind && { kind }),
+          ...(source && { source }),
+        },
+  )
+  // After the queries above: their subscriptions are in place by now. After
   // every render, not just the first: navigating to the list from the list
   // runs the loader (a new hold) without remounting the page.
   useEffect(releaseList)
-  const contacts = listed?.rows
+  const contacts = searching ? listed?.rows : paged.rows
+  // More may match than the rows on screen: beyond the window, or not
+  // loaded yet.
+  const partial = searching
+    ? (listed?.truncated ?? false)
+    : paged.status === 'more'
   const tags = useQuery(api.contacts.queries.tags, {
     tenantId: tenant._id,
     includeInactive: true,
@@ -180,7 +200,13 @@ function ContactList() {
           chosen={chosen.map((c) => c._id)}
           allChosen={allChosen}
           shown={contacts.length}
-          truncated={listed?.truncated ?? false}
+          beyond={
+            !partial
+              ? ''
+              : searching
+                ? ' (not the ones beyond)'
+                : ' (more not loaded yet)'
+          }
           onAll={(all) =>
             setSelected(new Set(all ? contacts.map((c) => c._id) : []))
           }
@@ -188,7 +214,7 @@ function ContactList() {
           allTags={tags ?? []}
         />
       )}
-      {listed?.truncated && (contacts?.length ?? 0) > 0 && (
+      {searching && listed?.truncated && (contacts?.length ?? 0) > 0 && (
         <p className="mt-3 text-sm text-amber-800">
           Showing the first {contacts?.length} contacts
           {tagFilter ? ' with this tag' : ''}
@@ -200,17 +226,21 @@ function ContactList() {
         <p className="mt-6 text-sm text-neutral-500">Loading…</p>
       ) : contacts.length === 0 ? (
         <p className="mt-6 text-sm text-neutral-500">
-          {listed?.tooBroad
-            ? 'Too many partial matches: add another word.'
-            : search.trim()
-              ? 'No contacts match.'
-              : source
-                ? 'No contacts with this source code.'
-                : tagFilter
-                  ? 'No contacts with this tag.'
-                  : kind
-                    ? 'No contacts of this kind.'
-                    : 'No contacts yet.'}
+          {searching && listed?.tooBroad
+            ? search.trim()
+              ? `No match in the first ${listed.checked} results; there may be more. Add another word.`
+              : `None of the first ${listed.checked} contacts checked match; there may be more. Add a search word to narrow it.`
+            : paged.status === 'more' && !searching
+              ? 'None among the contacts checked so far; there may be more.'
+              : search.trim()
+                ? 'No contacts match.'
+                : source
+                  ? 'No contacts with this source code.'
+                  : tagFilter
+                    ? 'No contacts with this tag.'
+                    : kind
+                      ? 'No contacts of this kind.'
+                      : 'No contacts yet.'}
         </p>
       ) : (
         <ul className="mt-3 divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
@@ -256,6 +286,16 @@ function ContactList() {
             </li>
           ))}
         </ul>
+      )}
+      {!searching && contacts !== undefined && paged.status !== 'done' && (
+        <button
+          type="button"
+          disabled={paged.status === 'loading'}
+          onClick={paged.loadMore}
+          className="mt-3 rounded border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-40"
+        >
+          {paged.status === 'loading' ? 'Loading more…' : 'Load more'}
+        </button>
       )}
     </main>
   )
@@ -356,7 +396,7 @@ function BulkBar({
   chosen,
   allChosen,
   shown,
-  truncated,
+  beyond,
   onAll,
   tags,
   allTags,
@@ -364,7 +404,8 @@ function BulkBar({
   chosen: Array<Id<'contacts'>>
   allChosen: boolean
   shown: number
-  truncated: boolean
+  /** What "select all" leaves out, '' when it covers every match. */
+  beyond: string
   onAll: (all: boolean) => void
   tags: Array<{ _id: Id<'tags'>; name: string }>
   allTags: Array<{ _id: Id<'tags'>; name: string }>
@@ -424,7 +465,7 @@ function BulkBar({
           disabled={running}
           onChange={(e) => onAll(e.target.checked)}
         />
-        select all {shown} shown{truncated ? ' (not the ones beyond)' : ''}
+        select all {shown} shown{beyond}
       </label>
       {chosen.length > 0 && (
         <>

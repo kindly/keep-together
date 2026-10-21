@@ -80,7 +80,7 @@ const list = (
   extra: { includeArchived?: boolean; kind?: Kind; tagId?: Id<'tags'> } = {},
   who: Tenant = f.a,
 ) =>
-  who.as.query(api.contacts.queries.list, {
+  who.as.query(api.contacts.queries.search, {
     tenantId: who.tenantId,
     search,
     ...extra,

@@ -1,4 +1,5 @@
 import { paginationOptsValidator } from 'convex/server'
+import type { PaginationResult } from 'convex/server'
 import { v } from 'convex/values'
 import type { Infer } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
@@ -264,7 +265,10 @@ async function contactsWithIdentifier(
 
 /** The most rows `list` returns. */
 export const LIST_LIMIT = 100
-/** The most assignments a tag-filtered `list` reads (then sorted by name). */
+/**
+ * How many matching contacts a tag-filtered `list` collects (then sorts by
+ * name), reading assignments in the order they were made.
+ */
 export const LIST_TAG_SCAN = 200
 /**
  * The most `contactSearch` hits one search reads. Convex ranks rows that
@@ -272,6 +276,49 @@ export const LIST_TAG_SCAN = 200
  * more than it returns.
  */
 export const LIST_SEARCH_SCAN = 2 * LIST_LIMIT
+/**
+ * The most rows a filter that the index can't hold (a tag, or a kind under
+ * a source filter) reads looking for matches before it stops and says so.
+ */
+export const LIST_SCAN_CAP = 1000
+
+/**
+ * Read `rows` until `want` of them pass `keep` or LIST_SCAN_CAP have been
+ * read. `keep` takes a batch, so its reads run concurrently; a batch is
+ * the rows still wanted, so with nothing filtered out this reads `want`
+ * rows, as `take(want)` would. `exhausted`: every row was read; `capped`:
+ * the cap stopped it short of `want`, so a match may lie beyond.
+ */
+async function scan<TRow, TKept>(
+  rows: AsyncIterable<TRow>,
+  keep: (batch: Array<TRow>) => Promise<Array<TKept | null>>,
+  want: number,
+) {
+  const kept: Array<TKept> = []
+  const it = rows[Symbol.asyncIterator]()
+  let read = 0
+  let exhausted = false
+  while (kept.length < want && read < LIST_SCAN_CAP && !exhausted) {
+    const batch: Array<TRow> = []
+    const size = Math.min(want - kept.length, LIST_SCAN_CAP - read)
+    while (batch.length < size) {
+      const next = await it.next()
+      if (next.done) {
+        exhausted = true
+        break
+      }
+      batch.push(next.value)
+    }
+    read += batch.length
+    for (const k of await keep(batch)) if (k !== null) kept.push(k)
+  }
+  return {
+    kept,
+    read,
+    exhausted,
+    capped: !exhausted && kept.length < want,
+  }
+}
 
 /** The contacts list's source filter: one part of a code, at its level. */
 const sourceFilter = v.object({
@@ -291,12 +338,69 @@ const SOURCE_FIELD = {
   version: 'acquisitionCodeId',
 } as const
 
-/** The `contactSearch` index serving a source filter without search text. */
+/**
+ * The `contactSearch` indexes serving a source filter without search text,
+ * by level: every row, or archived ones left out by the range (`live`).
+ */
 const SOURCE_INDEX = {
-  category: 'by_tenant_acquisitionCategory_sort',
-  detail: 'by_tenant_acquisitionDetail_sort',
-  version: 'by_tenant_acquisitionCode_sort',
+  category: {
+    all: 'by_tenant_acquisitionCategory_sort',
+    live: 'by_tenant_acquisitionCategory_archived_sort',
+  },
+  detail: {
+    all: 'by_tenant_acquisitionDetail_sort',
+    live: 'by_tenant_acquisitionDetail_archived_sort',
+  },
+  version: {
+    all: 'by_tenant_acquisitionCode_sort',
+    live: 'by_tenant_acquisitionCode_archived_sort',
+  },
 } as const
+
+type Kind = Doc<'contacts'>['kind']
+
+/**
+ * The contacts a browse (no search text, no tag) shows, in name order,
+ * with archived and kind in the index range: nothing read is then hidden,
+ * so a window or page never fills with rows that don't show.
+ */
+function browse(
+  db: ScopedDatabaseReader,
+  { kind, includeArchived }: { kind?: Kind; includeArchived?: boolean },
+) {
+  const contacts = db.query('contacts')
+  if (includeArchived) {
+    return kind
+      ? contacts.withIndex('by_tenant_kind_sort', (q) => q.eq('kind', kind))
+      : contacts.withIndex('by_tenant_sort')
+  }
+  return kind
+    ? contacts.withIndex('by_tenant_kind_archived_sort', (q) =>
+        q.eq('kind', kind).eq('archived', false),
+      )
+    : contacts.withIndex('by_tenant_archived_sort', (q) =>
+        q.eq('archived', false),
+      )
+}
+
+/**
+ * `browse` under a source filter: `contactSearch` rows in name order,
+ * archived in the range. A kind filter is the caller's, per row.
+ */
+function browseSource(
+  db: ScopedDatabaseReader,
+  source: SourceFilter,
+  includeArchived?: boolean,
+) {
+  const field = SOURCE_FIELD[source.level]
+  const indexes = SOURCE_INDEX[source.level]
+  const rows = db.query('contactSearch')
+  return includeArchived
+    ? rows.withIndex(indexes.all, (q) => q.eq(field, source.id))
+    : rows.withIndex(indexes.live, (q) =>
+        q.eq(field, source.id).eq('archived', false),
+      )
+}
 
 /**
  * Whether a contact's acquisition code falls under `source`, for the
@@ -319,30 +423,118 @@ function underSource(db: ScopedDatabaseReader, source: SourceFilter) {
   }
 }
 
+/** One contacts-list row: a contact with its first email and tag ids. */
+async function listRow(
+  db: ScopedDatabaseReader,
+  c: Doc<'contacts'>,
+  tagIdsRead: Promise<Array<Id<'tags'>>>,
+) {
+  const [email, tagIds] = await Promise.all([
+    db
+      .query('contactEmails')
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', c._id))
+      .first(),
+    tagIdsRead,
+  ])
+  return {
+    _id: c._id,
+    kind: c.kind,
+    displayName: c.displayName,
+    sortName: c.sortName,
+    archived: c.archived,
+    email: email?.address ?? null,
+    tagIds,
+  }
+}
+
+/** A contact's tag ids. */
+async function tagIdsOf(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
+  const rows = await db
+    .query('contactTags')
+    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
+    .collect()
+  return rows.map((t) => t.tagId)
+}
+
 /**
- * Searchable list, optionally only the contacts carrying one tag, of one
- * kind, and recruited under one part of a source code (`source`: a
- * category, detail or version); archived hidden unless asked. Bounded at LIST_LIMIT rows. Each
- * row carries its tag ids (names come from `tags`).
+ * The contacts list while browsing (no search text, no tag), a page at a
+ * time in name order, at most LIST_LIMIT rows a page; archived hidden
+ * unless asked, optionally one kind and one part of a source code
+ * (`source`: a category, detail or version). Each row carries its tag ids
+ * (names come from `tags`).
+ *
+ * Archived and kind sit in the `contacts` index range, and archived in a
+ * source filter's `contactSearch` range, so those pages are full. A kind
+ * under a source is checked per row, so such a page can be short, or even
+ * empty, while more follow: only `isDone` ends the list, and the UI says
+ * "none" only then. Search text or a tag filter goes to `search`.
+ */
+export const list = tenantQuery({
+  args: {
+    includeArchived: v.optional(v.boolean()),
+    kind: v.optional(contactKind),
+    source: v.optional(sourceFilter),
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, { includeArchived, kind, source, paginationOpts }) => {
+    const opts = {
+      ...paginationOpts,
+      numItems: Math.min(paginationOpts.numItems, LIST_LIMIT),
+    }
+    let result: { page: Array<Doc<'contacts'>> } & Omit<
+      PaginationResult<unknown>,
+      'page'
+    >
+    if (source) {
+      const hits = await browseSource(ctx.db, source, includeArchived).paginate(
+        opts,
+      )
+      const found = await Promise.all(
+        hits.page
+          .filter((h) => !kind || h.kind === kind)
+          .map((h) => ctx.db.get(h.contactId)),
+      )
+      result = { ...hits, page: found.filter((c) => c !== null) }
+    } else {
+      result = await browse(ctx.db, { kind, includeArchived }).paginate(opts)
+    }
+    return {
+      ...result,
+      page: await Promise.all(
+        result.page.map((c) => listRow(ctx.db, c, tagIdsOf(ctx.db, c._id))),
+      ),
+    }
+  },
+})
+
+/**
+ * The contacts list with search text or a tag filter: one window of at
+ * most LIST_LIMIT rows, not paged. Optionally also of one kind and under
+ * one part of a source code; archived hidden unless asked. Rows as `list`.
  *
  * A search finds a contact by anything in its `contactSearch` text (names,
  * emails and their parts, phones, postcodes, street, town, identifiers,
  * tags): every word must match, the last as a prefix. Exact matches come
  * first: an email address, then an identifier, then a phone number
- * (normalised), then the rest in Convex's relevance order.
+ * (normalised), then the rest in Convex's relevance order. That order
+ * can't be resumed from a cursor, hence one window. The search index holds
+ * the kind, archived and source filters; a tag filter checks the
+ * LIST_SEARCH_SCAN hits read.
  *
- * Without a search, a source filter reads its level's `contactSearch`
- * index in name order (2 × LIST_LIMIT rows, then a tag filter checks each);
- * otherwise a tag filter reads the tag's first LIST_TAG_SCAN
- * assignments; larger tags page through `byTag`. With a search, the
- * source filter is a search-index filter. `truncated` says more
- * contacts may match than `rows` holds (a cap or scan limit was hit), so
- * the UI can say it shows only some of them. `tooBroad` says the search
- * read LIST_SEARCH_SCAN hits and none held every word: a full match may
- * rank beyond them, so the UI asks for another word instead of saying
- * nothing matches.
+ * Without search text, the index holds every filter it can (see `browse`
+ * and `browseSource`); what it can't, a tag or a kind under a source, is
+ * checked row by row as the read goes on (`scan`) until enough match or
+ * LIST_SCAN_CAP rows have been read. A tag filter alone reads the tag's
+ * assignments that way, collecting LIST_TAG_SCAN matches; larger tags page
+ * through `byTag`.
+ *
+ * `truncated` says more contacts may match than `rows` holds (a cap or
+ * scan limit was hit), so the UI can say it shows only some of them.
+ * `tooBroad` says that happened with no row to show: a match may lie
+ * beyond the `checked` rows read, so the UI asks the user to narrow it
+ * instead of saying nothing matches.
  */
-export const list = tenantQuery({
+export const search = tenantQuery({
   args: {
     search: v.optional(v.string()),
     includeArchived: v.optional(v.boolean()),
@@ -350,13 +542,29 @@ export const list = tenantQuery({
     kind: v.optional(contactKind),
     source: v.optional(sourceFilter),
   },
-  handler: async (ctx, { search, includeArchived, tagId, kind, source }) => {
-    const term = search?.trim()
+  handler: async (
+    ctx,
+    { search: text, includeArchived, tagId, kind, source },
+  ) => {
+    const term = text?.trim()
+    // Every contact in `rows` passes every filter, in display order.
     let rows: Array<Doc<'contacts'>>
-    // A read that hit its cap: more contacts may match than it saw.
-    let scanFull = false
-    // The scan was all partial matches: a full match may lie beyond it.
-    let tooBroad = false
+    // More contacts may match than `rows` holds.
+    let truncated: boolean
+    // Rows the capped read looked at, for the UI's "none in the first N".
+    let checked = 0
+    const fits = (c: { kind: Doc<'contacts'>['kind']; archived: boolean }) =>
+      (!kind || c.kind === kind) && (includeArchived || !c.archived)
+    // A contact's tag ids, read once per call: the tag filter and the row's
+    // shape both need them.
+    const tagReads = new Map<Id<'contacts'>, Promise<Array<Id<'tags'>>>>()
+    const tagsOfRow = (id: Id<'contacts'>) => {
+      let read = tagReads.get(id)
+      if (!read) tagReads.set(id, (read = tagIdsOf(ctx.db, id)))
+      return read
+    }
+    const tagged = async (id: Id<'contacts'>) =>
+      !tagId || (await tagsOfRow(id)).includes(tagId)
     if (term) {
       const { terms, phone } = parseSearch(term)
       const [byEmail, byIdentifier, hits] = await Promise.all([
@@ -376,9 +584,12 @@ export const list = tenantQuery({
               .take(LIST_SEARCH_SCAN)
           : Promise.resolve([]),
       ])
-      scanFull = hits.length === LIST_SEARCH_SCAN
+      // Relevance order can't be resumed past the window with the phone
+      // ranking intact, so the window is fixed and a full one that shows
+      // nothing is `tooBroad`.
+      const scanFull = hits.length === LIST_SEARCH_SCAN
+      checked = hits.length
       const matched = hits.filter((h) => matchesAll(h.text, terms))
-      tooBroad = scanFull && matched.length === 0
       const byPhone = phone
         ? matched.filter((h) => h.phones.includes(phone))
         : []
@@ -389,9 +600,7 @@ export const list = tenantQuery({
       const once = (id: Id<'contacts'>) =>
         !seen.has(id) && Boolean(seen.add(id))
       const inSource = source ? underSource(ctx.db, source) : null
-      const candidates = [...byEmail, ...byIdentifier].filter(
-        (c) => (!kind || c.kind === kind) && (includeArchived || !c.archived),
-      )
+      const candidates = [...byEmail, ...byIdentifier].filter(fits)
       const sourced = inSource
         ? await Promise.all(candidates.map(inSource))
         : null
@@ -401,86 +610,56 @@ export const list = tenantQuery({
       const rest = [...byPhone, ...matched].map((h) => h.contactId).filter(once)
       const wanted = tagId ? rest : rest.slice(0, LIST_LIMIT + 1 - exact.length)
       const found = await Promise.all(wanted.map((id) => ctx.db.get(id)))
-      rows = [...exact, ...found.filter((c) => c !== null)]
+      const all = [...exact, ...found.filter((c) => c !== null)]
+      const onTag = await Promise.all(all.map((c) => tagged(c._id)))
+      rows = all.filter((_, i) => onTag[i])
+      truncated = scanFull || rows.length > LIST_LIMIT
     } else if (source) {
-      const hits = await ctx.db
-        .query('contactSearch')
-        .withIndex(SOURCE_INDEX[source.level], (q) =>
-          q.eq(SOURCE_FIELD[source.level], source.id),
-        )
-        .take(2 * LIST_LIMIT)
-      scanFull = hits.length === 2 * LIST_LIMIT
-      // The row knows the kind and archived state: read only the contacts
-      // that can show.
-      const wanted = hits.filter(
-        (h) => (!kind || h.kind === kind) && (includeArchived || !h.archived),
+      const read = await scan(
+        browseSource(ctx.db, source, includeArchived),
+        async (batch) => {
+          const live = batch.filter(fits)
+          const onTag = await Promise.all(live.map((h) => tagged(h.contactId)))
+          return live.filter((_, i) => onTag[i])
+        },
+        LIST_LIMIT + 1,
       )
+      checked = read.read
       const found = await Promise.all(
-        (tagId ? wanted : wanted.slice(0, LIST_LIMIT + 1)).map((h) =>
-          ctx.db.get(h.contactId),
-        ),
+        read.kept.map((h) => ctx.db.get(h.contactId)),
       )
       rows = found.filter((c) => c !== null)
+      truncated = read.capped || rows.length > LIST_LIMIT
     } else if (tagId) {
-      const assigned = await ctx.db
-        .query('contactTags')
-        .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId))
-        .take(LIST_TAG_SCAN)
-      scanFull = assigned.length === LIST_TAG_SCAN
-      const contacts = await Promise.all(
-        assigned.map((r) => ctx.db.get(r.contactId)),
+      const read = await scan(
+        ctx.db
+          .query('contactTags')
+          .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId)),
+        async (batch) =>
+          (await Promise.all(batch.map((r) => ctx.db.get(r.contactId)))).map(
+            (c) => (c && fits(c) ? c : null),
+          ),
+        LIST_TAG_SCAN,
       )
-      rows = contacts
-        .filter((c) => c !== null)
-        .filter((c) => !kind || c.kind === kind)
-        .sort((a, b) => a.sortName.localeCompare(b.sortName))
+      checked = read.read
+      rows = read.kept.sort((a, b) => a.sortName.localeCompare(b.sortName))
+      truncated = !read.exhausted || rows.length > LIST_LIMIT
     } else {
-      rows = await (
-        kind
-          ? ctx.db
-              .query('contacts')
-              .withIndex('by_tenant_kind_sort', (q) => q.eq('kind', kind))
-          : ctx.db.query('contacts').withIndex('by_tenant_sort')
-      ).take(2 * LIST_LIMIT)
-      scanFull = rows.length === 2 * LIST_LIMIT
+      rows = await browse(ctx.db, { kind, includeArchived }).take(
+        LIST_LIMIT + 1,
+      )
+      truncated = rows.length > LIST_LIMIT
     }
-    const visible = includeArchived ? rows : rows.filter((c) => !c.archived)
-    // A search or source filter with a tag filter checks the tag per row,
-    // so it shapes every row before cutting to the limit; otherwise only
-    // the rows it returns.
-    const searchingTag = Boolean((term || source) && tagId)
     const shaped = await Promise.all(
-      (searchingTag ? visible : visible.slice(0, LIST_LIMIT)).map(async (c) => {
-        const [email, tagRows] = await Promise.all([
-          ctx.db
-            .query('contactEmails')
-            .withIndex('by_tenant_contact', (q) => q.eq('contactId', c._id))
-            .first(),
-          ctx.db
-            .query('contactTags')
-            .withIndex('by_tenant_contact', (q) => q.eq('contactId', c._id))
-            .collect(),
-        ])
-        return {
-          _id: c._id,
-          kind: c.kind,
-          displayName: c.displayName,
-          sortName: c.sortName,
-          archived: c.archived,
-          email: email?.address ?? null,
-          tagIds: tagRows.map((r) => r.tagId),
-        }
-      }),
+      rows
+        .slice(0, LIST_LIMIT)
+        .map((c) => listRow(ctx.db, c, tagsOfRow(c._id))),
     )
-    const matching = searchingTag
-      ? shaped.filter((r) => r.tagIds.includes(tagId!))
-      : shaped
     return {
-      rows: matching.slice(0, LIST_LIMIT),
-      tooBroad,
-      truncated:
-        scanFull ||
-        (searchingTag ? matching.length : visible.length) > LIST_LIMIT,
+      rows: shaped,
+      truncated,
+      tooBroad: truncated && shaped.length === 0,
+      checked,
     }
   },
 })

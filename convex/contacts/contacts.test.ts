@@ -385,7 +385,7 @@ describe('email lookup', () => {
   test('the list finds a contact by exact email', async () => {
     await saveMethods(0, [email('countess@analytical.org')])
     const list = await f.a.as
-      .query(api.contacts.queries.list, {
+      .query(api.contacts.queries.search, {
         tenantId: f.a.tenantId,
         search: ' Countess@Analytical.org',
       })
@@ -431,7 +431,7 @@ describe('email lookup', () => {
     ).toEqual([ada])
     expect(await warningsOf(f.a, ada)).toEqual([])
     const bList = await f.b.as
-      .query(api.contacts.queries.list, {
+      .query(api.contacts.queries.search, {
         tenantId: f.b.tenantId,
         search: 'ann@example.com',
       })
@@ -494,7 +494,7 @@ describe('email lookup edges', () => {
   ) =>
     (
       await tenant.as
-        .query(api.contacts.queries.list, {
+        .query(api.contacts.queries.search, {
           tenantId: tenant.tenantId,
           search,
           includeArchived,
@@ -687,7 +687,7 @@ describe('email lookup edges', () => {
     // B's member cannot search A's tenant.
     const forbidden = await errorData(
       f.b.as
-        .query(api.contacts.queries.list, {
+        .query(api.contacts.queries.search, {
           tenantId: f.a.tenantId,
           search: 'ann@example.com',
         })
@@ -771,13 +771,13 @@ describe('counters and conflicts', () => {
     })
     expect((await getAda())?.contact.archived).toBe(true)
     const list = await f.a.as
-      .query(api.contacts.queries.list, {
+      .query(api.contacts.queries.search, {
         tenantId: f.a.tenantId,
       })
       .then((r) => r.rows)
     expect(list.map((c) => c._id)).not.toContain(ada)
     const all = await f.a.as
-      .query(api.contacts.queries.list, {
+      .query(api.contacts.queries.search, {
         tenantId: f.a.tenantId,
         includeArchived: true,
       })
@@ -977,7 +977,7 @@ describe('tenant isolation', () => {
     expect(await snapshot(f.t, f.b.tenantId)).toBe(bSnapshot)
     expect(
       await f.b.as
-        .query(api.contacts.queries.list, {
+        .query(api.contacts.queries.search, {
           tenantId: f.b.tenantId,
           includeArchived: true,
         })
