@@ -146,6 +146,7 @@ verdict next to the failures (all slow samples, then each failed flow).
 | overhead beyond the probe | send → screen message, less our function and the probe: what a no-op round trip at that moment wouldn't take. Derived, it overlaps the legs |
 | probe | the worker's `qcProbe:rtt` samples within 1 s of the sample, and its run median |
 | link | the first hop's worst round trip during the sample |
+| Convex slow on … | other instances with a call at or over 100 ms within 500 ms of the sample |
 
 The legs before `overhead` add up to the sample. `≈` legs rest on
 `commitMs`, so they're as good as the two clocks agree; a call's log time
@@ -158,8 +159,11 @@ The verdict is the first rule that holds:
 3. `ours`: page time 40 ms or more. Before the probe, since the page's
    time doesn't depend on the server.
 4. `convex/network`: a probe at that moment at 1.5× the worker's run
-   median and 20 ms over it. Before the function: a Convex stall slows
-   our function too.
+   median and 20 ms over it, or Convex slow on two other instances
+   within 500 ms (a call at or over 100 ms; seeds, bulk functions and
+   `auth:*` don't count). The probe runs every 2 s and misses most
+   stalls; the other instances catch them. Before the function: a stall
+   slows our function too.
 5. `unclear`: our function unmatched.
 6. `ours`: our function 50 ms or more (half the server budget).
 7. `convex/network`: function and page normal, so the excess is in the

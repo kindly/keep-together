@@ -9,10 +9,11 @@ import {
 import type { BlameSample, Probe, ServerCall } from './blame'
 import recorded from './blame.fixture.json'
 
-// Recorded slow samples (qc-results of runs tn9ttz4a and tn9g1x25), each
-// with the Convex calls on its instance around it and every RTT probe of
-// its worker in that run. The samples predate `fns`, so each fixture adds
-// the function its flow calls (the one call of it in the window).
+// Recorded slow samples (qc-results of runs tn9ttz4a, tn9g1x25 and
+// tn9vwfeq), each with every Convex call on the pool within 600 ms of it
+// and every RTT probe of its worker in that run. The first four predate
+// `fns`, so their fixtures add the function the flow calls (the one call
+// of it in the window); tn9vwfeq recorded its own.
 interface Case {
   run: string
   flow: string
@@ -22,7 +23,7 @@ interface Case {
   probes: Array<Probe>
 }
 const cases = recorded as unknown as Record<
-  'normal' | 'slowFunction' | 'linkStall' | 'slowSpell',
+  'normal' | 'slowFunction' | 'linkStall' | 'slowSpell' | 'stallElsewhere',
   Case
 >
 const run = (c: Case, s: Partial<BlameSample> = {}) =>
@@ -59,6 +60,8 @@ describe('blame on recorded samples', () => {
     expect(b.verdict).toBe('ours')
     expect(b.fnMs).toBe(50.5)
     expect(b.why).toMatch(/function 50.5 ms/)
+    // Nothing else on the pool was slow then.
+    expect(b.slowElsewhere).toEqual([])
     expect(legsSum(b)).toBeCloseTo(c.sample.endMs, 5)
   })
 
@@ -82,6 +85,70 @@ describe('blame on recorded samples', () => {
     expect(b.linkMs).toBeLessThan(50)
   })
 
+  test('a stall the probe missed: Convex slow on the other instances too, convex/network', () => {
+    const c = cases.stallElsewhere
+    const b = run(c)
+    expect(c.sample.fns).toEqual(['contacts/mutations:saveIdentifierType'])
+    expect(b.fnMs).toBe(141.9)
+    expect(b.probeMs).toEqual([40.2])
+    expect(b.slowElsewhere).toEqual(['qc-2', 'qc-3'])
+    expect(b.verdict).toBe('convex/network')
+    expect(b.why).toBe('Convex slow on qc-2, qc-3 at that moment too')
+  })
+
+  test('seeds, bulk functions and auth are slow by design: no spell', () => {
+    const c = cases.slowFunction
+    const at = c.sample.at + 50
+    const calls: Array<ServerCall> = [
+      ...c.calls,
+      {
+        instance: 'qc-2',
+        at,
+        fn: 'platform/qcSeed:fixture',
+        type: 'Mutation',
+        ms: 990,
+      },
+      {
+        instance: 'qc-3',
+        at,
+        fn: 'contacts/mutations:bulkTag',
+        type: 'Mutation',
+        ms: 250,
+      },
+      {
+        instance: 'qc-3',
+        at,
+        fn: 'contacts/queries:list',
+        type: 'Query',
+        ms: 0,
+        cached: true,
+      },
+      { instance: 'qc-3', at, fn: 'auth:store', type: 'Mutation', ms: 185 },
+    ]
+    const b = blame(c.sample, { calls, probes: c.probes })
+    expect(b.slowElsewhere).toEqual([])
+    expect(b.verdict).toBe('ours')
+    // One other instance slow is not yet a spell.
+    calls.push({
+      instance: 'qc-2',
+      at,
+      fn: 'contacts/queries:list',
+      type: 'Query',
+      ms: 120,
+    })
+    expect(blame(c.sample, { calls, probes: c.probes }).verdict).toBe('ours')
+    calls.push({
+      instance: 'qc-3',
+      at,
+      fn: 'contacts/queries:list',
+      type: 'Query',
+      ms: 120,
+    })
+    expect(blame(c.sample, { calls, probes: c.probes }).verdict).toBe(
+      'convex/network',
+    )
+  })
+
   test('the elevated probe wins over a slow function at that moment', () => {
     const c = cases.slowSpell
     const calls = c.calls.map((x) =>
@@ -96,7 +163,8 @@ describe('blame on recorded samples', () => {
 describe('matching the function', () => {
   test('two candidate calls (two workers on one instance) is unmatched, unclear', () => {
     const c = cases.normal
-    const mine = c.calls.find((x) => x.ms === 30.3)!
+    // The setAcquisition call this sample made.
+    const mine = c.calls.find((x) => x.at === 1792608853027)!
     const calls = [...c.calls, { ...mine, at: mine.at + 5, ms: 12 }]
     const b = blame(c.sample, { calls, probes: c.probes })
     expect(b.fnMs).toBeNull()

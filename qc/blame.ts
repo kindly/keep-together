@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
+import { BULK_FUNCTIONS } from './budgets'
 import { STALL_MS } from './link.setup'
 import { median } from './timing'
 import type { SampleDetail } from './timing'
@@ -14,17 +15,20 @@ import type { SampleDetail } from './timing'
 // - `link`: the first hop stalled during the sample (≥ STALL_MS, the
 //   LINK banner's rule).
 // - `ours`: page time (input → send, plus Transition → screen) at or over
-//   PAGE_SLOW_MS, or our function at or over FN_SLOW_MS with the probe
-//   normal.
+//   PAGE_SLOW_MS, or our function at or over FN_SLOW_MS with no probe
+//   or spell at that moment.
 // - `convex/network`: the probe was elevated at that moment (PROBE_SLOW),
-//   or the function was matched and normal and the page normal, so the
+//   or Convex was slow on other instances too (a slow spell: SPELL), or
+//   the function was matched and normal and the page normal, so the
 //   excess is in the legs between them.
 // - `unclear`: no legs, or the function couldn't be matched.
 //
-// The checks run in that order; the first that holds wins, except that
-// a slow page is `ours` before an elevated probe is looked at, since the
-// page's time doesn't depend on the server. Context only: a verdict
-// never changes whether a sample or a flow passes.
+// The first rule that holds wins, in this order: link; unclear without
+// legs; a slow page (it doesn't depend on the server); an elevated probe
+// or a spell (they slow our function too); unclear when the function is
+// unmatched; a slow function; convex/network. qc/README.md "Blame" has
+// the numbers. Context only: a verdict never changes whether a sample or
+// a flow passes.
 
 /** Page time this slow is ours: input → send plus Transition → screen. */
 export const PAGE_SLOW_MS = 40
@@ -32,6 +36,14 @@ export const PAGE_SLOW_MS = 40
 export const FN_SLOW_MS = 50
 /** A probe this far over the worker's run median is an elevated moment. */
 export const PROBE_SLOW = { ratio: 1.5, plusMs: 20 } as const
+/**
+ * A Convex-wide slow spell: calls at or over the server budget
+ * (`callMs`) on at least `instances` other pool instances within
+ * `windowMs` of the sample. The probe runs every 2 s and misses most of
+ * them; a spell slows our own function too. Seeds, bulk functions and
+ * `auth:*` (password hashing) are slow by design: left out.
+ */
+export const SPELL = { callMs: 100, windowMs: 500, instances: 2 } as const
 /** Probes this close to the sample's window count as "at that moment". */
 export const PROBE_NEAR_MS = 1_000
 /**
@@ -108,6 +120,8 @@ export interface Blame {
   probeMs: Array<number>
   /** The worker's run median probe. */
   probeMedianMs: number | null
+  /** Other instances with a call ≥ SPELL.callMs near the sample. */
+  slowElsewhere: Array<string>
   linkMs: number | null
 }
 
@@ -167,6 +181,30 @@ function probesNear(
   }
 }
 
+/** Other instances where Convex was slow within SPELL.windowMs of [from, to]. */
+function slowElsewhere(
+  calls: Array<ServerCall>,
+  instance: string | undefined,
+  from: number,
+  to: number,
+): Array<string> {
+  const where = new Set<string>()
+  for (const c of calls) {
+    if (
+      c.instance !== instance &&
+      !c.cached &&
+      c.ms >= SPELL.callMs &&
+      !(c.fn in BULK_FUNCTIONS) &&
+      !c.fn.startsWith('platform/qcSeed:') &&
+      !c.fn.startsWith('auth:') &&
+      c.at >= from - SPELL.windowMs &&
+      c.at <= to + SPELL.windowMs
+    )
+      where.add(c.instance)
+  }
+  return [...where].sort()
+}
+
 export function probeElevated(ms: number, medianMs: number): boolean {
   return ms >= medianMs * PROBE_SLOW.ratio && ms >= medianMs + PROBE_SLOW.plusMs
 }
@@ -221,6 +259,7 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
   const elevated =
     probe.medianMs !== null &&
     probe.near.some((ms) => probeElevated(ms, probe.medianMs!))
+  const elsewhere = slowElsewhere(ctx.calls, s.instance, s.at, s.at + end)
 
   const verdict = ((): [Verdict, string] => {
     if (linkMs !== null && linkMs >= STALL_MS)
@@ -232,6 +271,11 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
       return [
         'convex/network',
         `probe ${Math.max(...probe.near)} ms against a run median of ${probe.medianMs}`,
+      ]
+    if (elsewhere.length >= SPELL.instances)
+      return [
+        'convex/network',
+        `Convex slow on ${elsewhere.join(', ')} at that moment too`,
       ]
     if (match.ms === null) return ['unclear', `function ${match.how}`]
     if (match.ms >= FN_SLOW_MS)
@@ -257,6 +301,7 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
     longTaskMs: s.longTaskMs,
     probeMs: probe.near,
     probeMedianMs: probe.medianMs,
+    slowElsewhere: elsewhere,
     linkMs,
   }
 }
@@ -289,6 +334,8 @@ export function formatBlame(endMs: number, b: Blame): string {
       ? `probe ${b.probeMs.map((x) => Math.round(x)).join('/')} ms @ that moment (run median ${ms(b.probeMedianMs)})`
       : `probe: none within ${PROBE_NEAR_MS / 1000} s (run median ${ms(b.probeMedianMs)})`,
   )
+  if (b.slowElsewhere.length)
+    parts.push(`Convex slow on ${b.slowElsewhere.join(', ')} too`)
   parts.push(b.linkMs === null ? 'link ?' : `link ${Math.round(b.linkMs)} ms`)
   return `${Math.round(endMs)} = ${parts.join(' · ')} → ${b.verdict} (${b.why})`
 }
