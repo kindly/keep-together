@@ -9,6 +9,8 @@ are not spawned by `spawn.sh`; the human starts you and points you here.
 
 1. Read `CLAUDE.md`, `factory/README.md` and every file in `factory/roles/`.
 2. `ListAgents` gives your own session name (first line). Workers need it.
+   It can change when the machine reboots: re-check it after one, and tell
+   every live worker the new name.
 3. Read `factory/out/roster.md` if it exists. If it lists live workers,
    you are taking over: `SendMessage` each one `controller is now <your
    name>`, and update the roster.
