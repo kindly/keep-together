@@ -3,7 +3,7 @@
  * payload, not revisions), set on insert and refreshed by a rename's
  * re-index batches.
  */
-import { beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import type { Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
 import { setup, snapshot } from '../../test/fixture'
@@ -187,12 +187,77 @@ describe('refreshed by a rename', () => {
     expect(await searchWords(ids[ids.length - 1])).toContain('supporter')
   })
 
-  test('a second rename mid-run ends on the latest name', async () => {
+  test('two renames before the re-index runs end on the latest name', async () => {
     await saveTags(0, [{ key: 'k1', tagId: member }])
     await rename(f.a, member, 'Friend')
     await rename(f.a, member, 'Patron')
     await f.t.finishAllScheduledFunctions(() => {})
     expect(await namesOn()).toEqual([['k1', 'Patron']])
+  })
+})
+
+describe('while a re-index is running', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * More than one batch of `member` links, renamed to Friend, with only the
+   * first batch run: the chain's next batch is scheduled, not yet run.
+   */
+  const renameAndRunOneBatch = async () => {
+    const ids = [ada]
+    for (let i = 0; i < REINDEX_TAG_BATCH; i++) {
+      ids.push(await createContact(f.a, `Tan${i}`))
+    }
+    for (let i = 0; i < ids.length; i += BULK_TAG_LIMIT) {
+      await f.a.as.mutation(api.contacts.mutations.bulkTag, {
+        tenantId: f.a.tenantId,
+        contactIds: ids.slice(i, i + BULK_TAG_LIMIT),
+        tagId: member,
+        op: 'add',
+      })
+    }
+    vi.useFakeTimers()
+    await rename(f.a, member, 'Friend')
+    vi.runOnlyPendingTimers()
+    await f.t.finishInProgressScheduledFunctions()
+    const names = (await links())
+      .filter((r) => r.tagId === member)
+      .map((r) => r.name)
+    // Genuinely mid-run: one batch renamed, the rest not yet.
+    expect(names.filter((n) => n === 'Friend')).toHaveLength(REINDEX_TAG_BATCH)
+    expect(names.filter((n) => n === 'Member')).toHaveLength(
+      ids.length - REINDEX_TAG_BATCH,
+    )
+    return ids
+  }
+  const finish = () => f.t.finishAllScheduledFunctions(vi.runAllTimers)
+
+  test('a rename between two batches: every link ends on the latest name', async () => {
+    const ids = await renameAndRunOneBatch()
+    await rename(f.a, member, 'Patron')
+    await finish()
+    const rows = (await links()).filter((r) => r.tagId === member)
+    expect(rows).toHaveLength(ids.length)
+    for (const r of rows) expect(r.name).toBe('Patron')
+    for (const id of [ids[0], ids[ids.length - 1]]) {
+      const words = await searchWords(id)
+      expect(words).toContain('patron')
+      expect(words).not.toContain('friend')
+    }
+  })
+
+  test('a tag added mid-run takes the current name, and the run reaches it', async () => {
+    const ids = await renameAndRunOneBatch()
+    const late = await createContact(f.a, 'Late')
+    await saveTags(0, [{ key: 'late', tagId: member }], late)
+    expect(await namesOn(late)).toEqual([['late', 'Friend']])
+    await finish()
+    const rows = (await links()).filter((r) => r.tagId === member)
+    expect(rows).toHaveLength(ids.length + 1)
+    for (const r of rows) expect(r.name).toBe('Friend')
+    expect(await searchWords(late)).toContain('friend')
   })
 })
 
