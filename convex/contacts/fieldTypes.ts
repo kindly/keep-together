@@ -184,3 +184,70 @@ export function prepareFieldOption(p: FieldOptionPayload): FieldOptionPayload {
 export function retireGroupName(label: string): string {
   return `Retire field ${label}`
 }
+
+/**
+ * How a `contacts.fields` value is being written: a live save, or a
+ * restore re-applying history, which may put back an archived option or a
+ * value on an archived field (as restore may re-add an archived tag).
+ */
+export type FieldValueMode = 'save' | 'restore'
+
+export type FieldValueVerdict =
+  | { ok: true }
+  | { ok: false; retired: true }
+  | { ok: false; retired: false; reason: string; message: string }
+
+/**
+ * The tier-1 rule for one value, given the field and option it names (null:
+ * missing or another tenant's) and the option already in the field's slot
+ * on the contact (`current`). Always: both exist and the option is the
+ * field's. A retired field (no slot) is its own verdict: a save refuses
+ * it, a restore skips the value and says so. Only for a value newly set
+ * (not `current`): the field applies to `kind` (narrowing a field's kinds
+ * never blocks a contact that already has a value) and, on a save, the
+ * field and the option are both active.
+ */
+export function fieldValueVerdict(
+  field: Pick<
+    Doc<'contactFields'>,
+    '_id' | 'label' | 'appliesTo' | 'isActive' | 'slot'
+  > | null,
+  option: Pick<
+    Doc<'contactFieldOptions'>,
+    '_id' | 'fieldId' | 'label' | 'isActive'
+  > | null,
+  kind: ContactKind,
+  current: Id<'contactFieldOptions'> | undefined,
+  mode: FieldValueMode,
+): FieldValueVerdict {
+  const no = (reason: string, message: string): FieldValueVerdict => ({
+    ok: false,
+    retired: false,
+    reason,
+    message,
+  })
+  if (!field || !option) {
+    return no('unknown_field', 'The field and its option must exist')
+  }
+  if (option.fieldId !== field._id) {
+    return no(
+      'option_not_in_field',
+      `${option.label} is not an option of ${field.label}`,
+    )
+  }
+  if (field.slot === undefined) return { ok: false, retired: true }
+  if (option._id === current) return { ok: true }
+  if (!field.appliesTo.includes(kind)) {
+    return no(
+      'field_kind',
+      `${field.label} doesn’t apply to this kind of contact`,
+    )
+  }
+  if (mode === 'save' && !field.isActive) {
+    return no('archived_field', `${field.label} is archived`)
+  }
+  if (mode === 'save' && !option.isActive) {
+    return no('archived_option', `${option.label} is archived: choose another`)
+  }
+  return { ok: true }
+}

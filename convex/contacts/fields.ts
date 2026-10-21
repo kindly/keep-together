@@ -9,6 +9,7 @@ import type {
   ContactKind,
   FieldDefinition,
   FieldValue,
+  FieldValueMode,
   ResolvedFieldValue,
 } from './fieldTypes'
 
@@ -30,12 +31,11 @@ export async function fieldInSlot(
 }
 
 /**
- * The tier-1 checks for one value on a contact of `kind`: the field is this
- * tenant's, the option belongs to it, the field applies to `kind`, and an
- * option that isn't `current` (the option already in the field's slot on
- * the contact) is active. Throws `rejected(...)` on a failed check.
- * Returns null when the field is retired (no slot): live saves reject
- * that, restore skips the value and says so. Does not mark the option
+ * The tier-1 checks for one value on a contact of `kind`
+ * (`fieldValueVerdict` in fieldTypes.ts; `current` is the option already
+ * in the field's slot on the contact). Throws `rejected(...)` on a failed
+ * check. Returns null when the field is retired (no slot): a save rejects
+ * that, a restore skips the value and says so. Does not mark the option
  * used: the apply calls `markOptionUsed` for each value it newly sets.
  */
 export async function resolveFieldValue(
@@ -43,6 +43,7 @@ export async function resolveFieldValue(
   _value: FieldValue,
   _kind: ContactKind,
   _current: Id<'contactFieldOptions'> | undefined,
+  _mode: FieldValueMode = 'save',
 ): Promise<ResolvedFieldValue | null> {
   throw notBuilt()
 }
