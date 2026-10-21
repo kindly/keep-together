@@ -129,7 +129,8 @@ Every sample at or over budget, in both sets of a re-measure, gets a
 breakdown and a verdict (`qc/blame.ts`). They go on its history line as
 `detail[i].blame`, in a `BLAME` list after the table, and as counts by
 verdict next to the failures (all slow samples, then each failed flow).
-**Context only: a verdict never turns a failure into a pass.**
+The reporter's blame is context. What judges a sample is the same
+blame, computed live in the worker for the judged set (see Ours).
 
 ```
 128 = page 18 · to Convex ≈21 · our function 30 (contacts/mutations:setAcquisition) · back ≈46 · Transition 13 · overhead beyond the probe 49 · probe 30 ms @ that moment (run median 33) · link 1 ms → convex/network (…)
@@ -147,6 +148,8 @@ verdict next to the failures (all slow samples, then each failed flow).
 | probe | the worker's `qcProbe:rtt` samples within 1 s of the sample, and its run median |
 | link | the first hop's worst round trip during the sample |
 | Convex slow on … | a spell: other instances with a call at or over 100 ms within 500 ms of the sample (rule 4) |
+| re-runs | the page's own subscribed queries (`subs`, tracked by the tap from the page's first script) that started after the commit (−10 ms) and completed by the Transition (+10 ms) on that instance: what the sample waited for besides our mutation. Their **critical path**: re-runs whose intervals overlap run side by side, so each overlapping group counts its slowest, and groups one after another add up (human, 2026-10-21). Max, union and sum are kept too |
+| our share | page + our function + the re-runs' critical path. None for a save whose re-runs can't be told (no `subs`), so it never understates |
 
 The legs before `overhead` add up to the sample. `≈` legs rest on
 `commitMs`, so they're as good as the two clocks agree; a call's log time
@@ -168,8 +171,48 @@ The verdict is the first rule that holds:
    function too.
 5. `unclear`: our function unmatched.
 6. `ours`: our function 50 ms or more (half the server budget).
-7. `convex/network`: function and page normal, so the excess is in the
-   legs between them.
+7. `unclear`: function and page normal, the excess in the legs between
+   them. That is no evidence it wasn't ours (human, 2026-10-21), and
+   unclear counts as ours (see Ours).
+
+### Ours
+
+Human, 2026-10-21 (ADR 0018 amendment). The set re-measure stays as it
+is (see Budgets). Then, **inside the judged set**, every sample at or
+over budget is blamed live in the worker (`qc/live.ts`, `qc/judge.ts`):
+
+| Verdict | What happens |
+|---|---|
+| `ours` | fails, as today; no retry |
+| `unclear` | counts as ours: fails, no retry |
+| `link` or `convex/network` (positive evidence: a first-hop stall, the probe elevated, or a spell) | measured again, up to **2** more attempts. An attempt under budget passes it (`passed on retry`); an attempt that is over and ours fails it. Still over and not ours after the last: **our share** of that attempt must be under **budget − 50 ms** (repeatable 100 → 50, infrequent 150 → 100, rare 200 → 150) to pass (`passed on our share`), else `failed: our share over` |
+
+- **Retry cap:** 10 extra attempts per run, across all workers (files in
+  `qc-results/runs/<id>/retries/`). Past it a sample is judged as today
+  (over budget fails) as `failed: retry cap`.
+- **Self-test flows** (`harness.*`) are always judged as today.
+- **Live data.** The log collector and the link monitor append
+  `server-calls.live.jsonl` and `link.live.jsonl` in the run directory as
+  they go. Before blaming, the worker pings every instance with the probe
+  query and waits until each log stream has passed the sample's window
+  plus 500 ms (the spell window), at most 8 s; `convex logs` lags 30 ms at
+  the median, under 100 ms at p99. A stream that doesn't catch up leaves
+  calls missing, so the function goes unmatched, the verdict unclear,
+  and the sample fails: waiting costs time, never excuses a sample.
+  `[logs behind]` marks it.
+- **Reading it:** the table's last column adds `(1 passed on retry, …)`;
+  a `JUDGED` list after `BLAME` shows each judged sample's attempts,
+  verdicts and our share; and next to the failures,
+  `ours: N slow samples judged, R retried (E extra attempts): …`. A failed
+  flow's error names each failing sample's rule and attempts. History
+  carries `detail[i].judge` (rule, attempts) and `judged` (counts by rule)
+  per flow.
+- **Hidden-ours signals**, tracked per flow, not judged: the medians of the
+  characters (≈ bytes) the page received per sample, the requests it
+  sent, and the commit latency (send → commit less the probe), as
+  `signals` in history and three columns in the trend report. The trend
+  flags a flow that passed on our share in most of the runs that timed it
+  (at least two): `leans on our share`.
 
 `pnpm qc:report` renders that history to
 `qc-report/trend.html`: per-flow p50/p95 over the last 30 runs against the
@@ -193,7 +236,8 @@ samples.
 from ~15 ms to 120–160 ms), so a judged flow with any sample at or over
 budget is **re-measured once**, straight away in the same test, with K
 fresh samples. Only the re-measure is judged: the flow fails if it has a
-sample at or over budget too. This covers both kinds; the one-sample
+sample at or over budget that is ours (see Ours: a sample that isn't
+ours is retried, then judged on our share). This covers both kinds; the one-sample
 sign-in in the worker fixture re-measures by signing in again. Record
 mode and runs over the RTT ceiling judge nothing, so they never
 re-measure. Functional assertions never retry.

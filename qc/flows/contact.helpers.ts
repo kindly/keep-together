@@ -1,6 +1,7 @@
 import { expect } from '../fixtures'
 import type { Browser, Locator, Page } from '@playwright/test'
 import type { StorageState } from '../fixtures'
+import { tapContext } from '../timing'
 
 // Shared by the contact page specs (QC step 8). Every test makes its own
 // contacts (the world is shared by the worker), so nothing here relies on
@@ -77,6 +78,7 @@ export async function secondTab(
     storageState,
     viewport: { width: 1280, height: 800 },
   })
+  await tapContext(context)
   return context.newPage()
 }
 

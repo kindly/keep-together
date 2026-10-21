@@ -296,7 +296,7 @@ describe('our share: page + function + the re-runs the sample waited for', () =>
   test("the page's re-run queries are attributed and the slowest counts", () => {
     const b = run(c, { subs })
     expect(b.reruns).toEqual([{ fn: 'contacts/queries:getRoot', ms: 9.9 }])
-    expect(b.rerunMaxMs).toBe(9.9)
+    expect(b.rerunCriticalMs).toBe(9.9)
     expect(b.ourShareMs).toBe(57.8) // 17.6 page + 30.3 mutation + 9.9
   })
 
@@ -312,7 +312,7 @@ describe('our share: page + function + the re-runs the sample waited for', () =>
     expect(b.ourShareMs).toBeNull()
   })
 
-  test('re-runs run side by side: max is the critical path, union and sum shown', () => {
+  test('critical path: the slowest of each overlapping group, groups summed', () => {
     const commit = c.sample.at + c.sample.commitMs!
     const q = (fn: string, start: number, ms: number): ServerCall => ({
       instance: 'qc-2',
@@ -334,10 +334,12 @@ describe('our share: page + function + the re-runs the sample waited for', () =>
       { calls, probes: c.probes },
     )
     expect(b.reruns!.map((r) => r.fn)).toEqual(['a:one', 'a:two', 'a:three'])
+    // one and two overlap (12 and 10 → 12); three runs after them (6).
+    expect(b.rerunCriticalMs).toBe(18)
     expect(b.rerunMaxMs).toBe(12)
     expect(b.rerunUnionMs).toBe(19) // 13 + 6
     expect(b.rerunSumMs).toBe(28)
-    expect(b.ourShareMs).toBe(r1(17.6 + 30.3 + 12))
+    expect(b.ourShareMs).toBe(r1(17.6 + 30.3 + 18))
   })
 
   test('the mutation itself is never a re-run', () => {

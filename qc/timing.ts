@@ -1,13 +1,22 @@
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  mkdirSync,
+  openSync,
+  closeSync,
+  readFileSync,
+} from 'node:fs'
 import { loadavg } from 'node:os'
 import path from 'node:path'
 import { BaseConvexClient } from 'convex/browser'
 import type { QueryToken } from 'convex/browser'
 import { getFunctionName } from 'convex/server'
-import type { Page } from '@playwright/test'
+import type { BrowserContext, Page } from '@playwright/test'
 import { api } from '../convex/_generated/api'
 import { budgetFor } from './budgets'
 import type { FlowKind, FlowName } from './budgets'
+import { RETRY_CAP_PER_RUN, judgeSlowSample } from './judge'
+import type { SampleJudgement } from './judge'
+import type { LiveRun } from './live'
 
 // Client-perceived latency (factory/plans/qc-suite.sv, "What latency
 // means"). Timed inside the page: t0 is the event timestamp of the *last*
@@ -119,6 +128,8 @@ export interface SampleDetail {
   hostCpu: number | null
   /** The host's 1-minute load average. */
   load1: number
+  /** At or over budget in the judged set: how it was judged (qc/judge.ts). */
+  judge?: SampleJudgement
 }
 
 export interface FlowRecord {
@@ -239,6 +250,8 @@ interface QcWindow {
   __qcOut?: Array<[t: number, data: string]>
   /** The page's live subscriptions: queryId → udfPath. */
   __qcSubs?: Record<string, string>
+  /** The fold has seen a Connect: __qcSubs is the whole set. */
+  __qcSubsKnown?: boolean
 }
 
 // Capture-phase listeners record the timestamp of each trusted input event
@@ -254,7 +267,12 @@ interface QcWindow {
 // frame's time is its MessageEvent.timeStamp, set when the message was
 // dispatched, so the SPA's own handler, which runs first, isn't counted
 // in it. Each arm empties the buffer, so it holds one sample's frames.
-function arm(legs: boolean) {
+//
+// tapContext runs the same function as an init script with `now` false:
+// it installs the tap before the app's own scripts, so the tap sees the
+// socket's Connect and every subscription the page makes, not only those
+// after the first sample. Without that the subscriptions are unknown.
+function arm([legs, now]: [legs: boolean, now: boolean]) {
   const w = window as unknown as QcWindow
   if (!w.__qcListening) {
     w.__qcListening = true
@@ -315,9 +333,16 @@ function arm(legs: boolean) {
       }
     }
   }
+  if (!now) return
   if (w.__qcWire) w.__qcWire.length = 0
   w.__qcT0 = undefined
   w.__qcArmed = true
+}
+
+/** Install the tap in every page of `context` from its first script. */
+export async function tapContext(context: BrowserContext) {
+  if (LEGS)
+    await context.addInitScript(arm, [true, false] as [boolean, boolean])
 }
 
 function readT0() {
@@ -457,6 +482,7 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
         const type = /"type":"(\w+)"/.exec(data.slice(0, 200))?.[1]
         if (type === 'Connect') {
           for (const k of Object.keys(subs)) delete subs[k]
+          w.__qcSubsKnown = true
         } else if (type === 'ModifyQuerySet') {
           const m = JSON.parse(data) as {
             modifications?: Array<{
@@ -472,11 +498,13 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
         }
       }
     } catch {
-      // A frame that won't parse: the subscriptions are unknown from here.
+      // A frame that won't parse: unknown until the next Connect.
       for (const k of Object.keys(subs)) delete subs[k]
+      w.__qcSubsKnown = false
     }
     out.splice(0, done)
-    legs.subs = [...new Set(Object.values(subs))].sort()
+    // Only a set folded from the socket's Connect is the whole set.
+    if (w.__qcSubsKnown) legs.subs = [...new Set(Object.values(subs))].sort()
     legs.longTaskMs = Math.round(
       (w.__qcLong ?? [])
         .filter(([s, d]) => s + d >= t0 && s <= t1)
@@ -529,8 +557,9 @@ async function measureOnce<TArg>(
   const start = step.start ?? 'input'
   const inputPage = step.inputPage ?? page
   // The tap goes on both pages, so their sockets are caught before t0.
-  await inputPage.evaluate(arm, LEGS)
-  if (inputPage !== page) await page.evaluate(arm, LEGS)
+  await inputPage.evaluate(arm, [LEGS, true] as [boolean, boolean])
+  if (inputPage !== page)
+    await page.evaluate(arm, [LEGS, true] as [boolean, boolean])
   const cpu0 = cpuTicks()
   await step.action()
   // The predicate and the clock read happen in the same frame callback.
@@ -626,6 +655,32 @@ function pickTransition(
   return hit ? hit[0] : null
 }
 
+// Per worker process: the run's live files, opened on the first slow
+// sample. Imported lazily: qc/live.ts imports back into this module.
+let live: LiveRun | undefined
+async function liveRun(): Promise<LiveRun> {
+  if (!live) live = new (await import('./live')).LiveRun(runDir())
+  return live
+}
+
+/**
+ * Take one of the run's RETRY_CAP_PER_RUN retries. Workers are separate
+ * processes, so each retry is a file created exclusively: the first to
+ * create `retries/<i>` has it.
+ */
+export function takeRetry(dir = path.join(runDir(), 'retries')): boolean {
+  mkdirSync(dir, { recursive: true })
+  for (let i = 0; i < RETRY_CAP_PER_RUN; i++) {
+    try {
+      closeSync(openSync(path.join(dir, String(i)), 'wx'))
+      return true
+    } catch {
+      // Taken; try the next.
+    }
+  }
+  return false
+}
+
 // Per worker process: flows that already had their untimed warm-up.
 const warmed = new Set<FlowName>()
 
@@ -669,7 +724,35 @@ export async function runFlow<TArg>(
     firstDetail = detail
     ;({ set: samplesMs, detail } = await measureSet())
   }
-  const { medianMs, maxMs, pass } = judge(samplesMs, budget.maxMs)
+  const judged = judge(samplesMs, budget.maxMs)
+  const { medianMs, maxMs } = judged
+  let pass = judged.pass
+  // Over budget in the judged set: whose time was it? (qc/judge.ts)
+  if (!skipped && !pass && !budget.selfTest) {
+    pass = true
+    for (let i = 0; i < samplesMs.length && pass; i++) {
+      if (samplesMs[i] < budget.maxMs) continue
+      const j = await judgeSlowSample(
+        { ms: samplesMs[i], detail: detail[i] },
+        budget.maxMs,
+        {
+          blame: async (m) =>
+            (await liveRun()).blame({
+              ...m.detail,
+              worker: ctx.worker,
+              ...(ctx.instance && { instance: ctx.instance }),
+            }),
+          measure: async () => {
+            const s = await measureOnce(ctx.page, name, step, timeoutMs)
+            return { ms: round1(s.ms), detail: s.detail }
+          },
+          takeRetry: () => takeRetry(),
+        },
+      )
+      detail[i] = { ...detail[i], judge: j }
+      pass = j.pass
+    }
+  }
   const record: FlowRecord = {
     runId: runId(),
     flow: name,
@@ -704,10 +787,25 @@ export class OverBudgetError extends Error {}
 
 export function assertFlow(record: FlowRecord) {
   if (record.pass !== false || record.knownOver) return
+  const why = record.detail
+    .flatMap((d, i) =>
+      d.judge && !d.judge.pass
+        ? [
+            `sample ${record.samplesMs[i]} ms ${d.judge.rule} (${d.judge.attempts
+              .map(
+                (a) =>
+                  `${a.ms} ms ${a.verdict ?? 'under'}${a.why ? `: ${a.why}` : ''}`,
+              )
+              .join(' → ')})`,
+          ]
+        : [],
+    )
+    .join('; ')
   throw new OverBudgetError(
     `flow ${record.flow} over budget twice: samples ${record.samplesMs.join(', ')} ms, ` +
       `re-measured after ${record.firstSamplesMs?.join(', ')} ms; ` +
-      `every one must be under ${record.budgetMs} ms (RTT ${record.rttMs} ms)`,
+      `every one must be under ${record.budgetMs} ms (RTT ${record.rttMs} ms)` +
+      (why ? `; ${why}` : ''),
   )
 }
 

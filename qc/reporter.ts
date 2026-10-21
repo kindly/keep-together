@@ -31,12 +31,14 @@ import type { LinkFile } from './link.setup'
 import type { ServerTimingsFile } from './server-timings'
 import {
   blame,
+  commitLatency,
   countVerdicts,
   formatBlame,
   formatCounts,
   readBlameContext,
 } from './blame'
 import type { Blame, BlameContext } from './blame'
+import type { Rule } from './judge'
 import type { Budget, FlowKind, FlowName } from './budgets'
 
 // QC reporter: gathers every flow record the workers wrote for this run
@@ -104,6 +106,18 @@ export interface HistoryLine {
   pass: boolean | null
   /** Approved exception: `pass` is still the real judgement. */
   knownOver?: string
+  /** How the judged set's slow samples were judged (qc/judge.ts), by rule. */
+  judged?: Partial<Record<Rule, number>>
+  /**
+   * Hidden-ours signals over every sample (human, 2026-10-21): tracked,
+   * not judged. Medians of bytes the page received, requests it made, and
+   * commit latency (send → commit less the probe).
+   */
+  signals?: {
+    bytesInP50: number | null
+    requestsP50: number | null
+    commitLatencyP50: number | null
+  }
   /**
    * The run's Convex server execution times (qc/server-timings.ts), the
    * same on every line of a run; null when the collector wrote nothing.
@@ -225,6 +239,21 @@ export function summarise(
         })
       const detail = rs.flatMap((r) => where(r, r.detail))
       const firstDetail = rs.flatMap((r) => where(r, r.firstDetail))
+      const rules: Partial<Record<Rule, number>> = {}
+      for (const d of detail)
+        if (d.judge) rules[d.judge.rule] = (rules[d.judge.rule] ?? 0) + 1
+      const all = [...firstDetail, ...detail]
+      const p50 = (xs: Array<number | null | undefined>) => {
+        const ns = xs.filter((x): x is number => typeof x === 'number')
+        return ns.length ? median(ns) : null
+      }
+      const signals = all.some((d) => d.bytesIn !== undefined)
+        ? {
+            bytesInP50: p50(all.map((d) => d.bytesIn)),
+            requestsP50: p50(all.map((d) => d.requests)),
+            commitLatencyP50: p50(all.map((d) => commitLatency(d, ctx.probes))),
+          }
+        : undefined
       return {
         ...base,
         flow,
@@ -246,6 +275,8 @@ export function summarise(
         budgetMs,
         pass: judged.length ? judged.every((r) => r.pass) : null,
         ...(rs[0].knownOver && { knownOver: rs[0].knownOver }),
+        ...(Object.keys(rules).length && { judged: rules }),
+        ...(signals && { signals }),
       }
     })
 }
@@ -294,6 +325,11 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
             : 'OVER') +
       (l.firstSamplesMs
         ? ` (re-measured: 1st max ${Math.round(Math.max(...l.firstSamplesMs))})`
+        : '') +
+      (l.judged
+        ? ` (${Object.entries(l.judged)
+            .map(([rule, n]) => `${n} ${rule}`)
+            .join(', ')})`
         : ''),
   ])
   const widths = head.map((h, i) =>
@@ -395,6 +431,63 @@ function linkBanner(
     'Judged as usual; the network between this machine and its router held them up.',
     ...hits,
   ])
+}
+
+/** Every slow sample the judged sets judged on whose time it was (qc/judge.ts). */
+function judgeList(
+  lines: Array<HistoryLine>,
+  selfTest: Set<FlowName>,
+): Array<string> {
+  const rows = lines
+    .filter((l) => !selfTest.has(l.flow))
+    .flatMap((l) =>
+      (l.detail ?? []).flatMap((d) =>
+        d.judge
+          ? [
+              `  ${l.flow} w${d.worker} ${d.instance ?? '?'}: ${d.judge.rule} · ` +
+                d.judge.attempts
+                  .map(
+                    (a) =>
+                      `${Math.round(a.ms)} ms ${a.verdict ?? 'under'}` +
+                      (a.ourShareMs != null
+                        ? ` (our share ${Math.round(a.ourShareMs)})`
+                        : '') +
+                      (a.caughtUp === false ? ' [logs behind]' : ''),
+                  )
+                  .join(' → ') +
+                (d.judge.shareBudgetMs !== undefined
+                  ? ` · our share must be < ${d.judge.shareBudgetMs}`
+                  : ''),
+            ]
+          : [],
+      ),
+    )
+  if (!rows.length) return []
+  return [
+    'JUDGED: slow samples in the judged sets, ours or not (qc/README.md "Ours"; unclear counts as ours):',
+    ...rows,
+  ]
+}
+
+/** Counts for the run: retried, passed on retry or our share, failed and why. */
+function judgeSummary(
+  lines: Array<HistoryLine>,
+  selfTest: Set<FlowName>,
+): Array<string> {
+  const js = lines
+    .filter((l) => !selfTest.has(l.flow))
+    .flatMap((l) => (l.detail ?? []).flatMap((d) => (d.judge ? [d.judge] : [])))
+  if (!js.length) return []
+  const by: Partial<Record<Rule, number>> = {}
+  for (const j of js) by[j.rule] = (by[j.rule] ?? 0) + 1
+  const retried = js.filter((j) => j.attempts.length > 1).length
+  const extra = js.reduce((n, j) => n + j.attempts.length - 1, 0)
+  return [
+    `ours: ${js.length} slow samples judged, ${retried} retried (${extra} extra attempts): ` +
+      Object.entries(by)
+        .map(([rule, n]) => `${rule} ${n}`)
+        .join(', '),
+  ]
 }
 
 /** Every slow sample's breakdown, by flow. */
@@ -514,12 +607,16 @@ export default class QcReporter implements Reporter {
       out.push(...spikeBanner(lines, selfTest, lines[0]?.server ?? null))
       out.push(...linkBanner(lines, selfTest, link))
       out.push(...blameList(lines, selfTest))
+      out.push(...judgeList(lines, selfTest))
       if (blameCtx.skipped) {
         out.push(
           `blame: ${blameCtx.skipped} unreadable lines or files in server-calls.jsonl / rtt-*.jsonl skipped`,
         )
       }
-      blameLines = blameSummary(lines, selfTest)
+      blameLines = [
+        ...blameSummary(lines, selfTest),
+        ...judgeSummary(lines, selfTest),
+      ]
       const real = lines.filter((l) => !selfTest.has(l.flow))
       mkdirSync(path.dirname(HISTORY), { recursive: true })
       appendFileSync(

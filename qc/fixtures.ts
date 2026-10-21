@@ -13,6 +13,7 @@ import {
   runFlow,
   runId,
   startRttMonitor,
+  tapContext,
 } from './timing'
 import type { FlowName } from './budgets'
 import type { FlowRecord, FlowStep } from './timing'
@@ -205,6 +206,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           baseURL: `http://localhost:${instance.port}`,
           viewport: { width: 1280, height: 800 },
         })
+        await tapContext(context)
         const page = await context.newPage()
         // One sign-in per user and worker, no warm-up: each is its own
         // one-sample record, judged by the same rule (every sample under
@@ -305,6 +307,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         })),
       }
     })
+  },
+
+  // The default page's context: the WebSocket tap from its first script.
+  context: async ({ context }, use) => {
+    await tapContext(context)
+    await use(context)
   },
 
   storageState: async ({ session }, use) => {

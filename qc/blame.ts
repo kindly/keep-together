@@ -149,7 +149,12 @@ export interface Blame {
    * subscriptions (history before `subs`).
    */
   reruns: Array<{ fn: string; ms: number }> | null
-  /** Their critical path: they run side by side, the slowest decides. */
+  /**
+   * Their critical path (human, 2026-10-21): re-runs whose intervals
+   * overlap run side by side, so a group counts its slowest; groups one
+   * after another add up.
+   */
+  rerunCriticalMs: number | null
   rerunMaxMs: number | null
   /** The union of their [start, end] intervals (≥ max; = max when they overlap). */
   rerunUnionMs: number | null
@@ -223,6 +228,25 @@ function rerunCalls(
     .sort((a, b) => a.at - b.at)
 }
 
+/** Groups of overlapping [start, end] intervals: the slowest of each, summed. */
+function criticalMs(calls: Array<ServerCall>): number {
+  const spans = calls
+    .map((c): [number, number, number] => [c.at - c.ms, c.at, c.ms])
+    .sort((a, b) => a[0] - b[0])
+  let total = 0
+  let end = -Infinity
+  let slowest = 0
+  for (const [a, b, ms] of spans) {
+    if (a > end) {
+      total += slowest
+      slowest = 0
+    }
+    slowest = Math.max(slowest, ms)
+    end = Math.max(end, b)
+  }
+  return total + slowest
+}
+
 /** Total length of the calls' [start, end] intervals, overlaps counted once. */
 function unionMs(calls: Array<ServerCall>): number {
   const spans = calls
@@ -294,6 +318,21 @@ function slowElsewhere(
     : []
 }
 
+/**
+ * Send → commit, less the worker's probe at that moment (or its run
+ * median): how long Convex took to commit beyond a no-op round trip.
+ * Server clock. Null without a commit or any probe.
+ */
+export function commitLatency(
+  s: BlameSample,
+  probes: Array<Probe>,
+): number | null {
+  if (s.commitMs === null || s.sendMs === null) return null
+  const p = probesNear(probes, s, s.at, s.at + s.endMs)
+  const ref = p.near.length ? Math.max(...p.near) : p.medianMs
+  return ref === null ? null : r1(s.commitMs - s.sendMs - ref)
+}
+
 export function probeElevated(ms: number, medianMs: number): boolean {
   return ms >= medianMs * PROBE_SLOW.ratio && ms >= medianMs + PROBE_SLOW.plusMs
 }
@@ -358,18 +397,15 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
     probe.near.some((ms) => probeElevated(ms, probe.medianMs!))
   const elsewhere = slowElsewhere(ctx.calls, s, s.at, s.at + end)
   const rr = rerunCalls(ctx.calls, s)
-  const rerunMaxMs = rr ? Math.max(0, ...rr.map((c) => c.ms)) : null
+  const rerunCriticalMs = rr ? r1(criticalMs(rr)) : null
   // A save whose re-runs can't be told has no share: it would understate.
   const ourShareMs =
     pageMs === null ||
     match.ms === null ||
-    (s.commitMs !== null && rerunMaxMs === null)
+    (s.commitMs !== null && rerunCriticalMs === null)
       ? null
-      : r1(pageMs + match.ms + (rerunMaxMs ?? 0))
-  const commitLatencyMs =
-    s.commitMs !== null && s.sendMs !== null && probeRef !== null
-      ? r1(s.commitMs - s.sendMs - probeRef)
-      : null
+      : r1(pageMs + match.ms + (rerunCriticalMs ?? 0))
+  const commitLatencyMs = commitLatency(s, ctx.probes)
 
   const verdict = ((): [Verdict, string] => {
     if (linkMs !== null && linkMs >= STALL_MS)
@@ -416,7 +452,8 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
     slowElsewhere: elsewhere,
     linkMs,
     reruns: rr?.map((c) => ({ fn: c.fn, ms: c.ms })) ?? null,
-    rerunMaxMs,
+    rerunCriticalMs,
+    rerunMaxMs: rr ? Math.max(0, ...rr.map((c) => c.ms)) : null,
     rerunUnionMs: rr ? r1(unionMs(rr)) : null,
     rerunSumMs: rr ? r1(rr.reduce((n, c) => n + c.ms, 0)) : null,
     ourShareMs,
@@ -447,7 +484,7 @@ export function formatBlame(endMs: number, b: Blame): string {
   )
   if (b.reruns?.length)
     parts.push(
-      `re-runs ${b.reruns.map((r) => `${r.fn.split(':')[1]} ${Math.round(r.ms)}`).join(', ')} (critical ${ms(b.rerunMaxMs)})`,
+      `re-runs ${b.reruns.map((r) => `${r.fn.split(':')[1]} ${Math.round(r.ms)}`).join(', ')} (critical ${ms(b.rerunCriticalMs)})`,
     )
   if (b.backMs !== null) parts.push(`back ${ms(b.backMs, b.approx)}`)
   if (b.transitionMs !== null) parts.push(`Transition ${ms(b.transitionMs)}`)
