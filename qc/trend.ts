@@ -45,6 +45,12 @@ export interface FlowPoint {
   pass: boolean | null
   knownOver?: string
   rttOver: boolean
+  /** Slow samples that passed only on our share (qc/judge.ts). */
+  passedOnShare?: number
+  /** How the judged set's slow samples were judged, by rule. */
+  judged?: HistoryLine['judged']
+  /** Hidden-ours signals: tracked, not judged. */
+  signals?: HistoryLine['signals']
 }
 
 export interface FlowSeries {
@@ -52,6 +58,11 @@ export interface FlowSeries {
   kind: HistoryLine['kind']
   /** One per run in the window; null where the run didn't time the flow. */
   points: Array<FlowPoint | null>
+  /**
+   * Passed on our share in most of the runs that timed it (at least two):
+   * a flow that keeps leaning on "not ours" to pass.
+   */
+  leansOnShare: boolean
 }
 
 export interface ServerPoint {
@@ -88,6 +99,9 @@ export interface LatestRow {
   knownOver?: string
   rttOver: boolean
   firstMaxMs?: number
+  passedOnShare?: number
+  signals?: HistoryLine['signals']
+  leansOnShare: boolean
 }
 
 export interface Trend {
@@ -155,7 +169,14 @@ export function shapeTrend(
       .reverse()
       .flatMap((w) => w.lines)
       .find((l) => l.flow === flow)
-    return { flow, kind: last!.kind, points }
+    const timed = points.filter((p) => p !== null)
+    const leaning = timed.filter((p) => (p.passedOnShare ?? 0) > 0).length
+    return {
+      flow,
+      kind: last!.kind,
+      points,
+      leansOnShare: leaning >= 2 && leaning * 2 > timed.length,
+    }
   })
 
   // The server summary is the same on every line of a run.
@@ -211,6 +232,9 @@ export function shapeTrend(
         ...(p.knownOver && { knownOver: p.knownOver }),
         rttOver: p.rttOver,
         ...(p.firstMaxMs !== undefined && { firstMaxMs: p.firstMaxMs }),
+        ...(p.passedOnShare && { passedOnShare: p.passedOnShare }),
+        ...(p.signals && { signals: p.signals }),
+        leansOnShare: s.leansOnShare,
       }
     })
     .sort(
@@ -231,6 +255,11 @@ function flowPoint(l: HistoryLine): FlowPoint {
     ...(l.knownOver && { knownOver: l.knownOver }),
     rttOver: l.rttOver,
     ...(l.firstSamplesMs && { firstMaxMs: Math.max(...l.firstSamplesMs) }),
+    ...(l.judged?.['passed on our share'] && {
+      passedOnShare: l.judged['passed on our share'],
+    }),
+    ...(l.judged && { judged: l.judged }),
+    ...(l.signals && { signals: l.signals }),
   }
 }
 
@@ -247,12 +276,22 @@ const worst = (points: Array<ServerPoint | null>) =>
 export function flowMark(
   p: Pick<
     FlowPoint,
-    'maxMs' | 'budgetMs' | 'pass' | 'knownOver' | 'rttOver' | 'firstMaxMs'
+    | 'maxMs'
+    | 'budgetMs'
+    | 'pass'
+    | 'knownOver'
+    | 'rttOver'
+    | 'firstMaxMs'
+    | 'passedOnShare'
   >,
-): 'rtt' | 'known' | 'over' | 'spike' | 'ok' {
+): 'rtt' | 'known' | 'over' | 'share' | 'spike' | 'ok' {
   if (p.rttOver) return 'rtt'
   if (p.knownOver) return 'known'
-  if (p.maxMs >= p.budgetMs || p.pass === false) return 'over'
+  if (p.pass === false) return 'over'
+  // Over budget and passed: on our share, or on a retry (maxMs keeps the
+  // sample that was retried, so a retry reads as a re-measure).
+  if (p.passedOnShare) return 'share'
+  if (p.maxMs >= p.budgetMs) return p.pass === true ? 'spike' : 'over'
   if (p.firstMaxMs !== undefined) return 'spike'
   return 'ok'
 }
@@ -364,8 +403,14 @@ const MARK_TEXT = {
   over: 'OVER',
   known: 'known over',
   spike: 're-measured',
+  share: 'passed on our share',
   rtt: 'RTT over ceiling',
 } as const
+
+const signalText = (s: HistoryLine['signals']) =>
+  s
+    ? `signals: ${s.bytesInP50 === null ? '?' : ms(s.bytesInP50)} B in · ${s.requestsP50 ?? '?'} requests · commit ${s.commitLatencyP50 === null ? '?' : ms(s.commitLatencyP50)} ms beyond the probe (medians)`
+    : null
 
 function flowCard(s: FlowSeries, runs: Array<Run>): string {
   const lastP = s.points[lastIndex(s.points)]!
@@ -382,6 +427,14 @@ function flowCard(s: FlowSeries, runs: Array<Run>): string {
         ...(p.firstMaxMs !== undefined
           ? [`spike: 1st set max ${ms(p.firstMaxMs)}, re-measured`]
           : []),
+        ...(p.judged
+          ? [
+              `judged: ${Object.entries(p.judged)
+                .map(([rule, n]) => `${n} ${rule}`)
+                .join(', ')}`,
+            ]
+          : []),
+        ...(signalText(p.signals) ? [signalText(p.signals)!] : []),
         MARK_TEXT[m] + (p.knownOver ? `: ${p.knownOver}` : ''),
       ].join('\n'),
     }
@@ -389,6 +442,13 @@ function flowCard(s: FlowSeries, runs: Array<Run>): string {
   const flags = [...new Set(s.points.flatMap((p) => (p ? [flowMark(p)] : [])))]
     .filter((m) => m !== 'ok')
     .map((m) => `<span class="tag ${m}">${MARK_TEXT[m]}</span>`)
+    .concat(
+      s.leansOnShare
+        ? [
+            '<span class="tag over" title="passed on our share in most of the runs that timed it">leans on our share</span>',
+          ]
+        : [],
+    )
     .join(' ')
   return `<figure class="card">
 <figcaption><b>${esc(s.flow)}</b> <span class="muted">${KIND_TEXT[s.kind]}</span> ${flags}
@@ -466,11 +526,14 @@ function latestTable(t: Trend): string {
 <td class="num">&lt;${r.budgetMs}</td>
 <td class="num"><b>${ms(r.headroomMs)}</b></td>
 <td class="hr"><span class="bar" style="width:${bar}%"></span><span class="pct">${pct}%</span></td>
-<td><span class="tag ${m}"${r.knownOver ? ` title="${esc(r.knownOver)}"` : ''}>${esc(status)}</span></td>
+<td><span class="tag ${m}"${r.knownOver ? ` title="${esc(r.knownOver)}"` : ''}>${esc(status)}</span>${r.leansOnShare ? ' <span class="tag over">leans on our share</span>' : ''}</td>
+<td class="num">${r.signals?.bytesInP50 == null ? '' : ms(r.signals.bytesInP50)}</td>
+<td class="num">${r.signals?.requestsP50 ?? ''}</td>
+<td class="num">${r.signals?.commitLatencyP50 == null ? '' : ms(r.signals.commitLatencyP50)}</td>
 </tr>`
   })
   return `<table class="latest">
-<thead><tr><th>flow</th><th>kind</th><th class="num">median</th><th class="num">max</th><th class="num">budget</th><th class="num">headroom ms</th><th>headroom</th><th>status</th></tr></thead>
+<thead><tr><th>flow</th><th>kind</th><th class="num">median</th><th class="num">max</th><th class="num">budget</th><th class="num">headroom ms</th><th>headroom</th><th>status</th><th class="num" title="median characters (≈ bytes) the page received per sample">bytes in</th><th class="num" title="median requests the page sent per sample">requests</th><th class="num" title="median send → commit, less the probe">commit ms</th></tr></thead>
 <tbody>
 ${rows.join('\n')}
 </tbody>
@@ -490,7 +553,7 @@ export function renderTrend(t: Trend, generatedAt: string): string {
 ${latestTable(t)}
 
 <h2>Flows over runs</h2>
-<p class="muted"><span class="tag over">OVER</span> failed · <span class="tag known">known over</span> approved exception (qc/budgets.ts) · <span class="tag spike">re-measured</span> a spike over budget, passed on its one re-measure (the point is the re-measure; hover for the first) · <span class="tag rtt">RTT over ceiling</span> samples measured the link; latency not asserted · dashed line: budget</p>
+<p class="muted"><span class="tag over">OVER</span> failed · <span class="tag known">known over</span> approved exception (qc/budgets.ts) · <span class="tag spike">re-measured</span> a spike over budget, passed on its one re-measure (the point is the re-measure; hover for the first) · <span class="tag share">passed on our share</span> a slow sample that wasn't ours (link or Convex, with evidence) passed with our share under budget − 50 ms (qc/README.md "Ours") · <span class="tag rtt">RTT over ceiling</span> samples measured the link; latency not asserted · dashed line: budget</p>
 <div class="grid">
 ${t.flows.map((s) => flowCard(s, t.runs)).join('\n')}
 </div>
@@ -561,6 +624,7 @@ code { font: 12.5px ui-monospace, monospace; }
 .tag.known { background: var(--known-bg); color: var(--known); }
 .tag.rtt { background: var(--rtt-bg); color: var(--rtt); }
 .tag.spike { background: var(--spike-bg); color: var(--spike); }
+.tag.share { background: var(--spike-bg); color: var(--over); }
 .tag.ok { color: var(--ok); background: transparent; }
 table.latest { border-collapse: collapse; width: 100%; max-width: 980px; margin-top: 8px;
   font-variant-numeric: tabular-nums; }
@@ -571,6 +635,7 @@ table.latest { border-collapse: collapse; width: 100%; max-width: 980px; margin-
 .latest tr.over td:first-child { box-shadow: inset 3px 0 var(--over); padding-left: 8px; }
 .latest tr.known td:first-child { box-shadow: inset 3px 0 var(--known); padding-left: 8px; }
 .latest tr.spike td:first-child { box-shadow: inset 3px 0 var(--spike); padding-left: 8px; }
+.latest tr.share td:first-child { box-shadow: inset 3px 0 var(--over); padding-left: 8px; }
 .latest td:first-child { padding-left: 8px; }
 .hr { width: 160px; position: relative; }
 .hr .bar { display: inline-block; height: 8px; border-radius: 2px; background: var(--max);
@@ -602,6 +667,7 @@ figcaption { font-size: 13px; }
 .pt.over { fill: var(--over); }
 .pt.known { fill: var(--known); }
 .pt.spike { fill: var(--card); stroke: var(--spike); stroke-width: 2; }
+.pt.share { fill: var(--card); stroke: var(--over); stroke-width: 2; }
 .pt.rtt { fill: var(--card); stroke: var(--rtt); stroke-width: 1.5; stroke-dasharray: 2 1.5; }
 .pt.info { fill: var(--info); }
 footer { margin-top: 40px; font-size: 12px; }

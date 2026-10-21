@@ -109,3 +109,39 @@ What the spike established (details and numbers in spike 7):
   which check derived state (eligibility from the declaration chain,
   current consent from the log, exact pence round trips) through the
   UI.
+
+## Amendment: is a slow sample ours? (human, 2026-10-21)
+
+Point 4's pass rule has since become raw (every sample under budget,
+one set re-measure; qc/README.md). Wi-Fi stalls and Convex dev stalls
+still fail flows that our code didn't slow down. The human considered
+an external QC runner, declined it for now, and decided to measure
+whose time a slow sample was and judge on that:
+
+- The set re-measure stays. Inside the judged set, each sample at or
+  over budget is blamed live (`qc/blame.ts`, `qc/live.ts`). `ours` fails
+  as before. **`unclear` counts as ours.**
+- **"Not ours" needs positive evidence:** a first-hop stall, the probe
+  elevated at that moment, or a Convex-wide spell (two other instances,
+  two distinct functions, the sample's own functions excluded).
+  Leftover time in the overhead legs alone is `unclear`.
+- **Ours evidence wins:** a page of 40 ms or more, our function or our
+  re-runs at 50 ms or more make a sample ours whatever the link, probe
+  or spell show. An attempt whose log streams didn't catch up is
+  `unclear`.
+- A sample that isn't ours is **retried**, up to two more attempts
+  (10 per run). Still over and not ours: it passes only if **our share**
+  is under **budget − 50 ms**. Budget numbers are unchanged.
+- **Our share = page + our mutation + the critical path of the page's
+  own re-run queries** between the commit and the Transition, taken as
+  the union of their intervals: side by side they count once (≈ the
+  slowest), one after another they add up. The sum was rejected: Convex
+  re-runs them side by side and the Transition waits for the slowest. On recorded data (1,031 saves) the median
+  page + mutation was 28 ms, and 39 ms with the critical path.
+- Hidden-ours signals are tracked per flow, not judged: bytes received,
+  requests, and commit latency. The trend report flags a flow that
+  passes on our share in most of its runs.
+
+Consequence: a run can pass with samples over budget. Every such sample
+is listed with its evidence (`JUDGED`, history `detail[i].judge`), and
+the trend report shows a flow that leans on it.

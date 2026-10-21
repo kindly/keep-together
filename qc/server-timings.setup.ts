@@ -1,4 +1,7 @@
+import { mkdirSync } from 'node:fs'
+import path from 'node:path'
 import {
+  LIVE_CALLS_FILE,
   checkBudgets,
   formatTable,
   startServerTimings,
@@ -17,7 +20,11 @@ import type { QcHook } from './global-setup'
 export const serverTimingsHook: QcHook = {
   name: 'server timings',
   async setup(pool) {
-    const collector = await startServerTimings(pool)
+    mkdirSync(runDir(), { recursive: true })
+    const collector = await startServerTimings(
+      pool,
+      path.join(runDir(), LIVE_CALLS_FILE),
+    )
     return async () => {
       const timings = await collector.stop()
       writeResults(timings, runDir())

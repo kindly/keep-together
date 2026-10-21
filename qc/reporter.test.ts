@@ -135,6 +135,41 @@ describe('summarise: blame changes no judgement', () => {
   })
 })
 
+describe('summarise: judgements and signals (qc/judge.ts)', () => {
+  test("counts each flow's judged samples by rule and keeps the signals", () => {
+    const recs = records('r1')
+    const email = recs[0]
+    email.pass = true
+    email.detail[0] = {
+      ...email.detail[0],
+      bytesIn: 2000,
+      requests: 2,
+      judge: {
+        pass: true,
+        rule: 'passed on our share',
+        shareBudgetMs: 50,
+        attempts: [
+          { ms: 159.9, verdict: 'convex/network', ourShareMs: 44 },
+          { ms: 130, verdict: 'convex/network', ourShareMs: 45 },
+          { ms: 128, verdict: 'convex/network', ourShareMs: 41 },
+        ],
+      },
+    }
+    email.detail[1] = { ...email.detail[1], bytesIn: 3000, requests: 4 }
+    const [line] = summarise(recs, base, null, ctx)
+    expect(line.pass).toBe(true)
+    expect(line.judged).toEqual({ 'passed on our share': 1 })
+    expect(line.signals).toMatchObject({ bytesInP50: 2500, requestsP50: 3 })
+    expect(line.signals!.commitLatencyP50).toEqual(expect.any(Number))
+  })
+
+  test('no signals on history from before them', () => {
+    const [line] = summarise(records('r1'), base, null, ctx)
+    expect(line.signals).toBeUndefined()
+    expect(line.judged).toBeUndefined()
+  })
+})
+
 describe('readBlameContext', () => {
   let dir: string
   beforeEach(() => {

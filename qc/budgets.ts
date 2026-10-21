@@ -26,6 +26,10 @@
 //
 // A judged flow with any sample at or over budget is re-measured once (K
 // fresh samples) and fails only if that set is over too (qc/timing.ts).
+// A sample over budget in that set is then judged on whose time it was
+// (qc/judge.ts, human 2026-10-21): ours or unclear fails; not ours (link
+// or Convex, with evidence) is retried up to twice, then passes only if
+// our share of it is under maxMs − 50. The numbers here are unchanged.
 //
 // `knownOver` is an exception the human approved: the flow is still timed
 // and recorded in full, but being over budget doesn't fail the run. Every

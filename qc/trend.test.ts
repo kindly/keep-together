@@ -224,3 +224,64 @@ describe('renderTrend', () => {
     expect(yMax([500], 2000)).toBe(2500)
   })
 })
+
+describe('ours (qc/judge.ts) in the trend', () => {
+  const shared = (runId: string, at: string, n: number) =>
+    line({
+      runId,
+      at,
+      maxMs: 120,
+      pass: true,
+      ...(n && { judged: { 'passed on our share': n } }),
+      signals: { bytesInP50: 2100, requestsP50: 3, commitLatencyP50: 12 },
+    })
+
+  test('marks a flow that passed on our share, and a retry as a re-measure', () => {
+    expect(
+      flowMark({
+        maxMs: 120,
+        budgetMs: 100,
+        pass: true,
+        rttOver: false,
+        passedOnShare: 1,
+      }),
+    ).toBe('share')
+    expect(
+      flowMark({ maxMs: 120, budgetMs: 100, pass: true, rttOver: false }),
+    ).toBe('spike')
+    expect(
+      flowMark({ maxMs: 120, budgetMs: 100, pass: null, rttOver: false }),
+    ).toBe('over')
+  })
+
+  test('flags a flow that passed on our share in most of its runs', () => {
+    const t = shapeTrend(
+      [
+        shared('r1', '2026-10-21T10:00:00.000Z', 1),
+        shared('r2', '2026-10-21T11:00:00.000Z', 0),
+        shared('r3', '2026-10-21T12:00:00.000Z', 2),
+      ],
+      { lastRuns: 30 },
+    )
+    expect(t.flows[0].leansOnShare).toBe(true)
+    expect(t.latest[0]).toMatchObject({
+      leansOnShare: true,
+      passedOnShare: 2,
+      signals: { bytesInP50: 2100, requestsP50: 3, commitLatencyP50: 12 },
+    })
+    const html = renderTrend(t, '2026-10-21T13:00:00.000Z')
+    expect(html).toContain('leans on our share')
+    expect(html).toContain('passed on our share')
+  })
+
+  test('once is not a habit', () => {
+    const t = shapeTrend(
+      [
+        shared('r1', '2026-10-21T10:00:00.000Z', 1),
+        shared('r2', '2026-10-21T11:00:00.000Z', 0),
+      ],
+      { lastRuns: 30 },
+    )
+    expect(t.flows[0].leansOnShare).toBe(false)
+  })
+})

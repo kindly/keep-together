@@ -6,26 +6,12 @@ import {
   formatCounts,
   probeElevated,
 } from './blame'
-import type { BlameSample, Probe, ServerCall } from './blame'
-import recorded from './blame.fixture.json'
+import type { BlameSample, ServerCall } from './blame'
+import { cases } from './blame.fixture'
+import type { Case } from './blame.fixture'
 
-// Recorded slow samples (qc-results of runs tn9ttz4a, tn9g1x25 and
-// tn9vwfeq), each with every Convex call on the pool within 600 ms of it
-// and every RTT probe of its worker in that run. The first four predate
-// `fns`, so their fixtures add the function the flow calls (the one call
-// of it in the window); tn9vwfeq recorded its own.
-interface Case {
-  run: string
-  flow: string
-  budgetMs: number
-  sample: BlameSample
-  calls: Array<ServerCall>
-  probes: Array<Probe>
-}
-const cases = recorded as unknown as Record<
-  'normal' | 'slowFunction' | 'linkStall' | 'slowSpell' | 'stallElsewhere',
-  Case
->
+const r1 = (x: number) => Math.round(x * 10) / 10
+
 const run = (c: Case, s: Partial<BlameSample> = {}) =>
   blame({ ...c.sample, ...s }, { calls: c.calls, probes: c.probes })
 
@@ -33,11 +19,11 @@ const legsSum = (b: ReturnType<typeof blame>) =>
   b.pageMs! + b.toConvexMs! + b.fnMs! + b.backMs! + b.transitionMs!
 
 describe('blame on recorded samples', () => {
-  test('function and page normal: the time is in the legs between, convex/network', () => {
+  test('function and page normal, no evidence elsewhere: unclear, which counts as ours', () => {
     const c = cases.normal
     const b = run(c)
     expect(b).toMatchObject({
-      verdict: 'convex/network',
+      verdict: 'unclear',
       fnMs: 30.3,
       fnMatch: 'contacts/mutations:setAcquisition',
       pageMs: 17.6,
@@ -50,7 +36,7 @@ describe('blame on recorded samples', () => {
     // The legs partition the sample.
     expect(legsSum(b)).toBeCloseTo(c.sample.endMs, 5)
     expect(formatBlame(c.sample.endMs, b)).toBe(
-      '128 = page 18 · to Convex ≈21 · our function 30 (contacts/mutations:setAcquisition) · back ≈46 · Transition 13 · overhead beyond the probe 49 · probe 30 ms @ that moment (run median 33) · link 1 ms → convex/network (function 30.3 ms and page 17.6 ms normal)',
+      '128 = page 18 · to Convex ≈21 · our function 30 (contacts/mutations:setAcquisition) · re-runs getRoot 10 (critical 10) · back ≈46 · Transition 13 · overhead beyond the probe 49 · probe 30 ms @ that moment (run median 33) · link 1 ms · our share 58 → unclear (function 30.3 ms and page 17.6 ms normal, no evidence elsewhere)',
     )
   })
 
@@ -86,10 +72,14 @@ describe('blame on recorded samples', () => {
   })
 
   test('a stall the probe missed: Convex slow on the other instances too, convex/network', () => {
+    // The recorded stall (run tn9vwfeq), with this sample's own function
+    // at a normal 20 ms instead of the 141.9 it took: the rest of the pool
+    // is what shows the stall.
     const c = cases.stallElsewhere
-    const b = run(c)
+    const calls = c.calls.map((x) => (x.ms === 141.9 ? { ...x, ms: 20 } : x))
+    const b = blame(c.sample, { calls, probes: c.probes })
     expect(c.sample.fns).toEqual(['contacts/mutations:saveIdentifierType'])
-    expect(b.fnMs).toBe(141.9)
+    expect(b.fnMs).toBe(20)
     expect(b.probeMs).toEqual([40.2])
     expect(b.slowElsewhere).toEqual(['qc-2', 'qc-3'])
     expect(b.verdict).toBe('convex/network')
@@ -97,12 +87,12 @@ describe('blame on recorded samples', () => {
   })
 
   test('seeds, bulk functions and auth are slow by design: no spell', () => {
-    const c = cases.slowFunction
+    const c = cases.normal
     const at = c.sample.at + 50
     const calls: Array<ServerCall> = [
       ...c.calls,
       {
-        instance: 'qc-2',
+        instance: 'qc-1',
         at,
         fn: 'platform/qcSeed:fixture',
         type: 'Mutation',
@@ -127,16 +117,16 @@ describe('blame on recorded samples', () => {
     ]
     const b = blame(c.sample, { calls, probes: c.probes })
     expect(b.slowElsewhere).toEqual([])
-    expect(b.verdict).toBe('ours')
+    expect(b.verdict).toBe('unclear')
     // One other instance slow is not yet a spell.
     calls.push({
-      instance: 'qc-2',
+      instance: 'qc-1',
       at,
       fn: 'contacts/queries:list',
       type: 'Query',
       ms: 120,
     })
-    expect(blame(c.sample, { calls, probes: c.probes }).verdict).toBe('ours')
+    expect(blame(c.sample, { calls, probes: c.probes }).verdict).toBe('unclear')
     // Two instances, one function: a regression of that function, no spell.
     calls.push({
       instance: 'qc-3',
@@ -145,7 +135,7 @@ describe('blame on recorded samples', () => {
       type: 'Query',
       ms: 120,
     })
-    expect(blame(c.sample, { calls, probes: c.probes }).verdict).toBe('ours')
+    expect(blame(c.sample, { calls, probes: c.probes }).verdict).toBe('unclear')
     calls.push({
       instance: 'qc-3',
       at,
@@ -183,14 +173,79 @@ describe('blame on recorded samples', () => {
     expect(b.why).toBe('function 150 ms (≥ 50)')
   })
 
-  test('the elevated probe wins over a slow function at that moment', () => {
+  // Review M1 (qc/ours): ours evidence always wins. A stall, a slow probe
+  // or a spell doesn't make our page, function or re-runs slower.
+  test('a slow function during an elevated probe is ours', () => {
     const c = cases.slowSpell
     const calls = c.calls.map((x) =>
-      x.fn === 'sources/mutations:create' ? { ...x, ms: 90 } : x,
+      x.fn === 'sources/mutations:create' ? { ...x, ms: 60 } : x,
     )
     const b = blame(c.sample, { calls, probes: c.probes })
-    expect(b.fnMs).toBe(90)
-    expect(b.verdict).toBe('convex/network')
+    expect(b.probeMs).toContain(83.7)
+    expect(b.fnMs).toBe(60)
+    expect(b.verdict).toBe('ours')
+  })
+
+  test('a slow function during a spell is ours', () => {
+    const c = cases.stallElsewhere
+    const b = run(c)
+    expect(b.slowElsewhere).toEqual(['qc-2', 'qc-3'])
+    // Its own saveIdentifierType ran 141.9 ms in the stall: still ours.
+    expect(b.fnMs).toBe(141.9)
+    expect(b.verdict).toBe('ours')
+  })
+
+  test('a slow function during a link stall is ours', () => {
+    const c = cases.linkStall
+    const calls = c.calls.map((x) =>
+      x.fn === 'contacts/notes:setArchived' ? { ...x, ms: 55 } : x,
+    )
+    const b = blame(c.sample, { calls, probes: c.probes })
+    expect(b.linkMs).toBe(192)
+    expect(b.verdict).toBe('ours')
+  })
+
+  test('a slow page during a link stall is ours', () => {
+    const c = cases.linkStall
+    const b = run(c, { endMs: c.sample.transitionMs! + 100 })
+    expect(b.pageMs).toBeGreaterThanOrEqual(40)
+    expect(b.verdict).toBe('ours')
+  })
+
+  test('slow re-runs during a spell are ours', () => {
+    const c = cases.normal
+    const getRoot = c.calls.find(
+      (x) => x.fn === 'contacts/queries:getRoot' && x.at === 1792608853039,
+    )!
+    const calls: Array<ServerCall> = [
+      ...c.calls.filter((x) => x !== getRoot),
+      { ...getRoot, ms: 55, at: getRoot.at },
+      ...['qc-1', 'qc-3'].flatMap((instance) =>
+        ['a:x', 'a:y'].map((fn) => ({
+          instance,
+          at: c.sample.at + 60,
+          fn,
+          type: 'Query',
+          ms: 150,
+        })),
+      ),
+    ]
+    // getRoot's start moves before the commit at 55 ms: start it after.
+    const b = blame({ ...c.sample, commitMs: 0 }, { calls, probes: c.probes })
+    expect(b.slowElsewhere).toEqual(['qc-1', 'qc-3'])
+    expect(b.rerunCriticalMs).toBeGreaterThanOrEqual(50)
+    expect(b.verdict).toBe('ours')
+  })
+
+  test('an unmatched function during a link stall is unclear: ours not known normal', () => {
+    const b = run(cases.linkStall, { fns: undefined })
+    expect(b.verdict).toBe('unclear')
+  })
+
+  test('unknown re-runs during a link stall are unclear', () => {
+    const b = run(cases.linkStall, { subs: undefined })
+    expect(b.verdict).toBe('unclear')
+    expect(b.why).toMatch(/re-runs unknown/)
   })
 })
 
@@ -276,6 +331,103 @@ describe('matching the function', () => {
       pageMs: 12,
       verdict: 'ours',
     })
+  })
+})
+
+describe('our share: page + function + the re-runs the sample waited for', () => {
+  // The recorded setAcquisition save: commit at +53, Transition at +111.8.
+  // On its instance getRoot re-ran in between (9.9 ms); history completed
+  // after the Transition; the rest of the window is other instances.
+  const c = cases.normal
+  const subs = [
+    'contacts/queries:getRoot',
+    'contacts/queries:history',
+    'contacts/queries:getIdentifiers',
+    'sources/queries:picker',
+  ]
+
+  test("the page's re-run queries are attributed and the slowest counts", () => {
+    const b = run(c, { subs })
+    expect(b.reruns).toEqual([{ fn: 'contacts/queries:getRoot', ms: 9.9 }])
+    expect(b.rerunCriticalMs).toBe(9.9)
+    expect(b.ourShareMs).toBe(57.8) // 17.6 page + 30.3 mutation + 9.9
+  })
+
+  test("a query the page isn't subscribed to is not ours to wait for", () => {
+    const b = run(c, { subs: ['contacts/queries:history'] })
+    expect(b.reruns).toEqual([])
+    expect(b.ourShareMs).toBe(47.9)
+  })
+
+  test('no subscriptions recorded: no re-runs and no share, never understated', () => {
+    const b = run(c, { subs: undefined })
+    expect(b.reruns).toBeNull()
+    expect(b.ourShareMs).toBeNull()
+  })
+
+  test('critical path: the union of the re-runs, overlaps counted once', () => {
+    const commit = c.sample.at + c.sample.commitMs!
+    const q = (fn: string, start: number, ms: number): ServerCall => ({
+      instance: 'qc-2',
+      at: commit + start + ms,
+      fn,
+      type: 'Query',
+      ms,
+    })
+    const calls = [
+      ...c.calls.filter((x) => x.type !== 'Query'),
+      q('a:one', 5, 12), // [5, 17]
+      q('a:two', 8, 10), // [8, 18], overlaps one
+      q('a:three', 30, 6), // [30, 36]
+      q('a:early', -40, 30), // started before the commit: not a re-run
+      q('a:other', 5, 20), // not subscribed
+    ]
+    const b = blame(
+      { ...c.sample, subs: ['a:one', 'a:two', 'a:three', 'a:early'] },
+      { calls, probes: c.probes },
+    )
+    expect(b.reruns!.map((r) => r.fn)).toEqual(['a:one', 'a:two', 'a:three'])
+    // one and two overlap ([5, 18], 13); three runs after them (6).
+    expect(b.rerunCriticalMs).toBe(19)
+    expect(b.rerunMaxMs).toBe(12)
+    expect(b.rerunUnionMs).toBe(19)
+    expect(b.rerunSumMs).toBe(28)
+    expect(b.ourShareMs).toBe(r1(17.6 + 30.3 + 19))
+  })
+
+  test('a chain of overlaps counts all it covers (review L2: A, B, C)', () => {
+    const commit = c.sample.at + c.sample.commitMs!
+    const q = (fn: string, start: number, ms: number): ServerCall => ({
+      instance: 'qc-2',
+      at: commit + start + ms,
+      fn,
+      type: 'Query',
+      ms,
+    })
+    // A [0,10], B [5,25], C [15,30]: covered 30; the slowest is only 20.
+    const calls = [
+      ...c.calls.filter((x) => x.type !== 'Query'),
+      q('a:A', 0, 10),
+      q('a:B', 5, 20),
+      q('a:C', 15, 15),
+    ]
+    const b = blame(
+      {
+        ...c.sample,
+        transitionMs: c.sample.commitMs! + 40,
+        subs: ['a:A', 'a:B', 'a:C'],
+      },
+      { calls, probes: c.probes },
+    )
+    expect(b.rerunMaxMs).toBe(20)
+    expect(b.rerunCriticalMs).toBe(30)
+  })
+
+  test('the mutation itself is never a re-run', () => {
+    const b = run(c, { subs: [...subs, 'contacts/mutations:setAcquisition'] })
+    expect(b.reruns!.map((r) => r.fn)).not.toContain(
+      'contacts/mutations:setAcquisition',
+    )
   })
 })
 
