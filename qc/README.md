@@ -208,11 +208,11 @@ over budget is blamed live in the worker (`qc/live.ts`, `qc/judge.ts`):
   the gateway stopped answering ICMP), the link counts as not watched
   for that sample, never as a stall; an echo never answered counts as
   lost until the next reply, at most 1 s.
-- **Without the run's data** (no log collector, no link monitor) a slow
-  sample is usually `unclear` and fails as before; but the worker's own
-  RTT probe is always there, so an elevated probe can still give
-  `convex/network` and a retry. Each such sample waits out the 8 s
-  catch-up.
+- **Without the run's server data** (no log collector) a slow sample
+  fails exactly as before: the streams never catch up, so every attempt
+  is `unclear`, and even caught up its function would be unmatched,
+  which comes before any probe or link evidence. The only difference is
+  the wait: each such sample waits out the 8 s catch-up first.
 - **Reading it:** the table's last column adds `(1 passed on retry, …)`;
   a `JUDGED` list after `BLAME` shows each judged sample's attempts,
   verdicts and our share; and next to the failures,
