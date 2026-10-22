@@ -271,10 +271,14 @@ async function contactsWithIdentifier(
 /** The most rows `list` returns, and `list` asks for a page. */
 export const LIST_LIMIT = 100
 /**
- * The most rows one `list` page reads. A page pinned to a range that has
- * grown past it comes back incomplete, marked `SplitRequired`.
+ * The most rows one `list` page shows. A page pinned to a range that has
+ * grown past it comes back marked `SplitRequired`, with no rows, for the
+ * client to split. Just over a page: each row shown costs about 0.8 ms on
+ * a dev deployment (its first email and its tags, two index reads), so a
+ * page that grew by more than a few rows would break the 100 ms server
+ * rule (qc/README.md); its halves don't (QC "Load more", 2026-10-23).
  */
-export const LIST_PAGE_MAX_ROWS = 2 * LIST_LIMIT
+export const LIST_PAGE_MAX_ROWS = LIST_LIMIT + 10
 /**
  * How many matching contacts a tag-filtered `list` collects (then sorts by
  * name), reading assignments in the order they were made.
@@ -602,9 +606,10 @@ export const list = tenantQuery({
     const opts = {
       ...paginationOpts,
       numItems: Math.min(paginationOpts.numItems, LIST_LIMIT),
-      // A page pinned with `endCursor` reads its whole range however many
-      // rows have arrived in it since; past this it stops short with
-      // `SplitRequired` and a `splitCursor`, and the client splits it.
+      // Asks a page pinned with `endCursor` to stop short past this, with
+      // `SplitRequired` and a `splitCursor`. convex-test does; the real
+      // backend reads the whole pinned range regardless, so `tooBig` below
+      // makes the same answer of an oversized page.
       maximumRowsRead: LIST_PAGE_MAX_ROWS,
     }
     let result: { page: Array<Doc<'contacts'>> } & Omit<
@@ -617,6 +622,7 @@ export const list = tenantQuery({
           ? browseSource(ctx.db, source, includeArchived)
           : browseField(ctx.db, byField[0], includeArchived)
       ).paginate(opts)
+      if (tooBig(hits)) return toSplit(hits)
       const fieldsMatch = matchesFields(byField)
       const found = await Promise.all(
         hits.page
@@ -626,6 +632,7 @@ export const list = tenantQuery({
       result = { ...hits, page: found.filter((c) => c !== null) }
     } else {
       result = await browse(ctx.db, { kind, includeArchived }).paginate(opts)
+      if (tooBig(result)) return toSplit(result)
     }
     return {
       ...result,
@@ -635,6 +642,31 @@ export const list = tenantQuery({
     }
   },
 })
+
+/**
+ * A page to split rather than show: cut short (`SplitRequired`), or a
+ * pinned range that has grown past LIST_PAGE_MAX_ROWS, which the real
+ * backend returns in full. Either way only with a `splitCursor` to split
+ * at; without one the page is shown as it is.
+ */
+export function tooBig(
+  p: Omit<PaginationResult<unknown>, 'page'> & { page: Array<unknown> },
+) {
+  return (
+    !!p.splitCursor &&
+    (p.pageStatus === 'SplitRequired' || p.page.length > LIST_PAGE_MAX_ROWS)
+  )
+}
+
+/**
+ * A page the client splits at its `splitCursor` (paged-list.ts) and never
+ * shows: no rows, so none is shaped (two reads each, ~0.8 ms a row).
+ */
+function toSplit(
+  p: Omit<PaginationResult<unknown>, 'page'>,
+): Omit<PaginationResult<unknown>, 'page'> & { page: Array<never> } {
+  return { ...p, page: [], pageStatus: 'SplitRequired' }
+}
 
 /**
  * The contacts list with search text or a tag filter: one window of at

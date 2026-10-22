@@ -125,19 +125,71 @@ test('a page marked SplitRequired holds the list until its halves replace it', a
   )
 })
 
-test('a page marked SplitRecommended keeps showing while its halves load', async () => {
+test("SplitRecommended splits nothing: page 0 keeps the hold's args", async () => {
+  // The real backend marks every full page so (QC "Load more", 2026-10-23).
   server[at(null)] = {
     page: [row('a'), row('b')],
-    isDone: true,
-    continueCursor: 'end',
+    isDone: false,
+    continueCursor: 'c1',
     splitCursor: 's',
     pageStatus: 'SplitRecommended',
   }
   await render()
-  expect(got).toMatchObject({ rows: [row('a'), row('b')], status: 'done' })
-  expect(asked()).toEqual(
-    expect.arrayContaining([at(null), at(null, 's'), at('s', 'end')]),
+  expect(got).toMatchObject({ rows: [row('a'), row('b')], status: 'more' })
+  expect(asked()).toEqual([at(null)])
+  expect(JSON.stringify(lastRequest()[at(null)].args)).toBe(
+    JSON.stringify(firstPage(filters)),
   )
+  // Nor a pinned page.
+  await act(() => got.loadMore())
+  server[at(null, 'c1')] = server[at(null)]
+  server[at('c1')] = {
+    page: [row('c')],
+    isDone: true,
+    continueCursor: 'c2',
+    splitCursor: 't',
+    pageStatus: 'SplitRecommended',
+  }
+  await render()
+  await render()
+  expect(got).toMatchObject({
+    rows: [row('a'), row('b'), row('c')],
+    status: 'done',
+  })
+  expect(asked().sort()).toEqual([at(null, 'c1'), at('c1')].sort())
+})
+
+test('an empty SplitRequired page (list grew past what it shapes) splits', async () => {
+  server[at(null)] = { page: [row('a')], isDone: false, continueCursor: 'c1' }
+  await render()
+  await act(() => got.loadMore())
+  server[at('c1')] = { page: [row('z')], isDone: true, continueCursor: 'c2' }
+  // `list` answers a pinned page grown past LIST_PAGE_MAX_ROWS so.
+  server[at(null, 'c1')] = {
+    page: [],
+    isDone: false,
+    continueCursor: 'c1',
+    splitCursor: 's',
+    pageStatus: 'SplitRequired',
+  }
+  await render()
+  // Page 0's last rows are not shown in its place: it holds the list.
+  expect(got).toMatchObject({ rows: [], status: 'loading' })
+  server[at(null, 's')] = {
+    page: [row('a'), row('b')],
+    isDone: false,
+    continueCursor: 's',
+  }
+  server[at('s', 'c1')] = {
+    page: [row('c')],
+    isDone: false,
+    continueCursor: 'c1',
+  }
+  await render()
+  expect(got).toMatchObject({
+    rows: [row('a'), row('b'), row('c'), row('z')],
+    status: 'done',
+  })
 })
 
 test('new filters start again from one page; skip asks for nothing', async () => {

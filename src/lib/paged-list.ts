@@ -11,10 +11,11 @@ import { api } from '../../convex/_generated/api'
  * starts at the one before's `continueCursor`, and once it is asked for,
  * the page before is pinned to end there (`endCursor`), so pages stay
  * contiguous while rows come and go. A pinned page whose range grows is
- * split in two at its `splitCursor`, as `usePaginatedQuery` does: the old
- * page stays on screen until both halves have loaded, except one marked
- * `SplitRequired`, which is incomplete, so the list stops there (and says
- * it is loading) until the halves arrive.
+ * split in two at its `splitCursor`: `list` answers `SplitRequired`, with
+ * no rows, once it holds more than a page and a bit (the backend's own
+ * `SplitRecommended` comes on every full page, so it splits nothing). The
+ * list stops at such a page (and says it is loading) until both halves
+ * arrive.
  */
 
 type ListArgs = FunctionArgs<typeof api.contacts.queries.list>
@@ -169,8 +170,11 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
       next.push(s)
     } else if (
       page?.splitCursor &&
-      (page.pageStatus === 'SplitRecommended' ||
-        page.pageStatus === 'SplitRequired' ||
+      // Not on SplitRecommended alone: the backend says it of every
+      // 100-row page, and page 0 must keep the hold's args (list-hold.ts).
+      // `list` itself answers SplitRequired, with no rows, for a page grown
+      // past what it shapes.
+      (page.pageStatus === 'SplitRequired' ||
         page.page.length > 2 * LIST_PAGE_SIZE)
     ) {
       next.push({

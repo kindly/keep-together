@@ -3,7 +3,12 @@ import type { Doc, Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
 import { setup } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
-import { LIST_LIMIT, LIST_PAGE_MAX_ROWS, LIST_SCAN_CAP } from './queries'
+import {
+  LIST_LIMIT,
+  LIST_PAGE_MAX_ROWS,
+  LIST_SCAN_CAP,
+  tooBig,
+} from './queries'
 
 // A filtered contacts list never says "none" while matching contacts
 // exist: the window or page must not fill with rows the filter then hides.
@@ -351,8 +356,9 @@ test('a pinned page whose range has grown comes back split, not oversized', asyn
   await bulk(f.a, LIST_PAGE_MAX_ROWS + 50, 'Mmm')
   await bulk(f.b, 3, 'Mmm')
   const pinned = await page(first.continueCursor, second.continueCursor)
-  expect(pinned.page.length).toBeLessThanOrEqual(LIST_PAGE_MAX_ROWS)
   expect(pinned.pageStatus).toBe('SplitRequired')
+  // Never shown, so not shaped: no rows at all.
+  expect(pinned.page).toEqual([])
   // Its halves, each pinned, hold the whole range between them.
   const a = await page(first.continueCursor, pinned.splitCursor!)
   const b = await page(pinned.splitCursor!, second.continueCursor)
@@ -360,4 +366,26 @@ test('a pinned page whose range has grown comes back split, not oversized', asyn
   expect(a.pageStatus ?? null).not.toBe('SplitRequired')
   expect(names).toHaveLength(LIST_PAGE_MAX_ROWS + 52)
   expect(names.slice(-2)).toEqual(['Zed 0000', 'Zed 0001'])
+})
+
+test('a pinned page the backend returned in full, past the cap, is split unshaped', () => {
+  // The real backend ignores maximumRowsRead once endCursor is set: it
+  // returns the whole range, marked SplitRecommended (QC "Load more").
+  const page = (n: number, more: object = {}) => ({
+    page: Array.from({ length: n }, () => ({})),
+    isDone: false,
+    continueCursor: 'c',
+    splitCursor: 's',
+    pageStatus: 'SplitRecommended' as const,
+    ...more,
+  })
+  expect(tooBig(page(LIST_PAGE_MAX_ROWS + 1))).toBe(true)
+  // A full page is shown: every page of 100 comes back SplitRecommended.
+  expect(tooBig(page(LIST_LIMIT))).toBe(false)
+  expect(tooBig(page(LIST_PAGE_MAX_ROWS))).toBe(false)
+  // Nowhere to split: shown as it is.
+  expect(tooBig(page(LIST_PAGE_MAX_ROWS + 1, { splitCursor: null }))).toBe(
+    false,
+  )
+  expect(tooBig(page(0, { pageStatus: 'SplitRequired' }))).toBe(true)
 })

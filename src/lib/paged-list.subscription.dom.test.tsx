@@ -135,6 +135,65 @@ test('a split settles too: SplitRequired, then its halves replace it', async () 
   expect(renders - settled).toBeLessThanOrEqual(2)
 })
 
+test('after Load more, an empty SplitRequired page 0 splits and settles', async () => {
+  server[keyOf({ cursor: null })] = {
+    page: [{ _id: 'a' }],
+    isDone: false,
+    continueCursor: 'c1',
+  }
+  await render()
+  await act(() => got.loadMore())
+  server[keyOf({ cursor: 'c1' })] = {
+    page: [{ _id: 'z' }],
+    isDone: true,
+    continueCursor: 'c2',
+  }
+  // Pinned page 0 grew past what `list` shapes: no rows, split here.
+  server[keyOf({ cursor: null, endCursor: 'c1' })] = {
+    page: [],
+    isDone: false,
+    continueCursor: 'c1',
+    splitCursor: 's',
+    pageStatus: 'SplitRequired',
+  } as Result
+  await push()
+  expect(got).toMatchObject({ rows: [], status: 'loading' })
+  server[keyOf({ cursor: null, endCursor: 's' })] = {
+    page: [{ _id: 'a' }, { _id: 'b' }],
+    isDone: false,
+    continueCursor: 's',
+  }
+  server[keyOf({ cursor: 's', endCursor: 'c1' })] = {
+    page: [{ _id: 'c' }],
+    isDone: false,
+    continueCursor: 'c1',
+  }
+  await push()
+  expect(got).toMatchObject({
+    rows: [{ _id: 'a' }, { _id: 'b' }, { _id: 'c' }, { _id: 'z' }],
+    status: 'done',
+  })
+  const settled = renders
+  await render()
+  expect(renders - settled).toBeLessThanOrEqual(2)
+})
+
+test('a full page marked SplitRecommended settles unsplit', async () => {
+  server[keyOf({ cursor: null })] = {
+    page: [{ _id: 'a' }],
+    isDone: false,
+    continueCursor: 'c1',
+    splitCursor: 's',
+    pageStatus: 'SplitRecommended',
+  } as Result
+  await render()
+  expect(got).toMatchObject({ rows: [{ _id: 'a' }], status: 'more' })
+  const settled = renders
+  await render()
+  await push()
+  expect(renders - settled).toBeLessThanOrEqual(3)
+})
+
 test('field filters built afresh each render still settle', async () => {
   // The contacts page builds its field filters from state on every render:
   // a new array of new objects each time, equal in value.

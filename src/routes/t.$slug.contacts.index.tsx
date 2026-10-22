@@ -1,7 +1,7 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
-import { useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { BULK_TAG_LIMIT } from '../../convex/contacts/rules'
@@ -11,6 +11,7 @@ import type { FieldPick } from '../lib/field-filters'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
 import { holdList, releaseList } from '../lib/list-hold'
 import { usePagedList } from '../lib/paged-list'
+import type { ListRow } from '../lib/paged-list'
 import {
   BulkFieldControls,
   BulkFieldResult,
@@ -132,18 +133,26 @@ function ContactList() {
     tenantId: tenant._id,
     includeInactive: true,
   })
-  const tagName = new Map((tags ?? []).map((t) => [t._id as string, t]))
+  // Kept while their queries are, so unchanged rows skip re-rendering.
+  const tagName = useMemo(
+    () => new Map((tags ?? []).map((t) => [t._id as string, t])),
+    [tags],
+  )
   // Each option's chip: its field's label and its own, read live.
-  const chipOf = new Map(
-    (fields ?? []).flatMap((f) =>
-      f.options.map((o) => [
-        o._id as string,
-        {
-          text: `${f.label}: ${o.label}`,
-          active: f.isActive && o.isActive,
-        },
-      ]),
-    ),
+  const chipOf = useMemo(
+    () =>
+      new Map(
+        (fields ?? []).flatMap((f) =>
+          f.options.map((o) => [
+            o._id as string,
+            {
+              text: `${f.label}: ${o.label}`,
+              active: f.isActive && o.isActive,
+            },
+          ]),
+        ),
+      ),
+    [fields],
   )
 
   const [selected, setSelected] = useState<ReadonlySet<Id<'contacts'>>>(
@@ -155,13 +164,16 @@ function ContactList() {
     contacts !== undefined &&
     contacts.length > 0 &&
     chosen.length === contacts.length
-  const toggle = (id: Id<'contacts'>) =>
-    setSelected((s) => {
-      const next = new Set(s)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+  const toggle = useCallback(
+    (id: Id<'contacts'>) =>
+      setSelected((s) => {
+        const next = new Set(s)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      }),
+    [],
+  )
 
   return (
     <main className="mx-auto max-w-5xl p-6">
@@ -307,56 +319,16 @@ function ContactList() {
       ) : (
         <ul className="mt-3 divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
           {contacts.map((c) => (
-            <li key={c._id} className="flex items-center">
-              {canWrite && (
-                <input
-                  type="checkbox"
-                  aria-label={`select ${c.displayName}`}
-                  checked={selected.has(c._id)}
-                  onChange={() => toggle(c._id)}
-                  className="ml-4"
-                />
-              )}
-              <Link
-                to="/t/$slug/contacts/$contactId"
-                params={{ slug: tenant.slug, contactId: c._id }}
-                className="flex flex-1 items-baseline justify-between gap-4 px-4 py-2 hover:bg-neutral-50"
-              >
-                <span>
-                  {c.displayName}
-                  {c.archived && (
-                    <span className="ml-2 rounded bg-neutral-200 px-1.5 text-xs">
-                      archived
-                    </span>
-                  )}
-                  {c.tagIds.map((id) => {
-                    const t = tagName.get(id)
-                    return t ? (
-                      <span
-                        key={id}
-                        className={`ml-2 rounded-full border px-2 text-xs ${t.isActive ? 'border-neutral-300' : 'border-dashed border-neutral-300 text-neutral-500'}`}
-                      >
-                        {t.name}
-                      </span>
-                    ) : null
-                  })}
-                  {c.fieldOptionIds.map((id) => {
-                    const chip = chipOf.get(id)
-                    return chip ? (
-                      <span
-                        key={id}
-                        className={`ml-2 rounded border px-1.5 text-xs ${chip.active ? 'border-sky-200 bg-sky-50 text-sky-900' : 'border-dashed border-neutral-300 text-neutral-500'}`}
-                      >
-                        {chip.text}
-                      </span>
-                    ) : null
-                  })}
-                </span>
-                <span className="text-sm text-neutral-500">
-                  {c.email ?? c.kind}
-                </span>
-              </Link>
-            </li>
+            <ContactRow
+              key={c._id}
+              row={c}
+              slug={tenant.slug}
+              canWrite={canWrite}
+              checked={selected.has(c._id)}
+              onToggle={toggle}
+              tagName={tagName}
+              chipOf={chipOf}
+            />
           ))}
         </ul>
       )}
@@ -373,6 +345,104 @@ function ContactList() {
     </main>
   )
 }
+
+type Chip = { text: string; active: boolean }
+
+/** Equal rows by value: a re-subscribed page brings new objects. */
+function sameRow(a: ListRow, b: ListRow) {
+  return (
+    a._id === b._id &&
+    a.displayName === b.displayName &&
+    a.archived === b.archived &&
+    a.email === b.email &&
+    a.kind === b.kind &&
+    a.tagIds.join() === b.tagIds.join() &&
+    a.fieldOptionIds.join() === b.fieldOptionIds.join()
+  )
+}
+
+/**
+ * One list row. Memoised: Load more adds a page without re-rendering the
+ * rows already shown (QC contacts.loadMore, 2026-10-23).
+ */
+const ContactRow = memo(
+  function ContactRow({
+    row: c,
+    slug,
+    canWrite,
+    checked,
+    onToggle,
+    tagName,
+    chipOf,
+  }: {
+    row: ListRow
+    slug: string
+    canWrite: boolean
+    checked: boolean
+    onToggle: (id: Id<'contacts'>) => void
+    tagName: ReadonlyMap<string, { name: string; isActive: boolean }>
+    chipOf: ReadonlyMap<string, Chip>
+  }) {
+    return (
+      <li className="flex items-center">
+        {canWrite && (
+          <input
+            type="checkbox"
+            aria-label={`select ${c.displayName}`}
+            checked={checked}
+            onChange={() => onToggle(c._id)}
+            className="ml-4"
+          />
+        )}
+        <Link
+          to="/t/$slug/contacts/$contactId"
+          params={{ slug, contactId: c._id }}
+          className="flex flex-1 items-baseline justify-between gap-4 px-4 py-2 hover:bg-neutral-50"
+        >
+          <span>
+            {c.displayName}
+            {c.archived && (
+              <span className="ml-2 rounded bg-neutral-200 px-1.5 text-xs">
+                archived
+              </span>
+            )}
+            {c.tagIds.map((id) => {
+              const t = tagName.get(id)
+              return t ? (
+                <span
+                  key={id}
+                  className={`ml-2 rounded-full border px-2 text-xs ${t.isActive ? 'border-neutral-300' : 'border-dashed border-neutral-300 text-neutral-500'}`}
+                >
+                  {t.name}
+                </span>
+              ) : null
+            })}
+            {c.fieldOptionIds.map((id) => {
+              const chip = chipOf.get(id)
+              return chip ? (
+                <span
+                  key={id}
+                  className={`ml-2 rounded border px-1.5 text-xs ${chip.active ? 'border-sky-200 bg-sky-50 text-sky-900' : 'border-dashed border-neutral-300 text-neutral-500'}`}
+                >
+                  {chip.text}
+                </span>
+              ) : null
+            })}
+          </span>
+          <span className="text-sm text-neutral-500">{c.email ?? c.kind}</span>
+        </Link>
+      </li>
+    )
+  },
+  (a, b) =>
+    sameRow(a.row, b.row) &&
+    a.slug === b.slug &&
+    a.canWrite === b.canWrite &&
+    a.checked === b.checked &&
+    a.onToggle === b.onToggle &&
+    a.tagName === b.tagName &&
+    a.chipOf === b.chipOf,
+)
 
 /**
  * One field's filter: any, "not set", or one of its options (archived ones
