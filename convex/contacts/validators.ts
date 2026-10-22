@@ -5,6 +5,7 @@
 import { v } from 'convex/values'
 import type { ObjectType } from 'convex/values'
 import { channelLabel, contactKind } from '../lib/appSchema'
+import type { fieldValuesFields } from './fieldTypes'
 
 export const detailsFields = {
   clientKey: v.optional(v.string()), // create only; idempotency key
@@ -116,6 +117,7 @@ export type Payloads = {
   identifiers: ObjectType<typeof identifiersFields>
   identifierType: ObjectType<typeof identifierTypeFields>
   acquisition: ObjectType<typeof acquisitionFields>
+  fields: ObjectType<typeof fieldValuesFields>
   relationshipType: ObjectType<typeof relationshipTypeFields>
   relationship: ObjectType<typeof relationshipFields>
   note: ObjectType<typeof noteFields>

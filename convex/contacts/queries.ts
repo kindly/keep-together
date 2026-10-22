@@ -16,8 +16,13 @@ import { matchesAll, parseSearch } from './search'
 import type { AlsoUsedBy } from './warnings'
 import { groupsToRead, toMoments } from './history'
 import { describe } from '../sources/code'
-import { nameIdentifiers } from './view'
+import { nameFieldValues, nameIdentifiers } from './view'
 import type { IdentifierRow } from './view'
+import { fieldsBySlot } from './fieldDefs'
+import { optionIdsOf } from './fieldValues'
+import { invalid, rejected } from '../lib/contracts'
+import { slotFieldName } from '../lib/fieldSlots'
+import type { FieldSlot, SlotFieldName } from '../lib/fieldSlots'
 
 function emailRows(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
   return db
@@ -369,6 +374,100 @@ const SOURCE_INDEX = {
 type Kind = Doc<'contacts'>['kind']
 
 /**
+ * The contacts list's field filter: one field's option, or `null` for
+ * "not set". Several combine (all must hold): the first is the index range
+ * while browsing, the rest are checked per row (g1q10).
+ *
+ * Known weakness (review L4, left as is): the range is the first filter
+ * even when it is "not set", which usually matches most contacts. Then
+ * "not set + one option" reads mostly rows the second filter drops: `list`
+ * pages come back short and `search` may stop at LIST_SCAN_CAP
+ * (`tooBroad`). Preferring a set value as the range would fix it; for now
+ * the UI should put set values first.
+ */
+const fieldFilter = v.object({
+  fieldId: v.id('contactFields'),
+  optionId: v.union(v.id('contactFieldOptions'), v.null()),
+})
+
+/** A field filter resolved to the slot it reads; `undefined` = not set. */
+type SlotFilter = {
+  slot: SlotFieldName
+  optionId: Id<'contactFieldOptions'> | undefined
+}
+
+/**
+ * Field filters, checked and resolved to slots. The field must be this
+ * tenant's and hold a slot, the option must be its own, and each field
+ * appears once: anything else is refused, not silently matched against
+ * nothing (another tenant's ids read as null through the scoped db).
+ */
+async function slotFilters(
+  db: ScopedDatabaseReader,
+  filters: Array<Infer<typeof fieldFilter>> | undefined,
+): Promise<Array<SlotFilter>> {
+  if (!filters?.length) return []
+  if (new Set(filters.map((f) => f.fieldId)).size !== filters.length) {
+    throw invalid([
+      { field: 'fields', message: 'Filter each field at most once' },
+    ])
+  }
+  return Promise.all(
+    filters.map(async ({ fieldId, optionId }) => {
+      const [field, option] = await Promise.all([
+        db.get(fieldId),
+        optionId ? db.get(optionId) : null,
+      ])
+      if (!field || field.slot === undefined) {
+        throw rejected('unknown_field', 'That field does not exist')
+      }
+      if (optionId && option?.fieldId !== fieldId) {
+        throw rejected(
+          'unknown_option',
+          `That option is not one of ${field.label}'s`,
+        )
+      }
+      return {
+        slot: slotFieldName(field.slot as FieldSlot),
+        optionId: optionId ?? undefined,
+      }
+    }),
+  )
+}
+
+/** Whether a contact or its `contactSearch` row passes every field filter. */
+const matchesFields =
+  (filters: Array<SlotFilter>) =>
+  (row: Partial<Record<SlotFieldName, Id<'contactFieldOptions'>>>) =>
+    filters.every((f) => row[f.slot] === f.optionId)
+
+/**
+ * Field filters the search index holds; the rest are checked per row. A
+ * search query takes at most 8 filters, and tenant, archived, kind and
+ * source can take 4 of them.
+ */
+const SEARCH_INDEX_FIELD_FILTERS = 4
+
+/**
+ * `browse` under a field filter: `contactSearch` rows in name order, the
+ * field's value (and archived) in the range. Other filters are the
+ * caller's, per row.
+ */
+function browseField(
+  db: ScopedDatabaseReader,
+  filter: SlotFilter,
+  includeArchived?: boolean,
+) {
+  const rows = db.query('contactSearch')
+  const { slot, optionId } = filter
+  return includeArchived
+    ? rows.withIndex(`by_tenant_${slot}_sort`, (q) => q.eq(slot, optionId))
+    : rows.withIndex(`by_tenant_${slot}_archived_sort`, (q) =>
+        q.eq(slot, optionId).eq('archived', false),
+      )
+}
+
+/**
  * The contacts a browse (no search text, no tag) shows, in name order,
  * with archived and kind in the index range: nothing read is then hidden,
  * so a window or page never fills with rows that don't show.
@@ -432,7 +531,11 @@ function underSource(db: ScopedDatabaseReader, source: SourceFilter) {
   }
 }
 
-/** One contacts-list row: a contact with its first email and tag ids. */
+/**
+ * One contacts-list row: a contact with its first email, tag ids and
+ * field values (option ids, in slot order; labels come from the field
+ * definitions, so a rename shows without a write here).
+ */
 async function listRow(
   db: ScopedDatabaseReader,
   c: Doc<'contacts'>,
@@ -453,6 +556,7 @@ async function listRow(
     archived: c.archived,
     email: email?.address ?? null,
     tagIds,
+    fieldOptionIds: optionIdsOf(c),
   }
 }
 
@@ -469,23 +573,32 @@ async function tagIdsOf(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
  * The contacts list while browsing (no search text, no tag), a page at a
  * time in name order, at most LIST_LIMIT rows a page; archived hidden
  * unless asked, optionally one kind and one part of a source code
- * (`source`: a category, detail or version). Each row carries its tag ids
- * (names come from `tags`).
+ * (`source`: a category, detail or version), and any number of dropdown
+ * field values (`fields`, each an option or "not set"). Each row carries
+ * its tag ids (names come from `tags`) and its field values.
  *
  * Archived and kind sit in the `contacts` index range, and archived in a
  * source filter's `contactSearch` range, so those pages are full. A kind
  * under a source is checked per row, so such a page can be short, or even
  * empty, while more follow: only `isDone` ends the list, and the UI says
- * "none" only then. Search text or a tag filter goes to `search`.
+ * "none" only then. With no source, the first field filter is the range
+ * (its `contactSearch` index pair, archived included); a kind and the
+ * other field filters are checked per row, as is every field filter under
+ * a source. Search text or a tag filter goes to `search`.
  */
 export const list = tenantQuery({
   args: {
     includeArchived: v.optional(v.boolean()),
     kind: v.optional(contactKind),
     source: v.optional(sourceFilter),
+    fields: v.optional(v.array(fieldFilter)),
     paginationOpts: paginationOptsValidator,
   },
-  handler: async (ctx, { includeArchived, kind, source, paginationOpts }) => {
+  handler: async (
+    ctx,
+    { includeArchived, kind, source, fields, paginationOpts },
+  ) => {
+    const byField = await slotFilters(ctx.db, fields)
     const opts = {
       ...paginationOpts,
       numItems: Math.min(paginationOpts.numItems, LIST_LIMIT),
@@ -498,13 +611,16 @@ export const list = tenantQuery({
       PaginationResult<unknown>,
       'page'
     >
-    if (source) {
-      const hits = await browseSource(ctx.db, source, includeArchived).paginate(
-        opts,
-      )
+    if (source || byField.length) {
+      const hits = await (
+        source
+          ? browseSource(ctx.db, source, includeArchived)
+          : browseField(ctx.db, byField[0], includeArchived)
+      ).paginate(opts)
+      const fieldsMatch = matchesFields(byField)
       const found = await Promise.all(
         hits.page
-          .filter((h) => !kind || h.kind === kind)
+          .filter((h) => (!kind || h.kind === kind) && fieldsMatch(h))
           .map((h) => ctx.db.get(h.contactId)),
       )
       result = { ...hits, page: found.filter((c) => c !== null) }
@@ -531,11 +647,13 @@ export const list = tenantQuery({
  * first: an email address, then an identifier, then a phone number
  * (normalised), then the rest in Convex's relevance order. That order
  * can't be resumed from a cursor, hence one window. The search index holds
- * the kind, archived and source filters; a tag filter checks the
- * LIST_SEARCH_SCAN hits read.
+ * the kind, archived and source filters and up to
+ * SEARCH_INDEX_FIELD_FILTERS field values; a tag filter, "not set" and any
+ * further field filters check the LIST_SEARCH_SCAN hits read.
  *
  * Without search text, the index holds every filter it can (see `browse`
- * and `browseSource`); what it can't, a tag or a kind under a source, is
+ * `browseSource` and `browseField`); what it can't, a tag, a kind under a
+ * source or field, or a second field filter, is
  * checked row by row as the read goes on (`scan`) until enough match or
  * LIST_SCAN_CAP rows have been read. A tag filter alone reads the tag's
  * assignments that way, collecting LIST_TAG_SCAN matches; larger tags page
@@ -554,20 +672,35 @@ export const search = tenantQuery({
     tagId: v.optional(v.id('tags')),
     kind: v.optional(contactKind),
     source: v.optional(sourceFilter),
+    fields: v.optional(v.array(fieldFilter)),
   },
   handler: async (
     ctx,
-    { search: text, includeArchived, tagId, kind, source },
+    { search: text, includeArchived, tagId, kind, source, fields },
   ) => {
     const term = text?.trim()
+    const byField = await slotFilters(ctx.db, fields)
+    const fieldsMatch = matchesFields(byField)
+    // The set values the search index can hold; "not set" is checked per
+    // row with the rest.
+    const indexed = byField
+      .filter((f) => f.optionId !== undefined)
+      .slice(0, SEARCH_INDEX_FIELD_FILTERS)
     // Every contact in `rows` passes every filter, in display order.
     let rows: Array<Doc<'contacts'>>
     // More contacts may match than `rows` holds.
     let truncated: boolean
     // Rows the capped read looked at, for the UI's "none in the first N".
     let checked = 0
-    const fits = (c: { kind: Doc<'contacts'>['kind']; archived: boolean }) =>
-      (!kind || c.kind === kind) && (includeArchived || !c.archived)
+    const fits = (
+      c: {
+        kind: Doc<'contacts'>['kind']
+        archived: boolean
+      } & Partial<Record<SlotFieldName, Id<'contactFieldOptions'>>>,
+    ) =>
+      (!kind || c.kind === kind) &&
+      (includeArchived || !c.archived) &&
+      fieldsMatch(c)
     // A contact's tag ids, read once per call: the tag filter and the row's
     // shape both need them.
     const tagReads = new Map<Id<'contacts'>, Promise<Array<Id<'tags'>>>>()
@@ -590,9 +723,12 @@ export const search = tenantQuery({
                 const s = q.search('text', terms.join(' '))
                 const live = includeArchived ? s : s.eq('archived', false)
                 const ofKind = kind ? live.eq('kind', kind) : live
-                return source
+                let filtered = source
                   ? ofKind.eq(SOURCE_FIELD[source.level], source.id)
                   : ofKind
+                for (const f of indexed)
+                  filtered = filtered.eq(f.slot, f.optionId)
+                return filtered
               })
               .take(LIST_SEARCH_SCAN)
           : Promise.resolve([]),
@@ -602,7 +738,9 @@ export const search = tenantQuery({
       // nothing is `tooBroad`.
       const scanFull = hits.length === LIST_SEARCH_SCAN
       checked = hits.length
-      const matched = hits.filter((h) => matchesAll(h.text, terms))
+      const matched = hits.filter(
+        (h) => matchesAll(h.text, terms) && fieldsMatch(h),
+      )
       const byPhone = phone
         ? matched.filter((h) => h.phones.includes(phone))
         : []
@@ -627,9 +765,11 @@ export const search = tenantQuery({
       const onTag = await Promise.all(all.map((c) => tagged(c._id)))
       rows = all.filter((_, i) => onTag[i])
       truncated = scanFull || rows.length > LIST_LIMIT
-    } else if (source) {
+    } else if (source || byField.length) {
       const read = await scan(
-        browseSource(ctx.db, source, includeArchived),
+        source
+          ? browseSource(ctx.db, source, includeArchived)
+          : browseField(ctx.db, byField[0], includeArchived),
         async (batch) => {
           const live = batch.filter(fits)
           const onTag = await Promise.all(live.map((h) => tagged(h.contactId)))
@@ -692,24 +832,35 @@ async function contactView(
   known?: Doc<'contacts'>,
 ) {
   const emails = emailRows(db, id)
-  const [contact, kids, tagList, identifierList, knownAcquisition] =
+  const [contact, kids, tagList, identifierList, knownAcquisition, bySlot] =
     await Promise.all([
       known ?? db.get(id),
       children(db, id, emails),
       tagsOf(db, id),
       identifiersOf(db, id),
       known && acquisitionOf(db, known.acquisitionCodeId),
+      fieldsBySlot(db),
     ])
   if (!contact) return null
+  const optionIds = optionIdsOf(contact)
+  const [acquisition, options] = await Promise.all([
+    knownAcquisition !== undefined
+      ? knownAcquisition
+      : acquisitionOf(db, contact.acquisitionCodeId),
+    Promise.all(optionIds.map((o) => db.get(o))),
+  ])
+  const optionById = new Map(optionIds.map((o, i) => [o, options[i]]))
   return {
     contact,
     ...kids,
     tags: tagList,
     identifiers: identifierList,
-    acquisition:
-      knownAcquisition !== undefined
-        ? knownAcquisition
-        : await acquisitionOf(db, contact.acquisitionCodeId),
+    acquisition,
+    fields: nameFieldValues(
+      contact,
+      (slot) => bySlot.get(slot),
+      (o) => optionById.get(o),
+    ),
   }
 }
 

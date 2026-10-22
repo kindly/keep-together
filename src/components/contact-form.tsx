@@ -215,7 +215,9 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
     // would wait on its run too.
     history.hold()
     try {
-      const result: SaveResult = await saveForm(args as never)
+      // saveForm also takes the `fields` slice, which this form doesn't
+      // submit yet (dropdown fields step 5), so it never reports on it.
+      const result = (await saveForm(args as never)) as SaveResult
       dispatch({ type: 'saved', submitted, result, at: Date.now() })
     } catch (err) {
       const detail =

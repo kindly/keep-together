@@ -11,6 +11,7 @@ import {
   restoreEntityTo,
 } from '../lib/contracts'
 import type { CommandGroup, ContractCtx, Problem } from '../lib/contracts'
+import type { FieldRestoreNote } from './contracts'
 import { tenantPreferences } from '../lib/lists'
 import { tenantMutation } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
@@ -19,8 +20,11 @@ import {
   acquisition,
   addresses,
   archive,
+  checkFieldValues,
   contactContracts,
+  planFieldRestore,
   details,
+  fieldValues,
   identifierClashes,
   identifierType,
   identifiers,
@@ -29,6 +33,7 @@ import {
   tags,
 } from './contracts'
 import {
+  BULK_FIELD_LIMIT,
   BULK_TAG_LIMIT,
   IDENTIFIER_TYPE_LIMIT,
   normaliseTagName,
@@ -45,6 +50,12 @@ import {
   tagsFields,
 } from './validators'
 import type { Payloads } from './validators'
+import { fieldValuesOf, fieldsBySlot } from './fieldDefs'
+import { fieldValueVerdict, fieldValuesFields } from './fieldTypes'
+import type { FieldValue } from './fieldTypes'
+import { sortValues, withValue } from './fieldValues'
+import { slotFieldName } from '../lib/fieldSlots'
+import type { FieldSlot } from '../lib/fieldSlots'
 
 /**
  * Create a contact, with its acquisition code when the new-contact form
@@ -338,12 +349,148 @@ async function applyBulkTag(
   return { changed: plans.length, group: group.id }
 }
 
+// ── dropdown field values ──────────────────────────────────────────────────
+
+/**
+ * What a change of the contact's field values reads as in history: each
+ * field changed, by its label and its new option's, as they read now
+ * (so history keeps them after a rename). E.g. "Region: North, Type
+ * cleared".
+ */
+async function describeFieldChange(
+  db: ScopedDatabaseReader,
+  before: Array<FieldValue>,
+  after: Array<FieldValue>,
+  bySlot: Map<FieldSlot, Doc<'contactFields'>>,
+): Promise<string> {
+  const was = new Map(before.map((x) => [x.fieldId as string, x.optionId]))
+  const now = new Map(after.map((x) => [x.fieldId as string, x.optionId]))
+  const labels = new Map([...bySlot.values()].map((f) => [f._id, f.label]))
+  const changes = await Promise.all(
+    [...new Set([...was.keys(), ...now.keys()])]
+      .filter((fieldId) => was.get(fieldId) !== now.get(fieldId))
+      .map(async (fieldId) => {
+        const label =
+          labels.get(fieldId as Id<'contactFields'>) ??
+          (await db.get(fieldId as Id<'contactFields'>))?.label ??
+          '?'
+        const optionId = now.get(fieldId)
+        if (!optionId) return `${label} cleared`
+        return `${label}: ${(await db.get(optionId))?.label ?? '?'}`
+      }),
+  )
+  return changes.join(', ')
+}
+
+/**
+ * Set one field to one option (or clear it, `optionId: null`) on a batch
+ * of contacts, as one command group: one `contacts.fields` revision per
+ * contact that changes, none for contacts already in that state. To set,
+ * contacts of a kind the field doesn't apply to are skipped and counted;
+ * a clear clears every holder, whatever its kind. The whole
+ * batch is refused if any contact is unknown, the field is retired, or a
+ * contact would be refused the option (`fieldValueVerdict`: it is another
+ * field's, or archived, or its field is).
+ */
+export const bulkSetField = tenantMutation({
+  args: {
+    contactIds: v.array(v.id('contacts')),
+    fieldId: v.id('contactFields'),
+    optionId: v.union(v.id('contactFieldOptions'), v.null()),
+  },
+  handler: async (ctx, { contactIds, fieldId, optionId }) => {
+    const ids = [...new Set(contactIds)]
+    if (ids.length > BULK_FIELD_LIMIT) {
+      throw invalid([
+        {
+          field: 'contactIds',
+          message: `At most ${BULK_FIELD_LIMIT} contacts per batch`,
+        },
+      ])
+    }
+    // Every read at once: the batch's contacts and the projection rows
+    // the contracts will rebuild are then cached (see saveForm).
+    const [field, option, bySlot, contacts] = await Promise.all([
+      ctx.db.get(fieldId),
+      optionId ? ctx.db.get(optionId) : null,
+      fieldsBySlot(ctx.db),
+      Promise.all(ids.map((id) => ctx.db.get(id))),
+      Promise.all(
+        ids.map((id) =>
+          ctx.db
+            .query('contactSearch')
+            .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
+            .unique(),
+        ),
+      ),
+    ])
+    // Another tenant's ids read as null through the scoped db.
+    if (!field) throw rejected('unknown_field', 'That field does not exist')
+    if (field.slot === undefined) {
+      throw rejected('retired_field', `${field.label} has been retired`)
+    }
+    const slot = slotFieldName(field.slot as FieldSlot)
+    let skipped = 0
+    const plans: Array<{
+      id: Id<'contacts'>
+      expected: number
+      values: Array<FieldValue>
+    }> = []
+    for (const contact of contacts) {
+      if (!contact) throw rejected('unknown_contact', 'Contact must exist')
+      const current = contact[slot]
+      if ((current ?? null) === optionId) continue
+      // Only setting is kind-checked: a clear reaches every holder, even
+      // one the field no longer applies to.
+      if (optionId && !field.appliesTo.includes(contact.kind)) {
+        skipped++
+        continue
+      }
+      if (optionId) {
+        // The contract's own rule, checked up front so a refusal names
+        // the batch, not one contact in it.
+        const verdict = fieldValueVerdict(
+          field,
+          option,
+          contact.kind,
+          current,
+          'save',
+        )
+        // In save mode every refusal is a reason (never a skip).
+        if (!verdict.ok && verdict.skip === null) {
+          throw rejected(verdict.reason, verdict.message)
+        }
+      }
+      plans.push({
+        id: contact._id,
+        expected: contact.fieldsVersion ?? 0,
+        values: withValue(fieldValuesOf(contact, bySlot), fieldId, optionId),
+      })
+    }
+    if (plans.length === 0) return { changed: 0, skipped, group: null }
+    const group = await commandGroup(
+      ctx,
+      option ? `set ${field.label} to ${option.label}` : `clear ${field.label}`,
+    )
+    for (const plan of plans) {
+      await executeContract(
+        ctx,
+        fieldValues,
+        { values: plan.values },
+        { entityId: plan.id, expected: plan.expected, source: 'ui', group },
+      )
+    }
+    return { changed: plans.length, skipped, group: group.id }
+  },
+})
+
 // ── the form save (an action over the content slices) ─────────────────────
 
 const slice = <TFields extends PropertyValidators>(fields: TFields) =>
   v.optional(v.object({ expected: v.number(), ...fields }))
 
-type Slice = 'details' | 'methods' | 'addresses' | 'tags' | 'identifiers'
+type Slice =
+  'details' | 'methods' | 'addresses' | 'tags' | 'identifiers' | 'fields'
 
 async function contactIdentifierRows(
   db: ScopedDatabaseReader,
@@ -364,31 +511,36 @@ export async function currentPayloads(
   id: Id<'contacts'>,
 ): Promise<{
   contact: Doc<'contacts'>
+  /** The tenant's live fields, which name the contact's slot values. */
+  bySlot: Map<FieldSlot, Doc<'contactFields'>>
   current: {
     details: Payloads['details']
     methods: Payloads['methods']
     addresses: Payloads['addresses']
     tags: Payloads['tags']
     identifiers: Payloads['identifiers']
+    fields: Payloads['fields']
   }
 } | null> {
-  const [contact, emails, phones, addrs, tagRows, idRows] = await Promise.all([
-    db.get(id),
-    db
-      .query('contactEmails')
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
-      .collect(),
-    db
-      .query('contactPhones')
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
-      .collect(),
-    db
-      .query('contactAddresses')
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
-      .collect(),
-    contactTagRows(db, id),
-    contactIdentifierRows(db, id),
-  ])
+  const [contact, emails, phones, addrs, tagRows, idRows, bySlot] =
+    await Promise.all([
+      db.get(id),
+      db
+        .query('contactEmails')
+        .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
+        .collect(),
+      db
+        .query('contactPhones')
+        .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
+        .collect(),
+      db
+        .query('contactAddresses')
+        .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
+        .collect(),
+      contactTagRows(db, id),
+      contactIdentifierRows(db, id),
+      fieldsBySlot(db),
+    ])
   if (!contact) return null
   const current = {
     details: {
@@ -437,8 +589,9 @@ export async function currentPayloads(
         value: r.value,
       })),
     },
+    fields: { values: sortValues(fieldValuesOf(contact, bySlot)) },
   }
-  return { contact, current }
+  return { contact, bySlot, current }
 }
 
 // ── save-path prefetch ─────────────────────────────────────────────────────
@@ -462,6 +615,7 @@ async function prefetchSearchRow(
   db: ScopedDatabaseReader,
   contactId: Id<'contacts'>,
   submittedTags: Array<{ tagId: Id<'tags'> }> | undefined,
+  submittedFields: Array<FieldValue> | undefined,
 ) {
   await Promise.all([
     db
@@ -469,6 +623,11 @@ async function prefetchSearchRow(
       .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
       .unique(),
     ...(submittedTags ?? []).map((r) => db.get(r.tagId)),
+    // What `resolveFieldValue` reads for each value.
+    ...(submittedFields ?? []).flatMap((r) => [
+      db.get(r.fieldId),
+      db.get(r.optionId),
+    ]),
   ])
 }
 
@@ -541,14 +700,15 @@ export const saveForm = tenantMutation({
     addresses: slice(addressesFields),
     tags: slice(tagsFields),
     identifiers: slice(identifiersFields),
+    fields: slice(fieldValuesFields),
   },
   handler: async (ctx, args) => {
     const [found] = await Promise.all([
       currentPayloads(ctx.db, args.id),
-      prefetchSearchRow(ctx.db, args.id, args.tags?.tags),
+      prefetchSearchRow(ctx.db, args.id, args.tags?.tags, args.fields?.values),
     ])
     if (!found) throw new ConvexError({ kind: 'not_found' as const })
-    const { contact, current } = found
+    const { contact, bySlot, current } = found
     const source = args.source ?? 'ui'
 
     const problems: Partial<
@@ -616,6 +776,7 @@ export const saveForm = tenantMutation({
       args.identifiers,
       contact.identifiersVersion,
     )
+    consider('fields', fieldValues, args.fields, contact.fieldsVersion ?? 0)
 
     // Not awaited yet: its reads go out alongside the identifier check's.
     const prefetched = prefetchChanged(ctx.db, found, changed)
@@ -653,10 +814,42 @@ export const saveForm = tenantMutation({
       }
     }
 
+    // The same for a field value refused mid-edit (an option archived, a
+    // field retired): reported on its field, the other slices still save.
+    const at = changed.findIndex((c) => c.name === 'fields')
+    let fieldChange: string | null = null
+    if (at !== -1) {
+      const next = (changed[at].prepared as Payloads['fields']).values
+      const { refused } = await checkFieldValues(ctx.db, contact, next, false)
+      if (refused.length) {
+        problems.fields = refused.map((r) => ({
+          field: 'fields',
+          message: r.message,
+          key: r.fieldId,
+        }))
+        changed.splice(at, 1)
+      } else {
+        fieldChange = await describeFieldChange(
+          ctx.db,
+          current.fields.values,
+          next,
+          bySlot,
+        )
+      }
+    }
+
     await prefetched
+    // A field change always runs in a group named after it, so history
+    // keeps the labels as they read then (as `setAcquisition` does).
+    const groupName =
+      fieldChange === null
+        ? 'contact form save'
+        : changed.length > 1
+          ? `contact form save, ${fieldChange}`
+          : fieldChange
     const group =
-      changed.length > 1
-        ? await commandGroup(ctx, 'contact form save')
+      changed.length > 1 || fieldChange !== null
+        ? await commandGroup(ctx, groupName)
         : undefined
     // The counters after the save, from what ran (no re-read of the root).
     const counters = {
@@ -666,6 +859,7 @@ export const saveForm = tenantMutation({
       archive: contact.archiveVersion,
       tags: contact.tagsVersion,
       identifiers: contact.identifiersVersion,
+      fields: contact.fieldsVersion ?? 0,
     }
     for (const c of changed) counters[c.name] = (await c.run(group)).counter
 
@@ -680,22 +874,80 @@ export const saveForm = tenantMutation({
 
 // ── history ────────────────────────────────────────────────────────────────
 
-/** Restore one stored revision as a new command. */
+/**
+ * What restoring a `contacts.fields` revision left as it was, and why
+ * (`planFieldRestore`). Read after the restore, against the contact as it
+ * wrote it: a value it set is now held, so passes; one it left alone is
+ * still not, and a newer field still holds its value.
+ */
+async function fieldRestoreNotes(
+  db: ScopedDatabaseReader,
+  restored: Doc<'revisions'>,
+): Promise<Array<FieldRestoreNote>> {
+  const contact = await db.get(restored.entityId as Id<'contacts'>)
+  if (!contact) return []
+  const values = (restored.payload as Payloads['fields']).values
+  return (await planFieldRestore(db, contact, values, restored._creationTime))
+    .notes
+}
+
+/**
+ * Restore one stored revision as a new command. `skippedFields`: the
+ * fields it left as they were (`FieldRestoreNote`: `retired`,
+ * `wrong_kind`, or `added_after` "kept: added after this version"), by
+ * label.
+ */
 export const restoreRevision = tenantMutation({
   args: { revisionId: v.id('revisions') },
-  handler: async (ctx, { revisionId }) =>
-    restore(ctx, contactContracts, revisionId),
+  handler: async (ctx, { revisionId }) => {
+    const result = await restore(ctx, contactContracts, revisionId)
+    const revision = await ctx.db.get(revisionId)
+    const skippedFields =
+      revision?.contract === fieldValues.name
+        ? await fieldRestoreNotes(ctx.db, revision)
+        : []
+    return { ...result, skippedFields }
+  },
 })
 
 /**
  * Restore the whole Contact to the moment `at` — the latest state of every
  * content slice at that time (archive excluded; it has its own toggle).
+ * `skippedFields` as `restoreRevision`'s.
  */
 export const restoreTo = tenantMutation({
   args: { id: v.id('contacts'), at: v.number() },
-  handler: async (ctx, { id, at }) =>
-    restoreEntityTo(ctx, contactContracts, 'contacts', id, at, {
-      exclude: ['contacts.archive'],
-      label: `restore to ${new Date(at).toISOString()}`,
-    }),
+  handler: async (ctx, { id, at }) => {
+    const result = await restoreEntityTo(
+      ctx,
+      contactContracts,
+      'contacts',
+      id,
+      at,
+      {
+        exclude: ['contacts.archive'],
+        label: `restore to ${new Date(at).toISOString()}`,
+      },
+    )
+    // The fields revision this restore just wrote names the revision it
+    // restored.
+    const written = result.restored.includes(fieldValues.name)
+      ? await ctx.db
+          .query('revisions')
+          .withIndex('by_tenant_entity_contract', (q) =>
+            q
+              .eq('entity', 'contacts')
+              .eq('entityId', id)
+              .eq('contract', fieldValues.name),
+          )
+          .order('desc')
+          .first()
+      : null
+    const restored =
+      written?.restoredFrom && (await ctx.db.get(written.restoredFrom))
+    const skippedFields = restored
+      ? await fieldRestoreNotes(ctx.db, restored)
+      : []
+    return { ...result, skippedFields }
+  },
 })

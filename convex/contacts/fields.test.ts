@@ -9,9 +9,8 @@ import { beforeEach, describe, expect, test } from 'vitest'
 import { api, internal } from '../_generated/api'
 import type { Doc, Id } from '../_generated/dataModel'
 import type { MutationCtx } from '../_generated/server'
-import { defineContract, executeContract, restore } from '../lib/contracts'
-import { FIELD_SLOTS, SLOT_FIELD_NAMES, slotFieldName } from '../lib/fieldSlots'
-import type { FieldSlot } from '../lib/fieldSlots'
+import { executeContract, restore } from '../lib/contracts'
+import { FIELD_SLOTS } from '../lib/fieldSlots'
 import { scopeWriter } from '../lib/tenancy'
 import type { Role } from '../lib/tenancy'
 import { errorData, setup, snapshot } from '../../test/fixture'
@@ -20,7 +19,6 @@ import { contactContracts } from './contracts'
 import {
   FIELD_OPTION_LIMIT,
   fieldValueVerdict,
-  fieldValuesFields,
   retireGroupName,
 } from './fieldTypes'
 import type { ContactKind, FieldValue } from './fieldTypes'
@@ -42,60 +40,6 @@ let f: Fixture
 beforeEach(async () => {
   f = await setup()
 })
-
-// ── a stand-in for step 4's contract ─────────────────────────────────────────
-
-/**
- * Retire runs `contacts.fields`, which step 4 builds. Until it is in
- * `contactContracts`, these tests register this minimal stand-in: values
- * through `resolveFieldValue` and `markOptionUsed`, slots copied onto
- * `contactSearch`. Once step 4 has merged, the real contract is used.
- */
-const standIn = defineContract({
-  name: 'contacts.fields',
-  entity: 'contacts',
-  version: 1,
-  counter: 'fieldsVersion',
-  fields: fieldValuesFields,
-  apply: async (ctx, p, root, command) => {
-    const contact = root!
-    const patch: Partial<Record<string, OptionId | undefined>> =
-      Object.fromEntries(SLOT_FIELD_NAMES.map((n) => [n, undefined]))
-    for (const value of p.values) {
-      const field = await ctx.db.get(value.fieldId)
-      const current = field?.slot
-        ? contact[slotFieldName(field.slot as FieldSlot)]
-        : undefined
-      const r = await resolveFieldValue(
-        ctx.db,
-        value,
-        contact.kind,
-        current,
-        command.source === 'restore' ? 'restore' : 'save',
-      )
-      if (r.outcome !== 'set') continue
-      patch[slotFieldName(r.slot)] = value.optionId
-      if (value.optionId !== current) await markOptionUsed(ctx, value.optionId)
-    }
-    await ctx.db.patch('contacts', contact._id, patch)
-    return contact._id
-  },
-  project: async (ctx, id) => {
-    const contact = (await ctx.db.get(id))!
-    const row = await ctx.db
-      .query('contactSearch')
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
-      .unique()
-    await ctx.db.patch(
-      'contactSearch',
-      row!._id,
-      Object.fromEntries(SLOT_FIELD_NAMES.map((n) => [n, contact[n]])),
-    )
-  },
-})
-if (!Object.hasOwn(contactContracts, 'contacts.fields')) {
-  contactContracts['contacts.fields'] = standIn
-}
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 

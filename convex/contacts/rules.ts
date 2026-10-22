@@ -7,6 +7,7 @@ import type { Infer } from 'convex/values'
 import type { Problem } from '../lib/contracts'
 import { invalid } from '../lib/contracts'
 import type { Payloads } from './validators'
+import { sortValues } from './fieldValues'
 
 export type Kind = 'individual' | 'organization' | 'household'
 
@@ -233,6 +234,29 @@ export function prepareTags(p: Payloads['tags']): Payloads['tags'] {
  * batched by the caller (the SPA imports it from here).
  */
 export const BULK_TAG_LIMIT = 100
+
+/**
+ * A contact's dropdown field values: each field at most once (a field holds
+ * one option or nothing), in field-id order so equal states compare equal.
+ */
+export function prepareFields(p: Payloads['fields']): Payloads['fields'] {
+  const seen = new Set<string>()
+  for (const value of p.values) {
+    if (seen.has(value.fieldId)) {
+      throw invalid([
+        { field: 'fields', message: 'A field holds one option at most' },
+      ])
+    }
+    seen.add(value.fieldId)
+  }
+  return { values: sortValues(p.values) }
+}
+
+/**
+ * The most contacts one `bulkSetField` call changes; larger selections are
+ * batched by the caller (the SPA imports it from here).
+ */
+export const BULK_FIELD_LIMIT = 100
 
 /**
  * The uniqueness form of a tag name: names compare case-insensitively

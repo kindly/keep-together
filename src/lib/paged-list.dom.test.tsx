@@ -150,3 +150,40 @@ test('new filters start again from one page; skip asks for nothing', async () =>
   expect(lastRequest()).toEqual({})
   expect(got.rows).toBeUndefined()
 })
+
+test('every filter reaches `list`: kind, source and fields, on page 0 and after', async () => {
+  // Every key ListFilters has, set: a filter listFilters drops fails here.
+  const all: Required<ListFilters> = {
+    tenantId,
+    includeArchived: true,
+    kind: 'household',
+    source: { level: 'detail', id: 'code1' as Id<'sourceCodes'> },
+    fields: [
+      {
+        fieldId: 'field1' as Id<'contactFields'>,
+        optionId: 'option1' as Id<'contactFieldOptions'>,
+      },
+      // "Not set" is a filter too, not an absent one.
+      { fieldId: 'field2' as Id<'contactFields'>, optionId: null },
+    ],
+  }
+  server[at(null)] = { page: [], isDone: false, continueCursor: 'c1' }
+  await render(all)
+  const { paginationOpts: _first, ...firstArgs } = lastRequest()[at(null)].args
+  expect(firstArgs).toEqual(all)
+  expect(firstPage(all)).toMatchObject(all)
+  await act(() => got.loadMore())
+  const { paginationOpts: _next, ...nextArgs } = lastRequest()[at('c1')].args
+  expect(nextArgs).toEqual(all)
+})
+
+test('field filters are equal args whatever key order the page builds them in', async () => {
+  const fieldId = 'field1' as Id<'contactFields'>
+  const optionId = 'option1' as Id<'contactFieldOptions'>
+  await render({ tenantId, fields: [{ optionId, fieldId }] })
+  expect(JSON.stringify(lastRequest()[at(null)].args)).toBe(
+    JSON.stringify(firstPage({ tenantId, fields: [{ fieldId, optionId }] })),
+  )
+  // No field filters is no `fields` key: the hold's args stay as before.
+  expect(firstPage({ tenantId, fields: [] })).toEqual(firstPage({ tenantId }))
+})

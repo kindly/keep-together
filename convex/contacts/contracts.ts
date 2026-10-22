@@ -1,10 +1,10 @@
 /**
- * Contact contracts (ADR 0014). Seven partitioned slices on the Contact
+ * Contact contracts (ADR 0014). Eight partitioned slices on the Contact
  * root, plus Tag, IdentifierType, RelationshipType, Relationship and
  * ContactNote (two slices) as their own aggregates.
  * Apply functions are pure state application — restore re-runs them.
  */
-import { v } from 'convex/values'
+import { ConvexError, v } from 'convex/values'
 import { validate } from 'convex-helpers/validators'
 import type { Doc, Id } from '../_generated/dataModel'
 import type { ContractCtx } from '../lib/contracts'
@@ -18,6 +18,7 @@ import {
   normaliseTagName,
   prepareAddresses,
   prepareDetails,
+  prepareFields,
   prepareIdentifierType,
   prepareIdentifiers,
   prepareMethods,
@@ -47,8 +48,15 @@ import {
 import {
   projectAcquisition,
   projectContact,
+  projectFields,
   projectTag,
 } from './searchProjection'
+import { fieldsBySlot, markOptionUsed, resolveFieldValue } from './fieldDefs'
+import { fieldValuesFields } from './fieldTypes'
+import type { FieldValue, FieldValueSkip } from './fieldTypes'
+import { optionIdsOf, slotValues, sortValues } from './fieldValues'
+import { slotFieldName } from '../lib/fieldSlots'
+import type { SlotFieldName } from '../lib/fieldSlots'
 
 /**
  * v2 (external identifiers X1): `externalIdentifier` left the payload for
@@ -386,6 +394,189 @@ export const acquisition = defineContract({
   },
 })
 
+/**
+ * The contact's dropdown field values (plan: dropdown fields, g1q3): one
+ * slice for every field, named by field id; apply writes each to its
+ * field's current slot, and clears every slot the payload doesn't fill.
+ *
+ * The tier-1 checks are `resolveFieldValue`'s (step 2 owns them): the
+ * option belongs to the field, and a value newly set suits the contact's
+ * kind and, on a save, has an active field and option. A held value is
+ * kept as it is, even once its option or field is archived. The first use
+ * marks the option `used`. Restore re-applies history, so it may bring
+ * back an archived option. What it can't write back, and the fields that
+ * didn't exist yet, are settled before apply (`restorePayload`:
+ * `planFieldRestore`), so the restore's revision records the state it
+ * actually wrote.
+ */
+export const fieldValues = defineContract({
+  name: 'contacts.fields',
+  entity: 'contacts',
+  version: 1,
+  counter: 'fieldsVersion',
+  project: projectFields,
+  fields: fieldValuesFields,
+  prepare: prepareFields,
+  restorePayload: async (ctx, p, root, restored) =>
+    root
+      ? {
+          values: (
+            await planFieldRestore(
+              ctx.db,
+              root,
+              p.values,
+              restored._creationTime,
+            )
+          ).values,
+        }
+      : p,
+  apply: async (ctx, p, root, command) => {
+    if (!root)
+      throw rejected('no_root', 'contacts.fields targets an existing contact')
+    const checked = await checkFieldValues(
+      ctx.db,
+      root,
+      p.values,
+      command.source === 'restore',
+    )
+    if (checked.refused.length) {
+      const { reason, message } = checked.refused[0]
+      throw rejected(reason, message)
+    }
+    await Promise.all([
+      ctx.db.patch('contacts', root._id, slotValues(checked.slots)),
+      ...checked.toMark.map((optionId) => markOptionUsed(ctx, optionId)),
+    ])
+    return root._id
+  },
+})
+
+/** A field value `contacts.fields` refuses, and why. */
+export type FieldRefusal = {
+  fieldId: Id<'contactFields'>
+  reason: string
+  message: string
+}
+
+/**
+ * `contacts.fields`' checks on a payload's values against the contact as
+ * it is (`resolveFieldValue`, per value). Shared by the contract (which
+ * refuses the first) and the form save (which reports each on its field
+ * and saves the other slices). `slots`: what each slot will hold;
+ * `toMark`: options going on the contact for the first time; `skipped`:
+ * values a restore leaves out (field retired, or no longer for the
+ * contact's kind), by field label.
+ */
+export async function checkFieldValues(
+  db: ScopedDatabaseReader,
+  root: Doc<'contacts'>,
+  values: Array<FieldValue>,
+  restoring: boolean,
+) {
+  // An option belongs to one field, which holds one slot: held anywhere on
+  // the contact is held in that field's slot.
+  const held = new Set<string>(optionIdsOf(root))
+  const results = await Promise.all(
+    values.map(async (value) => {
+      try {
+        const resolved = await resolveFieldValue(
+          db,
+          value,
+          root.kind,
+          held.has(value.optionId) ? value.optionId : undefined,
+          restoring ? 'restore' : 'save',
+        )
+        return { value, resolved }
+      } catch (e) {
+        const data = e instanceof ConvexError ? e.data : null
+        if (data?.kind !== 'rejected') throw e
+        return { value, refusal: data as { reason: string; message: string } }
+      }
+    }),
+  )
+  const slots: Partial<Record<SlotFieldName, Id<'contactFieldOptions'>>> = {}
+  const toMark: Array<Id<'contactFieldOptions'>> = []
+  const refused: Array<FieldRefusal> = []
+  const skipped: Array<{
+    fieldId: Id<'contactFields'>
+    label: string
+    reason: FieldValueSkip
+  }> = []
+  for (const { value, resolved, refusal } of results) {
+    if (refusal) {
+      refused.push({ fieldId: value.fieldId, ...refusal })
+    } else if (resolved.outcome === 'skipped') {
+      skipped.push({
+        fieldId: value.fieldId,
+        label: resolved.field.label,
+        reason: resolved.reason,
+      })
+    } else {
+      slots[slotFieldName(resolved.slot)] = resolved.option._id
+      if (!held.has(resolved.option._id) && !resolved.option.used) {
+        toMark.push(resolved.option._id)
+      }
+    }
+  }
+  return { slots, toMark, refused, skipped }
+}
+
+/** Why a restore didn't write a field's value from the revision. */
+export type FieldRestoreNote = {
+  label: string
+  /**
+   * `retired`: the field is gone, its value left out. `wrong_kind`: the
+   * field no longer applies to the contact's kind, so the contact keeps
+   * what it holds now. `added_after`: the field didn't exist at the
+   * revision's time, so the contact keeps what it holds now.
+   */
+  reason: FieldValueSkip | 'added_after'
+}
+
+/**
+ * What restoring `values` (a revision written at `restoredAt`) writes to
+ * the contact as it is now, and what it leaves alone:
+ *   - a retired field's value is left out;
+ *   - a value whose field no longer suits the kind is not written, and the
+ *     field keeps its current value;
+ *   - a field created after the revision (a newer field, perhaps in a
+ *     retired one's slot) is not the revision's to clear: it keeps its
+ *     current value.
+ * `values` is the payload to apply and record. `notes` lists every field
+ * left as it is (an `added_after` one only if it holds a value).
+ */
+export async function planFieldRestore(
+  db: ScopedDatabaseReader,
+  root: Doc<'contacts'>,
+  values: Array<FieldValue>,
+  restoredAt: number,
+): Promise<{ values: Array<FieldValue>; notes: Array<FieldRestoreNote> }> {
+  const [checked, bySlot] = await Promise.all([
+    checkFieldValues(db, root, values, true),
+    fieldsBySlot(db),
+  ])
+  const skippedIds = new Set<string>(checked.skipped.map((x) => x.fieldId))
+  const named = new Set<string>(values.map((x) => x.fieldId))
+  const out = values.filter((x) => !skippedIds.has(x.fieldId))
+  const notes: Array<FieldRestoreNote> = checked.skipped.map(
+    ({ label, reason }) => ({ label, reason }),
+  )
+  for (const [slot, field] of bySlot) {
+    const held = root[slotFieldName(slot)]
+    const kept = { fieldId: field._id, optionId: held! }
+    if (skippedIds.has(field._id)) {
+      // wrong_kind: what the contact holds stays.
+      if (held) out.push(kept)
+    } else if (!named.has(field._id) && field._creationTime > restoredAt) {
+      if (held) {
+        out.push(kept)
+        notes.push({ label: field.label, reason: 'added_after' })
+      }
+    }
+  }
+  return { values: sortValues(out), notes }
+}
+
 /** A tag definition. Renaming keeps every assignment (they hold the id). */
 export const tag = defineContract({
   name: 'contacts.tag',
@@ -684,6 +875,7 @@ export const contactContracts = registry(
   tag,
   identifiers,
   acquisition,
+  fieldValues,
   identifierType,
   relationshipType,
   relationship,
@@ -698,4 +890,5 @@ export const contactSlices = {
   addresses,
   tags,
   identifiers,
+  fields: fieldValues,
 } as const
