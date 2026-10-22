@@ -13,7 +13,7 @@ import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { Id } from '../../convex/_generated/dataModel'
 import { usePagedList } from './paged-list'
-import type { PagedList } from './paged-list'
+import type { ListFilters, PagedList } from './paged-list'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -56,9 +56,12 @@ const filters = { tenantId, includeArchived: false }
 let root: Root
 let got: PagedList
 
+/** The page's filters; a test may build them afresh each render. */
+let filtersOf: () => ListFilters = () => filters
+
 function Probe() {
   renders++
-  got = usePagedList(filters)
+  got = usePagedList(filtersOf())
   return null
 }
 const render = () => act(() => root.render(<Probe />))
@@ -69,6 +72,7 @@ beforeEach(() => {
   server = {}
   listeners = new Set()
   renders = 0
+  filtersOf = () => filters
   root = createRoot(document.createElement('div'))
 })
 afterEach(() => act(() => root.unmount()))
@@ -129,4 +133,31 @@ test('a split settles too: SplitRequired, then its halves replace it', async () 
   const settled = renders
   await render()
   expect(renders - settled).toBeLessThanOrEqual(2)
+})
+
+test('field filters built afresh each render still settle', async () => {
+  // The contacts page builds its field filters from state on every render:
+  // a new array of new objects each time, equal in value.
+  filtersOf = () => ({
+    tenantId,
+    includeArchived: false,
+    fields: [
+      {
+        fieldId: 'field1' as Id<'contactFields'>,
+        optionId: 'option1' as Id<'contactFieldOptions'>,
+      },
+      { fieldId: 'field2' as Id<'contactFields'>, optionId: null },
+    ],
+  })
+  server[keyOf({ cursor: null })] = {
+    page: [{ _id: 'a' }],
+    isDone: true,
+    continueCursor: 'c1',
+  }
+  await render()
+  expect(got).toMatchObject({ rows: [{ _id: 'a' }], status: 'done' })
+  const settled = renders
+  await render()
+  await push()
+  expect(renders - settled).toBeLessThanOrEqual(3)
 })

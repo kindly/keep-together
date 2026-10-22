@@ -237,6 +237,29 @@ describe('every public mutation and action', () => {
       tenantId: b.tenantId,
       ...person('Other'),
     })
+    // A dropdown field with an option, inserted as the definitions'
+    // contracts would (step 2 owns those writes).
+    await t.run(async (ctx) => {
+      const fieldId = await ctx.db.insert('contactFields', {
+        tenantId: a.tenantId,
+        label: 'Region',
+        labelNormalized: 'region',
+        appliesTo: ['individual', 'organization', 'household'],
+        isActive: true,
+        slot: 1,
+        saveVersion: 0,
+      })
+      await ctx.db.insert('contactFieldOptions', {
+        tenantId: a.tenantId,
+        fieldId,
+        label: 'North',
+        labelNormalized: 'north',
+        position: 0,
+        isActive: true,
+        used: false,
+        saveVersion: 0,
+      })
+    })
     const idsByTable = await t.run(async (ctx) => {
       const out: Record<string, string> = { tenants: a.tenantId }
       for (const table of [
@@ -248,6 +271,8 @@ describe('every public mutation and action', () => {
         'identifierTypes',
         'sourceCodes',
         'revisions',
+        'contactFields',
+        'contactFieldOptions',
       ] as const satisfies ReadonlyArray<TableNames>) {
         const row = (await ctx.db.query(table).collect()).find(
           (r) => r.tenantId === a.tenantId,

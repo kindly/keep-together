@@ -675,7 +675,7 @@ describe('details v2', () => {
       id: ada,
       at: moment,
     })
-    expect(result).toEqual({ restored: [], group: null })
+    expect(result).toEqual({ restored: [], group: null, skippedFields: [] })
   })
 
   test('the upcaster drops only the old field', () => {

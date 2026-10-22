@@ -25,13 +25,24 @@ export type ListRow = Page['page'][number]
 /** Rows a page asks for (the query's own cap, LIST_LIMIT). */
 export const LIST_PAGE_SIZE = 100
 
-/** The filters in one fixed key order, so equal filters are equal args. */
+/**
+ * The filters in one fixed key order, so equal filters are equal args.
+ * Every filter `list` takes must be here: one left out is silently not
+ * applied (the "every filter reaches `list`" test). Field filters keep
+ * their order (the first is the index range) and their own key order.
+ */
 export function listFilters(f: ListFilters): ListFilters {
   return {
     tenantId: f.tenantId,
     includeArchived: f.includeArchived ?? false,
     ...(f.kind && { kind: f.kind }),
     ...(f.source && { source: f.source }),
+    ...(f.fields?.length && {
+      fields: f.fields.map((x) => ({
+        fieldId: x.fieldId,
+        optionId: x.optionId,
+      })),
+    }),
   }
 }
 

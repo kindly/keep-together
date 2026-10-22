@@ -14,6 +14,7 @@ import { internalTenantMutation } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { describe } from '../sources/code'
 import { searchRow } from './search'
+import { sameSlots, slotValues } from './fieldValues'
 
 type AcquisitionIds = Pick<
   Doc<'contactSearch'>,
@@ -114,10 +115,15 @@ export async function projectContactSearch(
       tagNames: tagRows.map((r) => r.name),
     }),
     ...ids,
+    ...slotValues(contact),
   }
   if (!existing) {
     await db.insert('contactSearch', { contactId, ...row })
-  } else if (!sameRow(existing, row) || !sameIds(existing, ids)) {
+  } else if (
+    !sameRow(existing, row) ||
+    !sameIds(existing, ids) ||
+    !sameSlots(existing, contact)
+  ) {
     await db.patch('contactSearch', existing._id, row)
   }
 }
@@ -156,7 +162,11 @@ export async function projectContact(
     identifiers: [],
     tagNames: [],
   })
-  await ctx.db.insert('contactSearch', { contactId: id, ...row })
+  await ctx.db.insert('contactSearch', {
+    contactId: id,
+    ...row,
+    ...slotValues(contact),
+  })
 }
 
 /**
@@ -180,6 +190,30 @@ export async function projectAcquisition(
   const ids = await acquisitionIds(ctx.db, contact.acquisitionCodeId, existing)
   if (!sameIds(existing, ids)) {
     await ctx.db.patch('contactSearch', existing._id, ids)
+  }
+}
+
+/**
+ * The `project` hook of `contacts.fields`: only the row's slot values can
+ * have changed (option labels are not in the search text, g1q11), so it
+ * reads the root and the row, not the children. A contact with no row yet
+ * gets a full build.
+ */
+export async function projectFields(
+  ctx: ContractCtx,
+  id: Id<'contacts'>,
+): Promise<void> {
+  const [contact, existing] = await Promise.all([
+    ctx.db.get(id),
+    ctx.db
+      .query('contactSearch')
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
+      .unique(),
+  ])
+  if (!contact) return
+  if (!existing) return projectContactSearch(ctx, id)
+  if (!sameSlots(existing, contact)) {
+    await ctx.db.patch('contactSearch', existing._id, slotValues(contact))
   }
 }
 

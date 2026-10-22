@@ -1,10 +1,10 @@
 /**
- * Contact contracts (ADR 0014). Seven partitioned slices on the Contact
+ * Contact contracts (ADR 0014). Eight partitioned slices on the Contact
  * root, plus Tag, IdentifierType, RelationshipType, Relationship and
  * ContactNote (two slices) as their own aggregates.
  * Apply functions are pure state application — restore re-runs them.
  */
-import { v } from 'convex/values'
+import { ConvexError, v } from 'convex/values'
 import { validate } from 'convex-helpers/validators'
 import type { Doc, Id } from '../_generated/dataModel'
 import type { ContractCtx } from '../lib/contracts'
@@ -18,6 +18,7 @@ import {
   normaliseTagName,
   prepareAddresses,
   prepareDetails,
+  prepareFields,
   prepareIdentifierType,
   prepareIdentifiers,
   prepareMethods,
@@ -47,8 +48,15 @@ import {
 import {
   projectAcquisition,
   projectContact,
+  projectFields,
   projectTag,
 } from './searchProjection'
+import { markOptionUsed, resolveFieldValue } from './fieldDefs'
+import { fieldValuesFields } from './fieldTypes'
+import type { FieldValue, FieldValueSkip } from './fieldTypes'
+import { optionIdsOf, slotValues } from './fieldValues'
+import { slotFieldName } from '../lib/fieldSlots'
+import type { FieldSlot, SlotFieldName } from '../lib/fieldSlots'
 
 /**
  * v2 (external identifiers X1): `externalIdentifier` left the payload for
@@ -386,6 +394,117 @@ export const acquisition = defineContract({
   },
 })
 
+/**
+ * The contact's dropdown field values (plan: dropdown fields, g1q3): one
+ * slice for every field, named by field id; apply writes each to its
+ * field's current slot, and clears every slot the payload doesn't fill.
+ *
+ * The tier-1 checks are `resolveFieldValue`'s (step 2 owns them): the
+ * option belongs to the field, and a value newly set suits the contact's
+ * kind and, on a save, has an active field and option. A held value is
+ * kept as it is, even once its option or field is archived. The first use
+ * marks the option `used`. Restore re-applies history, so it may bring
+ * back an archived option, and it skips a value whose field has since been
+ * retired (its slot may hold another field now) or no longer applies to
+ * the contact's kind; the restore mutations report those.
+ */
+export const fieldValues = defineContract({
+  name: 'contacts.fields',
+  entity: 'contacts',
+  version: 1,
+  counter: 'fieldsVersion',
+  project: projectFields,
+  fields: fieldValuesFields,
+  prepare: prepareFields,
+  apply: async (ctx, p, root, command) => {
+    if (!root)
+      throw rejected('no_root', 'contacts.fields targets an existing contact')
+    const checked = await checkFieldValues(
+      ctx.db,
+      root,
+      p.values,
+      command.source === 'restore',
+    )
+    if (checked.refused.length) {
+      const { reason, message } = checked.refused[0]
+      throw rejected(reason, message)
+    }
+    await Promise.all([
+      ctx.db.patch('contacts', root._id, slotValues(checked.slots)),
+      ...checked.toMark.map((optionId) => markOptionUsed(ctx, optionId)),
+    ])
+    return root._id
+  },
+})
+
+/** A field value `contacts.fields` refuses, and why. */
+export type FieldRefusal = {
+  fieldId: Id<'contactFields'>
+  reason: string
+  message: string
+}
+
+/**
+ * `contacts.fields`' checks on a payload's values against the contact as
+ * it is (`resolveFieldValue`, per value). Shared by the contract (which
+ * refuses the first) and the form save (which reports each on its field
+ * and saves the other slices). `slots`: what each slot will hold;
+ * `toMark`: options going on the contact for the first time; `skipped`:
+ * values a restore leaves out (field retired, or no longer for the
+ * contact's kind), by field label.
+ */
+export async function checkFieldValues(
+  db: ScopedDatabaseReader,
+  root: Doc<'contacts'>,
+  values: Array<FieldValue>,
+  restoring: boolean,
+) {
+  // An option belongs to one field, which holds one slot: held anywhere on
+  // the contact is held in that field's slot.
+  const held = new Set<string>(optionIdsOf(root))
+  const results = await Promise.all(
+    values.map(async (value) => {
+      try {
+        const resolved = await resolveFieldValue(
+          db,
+          value,
+          root.kind,
+          held.has(value.optionId) ? value.optionId : undefined,
+          restoring ? 'restore' : 'save',
+        )
+        return { value, resolved }
+      } catch (e) {
+        const data = e instanceof ConvexError ? e.data : null
+        if (data?.kind !== 'rejected') throw e
+        return { value, refusal: data as { reason: string; message: string } }
+      }
+    }),
+  )
+  const slots: Partial<Record<SlotFieldName, Id<'contactFieldOptions'>>> = {}
+  const toMark: Array<Id<'contactFieldOptions'>> = []
+  const refused: Array<FieldRefusal> = []
+  const skipped: Array<{ label: string; reason: FieldValueSkip }> = []
+  for (const { value, resolved, refusal } of results) {
+    if (refusal) {
+      refused.push({ fieldId: value.fieldId, ...refusal })
+    } else if (resolved.outcome === 'skipped') {
+      skipped.push({ label: resolved.field.label, reason: resolved.reason })
+      // A field still in its slot keeps what the contact holds there now.
+      const { slot } = resolved.field
+      if (slot !== undefined) {
+        const name = slotFieldName(slot as FieldSlot)
+        slots[name] = root[name]
+      }
+    } else {
+      slots[slotFieldName(resolved.slot)] = resolved.option._id
+      if (!held.has(resolved.option._id) && !resolved.option.used) {
+        toMark.push(resolved.option._id)
+      }
+    }
+  }
+  return { slots, toMark, refused, skipped }
+}
+
 /** A tag definition. Renaming keeps every assignment (they hold the id). */
 export const tag = defineContract({
   name: 'contacts.tag',
@@ -684,6 +803,7 @@ export const contactContracts = registry(
   tag,
   identifiers,
   acquisition,
+  fieldValues,
   identifierType,
   relationshipType,
   relationship,
@@ -698,4 +818,5 @@ export const contactSlices = {
   addresses,
   tags,
   identifiers,
+  fields: fieldValues,
 } as const

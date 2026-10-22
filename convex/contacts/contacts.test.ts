@@ -895,7 +895,7 @@ describe('history and restore', () => {
       id: ada,
       at: now,
     })
-    expect(result).toEqual({ restored: [], group: null })
+    expect(result).toEqual({ restored: [], group: null, skippedFields: [] })
   })
 })
 
