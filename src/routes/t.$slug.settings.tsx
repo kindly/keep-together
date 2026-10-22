@@ -37,6 +37,14 @@ function SettingsLayout() {
             Tags
           </Link>
           <Link
+            to="/t/$slug/settings/fields"
+            params={{ slug }}
+            className={tab}
+            activeProps={{ className: activeTab }}
+          >
+            Fields
+          </Link>
+          <Link
             to="/t/$slug/settings/identifiers"
             params={{ slug }}
             className={tab}

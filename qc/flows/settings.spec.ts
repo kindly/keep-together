@@ -260,6 +260,7 @@ test.describe('settings for staff and viewers', () => {
       await other.waitForURL(new RegExp(`${tagsPath(user.slug)}$`))
       await expect(tabs(other).getByRole('link')).toHaveText([
         'Tags',
+        'Fields',
         'Identifier types',
         'Source codes',
       ])
