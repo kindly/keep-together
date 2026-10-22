@@ -9,6 +9,7 @@ import { SEED_CATEGORIES } from '../sources/rules'
 import {
   IDENTIFIER_TYPE,
   QC_EVENT_DETAIL,
+  QC_FIELD,
   qcIdentifiers,
   qcSourceDetail,
 } from './qcSeed'
@@ -192,7 +193,9 @@ test('every seeded write went through a contract and left a revision', async () 
         2 * 3 +
         contactIds.length * 2 +
         extra.flat().length +
-        typeRevisions,
+        typeRevisions +
+        // A's field and its options.
+        (isA ? 1 + QC_FIELD.options.length : 0),
     )
   }
 })
@@ -489,4 +492,116 @@ test('source codes: Charles and the Trust coded under Street; Event-Gala free', 
     })
     expect(version.rows.map((r) => r._id)).toEqual([trust])
   }
+})
+
+/** A seeded user's identity, by their index in `world.users`. */
+async function asUser(t: Awaited<ReturnType<typeof seed>>['t'], email: string) {
+  const id = await t.run(async (ctx) => {
+    const user = await ctx.db
+      .query('users')
+      .withIndex('email', (q) => q.eq('email', email))
+      .unique()
+    return user!._id
+  })
+  return t.withIdentity({ subject: `${id}|session` })
+}
+
+test('fields: A has Volunteer status, unused, for every kind; B has none', async () => {
+  const { t, world } = await seed()
+  expect(world.field).toEqual(QC_FIELD)
+  const [tenantA, tenantB] = world.tenants
+  const a = await (
+    await asUser(t, world.users[0].email)
+  ).query(api.contacts.fields.list, { tenantId: tenantA.tenantId })
+  expect(
+    a.map((f) => ({
+      label: f.label,
+      slot: f.slot,
+      isActive: f.isActive,
+      appliesTo: f.appliesTo,
+      options: f.options.map((o) => [o.label, o.isActive, o.used]),
+    })),
+  ).toEqual([
+    {
+      label: QC_FIELD.label,
+      slot: 1,
+      isActive: true,
+      appliesTo: ['individual', 'organization', 'household'],
+      options: QC_FIELD.options.map((l) => [l, true, false]),
+    },
+  ])
+  const b = await (
+    await asUser(t, world.users[1].email)
+  ).query(api.contacts.fields.list, { tenantId: tenantB.tenantId })
+  expect(b).toEqual([])
+  // Through contracts: one revision per definition row.
+  const revisions = await t.run(async (ctx) =>
+    (await ctx.db.query('revisions').collect()).filter((r) =>
+      ['contacts.field', 'contacts.fieldOption'].includes(r.contract),
+    ),
+  )
+  expect(revisions).toHaveLength(1 + QC_FIELD.options.length)
+  expect(revisions.every((r) => r.tenantId === tenantA.tenantId)).toBe(true)
+})
+
+test('crowd: adds numbered individuals to one tenant, in batches', async () => {
+  const { t, world } = await seed()
+  const [tenantA, tenantB] = world.tenants
+  expect(
+    await t.action(internal.platform.qcSeed.crowd, {
+      tenantId: tenantB.tenantId,
+      lastName: 'Crowd',
+      count: 120,
+    }),
+  ).toBe(120)
+  const rows = await t.run((ctx) => ctx.db.query('contacts').collect())
+  const crowd = rows.filter((r) => r.lastName === 'Crowd')
+  expect(crowd).toHaveLength(120)
+  expect(crowd.every((r) => r.tenantId === tenantB.tenantId)).toBe(true)
+  expect(
+    crowd
+      .map((r) => r.sortName)
+      .sort()
+      .slice(0, 2),
+  ).toEqual(['Crowd, n0001', 'Crowd, n0002'])
+  expect(rows.filter((r) => r.tenantId === tenantA.tenantId)).toHaveLength(
+    tenantA.contactIds.length,
+  )
+  // Listed like any other contact: the projection was built.
+  const listed = await (
+    await asUser(t, world.users[1].email)
+  ).query(api.contacts.queries.list, {
+    tenantId: tenantB.tenantId,
+    paginationOpts: { numItems: 100, cursor: null },
+  })
+  expect(
+    listed.page.filter((c) => c.displayName.endsWith('Crowd')),
+  ).toHaveLength(100 - tenantB.contactIds.length)
+})
+
+test('crowd refuses unless QC_SEED_ENABLED is "1", and an unknown tenant', async () => {
+  const { t, world } = await seed()
+  const tenantId = world.tenants[1].tenantId
+  vi.stubEnv('QC_SEED_ENABLED', '')
+  expect(
+    await errorData(
+      t.action(internal.platform.qcSeed.crowd, {
+        tenantId,
+        lastName: 'Crowd',
+        count: 1,
+      }),
+    ),
+  ).toMatchObject({ kind: 'disabled' })
+  vi.stubEnv('QC_SEED_ENABLED', '1')
+  await t.run((ctx) => ctx.db.delete('tenants', tenantId))
+  expect(
+    await errorData(
+      t.mutation(internal.platform.qcSeed.crowdBatch, {
+        tenantId,
+        lastName: 'Crowd',
+        from: 0,
+        count: 1,
+      }),
+    ),
+  ).toMatchObject({ kind: 'not_found' })
 })

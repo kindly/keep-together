@@ -36,7 +36,8 @@
 // run lists every knownOver flow in a banner, timed or not, so it can't be
 // forgotten. Remove the mark with the fix.
 
-export type FlowKind = 'repeatable' | 'infrequent' | 'rare' | 'oncePerSession' | 'bulk'
+export type FlowKind =
+  'repeatable' | 'infrequent' | 'rare' | 'oncePerSession' | 'bulk'
 
 export interface Budget {
   kind: FlowKind
@@ -97,6 +98,16 @@ export const budgets = {
   'contacts.createWithCode': infrequent,
   'contacts.filter.sourceCategory': repeatable,
   'contacts.filter.sourceVersion': repeatable,
+  'contacts.loadMore': repeatable,
+  // Dropdown fields (plan step 6): the classes of the tag flows they
+  // replace (human, g1q14, 2026-10-21).
+  'fields.create': repeatable,
+  'fields.option.add': repeatable,
+  'fields.archive': repeatable,
+  'fields.filter': repeatable,
+  'contact.field.set': repeatable,
+  'contact.field.clear': repeatable,
+  'settings.staffFields.toggle': repeatable,
   'tags.create': repeatable,
   'tags.rename': repeatable,
   'tags.archive': repeatable,
@@ -115,6 +126,8 @@ export const budgets = {
   'settings.sourceCodes.archive': repeatable,
   // Recorded with auth.signIn above.
   'contacts.bulkTag': { kind: 'bulk', maxMs: 500 },
+  // bulkTag's budget, for the flow that replaces it (human, g1q14).
+  'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },
 
   // qc/harness.spec.ts: proves the timing path can fail and pass.
   'harness.impossible': { kind: 'repeatable', maxMs: 1, selfTest: true },
@@ -137,8 +150,11 @@ export function budgetFor(name: FlowName): Budget {
  * 100 ms server rule like their flows (human, 2026-10-18): each has its own
  * limit in ms, recorded like the `bulk` flow budgets. bulkTag: worst 242.6 ms
  * over runs tn357fbu, tn35ew84, tn35t6tx (2026-10-18), × 1.5, rounded up.
+ * bulkSetField takes bulkTag's limit, as the function replacing it (human,
+ * dropdown fields g1q14, 2026-10-21).
  * qc/server-timings.ts asserts them against it instead of 100 ms.
  */
 export const BULK_FUNCTIONS: Record<string, number> = {
   'contacts/mutations:bulkTag': 370,
+  'contacts/mutations:bulkSetField': 370,
 }

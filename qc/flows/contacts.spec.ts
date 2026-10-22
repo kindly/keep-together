@@ -1,5 +1,6 @@
-import { expect, test } from '../fixtures'
+import { convexOn, expect, test } from '../fixtures'
 import { runId } from '../timing'
+import { secondTab } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
 // QC step 7 (factory/plans/qc-suite.sv): the contacts list and the new
@@ -13,6 +14,9 @@ const NEW = { type: 'route', description: '/t/$slug/contacts/new' }
 const CONTACT = { type: 'route', description: '/t/$slug/contacts/$contactId' }
 
 const listPath = (slug: string) => `/t/${slug}/contacts`
+
+/** Rows per list page: LIST_PAGE_SIZE in src/lib/paged-list.ts. */
+const LIST_PAGE_SIZE = 100
 
 /** A name token unique to this run and call, safe for the search index. */
 function uniq(prefix: string): string {
@@ -247,6 +251,72 @@ test.describe('contacts list', () => {
           ),
         arg: lastName,
       })
+    },
+  )
+
+  test(
+    'Load more shows the next page, and a page that grows splits without loss',
+    { annotation: [LIST] },
+    async ({ browser, baseURL, flow, instance, session, users, world }) => {
+      test.setTimeout(120_000)
+      // In B, whose list no timed flow browses, so A's list stays the size
+      // the other flows were budgeted on.
+      const crowd = (lastName: string, count: number) =>
+        convexOn(instance, [
+          'run',
+          'platform/qcSeed:crowd',
+          JSON.stringify({
+            tenantId: world.tenants[1].tenantId,
+            lastName,
+            count,
+          }),
+        ])
+      // After B's seeded `Bravo-<run>` contacts: more than two pages.
+      await crowd(uniq('Crowd'), 2 * LIST_PAGE_SIZE)
+      const b = await secondTab(browser, baseURL!, await session(users.b))
+      const links = rows(b)
+      const more = b.getByRole('button', { name: 'Load more' })
+      const hrefs = async () =>
+        links.evaluateAll((as) => as.map((a) => a.getAttribute('href')))
+
+      await flow(b, 'contacts.loadMore', {
+        before: async () => {
+          await b.goto(listPath(users.b.slug))
+          await expect(links).toHaveCount(LIST_PAGE_SIZE)
+          await expect(more).toBeEnabled()
+        },
+        action: () => more.click(),
+        until: (n) => document.querySelectorAll('main ul li a').length > n,
+        arg: LIST_PAGE_SIZE,
+      })
+      await expect(links).toHaveCount(2 * LIST_PAGE_SIZE)
+      const before = await hrefs()
+      expect(new Set(before).size).toBe(before.length)
+
+      // Page 0 is now pinned to end where page 1 starts. Contacts arriving
+      // in its range grow it past the server's per-page read limit
+      // (maximumRowsRead, LIST_PAGE_MAX_ROWS in convex/contacts/queries.ts),
+      // so it comes back short and split, and the list splits it
+      // (paged-list.ts). Every row still shows, once.
+      const early = uniq('Aardvark')
+      const arriving = 250
+      // 100 a transaction, as every bulk write here commits.
+      await crowd(early, arriving)
+      await expect(links).toHaveCount(before.length + arriving, {
+        timeout: 30_000,
+      })
+      const after = await hrefs()
+      expect(new Set(after).size).toBe(after.length)
+      expect(after.slice(arriving)).toEqual(before)
+      await expect(links.filter({ hasText: early })).toHaveCount(arriving)
+      // And the list carries on past page 1.
+      await more.click()
+      await expect
+        .poll(async () => (await hrefs()).length)
+        .toBeGreaterThan(after.length)
+      const all = await hrefs()
+      expect(new Set(all).size).toBe(all.length)
+      await b.context().close()
     },
   )
 })
