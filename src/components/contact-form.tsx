@@ -6,6 +6,8 @@ import { useEffect, useMemo, useReducer, useRef } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import type { Payloads } from '../../convex/contacts/validators'
+import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
+import { sortValues } from '../../convex/contacts/fieldValues'
 import { contactWarnings } from '../../convex/contacts/warnings'
 import type { Warning } from '../../convex/contacts/warnings'
 import type {
@@ -92,6 +94,11 @@ function toSlices(data: Data): Slices {
         value: r.value,
       })),
     },
+    fields: {
+      values: sortValues(
+        data.fields.map((f) => ({ fieldId: f.fieldId, optionId: f.optionId })),
+      ),
+    },
   }
 }
 
@@ -102,10 +109,20 @@ function toCounters(data: Data): Counters {
     addresses: data.contact.addressesVersion,
     tags: data.contact.tagsVersion,
     identifiers: data.contact.identifiersVersion,
+    fields: data.contact.fieldsVersion ?? 0,
   }
 }
 
-export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
+export function ContactForm({
+  id,
+  data,
+  fields,
+}: {
+  id: Id<'contacts'>
+  data: Data
+  /** The tenant's field definitions (`api.contacts.fields.list`). */
+  fields: Array<FieldDefinition>
+}) {
   const tenant = useTenant()
   const canWrite = useCanWrite()
   const saveForm = useMutation(api.contacts.mutations.saveForm)
@@ -215,9 +232,7 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
     // would wait on its run too.
     history.hold()
     try {
-      // saveForm also takes the `fields` slice, which this form doesn't
-      // submit yet (dropdown fields step 5), so it never reports on it.
-      const result = (await saveForm(args as never)) as SaveResult
+      const result: SaveResult = await saveForm(args as never)
       dispatch({ type: 'saved', submitted, result, at: Date.now() })
     } catch (err) {
       const detail =
@@ -327,8 +342,9 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
           ))}
           {state.conflicts.length > 0 && (
             <Notice tone="error">
-              Changed by both of you: {state.conflicts.join(', ')}. Your value
-              is kept — check it.
+              Changed by both of you:{' '}
+              {state.conflicts.map((c) => conflictName(c, fields)).join(', ')}.
+              Your value is kept — check it.
             </Notice>
           )}
           {generalWarnings.map((w) => (
@@ -400,6 +416,21 @@ export function ContactForm({ id, data }: { id: Id<'contacts'>; data: Data }) {
           problems={state.problems.tags ?? []}
           known={data.tags}
           allTags={allTags}
+        />
+
+        <FieldValues
+          value={state.local.fields}
+          onChange={(v) => {
+            saveNow.current = true
+            edit('fields', v)
+          }}
+          problems={state.problems.fields ?? []}
+          conflicts={state.conflicts
+            .filter((c) => c.startsWith('fields.'))
+            .map((c) => c.slice(7))}
+          known={data.fields}
+          definitions={fields}
+          kind={data.contact.kind}
         />
       </fieldset>
 
@@ -868,6 +899,122 @@ function TagFields({
             ))}
           </select>
         )}
+      </div>
+    </section>
+  )
+}
+
+/** A conflict as the notice names it: a field value by its field's label. */
+function conflictName(c: string, fields: Array<FieldDefinition>) {
+  if (!c.startsWith('fields.')) return c
+  return fields.find((f) => f._id === c.slice(7))?.label ?? 'a field'
+}
+
+/**
+ * The dropdown fields, one select per field, in slot order. A field shows
+ * when it is active, not being retired and applies to the contact's
+ * (saved) kind, or when the contact holds a value in it anyway; then the
+ * value can be kept or cleared, but no other option is offered. Archived
+ * options leave the list except the one the contact holds, marked.
+ */
+function FieldValues({
+  value,
+  onChange,
+  problems,
+  conflicts,
+  known,
+  definitions,
+  kind,
+}: {
+  value: Payloads['fields']
+  onChange: (v: Payloads['fields']) => void
+  problems: Array<Problem>
+  /** Field ids changed both here and elsewhere. */
+  conflicts: Array<string>
+  known: Data['fields']
+  definitions: Array<FieldDefinition>
+  kind: Data['contact']['kind']
+}) {
+  const held = new Map<string, Id<'contactFieldOptions'>>(
+    value.values.map((x) => [x.fieldId, x.optionId]),
+  )
+  const shown = [...definitions]
+    .sort((a, b) => a.slot - b.slot)
+    .filter(
+      (f) =>
+        held.has(f._id) ||
+        (f.isActive && !f.retiring && f.appliesTo.includes(kind)),
+    )
+  if (shown.length === 0) return null
+  const set = (
+    fieldId: Id<'contactFields'>,
+    optionId: Id<'contactFieldOptions'> | null,
+  ) => {
+    const rest = value.values.filter((x) => x.fieldId !== fieldId)
+    onChange({
+      values: sortValues(optionId ? [...rest, { fieldId, optionId }] : rest),
+    })
+  }
+  return (
+    <section>
+      <h2 className="mb-3 text-lg font-medium">Fields</h2>
+      <Message
+        message={
+          problems.find((p) => !shown.some((f) => f._id === p.key))?.message
+        }
+        tone="error"
+      />
+      <div className="grid gap-3 sm:grid-cols-2">
+        {shown.map((f) => {
+          const current = held.get(f._id)
+          const settable =
+            f.isActive && !f.retiring && f.appliesTo.includes(kind)
+          const options = f.options.filter(
+            (o) => o._id === current || (settable && o.isActive),
+          )
+          // The held option, when the definitions don't list it (it should
+          // never happen; `known` names it as the server last saw it).
+          const unlisted =
+            current && !options.some((o) => o._id === current)
+              ? (known.find((k) => k.optionId === current)?.optionLabel ?? '?')
+              : null
+          const note = f.retiring
+            ? ' (being retired)'
+            : !f.isActive
+              ? ' (archived)'
+              : !f.appliesTo.includes(kind)
+                ? ' (not for this kind)'
+                : ''
+          return (
+            <Field
+              key={f._id}
+              label={`${f.label}${note}`}
+              message={problems.find((p) => p.key === f._id)?.message}
+              conflict={conflicts.includes(f._id)}
+            >
+              <select
+                value={current ?? ''}
+                onChange={(e) =>
+                  set(
+                    f._id,
+                    (e.target.value as Id<'contactFieldOptions'>) || null,
+                  )
+                }
+                className="rounded border border-neutral-300 px-2 py-1.5"
+              >
+                <option value="">not set</option>
+                {options.map((o) => (
+                  <option key={o._id} value={o._id}>
+                    {o.isActive ? o.label : `${o.label} (archived)`}
+                  </option>
+                ))}
+                {unlisted !== null && current && (
+                  <option value={current}>{unlisted}</option>
+                )}
+              </select>
+            </Field>
+          )
+        })}
       </div>
     </section>
   )

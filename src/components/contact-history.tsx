@@ -6,12 +6,14 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
 } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { joinMoments } from '../../convex/contacts/history'
 import type { Moment } from '../../convex/contacts/history'
+import type { FieldRestoreNote } from '../../convex/contacts/contracts'
 import { useCanWrite, useTenant } from '../lib/tenant'
 import { useQuery, useSessionStore } from '../lib/query-cache'
 
@@ -384,6 +386,24 @@ export function useHistoryPages(
   }
 }
 
+const SKIP_REASONS: Record<FieldRestoreNote['reason'], string> = {
+  retired: 'the field has been retired',
+  wrong_kind: 'the field no longer applies to this kind of contact',
+  added_after: 'the field was added after this point; its value is kept',
+}
+
+/**
+ * What a restore's `skippedFields` say, as one line, or null when it left
+ * no field value out.
+ */
+export function skippedFieldsNote(
+  skipped: Array<FieldRestoreNote>,
+): string | null {
+  if (skipped.length === 0) return null
+  const parts = skipped.map((s) => `${s.label} (${SKIP_REASONS[s.reason]})`)
+  return `Restored, except: ${parts.join('; ')}.`
+}
+
 /**
  * The timeline as moments, newest first, a page at a time; "Restore to
  * here" re-executes every slice's state at that time, from any page.
@@ -432,7 +452,15 @@ export function ContactHistory({
         feed.release()
       }
     }
-  const restoreTo = held(restoreMutation)
+  // What the last restore left as it was (field values it skipped).
+  const [restoreNote, setRestoreNote] = useState<string | null>(null)
+  const restoreTo = held(
+    async (args: FunctionArgs<typeof api.contacts.mutations.restoreTo>) => {
+      setRestoreNote(null)
+      const result = await restoreMutation(args)
+      setRestoreNote(skippedFieldsNote(result.skippedFields))
+    },
+  )
   const setArchived = held(archiveMutation)
   const name = (userId: Id<'users'> | null) =>
     members?.find((m) => m.userId === userId)?.name ?? 'system'
@@ -455,6 +483,21 @@ export function ContactHistory({
         </button>
       )}
       <h2 className="text-lg font-medium">History</h2>
+      {restoreNote && (
+        <p
+          role="status"
+          className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800"
+        >
+          {restoreNote}{' '}
+          <button
+            type="button"
+            onClick={() => setRestoreNote(null)}
+            className="underline"
+          >
+            Dismiss
+          </button>
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-red-700">
           History couldn’t load.{' '}

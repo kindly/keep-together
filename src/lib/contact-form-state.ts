@@ -9,18 +9,20 @@
  * reports invalid / stale slices while saving the rest.
  */
 import type { Id } from '../../convex/_generated/dataModel'
+import { sortValues } from '../../convex/contacts/fieldValues'
 import type { Payloads } from '../../convex/contacts/validators'
 import { same, threeWayMerge } from './merge'
 import type { Unsaved } from './unsaved'
 
 export type SliceName =
-  'details' | 'methods' | 'addresses' | 'tags' | 'identifiers'
+  'details' | 'methods' | 'addresses' | 'tags' | 'identifiers' | 'fields'
 export type Slices = {
   details: Payloads['details']
   methods: Payloads['methods']
   addresses: Payloads['addresses']
   tags: Payloads['tags']
   identifiers: Payloads['identifiers']
+  fields: Payloads['fields']
 }
 export type Counters = Record<SliceName, number>
 /**
@@ -40,6 +42,7 @@ export const SLICES: Array<SliceName> = [
   'addresses',
   'tags',
   'identifiers',
+  'fields',
 ]
 
 export type FormState = {
@@ -188,6 +191,42 @@ export function mergeIdentifiers(
 }
 
 /**
+ * Dropdown field values merge per field: a field we set or cleared (local
+ * against base) keeps our choice, every other field takes the remote one.
+ * A field both sides changed to different values keeps ours and is
+ * reported as a conflict (`fields.<fieldId>`). Values stay in field-id
+ * order, as the server sorts them.
+ */
+export function mergeFieldValues(
+  base: Slices['fields'],
+  local: Slices['fields'],
+  remote: Slices['fields'],
+): { value: Slices['fields']; conflicts: Array<string> } {
+  const of = (s: Slices['fields']) =>
+    new Map<string, string>(s.values.map((x) => [x.fieldId, x.optionId]))
+  const [was, ours, theirs] = [of(base), of(local), of(remote)]
+  const ids = new Set([...was.keys(), ...ours.keys(), ...theirs.keys()])
+  const values: Slices['fields']['values'] = []
+  const conflicts: Array<string> = []
+  for (const fieldId of ids) {
+    const mine = ours.get(fieldId) !== was.get(fieldId)
+    const chosen = mine ? ours.get(fieldId) : theirs.get(fieldId)
+    if (
+      mine &&
+      theirs.get(fieldId) !== was.get(fieldId) &&
+      theirs.get(fieldId) !== ours.get(fieldId)
+    )
+      conflicts.push(fieldId)
+    if (chosen)
+      values.push({
+        fieldId: fieldId as Slices['fields']['values'][number]['fieldId'],
+        optionId: chosen as Slices['fields']['values'][number]['optionId'],
+      })
+  }
+  return { value: { values: sortValues(values) }, conflicts }
+}
+
+/**
  * Per-field merge of the rows that would be submitted. base never holds
  * unfilled rows (`submission` cleans), so merging raw local would read a
  * blank row left on screen as a local change to its whole list, and the
@@ -294,6 +333,7 @@ export function initialState(slices: Slices, counters: Counters): FormState {
       addresses: false,
       tags: false,
       identifiers: false,
+      fields: false,
     },
     conflicts: [],
     problems: {},
@@ -353,12 +393,18 @@ export function reduce(state: FormState, action: Action): FormState {
                   ),
                   conflicts: [],
                 }
-              : mergeFilled(
-                  slice,
-                  state.base[slice] as never,
-                  state.local[slice] as never,
-                  remote as never,
-                )
+              : slice === 'fields'
+                ? mergeFieldValues(
+                    state.base.fields,
+                    state.local.fields,
+                    remote as Slices['fields'],
+                  )
+                : mergeFilled(
+                    slice,
+                    state.base[slice] as never,
+                    state.local[slice] as never,
+                    remote as never,
+                  )
         put(next.base, slice, remote)
         put(next.local, slice, merged.value)
         conflicts = [

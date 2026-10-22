@@ -8,6 +8,7 @@ import { useQuery } from '../lib/query-cache'
 import { contactSeed, dropContactSeed } from '../lib/contact-seed'
 import type { ContactView } from '../lib/contact-seed'
 import type { SourceCodeDescription } from '../../convex/sources/code'
+import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
 import { ContactForm } from '../components/contact-form'
 import { ContactHistory } from '../components/contact-history'
 import { ContactNotes } from '../components/contact-notes'
@@ -41,6 +42,10 @@ export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
       query: api.contacts.queries.tags,
       args: { tenantId: tenant._id, includeInactive: true },
     })
+    convex.prewarmQuery({
+      query: api.contacts.fields.list,
+      args: { tenantId: tenant._id },
+    })
   },
 })
 
@@ -63,6 +68,7 @@ const SLICE_QUERIES = [
 function useContactView(
   tenantId: Id<'tenants'>,
   id: Id<'contacts'>,
+  fields: Array<FieldDefinition> | undefined,
 ): ContactView | null | undefined {
   const args = { tenantId, id }
   const root = useQuery(api.contacts.queries.getRoot, args)
@@ -106,7 +112,8 @@ function useContactView(
       tags === undefined ||
       identifiers === undefined ||
       acquisition === undefined ||
-      types === undefined
+      types === undefined ||
+      fields === undefined
     )
       return undefined
     return assembleView({
@@ -116,8 +123,9 @@ function useContactView(
       identifiers,
       types,
       acquisition,
+      fields,
     })
-  }, [root, channels, tags, identifiers, acquisition, types])
+  }, [root, channels, tags, identifiers, acquisition, types, fields])
 }
 
 /**
@@ -138,7 +146,10 @@ function ContactPage() {
   const id = contactId as Id<'contacts'>
   // The form, note editors and composer report here; the guard reads it.
   const work = useUnsavedWork()
-  const live = useContactView(tenant._id, id)
+  // The field definitions name the contact's values and are the form's
+  // dropdowns: one subscription for both.
+  const fields = useQuery(api.contacts.fields.list, { tenantId: tenant._id })
+  const live = useContactView(tenant._id, id, fields)
   // Straight from the new-contact form: its view until the queries answer.
   const data = live === undefined ? contactSeed(id) : live
   useEffect(() => {
@@ -154,10 +165,19 @@ function ContactPage() {
           {/* A new instance per group and contact: its reducer and the
               last held / shared answers belong to the contact they came
               from, and must never show on the next one. */}
-          <ContactForm key={`${tenant._id}:${id}`} id={id} data={data} />
+          <ContactForm
+            key={`${tenant._id}:${id}`}
+            id={id}
+            data={data}
+            // Only the seed shows before the definitions answer: its own
+            // values stand, the dropdowns appear a moment later.
+            fields={fields ?? []}
+          />
           <ContactNotes contactId={id} />
         </div>
+        {/* Keyed like the form: a restore notice belongs to its contact. */}
         <ContactHistory
+          key={`${tenant._id}:${id}`}
           id={id}
           version={rootVersion(data.contact)}
           archived={data.contact.archived}

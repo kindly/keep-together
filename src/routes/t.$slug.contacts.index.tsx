@@ -1,14 +1,22 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
-import { ConvexError } from 'convex/values'
 import { useEffect, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { BULK_TAG_LIMIT } from '../../convex/contacts/rules'
+import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
+import { fieldArgs, fieldShown } from '../lib/field-filters'
+import type { FieldPick } from '../lib/field-filters'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
 import { holdList, releaseList } from '../lib/list-hold'
 import { usePagedList } from '../lib/paged-list'
+import {
+  BulkFieldControls,
+  BulkFieldResult,
+  bulkFailure,
+  useBulkSetField,
+} from '../components/bulk-set-field'
 
 export const Route = createFileRoute('/t/$slug/contacts/')({
   component: ContactList,
@@ -23,6 +31,10 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
     })
     convex.prewarmQuery({
       query: api.sources.queries.filterOptions,
+      args: { tenantId: tenant._id },
+    })
+    convex.prewarmQuery({
+      query: api.contacts.fields.list,
       args: { tenantId: tenant._id },
     })
   },
@@ -56,6 +68,9 @@ const KINDS: Array<{ value: Kind | ''; label: string }> = [
   { value: 'organization', label: 'organisations' },
 ]
 
+/** "not set" in a field filter's select ('' is "any"). */
+const NOT_SET = 'none'
+
 type Bulk =
   | { state: 'idle' }
   | { state: 'running'; op: 'add' | 'remove'; done: number; total: number }
@@ -71,6 +86,10 @@ function ContactList() {
   const [kind, setKind] = useState<Kind | ''>('')
   const [sourcePick, setSourcePick] = useState<SourcePick>(NO_SOURCE)
   const source = sourceArg(sourcePick)
+  const fields = useQuery(api.contacts.fields.list, { tenantId: tenant._id })
+  const [fieldPicks, setFieldPicks] = useState<Array<FieldPick>>([])
+  const fieldFilters = fieldArgs(fieldPicks, fields, kind)
+  const bulkField = useBulkSetField()
   // Search text or a tag: one window (`search`). Otherwise browse a page at
   // a time (`list`).
   const searching = search.trim() !== '' || tagFilter !== ''
@@ -84,6 +103,7 @@ function ContactList() {
           ...(tagFilter && { tagId: tagFilter }),
           ...(kind && { kind }),
           ...(source && { source }),
+          ...(fieldFilters.length > 0 && { fields: fieldFilters }),
         }
       : 'skip',
   )
@@ -95,6 +115,7 @@ function ContactList() {
           includeArchived,
           ...(kind && { kind }),
           ...(source && { source }),
+          ...(fieldFilters.length > 0 && { fields: fieldFilters }),
         },
   )
   // After the queries above: their subscriptions are in place by now. After
@@ -112,6 +133,18 @@ function ContactList() {
     includeInactive: true,
   })
   const tagName = new Map((tags ?? []).map((t) => [t._id as string, t]))
+  // Each option's chip: its field's label and its own, read live.
+  const chipOf = new Map(
+    (fields ?? []).flatMap((f) =>
+      f.options.map((o) => [
+        o._id as string,
+        {
+          text: `${f.label}: ${o.label}`,
+          active: f.isActive && o.isActive,
+        },
+      ]),
+    ),
+  )
 
   const [selected, setSelected] = useState<ReadonlySet<Id<'contacts'>>>(
     new Set(),
@@ -174,6 +207,27 @@ function ContactList() {
           ))}
         </select>
         <SourceFilter value={sourcePick} onChange={setSourcePick} />
+        {(fields ?? [])
+          .filter((f) => fieldShown(f, kind))
+          .sort((a, b) => a.slot - b.slot)
+          .map((f) => (
+            <FieldFilter
+              key={f._id}
+              field={f}
+              value={fieldPicks.find((p) => p.fieldId === f._id)}
+              onChange={(pick) =>
+                setFieldPicks((picks) => {
+                  const rest = picks.filter((p) => p.fieldId !== f._id)
+                  if (pick === undefined) return rest
+                  // A changed pick keeps its place in the order.
+                  const at = picks.findIndex((p) => p.fieldId === f._id)
+                  return at === -1
+                    ? [...rest, pick]
+                    : [...rest.slice(0, at), pick, ...rest.slice(at)]
+                })
+              }
+            />
+          ))}
         <label className="flex items-center gap-2 text-sm text-neutral-600">
           <input
             type="checkbox"
@@ -212,14 +266,20 @@ function ContactList() {
           }
           tags={(tags ?? []).filter((t) => t.isActive)}
           allTags={tags ?? []}
+          fields={(fields ?? []).filter((f) => f.isActive && !f.retiring)}
+          bulkField={bulkField}
         />
       )}
+      {/* Outside the bar: a set moves rows out of a list filtered on the
+          field, which can empty the selection, or the list, mid-run. */}
+      <BulkFieldResult bulk={bulkField.bulk} onDismiss={bulkField.dismiss} />
       {searching && listed?.truncated && (contacts?.length ?? 0) > 0 && (
         <p className="mt-3 text-sm text-amber-800">
           Showing the first {contacts?.length} contacts
           {tagFilter ? ' with this tag' : ''}
-          {source ? ' with this source code' : ''}; there are more. Narrow the
-          search to see them.
+          {source ? ' with this source code' : ''}
+          {fieldFilters.length > 0 ? ' with these field values' : ''}; there are
+          more. Narrow the search to see them.
         </p>
       )}
       {contacts === undefined ? (
@@ -234,13 +294,15 @@ function ContactList() {
               ? 'None among the contacts checked so far; there may be more.'
               : search.trim()
                 ? 'No contacts match.'
-                : source
-                  ? 'No contacts with this source code.'
-                  : tagFilter
-                    ? 'No contacts with this tag.'
-                    : kind
-                      ? 'No contacts of this kind.'
-                      : 'No contacts yet.'}
+                : fieldFilters.length > 0
+                  ? 'No contacts with these field values.'
+                  : source
+                    ? 'No contacts with this source code.'
+                    : tagFilter
+                      ? 'No contacts with this tag.'
+                      : kind
+                        ? 'No contacts of this kind.'
+                        : 'No contacts yet.'}
         </p>
       ) : (
         <ul className="mt-3 divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
@@ -278,6 +340,17 @@ function ContactList() {
                       </span>
                     ) : null
                   })}
+                  {c.fieldOptionIds.map((id) => {
+                    const chip = chipOf.get(id)
+                    return chip ? (
+                      <span
+                        key={id}
+                        className={`ml-2 rounded border px-1.5 text-xs ${chip.active ? 'border-sky-200 bg-sky-50 text-sky-900' : 'border-dashed border-neutral-300 text-neutral-500'}`}
+                      >
+                        {chip.text}
+                      </span>
+                    ) : null
+                  })}
                 </span>
                 <span className="text-sm text-neutral-500">
                   {c.email ?? c.kind}
@@ -298,6 +371,48 @@ function ContactList() {
         </button>
       )}
     </main>
+  )
+}
+
+/**
+ * One field's filter: any, "not set", or one of its options (archived ones
+ * too, marked: contacts keep them).
+ */
+function FieldFilter({
+  field,
+  value,
+  onChange,
+}: {
+  field: FieldDefinition
+  value: FieldPick | undefined
+  onChange: (pick: FieldPick | undefined) => void
+}) {
+  return (
+    <select
+      aria-label={`Filter by ${field.label}`}
+      value={value === undefined ? '' : (value.optionId ?? NOT_SET)}
+      onChange={(e) => {
+        const v = e.target.value
+        onChange(
+          v === ''
+            ? undefined
+            : {
+                fieldId: field._id,
+                optionId:
+                  v === NOT_SET ? null : (v as Id<'contactFieldOptions'>),
+              },
+        )
+      }}
+      className="rounded border border-neutral-300 px-2 py-1.5 text-sm"
+    >
+      <option value="">{`any ${field.label}`}</option>
+      <option value={NOT_SET}>{`${field.label} not set`}</option>
+      {field.options.map((o) => (
+        <option key={o._id} value={o._id}>
+          {o.isActive ? o.label : `${o.label} (archived)`}
+        </option>
+      ))}
+    </select>
   )
 }
 
@@ -372,21 +487,6 @@ function SourceFilter({
   )
 }
 
-/** A user-facing line for a failed `bulkTag`. */
-function bulkFailure(err: unknown): string {
-  if (!(err instanceof ConvexError)) return 'Could not change tags'
-  const d = err.data as {
-    kind?: string
-    message?: string
-    problems?: Array<{ message: string }>
-  }
-  if (d.kind === 'invalid' && d.problems?.length)
-    return d.problems.map((p) => p.message).join('; ')
-  if (d.kind === 'stale')
-    return 'Someone else changed one of these contacts just now; try again'
-  return d.message ?? d.kind ?? 'Could not change tags'
-}
-
 /**
  * Add or remove one tag on the selected rows. Each batch is one
  * all-or-nothing `bulkTag` (one command group); the bar shows progress
@@ -400,6 +500,8 @@ function BulkBar({
   onAll,
   tags,
   allTags,
+  fields,
+  bulkField,
 }: {
   chosen: Array<Id<'contacts'>>
   allChosen: boolean
@@ -409,6 +511,10 @@ function BulkBar({
   onAll: (all: boolean) => void
   tags: Array<{ _id: Id<'tags'>; name: string }>
   allTags: Array<{ _id: Id<'tags'>; name: string }>
+  /** Fields a value can be set on: active, not being retired. */
+  fields: Array<FieldDefinition>
+  /** The page's bulk "set field" run (it outlives this bar). */
+  bulkField: ReturnType<typeof useBulkSetField>
 }) {
   const tenant = useTenant()
   const bulkTag = useMutation(api.contacts.mutations.bulkTag)
@@ -452,7 +558,10 @@ function BulkBar({
       })
     } catch (err) {
       const soFar = changed > 0 ? ` (${changed} changed before it stopped)` : ''
-      setBulk({ state: 'failed', message: `${bulkFailure(err)}${soFar}` })
+      setBulk({
+        state: 'failed',
+        message: `${bulkFailure(err, 'Could not change tags')}${soFar}`,
+      })
     }
   }
 
@@ -503,6 +612,16 @@ function BulkBar({
             Remove tag
           </button>
         </>
+      )}
+      {chosen.length > 0 && fields.length > 0 && (
+        <BulkFieldControls
+          chosen={chosen}
+          fields={fields}
+          running={bulkField.bulk.state === 'running'}
+          onRun={(ids, field, optionId) =>
+            void bulkField.run(ids, field, optionId)
+          }
+        />
       )}
       <span role="status" className="text-neutral-600">
         {bulk.state === 'running' &&
