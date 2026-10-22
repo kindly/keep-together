@@ -5,6 +5,7 @@ import {
   clean,
   initialState,
   reduce,
+  mergeFieldValues,
   mergeIdentifiers,
   mergeTags,
   rekey,
@@ -34,6 +35,7 @@ const slices: Slices = {
       { key: 'i1', typeId: 'typeOld' as Id<'identifierTypes'>, value: 'M1' },
     ],
   },
+  fields: { values: [] },
 }
 const counters = {
   details: 0,
@@ -41,6 +43,7 @@ const counters = {
   addresses: 0,
   tags: 0,
   identifiers: 0,
+  fields: 0,
 }
 
 describe('contact form state', () => {
@@ -162,6 +165,7 @@ describe('contact form state', () => {
           archive: 0,
           tags: 0,
           identifiers: 0,
+          fields: 0,
         },
       },
     })
@@ -207,6 +211,7 @@ describe('contact form state', () => {
           archive: 0,
           tags: 0,
           identifiers: 0,
+          fields: 0,
         },
       },
     })
@@ -238,6 +243,7 @@ describe('contact form state', () => {
           archive: 0,
           tags: 0,
           identifiers: 0,
+          fields: 0,
         },
       },
     })
@@ -283,6 +289,7 @@ describe('contact form state', () => {
         archive: 0,
         tags: 0,
         identifiers: 0,
+        fields: 0,
       },
     })
 
@@ -379,6 +386,7 @@ describe('contact form state', () => {
           archive: 0,
           tags: 0,
           identifiers: 0,
+          fields: 0,
         },
       },
     })
@@ -505,6 +513,7 @@ describe('contact form state', () => {
             archive: 0,
             tags: 1,
             identifiers: 0,
+            fields: 0,
           },
         },
       })
@@ -527,6 +536,7 @@ describe('contact form state', () => {
             archive: 0,
             tags: 2,
             identifiers: 0,
+            fields: 0,
           },
         },
       })
@@ -832,6 +842,7 @@ describe('unsavedWork', () => {
           archive: 0,
           tags: 0,
           identifiers: 0,
+          fields: 0,
         },
       },
     })
@@ -1078,5 +1089,135 @@ describe('a torn view (rows and counter delivered apart)', () => {
     expect(s.local.tags).toEqual({ tags: [two.tags[0]] })
     expect(s.base.tags).toEqual(two)
     expect(s.conflicts).toEqual([])
+  })
+})
+
+describe('the fields slice', () => {
+  const v = (fieldId: string, optionId: string) => ({
+    fieldId: fieldId as Id<'contactFields'>,
+    optionId: optionId as Id<'contactFieldOptions'>,
+  })
+  const withFields = (values: Array<ReturnType<typeof v>>): Slices => ({
+    ...slices,
+    fields: { values },
+  })
+  const zeros = { ...counters, archive: 0 }
+
+  test('a field set here and another set elsewhere both survive', () => {
+    let s = reduce(initialState(withFields([v('fA', 'north')]), counters), {
+      type: 'edit',
+      slice: 'fields',
+      value: { values: [v('fA', 'south')] },
+    })
+    s = reduce(s, {
+      type: 'server',
+      slices: withFields([v('fA', 'north'), v('fB', 'active')]),
+      counters: { ...counters, fields: 1 },
+    })
+    expect(s.local.fields.values).toEqual([v('fA', 'south'), v('fB', 'active')])
+    expect(s.conflicts).toEqual([])
+    expect(s.dirty.fields).toBe(true)
+    expect(s.needsSave).toBe(true)
+    expect(submission(s)).toEqual({
+      fields: { values: [v('fA', 'south'), v('fB', 'active')] },
+    })
+  })
+
+  test('a field cleared here stays cleared when another changes elsewhere', () => {
+    const out = mergeFieldValues(
+      { values: [v('fA', 'north')] },
+      { values: [] },
+      { values: [v('fA', 'north'), v('fB', 'active')] },
+    )
+    expect(out).toEqual({
+      value: { values: [v('fB', 'active')] },
+      conflicts: [],
+    })
+  })
+
+  test('one field changed to different values on both sides keeps ours, as a conflict', () => {
+    const out = mergeFieldValues(
+      { values: [v('fA', 'north')] },
+      { values: [v('fA', 'south')] },
+      { values: [v('fA', 'east')] },
+    )
+    expect(out).toEqual({
+      value: { values: [v('fA', 'south')] },
+      conflicts: ['fA'],
+    })
+    let s = reduce(initialState(withFields([v('fA', 'north')]), counters), {
+      type: 'edit',
+      slice: 'fields',
+      value: { values: [v('fA', 'south')] },
+    })
+    s = reduce(s, {
+      type: 'server',
+      slices: withFields([v('fA', 'east')]),
+      counters: { ...counters, fields: 1 },
+    })
+    expect(s.conflicts).toEqual(['fields.fA'])
+  })
+
+  test('both sides choosing the same option is no change and no conflict', () => {
+    let s = reduce(initialState(withFields([]), counters), {
+      type: 'edit',
+      slice: 'fields',
+      value: { values: [v('fA', 'south')] },
+    })
+    s = reduce(s, {
+      type: 'server',
+      slices: withFields([v('fA', 'south')]),
+      counters: { ...counters, fields: 1 },
+    })
+    expect(s.conflicts).toEqual([])
+    expect(s.dirty.fields).toBe(false)
+  })
+
+  test('a saved value is clean; a refusal waits for the next edit', () => {
+    let s = reduce(initialState(withFields([]), counters), {
+      type: 'edit',
+      slice: 'fields',
+      value: { values: [v('fA', 'gone')] },
+    })
+    s = reduce(s, { type: 'commit' })
+    s = reduce(s, { type: 'saving' })
+    s = reduce(s, {
+      type: 'saved',
+      submitted: submission(s),
+      result: {
+        saved: [],
+        problems: {
+          fields: [{ field: 'fields', message: 'gone is archived', key: 'fA' }],
+        },
+        stale: {},
+        counters: zeros,
+      },
+      at: 1,
+    })
+    expect(s.problems.fields).toHaveLength(1)
+    expect(s.needsSave).toBe(false)
+    expect(unsavedWork(s)).toBe('unsaved')
+    s = reduce(s, {
+      type: 'edit',
+      slice: 'fields',
+      value: { values: [v('fA', 'north')] },
+    })
+    s = reduce(s, { type: 'commit' })
+    s = reduce(s, { type: 'saving' })
+    s = reduce(s, {
+      type: 'saved',
+      submitted: submission(s),
+      result: {
+        saved: ['fields'],
+        problems: {},
+        stale: {},
+        counters: { ...zeros, fields: 1 },
+      },
+      at: 2,
+    })
+    expect(s.problems.fields).toBeUndefined()
+    expect(s.dirty.fields).toBe(false)
+    expect(s.counters.fields).toBe(1)
+    expect(unsavedWork(s)).toBe('clean')
   })
 })
