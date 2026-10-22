@@ -23,12 +23,18 @@ export type Tenant = {
   staffCanManageSourceCodes: boolean
   /** Its counter, for the switch's save; null until first saved. */
   sourceCodesVersion: number | null
+  /** The tenant's "staff can manage fields" switch. */
+  staffCanManageFields: boolean
+  /** Its counter, for the switch's save; null until first saved. */
+  fieldsVersion: number | null
   /** Whether this caller may manage tags, given role and switch. */
   canManageTags: boolean
   /** Whether this caller may manage identifier types, given role and switch. */
   canManageIdentifierTypes: boolean
   /** Whether this caller may manage source codes, given role and switch. */
   canManageSourceCodes: boolean
+  /** Whether this caller may manage dropdown fields, given role and switch. */
+  canManageFields: boolean
 }
 
 export const TenantContext = createContext<Tenant | null>(null)
@@ -57,7 +63,7 @@ export function useIsAdmin(): boolean {
 
 /**
  * Whether the caller may create, rename and archive the tenant's tags,
- * its identifier types or its source codes: admins, and staff when the
+ * its identifier types, its source codes or its dropdown fields: admins, and staff when the
  * group allows it for that list. The backend enforces it (lib/lists).
  */
 export function useCanManageList(kind: ListKind): boolean {
@@ -66,6 +72,7 @@ export function useCanManageList(kind: ListKind): boolean {
     tags: tenant.canManageTags,
     identifierTypes: tenant.canManageIdentifierTypes,
     sourceCodes: tenant.canManageSourceCodes,
+    fields: tenant.canManageFields,
   }[kind]
 }
 

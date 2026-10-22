@@ -3,10 +3,11 @@
  * Settings page (secrets go in `tenantSettings`, encrypted). One row per
  * tenant at most, created by the first save; no row means every default.
  *
- * `staffCanManageTags`, `staffCanManageIdentifierTypes` and
- * `staffCanManageSourceCodes` (each default off, independent): whether
- * staff, as well as admins, may create, rename and archive / reactivate
- * the tenant's tags, its identifier types, and its source codes (the rule
+ * `staffCanManageTags`, `staffCanManageIdentifierTypes`,
+ * `staffCanManageSourceCodes` and `staffCanManageFields` (each default
+ * off, independent): whether staff, as well as admins, may create, rename
+ * and archive / reactivate the tenant's tags, its identifier types, its
+ * source codes and its dropdown fields and their options (the rule
  * is in lib/lists). Each is its own contract with its own
  * counter, so switching one never conflicts with the other. Putting tags
  * and identifiers on contacts is ordinary staff editing either way;
@@ -71,6 +72,21 @@ export const sourceCodes = defineContract({
   version: 1,
   counter: 'sourceCodesVersion',
   fields: sourceCodesFields,
+  apply: async (ctx, p, root) => {
+    if (!root) return ctx.db.insert('tenantPreferences', { ...DEFAULTS, ...p })
+    await ctx.db.patch('tenantPreferences', root._id, p)
+    return root._id
+  },
+})
+
+export const fieldsFields = { staffCanManageFields: v.boolean() }
+
+export const fields = defineContract({
+  name: 'tenantPreferences.fields',
+  entity: 'tenantPreferences',
+  version: 1,
+  counter: 'fieldsVersion',
+  fields: fieldsFields,
   apply: async (ctx, p, root) => {
     if (!root) return ctx.db.insert('tenantPreferences', { ...DEFAULTS, ...p })
     await ctx.db.patch('tenantPreferences', root._id, p)
@@ -147,6 +163,21 @@ export const setStaffCanManageSourceCodes = tenantMutation({
     const row = await tenantPreferences(ctx.db)
     staleIfUnseen(row, expected, sourceCodes.name, row?.sourceCodesVersion)
     return executeContract(ctx, sourceCodes, payload, {
+      entityId: row?._id,
+      expected,
+      source: 'ui',
+    })
+  },
+})
+
+/** Turn "staff can manage fields" on or off. Admin only. */
+export const setStaffCanManageFields = tenantMutation({
+  minRole: 'admin',
+  args: { expected: v.optional(v.number()), ...fieldsFields },
+  handler: async (ctx, { expected, ...payload }) => {
+    const row = await tenantPreferences(ctx.db)
+    staleIfUnseen(row, expected, fields.name, row?.fieldsVersion)
+    return executeContract(ctx, fields, payload, {
       entityId: row?._id,
       expected,
       source: 'ui',

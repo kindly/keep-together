@@ -77,9 +77,12 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
       identifierTypesVersion: null,
       staffCanManageSourceCodes: false,
       sourceCodesVersion: null,
+      staffCanManageFields: false,
+      fieldsVersion: null,
       canManageTags: true,
       canManageIdentifierTypes: true,
       canManageSourceCodes: true,
+      canManageFields: true,
     },
   ])
 })

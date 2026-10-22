@@ -59,6 +59,8 @@ export const mine = query({
               identifierTypesVersion: prefs?.identifierTypesVersion ?? null,
               staffCanManageSourceCodes: staffMayManage(prefs, 'sourceCodes'),
               sourceCodesVersion: prefs?.sourceCodesVersion ?? null,
+              staffCanManageFields: staffMayManage(prefs, 'fields'),
+              fieldsVersion: prefs?.fieldsVersion ?? null,
               canManageTags: mayManageList(m.role, prefs, 'tags'),
               canManageIdentifierTypes: mayManageList(
                 m.role,
@@ -66,6 +68,7 @@ export const mine = query({
                 'identifierTypes',
               ),
               canManageSourceCodes: mayManageList(m.role, prefs, 'sourceCodes'),
+              canManageFields: mayManageList(m.role, prefs, 'fields'),
             }
           : null
       }),

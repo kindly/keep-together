@@ -13,6 +13,8 @@ import type * as comms_contracts from "../comms/contracts.js";
 import type * as comms_rules from "../comms/rules.js";
 import type * as comms_suppressions from "../comms/suppressions.js";
 import type * as contacts_contracts from "../contacts/contracts.js";
+import type * as contacts_fieldTypes from "../contacts/fieldTypes.js";
+import type * as contacts_fields from "../contacts/fields.js";
 import type * as contacts_history from "../contacts/history.js";
 import type * as contacts_migrations from "../contacts/migrations.js";
 import type * as contacts_mutations from "../contacts/mutations.js";
@@ -67,6 +69,8 @@ declare const fullApi: ApiFromModules<{
   "comms/rules": typeof comms_rules;
   "comms/suppressions": typeof comms_suppressions;
   "contacts/contracts": typeof contacts_contracts;
+  "contacts/fieldTypes": typeof contacts_fieldTypes;
+  "contacts/fields": typeof contacts_fields;
   "contacts/history": typeof contacts_history;
   "contacts/migrations": typeof contacts_migrations;
   "contacts/mutations": typeof contacts_mutations;

@@ -18,6 +18,10 @@ const LABELS = {
     label: 'Staff can manage source codes',
     help: 'When off, only admins add, rename, archive and delete source codes. Staff can always put a code on a contact.',
   },
+  fields: {
+    label: 'Staff can manage fields',
+    help: 'When off, only admins add, rename, archive and retire fields and their options. Staff can always set a field on a contact.',
+  },
 } satisfies Record<ListKind, { label: string; help: string }>
 
 /**
@@ -38,12 +42,16 @@ export function StaffListSwitch({ kind }: { kind: ListKind }) {
   const saveCodes = useMutation(
     api.platform.preferences.setStaffCanManageSourceCodes,
   )
+  const saveFields = useMutation(
+    api.platform.preferences.setStaffCanManageFields,
+  )
   if (!isAdmin) return null
 
   const checked = {
     tags: tenant.staffCanManageTags,
     identifierTypes: tenant.staffCanManageIdentifierTypes,
     sourceCodes: tenant.staffCanManageSourceCodes,
+    fields: tenant.staffCanManageFields,
   }[kind]
 
   async function toggle(on: boolean) {
@@ -61,11 +69,17 @@ export function StaffListSwitch({ kind }: { kind: ListKind }) {
           expected: tenant.identifierTypesVersion ?? undefined,
           staffCanManageIdentifierTypes: on,
         })
-      } else {
+      } else if (kind === 'sourceCodes') {
         await saveCodes({
           tenantId: tenant._id,
           expected: tenant.sourceCodesVersion ?? undefined,
           staffCanManageSourceCodes: on,
+        })
+      } else {
+        await saveFields({
+          tenantId: tenant._id,
+          expected: tenant.fieldsVersion ?? undefined,
+          staffCanManageFields: on,
         })
       }
     } catch (err) {

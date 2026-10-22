@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { api } from '../_generated/api'
 import schema from '../schema'
 import { contactContracts } from '../contacts/contracts'
+import { fieldContracts } from '../contacts/fields'
 import { commsContracts } from '../comms/contracts'
 import { sourceContracts } from '../sources/code'
 import {
@@ -503,6 +504,7 @@ describe('registry invariants (meta-test)', () => {
       ...Object.values(contactContracts),
       ...Object.values(commsContracts),
       ...Object.values(sourceContracts),
+      ...Object.values(fieldContracts),
     ]) {
       const table = (
         schema.tables as Record<
@@ -529,7 +531,12 @@ describe('registry invariants (meta-test)', () => {
   // A version bump without its upcaster would otherwise surface only when
   // someone restores an old revision. Every registry restore uses goes
   // in REGISTRIES.
-  const REGISTRIES = { contactContracts, commsContracts, sourceContracts }
+  const REGISTRIES = {
+    contactContracts,
+    commsContracts,
+    sourceContracts,
+    fieldContracts,
+  }
   test.each(
     Object.entries(REGISTRIES).flatMap(([registryName, reg]) =>
       Object.values(reg).map((c) => [registryName, c.name, c] as const),

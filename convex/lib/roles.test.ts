@@ -57,7 +57,7 @@ async function staffManage(who: Tenant, kind: ListKind, on: boolean) {
         staffCanManageIdentifierTypes: on,
       },
     )
-  } else {
+  } else if (kind === 'sourceCodes') {
     await who.as.mutation(
       api.platform.preferences.setStaffCanManageSourceCodes,
       {
@@ -66,6 +66,12 @@ async function staffManage(who: Tenant, kind: ListKind, on: boolean) {
         staffCanManageSourceCodes: on,
       },
     )
+  } else {
+    await who.as.mutation(api.platform.preferences.setStaffCanManageFields, {
+      tenantId: who.tenantId,
+      expected: prefs.fieldsVersion ?? undefined,
+      staffCanManageFields: on,
+    })
   }
 }
 
@@ -73,6 +79,7 @@ const LIST_KINDS = [
   'tags',
   'identifierTypes',
   'sourceCodes',
+  'fields',
 ] as const satisfies ReadonlyArray<ListKind>
 
 const person = (lastName: string) => ({
@@ -95,6 +102,7 @@ const ADMIN_ONLY = new Set([
   'platform/preferences:setStaffCanManageTags',
   'platform/preferences:setStaffCanManageIdentifierTypes',
   'platform/preferences:setStaffCanManageSourceCodes',
+  'platform/preferences:setStaffCanManageFields',
   'comms/suppressions:release',
 ])
 
@@ -109,6 +117,14 @@ const LIST_MANAGERS = new Map<string, ListKind>([
   ['sources/mutations:create', 'sourceCodes'],
   ['sources/mutations:save', 'sourceCodes'],
   ['sources/mutations:remove', 'sourceCodes'],
+  ['contacts/fields:createField', 'fields'],
+  ['contacts/fields:saveField', 'fields'],
+  ['contacts/fields:deleteField', 'fields'],
+  ['contacts/fields:addOption', 'fields'],
+  ['contacts/fields:saveOption', 'fields'],
+  ['contacts/fields:reorderOptions', 'fields'],
+  ['contacts/fields:deleteOption', 'fields'],
+  ['contacts/fields:retireField', 'fields'],
 ])
 
 /** Modules that register no functions and only load in the Convex runtime. */
@@ -232,6 +248,28 @@ describe('every public mutation and action', () => {
       name: 'Old CRM id',
       isActive: true,
     })
+    // A field whose option is used, so neither delete succeeds and the
+    // later calls still find both rows.
+    const { id: fieldId } = await a.as.mutation(
+      api.contacts.fields.createField,
+      {
+        tenantId: a.tenantId,
+        label: 'Level',
+        appliesTo: ['individual'],
+        isActive: true,
+      },
+    )
+    const { id: optionId } = await a.as.mutation(
+      api.contacts.fields.addOption,
+      {
+        tenantId: a.tenantId,
+        fieldId,
+        label: 'Gold',
+      },
+    )
+    await t.run((ctx) =>
+      ctx.db.patch('contactFieldOptions', optionId, { used: true }),
+    )
     // Another tenant's rows must never be picked: ids come from tenant A.
     await b.as.mutation(api.contacts.mutations.create, {
       tenantId: b.tenantId,
@@ -247,6 +285,8 @@ describe('every public mutation and action', () => {
         'tags',
         'identifierTypes',
         'sourceCodes',
+        'contactFields',
+        'contactFieldOptions',
         'revisions',
       ] as const satisfies ReadonlyArray<TableNames>) {
         const row = (await ctx.db.query(table).collect()).find(
