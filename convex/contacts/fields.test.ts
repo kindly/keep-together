@@ -6,7 +6,7 @@
  * throughout.
  */
 import { beforeEach, describe, expect, test } from 'vitest'
-import { api } from '../_generated/api'
+import { api, internal } from '../_generated/api'
 import type { Doc, Id } from '../_generated/dataModel'
 import type { MutationCtx } from '../_generated/server'
 import { defineContract, executeContract, restore } from '../lib/contracts'
@@ -274,6 +274,7 @@ describe('contacts.field', () => {
         label: 'Volunteer status',
         appliesTo: ['individual', 'household'],
         isActive: true,
+        retiring: false,
         slot: 1,
         saveVersion: 0,
         options: [],
@@ -532,7 +533,8 @@ describe('fieldValueVerdict', () => {
     label: 'Level',
     appliesTo: ['individual'] as Array<ContactKind>,
     isActive: true,
-    slot: 1,
+    slot: 1 as number | undefined,
+    retiring: false as boolean | undefined,
   }
   const opt = {
     _id: 'o1' as OptionId,
@@ -589,6 +591,18 @@ describe('fieldValueVerdict', () => {
         'restore',
       ),
     ).toEqual({ ok: false, skip: 'retired' })
+  })
+
+  test('retiring: no new value (a save refuses, a restore skips); a kept one stays', () => {
+    expect(verdict({ retiring: true }, {})).toMatchObject({
+      reason: 'retiring_field',
+    })
+    expect(
+      verdict({ retiring: true }, {}, 'individual', undefined, 'restore'),
+    ).toEqual({ ok: false, skip: 'retired' })
+    expect(
+      verdict({ retiring: true }, {}, 'individual', 'o1' as OptionId),
+    ).toEqual({ ok: true })
   })
 
   test('kind: only for a new value; a save refuses, a restore skips', () => {
@@ -746,6 +760,14 @@ describe('retire', () => {
     // One group per batch, and batches go option by option: Bob's Silver
     // is cleared in a batch of its own.
     expect(bobs).toMatchObject([{ groupName: retireGroupName('Level') }])
+    // The caller is the actor on every revision and group retire writes.
+    expect(cleared[0].actor).toBe(f.a.userId)
+    expect(bobs[0].actor).toBe(f.a.userId)
+    const group = await f.t.run((ctx) => ctx.db.get(cleared[0].group!))
+    expect(group!.actor).toBe(f.a.userId)
+    expect(
+      (await revisionsOf(f.a, 'contactFields', level.id)).map((r) => r.actor),
+    ).toEqual([f.a.userId, f.a.userId])
     expect(
       (await revisionsOf(f.a, 'contactFields', level.id)).map(
         (r) => r.payload.isActive,
@@ -853,6 +875,116 @@ describe('retire', () => {
       groups.add(r.group!)
     }
     expect(groups.size).toBe(2)
+  })
+
+  test('resumes after an interruption; a retiring field takes no new value', async () => {
+    const level = await fieldWith(f.a, 'Level', ['Gold', 'Silver'])
+    const [gold, silver] = level.options
+    const ada = await contact(f.a, 'Ada')
+    const bob = await contact(f.a, 'Bob')
+    await setValues(f.a, ada, [{ fieldId: level.id, optionId: gold }])
+    // Bob had Silver once, then nothing: a revision to restore later.
+    await setValues(f.a, bob, [{ fieldId: level.id, optionId: silver }])
+    await setValues(f.a, bob, [])
+    // A retire that stopped right after it started.
+    await f.t.mutation(internal.contacts.fields.retireStart, {
+      tenantId: f.a.tenantId,
+      role: 'admin',
+      actor: f.a.userId,
+      id: level.id,
+    })
+    expect(await definition(f.a, level.id)).toMatchObject({
+      isActive: false,
+      retiring: true,
+      slot: 1,
+    })
+    // No reactivating, no new values; a restore skips them.
+    expect(
+      await errorData(saveField(f.a, level.id, { isActive: true })),
+    ).toMatchObject({ reason: 'retiring_field' })
+    expect(
+      await errorData(
+        setValues(f.a, bob, [{ fieldId: level.id, optionId: gold }]),
+      ),
+    ).toMatchObject({ reason: 'retiring_field' })
+    const [silverRevision] = (await revisionsOf(f.a, 'contacts', bob)).filter(
+      (r) =>
+        r.contract === 'contacts.fields' &&
+        (r.payload as { values: Array<unknown> }).values.length === 1,
+    )
+    await f.t.run((ctx) =>
+      restore(scoped(ctx, f.a.tenantId), contactContracts, silverRevision._id),
+    )
+    expect((await getDoc(bob))!.field1).toBeUndefined()
+    // Ada's value stays until the retire clears it.
+    expect(await getDoc(ada)).toMatchObject({ field1: gold })
+
+    // Run again: it carries on, archiving no second time.
+    expect(
+      await f.a.as.action(api.contacts.fields.retireField, {
+        tenantId: f.a.tenantId,
+        id: level.id,
+      }),
+    ).toEqual({ cleared: 1 })
+    const done = (await getDoc(level.id))!
+    expect(done.slot).toBeUndefined()
+    expect(done.retiring).toBeUndefined()
+    expect((await getDoc(ada))!.field1).toBeUndefined()
+    expect(
+      (await revisionsOf(f.a, 'contactFields', level.id)).map(
+        (r) => r.payload.isActive,
+      ),
+    ).toEqual([true, false])
+  })
+
+  test('finds holders from the contacts, not contactSearch; archived ones too', async () => {
+    const level = await fieldWith(f.a, 'Level', ['Gold'])
+    const region = await fieldWith(f.a, 'Region', ['North'])
+    const gold = level.options[0]
+    const ada = await contact(f.a, 'Ada')
+    const bob = await contact(f.a, 'Bob')
+    const cy = await contact(f.a, 'Cy')
+    const dee = await contact(f.a, 'Dee')
+    // Ada: archived, holding Gold.
+    await setValues(f.a, ada, [{ fieldId: level.id, optionId: gold }])
+    await f.a.as.mutation(api.contacts.mutations.setArchived, {
+      tenantId: f.a.tenantId,
+      id: ada,
+      expected: 0,
+      archived: true,
+    })
+    // Bob: holds Gold, but his search row lost it (drift).
+    await setValues(f.a, bob, [{ fieldId: level.id, optionId: gold }])
+    // Cy: no value, but a stale search row claims Gold.
+    // Dee: Gold, plus Region's slot holding Level's option (drift).
+    await setValues(f.a, dee, [{ fieldId: level.id, optionId: gold }])
+    await f.t.run(async (ctx) => {
+      const row = (id: Id<'contacts'>) =>
+        ctx.db
+          .query('contactSearch')
+          .withIndex('by_tenant_contact', (q) =>
+            q.eq('tenantId', f.a.tenantId).eq('contactId', id),
+          )
+          .unique()
+      await ctx.db.patch('contactSearch', (await row(bob))!._id, {
+        field1: undefined,
+      })
+      await ctx.db.patch('contactSearch', (await row(cy))!._id, {
+        field1: gold,
+      })
+      await ctx.db.patch('contacts', dee, { field2: gold })
+    })
+    expect(
+      await f.a.as.action(api.contacts.fields.retireField, {
+        tenantId: f.a.tenantId,
+        id: level.id,
+      }),
+    ).toEqual({ cleared: 3 })
+    for (const id of [ada, bob, dee]) {
+      expect((await getDoc(id))!.field1, id).toBeUndefined()
+    }
+    expect((await getDoc(level.id))!.slot).toBeUndefined()
+    void region
   })
 
   test('a field with no values retires straight away', async () => {

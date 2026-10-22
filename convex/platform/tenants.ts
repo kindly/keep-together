@@ -195,12 +195,18 @@ export async function insertTenant(
 
 /**
  * Used by `tenantAction` (actions have no db) to enforce membership and
- * role; returns the caller's role.
+ * role; returns the caller and their role.
  */
 export const assertMember = internalQuery({
   args: { tenantId: v.id('tenants'), minRole: roleValidator },
-  handler: async (ctx, { tenantId, minRole }): Promise<Role> => {
-    const { role } = await requireMember(ctx, tenantId, minRole)
-    return role
+  handler: async (
+    ctx,
+    { tenantId, minRole },
+  ): Promise<{ role: Role; userId: Id<'users'> }> => {
+    const { role, userId } = await requireMember(ctx, tenantId, minRole)
+    // A member always has a user; the scope's type allows null for
+    // internal functions.
+    if (!userId) throw new ConvexError({ kind: 'unauthenticated' as const })
+    return { role, userId }
   },
 })

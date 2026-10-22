@@ -381,7 +381,9 @@ export const appTables = {
   // `isActive: false` (hidden; values and slot kept). System-owned: `slot`,
   // 1…FIELD_SLOTS, the lowest free one assigned on create and preserved by
   // the contract; absent once the field is retired (every value cleared),
-  // which frees it. Retired rows stay so history can name them.
+  // which frees it. Retired rows stay so history can name them. Also
+  // system-owned: `retiring`, set while a retire is clearing values (no
+  // new values, no reactivating), cleared with the slot. Optional for good.
   contactFields: defineTable({
     tenantId: v.id('tenants'),
     label: v.string(),
@@ -389,6 +391,7 @@ export const appTables = {
     appliesTo: v.array(contactKind),
     isActive: v.boolean(),
     slot: v.optional(v.number()),
+    retiring: v.optional(v.boolean()),
     saveVersion: v.number(),
   }).index('by_tenant_slot', ['tenantId', 'slot']),
 

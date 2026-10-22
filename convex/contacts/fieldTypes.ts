@@ -112,6 +112,11 @@ export type FieldDefinition = {
   appliesTo: Array<ContactKind>
   /** False: archived, hidden from the form and filters; values kept. */
   isActive: boolean
+  /**
+   * A retire is clearing its values (or stopped part way: run it again).
+   * No new values, and it can't be reactivated.
+   */
+  retiring: boolean
   slot: FieldSlot
   saveVersion: number
   /** Archived ones included. */
@@ -220,6 +225,9 @@ export type FieldValueVerdict =
  * the field's. Then, by mode:
  *   - a retired field (no slot): a save refuses it, a restore skips the
  *     value (`skip: 'retired'`);
+ *   - a field being retired takes no new value: a save refuses one, a
+ *     restore skips it (`skip: 'retired'`); one already on the contact
+ *     stays until the retire clears it;
  *   - a value already on the contact (`current`) is fine whatever else
  *     changed, so narrowing a field's kinds or archiving never blocks a
  *     contact's save;
@@ -232,7 +240,7 @@ export type FieldValueVerdict =
 export function fieldValueVerdict(
   field: Pick<
     Doc<'contactFields'>,
-    '_id' | 'label' | 'appliesTo' | 'isActive' | 'slot'
+    '_id' | 'label' | 'appliesTo' | 'isActive' | 'slot' | 'retiring'
   > | null,
   option: Pick<
     Doc<'contactFieldOptions'>,
@@ -263,6 +271,11 @@ export function fieldValueVerdict(
       : no('retired_field', `${field.label} has been retired`)
   }
   if (option._id === current) return { ok: true }
+  if (field.retiring) {
+    return mode === 'restore'
+      ? { ok: false, skip: 'retired' }
+      : no('retiring_field', `${field.label} is being retired`)
+  }
   if (!field.appliesTo.includes(kind)) {
     return mode === 'restore'
       ? { ok: false, skip: 'wrong_kind' }

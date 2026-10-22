@@ -397,20 +397,25 @@ export const tenantMutation = customMutation(mutation, {
   },
 })
 
-// Actions have no db; they verify membership and role, and carry tenantId
-// for the internal functions they call.
+// Actions have no db; they verify membership and role, and carry tenantId,
+// the role and the caller for the internal functions they call (which
+// pass both on, so revisions and command groups name the caller).
 export const tenantAction = customAction(action, {
   args: tenantArgs,
   input: async (
     ctx,
     { tenantId },
     { minRole = 'staff' }: RoleOption,
-  ): Promise<{ ctx: { tenantId: Id<'tenants'>; role: Role }; args: {} }> => {
-    const role: Role = await ctx.runQuery(
-      internal.platform.tenants.assertMember,
-      { tenantId, minRole },
-    )
-    return { ctx: { tenantId, role }, args: {} }
+  ): Promise<{
+    ctx: { tenantId: Id<'tenants'>; role: Role; userId: Id<'users'> }
+    args: {}
+  }> => {
+    const { role, userId }: { role: Role; userId: Id<'users'> } =
+      await ctx.runQuery(internal.platform.tenants.assertMember, {
+        tenantId,
+        minRole,
+      })
+    return { ctx: { tenantId, role, userId }, args: {} }
   },
 })
 

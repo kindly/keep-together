@@ -199,6 +199,7 @@ export async function fieldDefinitions(
     label: f.label,
     appliesTo: f.appliesTo,
     isActive: f.isActive,
+    retiring: f.retiring ?? false,
     slot: f.slot as FieldSlot,
     saveVersion: f.saveVersion,
     options: options[i].map((o) => ({
@@ -234,6 +235,13 @@ export const field = defineContract({
   apply: async (ctx, p, root, command) => {
     if (root && root.slot === undefined && command.source !== 'restore') {
       throw rejected('retired_field', 'This field has been retired')
+    }
+    // A restore too: reactivating would let values back in mid-retire.
+    if (root?.retiring && p.isActive) {
+      throw rejected(
+        'retiring_field',
+        `${root.label} is being retired: finish the retire first`,
+      )
     }
     const labelNormalized = normaliseFieldLabel(p.label)
     const fields = {
@@ -529,156 +537,157 @@ export const deleteOption = tenantMutation({
 
 // ── retire ─────────────────────────────────────────────────────────────────
 
-/** How many contacts one retire batch clears: one contract each. */
+/** How many contacts one retire batch reads (and at most clears). */
 export const RETIRE_BATCH = 100
 
-/** Rounds of "clear, then check none are left" before giving up. */
-const RETIRE_ROUNDS = 5
+/** Passes over the contacts before giving up on finding none left. */
+const RETIRE_PASSES = 5
 
 /**
- * Retire a field: archive it (so the form stops offering it), clear its
- * value on every contact through `contacts.fields`, a batch at a time,
- * each batch its own command group ("Retire field *Label*"), then free its
- * slot. The field and option rows stay, so history can still name them,
- * and restore skips values of a retired field. Resumable: a retire that
- * stops part way leaves the field archived, and running it again carries
- * on.
+ * Retire a field: mark it retiring and archive it (no new values, no
+ * reactivating), clear its value on every contact through
+ * `contacts.fields`, then free its slot. The field and option rows stay,
+ * so history can still name them, and restore skips values of a retired
+ * field.
+ *
+ * Carriers are found from the contacts themselves (archived ones
+ * included), never from `contactSearch`: a pass reads every contact a
+ * batch at a time and clears any with a value in the field's slot, each
+ * batch that clears something its own command group ("Retire field
+ * *Label*"). The slot is freed only after a whole pass found no holder.
+ * Revisions and groups name the caller.
+ *
+ * Resumable: a retire that stops part way leaves the field retiring, with
+ * its slot; running it again carries on.
  */
 export const retireField = tenantAction({
   args: { id: v.id('contactFields') },
   handler: async (ctx, { id }): Promise<{ cleared: number }> => {
-    let { optionIds }: { optionIds: Array<Id<'contactFieldOptions'>> } =
-      await ctx.runMutation(internal.contacts.fields.retireStart, {
-        tenantId: ctx.tenantId,
-        role: ctx.role,
-        id,
-      })
+    const caller = {
+      tenantId: ctx.tenantId,
+      role: ctx.role,
+      actor: ctx.userId,
+      id,
+    }
+    await ctx.runMutation(internal.contacts.fields.retireStart, caller)
     let cleared = 0
-    for (let round = 0; round < RETIRE_ROUNDS; round++) {
-      for (const optionId of optionIds) {
-        let cursor: string | null = null
-        for (;;) {
-          const batch: { cleared: number; cursor: string | null } =
-            await ctx.runMutation(internal.contacts.fields.retireBatch, {
-              tenantId: ctx.tenantId,
-              role: ctx.role,
-              id,
-              optionId,
-              cursor,
-            })
-          cleared += batch.cleared
-          if (batch.cursor === null) break
-          cursor = batch.cursor
-        }
+    for (let pass = 0; pass < RETIRE_PASSES; pass++) {
+      let found = 0
+      let cursor: string | null = null
+      for (;;) {
+        const batch: { cleared: number; cursor: string | null } =
+          await ctx.runMutation(internal.contacts.fields.retireBatch, {
+            ...caller,
+            cursor,
+          })
+        found += batch.cleared
+        if (batch.cursor === null) break
+        cursor = batch.cursor
       }
-      const finish: {
-        done: boolean
-        optionIds: Array<Id<'contactFieldOptions'>>
-      } = await ctx.runMutation(internal.contacts.fields.retireFinish, {
-        tenantId: ctx.tenantId,
-        role: ctx.role,
-        id,
-      })
-      if (finish.done) return { cleared }
-      optionIds = finish.optionIds
+      cleared += found
+      if (found === 0) {
+        await ctx.runMutation(internal.contacts.fields.retireFinish, caller)
+        return { cleared }
+      }
     }
     throw rejected(
       'retire_incomplete',
-      'Values kept being set while retiring: try again',
+      'Values kept appearing while retiring: try again',
     )
   },
 })
 
-/** The caller's role, carried from the action: never `null` here. */
-const retireArgs = { role: roleValidator, id: v.id('contactFields') }
-
-/** Load a live field for retire, checking the caller may manage fields. */
-async function retiring(
-  ctx: { db: ScopedDatabaseReader; role: Role },
-  id: Id<'contactFields'>,
-) {
-  await requireListManager(ctx, 'fields')
-  const row = await ctx.db.get(id)
-  if (!row) throw new ConvexError({ kind: 'not_found' as const })
-  return row
-}
-
-/** Archive the field (a `contacts.field` revision) and list its options. */
-export const retireStart = internalTenantMutation({
-  args: retireArgs,
-  handler: async (ctx, { role, id }) => {
-    const row = await retiring({ db: ctx.db, role }, id)
-    if (row.slot === undefined) {
-      throw rejected('retired_field', `${row.label} is already retired`)
-    }
-    if (row.isActive) {
-      await executeContract(
-        { ...ctx, role },
-        field,
-        { label: row.label, appliesTo: row.appliesTo, isActive: false },
-        { entityId: id, source: 'ui' },
-      )
-    }
-    const options = await optionsOf(ctx.db, id)
-    return { optionIds: options.map((o) => o._id) }
-  },
-})
-
-/** Index of the projection rows carrying an option in `slot`. */
-function carriers(
-  db: ScopedDatabaseReader,
-  slot: FieldSlot,
-  optionId: Id<'contactFieldOptions'>,
-) {
-  const name = slotFieldName(slot)
-  // The slot's index is picked at run time; its shape is `fieldSlots`'.
-  return db
-    .query('contactSearch')
-    .withIndex(`by_tenant_${name}_sort` as 'by_tenant_field1_sort', (q) =>
-      q.eq(name as 'field1', optionId),
-    )
+/** The caller, carried from the action: role never `null` here. */
+const retireArgs = {
+  role: roleValidator,
+  actor: v.id('users'),
+  id: v.id('contactFields'),
 }
 
 /**
- * Clear the field on up to RETIRE_BATCH contacts carrying `optionId`,
- * found through their `contactSearch` rows, under one command group.
+ * The contract context of the action's caller, and the field, checking
+ * the caller may manage fields.
+ */
+async function retiring(
+  ctx: { db: ScopedDatabaseWriter },
+  {
+    role,
+    actor,
+    id,
+  }: { role: Role; actor: Id<'users'>; id: Id<'contactFields'> },
+): Promise<{ caller: ContractCtx; row: Doc<'contactFields'> }> {
+  const caller: ContractCtx = { db: ctx.db, role, userId: actor }
+  await requireListManager({ db: ctx.db, role }, 'fields')
+  const row = await ctx.db.get(id)
+  if (!row) throw new ConvexError({ kind: 'not_found' as const })
+  return { caller, row }
+}
+
+/**
+ * Mark the field retiring (a system write, like `slot`) and archive it (a
+ * `contacts.field` revision). A field already retiring is a resumed
+ * retire.
+ */
+export const retireStart = internalTenantMutation({
+  args: retireArgs,
+  handler: async (ctx, args) => {
+    const { caller, row } = await retiring(ctx, args)
+    if (row.slot === undefined) {
+      throw rejected('retired_field', `${row.label} is already retired`)
+    }
+    if (!row.retiring) {
+      await ctx.db.patch('contactFields', row._id, { retiring: true })
+    }
+    if (row.isActive) {
+      await executeContract(
+        caller,
+        field,
+        { label: row.label, appliesTo: row.appliesTo, isActive: false },
+        { entityId: row._id, source: 'ui' },
+      )
+    }
+    return null
+  },
+})
+
+/**
+ * Read the next RETIRE_BATCH contacts and clear the field on any holding
+ * a value in its slot, under one command group. Other fields' values stay;
+ * one whose option isn't its slot field's (drift) is left out too, so the
+ * contract never refuses the clearing over it.
  */
 export const retireBatch = internalTenantMutation({
-  args: {
-    ...retireArgs,
-    optionId: v.id('contactFieldOptions'),
-    cursor: v.union(v.string(), v.null()),
-  },
-  handler: async (ctx, { role, id, optionId, cursor }) => {
-    const row = await retiring({ db: ctx.db, role }, id)
+  args: { ...retireArgs, cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor, ...args }) => {
+    const { caller, row } = await retiring(ctx, args)
     if (row.slot === undefined) return { cleared: 0, cursor: null }
-    const slot = row.slot as FieldSlot
-    const page = await carriers(ctx.db, slot, optionId).paginate({
-      numItems: RETIRE_BATCH,
-      cursor,
-    })
-    const contacts = (
-      await Promise.all(page.page.map((s) => ctx.db.get(s.contactId)))
-    ).filter(
-      (c): c is Doc<'contacts'> =>
-        c !== null && c[slotFieldName(slot)] === optionId,
-    )
-    if (contacts.length > 0) {
+    const name = slotFieldName(row.slot as FieldSlot)
+    const page = await ctx.db
+      .query('contacts')
+      .withIndex('by_tenant_sort')
+      .paginate({ numItems: RETIRE_BATCH, cursor })
+    const holders = page.page.filter((c) => c[name] !== undefined)
+    if (holders.length > 0) {
       // Looked up when run, not imported: contracts.ts imports this file.
       if (!Object.hasOwn(contactContracts, 'contacts.fields')) {
         throw new Error('retire needs the contacts.fields contract (step 4)')
       }
       const contract = contactContracts['contacts.fields']
       const bySlot = await fieldsBySlot(ctx.db)
-      const scoped: ContractCtx = { ...ctx, role }
-      const group = await commandGroup(scoped, retireGroupName(row.label))
-      for (const contact of contacts) {
+      const group = await commandGroup(caller, retireGroupName(row.label))
+      for (const contact of holders) {
+        const others = fieldValuesOf(contact, bySlot).filter(
+          (value) => value.fieldId !== row._id,
+        )
+        const options = await Promise.all(
+          others.map((value) => ctx.db.get(value.optionId)),
+        )
         const payload: FieldValuesPayload = {
-          values: fieldValuesOf(contact, bySlot).filter(
-            (value) => value.fieldId !== id,
+          values: others.filter(
+            (value, i) => options[i]?.fieldId === value.fieldId,
           ),
         }
-        await executeContract(scoped, contract, payload, {
+        await executeContract(caller, contract, payload, {
           entityId: contact._id,
           source: 'ui',
           group,
@@ -686,31 +695,27 @@ export const retireBatch = internalTenantMutation({
       }
     }
     return {
-      cleared: contacts.length,
+      cleared: holders.length,
       cursor: page.isDone ? null : page.continueCursor,
     }
   },
 })
 
 /**
- * Free the slot, if no contact carries the field any more. Someone may
- * have set a value (or added an option) meanwhile: then not done, with
- * the options as they are now, and the action goes round again. A system
- * write, like `markOptionUsed`: `slot` is in no payload.
+ * Free the slot and end the retire: the action calls this only after a
+ * whole pass over the contacts found no holder, and the retiring marker
+ * kept new values out since. System writes: `slot` and `retiring` are in
+ * no payload.
  */
 export const retireFinish = internalTenantMutation({
   args: retireArgs,
-  handler: async (ctx, { role, id }) => {
-    const row = await retiring({ db: ctx.db, role }, id)
-    const options = await optionsOf(ctx.db, id)
-    const optionIds = options.map((o) => o._id)
-    if (row.slot === undefined) return { done: true, optionIds }
-    const slot = row.slot as FieldSlot
-    const left = await Promise.all(
-      options.map((o) => carriers(ctx.db, slot, o._id).first()),
-    )
-    if (left.some((s) => s !== null)) return { done: false, optionIds }
-    await ctx.db.patch('contactFields', id, { slot: undefined })
-    return { done: true, optionIds }
+  handler: async (ctx, args) => {
+    const { row } = await retiring(ctx, args)
+    if (row.slot === undefined) return null
+    await ctx.db.patch('contactFields', row._id, {
+      slot: undefined,
+      retiring: undefined,
+    })
+    return null
   },
 })
