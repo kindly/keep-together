@@ -68,6 +68,7 @@ modules), one tenant inside, registered with the shared platform.
 |---|---|
 | `convex/lib/appSchema.ts` | all app tables; `tenants`, `memberships`, `tenantSettings`, `revisions`, domain tables (`convex/schema.ts` adds Convex Auth's `authTables`) |
 | `convex/lib/tenancy.ts` | `tenantQuery`/`tenantMutation`/`tenantAction` + internal variants; membership check; tenant-wrapped `db` |
+| `convex/lib/fieldSlots.ts` | `FIELD_SLOTS` and the generators for the dropdown-field slots' schema fields, indexes and search filter fields (ADR 0023) |
 | `convex/lib/contracts.ts` | `executeContract`, counter/`expected` handling, revision append, restore + upcaster chain |
 | `convex/platform/` | the only module allowed to import raw `query`/`mutation`/`action`: tenant lifecycle, memberships, routing HTTP action, billing rollups |
 | `convex/contacts/` … | one folder per domain module: `schema.ts` fragment, contracts, queries, `warnings.ts`, tests |
@@ -81,7 +82,7 @@ modules), one tenant inside, registered with the shared platform.
 
 | Module | Owns |
 |---|---|
-| `contacts` | Individual/Household/Organization contacts, relationships (ADR 0014) |
+| `contacts` | Individual/Household/Organization contacts, relationships (ADR 0014); dropdown fields and their values (`fields.ts`, ADR 0023); tags until they're removed |
 | `giving` | Contribution, LineItem, RecurringContribution, Pledge, Batch |
 | `giftaid` | Declaration chain, claims, HMRC submission (GovTalk + IRmark in a Node action) |
 | `consent` | Immutable consent log; derived communication preferences |
@@ -92,6 +93,28 @@ modules), one tenant inside, registered with the shared platform.
 These mirror the CiviCRM entity groupings analysed in research.md
 §B2–B6. Domain modules may import `lib`, never each other's internals —
 go through a module's exported functions.
+
+## Dropdown fields
+
+Admin-defined single-choice fields on contacts, which replace tags
+(ADR 0023). They live in `convex/contacts/`: definitions, options and the
+retire action are in `fields.ts`, and the values' contract
+`contacts.fields` is in `contracts.ts`. The tables in
+`convex/lib/appSchema.ts`:
+
+| Table / field | Written by | Notes |
+|---|---|---|
+| `contactFields` | `contacts.field` (`saveVersion`) | one row per field: label, `appliesTo` (kinds), `isActive`; system-owned `slot` (absent once retired) and `retiring`. Index `by_tenant_slot` |
+| `contactFieldOptions` | `contacts.fieldOption` (`saveVersion`) | one row per option: `fieldId`, label, `position`, `isActive`; system-owned `used`. Index `by_tenant_field_position` |
+| `contacts.field1…N` | `contacts.fields` (`fieldsVersion`) | the option id held in each slot; absent = not set |
+| `contactSearch.field1…N` | the projection hook only | copied from the contact; two indexes per slot and one `search_text` filter field each, generated from `FIELD_SLOTS` |
+| `tenantPreferences.staffCanManageFields` | `tenantPreferences.fields` (`fieldsVersion`) | the staff switch (`ListKind` `fields`) |
+
+N is `FIELD_SLOTS` (5). Raising it is loosen-only, but the push rebuilds
+`search_text` and waits for it. The search index's 16 filter fields cap it
+at 10 slots, and past about 8 values would move to a join table (ADR 0023
+decisions 3–5). Tags (`tags`, `contactTags`) are still in the schema until
+plan steps 7–9 remove them.
 
 ## Invariants the tests enforce
 

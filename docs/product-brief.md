@@ -26,13 +26,13 @@ A simple, cheap CRM for small UK community groups and hubs (village halls, commu
 - Free competitors exist (Wonderful.org, KindLink ~1.3% fees) — so the 10% must be justified by convenience/value, and messaging must emphasise the cap
 
 ## MVP scope (proposed)
-1. **Contacts**: simple people database — name, email, tags (member/donor/volunteer), notes, GDPR consent tracking. CSV import from spreadsheets.
+1. **Contacts**: simple people database — name, email, dropdown fields an organisation defines (e.g. supporter type: member/donor/volunteer; these replaced tags, ADR 0023), notes, GDPR consent tracking. CSV import from spreadsheets.
 2. **Donations**:
    - GoCardless integration for Direct Debit regular giving (core feature)
    - Stripe for one-off card donations
    - Hosted/embeddable donation page per organisation
    - Gift Aid declaration capture + HMRC-ready export (full Gift Aid filing can be phase 2)
-3. **Email**: basic broadcast email to tagged segments (newsletters, appeals). Nothing fancy — no automation builders in v1.
+3. **Email**: basic broadcast email to segments chosen by dropdown field (newsletters, appeals). Nothing fancy — no automation builders in v1.
 4. **Billing engine**: track donations processed per org, compute percentage vs flat fee, auto-charge the cheaper amount, show the org a transparent running tally ("you've paid £43 of your £120 annual cap").
 5. **Multi-tenant** from day one: each community group is an isolated org with 1–5 volunteer logins.
 

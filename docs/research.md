@@ -117,6 +117,8 @@ This is the part most worth internalising, because it's the distilled shape of a
 
 **Groups** (static or smart/dynamic) and **Tags** provide segmentation. Group *subscription* is dated and logged — important later for GDPR provenance.
 
+> **keep-together deliberately copies neither CiviCRM's custom fields nor its tags** (ADR 0023). Custom fields are EAV tables (B1) where every filter is a join. Tags are multi-valued, which Convex can't index. Instead an organisation gets a few single-choice *dropdown fields* stored as indexed slots on the contact (5 for now). Combinations of criteria, CiviCRM's smart groups, become saved segments later.
+
 **The money model** is worth copying carefully:
 - A **Contribution** is a single financial transaction, linked to a contact, with a financial type, source, receive date, and status.
 - **Line items** sit under contributions, so a single payment can split across funds/purposes.

@@ -21,7 +21,8 @@ until its backfill has run, so a skipped step fails loudly, not silently.
 | 11 | `f4b1571` (source codes 6, tighten) | — | refuses to deploy unless row 9's `backfillAcquisitionVersion` and `backfillSourceCodesPreference` are isDone (ADR 0022) |
 | 12 | `645f74e` (tag name A, `contactTags.name` loosen) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillContactTagName"}'` (copies each tag's name onto its links) | isDone, and no `contactTags` row without `name` (a link whose tag is missing stays unnamed). The backfill was deleted in `e406038`: run it from this commit |
 | 13 | `e406038` (tag name B, tighten) | — | deploy only where row 12 is done; an unnamed row refuses the deploy |
-| 14 | `main` | optional: `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillRevisionGroupName"}'` (perf-storage 1b, `e50916c`; history falls back without it) | — |
+| 14 | `1a39eb2` (dropdown fields 1, loosen) | `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillFieldsVersion"}'`, then `npx convex run platform/migrations:run '{"fn":"platform/migrations:backfillFieldsPreference"}'` | isDone for both. The push rebuilds `contactSearch`'s `search_text` (its filter fields change) and waits for it, as any `FIELD_SLOTS` change will (ADR 0023). Later fields commits up to `cf59ef7` only add `contactFields.retiring`, optional for good: deploy, nothing to run. The tighten comes with the tag removal (plan step 9) and will refuse to deploy unless both are isDone |
+| 15 | `main` | optional: `npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillRevisionGroupName"}'` (perf-storage 1b, `e50916c`; history falls back without it) | — |
 
 Rehearse the sequence on a rehearsal slot first (README "Rehearsal
 slots"): `pnpm rehearsal:claim`, then `pnpm rehearsal:run <n> --cwd

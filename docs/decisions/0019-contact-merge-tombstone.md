@@ -84,7 +84,12 @@ Initial classification:
   contributions / mandates, pledges, memberships, supporter login,
   contact identifiers (re-parented, see decision 2; lookup by an old id
   lands on the survivor directly).
-- **Tags** are merged by union into the survivor's `tags` slice.
+- ~~**Tags** are merged by union into the survivor's `tags` slice.~~
+  *[superseded 2026-10-23: tags are being removed; see ADR 0023]*
+- **Dropdown field values** (`contacts.field1…N`, ADR 0023) are fields
+  on the contact: staff choose each field's value in the merge UI
+  (default: the survivor's, or the other contact's if the survivor has
+  none), through the survivor's `contacts.fields` contract.
 - **The acquisition code** (`contacts.acquisitionCodeId`, ADR 0022) is
   a field on the contact, not a referencing entity: staff choose which
   code the survivor keeps in the merge UI (default: the code of whichever
