@@ -200,3 +200,94 @@ test('five fields: the add form gives way to a note', () => {
   expect(el.querySelector('input[aria-label="New field"]')).toBeNull()
   expect(el.textContent).toContain('All 5 fields are in use')
 })
+
+const withOptions = (...labels: Array<string>) =>
+  ({
+    ...REGION,
+    deletable: true,
+    options: labels.map((l, i) => opt(l, i)),
+  }) as unknown as Field
+const press = async (label: string) => {
+  const b = el.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!
+  b.focus()
+  await click(b)
+}
+const focused = () => document.activeElement?.getAttribute('aria-label')
+const announced = () => el.querySelector('[aria-live="polite"]')!.textContent
+
+test('a move keeps focus on the moved option, and says where it went', async () => {
+  let done: (v: null) => void = () => {}
+  mutation.mockReturnValueOnce(new Promise((r) => (done = r)))
+  fields = [withOptions('Bronze', 'Silver', 'Gold')]
+  render()
+  await press('Move Bronze down')
+  // Pressed again before the move shows: ignored, the button stays usable.
+  expect(
+    el.querySelector<HTMLButtonElement>('[aria-label="Move Bronze down"]')!
+      .disabled,
+  ).toBe(false)
+  await press('Move Bronze down')
+  expect(mutation).toHaveBeenCalledTimes(1)
+  fields = [withOptions('Silver', 'Bronze', 'Gold')]
+  rerender()
+  await act(async () => done(null))
+  expect(focused()).toBe('Move Bronze down')
+  expect(announced()).toBe('Bronze, position 2 of 3')
+  // To the end: its down arrow is off, so focus goes to up.
+  await press('Move Bronze down')
+  fields = [withOptions('Silver', 'Gold', 'Bronze')]
+  rerender()
+  expect(focused()).toBe('Move Bronze up')
+  expect(announced()).toBe('Bronze, position 3 of 3')
+})
+
+test('a retire elsewhere closes open editors, with a note', async () => {
+  render()
+  await click(button('edit'))
+  const south = [...el.querySelectorAll('[data-testid="field-option"]')][1]
+  await click(button('rename', south))
+  expect(el.querySelector('input[aria-label="Rename South"]')).toBeTruthy()
+  fields = [{ ...REGION, isActive: false, retiring: true, saveVersion: 1 }]
+  rerender()
+  expect(el.querySelector('input[aria-label="Label of Region"]')).toBeNull()
+  expect(el.querySelector('input[aria-label="Rename South"]')).toBeNull()
+  expect(el.textContent).toContain('Your edit was closed unsaved')
+  expect(el.textContent).toContain('Your rename was closed unsaved')
+})
+
+test('archiving an option asks first', async () => {
+  render()
+  const south = [...el.querySelectorAll('[data-testid="field-option"]')][1]
+  await click(button('archive', south))
+  expect(mutation).not.toHaveBeenCalled()
+  const dialog = document.querySelector('[role="alertdialog"]')!
+  expect(dialog.textContent).toContain('Contacts that have it keep it')
+  await click(button('Archive', dialog))
+  expect(mutation).toHaveBeenCalledWith({
+    tenantId: 'tenantA',
+    id: 'South',
+    expected: 0,
+    label: 'South',
+    isActive: false,
+  })
+})
+
+test('an open option rename keeps its field shown when the field is archived', async () => {
+  render()
+  const south = [...el.querySelectorAll('[data-testid="field-option"]')][1]
+  await click(button('rename', south))
+  fields = [{ ...REGION, isActive: false, saveVersion: 1 }]
+  rerender()
+  expect(el.querySelector('input[aria-label="Rename South"]')).toBeTruthy()
+  expect(el.textContent).toContain('Archived while this was open')
+})
+
+test('a field retired elsewhere leaves a notice', () => {
+  fields = [{ ...REGION, isActive: false, retiring: true }]
+  render()
+  fields = []
+  rerender()
+  expect(el.textContent).toContain(
+    'Region has been retired: its values are cleared',
+  )
+})

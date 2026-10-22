@@ -842,9 +842,42 @@ describe('retire', () => {
       retiring: true,
       slot: 1,
     })
-    // No reactivating, no new values; a restore skips them.
+    // No reactivating, no edits to it or its options, no new values; a
+    // restore skips them.
     expect(
       await errorData(saveField(f.a, level.id, { isActive: true })),
+    ).toMatchObject({ reason: 'retiring_field' })
+    expect(
+      await errorData(saveField(f.a, level.id, { label: 'Tier' })),
+    ).toMatchObject({ reason: 'retiring_field' })
+    expect(
+      await errorData(saveOption(f.a, level.id, gold, { label: 'Golden' })),
+    ).toMatchObject({ reason: 'retiring_field' })
+    expect(
+      await errorData(
+        f.a.as.mutation(api.contacts.fields.addOption, {
+          tenantId: f.a.tenantId,
+          fieldId: level.id,
+          label: 'Bronze',
+        }),
+      ),
+    ).toMatchObject({ reason: 'retiring_field' })
+    expect(
+      await errorData(
+        f.a.as.mutation(api.contacts.fields.reorderOptions, {
+          tenantId: f.a.tenantId,
+          fieldId: level.id,
+          order: [silver, gold],
+        }),
+      ),
+    ).toMatchObject({ reason: 'retiring_field' })
+    const [labelRevision] = await revisionsOf(f.a, 'contactFields', level.id)
+    expect(
+      await errorData(
+        f.t.run((ctx) =>
+          restore(scoped(ctx, f.a.tenantId), fieldContracts, labelRevision._id),
+        ),
+      ),
     ).toMatchObject({ reason: 'retiring_field' })
     expect(
       await errorData(

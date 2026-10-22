@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useAction, useMutation, useQuery } from 'convex/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from '../../convex/_generated/api'
 import {
@@ -92,8 +92,35 @@ function FieldsPage() {
   const fields = useQuery(api.contacts.fields.list, { tenantId: tenant._id })
   const [showArchived, setShowArchived] = useState(false)
   const [open, markOpen] = useOpenRows()
-  // Set by a retire this tab ran, once the field has left the list.
+  // What a finished retire did: one this tab ran, or one that ended
+  // elsewhere while this tab showed the field.
   const [retired, setRetired] = useState<string | null>(null)
+  // Fields this tab is retiring: their own message says how it went.
+  const retiringHere = useRef(new Set<string>())
+  const seen = useRef<ReadonlyArray<Field> | undefined>(undefined)
+  useEffect(() => {
+    if (!fields) return
+    const before = seen.current
+    seen.current = fields
+    if (!before) return
+    const now = new Set<string>(fields.map((f) => f._id))
+    const gone = before.filter(
+      (f) => f.retiring && !now.has(f._id) && !retiringHere.current.has(f._id),
+    )
+    if (gone.length) {
+      setRetired(
+        gone
+          .map(
+            (f) =>
+              `${f.label} has been retired: its values are cleared and its place is free for a new field.`,
+          )
+          .join(' '),
+      )
+    }
+  }, [fields])
+  const onRetireStart = useCallback((id: string) => {
+    retiringHere.current.add(id)
+  }, [])
   const shown = fields ? shownFields(fields, showArchived, open) : []
   // Archived fields left out, and archived options of the fields shown.
   const hidden =
@@ -168,6 +195,7 @@ function FieldsPage() {
                   showArchived={showArchived}
                   kept={!showArchived && !f.isActive && !f.retiring}
                   markOpen={markOpen}
+                  onRetireStart={onRetireStart}
                   onRetired={setRetired}
                 />
               ))}
@@ -288,13 +316,15 @@ function FieldCard({
   showArchived,
   kept,
   markOpen,
+  onRetireStart,
   onRetired,
 }: {
   field: Field
   showArchived: boolean
-  /** Archived and shown only while its editor is open. */
+  /** Archived and shown only while an editor in it is open. */
   kept: boolean
   markOpen: MarkOpen
+  onRetireStart: (id: string) => void
   onRetired: (message: string) => void
 }) {
   const tenant = useTenant()
@@ -314,7 +344,17 @@ function FieldCard({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [open, markOptionOpen] = useOpenRows()
-  useMarkOpen(field._id, editing, markOpen)
+  // An option's open rename keeps the whole card shown too.
+  useMarkOpen(field._id, editing || open.size > 0, markOpen)
+  // The option last moved here and its index before the move, until the
+  // move shows: its row then takes focus back (see OptionRow's `refocus`).
+  const [moved, setMoved] = useState<{
+    id: Option['_id']
+    by: -1 | 1
+    from: number
+  } | null>(null)
+  // The polite announcement of where it went.
+  const [position, setPosition] = useState('')
 
   const options = shownOptions(field.options, showArchived, open)
   const hiddenOptions = field.options.length - options.length
@@ -322,6 +362,21 @@ function FieldCard({
   const retiring = running || field.retiring
   const manage = canManage && !retiring
   const dim = field.isActive ? '' : 'opacity-60'
+  // The retire refuses every edit to the field, so an open editor closes.
+  const [closed, setClosed] = useState(false)
+  useEffect(() => {
+    if (!retiring || !editing) return
+    setEditing(false)
+    setClosed(true)
+  }, [retiring, editing])
+
+  const movedTo = moved ? options.findIndex((o) => o._id === moved.id) : -1
+  const landed = moved !== null && movedTo !== -1 && movedTo !== moved.from
+  useEffect(() => {
+    if (!landed) return
+    const o = options[movedTo]
+    setPosition(`${o.label}, position ${movedTo + 1} of ${options.length}`)
+  }, [landed, movedTo, options])
 
   async function setActive(isActive: boolean, expected: number) {
     setArchiving(null)
@@ -358,6 +413,7 @@ function FieldCard({
     setConfirmRetire(false)
     setError(null)
     setRunning(true)
+    onRetireStart(field._id)
     try {
       const { cleared } = await retire({ tenantId: tenant._id, id: field._id })
       // The field has left the list (its slot is free), so this card is
@@ -371,17 +427,23 @@ function FieldCard({
     }
   }
 
+  // Ignored while a move is in flight rather than disabling the buttons,
+  // which would drop keyboard focus.
+  const moving = useRef(false)
   async function move(id: Option['_id'], by: -1 | 1) {
+    if (moving.current) return
     const order = moveOption(field.options, options, id, by)
     if (!order) return
+    moving.current = true
     setError(null)
-    setBusy(true)
+    setMoved({ id, by, from: options.findIndex((o) => o._id === id) })
     try {
       await reorder({ tenantId: tenant._id, fieldId: field._id, order })
     } catch (err) {
+      setMoved(null)
       setError(failureMessage(err, 'row'))
     } finally {
-      setBusy(false)
+      moving.current = false
     }
   }
 
@@ -476,6 +538,12 @@ function FieldCard({
           onResume={() => void runRetire()}
         />
       )}
+      {closed && (
+        <span role="status" className="text-xs text-amber-700">
+          Your edit was closed unsaved: this field is being retired, so it can’t
+          be changed.
+        </span>
+      )}
       {editing && <EditField field={field} onDone={() => setEditing(false)} />}
       {error && (
         <span role="alert" className="text-xs text-red-700">
@@ -501,15 +569,21 @@ function FieldCard({
                 fieldLabel={field.label}
                 manage={manage}
                 busy={busy}
+                retiring={retiring}
                 first={i === 0}
                 last={i === options.length - 1}
                 kept={!showArchived && !o.isActive}
                 markOpen={markOptionOpen}
                 onMove={(by) => void move(o._id, by)}
+                refocus={landed && moved.id === o._id ? moved.by : null}
+                onRefocused={() => setMoved(null)}
               />
             ))}
           </ol>
         )}
+        <span role="status" aria-live="polite" className="sr-only">
+          {position}
+        </span>
         {manage && <AddOption field={field} />}
       </div>
       <ConfirmDialog
@@ -717,43 +791,74 @@ function OptionRow({
   fieldLabel,
   manage,
   busy: fieldBusy,
+  retiring,
   first,
   last,
   kept,
   markOpen,
   onMove,
+  refocus,
+  onRefocused,
 }: {
   option: Option
   fieldLabel: string
   manage: boolean
-  /** A reorder or other field-level change is in flight. */
+  /** A field-level change is in flight. */
   busy: boolean
+  /** The field is being retired: no edits. */
+  retiring: boolean
   first: boolean
   last: boolean
   /** Archived and shown only while its editor is open. */
   kept: boolean
   markOpen: MarkOpen
   onMove: (by: -1 | 1) => void
+  /**
+   * This option was just moved this way and the move now shows: focus
+   * goes back to the same arrow, or the other one at the end of the list.
+   */
+  refocus: -1 | 1 | null
+  onRefocused: () => void
 }) {
   const tenant = useTenant()
   const save = useMutation(api.contacts.fields.saveOption)
   const remove = useMutation(api.contacts.fields.deleteOption)
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState<number | null>(null)
+  // The counter the archive confirm opened on; null while it is closed.
+  const [archiving, setArchiving] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [closed, setClosed] = useState(false)
   useMarkOpen(option._id, editing, markOpen)
   const blocked = optionDeleteBlocked(option)
   const off = busy || fieldBusy
+  const up = useRef<HTMLButtonElement>(null)
+  const down = useRef<HTMLButtonElement>(null)
 
-  async function setActive(isActive: boolean) {
+  useEffect(() => {
+    if (!retiring || !editing) return
+    setEditing(false)
+    setClosed(true)
+  }, [retiring, editing])
+
+  useEffect(() => {
+    if (refocus === null) return
+    const target =
+      (refocus === -1 && !first) || last ? up.current : down.current
+    target?.focus()
+    onRefocused()
+  }, [refocus, first, last, onRefocused])
+
+  async function setActive(isActive: boolean, expected: number) {
+    setArchiving(null)
     setError(null)
     setBusy(true)
     try {
       await save({
         tenantId: tenant._id,
         id: option._id,
-        expected: option.saveVersion,
+        expected,
         label: option.label,
         isActive,
       })
@@ -796,8 +901,9 @@ function OptionRow({
         {manage && !editing && (
           <span className="flex flex-wrap items-baseline gap-3">
             <button
+              ref={up}
               type="button"
-              disabled={off || first}
+              disabled={first}
               aria-label={`Move ${option.label} up`}
               onClick={() => onMove(-1)}
               className="text-xs text-neutral-600 disabled:text-neutral-300"
@@ -805,8 +911,9 @@ function OptionRow({
               ↑
             </button>
             <button
+              ref={down}
               type="button"
-              disabled={off || last}
+              disabled={last}
               aria-label={`Move ${option.label} down`}
               onClick={() => onMove(1)}
               className="text-xs text-neutral-600 disabled:text-neutral-300"
@@ -823,7 +930,11 @@ function OptionRow({
             <button
               type="button"
               disabled={off}
-              onClick={() => void setActive(!option.isActive)}
+              onClick={() =>
+                option.isActive
+                  ? setArchiving(option.saveVersion)
+                  : void setActive(true, option.saveVersion)
+              }
               className="text-xs text-neutral-600 underline"
             >
               {option.isActive ? 'archive' : 'reactivate'}
@@ -852,6 +963,12 @@ function OptionRow({
           Archived while this was open. It stays here until you close it.
         </span>
       )}
+      {closed && (
+        <span role="status" className="text-xs text-amber-700">
+          Your rename was closed unsaved: {fieldLabel} is being retired, so its
+          options can’t be changed.
+        </span>
+      )}
       {error && (
         <span role="alert" className="text-xs text-red-700">
           {error}
@@ -865,6 +982,15 @@ function OptionRow({
         cancel="Keep it"
         onConfirm={() => void confirmDelete(deleting ?? option.saveVersion)}
         onCancel={() => setDeleting(null)}
+      />
+      <ConfirmDialog
+        open={archiving !== null}
+        title={`Archive ${option.label}?`}
+        description={`It leaves the ${fieldLabel} dropdown. Contacts that have it keep it, and you can reactivate it later.`}
+        confirm="Archive"
+        cancel="Keep it"
+        onConfirm={() => void setActive(false, archiving ?? option.saveVersion)}
+        onCancel={() => setArchiving(null)}
       />
     </li>
   )

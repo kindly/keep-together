@@ -221,8 +221,8 @@ export async function fieldDefinitions(
  * A field definition. Labels are unique among the live fields,
  * case-insensitively (a retired field's label is free again). Create takes
  * the lowest free slot, or refuses when all FIELD_SLOTS are taken; the
- * slot is preserved by every save and restore. A retired field can't be
- * edited, bar a restore, which leaves it retired.
+ * slot is preserved by every save and restore. A retiring field can't be
+ * edited at all; a retired one only by a restore, which leaves it retired.
  */
 export const field = defineContract({
   name: 'contacts.field',
@@ -236,8 +236,10 @@ export const field = defineContract({
     if (root && root.slot === undefined && command.source !== 'restore') {
       throw rejected('retired_field', 'This field has been retired')
     }
-    // A restore too: reactivating would let values back in mid-retire.
-    if (root?.retiring && p.isActive) {
+    // No edit at all mid-retire, a restore's included: reactivating would
+    // let values back in, and a rename would change what the retire's
+    // history names. (retireStart archives before it marks the field.)
+    if (root?.retiring) {
       throw rejected(
         'retiring_field',
         `${root.label} is being retired: finish the retire first`,
@@ -281,8 +283,9 @@ export const field = defineContract({
  * One option of a field. Create takes the field (`createWith`), fixed for
  * good. Labels are unique within the field, case-insensitively, archived
  * options included; a field holds at most FIELD_OPTION_LIMIT. `used` is
- * created false and never touched here. A retired field's options can't
- * be edited, bar a restore.
+ * created false and never touched here. A retiring field's options can't
+ * be edited at all (nor added, nor reordered); a retired field's only by
+ * a restore.
  */
 export const fieldOption = defineContract({
   name: 'contacts.fieldOption',
@@ -310,6 +313,12 @@ export const fieldOption = defineContract({
     if (!parent) throw rejected('unknown_field', 'The field must exist')
     if (parent.slot === undefined && command.source !== 'restore') {
       throw rejected('retired_field', `${parent.label} has been retired`)
+    }
+    if (parent.retiring) {
+      throw rejected(
+        'retiring_field',
+        `${parent.label} is being retired: finish the retire first`,
+      )
     }
     const labelNormalized = normaliseFieldLabel(p.label)
     const clash = siblings.find(
@@ -624,9 +633,9 @@ async function retiring(
 }
 
 /**
- * Mark the field retiring (a system write, like `slot`) and archive it (a
- * `contacts.field` revision). A field already retiring is a resumed
- * retire.
+ * Archive the field (a `contacts.field` revision) and mark it retiring (a
+ * system write, like `slot`), after which neither contract takes an edit
+ * to it or its options. A field already retiring is a resumed retire.
  */
 export const retireStart = internalTenantMutation({
   args: retireArgs,
@@ -635,9 +644,8 @@ export const retireStart = internalTenantMutation({
     if (row.slot === undefined) {
       throw rejected('retired_field', `${row.label} is already retired`)
     }
-    if (!row.retiring) {
-      await ctx.db.patch('contactFields', row._id, { retiring: true })
-    }
+    // Archive first: the contract refuses any edit once the field is
+    // marked. Both land in this one transaction.
     if (row.isActive) {
       await executeContract(
         caller,
@@ -645,6 +653,9 @@ export const retireStart = internalTenantMutation({
         { label: row.label, appliesTo: row.appliesTo, isActive: false },
         { entityId: row._id, source: 'ui' },
       )
+    }
+    if (!row.retiring) {
+      await ctx.db.patch('contactFields', row._id, { retiring: true })
     }
     return null
   },
