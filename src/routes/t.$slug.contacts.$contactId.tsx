@@ -175,7 +175,9 @@ function ContactPage() {
           />
           <ContactNotes contactId={id} />
         </div>
+        {/* Keyed like the form: a restore notice belongs to its contact. */}
         <ContactHistory
+          key={`${tenant._id}:${id}`}
           id={id}
           version={rootVersion(data.contact)}
           archived={data.contact.archived}

@@ -1,17 +1,22 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
-import { ConvexError } from 'convex/values'
 import { useEffect, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
-import { BULK_FIELD_LIMIT, BULK_TAG_LIMIT } from '../../convex/contacts/rules'
+import { BULK_TAG_LIMIT } from '../../convex/contacts/rules'
 import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
 import { fieldArgs, fieldShown } from '../lib/field-filters'
 import type { FieldPick } from '../lib/field-filters'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
 import { holdList, releaseList } from '../lib/list-hold'
 import { usePagedList } from '../lib/paged-list'
+import {
+  BulkFieldControls,
+  BulkFieldResult,
+  bulkFailure,
+  useBulkSetField,
+} from '../components/bulk-set-field'
 
 export const Route = createFileRoute('/t/$slug/contacts/')({
   component: ContactList,
@@ -84,6 +89,7 @@ function ContactList() {
   const fields = useQuery(api.contacts.fields.list, { tenantId: tenant._id })
   const [fieldPicks, setFieldPicks] = useState<Array<FieldPick>>([])
   const fieldFilters = fieldArgs(fieldPicks, fields, kind)
+  const bulkField = useBulkSetField()
   // Search text or a tag: one window (`search`). Otherwise browse a page at
   // a time (`list`).
   const searching = search.trim() !== '' || tagFilter !== ''
@@ -261,8 +267,12 @@ function ContactList() {
           tags={(tags ?? []).filter((t) => t.isActive)}
           allTags={tags ?? []}
           fields={(fields ?? []).filter((f) => f.isActive && !f.retiring)}
+          bulkField={bulkField}
         />
       )}
+      {/* Outside the bar: a set moves rows out of a list filtered on the
+          field, which can empty the selection, or the list, mid-run. */}
+      <BulkFieldResult bulk={bulkField.bulk} onDismiss={bulkField.dismiss} />
       {searching && listed?.truncated && (contacts?.length ?? 0) > 0 && (
         <p className="mt-3 text-sm text-amber-800">
           Showing the first {contacts?.length} contacts
@@ -477,21 +487,6 @@ function SourceFilter({
   )
 }
 
-/** A user-facing line for a failed `bulkTag` or `bulkSetField`. */
-function bulkFailure(err: unknown, fallback = 'Could not change tags'): string {
-  if (!(err instanceof ConvexError)) return fallback
-  const d = err.data as {
-    kind?: string
-    message?: string
-    problems?: Array<{ message: string }>
-  }
-  if (d.kind === 'invalid' && d.problems?.length)
-    return d.problems.map((p) => p.message).join('; ')
-  if (d.kind === 'stale')
-    return 'Someone else changed one of these contacts just now; try again'
-  return d.message ?? d.kind ?? fallback
-}
-
 /**
  * Add or remove one tag on the selected rows. Each batch is one
  * all-or-nothing `bulkTag` (one command group); the bar shows progress
@@ -506,6 +501,7 @@ function BulkBar({
   tags,
   allTags,
   fields,
+  bulkField,
 }: {
   chosen: Array<Id<'contacts'>>
   allChosen: boolean
@@ -517,6 +513,8 @@ function BulkBar({
   allTags: Array<{ _id: Id<'tags'>; name: string }>
   /** Fields a value can be set on: active, not being retired. */
   fields: Array<FieldDefinition>
+  /** The page's bulk "set field" run (it outlives this bar). */
+  bulkField: ReturnType<typeof useBulkSetField>
 }) {
   const tenant = useTenant()
   const bulkTag = useMutation(api.contacts.mutations.bulkTag)
@@ -560,7 +558,10 @@ function BulkBar({
       })
     } catch (err) {
       const soFar = changed > 0 ? ` (${changed} changed before it stopped)` : ''
-      setBulk({ state: 'failed', message: `${bulkFailure(err)}${soFar}` })
+      setBulk({
+        state: 'failed',
+        message: `${bulkFailure(err, 'Could not change tags')}${soFar}`,
+      })
     }
   }
 
@@ -613,7 +614,14 @@ function BulkBar({
         </>
       )}
       {chosen.length > 0 && fields.length > 0 && (
-        <BulkField chosen={chosen} fields={fields} />
+        <BulkFieldControls
+          chosen={chosen}
+          fields={fields}
+          running={bulkField.bulk.state === 'running'}
+          onRun={(ids, field, optionId) =>
+            void bulkField.run(ids, field, optionId)
+          }
+        />
       )}
       <span role="status" className="text-neutral-600">
         {bulk.state === 'running' &&
@@ -626,134 +634,5 @@ function BulkBar({
         </span>
       )}
     </div>
-  )
-}
-
-type BulkFieldState =
-  | { state: 'idle' }
-  | { state: 'running'; done: number; total: number }
-  | { state: 'done'; message: string }
-  | { state: 'failed'; message: string }
-
-/**
- * Set one field to an option, or clear it, on the selected rows: each
- * batch of BULK_FIELD_LIMIT is one all-or-nothing `bulkSetField` (one
- * command group). Contacts of a kind the field doesn't apply to are
- * skipped by the server and counted in the result.
- */
-function BulkField({
-  chosen,
-  fields,
-}: {
-  chosen: Array<Id<'contacts'>>
-  fields: Array<FieldDefinition>
-}) {
-  const tenant = useTenant()
-  const bulkSetField = useMutation(api.contacts.mutations.bulkSetField)
-  const [fieldId, setFieldId] = useState<Id<'contactFields'> | ''>('')
-  // '' until chosen; NOT_SET clears.
-  const [optionId, setOptionId] = useState<string>('')
-  const [bulk, setBulk] = useState<BulkFieldState>({ state: 'idle' })
-  const running = bulk.state === 'running'
-  const field = fields.find((f) => f._id === fieldId)
-  const options = field?.options.filter((o) => o.isActive) ?? []
-
-  async function run() {
-    if (!field || !optionId) return
-    const option =
-      optionId === NOT_SET ? null : (optionId as Id<'contactFieldOptions'>)
-    const label = options.find((o) => o._id === option)?.label
-    const ids = [...chosen]
-    let changed = 0
-    let skipped = 0
-    setBulk({ state: 'running', done: 0, total: ids.length })
-    try {
-      for (let i = 0; i < ids.length; i += BULK_FIELD_LIMIT) {
-        const batch = ids.slice(i, i + BULK_FIELD_LIMIT)
-        const result = await bulkSetField({
-          tenantId: tenant._id,
-          contactIds: batch,
-          fieldId: field._id,
-          optionId: option,
-        })
-        changed += result.changed
-        skipped += result.skipped
-        setBulk({ state: 'running', done: i + batch.length, total: ids.length })
-      }
-      const n = `${changed} contact${changed === 1 ? '' : 's'}`
-      const done =
-        option === null
-          ? `Cleared “${field.label}” on ${n}`
-          : `Set “${field.label}” to “${label ?? '?'}” on ${n}`
-      setBulk({
-        state: 'done',
-        message:
-          skipped > 0
-            ? `${done}; skipped ${skipped} of a kind it doesn’t apply to`
-            : done,
-      })
-    } catch (err) {
-      const soFar = changed > 0 ? ` (${changed} changed before it stopped)` : ''
-      setBulk({
-        state: 'failed',
-        message: `${bulkFailure(err, 'Could not set the field')}${soFar}`,
-      })
-    }
-  }
-
-  return (
-    <>
-      <select
-        aria-label="Field to set"
-        value={fieldId}
-        disabled={running}
-        onChange={(e) => {
-          setFieldId(e.target.value as Id<'contactFields'> | '')
-          setOptionId('')
-        }}
-        className="rounded border border-neutral-300 px-2 py-1"
-      >
-        <option value="">choose field…</option>
-        {fields.map((f) => (
-          <option key={f._id} value={f._id}>
-            {f.label}
-          </option>
-        ))}
-      </select>
-      {field && (
-        <select
-          aria-label={`Value for ${field.label}`}
-          value={optionId}
-          disabled={running}
-          onChange={(e) => setOptionId(e.target.value)}
-          className="rounded border border-neutral-300 px-2 py-1"
-        >
-          <option value="">choose value…</option>
-          {options.map((o) => (
-            <option key={o._id} value={o._id}>
-              {o.label}
-            </option>
-          ))}
-          <option value={NOT_SET}>clear (not set)</option>
-        </select>
-      )}
-      <button
-        type="button"
-        disabled={running || !field || !optionId}
-        onClick={() => void run()}
-        className="rounded bg-neutral-900 px-2 py-1 text-white hover:bg-neutral-700 disabled:opacity-40"
-      >
-        Set field
-      </button>
-      <span role="status" className="text-neutral-600">
-        {bulk.state === 'running' && `Setting… ${bulk.done} of ${bulk.total}`}
-        {bulk.state === 'done' && bulk.message}
-      </span>
-      {bulk.state === 'failed' && (
-        <span role="alert" className="text-red-700">
-          {bulk.message}
-        </span>
-      )}
-    </>
   )
 }
