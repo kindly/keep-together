@@ -377,6 +377,13 @@ type Kind = Doc<'contacts'>['kind']
  * The contacts list's field filter: one field's option, or `null` for
  * "not set". Several combine (all must hold): the first is the index range
  * while browsing, the rest are checked per row (g1q10).
+ *
+ * Known weakness (review L4, left as is): the range is the first filter
+ * even when it is "not set", which usually matches most contacts. Then
+ * "not set + one option" reads mostly rows the second filter drops: `list`
+ * pages come back short and `search` may stop at LIST_SCAN_CAP
+ * (`tooBroad`). Preferring a set value as the range would fix it; for now
+ * the UI should put set values first.
  */
 const fieldFilter = v.object({
   fieldId: v.id('contactFields'),

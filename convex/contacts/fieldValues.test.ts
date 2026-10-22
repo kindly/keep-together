@@ -434,6 +434,22 @@ describe('bulkSetField', () => {
     }
   })
 
+  test('a clear reaches every holder, even one the field no longer applies to (L2)', async () => {
+    const acme = await contact(f.a, 'Acme', 'organization')
+    await bulk([ada, acme], region.id, region.options.North)
+    await patchField(region.id, { appliesTo: ['individual'] })
+    expect(await bulk([ada, acme], region.id, null)).toMatchObject({
+      changed: 2,
+      skipped: 0,
+    })
+    expect((await root(acme))!.field1).toBeUndefined()
+    // Setting is still kind-checked.
+    expect(await bulk([acme], region.id, region.options.South)).toMatchObject({
+      changed: 0,
+      skipped: 1,
+    })
+  })
+
   test('clears, and does nothing at all when nothing changes', async () => {
     await bulk([ada], region.id, region.options.North)
     expect(await bulk([ada], region.id, null)).toMatchObject({ changed: 1 })
@@ -509,6 +525,87 @@ describe('retire and restore', () => {
     ])
     expect(live.problems.fields?.[0].message).toMatch(/retired/)
     expect(colour.id).toBeDefined()
+  })
+
+  test('a restore records the state it wrote, so restoring that revision can only set what the contact held (M1)', async () => {
+    await saveFields(ada, [{ fieldId: type.id, optionId: type.options.Member }])
+    const [rev1] = await fieldRevisions(ada)
+    await saveFields(ada, [{ fieldId: type.id, optionId: type.options.Donor }])
+    await patchField(type.id, { appliesTo: ['organization'] })
+    const restored = await f.a.as.mutation(
+      api.contacts.mutations.restoreRevision,
+      { tenantId: f.a.tenantId, revisionId: rev1._id },
+    )
+    expect(restored.skippedFields).toEqual([
+      { label: 'Type', reason: 'wrong_kind' },
+    ])
+    const rev3 = (await fieldRevisions(ada)).at(-1)!
+    // The revision is what Ada holds (Donor), not the payload restored.
+    expect(rev3.payload).toEqual({
+      values: [{ fieldId: type.id, optionId: type.options.Donor }],
+    })
+    await patchField(type.id, { appliesTo: ALL_KINDS })
+    await saveFields(ada, [
+      { fieldId: type.id, optionId: type.options.Member },
+      { fieldId: region.id, optionId: region.options.North },
+    ])
+    const back = await f.a.as.mutation(api.contacts.mutations.restoreTo, {
+      tenantId: f.a.tenantId,
+      id: ada,
+      at: rev3._creationTime,
+    })
+    expect(back.restored).toEqual(['contacts.fields'])
+    expect(back.skippedFields).toEqual([])
+    const after = (await root(ada))!
+    expect(after.field2).toBe(type.options.Donor)
+    expect(after.field1).toBeUndefined()
+  })
+
+  test('a restore keeps the values of fields created after the revision, and says so (L3)', async () => {
+    await saveFields(ada, [
+      { fieldId: region.id, optionId: region.options.North },
+      { fieldId: type.id, optionId: type.options.Member },
+    ])
+    const [before] = await fieldRevisions(ada)
+    await retire(region, [ada])
+    // A newer field in the retired one's slot, and one in a never-used slot.
+    const colour = await defineField(f.a, 'Colour', 1, ['Red'])
+    const size = await defineField(f.a, 'Size', 3, ['Large'])
+    const unset = await defineField(f.a, 'Unset', 4, ['Any'])
+    await saveFields(ada, [
+      { fieldId: type.id, optionId: type.options.Donor },
+      { fieldId: colour.id, optionId: colour.options.Red },
+      { fieldId: size.id, optionId: size.options.Large },
+    ])
+    const restored = await f.a.as.mutation(
+      api.contacts.mutations.restoreRevision,
+      { tenantId: f.a.tenantId, revisionId: before._id },
+    )
+    expect(restored.skippedFields).toEqual([
+      { label: 'Region', reason: 'retired' },
+      { label: 'Colour', reason: 'added_after' },
+      { label: 'Size', reason: 'added_after' },
+    ])
+    const after = (await root(ada))!
+    expect(after.field1).toBe(colour.options.Red)
+    expect(after.field2).toBe(type.options.Member)
+    expect(after.field3).toBe(size.options.Large)
+    expect(after.field4).toBeUndefined()
+    expect(unset.id).toBeDefined()
+    // A field that existed then but held nothing is the revision's to clear.
+    await saveFields(ada, [
+      { fieldId: type.id, optionId: type.options.Member },
+      { fieldId: colour.id, optionId: colour.options.Red },
+      { fieldId: size.id, optionId: size.options.Large },
+      { fieldId: unset.id, optionId: unset.options.Any },
+    ])
+    const withColour = (await fieldRevisions(ada)).at(-1)!
+    await saveFields(ada, [])
+    await f.a.as.mutation(api.contacts.mutations.restoreRevision, {
+      tenantId: f.a.tenantId,
+      revisionId: withColour._id,
+    })
+    expect((await root(ada))!.field4).toBe(unset.options.Any)
   })
 
   test('restoreTo reports the skipped values too', async () => {

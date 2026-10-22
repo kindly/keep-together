@@ -11,6 +11,7 @@ import {
   restoreEntityTo,
 } from '../lib/contracts'
 import type { CommandGroup, ContractCtx, Problem } from '../lib/contracts'
+import type { FieldRestoreNote } from './contracts'
 import { tenantPreferences } from '../lib/lists'
 import { tenantMutation } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
@@ -21,6 +22,7 @@ import {
   archive,
   checkFieldValues,
   contactContracts,
+  planFieldRestore,
   details,
   fieldValues,
   identifierClashes,
@@ -383,8 +385,9 @@ async function describeFieldChange(
 /**
  * Set one field to one option (or clear it, `optionId: null`) on a batch
  * of contacts, as one command group: one `contacts.fields` revision per
- * contact that changes, none for contacts already in that state. Contacts
- * of a kind the field doesn't apply to are skipped and counted. The whole
+ * contact that changes, none for contacts already in that state. To set,
+ * contacts of a kind the field doesn't apply to are skipped and counted;
+ * a clear clears every holder, whatever its kind. The whole
  * batch is refused if any contact is unknown, the field is retired, or a
  * contact would be refused the option (`fieldValueVerdict`: it is another
  * field's, or archived, or its field is).
@@ -435,12 +438,14 @@ export const bulkSetField = tenantMutation({
     }> = []
     for (const contact of contacts) {
       if (!contact) throw rejected('unknown_contact', 'Contact must exist')
-      if (!field.appliesTo.includes(contact.kind)) {
+      const current = contact[slot]
+      if ((current ?? null) === optionId) continue
+      // Only setting is kind-checked: a clear reaches every holder, even
+      // one the field no longer applies to.
+      if (optionId && !field.appliesTo.includes(contact.kind)) {
         skipped++
         continue
       }
-      const current = contact[slot]
-      if ((current ?? null) === optionId) continue
       if (optionId) {
         // The contract's own rule, checked up front so a refusal names
         // the batch, not one contact in it.
@@ -870,25 +875,27 @@ export const saveForm = tenantMutation({
 // ── history ────────────────────────────────────────────────────────────────
 
 /**
- * The values of a restored `contacts.fields` payload that the restore left
- * out, and why (`checkFieldValues` in restore mode). Read after the
- * restore: a value it set is now held, so passes; one it skipped still
- * isn't, so is skipped again.
+ * What restoring a `contacts.fields` revision left as it was, and why
+ * (`planFieldRestore`). Read after the restore, against the contact as it
+ * wrote it: a value it set is now held, so passes; one it left alone is
+ * still not, and a newer field still holds its value.
  */
-async function skippedFieldsIn(
+async function fieldRestoreNotes(
   db: ScopedDatabaseReader,
-  contactId: string,
-  payload: unknown,
-) {
-  const contact = await db.get(contactId as Id<'contacts'>)
-  const values = (payload as Partial<Payloads['fields']> | null)?.values ?? []
-  if (!contact || values.length === 0) return []
-  return (await checkFieldValues(db, contact, values, true)).skipped
+  restored: Doc<'revisions'>,
+): Promise<Array<FieldRestoreNote>> {
+  const contact = await db.get(restored.entityId as Id<'contacts'>)
+  if (!contact) return []
+  const values = (restored.payload as Payloads['fields']).values
+  return (await planFieldRestore(db, contact, values, restored._creationTime))
+    .notes
 }
 
 /**
  * Restore one stored revision as a new command. `skippedFields`: the
- * field values it left out (`retired` or `wrong_kind`), by field label.
+ * fields it left as they were (`FieldRestoreNote`: `retired`,
+ * `wrong_kind`, or `added_after` "kept: added after this version"), by
+ * label.
  */
 export const restoreRevision = tenantMutation({
   args: { revisionId: v.id('revisions') },
@@ -897,7 +904,7 @@ export const restoreRevision = tenantMutation({
     const revision = await ctx.db.get(revisionId)
     const skippedFields =
       revision?.contract === fieldValues.name
-        ? await skippedFieldsIn(ctx.db, revision.entityId, revision.payload)
+        ? await fieldRestoreNotes(ctx.db, revision)
         : []
     return { ...result, skippedFields }
   },
@@ -922,9 +929,9 @@ export const restoreTo = tenantMutation({
         label: `restore to ${new Date(at).toISOString()}`,
       },
     )
-    // The fields revision this restore just wrote carries the payload it
-    // restored, skipped values and all.
-    const restoredFields = result.restored.includes(fieldValues.name)
+    // The fields revision this restore just wrote names the revision it
+    // restored.
+    const written = result.restored.includes(fieldValues.name)
       ? await ctx.db
           .query('revisions')
           .withIndex('by_tenant_entity_contract', (q) =>
@@ -936,8 +943,10 @@ export const restoreTo = tenantMutation({
           .order('desc')
           .first()
       : null
-    const skippedFields = restoredFields
-      ? await skippedFieldsIn(ctx.db, id, restoredFields.payload)
+    const restored =
+      written?.restoredFrom && (await ctx.db.get(written.restoredFrom))
+    const skippedFields = restored
+      ? await fieldRestoreNotes(ctx.db, restored)
       : []
     return { ...result, skippedFields }
   },

@@ -8,6 +8,8 @@
  *   prepare (normalise + invariant checks)
  *     → re-read the root (fresh, in-transaction)
  *     → check `expected` against the slice's counter (stale ⇒ throw, no trace)
+ *     → on restore, the contract's `restorePayload`, if any (what can be
+ *       written back now: the payload applied and recorded)
  *     → run the pure apply function
  *     → bump the counter
  *     → append a revision (normalised payload + contract name + version)
@@ -131,6 +133,20 @@ export type Contract<
   ): Promise<void>
   /** fromVersion → function taking a payload at that version to the next. */
   upcasters?: Record<number, (payload: unknown) => unknown>
+  /**
+   * Restore only: the payload to apply *and record*, given the root as it
+   * is now and the revision being restored. For a slice whose stored state
+   * can't always be written back (a dropdown field since retired), so the
+   * new revision is the state actually written, never more: a later
+   * restore of it can only set what the root really held.
+   */
+  // eslint-disable-next-line @typescript-eslint/method-signature-style
+  restorePayload?(
+    ctx: ContractCtx,
+    payload: ObjectType<TFields>,
+    root: Doc<TRoot> | null,
+    restored: Doc<'revisions'>,
+  ): Promise<ObjectType<TFields>>
 }
 
 export function defineContract<
@@ -189,7 +205,7 @@ export async function executeContract<
   // Shape check matters for restore (stored payloads re-enter here); for
   // live calls the mutation's args validator has already run.
   validate(v.object(contract.fields), input, { throw: true })
-  const payload = contract.prepare ? contract.prepare(input) : input
+  let payload = contract.prepare ? contract.prepare(input) : input
 
   let root: Doc<TRoot> | null = null
   let counter = 0
@@ -210,6 +226,16 @@ export async function executeContract<
       })
     }
     counter = current + 1
+  }
+  if (
+    opts.source === 'restore' &&
+    opts.restoredFrom !== undefined &&
+    contract.restorePayload
+  ) {
+    const restored = await ctx.db.get(opts.restoredFrom)
+    if (restored) {
+      payload = await contract.restorePayload(ctx, payload, root, restored)
+    }
   }
 
   const id = await contract.apply(ctx, payload, root, {

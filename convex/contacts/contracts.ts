@@ -51,12 +51,12 @@ import {
   projectFields,
   projectTag,
 } from './searchProjection'
-import { markOptionUsed, resolveFieldValue } from './fieldDefs'
+import { fieldsBySlot, markOptionUsed, resolveFieldValue } from './fieldDefs'
 import { fieldValuesFields } from './fieldTypes'
 import type { FieldValue, FieldValueSkip } from './fieldTypes'
-import { optionIdsOf, slotValues } from './fieldValues'
+import { optionIdsOf, slotValues, sortValues } from './fieldValues'
 import { slotFieldName } from '../lib/fieldSlots'
-import type { FieldSlot, SlotFieldName } from '../lib/fieldSlots'
+import type { SlotFieldName } from '../lib/fieldSlots'
 
 /**
  * v2 (external identifiers X1): `externalIdentifier` left the payload for
@@ -404,9 +404,10 @@ export const acquisition = defineContract({
  * kind and, on a save, has an active field and option. A held value is
  * kept as it is, even once its option or field is archived. The first use
  * marks the option `used`. Restore re-applies history, so it may bring
- * back an archived option, and it skips a value whose field has since been
- * retired (its slot may hold another field now) or no longer applies to
- * the contact's kind; the restore mutations report those.
+ * back an archived option. What it can't write back, and the fields that
+ * didn't exist yet, are settled before apply (`restorePayload`:
+ * `planFieldRestore`), so the restore's revision records the state it
+ * actually wrote.
  */
 export const fieldValues = defineContract({
   name: 'contacts.fields',
@@ -416,6 +417,19 @@ export const fieldValues = defineContract({
   project: projectFields,
   fields: fieldValuesFields,
   prepare: prepareFields,
+  restorePayload: async (ctx, p, root, restored) =>
+    root
+      ? {
+          values: (
+            await planFieldRestore(
+              ctx.db,
+              root,
+              p.values,
+              restored._creationTime,
+            )
+          ).values,
+        }
+      : p,
   apply: async (ctx, p, root, command) => {
     if (!root)
       throw rejected('no_root', 'contacts.fields targets an existing contact')
@@ -483,18 +497,20 @@ export async function checkFieldValues(
   const slots: Partial<Record<SlotFieldName, Id<'contactFieldOptions'>>> = {}
   const toMark: Array<Id<'contactFieldOptions'>> = []
   const refused: Array<FieldRefusal> = []
-  const skipped: Array<{ label: string; reason: FieldValueSkip }> = []
+  const skipped: Array<{
+    fieldId: Id<'contactFields'>
+    label: string
+    reason: FieldValueSkip
+  }> = []
   for (const { value, resolved, refusal } of results) {
     if (refusal) {
       refused.push({ fieldId: value.fieldId, ...refusal })
     } else if (resolved.outcome === 'skipped') {
-      skipped.push({ label: resolved.field.label, reason: resolved.reason })
-      // A field still in its slot keeps what the contact holds there now.
-      const { slot } = resolved.field
-      if (slot !== undefined) {
-        const name = slotFieldName(slot as FieldSlot)
-        slots[name] = root[name]
-      }
+      skipped.push({
+        fieldId: value.fieldId,
+        label: resolved.field.label,
+        reason: resolved.reason,
+      })
     } else {
       slots[slotFieldName(resolved.slot)] = resolved.option._id
       if (!held.has(resolved.option._id) && !resolved.option.used) {
@@ -503,6 +519,62 @@ export async function checkFieldValues(
     }
   }
   return { slots, toMark, refused, skipped }
+}
+
+/** Why a restore didn't write a field's value from the revision. */
+export type FieldRestoreNote = {
+  label: string
+  /**
+   * `retired`: the field is gone, its value left out. `wrong_kind`: the
+   * field no longer applies to the contact's kind, so the contact keeps
+   * what it holds now. `added_after`: the field didn't exist at the
+   * revision's time, so the contact keeps what it holds now.
+   */
+  reason: FieldValueSkip | 'added_after'
+}
+
+/**
+ * What restoring `values` (a revision written at `restoredAt`) writes to
+ * the contact as it is now, and what it leaves alone:
+ *   - a retired field's value is left out;
+ *   - a value whose field no longer suits the kind is not written, and the
+ *     field keeps its current value;
+ *   - a field created after the revision (a newer field, perhaps in a
+ *     retired one's slot) is not the revision's to clear: it keeps its
+ *     current value.
+ * `values` is the payload to apply and record. `notes` lists every field
+ * left as it is (an `added_after` one only if it holds a value).
+ */
+export async function planFieldRestore(
+  db: ScopedDatabaseReader,
+  root: Doc<'contacts'>,
+  values: Array<FieldValue>,
+  restoredAt: number,
+): Promise<{ values: Array<FieldValue>; notes: Array<FieldRestoreNote> }> {
+  const [checked, bySlot] = await Promise.all([
+    checkFieldValues(db, root, values, true),
+    fieldsBySlot(db),
+  ])
+  const skippedIds = new Set<string>(checked.skipped.map((x) => x.fieldId))
+  const named = new Set<string>(values.map((x) => x.fieldId))
+  const out = values.filter((x) => !skippedIds.has(x.fieldId))
+  const notes: Array<FieldRestoreNote> = checked.skipped.map(
+    ({ label, reason }) => ({ label, reason }),
+  )
+  for (const [slot, field] of bySlot) {
+    const held = root[slotFieldName(slot)]
+    const kept = { fieldId: field._id, optionId: held! }
+    if (skippedIds.has(field._id)) {
+      // wrong_kind: what the contact holds stays.
+      if (held) out.push(kept)
+    } else if (!named.has(field._id) && field._creationTime > restoredAt) {
+      if (held) {
+        out.push(kept)
+        notes.push({ label: field.label, reason: 'added_after' })
+      }
+    }
+  }
+  return { values: sortValues(out), notes }
 }
 
 /** A tag definition. Renaming keeps every assignment (they hold the id). */

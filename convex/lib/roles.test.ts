@@ -237,29 +237,6 @@ describe('every public mutation and action', () => {
       tenantId: b.tenantId,
       ...person('Other'),
     })
-    // A dropdown field with an option, inserted as the definitions'
-    // contracts would (step 2 owns those writes).
-    await t.run(async (ctx) => {
-      const fieldId = await ctx.db.insert('contactFields', {
-        tenantId: a.tenantId,
-        label: 'Region',
-        labelNormalized: 'region',
-        appliesTo: ['individual', 'organization', 'household'],
-        isActive: true,
-        slot: 1,
-        saveVersion: 0,
-      })
-      await ctx.db.insert('contactFieldOptions', {
-        tenantId: a.tenantId,
-        fieldId,
-        label: 'North',
-        labelNormalized: 'north',
-        position: 0,
-        isActive: true,
-        used: false,
-        saveVersion: 0,
-      })
-    })
     const idsByTable = await t.run(async (ctx) => {
       const out: Record<string, string> = { tenants: a.tenantId }
       for (const table of [
@@ -271,8 +248,6 @@ describe('every public mutation and action', () => {
         'identifierTypes',
         'sourceCodes',
         'revisions',
-        'contactFields',
-        'contactFieldOptions',
       ] as const satisfies ReadonlyArray<TableNames>) {
         const row = (await ctx.db.query(table).collect()).find(
           (r) => r.tenantId === a.tenantId,
@@ -281,6 +256,36 @@ describe('every public mutation and action', () => {
       }
       return out
     })
+    // Step 4 (contact values) only: bulkSetField takes a field and an
+    // option. Until step 2's fixture (createField + addOption) is merged in,
+    // insert one of each as its contracts would; with it, this does nothing.
+    if (!idsByTable.contactFields) {
+      Object.assign(
+        idsByTable,
+        await t.run(async (ctx) => {
+          const fieldId = await ctx.db.insert('contactFields', {
+            tenantId: a.tenantId,
+            label: 'Region',
+            labelNormalized: 'region',
+            appliesTo: ['individual', 'organization', 'household'],
+            isActive: true,
+            slot: 1,
+            saveVersion: 0,
+          })
+          const optionId = await ctx.db.insert('contactFieldOptions', {
+            tenantId: a.tenantId,
+            fieldId,
+            label: 'North',
+            labelNormalized: 'north',
+            position: 0,
+            isActive: true,
+            used: false,
+            saveVersion: 0,
+          })
+          return { contactFields: fieldId, contactFieldOptions: optionId }
+        }),
+      )
+    }
     const ids = (table: string) => {
       const id = idsByTable[table]
       if (!id) {
