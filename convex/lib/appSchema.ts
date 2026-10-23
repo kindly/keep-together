@@ -645,6 +645,8 @@ export const appTables = {
   //     snapshot (declarationVersion). Create-only: never edited.
   //   giftaid.cancellation → cancelledFrom, cancellationNote
   //     (cancellationVersion)
+  //   giftaid.void → voidReason, voidedAt, voidedBy (voidVersion).
+  //     Create-only: "made in error", the declaration never applied.
   // System-owned: `enteredBy`, set on create. Coverage of a gift is derived
   // from these rows (giftaid/declarations), never stored on the gift.
   // Erasure must keep the whole row, snapshot included, for HMRC's 6-year
@@ -657,6 +659,7 @@ export const appTables = {
     contributionId: v.optional(v.id('contributions')),
     madeOn: v.string(), // ISO date
     method: declarationMethod,
+    wordingVersion: v.string(), // giftaid/validators HMRC_MODEL_WORDING_VERSION
     // The name and home address the declaration was made under.
     firstName: v.string(),
     lastName: v.string(),
@@ -664,9 +667,14 @@ export const appTables = {
     postcode: v.string(),
     cancelledFrom: v.optional(v.string()), // ISO date; absent = not cancelled
     cancellationNote: v.optional(v.string()),
+    // Present = voided: recorded in error, never covers anything.
+    voidReason: v.optional(v.string()),
+    voidedAt: v.optional(v.number()),
+    voidedBy: v.optional(v.id('users')), // absent = system
     enteredBy: v.optional(v.id('users')), // absent = system
     declarationVersion: v.number(),
     cancellationVersion: v.number(),
+    voidVersion: v.number(),
   })
     // Prefix `contactId` = a contact's chain, in date order.
     .index('by_tenant_contact_madeOn', ['tenantId', 'contactId', 'madeOn']),

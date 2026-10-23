@@ -8,8 +8,11 @@ import {
   openAt,
   prepareCancellation,
   prepareDeclaration,
+  prepareVoid,
+  ukDate,
   yearsBefore,
 } from './rules'
+import { HMRC_MODEL_WORDING_VERSION } from './validators'
 import type { DeclarationWindow } from './rules'
 import { declarationWarnings } from './warnings'
 
@@ -43,6 +46,12 @@ describe('dates', () => {
     expect(yearsBefore('2028-02-29', 4)).toBe('2024-02-29')
     expect(yearsBefore('2024-02-29', 1)).toBe('2023-03-01')
     expect(yearsBefore('2026-12-31', 4)).toBe('2022-12-31')
+  })
+
+  test('ukDate: the London calendar date, BST included', () => {
+    expect(ukDate(Date.UTC(2026, 6, 1, 22, 59))).toBe('2026-07-01')
+    expect(ukDate(Date.UTC(2026, 6, 1, 23, 0))).toBe('2026-07-02')
+    expect(ukDate(Date.UTC(2026, 11, 31, 23, 59))).toBe('2026-12-31')
   })
 })
 
@@ -96,6 +105,19 @@ describe('coverage', () => {
     },
   )
 
+  test.each(['thisGift', 'future', 'futureAndPast4y'] as const)(
+    '%s: voided covers nothing, past or future, and is never current or open',
+    (scope) => {
+      const voided = decl(scope, { voidedAt: 1 })
+      for (const date of ['2022-03-03', MADE, '2030-01-01']) {
+        expect(covers(voided, at(date, GIFT))).toBe(false)
+      }
+      expect(coveringDeclaration([voided], at(MADE, GIFT))).toBeNull()
+      expect(currentOf([voided], MADE)).toBeNull()
+      expect(openAt(voided, MADE)).toBe(false)
+    },
+  )
+
   test('a later declaration covers again after a cancellation', () => {
     const chain = [
       decl('future', { madeOn: '2020-01-01', cancelledFrom: '2022-01-01' }),
@@ -146,6 +168,7 @@ describe('prepare', () => {
     scope: 'future' as const,
     madeOn: ' 2026-03-03 ',
     method: 'paperForm' as const,
+    wordingVersion: ` ${HMRC_MODEL_WORDING_VERSION} `,
     firstName: '  Jo ',
     lastName: 'Bloggs',
     addressLine1: ' 12   High St ',
@@ -156,6 +179,7 @@ describe('prepare', () => {
     expect(prepareDeclaration(payload)).toEqual({
       ...payload,
       madeOn: '2026-03-03',
+      wordingVersion: HMRC_MODEL_WORDING_VERSION,
       firstName: 'Jo',
       addressLine1: '12 High St',
       postcode: 'SW1A 1AA',
@@ -174,6 +198,26 @@ describe('prepare', () => {
     ).toThrow()
   })
 
+  test('refuses onScreenByDonor (no donor screen yet) and a blank wording version', () => {
+    expect(() =>
+      prepareDeclaration({ ...payload, method: 'onScreenByDonor' }),
+    ).toThrow(/no screen for donors/)
+    expect(() =>
+      prepareDeclaration({ ...payload, wordingVersion: ' ' }),
+    ).toThrow()
+    expect(
+      prepareDeclaration({ ...payload, method: 'staffTickedNoEvidence' })
+        .method,
+    ).toBe('staffTickedNoEvidence')
+  })
+
+  test('void: a reason is required, tidied', () => {
+    expect(prepareVoid({ reason: ' wrong Jo ' })).toEqual({
+      reason: 'wrong Jo',
+    })
+    expect(() => prepareVoid({ reason: '  ' })).toThrow()
+  })
+
   test('cancellation: blanks absent, a real date, a note only with a date', () => {
     expect(prepareCancellation({ cancelledFrom: ' ', note: '' })).toEqual({
       cancelledFrom: undefined,
@@ -187,6 +231,7 @@ describe('prepare', () => {
 describe('warnings', () => {
   const full = {
     method: 'paperForm' as const,
+    wordingVersion: HMRC_MODEL_WORDING_VERSION,
     firstName: 'Jo',
     lastName: 'Bloggs',
     addressLine1: '12',
@@ -212,5 +257,18 @@ describe('warnings', () => {
     expect(
       declarationWarnings({ ...full, method: 'oral' }).map((w) => w.anchor),
     ).toEqual(['method'])
+  })
+
+  test('staff ticked with no evidence; not the current wording', () => {
+    expect(
+      declarationWarnings({ ...full, method: 'staffTickedNoEvidence' }).map(
+        (w) => w.label,
+      ),
+    ).toEqual(['No evidence yet'])
+    expect(
+      declarationWarnings({ ...full, wordingVersion: 'hmrc-2012' }).map(
+        (w) => w.anchor,
+      ),
+    ).toEqual(['wordingVersion'])
   })
 })

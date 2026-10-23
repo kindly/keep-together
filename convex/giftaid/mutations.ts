@@ -1,5 +1,5 @@
 /**
- * Recording Gift Aid declarations and cancellations. Staff and admins
+ * Recording Gift Aid declarations, cancellations and voids. Staff and admins
  * (the scoped constructor's default); viewers only read.
  */
 import { v } from 'convex/values'
@@ -7,7 +7,7 @@ import type { Id } from '../_generated/dataModel'
 import { commandGroup, executeContract, invalid } from '../lib/contracts'
 import type { CommandGroup, ContractCtx, Source } from '../lib/contracts'
 import { tenantMutation } from '../lib/tenancy'
-import { cancellation, chain, declaration } from './declarations'
+import { cancellation, chain, declaration, voidContract } from './declarations'
 import { isIsoDate, openAt } from './rules'
 import { declarationFields } from './validators'
 import type { DeclarationPayload } from './validators'
@@ -76,4 +76,19 @@ export const recordCancellation = tenantMutation({
   },
   handler: (ctx, { contactId, cancelledFrom, note }) =>
     cancelDeclarations(ctx, contactId, cancelledFrom, note, 'ui'),
+})
+
+/**
+ * "Made in error" on one declaration of the Gift Aid panel: it never
+ * applied, to any gift. Refused if already voided.
+ */
+export const voidDeclaration = tenantMutation({
+  args: { id: v.id('giftAidDeclarations'), reason: v.string() },
+  handler: (ctx, { id, reason }) =>
+    executeContract(
+      ctx,
+      voidContract,
+      { reason },
+      { entityId: id, source: 'ui' },
+    ),
 })

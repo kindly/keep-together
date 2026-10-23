@@ -14,6 +14,7 @@ import type { Id, TableNames } from '../_generated/dataModel'
 import schema from '../schema'
 import { errorData, modules, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
+import { HMRC_MODEL_WORDING_VERSION } from '../giftaid/validators'
 import type { ListKind } from './lists'
 import { tenantAction, tenantMutation, tenantQuery } from './tenancy'
 import type { Role } from './tenancy'
@@ -287,6 +288,18 @@ describe('every public mutation and action', () => {
       method: 'cash',
       allocations: [{ sourceCodeId: versionId!, amount: 2000n }],
     })
+    await a.as.mutation(api.giftaid.mutations.declare, {
+      tenantId: a.tenantId,
+      contactId: c1,
+      scope: 'future',
+      madeOn: '2026-10-20',
+      method: 'paperForm',
+      wordingVersion: HMRC_MODEL_WORDING_VERSION,
+      firstName: 'Ames',
+      lastName: '',
+      addressLine1: '',
+      postcode: '',
+    })
     // Another tenant's rows must never be picked: ids come from tenant A.
     await b.as.mutation(api.contacts.mutations.create, {
       tenantId: b.tenantId,
@@ -304,6 +317,7 @@ describe('every public mutation and action', () => {
         'contactFields',
         'contactFieldOptions',
         'contributions',
+        'giftAidDeclarations',
         'revisions',
       ] as const satisfies ReadonlyArray<TableNames>) {
         const row = (await ctx.db.query(table).collect()).find(

@@ -12,18 +12,25 @@
  *   thisGift         exactly its own gift
  *
  * A cancellation with `cancelledFrom` ≤ `d` removes coverage for gifts on
- * or after that date (3.8.2). Dates are ISO `YYYY-MM-DD`, so they compare
+ * or after that date (3.8.2). A voided declaration (recorded in error)
+ * covers nothing, whatever its window. Dates are ISO `YYYY-MM-DD`, so they compare
  * as strings.
  */
 import type { Id } from '../_generated/dataModel'
 import { invalid } from '../lib/contracts'
 import type { Problem } from '../lib/contracts'
-import type { CancellationPayload, DeclarationPayload } from './validators'
+import type {
+  CancellationPayload,
+  DeclarationPayload,
+  VoidPayload,
+} from './validators'
 
 /** The most declarations one contact may have (each read on every coverage check). */
 export const DECLARATION_LIMIT = 100
 export const SNAPSHOT_FIELD_MAX = 200
 export const CANCELLATION_NOTE_MAX = 1000
+export const VOID_REASON_MAX = 1000
+export const WORDING_VERSION_MAX = 50
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -54,6 +61,19 @@ export function yearsBefore(date: string, years: number): string {
   return `${pad(y, 4)}-${pad(month)}-${pad(day)}`
 }
 
+/**
+ * The UK calendar date at `at` (ms since the epoch), `YYYY-MM-DD`: what
+ * "today" means to the staff entering a declaration.
+ */
+export function ukDate(at: number): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/London',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(at)
+}
+
 /** What coverage needs to know about one declaration. */
 export type DeclarationWindow = {
   scope: DeclarationPayload['scope']
@@ -61,6 +81,8 @@ export type DeclarationWindow = {
   /** The gift a `thisGift` declaration was made with. */
   contributionId?: Id<'contributions'>
   cancelledFrom?: string
+  /** Present = voided (recorded in error): it never applied. */
+  voidedAt?: number
 }
 
 /** The gift being asked about: its date and, for `thisGift`, its id. */
@@ -74,6 +96,7 @@ export function windowStart(d: DeclarationWindow): string | null {
 }
 
 export function covers(d: DeclarationWindow, gift: GiftRef): boolean {
+  if (d.voidedAt !== undefined) return false
   if (d.cancelledFrom !== undefined && d.cancelledFrom <= gift.date) {
     return false
   }
@@ -119,12 +142,14 @@ export function currentOf<T extends DeclarationWindow>(
 
 /**
  * Whether a cancellation from `date` applies to the declaration: it had
- * been made by then and wasn't already cancelled on or before it. A later
+ * been made by then, isn't void and wasn't already cancelled on or before
+ * it. A later
  * cancellation date is moved earlier; a declaration made after `date` is
  * left alone (the donor declared again since).
  */
 export function openAt(d: DeclarationWindow, date: string): boolean {
   return (
+    d.voidedAt === undefined &&
     d.madeOn <= date &&
     (d.cancelledFrom === undefined || d.cancelledFrom > date)
   )
@@ -136,7 +161,10 @@ function tidy(value: string): string {
 
 /**
  * Snapshot fields tidied (postcode upper-cased); `madeOn` a real date;
- * a gift named exactly when the scope is `thisGift`.
+ * a wording version given; a gift named exactly when the scope is
+ * `thisGift`; never `onScreenByDonor` while no donor-facing screen exists
+ * (staff can't make that true). A future `madeOn` is refused by the
+ * contract, which knows the time.
  * Empty snapshot fields are storable: they warn (warnings.ts), because
  * staff may tick before they have the address (g3q3).
  */
@@ -144,6 +172,7 @@ export function prepareDeclaration(p: DeclarationPayload): DeclarationPayload {
   const out = {
     ...p,
     madeOn: p.madeOn.trim(),
+    wordingVersion: p.wordingVersion.trim(),
     firstName: tidy(p.firstName),
     lastName: tidy(p.lastName),
     addressLine1: tidy(p.addressLine1),
@@ -152,6 +181,24 @@ export function prepareDeclaration(p: DeclarationPayload): DeclarationPayload {
   const problems: Array<Problem> = []
   if (!isIsoDate(out.madeOn)) {
     problems.push({ field: 'madeOn', message: 'Enter a date (YYYY-MM-DD)' })
+  }
+  if (out.method === 'onScreenByDonor') {
+    problems.push({
+      field: 'method',
+      message:
+        'There is no screen for donors to declare on yet: record how staff took the declaration',
+    })
+  }
+  if (!out.wordingVersion) {
+    problems.push({
+      field: 'wordingVersion',
+      message: 'Say which declaration wording the donor agreed to',
+    })
+  } else if (out.wordingVersion.length > WORDING_VERSION_MAX) {
+    problems.push({
+      field: 'wordingVersion',
+      message: `At most ${WORDING_VERSION_MAX} characters`,
+    })
   }
   if (out.scope === 'thisGift' && out.contributionId === undefined) {
     problems.push({
@@ -207,5 +254,21 @@ export function prepareCancellation(
     })
   }
   if (problems.length) throw invalid(problems)
+  return out
+}
+
+/** A reason is required: the void is the audit record of the mistake. */
+export function prepareVoid(p: VoidPayload): VoidPayload {
+  const out = { reason: p.reason.trim() }
+  if (!out.reason) {
+    throw invalid([
+      { field: 'reason', message: 'Say why the declaration was made in error' },
+    ])
+  }
+  if (out.reason.length > VOID_REASON_MAX) {
+    throw invalid([
+      { field: 'reason', message: `At most ${VOID_REASON_MAX} characters` },
+    ])
+  }
   return out
 }

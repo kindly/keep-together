@@ -1,10 +1,13 @@
 /**
  * Gift Aid declarations (cash gifts plan, step 1b): one
  * `giftAidDeclarations` root per declaration, a dated chain per contact
- * (rule 1). Two contracts partition it:
+ * (rule 1). Three contracts partition it:
  *
  *   giftaid.declaration  — what was declared; create-only, never edited
- *   giftaid.cancellation — from when it no longer applies
+ *   giftaid.cancellation — from when it no longer applies (the donor
+ *                          withdrew from a date)
+ *   giftaid.void         — it was recorded in error and never applied;
+ *                          create-only
  *
  * Coverage is derived from the chain at read time (rules.ts) and never
  * stored on a gift. Other modules use `coverage` and `currentDeclaration`,
@@ -13,24 +16,29 @@
  */
 import type { Doc, Id } from '../_generated/dataModel'
 import { describeGift } from '../giving/gifts'
-import { defineContract, registry, rejected } from '../lib/contracts'
+import { defineContract, invalid, registry, rejected } from '../lib/contracts'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import {
   DECLARATION_LIMIT,
+  covers,
   coveringDeclaration,
   currentOf,
   prepareCancellation,
   prepareDeclaration,
+  prepareVoid,
+  ukDate,
 } from './rules'
 import type { GiftRef } from './rules'
-import { cancellationFields, declarationFields } from './validators'
+import { cancellationFields, declarationFields, voidFields } from './validators'
 
 /**
  * A declaration as made. Refused for anyone but an individual (HMRC
- * 3.6.7: not in a company's or joint names), and for a "this gift only"
- * declaration whose gift isn't this contact's. Never updated: a mistake
- * is a cancellation plus a new declaration, so restore of a revision is
- * refused too. `enteredBy` is the actor, set here once.
+ * 3.6.7: not in a company's or joint names); when made after today (UK
+ * time, at the command's time); and for a "this gift only" declaration
+ * whose gift isn't this contact's, is void, or already has one covering
+ * it. Never updated: a declaration recorded in error is voided
+ * (`giftaid.void`), a donor withdrawing is a cancellation, so restore of
+ * a revision is refused too. `enteredBy` is the actor, set here once.
  */
 export const declaration = defineContract({
   name: 'giftaid.declaration',
@@ -43,8 +51,16 @@ export const declaration = defineContract({
     if (root) {
       throw rejected(
         'immutable',
-        'A declaration can’t be changed: record a cancellation, then a new declaration',
+        'A declaration can’t be changed: void it as made in error, then record a new one',
       )
+    }
+    if (p.madeOn > ukDate(command.at)) {
+      throw invalid([
+        {
+          field: 'madeOn',
+          message: 'A declaration can’t be made in the future',
+        },
+      ])
     }
     const [contact, held, gift] = await Promise.all([
       // Another tenant's ids read as null through the scoped db.
@@ -65,6 +81,28 @@ export const declaration = defineContract({
         'A “this gift only” declaration must name one of this contact’s gifts',
       )
     }
+    if (p.contributionId && gift?.status === 'void') {
+      throw rejected(
+        'void_gift',
+        'A void gift can’t have a Gift Aid declaration',
+      )
+    }
+    if (
+      p.contributionId &&
+      held.some(
+        (d) =>
+          d.scope === 'thisGift' &&
+          covers(d, {
+            date: gift!.receivedOn,
+            contributionId: p.contributionId,
+          }),
+      )
+    ) {
+      throw rejected(
+        'duplicate_gift_declaration',
+        'This gift already has a “this gift only” declaration',
+      )
+    }
     if (held.length >= DECLARATION_LIMIT) {
       throw rejected(
         'declaration_limit',
@@ -76,6 +114,7 @@ export const declaration = defineContract({
       enteredBy: command.actor ?? undefined,
       declarationVersion: 0,
       cancellationVersion: 0,
+      voidVersion: 0,
     })
   },
 })
@@ -83,7 +122,8 @@ export const declaration = defineContract({
 /**
  * When the declaration stops applying: gifts on or after `cancelledFrom`
  * aren't covered by it (3.8.2). Clearing it undoes a cancellation
- * recorded by mistake.
+ * recorded by mistake. Refused on a voided declaration: there is nothing
+ * left to cancel.
  */
 export const cancellation = defineContract({
   name: 'giftaid.cancellation',
@@ -99,6 +139,9 @@ export const cancellation = defineContract({
         'giftaid.cancellation targets an existing declaration',
       )
     }
+    if (root.voidedAt !== undefined) {
+      throw rejected('voided', 'This declaration was made in error and voided')
+    }
     await ctx.db.patch('giftAidDeclarations', root._id, {
       cancelledFrom: p.cancelledFrom,
       cancellationNote: p.note,
@@ -107,8 +150,43 @@ export const cancellation = defineContract({
   },
 })
 
+/**
+ * "Made in error": the declaration was recorded by mistake (wrong contact,
+ * never made) and never applied to any gift, past or future; coverage
+ * ignores it everywhere. Unlike a cancellation it has no date. Create
+ * only: refused on a declaration already voided, so restore can't undo it
+ * either (a new declaration is the way back). Who and when are the
+ * command's actor and time.
+ */
+export const voidContract = defineContract({
+  name: 'giftaid.void',
+  entity: 'giftAidDeclarations',
+  version: 1,
+  counter: 'voidVersion',
+  fields: voidFields,
+  prepare: prepareVoid,
+  apply: async (ctx, p, root, command) => {
+    if (!root) {
+      throw rejected('no_root', 'giftaid.void targets an existing declaration')
+    }
+    if (root.voidedAt !== undefined) {
+      throw rejected('immutable', 'This declaration is already voided')
+    }
+    await ctx.db.patch('giftAidDeclarations', root._id, {
+      voidReason: p.reason,
+      voidedAt: command.at,
+      voidedBy: command.actor ?? undefined,
+    })
+    return root._id
+  },
+})
+
 /** Everything restore needs to know about this module. */
-export const giftaidContracts = registry(declaration, cancellation)
+export const giftaidContracts = registry(
+  declaration,
+  cancellation,
+  voidContract,
+)
 
 // ── reading the chain ──────────────────────────────────────────────────────
 

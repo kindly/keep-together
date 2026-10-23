@@ -3,6 +3,7 @@
  * yet enough for HMRC. Never blocks a save; a later claim step decides
  * which declarations count. Shared by backend and UI.
  */
+import { HMRC_MODEL_WORDING_VERSION } from './validators'
 import type { DeclarationPayload } from './validators'
 
 export type Warning = {
@@ -15,7 +16,12 @@ export type Warning = {
 export function declarationWarnings(
   d: Pick<
     DeclarationPayload,
-    'method' | 'firstName' | 'lastName' | 'addressLine1' | 'postcode'
+    | 'method'
+    | 'wordingVersion'
+    | 'firstName'
+    | 'lastName'
+    | 'addressLine1'
+    | 'postcode'
   >,
 ): Array<Warning> {
   const warnings: Array<Warning> = []
@@ -44,6 +50,25 @@ export function declarationWarnings(
       label: 'Made orally',
       message:
         'Not effective until the donor has been sent a written record of it',
+    })
+  }
+  // Staff ticked with no form in hand: honest, but nothing yet shows the
+  // donor made it. A claim leaves these out until evidence is recorded.
+  if (d.method === 'staffTickedNoEvidence') {
+    warnings.push({
+      anchor: 'method',
+      label: 'No evidence yet',
+      message:
+        'Gifts won’t be claimed until there is evidence the donor made this declaration',
+    })
+  }
+  // 3.6.2: the donor must have been given HMRC's tax explanation; an older
+  // wording may still be valid but is worth a look.
+  if (d.wordingVersion !== HMRC_MODEL_WORDING_VERSION) {
+    warnings.push({
+      anchor: 'wordingVersion',
+      label: 'Wording',
+      message: 'Not HMRC’s current model declaration wording',
     })
   }
   return warnings
