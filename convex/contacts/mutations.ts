@@ -16,6 +16,7 @@ import { tenantPreferences } from '../lib/lists'
 import { tenantMutation } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { describe } from '../sources/code'
+import { createContact } from './donors'
 import {
   acquisition,
   addresses,
@@ -75,19 +76,7 @@ export const create = tenantMutation({
           code ? `new contact, acquisition code ${code.code}` : 'new contact',
         )
       : undefined
-    const { id } = await executeContract(ctx, details, payload, {
-      source: 'ui',
-      group,
-    })
-    if (acquisitionCodeId) {
-      await executeContract(
-        ctx,
-        acquisition,
-        { codeId: acquisitionCodeId },
-        { entityId: id, expected: 0, source: 'ui', group },
-      )
-    }
-    return id
+    return createContact(ctx, payload, { acquisitionCodeId, group })
   },
 })
 
