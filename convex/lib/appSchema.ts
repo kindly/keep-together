@@ -42,6 +42,16 @@ export const suppressionReason = v.union(
   v.literal('bounce'),
   v.literal('release'),
 )
+/** How a gift was paid: by hand, or on a card reader we don't drive (yet). */
+export const contributionMethod = v.union(v.literal('cash'), v.literal('card'))
+/**
+ * Where a gift stands. `void` = entered by mistake: kept, counts for
+ * nothing. Room for `pending` / `failed` / `refunded` (ADR 0008).
+ */
+export const contributionStatus = v.union(
+  v.literal('completed'),
+  v.literal('void'),
+)
 
 /**
  * The app's tables; `convex/schema.ts` adds the auth library's to them.
@@ -528,6 +538,85 @@ export const appTables = {
     // Prefix `parentId` = a part's children (categories: parentId absent);
     // both = a sibling by name.
     .index('by_tenant_parent', ['tenantId', 'parentId', 'nameNormalized']),
+
+  // ── giving (cash gifts plan) ──────────────────────────────────────────
+  // One gift, its own aggregate (history class, ADR 0019: never deleted,
+  // kept through erasure). Field ownership:
+  //   giving.gift   → contactId (create-only), receivedOn, amount, method,
+  //                   reference, allocations (giftVersion)
+  //   giving.status → status (statusVersion)
+  // System-owned: `enteredBy`, set on create, preserved by every save and
+  // restore. `allocations` split `amount` (pence, rule 7) across source
+  // codes (versions), summing to it (ADR 0022 decision 9); the page sends
+  // one. Read by code through `contributionAllocations`.
+  contributions: defineTable({
+    tenantId: v.id('tenants'),
+    contactId: v.id('contacts'),
+    receivedOn: v.string(), // ISO date
+    amount: v.int64(), // pence, > 0
+    method: contributionMethod,
+    reference: v.optional(v.string()), // card only: the reader's receipt id
+    allocations: v.array(
+      v.object({
+        key: v.string(),
+        sourceCodeId: v.id('sourceCodes'),
+        amount: v.int64(),
+      }),
+    ),
+    status: contributionStatus,
+    enteredBy: v.optional(v.id('users')), // absent = system
+    giftVersion: v.number(),
+    statusVersion: v.number(),
+  })
+    // "My recent gifts": newest first by _creationTime.
+    .index('by_tenant_enteredBy', ['tenantId', 'enteredBy'])
+    // A contact's gifts panel, newest first.
+    .index('by_tenant_contact_receivedOn', [
+      'tenantId',
+      'contactId',
+      'receivedOn',
+    ]),
+
+  // Derived projection: one row per allocation of a gift, rebuilt from the
+  // gift by the `project` hook of both giving contracts (giving/projection)
+  // in the same transaction, never written anywhere else. No contract, no
+  // counter, no revisions. `detailId` / `categoryId` are copies that stay
+  // right because a part's parent never changes. Income by code, detail or
+  // category over dates is an index range (ADR 0022 decision 9); the
+  // (code, contact) index is also the contact × source code join.
+  contributionAllocations: defineTable({
+    tenantId: v.id('tenants'),
+    contributionId: v.id('contributions'),
+    key: v.string(), // the allocation's key in the gift
+    contactId: v.id('contacts'),
+    sourceCodeId: v.id('sourceCodes'),
+    detailId: v.id('sourceCodes'),
+    categoryId: v.id('sourceCodes'),
+    receivedOn: v.string(),
+    amount: v.int64(),
+    status: contributionStatus,
+  })
+    .index('by_tenant_contribution', ['tenantId', 'contributionId'])
+    .index('by_tenant_sourceCode_receivedOn', [
+      'tenantId',
+      'sourceCodeId',
+      'receivedOn',
+    ])
+    .index('by_tenant_detail_receivedOn', [
+      'tenantId',
+      'detailId',
+      'receivedOn',
+    ])
+    .index('by_tenant_category_receivedOn', [
+      'tenantId',
+      'categoryId',
+      'receivedOn',
+    ])
+    .index('by_tenant_sourceCode_contact', [
+      'tenantId',
+      'sourceCodeId',
+      'contactId',
+    ]),
 
   // ── comms ─────────────────────────────────────────────────────────────
   // Suppression per address (domain rule 5: centralised in comms). One row
