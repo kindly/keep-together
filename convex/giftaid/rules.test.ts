@@ -88,6 +88,32 @@ describe('coverage', () => {
     ).toBe(false)
   })
 
+  test.each(['future', 'futureAndPast4y'] as const)(
+    '%s made with a gift covers that gift even before its window; no other gift',
+    (scope) => {
+      const madeWith = decl(scope, { contributionId: GIFT })
+      // Back-dated gift entered today: before madeOn − 4y and before madeOn.
+      expect(covers(madeWith, at('2020-01-01', GIFT))).toBe(true)
+      expect(covers(madeWith, at('2020-01-01', OTHER_GIFT))).toBe(false)
+      expect(covers(madeWith, at('2020-01-01'))).toBe(false)
+      // The window is unchanged for every other gift.
+      expect(covers(madeWith, at(MADE, OTHER_GIFT))).toBe(true)
+      expect(coveringDeclaration([madeWith], at('2020-01-01', GIFT))).toBe(
+        madeWith,
+      )
+      // Cancelled on or before its gift's date: not covered.
+      expect(
+        covers(
+          decl(scope, { contributionId: GIFT, cancelledFrom: '2020-01-01' }),
+          at('2020-01-01', GIFT),
+        ),
+      ).toBe(false)
+      expect(covers({ ...madeWith, voidedAt: 1 }, at('2020-01-01', GIFT))).toBe(
+        false,
+      )
+    },
+  )
+
   test.each(['thisGift', 'future', 'futureAndPast4y'] as const)(
     '%s: cancellation before or on the gift date removes coverage; after keeps it',
     (scope) => {
@@ -186,16 +212,16 @@ describe('prepare', () => {
     })
   })
 
-  test('refuses a bad date, a thisGift with no gift, a gift on an enduring scope', () => {
+  test('refuses a bad date and a thisGift with no gift; an enduring scope may name its gift', () => {
     expect(() =>
       prepareDeclaration({ ...payload, madeOn: '2026-02-30' }),
     ).toThrow()
     expect(() =>
       prepareDeclaration({ ...payload, scope: 'thisGift' }),
     ).toThrow()
-    expect(() =>
-      prepareDeclaration({ ...payload, contributionId: GIFT }),
-    ).toThrow()
+    expect(
+      prepareDeclaration({ ...payload, contributionId: GIFT }).contributionId,
+    ).toBe(GIFT)
   })
 
   test('refuses onScreenByDonor (no donor screen yet) and a blank wording version', () => {

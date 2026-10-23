@@ -332,9 +332,27 @@ describe('giftaid.declaration', () => {
       await reason(declare({ scope: 'thisGift', contributionId: samsGift })),
     ).toBe('unknown_gift')
     expect(await kind(declare({ scope: 'thisGift' }))).toBe('invalid')
-    expect(await kind(declare({ scope: 'future', contributionId: gift }))).toBe(
-      'invalid',
-    )
+    expect(
+      await reason(declare({ scope: 'future', contributionId: samsGift })),
+    ).toBe('unknown_gift')
+  })
+
+  test('an enduring declaration made with a back-dated gift covers that gift', async () => {
+    const gift = await giftFor(f.t, f.a, jo, '2021-01-10')
+    const other = await giftFor(f.t, f.a, jo, '2021-01-10')
+    const covering = (id: Id<'contributions'>) =>
+      f.t.run((ctx) =>
+        coverage({ db: scopeWriter(ctx, f.a.tenantId) }, jo, '2021-01-10', id),
+      )
+    // Both windows start after 2021-01-10 (madeOn 2026-03-03).
+    const { id } = await declare({ scope: 'future', contributionId: gift })
+    expect((await covering(gift))?.id).toBe(id)
+    expect(await covering(other)).toBeNull()
+    const past = await declare({
+      scope: 'futureAndPast4y',
+      contributionId: other,
+    })
+    expect((await covering(other))?.id).toBe(past.id)
   })
 
   test('thisGift: a void gift or one already declared is refused; voiding frees it', async () => {

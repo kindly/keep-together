@@ -9,7 +9,10 @@ import type { Doc, Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
+import { coverage } from '../giftaid/declarations'
 import { declarationWarnings } from '../giftaid/warnings'
+import { scopeWriter } from '../lib/tenancy'
+import { giftWarnings } from './warnings'
 import { HMRC_MODEL_WORDING_VERSION } from '../giftaid/validators'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
@@ -91,11 +94,15 @@ function recordWith(args: RecordArgs, who: Tenant = f.a) {
   })
 }
 
-/** £20 cash under Street-Wesser-001 from a new Jo Bloggs, plus `over`. */
+/**
+ * £20 cash under Street-Wesser-001 from a new Jo Bloggs, plus `over`. A
+ * fresh client key each time, as each render of the form mints one.
+ */
 function record(over: Partial<RecordArgs> = {}, who: Tenant = f.a) {
   const amount = over.amount ?? 2000n
   return recordWith(
     {
+      clientKey: crypto.randomUUID(),
       contact: person,
       receivedOn: '2026-10-20',
       amount,
@@ -294,8 +301,8 @@ describe('an existing contact’s acquisition code', () => {
 })
 
 describe('Gift Aid', () => {
-  test('defaults: staff ticked, past 4 years and future, made on the gift’s date, current wording', async () => {
-    const { contactId, declarationId } = await record({
+  test('defaults: staff ticked, past 4 years and future, made today naming the gift, current wording', async () => {
+    const { contactId, giftId, declarationId } = await record({
       home: { line1: '12 High St', postcode: 'ab1 2cd' },
       giftAid: {},
     })
@@ -303,7 +310,9 @@ describe('Gift Aid', () => {
       contactId,
       scope: 'futureAndPast4y',
       method: 'staffTickedNoEvidence',
-      madeOn: '2026-10-20',
+      // Today (UK), not the gift's date: a declaration is never back-dated.
+      madeOn: '2026-10-23',
+      contributionId: giftId,
       wordingVersion: HMRC_MODEL_WORDING_VERSION,
       firstName: 'Jo',
       lastName: 'Bloggs',
@@ -421,6 +430,80 @@ describe('Gift Aid', () => {
     expect(declarationWarnings(d).map((w) => w.label)).toContain('Home address')
   })
 
+  test('a gift dated after today with Gift Aid saves, with the gift warned about (g1q6)', async () => {
+    const { giftId, declarationId } = await record({
+      receivedOn: '2026-11-01',
+      giftAid: {},
+    })
+    const gift = await get(giftId)
+    expect(giftWarnings(gift, '2026-10-23').map((w) => w.anchor)).toContain(
+      'receivedOn',
+    )
+    expect((await get(declarationId!)).madeOn).toBe('2026-10-23')
+  })
+
+  test.each(['future', 'futureAndPast4y'] as const)(
+    'a back-dated gift is covered by the %s declaration made with it today',
+    async (scope) => {
+      // Before both windows: future starts 2026-10-23, the other 2022-10-23.
+      const { contactId, giftId, declarationId } = await record({
+        receivedOn: '2021-06-01',
+        giftAid: { scope },
+      })
+      const earlier = await record({
+        contact: contactId,
+        receivedOn: '2021-06-01',
+      })
+      const covering = (id: Id<'contributions'>) =>
+        f.t.run((ctx) =>
+          coverage(
+            { db: scopeWriter(ctx, f.a.tenantId) },
+            contactId,
+            '2021-06-01',
+            id,
+          ),
+        )
+      expect((await covering(giftId))?.id).toBe(declarationId)
+      // Another gift of that date is outside the window.
+      expect(await covering(earlier.giftId)).toBeNull()
+    },
+  )
+
+  test('the address typed is the snapshot, even when the contact’s primary is incomplete (F3)', async () => {
+    const jo = await existing(f.a)
+    await f.a.as.mutation(api.contacts.mutations.saveAddresses, {
+      tenantId: f.a.tenantId,
+      id: jo,
+      expected: 0,
+      addresses: [
+        {
+          label: 'home',
+          line1: '',
+          line2: '',
+          line3: '',
+          town: 'Leeds',
+          postcode: '',
+          country: 'GB',
+          isPrimary: true,
+        },
+      ],
+    })
+    const { declarationId } = await record({
+      contact: jo,
+      home: { line1: ' 3  Mill Lane ', postcode: ' ls1 1aa ' },
+      giftAid: {},
+    })
+    expect(await get(declarationId!)).toMatchObject({
+      addressLine1: '3 Mill Lane',
+      postcode: 'LS1 1AA',
+    })
+    const rows = await rowsOf('contactAddresses', jo)
+    expect(rows.map((r) => [r.town, r.isPrimary])).toEqual([
+      ['Leeds', true],
+      ['', false],
+    ])
+  })
+
   test('blank address fields add no address', async () => {
     const { contactId } = await record({ home: { line1: ' ', postcode: '' } })
     expect(await rowsOf('contactAddresses', contactId)).toEqual([])
@@ -530,13 +613,6 @@ describe('any refusal leaves nothing behind', () => {
     expect(data).toMatchObject({ kind: 'invalid' })
   })
 
-  test('a gift dated after today with the default declaration date', async () => {
-    const data = await refusal(
-      record({ receivedOn: '2026-11-01', giftAid: {} }),
-    )
-    expect(data).toMatchObject({ kind: 'invalid' })
-  })
-
   test('an on-screen declaration (no donor screen yet)', async () => {
     const data = await refusal(
       record({ giftAid: { method: 'onScreenByDonor' } }),
@@ -544,13 +620,50 @@ describe('any refusal leaves nothing behind', () => {
     expect(data).toMatchObject({ kind: 'invalid' })
   })
 
-  test('a double submit with the same client key', async () => {
-    const contact = { ...person, clientKey: 'form-1' }
-    await record({ contact })
+  test('a double submit for a new contact: refused, naming the gift', async () => {
+    const { giftId, contactId } = await record({ clientKey: 'form-1' })
+    // The new contact carries the form's key too.
+    expect((await get(contactId)).clientKey).toBe('form-1')
     aSnapshot = await snapshot(f.t, f.a.tenantId)
-    expect(await refusal(record({ contact }))).toMatchObject({
+    expect(
+      await refusal(record({ clientKey: 'form-1', giftAid: {} })),
+    ).toMatchObject({ kind: 'rejected', reason: 'duplicate', message: giftId })
+  })
+
+  test('a double submit for an existing contact: refused, naming the gift', async () => {
+    const jo = await existing(f.a)
+    const again = {
+      clientKey: 'form-2',
+      contact: jo,
+      home: { line1: '1 A St', postcode: 'A1 1AA' },
+      giftAid: {},
+    }
+    const { giftId } = await record(again)
+    aSnapshot = await snapshot(f.t, f.a.tenantId)
+    expect(await refusal(record(again))).toMatchObject({
       reason: 'duplicate',
+      message: giftId,
     })
+  })
+
+  test('a blank client key', async () => {
+    expect(await refusal(record({ clientKey: ' ' }))).toMatchObject({
+      kind: 'invalid',
+    })
+  })
+
+  test('an existing contact’s added address, when Gift Aid is then refused (F4)', async () => {
+    const jo = await existing(f.a)
+    aSnapshot = await snapshot(f.t, f.a.tenantId)
+    const data = await refusal(
+      record({
+        contact: jo,
+        home: { line1: '1 A St', postcode: 'A1 1AA' },
+        giftAid: { method: 'onScreenByDonor' },
+      }),
+    )
+    expect(data).toMatchObject({ kind: 'invalid' })
+    expect(await rowsOf('contactAddresses', jo)).toEqual([])
   })
 
   test('a viewer', async () => {
@@ -596,11 +709,12 @@ describe('two tenants', () => {
     expect(await snapshot(f.t, f.a.tenantId)).toBe(aSnapshot)
   })
 
-  test('the same save in both tenants stays in each', async () => {
+  test('the same save in both tenants stays in each, client key included', async () => {
     const bStreet = await code(f.b, 'Street', 'Wesser')
-    const inA = await record({ giftAid: {} })
+    const inA = await record({ clientKey: 'same', giftAid: {} })
     const inB = await record(
       {
+        clientKey: 'same',
         giftAid: {},
         allocations: [{ sourceCodeId: bStreet.version, amount: 2000n }],
       },

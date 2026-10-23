@@ -14,6 +14,7 @@
  */
 import type { Id } from '../_generated/dataModel'
 import type { Command, ContractCtx } from '../lib/contracts'
+import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { defineContract, registry, rejected } from '../lib/contracts'
 import { describe, markUsed } from '../sources/code'
 import { projectAllocations } from './projection'
@@ -57,10 +58,16 @@ async function checkNewCodes(
   }
 }
 
+/** Create-only arguments of `giving.gift`: never part of a payload. */
+export type GiftCreateWith = { clientKey?: string }
+
 /**
  * What was given: donor, date, amount, method, card reference and the
  * split across source codes. `contactId` is fixed at create (g3q2).
- * System-owned: `enteredBy`, the creator, which no payload carries.
+ * System-owned: `enteredBy`, the creator, and `clientKey`, which no
+ * payload carries. A create whose `clientKey` (createWith) is already on
+ * a gift is refused as `duplicate` with that gift's id, as
+ * `contacts.details` does: the command was already executed.
  */
 export const gift = defineContract({
   name: 'giving.gift',
@@ -83,8 +90,13 @@ export const gift = defineContract({
       })),
     }
     if (!root) {
+      const { clientKey } = (command.createWith ?? {}) as GiftCreateWith
       // Another tenant's id reads as null through the scoped db.
-      const contact = await ctx.db.get(p.contactId)
+      const [contact, existing] = await Promise.all([
+        ctx.db.get(p.contactId),
+        clientKey ? findByClientKey(ctx.db, clientKey) : null,
+      ])
+      if (existing) throw rejected('duplicate', existing._id)
       if (!contact) throw rejected('unknown_contact', 'Contact must exist')
       await checkNewCodes(ctx, p, new Set(), command)
       return ctx.db.insert('contributions', {
@@ -92,6 +104,7 @@ export const gift = defineContract({
         ...fields,
         status: 'completed',
         enteredBy: command.actor ?? undefined,
+        clientKey,
         giftVersion: 0,
         statusVersion: 0,
       })
@@ -112,6 +125,14 @@ export const gift = defineContract({
     return root._id
   },
 })
+
+/** The gift a form's `clientKey` already saved, or null. */
+export function findByClientKey(db: ScopedDatabaseReader, clientKey: string) {
+  return db
+    .query('contributions')
+    .withIndex('by_tenant_clientKey', (q) => q.eq('clientKey', clientKey))
+    .first()
+}
 
 /** Completed or void. A void gift is kept and counts for nothing. */
 export const status = defineContract({

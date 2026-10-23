@@ -585,11 +585,15 @@ export const appTables = {
     ),
     status: contributionStatus,
     enteredBy: v.optional(v.id('users')), // absent = system
+    // Client-minted once per form → a double submit or retry is refused
+    // (giving.gift's create). System-owned: no payload carries it.
+    clientKey: v.optional(v.string()),
     giftVersion: v.number(),
     statusVersion: v.number(),
   })
     // "My recent gifts": newest first by _creationTime.
     .index('by_tenant_enteredBy', ['tenantId', 'enteredBy'])
+    .index('by_tenant_clientKey', ['tenantId', 'clientKey'])
     // A contact's gifts panel, newest first.
     .index('by_tenant_contact_receivedOn', [
       'tenantId',

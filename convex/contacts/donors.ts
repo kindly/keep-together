@@ -94,14 +94,14 @@ export async function addFirstEmail(
  * Add a UK home address (line 1 and postcode, what Gift Aid needs) to the
  * contact's addresses, keeping the ones it has. It becomes the primary
  * only if there is none. Built from the rows read in this transaction, so
- * it needs no `expected`.
+ * it needs no `expected`. Returns line 1 and postcode as stored (tidied).
  */
 export async function addHomeAddress(
   ctx: ContractCtx,
   contactId: Id<'contacts'>,
   home: { line1: string; postcode: string },
   group: CommandGroup,
-): Promise<void> {
+): Promise<{ line1: string; postcode: string }> {
   const [contact, rows] = await Promise.all([
     ctx.db.get(contactId),
     addressRows(ctx.db, contactId),
@@ -128,10 +128,11 @@ export async function addHomeAddress(
     country: 'GB',
     isPrimary: !kept.some((a) => a.isPrimary),
   }
+  const key = crypto.randomUUID()
   await executeContract(
     ctx,
     addresses,
-    { addresses: [...kept, added] },
+    { addresses: [...kept, { key, ...added }] },
     {
       entityId: contactId,
       expected: contact.addressesVersion,
@@ -139,6 +140,11 @@ export async function addHomeAddress(
       group,
     },
   )
+  const stored = await ctx.db
+    .query('contactAddresses')
+    .withIndex('by_tenant_key', (q) => q.eq('key', key))
+    .unique()
+  return { line1: stored!.line1, postcode: stored!.postcode }
 }
 
 /**

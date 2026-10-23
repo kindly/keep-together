@@ -11,6 +11,10 @@
  *   future           [madeOn, ∞)
  *   thisGift         exactly its own gift
  *
+ * Whatever the scope, a declaration also covers the gift it was made with
+ * (`contributionId`: "I want to Gift Aid my donation of £x and …"), even
+ * one dated before `madeOn`.
+ *
  * A cancellation with `cancelledFrom` ≤ `d` removes coverage for gifts on
  * or after that date (3.8.2). A voided declaration (recorded in error)
  * covers nothing, whatever its window. Dates are ISO `YYYY-MM-DD`, so they compare
@@ -83,14 +87,14 @@ export function ukDate(at: number): string {
 export type DeclarationWindow = {
   scope: DeclarationPayload['scope']
   madeOn: string
-  /** The gift a `thisGift` declaration was made with. */
+  /** The gift it was made with (always, for `thisGift`). */
   contributionId?: Id<'contributions'>
   cancelledFrom?: string
   /** Present = voided (recorded in error): it never applied. */
   voidedAt?: number
 }
 
-/** The gift being asked about: its date and, for `thisGift`, its id. */
+/** The gift being asked about: its date and, once saved, its id. */
 export type GiftRef = { date: string; contributionId?: Id<'contributions'> }
 
 /** The first day the declaration covers; null for `thisGift` (no range). */
@@ -105,11 +109,13 @@ export function covers(d: DeclarationWindow, gift: GiftRef): boolean {
   if (d.cancelledFrom !== undefined && d.cancelledFrom <= gift.date) {
     return false
   }
-  if (d.scope === 'thisGift') {
-    return (
-      d.contributionId !== undefined && d.contributionId === gift.contributionId
-    )
+  if (
+    d.contributionId !== undefined &&
+    d.contributionId === gift.contributionId
+  ) {
+    return true
   }
+  if (d.scope === 'thisGift') return false
   return windowStart(d)! <= gift.date
 }
 
@@ -166,9 +172,10 @@ function tidy(value: string): string {
 
 /**
  * Snapshot fields tidied (postcode upper-cased); `madeOn` a real date;
- * a wording version given; a gift named exactly when the scope is
- * `thisGift`; never `onScreenByDonor` while no donor-facing screen exists
- * (staff can't make that true). A future `madeOn` is refused by the
+ * a wording version given; a gift named when the scope is `thisGift`
+ * (any scope may name the gift it was made with); never
+ * `onScreenByDonor` while no donor-facing screen exists (staff can't
+ * make that true). A future `madeOn` is refused by the
  * contract, which knows the time.
  * Empty snapshot fields are storable: they warn (warnings.ts), because
  * staff may tick before they have the address (g3q3).
@@ -209,12 +216,6 @@ export function prepareDeclaration(p: DeclarationPayload): DeclarationPayload {
     problems.push({
       field: 'contributionId',
       message: 'A “this gift only” declaration needs its gift',
-    })
-  }
-  if (out.scope !== 'thisGift' && out.contributionId !== undefined) {
-    problems.push({
-      field: 'contributionId',
-      message: 'Only a “this gift only” declaration names a gift',
     })
   }
   for (const field of [
