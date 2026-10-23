@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, test } from 'vitest'
 import migrationsTest from '@convex-dev/migrations/test'
 import { runToCompletion } from '@convex-dev/migrations'
 import { api, components, internal } from '../_generated/api'
-import { setup } from '../../test/fixture'
+import type { Id } from '../_generated/dataModel'
+import { setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
+import { FIRST_NUMBER } from './number'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
 
@@ -29,7 +31,8 @@ const createContact = (who: Tenant, lastName: string) =>
 const run = (
   fn:
     | typeof internal.contacts.migrations.backfillFieldsVersion
-    | typeof internal.contacts.migrations.backfillContactSearch,
+    | typeof internal.contacts.migrations.backfillContactSearch
+    | typeof internal.contacts.migrations.backfillContactNumbers,
   opts: { batchSize?: number; cursor?: null } = {},
 ) => f.t.run((ctx) => runToCompletion(ctx, components.migrations, fn, opts))
 
@@ -123,5 +126,177 @@ describe('backfillContactSearch fills contactSearch.sortName', () => {
       cursor: null,
     })
     expect(await rows()).toEqual(done)
+  })
+})
+
+describe('backfillContactNumbers', () => {
+  /**
+   * Every contact loses its number and every sequence row goes, as if
+   * created before contact numbers step 1.
+   */
+  const unnumber = () =>
+    f.t.run(async (ctx) => {
+      for (const c of await ctx.db.query('contacts').collect()) {
+        await ctx.db.patch('contacts', c._id, { number: undefined })
+      }
+      for (const s of await ctx.db.query('contactNumberSequences').collect()) {
+        await ctx.db.delete('contactNumberSequences', s._id)
+      }
+    })
+
+  /** The tenant's contacts, oldest first, as [lastName, number or null]. */
+  const numbers = (who: Tenant) =>
+    f.t.run(async (ctx) =>
+      (await ctx.db.query('contacts').collect())
+        .filter((c) => c.tenantId === who.tenantId)
+        .map((c) => [c.lastName, c.number ?? null] as const),
+    )
+
+  const next = (who: Tenant) =>
+    f.t.run(
+      async (ctx) =>
+        (await ctx.db.query('contactNumberSequences').collect()).find(
+          (s) => s.tenantId === who.tenantId,
+        )?.next,
+    )
+
+  const backfill = () =>
+    run(internal.contacts.migrations.backfillContactNumbers, { cursor: null })
+
+  test('numbers each tenant’s contacts in creation order from its first number', async () => {
+    for (const name of ['Lovelace', 'Babbage', 'Somerville']) {
+      await createContact(f.a, name)
+    }
+    await createContact(f.b, 'Herschel')
+    await createContact(f.b, 'Fry')
+    await unnumber()
+
+    const status = await backfill()
+    expect(status.isDone).toBe(true)
+    expect(await numbers(f.a)).toEqual([
+      ['Lovelace', FIRST_NUMBER],
+      ['Babbage', FIRST_NUMBER + 1],
+      ['Somerville', FIRST_NUMBER + 2],
+    ])
+    // Tenant B has its own sequence, untouched by A's contacts.
+    expect(await numbers(f.b)).toEqual([
+      ['Herschel', FIRST_NUMBER],
+      ['Fry', FIRST_NUMBER + 1],
+    ])
+    expect(await next(f.a)).toBe(FIRST_NUMBER + 3)
+    expect(await next(f.b)).toBe(FIRST_NUMBER + 2)
+    // A create afterwards carries on above every backfilled number.
+    await createContact(f.a, 'Hopper')
+    expect((await numbers(f.a)).at(-1)).toEqual(['Hopper', FIRST_NUMBER + 3])
+  })
+
+  test('contacts numbered at create keep their numbers; old ones go above them', async () => {
+    await createContact(f.a, 'Lovelace')
+    await createContact(f.a, 'Babbage')
+    await createContact(f.b, 'Herschel')
+    await unnumber()
+    // Created after step 1 deployed, before the backfill ran (plan g1q7).
+    await createContact(f.a, 'Gap')
+    expect(await numbers(f.a)).toEqual([
+      ['Lovelace', null],
+      ['Babbage', null],
+      ['Gap', FIRST_NUMBER],
+    ])
+
+    await backfill()
+    expect(await numbers(f.a)).toEqual([
+      ['Lovelace', FIRST_NUMBER + 1],
+      ['Babbage', FIRST_NUMBER + 2],
+      ['Gap', FIRST_NUMBER],
+    ])
+    expect(await numbers(f.b)).toEqual([['Herschel', FIRST_NUMBER]])
+  })
+
+  test('creates between tenant batches never share or split a block', async () => {
+    await createContact(f.a, 'Lovelace')
+    await createContact(f.a, 'Babbage')
+    await createContact(f.b, 'Herschel')
+    await createContact(f.b, 'Fry')
+    await unnumber()
+
+    // One tenant per batch: run the first, create in both, run the rest.
+    const fn = internal.contacts.migrations.backfillContactNumbers
+    const firstBatch = await f.t.mutation(fn, {
+      cursor: null,
+      batchSize: 1,
+      dryRun: false,
+    })
+    const [done, pending] =
+      (await numbers(f.a))[0][1] === null ? [f.b, f.a] : [f.a, f.b]
+    expect((await numbers(pending)).every(([, n]) => n === null)).toBe(true)
+    await createContact(done, 'AfterDone')
+    await createContact(pending, 'BeforeItsTurn')
+    await f.t.run((ctx) =>
+      runToCompletion(ctx, components.migrations, fn, {
+        cursor: firstBatch.continueCursor,
+      }),
+    )
+
+    // The done tenant: its block, then the create above it.
+    expect((await numbers(done)).map(([, n]) => n)).toEqual([
+      FIRST_NUMBER,
+      FIRST_NUMBER + 1,
+      FIRST_NUMBER + 2,
+    ])
+    // The pending tenant: the create took the first number; the old
+    // contacts' block follows it whole, in creation order.
+    expect((await numbers(pending)).map(([, n]) => n)).toEqual([
+      FIRST_NUMBER + 1,
+      FIRST_NUMBER + 2,
+      FIRST_NUMBER,
+    ])
+    await createContact(pending, 'Later')
+    expect((await numbers(pending)).at(-1)).toEqual(['Later', FIRST_NUMBER + 3])
+  })
+
+  test('a rerun changes nothing, and numbers stay unique per tenant', async () => {
+    for (const name of ['Lovelace', 'Babbage', 'Somerville']) {
+      await createContact(f.a, name)
+    }
+    await createContact(f.b, 'Herschel')
+    await unnumber()
+    await createContact(f.a, 'Gap')
+    await backfill()
+    const [a, b] = [
+      await snapshot(f.t, f.a.tenantId),
+      await snapshot(f.t, f.b.tenantId),
+    ]
+
+    const status = await backfill()
+    expect(status.isDone).toBe(true)
+    expect(await snapshot(f.t, f.a.tenantId)).toBe(a)
+    expect(await snapshot(f.t, f.b.tenantId)).toBe(b)
+    for (const who of [f.a, f.b]) {
+      const ns = (await numbers(who)).map(([, n]) => n)
+      expect(ns.every((n) => typeof n === 'number')).toBe(true)
+      expect(new Set(ns).size).toBe(ns.length)
+      // Contiguous from the first number: no number lost.
+      expect(ns.map(Number).sort((x, y) => x - y)).toEqual(
+        ns.map((_, i) => FIRST_NUMBER + i),
+      )
+      expect(await next(who)).toBe(FIRST_NUMBER + ns.length)
+    }
+  })
+
+  test('the contact’s other fields and its search row are untouched', async () => {
+    const id: Id<'contacts'> = await createContact(f.a, 'Lovelace')
+    await unnumber()
+    const read = () =>
+      f.t.run(async (ctx) => ({
+        contact: await ctx.db.get(id),
+        search: await ctx.db.query('contactSearch').collect(),
+        revisions: (await ctx.db.query('revisions').collect()).length,
+      }))
+    const before = await read()
+    await backfill()
+    const after = await read()
+    expect(after.contact).toEqual({ ...before.contact, number: FIRST_NUMBER })
+    expect(after.search).toEqual(before.search)
+    expect(after.revisions).toBe(before.revisions)
   })
 })

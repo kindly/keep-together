@@ -24,6 +24,7 @@
  */
 import { migrations } from '../lib/migrations'
 import { scopeWriter } from '../lib/tenancy'
+import { allocateNumbers } from './number'
 import { projectContactSearch } from './searchProjection'
 
 export const run = migrations.runner()
@@ -76,4 +77,52 @@ export const backfillFieldsVersion = migrations.define({
   table: 'contacts',
   migrateOne: (_ctx, contact) =>
     contact.fieldsVersion === undefined ? { fieldsVersion: 0 } : undefined,
+})
+
+/** The most contacts `backfillContactNumbers` numbers in one tenant. */
+export const MAX_BACKFILL_PER_TENANT = 8000
+
+/**
+ * Contact numbers step 2: a number for every contact created before step 1
+ * (plan: factory/plans/contact-numbers.sv). One tenant per batch: its
+ * unnumbered contacts, oldest first, take one block from its sequence
+ * (`allocateNumbers`), all in one mutation, so every number of the block
+ * goes on a contact and they come out in creation order.
+ *
+ * Safe beside creates: a create takes its number from the same sequence
+ * row, so the two serialise on it (Convex retries the loser) and never
+ * share a number. Doing a whole tenant at once means no create lands in
+ * the middle of its block: contacts created after the backfill are
+ * numbered above every old one. Contacts created between the step 1 deploy
+ * and this run keep their (lower) numbers; that one-off gap was accepted
+ * (plan g1q7). Numbered contacts are never read or touched, so a rerun is
+ * a no-op.
+ *
+ * A tenant with more than MAX_BACKFILL_PER_TENANT unnumbered contacts
+ * fails the batch rather than split its block (none is anywhere near).
+ *
+ *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillContactNumbers"}'
+ */
+export const backfillContactNumbers = migrations.define({
+  table: 'tenants',
+  batchSize: 1,
+  migrateOne: async (ctx, tenant) => {
+    const db = scopeWriter(ctx, tenant._id)
+    // `number` absent sorts first in the index; within it, creation order.
+    const unnumbered = await db
+      .query('contacts')
+      .withIndex('by_tenant_number', (q) => q.eq('number', undefined))
+      .take(MAX_BACKFILL_PER_TENANT + 1)
+    if (unnumbered.length === 0) return
+    if (unnumbered.length > MAX_BACKFILL_PER_TENANT) {
+      throw new Error(
+        `backfillContactNumbers: tenant ${tenant._id} has more than ` +
+          `${MAX_BACKFILL_PER_TENANT} unnumbered contacts`,
+      )
+    }
+    const first = await allocateNumbers(db, unnumbered.length)
+    for (const [i, contact] of unnumbered.entries()) {
+      await db.patch('contacts', contact._id, { number: first + i })
+    }
+  },
 })
