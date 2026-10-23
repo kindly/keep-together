@@ -139,9 +139,13 @@ test.describe('record a gift', { annotation: [NEW] }, () => {
     await page.getByLabel('Gift Aid declaration').check()
     await page.getByLabel('House number or name, street').fill('12 High St')
     await page.getByRole('button', { name: 'Record gift' }).click()
-    await expect(
-      page.getByText('Add the postcode, or clear line 1'),
-    ).toBeVisible()
+    // Marked on the field, and announced.
+    await expect(page.getByLabel('Postcode')).toHaveAccessibleDescription(
+      'Add the postcode, or clear line 1',
+    )
+    await expect(page.getByRole('alert')).toHaveText(
+      'Not saved: Add the postcode, or clear line 1',
+    )
     await expect(page.getByRole('status')).toHaveCount(0)
   })
 
