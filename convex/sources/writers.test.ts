@@ -120,8 +120,9 @@ const CONTACT_WRITES = FILES.flatMap(({ file, text }) =>
   })),
 )
 
-// `contacts.number` is set once, by the details contract's create branch,
-// and never changed (not by saves, restores, merge or anonymise). A write
+// `contacts.number` is set once, by the details contract's create branch
+// or (for contacts created before it) by backfillContactNumbers, and never
+// changed (not by saves, restores, merge or anonymise). A write
 // to `contacts` can only change it by naming it, or by passing an object
 // whose keys aren't visible here, so each of those is checked by hand:
 //   - details.apply's update patch: `fields`, the details fields by name;
@@ -129,9 +130,11 @@ const CONTACT_WRITES = FILES.flatMap(({ file, text }) =>
 // A new write to `contacts` fails here until it is added and checked.
 const CONTACT_WRITERS = {
   'contacts/contracts.ts': 5,
+  // backfillContactNumbers: `{ number }` on contacts that have none.
+  'contacts/migrations.ts': 1,
 } as Partial<Record<string, number>>
 
-test('contacts.number is written only by the create insert', () => {
+test('contacts.number is written only by the create insert and the backfill', () => {
   const byFile: Record<string, number> = {}
   for (const w of CONTACT_WRITES) byFile[w.file] = (byFile[w.file] ?? 0) + 1
   expect(byFile).toEqual(CONTACT_WRITERS)
@@ -140,11 +143,10 @@ test('contacts.number is written only by the create insert', () => {
     CONTACT_WRITES.filter((w) => w.method !== 'patch' && w.method !== 'insert'),
   ).toEqual([])
   const naming = CONTACT_WRITES.filter((w) => /\bnumber\b/.test(w.call))
-  expect(naming).toHaveLength(1)
-  expect(naming[0]).toMatchObject({
-    file: 'contacts/contracts.ts',
-    method: 'insert',
-  })
+  expect(naming.map(({ file, method }) => ({ file, method }))).toEqual([
+    { file: 'contacts/contracts.ts', method: 'insert' },
+    { file: 'contacts/migrations.ts', method: 'patch' },
+  ])
   const opaque = CONTACT_WRITES.filter(
     (w) => w.method === 'patch' && !/,\s*\{[^}]*\}\s*,?\s*\)$/.test(w.call),
   ).map((w) => w.call.replace(/\s+/g, ' '))
