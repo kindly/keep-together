@@ -635,7 +635,7 @@ export function DonorSearch({
               {o.kind === 'match' ? (
                 <>
                   <span className="flex-1 truncate">{o.row.displayName}</span>
-                  {o.numberMatch && o.row.number !== null && (
+                  {o.numberMatch && (
                     <span className="rounded bg-emerald-200 px-1.5 text-xs text-emerald-900">
                       contact no. {formatNumber(o.row.number)}
                     </span>
