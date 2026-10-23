@@ -181,6 +181,30 @@ async function bUntouched() {
 }
 
 describe('creating a gift', () => {
+  test('a client key already on a gift is refused as duplicate (giving.gift)', async () => {
+    const id = await f.a.as.mutation(api.giving.mutations.create, {
+      tenantId: f.a.tenantId,
+      ...giftArgs(),
+      clientKey: 'k1',
+    })
+    expect((await gift(id)).clientKey).toBe('k1')
+    const before = await snapshot(f.t, f.a.tenantId)
+    expect(
+      await errorData(
+        f.a.as.mutation(api.giving.mutations.create, {
+          tenantId: f.a.tenantId,
+          ...giftArgs({ amount: 500n }),
+          clientKey: 'k1',
+        }),
+      ),
+    ).toMatchObject({ reason: 'duplicate', message: id })
+    expect(await snapshot(f.t, f.a.tenantId)).toBe(before)
+    // An edit keeps the key (system-owned).
+    await save(id, 0, giftArgs({ amount: 2500n }))
+    expect((await gift(id)).clientKey).toBe('k1')
+    await bUntouched()
+  })
+
   test('stores the gift, its status and one allocation row per share', async () => {
     const id = await create(giftArgs({ amount: 1234567n }))
     const g = await gift(id)

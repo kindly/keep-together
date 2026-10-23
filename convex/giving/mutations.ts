@@ -5,11 +5,33 @@
  */
 import { ConvexError, v } from 'convex/values'
 import type { Id } from '../_generated/dataModel'
-import { commandGroup, executeContract, restore } from '../lib/contracts'
+import {
+  addFirstEmail,
+  addHomeAddress,
+  createContact,
+  describeDonor,
+  fillAcquisition,
+} from '../contacts/donors'
+import { makeDeclaration } from '../giftaid/mutations'
+import { ukDate } from '../giftaid/rules'
+import {
+  HMRC_MODEL_WORDING_VERSION,
+  declarationMethod,
+  declarationScope,
+} from '../giftaid/validators'
+import { contactKind } from '../lib/appSchema'
+import {
+  commandGroup,
+  executeContract,
+  invalid,
+  rejected,
+  restore,
+} from '../lib/contracts'
 import type { CommandGroup, ContractCtx } from '../lib/contracts'
 import { tenantMutation } from '../lib/tenancy'
 import { describe } from '../sources/code'
-import { gift, givingContracts, status } from './contracts'
+import { findByClientKey, gift, givingContracts, status } from './contracts'
+import type { GiftCreateWith } from './contracts'
 import { formatPence } from './rules'
 import { giftFields, statusFields } from './validators'
 import type { GiftPayload } from './validators'
@@ -20,7 +42,7 @@ import type { GiftPayload } from './validators'
  */
 export async function giftGroupName(
   ctx: ContractCtx,
-  p: GiftPayload,
+  p: Pick<GiftPayload, 'amount' | 'method' | 'allocations'>,
 ): Promise<string> {
   const codes = await Promise.all(
     p.allocations.map((a) => describe(ctx.db, a.sourceCodeId)),
@@ -34,17 +56,23 @@ export async function giftGroupName(
  * Record a gift in the caller's transaction: `giving.gift`, then
  * `giving.status` (completed), so status history starts with the gift.
  * Runs under `group`, or one of its own named by `giftGroupName`. A
- * refusal throws, rolling back the caller's whole mutation. For commands
+ * `clientKey` already on a gift is refused as `duplicate`. A refusal
+ * throws, rolling back the caller's whole mutation. For commands
  * that compose it (recordGift).
  */
 export async function createGift(
   ctx: ContractCtx,
   p: GiftPayload,
-  opts: { group?: CommandGroup } = {},
+  opts: { group?: CommandGroup; clientKey?: string } = {},
 ): Promise<Id<'contributions'>> {
   const group =
     opts.group ?? (await commandGroup(ctx, await giftGroupName(ctx, p)))
-  const { id } = await executeContract(ctx, gift, p, { source: 'ui', group })
+  const createWith: GiftCreateWith = { clientKey: opts.clientKey }
+  const { id } = await executeContract(ctx, gift, p, {
+    source: 'ui',
+    group,
+    createWith,
+  })
   await executeContract(
     ctx,
     status,
@@ -56,8 +84,9 @@ export async function createGift(
 
 /** A gift from an existing contact. */
 export const create = tenantMutation({
-  args: giftFields,
-  handler: async (ctx, payload) => createGift(ctx, payload),
+  args: { ...giftFields, clientKey: v.optional(v.string()) },
+  handler: async (ctx, { clientKey, ...payload }) =>
+    createGift(ctx, payload, { clientKey }),
 })
 
 /** Correct a gift. Stale only if the gift's fields changed since `expected`. */
@@ -94,4 +123,125 @@ export const restoreRevision = tenantMutation({
   args: { revisionId: v.id('revisions') },
   handler: async (ctx, { revisionId }) =>
     restore(ctx, givingContracts, revisionId),
+})
+
+/** The record-gift page's inline new contact (g1q3): the minimum fields. */
+const newContactFields = v.object({
+  kind: contactKind,
+  firstName: v.string(), // people
+  lastName: v.string(), // people
+  name: v.string(), // organisations and households
+  email: v.optional(v.string()),
+})
+
+const { contactId: _, ...giftOnlyFields } = giftFields
+
+/**
+ * The record-gift page's one save (g1q4): in one mutation and one command
+ * group named like a gift ("gift £20 cash, Street-Wesser-001"):
+ *
+ *   1. `contact` is an existing contact's id, or a new contact, created
+ *      with the gift's code as its acquisition code (and its email);
+ *      `home` (line 1 and postcode) is added to its addresses (g3q3);
+ *   2. the gift (`giving.gift`, then `giving.status` completed);
+ *   3. an existing contact with no acquisition code gets the gift's code
+ *      (g2q1); one it already has stays;
+ *   4. with `giftAid`, a declaration (individuals only) naming the gift
+ *      (so it covers it, whatever the scope), whose snapshot is the
+ *      contact's name and the `home` just typed, else its primary
+ *      address. Defaults: the tick's method `staffTickedNoEvidence`,
+ *      scope `futureAndPast4y` (g2q5), made today (UK date: a
+ *      declaration is dated when the donor makes it, never back-dated to
+ *      the gift), HMRC's current wording.
+ *
+ * `clientKey` is minted once per form: a repeat (double click, retry) is
+ * refused as `duplicate` with the gift's id, before anything is written.
+ * A new contact carries the same key. The gift's code is its first
+ * allocation's (the page sends one). Any refusal throws, so nothing of
+ * the save is left behind: no contact, no contact number, no gift, no
+ * group.
+ */
+export const recordGift = tenantMutation({
+  args: {
+    clientKey: v.string(),
+    contact: v.union(v.id('contacts'), newContactFields),
+    home: v.optional(v.object({ line1: v.string(), postcode: v.string() })),
+    ...giftOnlyFields,
+    giftAid: v.optional(
+      v.object({
+        scope: v.optional(declarationScope),
+        method: v.optional(declarationMethod),
+        madeOn: v.optional(v.string()),
+      }),
+    ),
+  },
+  handler: async (ctx, { clientKey, contact, home, giftAid, ...fields }) => {
+    if (!clientKey.trim()) {
+      throw invalid([
+        { field: 'clientKey', message: 'A client key is required' },
+      ])
+    }
+    // Checked first so a repeat names the gift, not the new contact.
+    const saved = await findByClientKey(ctx.db, clientKey)
+    if (saved) throw rejected('duplicate', saved._id)
+    const codeId = fields.allocations.at(0)?.sourceCodeId
+    if (!codeId) {
+      throw invalid([{ field: 'allocations', message: 'Pick a source code' }])
+    }
+    const group = await commandGroup(ctx, await giftGroupName(ctx, fields))
+
+    let contactId: Id<'contacts'>
+    if (typeof contact === 'string') {
+      contactId = contact
+      if (!(await describeDonor(ctx.db, contactId))) {
+        throw rejected('unknown_contact', 'Contact must exist')
+      }
+    } else {
+      const { email, ...names } = contact
+      contactId = await createContact(
+        ctx,
+        { ...names, clientKey, title: '', nickname: '', isDeceased: false },
+        { acquisitionCodeId: codeId, group },
+      )
+      if (email?.trim()) await addFirstEmail(ctx, contactId, email, group)
+    }
+    const typed =
+      home && (home.line1.trim() || home.postcode.trim())
+        ? await addHomeAddress(ctx, contactId, home, group)
+        : null
+
+    const giftId = await createGift(
+      ctx,
+      { ...fields, contactId },
+      { group, clientKey },
+    )
+    if (typeof contact === 'string') {
+      await fillAcquisition(ctx, contactId, codeId, group)
+    }
+
+    let declarationId: Id<'giftAidDeclarations'> | null = null
+    if (giftAid) {
+      const donor = (await describeDonor(ctx.db, contactId))!
+      const address = typed ?? donor.home
+      const made = await makeDeclaration(
+        ctx,
+        {
+          contactId,
+          scope: giftAid.scope ?? 'futureAndPast4y',
+          contributionId: giftId,
+          madeOn: giftAid.madeOn ?? ukDate(Date.now()),
+          method: giftAid.method ?? 'staffTickedNoEvidence',
+          wordingVersion: HMRC_MODEL_WORDING_VERSION,
+          firstName: donor.firstName,
+          lastName: donor.lastName,
+          addressLine1: address.line1,
+          postcode: address.postcode,
+        },
+        'ui',
+        group,
+      )
+      declarationId = made.id
+    }
+    return { contactId, giftId, declarationId }
+  },
 })

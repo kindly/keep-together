@@ -34,16 +34,19 @@ import { cancellationFields, declarationFields, voidFields } from './validators'
 /**
  * A declaration as made. Refused for anyone but an individual (HMRC
  * 3.6.7: not in a company's or joint names); when made after today (UK
- * time, at the command's time); and for a "this gift only" declaration
- * whose gift isn't this contact's, is void, or already has one covering
- * it. Never updated: a declaration recorded in error is voided
+ * time, at the command's time); when the gift it names isn't this
+ * contact's or is void; and for a "this gift only" declaration whose gift
+ * already has one. Never updated: a declaration recorded in error is voided
  * (`giftaid.void`), a donor withdrawing is a cancellation, so restore of
  * a revision is refused too. `enteredBy` is the actor, set here once.
  */
 export const declaration = defineContract({
   name: 'giftaid.declaration',
   entity: 'giftAidDeclarations',
-  version: 1,
+  // v2: any scope may name the gift it was made with (covered whatever
+  // its date); v1 named one only for `thisGift`. Same shape.
+  version: 2,
+  upcasters: { 1: (payload) => payload },
   counter: 'declarationVersion',
   fields: declarationFields,
   prepare: prepareDeclaration,
@@ -78,7 +81,7 @@ export const declaration = defineContract({
     if (p.contributionId && gift?.contactId !== p.contactId) {
       throw rejected(
         'unknown_gift',
-        'A “this gift only” declaration must name one of this contact’s gifts',
+        'A declaration can only name one of this contact’s gifts',
       )
     }
     if (p.contributionId && gift?.status === 'void') {
@@ -88,6 +91,7 @@ export const declaration = defineContract({
       )
     }
     if (
+      p.scope === 'thisGift' &&
       p.contributionId &&
       held.some(
         (d) =>

@@ -51,7 +51,8 @@ export const HMRC_MODEL_WORDING_VERSION = 'hmrc-2016-04'
 export const declarationFields = {
   contactId: v.id('contacts'),
   scope: declarationScope,
-  // `thisGift` only, and then required: the gift it was made with.
+  // The gift it was made with, which it always covers; required for
+  // `thisGift`. Absent for a declaration made on its own (contact page).
   contributionId: v.optional(v.id('contributions')),
   madeOn: v.string(), // ISO date
   method: declarationMethod,
