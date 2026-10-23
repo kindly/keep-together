@@ -88,8 +88,8 @@ Banners to look for:
   (factory/out/builder-qcstall.md). They're judged as usual: the banner
   says where the time went, it doesn't excuse it. A wired link avoids it.
 - **`EXCEPTED`**: the server exceptions banner: every approved exception
-  (`SERVER_EXCEPTIONS` in `qc/budgets.ts`), on every run, with the calls
-  it excepted this run (see Budgets).
+  (`SERVER_EXCEPTIONS` in `qc/budgets.ts`), on every run, with its
+  ceiling and the calls it excepted this run (see Budgets).
 - **`QC RUN FAILED, whatever the test counts above say`**: a gate the
   tests can't see failed: the coverage gate, a flow in `qc/budgets.ts`
   that nothing timed, or the worker-setup sign-in over budget.
@@ -143,7 +143,7 @@ blame, computed live in the worker for the judged set (see Ours).
 |---|---|
 | page | input → send, plus the Transition (or last message) → result on screen; long tasks shown when any |
 | to Convex ≈ | send → commit, less our function (server clock) |
-| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance. A mutation's call must complete from 10 ms before to 100 ms after its commit timestamp, both on the server clock, so clock skew can't move it; without a commit (a query change, an action), between the send and the response or screen message ± 10 ms on the page's clock. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
+| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance. A mutation's call must complete from 10 ms before to 100 ms after its commit timestamp, both on the server clock, so clock skew can't move it. When that window holds no call at all (a concurrent long mutation on the instance held the log line past it, and the response with it), the match falls back to the send → response window below, marked `(send → response)`. Without a commit (a query change, an action), between the send and the response or screen message ± 10 ms on the page's clock. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
 | back ≈ | commit → response (server clock) |
 | Transition | response → the Transition carrying the result |
 | Convex + network | send → screen message, less our function, when there's no commit to split it (a query change) |
@@ -233,7 +233,22 @@ over budget is blamed live in the worker (`qc/live.ts`, `qc/judge.ts`):
 `pnpm qc:report` renders that history to
 `qc-report/trend.html`: per-flow p50/p95 over the last 30 runs against the
 budget line. The Playwright HTML report is in `qc-report/playwright/`,
-with traces for failed tests.
+with a screenshot for each failed test and a trace for each flow that
+failed its budget.
+
+**Tracing is off for timed samples** (human, 2026-10-23). Playwright's
+tracing snapshots the whole DOM around every action, the timed click
+included, so its cost grows with the page: ~230 ms of snapshotting on one
+`contacts.loadMore` click, a median of 190 ms traced against 95 ms
+untraced (factory/out/builder-fields6-report.md). That is the harness's
+overhead, not the app's work: turning it off removes no app work, and it
+lowers the measured times of big pages. Compare history across this
+change with that in mind. A flow that fails its budget gets one more
+sample, untimed and unjudged, with tracing on, attached to the test as
+`trace` (worker-setup sign-ins write theirs to
+`test-results/.traces/<run>/`). A functional failure has a screenshot,
+not a trace; to trace one, rerun it with `pnpm qc --trace on <spec>` and
+ignore its times.
 
 Server execution times come from `convex logs`: every uncached call of
 our own functions on a user path must take under 100 ms, bar one spike
@@ -290,12 +305,15 @@ Two marks change how a flow is judged:
 - **A server exception** (`SERVER_EXCEPTIONS` in `qc/budgets.ts`): one
   function's calls that log a given line are timed and recorded in a row
   of their own (`<fn> [excepted]`), listed in the `EXCEPTED` banner on
-  every run, and never asserted. The function's other calls are judged
+  every run, and exempt from the 100 ms rule. Each excepted call must
+  still be under the exception's `ceilingMs`: one at or over it fails the
+  run, with no spike allowance. The function's other calls are judged
   as usual. The one there: a `contacts/queries:list` call that read a
   grown pinned page in full, which the backend does whatever
   `maximumRowsRead` says ("list re-run after a bulk write into an open
   page: ~150 ms reading the grown range", human 2026-10-23;
-  `contacts.loadMore`'s insert into page 0 makes them).
+  `contacts.loadMore`'s insert into page 0 makes them), with a ceiling
+  of 250 ms (human 2026-10-23).
 - **`pending: true`**: no spec times the flow yet; a run that doesn't
   time it warns instead of failing. Drop it when the spec lands.
 

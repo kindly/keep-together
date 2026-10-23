@@ -331,13 +331,15 @@ test('the server exceptions banner lists every exception, with or without server
   const none = serverExceptionBanner(null).join('\n')
   // Exceptions counted as exceptions; no server data, no call count.
   expect(none).toContain(
-    '1 server exception (approved, qc/budgets.ts SERVER_EXCEPTIONS): timed, never asserted.',
+    '1 server exception (approved, qc/budgets.ts SERVER_EXCEPTIONS): timed, held only to their ceilings.',
   )
   expect(none).toContain(
-    'contacts/queries:list: EXCEPTED, not asserted: list re-run after a bulk write into an open page: ~150 ms reading the grown range (human 2026-10-23) · no server data',
+    'contacts/queries:list: EXCEPTED from the 100 ms rule: list re-run after a bulk write into an open page: ~150 ms reading the grown range (human 2026-10-23) · ceiling < 250 ms · no server data',
   )
   const some = serverExceptionBanner({
-    exceptions: ['contacts/queries:list: EXCEPTED, not asserted: … · 4 calls'],
+    exceptions: [
+      'contacts/queries:list: EXCEPTED from the 100 ms rule: … · 4 calls',
+    ],
     exceptedCalls: 4,
   }).join('\n')
   expect(some).toContain(

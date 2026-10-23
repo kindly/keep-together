@@ -177,7 +177,7 @@ function matchCalls(
   fns: Array<string> | undefined,
   from: number,
   to: number,
-): { ms: number | null; how: string } {
+): { ms: number | null; how: string; none?: true } {
   if (!instance) return { ms: null, how: 'unmatched: no instance' }
   if (!fns) return { ms: null, how: 'unmatched: sample has no function name' }
   if (!fns.length) return { ms: null, how: 'unmatched: sent no function' }
@@ -192,6 +192,7 @@ function matchCalls(
       return {
         ms: null,
         how: `unmatched: ${hits.length} ${fn} calls in the window`,
+        ...(hits.length === 0 && { none: true as const }),
       }
     }
     times.push(hits[0].ms)
@@ -330,24 +331,37 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
     s.responseMs !== null && s.transitionMs !== null
       ? Math.min(s.responseMs, s.transitionMs)
       : (s.responseMs ?? screenAt)
+  const sendWindow = () =>
+    matchCalls(
+      ctx.calls,
+      s.instance,
+      s.fns,
+      s.at + s.sendMs! - MATCH_SLACK_MS,
+      s.at + (s.responseMs ?? screenAt ?? end) + MATCH_SLACK_MS,
+    )
+  // A mutation matches on the commit window first. A concurrent long
+  // mutation on the instance can hold its log line past that window
+  // (commit + 100 ms) while the response waits too; then, and only when
+  // the commit window has no call at all, fall back to send → response.
+  // Two candidates there stay unmatched, as anywhere.
+  const byCommit = (commitMs: number) => {
+    const m = matchCalls(
+      ctx.calls,
+      s.instance,
+      s.fns,
+      s.at + commitMs - COMMIT_MATCH.beforeMs,
+      s.at + commitMs + COMMIT_MATCH.afterMs,
+    )
+    if (!m.none) return m
+    const f = sendWindow()
+    return f.none ? m : { ...f, how: `${f.how} (send → response)` }
+  }
   const match =
     s.sendMs === null || answerAt === null
       ? { ms: null, how: 'unmatched: no request in the sample' }
       : s.commitMs !== null
-        ? matchCalls(
-            ctx.calls,
-            s.instance,
-            s.fns,
-            s.at + s.commitMs - COMMIT_MATCH.beforeMs,
-            s.at + s.commitMs + COMMIT_MATCH.afterMs,
-          )
-        : matchCalls(
-            ctx.calls,
-            s.instance,
-            s.fns,
-            s.at + s.sendMs - MATCH_SLACK_MS,
-            s.at + (s.responseMs ?? screenAt ?? end) + MATCH_SLACK_MS,
-          )
+        ? byCommit(s.commitMs)
+        : sendWindow()
   const fn = match.ms ?? 0
   const split =
     s.sendMs !== null && s.commitMs !== null && s.responseMs !== null

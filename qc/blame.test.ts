@@ -294,6 +294,61 @@ describe('matching the function', () => {
     expect(b.fnMatch).toMatch(/^unmatched: 0 /)
   })
 
+  test('a log line held past the commit window falls back to send → response', () => {
+    // A concurrent long mutation on the instance delays our call's log
+    // line to commit + 150 ms, and the response with it (the
+    // fields.spec staff-switch case).
+    const c = cases.normal
+    const mine = c.calls.find((x) => x.at === 1792608853027)!
+    const late = c.sample.at + c.sample.commitMs! + 150
+    const calls = c.calls.map((x) => (x === mine ? { ...x, at: late } : x))
+    const sample = {
+      ...c.sample,
+      responseMs: c.sample.commitMs! + 165,
+      transitionMs: c.sample.commitMs! + 175,
+      lastInMs: c.sample.commitMs! + 176,
+      endMs: c.sample.commitMs! + 190,
+    }
+    const b = blame(sample, { calls, probes: c.probes })
+    expect(b.fnMs).toBe(30.3)
+    expect(b.fnMatch).toBe(
+      'contacts/mutations:setAcquisition (send → response)',
+    )
+    // Without the fallback it read "unclear: 0 calls in the window".
+    expect(b.why).not.toMatch(/calls in the window/)
+  })
+
+  test('the fallback never guesses between two candidates', () => {
+    const c = cases.normal
+    const mine = c.calls.find((x) => x.at === 1792608853027)!
+    const late = c.sample.at + c.sample.commitMs! + 150
+    const calls = [
+      ...c.calls.filter((x) => x !== mine),
+      { ...mine, at: late },
+      { ...mine, at: late + 5, ms: 12 },
+    ]
+    const b = blame(
+      { ...c.sample, responseMs: c.sample.commitMs! + 165 },
+      { calls, probes: c.probes },
+    )
+    expect(b.fnMs).toBeNull()
+    expect(b.fnMatch).toBe(
+      'unmatched: 2 contacts/mutations:setAcquisition calls in the window (send → response)',
+    )
+    expect(b.verdict).toBe('unclear')
+  })
+
+  test('a call in the commit window wins over the send → response window', () => {
+    // Another call of the function inside send → response but before the
+    // commit window: the commit match is used, the fallback never runs.
+    const c = cases.normal
+    const mine = c.calls.find((x) => x.at === 1792608853027)!
+    const early = { ...mine, at: c.sample.at + c.sample.sendMs! + 5, ms: 3 }
+    const b = blame(c.sample, { calls: [...c.calls, early], probes: c.probes })
+    expect(b.fnMs).toBe(30.3)
+    expect(b.fnMatch).toBe('contacts/mutations:setAcquisition')
+  })
+
   test('a call on another instance is not matched', () => {
     const b = run(cases.normal, { instance: 'qc-9' })
     expect(b.fnMatch).toMatch(/^unmatched: 0 /)

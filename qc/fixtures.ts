@@ -224,6 +224,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
             where: 'worker setup',
             repeats: 1,
             warmUp: false,
+            tracePath: path.join(
+              'test-results',
+              '.traces',
+              runId(),
+              `w${workerInfo.parallelIndex}-${'ab'[i]}-auth.signIn.zip`,
+            ),
           },
           'auth.signIn',
           {
@@ -333,6 +339,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           worker: testInfo.parallelIndex,
           instance: instance.name,
           where: testInfo.titlePath.join(' › '),
+          tracePath: testInfo.outputPath(`trace-${name}.zip`),
         },
         name,
         step,
@@ -341,6 +348,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         body: JSON.stringify(record, null, 2),
         contentType: 'application/json',
       })
+      // Named `trace`, the HTML report opens it in the trace viewer.
+      if (record.trace)
+        await testInfo.attach('trace', {
+          path: record.trace,
+          contentType: 'application/zip',
+        })
       assertFlow(record)
       return record
     })

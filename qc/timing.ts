@@ -50,6 +50,14 @@ import type { LiveRun } from './live'
 // answered, and when the Transition carrying the result came back; the
 // page's long tasks and the host's CPU cover the local side. Context only:
 // nothing is judged on them.
+//
+// Tracing (human, 2026-10-23): Playwright tracing is off for the whole
+// run (playwright.config.ts). It snapshots the DOM around every action,
+// timed clicks included, so it charged the harness's own work to the app
+// and more so the bigger the page (~230 ms on one Load more). A flow that
+// fails its budget instead gets one more sample, untimed and unjudged,
+// with tracing on (`tracePath`): the failure stays debuggable and no
+// judged sample is ever traced.
 
 /** Timed samples per flow call; QC_REPEATS=1 is a fast functional run. */
 export const REPEATS = Number(process.env.QC_REPEATS ?? 5)
@@ -163,6 +171,8 @@ export interface FlowRecord {
   selfTest?: true
   /** Approved exception (qc/budgets.ts): judged, but never fails. */
   knownOver?: string
+  /** Failed: the Playwright trace of one extra, unjudged sample. */
+  trace?: string
 }
 
 export interface FlowStep<TArg = undefined> {
@@ -203,6 +213,11 @@ export interface FlowContext {
   repeats?: number
   /** One untimed iteration first, once per flow per worker (default true). */
   warmUp?: boolean
+  /**
+   * Where to write the trace of one extra, unjudged sample when the flow
+   * fails its budget. Without it a failing flow records no trace.
+   */
+  tracePath?: string
 }
 
 export function median(xs: Array<number>): number {
@@ -753,6 +768,28 @@ export async function runFlow<TArg>(
       pass = j.pass
     }
   }
+  // Failed: trace one more sample, outside the judged set. Under
+  // `--trace on` the context is traced already and start() throws: that
+  // trace covers it.
+  let trace: string | undefined
+  const tracing = ctx.page.context().tracing
+  if (
+    !skipped &&
+    !pass &&
+    !budget.knownOver &&
+    ctx.tracePath &&
+    (await tracing
+      .start({ screenshots: true, snapshots: true, title: name })
+      .then(() => true)
+      .catch(() => false))
+  ) {
+    try {
+      await measureOnce(ctx.page, name, step, timeoutMs)
+    } finally {
+      await tracing.stop({ path: ctx.tracePath })
+    }
+    trace = ctx.tracePath
+  }
   const record: FlowRecord = {
     runId: runId(),
     flow: name,
@@ -773,6 +810,7 @@ export async function runFlow<TArg>(
     ...(skipped && { skipped }),
     ...(budget.selfTest && { selfTest: true as const }),
     ...(budget.knownOver && { knownOver: budget.knownOver }),
+    ...(trace && { trace }),
   }
   const dir = runDir()
   mkdirSync(dir, { recursive: true })

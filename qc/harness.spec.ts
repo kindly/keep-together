@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs'
 import { expect, test } from './fixtures'
 import {
   OverBudgetError,
@@ -16,7 +17,9 @@ import type { FlowStep } from './timing'
 // pass, so the timing path is live end to end (seed, UI sign-in, RTT,
 // in-page measurement, the pass rule). Two more prove the spike rule: a
 // sample forced over budget in the first set is re-measured and passes,
-// and one forced into both sets fails.
+// and one forced into both sets fails. The impossible budget also proves
+// a failed flow is traced (one extra sample, outside the judged set); the
+// passing ones prove nothing else is.
 
 function openContacts(page: Page, slug: string): FlowStep<string> {
   // The header's link: the group home also has a "Find a contact" card.
@@ -73,6 +76,10 @@ test.describe('harness', () => {
     await expect(
       flow(page, 'harness.impossible', openContacts(page, users.a.slug)),
     ).rejects.toThrow(OverBudgetError)
+    // A failing flow leaves the trace of one extra, unjudged sample.
+    const attached = test.info().attachments.find((a) => a.name === 'trace')
+    expect(attached?.path).toBeDefined()
+    expect(statSync(attached!.path!).size).toBeGreaterThan(0)
   })
 
   // Also runs in record mode and over the RTT ceiling: it measures there,
@@ -85,6 +92,7 @@ test.describe('harness', () => {
     )
     const judged = !RECORD && rttMs <= RTT_CEILING_MS
     expect(record.pass).toBe(judged ? true : null)
+    expect(record.trace).toBeUndefined()
     // Real samples: a client navigation plus a query takes milliseconds.
     expect(Math.min(...record.samplesMs)).toBeGreaterThan(1)
   })
@@ -119,6 +127,7 @@ test.describe('harness', () => {
       expect(record.samplesMs).toHaveLength(REPEATS)
       expect(Math.max(...record.samplesMs)).toBeLessThan(1000)
       expect(record.pass).toBe(true)
+      expect(record.trace).toBeUndefined()
       expect(() => assertFlow(record)).not.toThrow()
     })
 

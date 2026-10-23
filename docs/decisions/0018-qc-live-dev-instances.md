@@ -21,8 +21,16 @@ pinned page in full ("list re-run after a bulk write into an open page:
 ~150 ms reading the grown range"). The backend reads a pinned range
 whole, whatever `maximumRowsRead` says. Such calls are timed and
 recorded in a row of their own, listed in a banner on every run, and
-never asserted; every other `list` call is judged as before
-(`SERVER_EXCEPTIONS` in `qc/budgets.ts`). Raising a
+exempt from the 100 ms rule; every other `list` call is judged as before
+(`SERVER_EXCEPTIONS` in `qc/budgets.ts`). Excepted calls still have a
+ceiling: one at or over 250 ms fails the run (human, 2026-10-23).
+**Amended 2026-10-23 (human):** Playwright tracing is off for timed
+samples. It snapshotted the DOM around every action, timed ones too, at
+a cost that grows with the page (median 190 ms traced against 95 ms
+untraced on `contacts.loadMore`). This removes harness overhead, not app
+work, and it lowers the measured times of big pages, so history from
+before it reads high on them. A flow that fails its budget records a
+trace of one extra, unjudged sample instead. Raising a
 budget or adding an exception needs the human's OK. Details:
 `factory/plans/qc-suite.sv`, `qc/README.md`.
 (`docs/spikes/07-qc-harness.md`) for review. Plan:
