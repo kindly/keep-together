@@ -1,10 +1,12 @@
-import { describe, expect, test } from 'vitest'
-import { api } from '../_generated/api'
+import { convexTest } from 'convex-test'
+import { describe, expect, test, vi } from 'vitest'
+import { api, internal } from '../_generated/api'
 import schema from '../schema'
 import { contactContracts } from '../contacts/contracts'
 import { fieldContracts } from '../contacts/fields'
 import { commsContracts } from '../comms/contracts'
 import { sourceContracts } from '../sources/code'
+import { givingContracts } from '../giving/contracts'
 import {
   canonical,
   defineContract,
@@ -14,7 +16,7 @@ import {
 } from './contracts'
 import { scopeWriter } from './tenancy'
 import type { ScopedDatabaseWriter } from './tenancy'
-import { errorData, setup, snapshot } from '../../test/fixture'
+import { errorData, modules, setup, snapshot } from '../../test/fixture'
 
 const individual = {
   kind: 'individual' as const,
@@ -510,6 +512,7 @@ describe('registry invariants (meta-test)', () => {
       ...Object.values(commsContracts),
       ...Object.values(sourceContracts),
       ...Object.values(fieldContracts),
+      ...Object.values(givingContracts),
     ]) {
       const table = (
         schema.tables as Record<
@@ -541,6 +544,7 @@ describe('registry invariants (meta-test)', () => {
     commsContracts,
     sourceContracts,
     fieldContracts,
+    givingContracts,
   }
   test.each(
     Object.entries(REGISTRIES).flatMap(([registryName, reg]) =>
@@ -572,5 +576,102 @@ describe('canonical', () => {
       }),
     )
     expect(canonical({ a: undefined, b: 1 })).toBe(canonical({ b: 1 }))
+  })
+  test('writes an int64 as Convex JSON, so stored and sent payloads agree', () => {
+    expect(canonical({ amount: 2000n })).toBe(
+      '{"amount":{"$integer":"0AcAAAAAAAA="}}',
+    )
+    expect(canonical({ amount: 5n })).not.toBe(canonical({ amount: 5 }))
+    expect(canonical({ amount: 5n })).not.toBe(canonical({ amount: '5n' }))
+    expect(
+      canonical([
+        { key: 'b', amount: -1n },
+        { key: 'a', amount: 0n },
+      ]),
+    ).toBe(
+      canonical([
+        { key: 'a', amount: 0n },
+        { key: 'b', amount: -1n },
+      ]),
+    )
+  })
+
+  /** `canonical` before int64 support: its output must not change. */
+  function canonicalBeforeInt64(payload: unknown): string {
+    const sortDeep = (value: unknown): unknown => {
+      if (Array.isArray(value)) {
+        const items = value.map(sortDeep)
+        if (
+          items.length > 0 &&
+          items.every(
+            (i): i is { key: unknown } =>
+              typeof i === 'object' && i !== null && 'key' in i,
+          )
+        ) {
+          return [...items].sort((a, b) =>
+            String(a.key).localeCompare(String(b.key)),
+          )
+        }
+        return items
+      }
+      if (typeof value === 'object' && value !== null) {
+        const out: Record<string, unknown> = {}
+        for (const k of Object.keys(value).sort()) {
+          const item = (value as Record<string, unknown>)[k]
+          if (item !== undefined) out[k] = sortDeep(item)
+        }
+        return out
+      }
+      return value
+    }
+    return JSON.stringify(sortDeep(payload))
+  }
+
+  const hasBigint = (value: unknown): boolean =>
+    typeof value === 'bigint' ||
+    (typeof value === 'object' &&
+      value !== null &&
+      Object.values(value).some(hasBigint))
+
+  test('is byte-identical to before for payloads without int64s', () => {
+    const samples: Array<unknown> = [
+      null,
+      'x',
+      0,
+      -0,
+      1.5,
+      true,
+      [],
+      {},
+      [1, 'a', null],
+      { b: [{ key: 'é' }, { key: 'e' }, { key: 'E' }], a: { z: 1, y: [] } },
+      { rows: [{ key: 'k', v: undefined }, { notKey: 1 }] },
+      { emails: [{ label: 'home', address: 'a@b.c', isPrimary: true }] },
+    ]
+    for (const p of samples) expect(canonical(p)).toBe(canonicalBeforeInt64(p))
+  })
+
+  test('is byte-identical to before for every seeded revision', async () => {
+    vi.stubEnv('QC_SEED_ENABLED', '1')
+    try {
+      const t = convexTest(schema, modules)
+      await t.action(internal.platform.qcSeed.fixture, {
+        runId: '1',
+        worker: 1,
+        password: 'qc-password-123',
+      })
+      await t.finishAllScheduledFunctions(() => {})
+      const revisions = await t.run((ctx) =>
+        ctx.db.query('revisions').collect(),
+      )
+      const plain = revisions.filter((r) => !hasBigint(r.payload))
+      // The seed writes contacts, lists and source codes: many contracts.
+      expect(new Set(plain.map((r) => r.contract)).size).toBeGreaterThan(3)
+      for (const r of plain) {
+        expect(canonical(r.payload)).toBe(canonicalBeforeInt64(r.payload))
+      }
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })

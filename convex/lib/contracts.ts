@@ -19,7 +19,7 @@
  * Restore re-executes a stored payload as a NEW command, chaining upcasters
  * by declared version. Nothing is ever rewound.
  */
-import { ConvexError, v } from 'convex/values'
+import { ConvexError, convexToJson, v } from 'convex/values'
 import type { ObjectType, PropertyValidators } from 'convex/values'
 import { validate } from 'convex-helpers/validators'
 import type { Doc, Id, TableNames } from '../_generated/dataModel'
@@ -358,13 +358,19 @@ export async function restore(
 
 /**
  * Order-independent view of a payload for change detection: child-row
- * lists sorted by `key`, object keys sorted, `undefined` dropped.
+ * lists sorted by `key`, object keys sorted, `undefined` dropped. An int64
+ * (bigint: money) is written as Convex's own JSON form, `{"$integer":
+ * base64}`, so a payload and its stored revision (int64 in, bigint out)
+ * read the same, and `5n` never equals `5`. Field names can't start with
+ * `$`, so no stored object collides with it; payloads without bigints are
+ * unchanged.
  */
 export function canonical(payload: unknown): string {
   return JSON.stringify(sortDeep(payload))
 }
 
 function sortDeep(value: unknown): unknown {
+  if (typeof value === 'bigint') return convexToJson(value)
   if (Array.isArray(value)) {
     const items = value.map(sortDeep)
     if (
