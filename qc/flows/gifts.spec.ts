@@ -380,6 +380,10 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
     world,
     instance,
   }) => {
+    // The test's own wall-clock limit, not a budget: each sample of both
+    // flows sets up a fresh donor and loads their page, so a re-measure
+    // (K more samples) can pass Playwright's default 30 s.
+    test.setTimeout(120_000)
     const r = await recorder(instance, users.a, world.tenants[0].tenantId)
     const contactUrl = await createContact(
       page,
