@@ -123,7 +123,6 @@ export const details = defineContract({
         methodsVersion: 0,
         addressesVersion: 0,
         archiveVersion: 0,
-        tagsVersion: 0,
         identifiersVersion: 0,
         acquisitionVersion: 0,
         fieldsVersion: 0,

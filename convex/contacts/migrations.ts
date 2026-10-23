@@ -22,6 +22,7 @@
  * it after deploying a change to what the search text holds (dropdown
  * fields step 7 took tag names out of it).
  */
+import { internal } from '../_generated/api'
 import { migrations } from '../lib/migrations'
 import { scopeWriter } from '../lib/tenancy'
 import { allocateNumbers } from './number'
@@ -142,3 +143,63 @@ export const backfillContactNumbers = migrations.define({
     }
   },
 })
+
+/**
+ * Dropdown fields step 8: drop the tag data step 7 left unread. Deletes
+ * every `contactTags` and `tags` row and unsets `contacts.tagsVersion` and
+ * the tag switch on `tenantPreferences`, so step 9 can drop the tables and
+ * fields. Old `contacts.tags` / `contacts.tag` revisions stay: history
+ * shows them read-only from their own payload and never reads these rows.
+ *
+ * Each part pages its table at the component's default 100 rows a batch:
+ * at most 100 deletes or patches, the page's one range read and (dry run)
+ * 100 re-`get`s, far inside the 4,096 index ranges and 16 MiB a
+ * transaction allows. Every part skips rows that are already done (a
+ * deleted row isn't in the next page), so a rerun is a read-only pass.
+ * Run them in order with the `dropTagData` series below.
+ *
+ * No re-projection here: step 7 took tag names out of `contactSearch` with
+ * `backfillContactSearch`, and these rows were never in the search text
+ * since.
+ */
+export const deleteContactTags = migrations.define({
+  table: 'contactTags',
+  migrateOne: async (ctx, link) => {
+    await ctx.db.delete('contactTags', link._id)
+  },
+})
+
+export const deleteTags = migrations.define({
+  table: 'tags',
+  migrateOne: async (ctx, tag) => {
+    await ctx.db.delete('tags', tag._id)
+  },
+})
+
+// A patch with `undefined` removes the field.
+export const unsetContactTagsVersion = migrations.define({
+  table: 'contacts',
+  migrateOne: (_ctx, contact) =>
+    contact.tagsVersion === undefined ? undefined : { tagsVersion: undefined },
+})
+
+export const unsetTagPreferences = migrations.define({
+  table: 'tenantPreferences',
+  migrateOne: (_ctx, row) =>
+    row.staffCanManageTags === undefined && row.tagsVersion === undefined
+      ? undefined
+      : { staffCanManageTags: undefined, tagsVersion: undefined },
+})
+
+/**
+ * The four parts of step 8 as one series: each starts the next when it
+ * finishes. Done when `getStatus` reports all four isDone.
+ *
+ *   npx convex run contacts/migrations:dropTagData
+ */
+export const dropTagData = migrations.runner([
+  internal.contacts.migrations.deleteContactTags,
+  internal.contacts.migrations.deleteTags,
+  internal.contacts.migrations.unsetContactTagsVersion,
+  internal.contacts.migrations.unsetTagPreferences,
+])
