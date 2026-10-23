@@ -21,6 +21,7 @@ import type * as contacts_history from "../contacts/history.js";
 import type * as contacts_migrations from "../contacts/migrations.js";
 import type * as contacts_mutations from "../contacts/mutations.js";
 import type * as contacts_notes from "../contacts/notes.js";
+import type * as contacts_number from "../contacts/number.js";
 import type * as contacts_queries from "../contacts/queries.js";
 import type * as contacts_relationships from "../contacts/relationships.js";
 import type * as contacts_rules from "../contacts/rules.js";
@@ -79,6 +80,7 @@ declare const fullApi: ApiFromModules<{
   "contacts/migrations": typeof contacts_migrations;
   "contacts/mutations": typeof contacts_mutations;
   "contacts/notes": typeof contacts_notes;
+  "contacts/number": typeof contacts_number;
   "contacts/queries": typeof contacts_queries;
   "contacts/relationships": typeof contacts_relationships;
   "contacts/rules": typeof contacts_rules;

@@ -27,6 +27,7 @@ import {
   prepareRelationshipType,
 } from './rules'
 import { describe, markUsed } from '../sources/code'
+import { readSequence, takeNumbers } from './number'
 import {
   acquisitionFields,
   addressesFields,
@@ -75,7 +76,7 @@ export const details = defineContract({
       return rest
     },
   },
-  apply: async (ctx, p, root) => {
+  apply: async (ctx, p, root, command) => {
     const names = computedNames(p)
     const fields = {
       title: p.title,
@@ -89,20 +90,32 @@ export const details = defineContract({
       ...names,
     }
     if (root === null) {
-      if (p.clientKey) {
-        const existing = await ctx.db
-          .query('contacts')
-          .withIndex('by_tenant_clientKey', (q) =>
-            q.eq('clientKey', p.clientKey),
-          )
-          .unique()
-        if (existing) {
-          // The command was already executed (double submit / retried import).
-          throw rejected('duplicate', existing._id)
-        }
+      // The contact number: the next from the sequence, read alongside the
+      // clientKey check and taken only once it passes, so a duplicate (even
+      // one a batch catches and skips) uses none. A batch in one mutation
+      // takes one per row; the row is committed once (contacts/number).
+      if (command.createWith !== undefined) {
+        throw new Error('contacts.details: create takes no createWith')
       }
+      const [existing, sequence] = await Promise.all([
+        p.clientKey
+          ? ctx.db
+              .query('contacts')
+              .withIndex('by_tenant_clientKey', (q) =>
+                q.eq('clientKey', p.clientKey),
+              )
+              .unique()
+          : null,
+        readSequence(ctx.db),
+      ])
+      if (existing) {
+        // The command was already executed (double submit / retried import).
+        throw rejected('duplicate', existing._id)
+      }
+      const number = await takeNumbers(ctx.db, sequence, 1)
       return ctx.db.insert('contacts', {
         ...fields,
+        number,
         clientKey: p.clientKey,
         kind: p.kind,
         archived: false,
