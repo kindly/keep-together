@@ -45,7 +45,6 @@ import {
   seedTags,
   UK_RELATIONSHIP_TYPES,
 } from '../contacts/seed'
-import { allocateNumbers } from '../contacts/number'
 import schema from '../schema'
 import {
   DONOR_COUNT,
@@ -262,15 +261,13 @@ export const donors = internalMutation({
       if ((await scoped.db.get(typeId))?.isActive)
         identifierTypes.set(name, typeId)
     }
-    // One block of contact numbers for the batch, in donor order.
-    const firstNumber = await allocateNumbers(scoped.db, to - from)
     for (let i = from; i < to; i++) {
       const spec = specs[i]
       const { id } = await executeContract(
         scoped,
         details,
         { ...spec.details, clientKey: spec.clientKey },
-        { ...opts, createWith: { number: firstNumber + i - from } },
+        opts,
       )
       ids.set(i, id)
       await executeContract(scoped, methods, spec.methods, {

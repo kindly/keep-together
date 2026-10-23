@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, test } from 'vitest'
+import { ConvexError } from 'convex/values'
 import type { Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
 import { executeContract } from '../lib/contracts'
 import { scopeWriter } from '../lib/tenancy'
-import { DOMAIN_TABLES } from '../lib/tables'
 import { details } from './contracts'
 import {
   FIRST_NUMBER,
@@ -51,24 +51,31 @@ const numberOf = (id: Id<'contacts'>) =>
   f.t.run(async (ctx) => (await ctx.db.get(id))?.number)
 
 /**
- * An import-style batch: one block of numbers, then a details create per
- * row with its number from the block, all in one mutation.
+ * An import-style batch: a details create per row, all in one mutation.
+ * A row whose clientKey is already there is skipped, as an import would.
  */
-const batch = (who: Tenant, names: Array<string>) =>
+const batch = (who: Tenant, rows: Array<[string, string?]>) =>
   f.t.run(async (ctx) => {
     const scoped = {
       db: scopeWriter(ctx, who.tenantId),
       userId: who.userId,
       role: null,
     }
-    const first = await allocateNumbers(scoped.db, names.length)
     const ids = []
-    for (const [i, name] of names.entries()) {
-      const { id } = await executeContract(scoped, details, person(name), {
-        source: 'import',
-        createWith: { number: first + i },
-      })
-      ids.push(id)
+    for (const [name, clientKey] of rows) {
+      try {
+        const { id } = await executeContract(
+          scoped,
+          details,
+          person(name, clientKey),
+          { source: 'import' },
+        )
+        ids.push(id)
+      } catch (e) {
+        if (!(e instanceof ConvexError) || e.data.reason !== 'duplicate') {
+          throw e
+        }
+      }
     }
     return ids
   })
@@ -108,9 +115,9 @@ describe('allocation', () => {
     ])
   })
 
-  test('a batch takes one block, numbered in creation order', async () => {
+  test('a batch numbers its rows in creation order', async () => {
     await create(f.a, 'Ada')
-    const ids = await batch(f.a, ['Charles', 'Mary', 'Grace'])
+    const ids = await batch(f.a, [['Charles'], ['Mary'], ['Grace']])
     const after = await create(f.a, 'Alan')
     expect(await Promise.all(ids.map(numberOf))).toEqual([
       FIRST_NUMBER + 1,
@@ -125,6 +132,29 @@ describe('allocation', () => {
     expect(new Set(byTime).size).toBe(rows.length)
   })
 
+  test('a batch that skips a duplicate leaves no gap', async () => {
+    await create(f.a, 'Ada', 'ck-1')
+    const ids = await batch(f.a, [
+      ['Charles', 'ck-2'],
+      ['Ada again', 'ck-1'],
+      ['Mary', 'ck-3'],
+    ])
+    expect(await Promise.all(ids.map(numberOf))).toEqual([
+      FIRST_NUMBER + 1,
+      FIRST_NUMBER + 2,
+    ])
+    expect(await numberOf(await create(f.a, 'Grace'))).toBe(FIRST_NUMBER + 3)
+  })
+
+  test('the backfill block (allocateNumbers) is skipped by creates', async () => {
+    await create(f.a, 'Ada')
+    const first = await f.t.run((ctx) =>
+      allocateNumbers(scopeWriter(ctx, f.a.tenantId), 5),
+    )
+    expect(first).toBe(FIRST_NUMBER + 1)
+    expect(await numberOf(await create(f.a, 'Charles'))).toBe(FIRST_NUMBER + 6)
+  })
+
   test('a duplicate clientKey is rejected without taking a number', async () => {
     const ada = await create(f.a, 'Ada', 'ck-1')
     expect(await errorData(create(f.a, 'Ada', 'ck-1'))).toMatchObject({
@@ -135,7 +165,7 @@ describe('allocation', () => {
     expect(await numberOf(next)).toBe(FIRST_NUMBER + 1)
   })
 
-  test('the payload never carries the number', async () => {
+  test('neither the payload nor a create argument carries the number', async () => {
     await expect(
       f.a.as.mutation(api.contacts.mutations.create, {
         tenantId: f.a.tenantId,
@@ -143,7 +173,22 @@ describe('allocation', () => {
         number: 99999,
       } as never),
     ).rejects.toThrow()
+    await expect(
+      f.t.run((ctx) =>
+        executeContract(
+          {
+            db: scopeWriter(ctx, f.a.tenantId),
+            userId: f.a.userId,
+            role: null,
+          },
+          details,
+          person('Ada'),
+          { source: 'import', createWith: { number: 99999 } },
+        ),
+      ),
+    ).rejects.toThrow(/createWith/)
     const ada = await create(f.a, 'Ada')
+    expect(await numberOf(ada)).toBe(FIRST_NUMBER)
     const revisions = await f.t.run((ctx) =>
       ctx.db.query('revisions').collect(),
     )
@@ -151,9 +196,9 @@ describe('allocation', () => {
     expect(created.payload).not.toHaveProperty('number')
   })
 
-  test('the sequence travels with the tenant (a domain table)', () => {
-    expect(DOMAIN_TABLES).toContain('contactNumberSequences')
-  })
+  // No "the sequence travels with the tenant" test: no per-tenant export
+  // exists yet, and the whole-deployment snapshot import carries every
+  // table. That test belongs with the export, when one is built.
 })
 
 describe('the number never changes', () => {

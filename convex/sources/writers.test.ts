@@ -93,3 +93,81 @@ test('every write with a variable table is one checked by hand', () => {
     ),
   ).toEqual([])
 })
+
+/**
+ * The text of the call whose `(` is at `open`, up to its matching `)`.
+ * Brackets inside strings would miscount; none of the calls checked has one.
+ */
+function callText(text: string, open: number): string {
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '(') depth++
+    if (text[i] === ')' && --depth === 0) return text.slice(open, i + 1)
+  }
+  throw new Error('unbalanced call')
+}
+
+/** Every write to `contacts` in the module tree, as file and call text. */
+const CONTACT_WRITES = FILES.flatMap(({ file, text }) =>
+  [
+    ...text.matchAll(
+      /\bdb\s*\.\s*(insert|patch|replace|delete)\s*(\()\s*'contacts'/g,
+    ),
+  ].map((m) => ({
+    file,
+    method: m[1],
+    call: callText(text, m.index + m[0].lastIndexOf('(')),
+  })),
+)
+
+// `contacts.number` is set once, by the details contract's create branch,
+// and never changed (not by saves, restores, merge or anonymise). A write
+// to `contacts` can only change it by naming it, or by passing an object
+// whose keys aren't visible here, so each of those is checked by hand:
+//   - details.apply's update patch: `fields`, the details fields by name;
+//   - fieldValues.apply: `slotValues(...)`, field slot keys only.
+// A new write to `contacts` fails here until it is added and checked.
+const CONTACT_WRITERS = {
+  'contacts/contracts.ts': 5,
+} as Partial<Record<string, number>>
+
+test('contacts.number is written only by the create insert', () => {
+  const byFile: Record<string, number> = {}
+  for (const w of CONTACT_WRITES) byFile[w.file] = (byFile[w.file] ?? 0) + 1
+  expect(byFile).toEqual(CONTACT_WRITERS)
+  // A replace would drop the number (or set one); a delete breaks rule 3.
+  expect(
+    CONTACT_WRITES.filter((w) => w.method !== 'patch' && w.method !== 'insert'),
+  ).toEqual([])
+  const naming = CONTACT_WRITES.filter((w) => /\bnumber\b/.test(w.call))
+  expect(naming).toHaveLength(1)
+  expect(naming[0]).toMatchObject({
+    file: 'contacts/contracts.ts',
+    method: 'insert',
+  })
+  const opaque = CONTACT_WRITES.filter(
+    (w) => w.method === 'patch' && !/,\s*\{[^}]*\}\s*,?\s*\)$/.test(w.call),
+  ).map((w) => w.call.replace(/\s+/g, ' '))
+  expect(opaque).toEqual([
+    "('contacts', root._id, fields)",
+    "('contacts', root._id, slotValues(checked.slots))",
+  ])
+})
+
+// Migrations on `contacts` write through `migrateOne`'s return, not
+// `db.patch`, so they are listed by name: neither touches `number`
+// (backfillContactSearch writes `contactSearch`, backfillFieldsVersion
+// `fieldsVersion`). A new one fails here until it is checked and added.
+test('every contacts migration is one checked by hand', () => {
+  const migrations = FILES.flatMap(({ file, text }) =>
+    [
+      ...text.matchAll(
+        /export const (\w+) = \w+\.define\(\{\s*table:\s*'contacts'/g,
+      ),
+    ].map((m) => `${file}:${m[1]}`),
+  )
+  expect(migrations).toEqual([
+    'contacts/migrations.ts:backfillContactSearch',
+    'contacts/migrations.ts:backfillFieldsVersion',
+  ])
+})

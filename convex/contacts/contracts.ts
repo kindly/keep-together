@@ -34,7 +34,6 @@ import {
   acquisitionFields,
   addressesFields,
   archiveFields,
-  detailsCreateFields,
   detailsFields,
   identifierTypeFields,
   identifiersFields,
@@ -96,14 +95,13 @@ export const details = defineContract({
       ...names,
     }
     if (root === null) {
-      // The contact number: one from the caller's block (a batch takes one
-      // per batch, `allocateNumbers`), or the next from the sequence, read
-      // alongside the clientKey check and taken only once it passes.
-      validate(v.object(detailsCreateFields), command.createWith ?? {}, {
-        throw: true,
-      })
-      const fromBlock = (command.createWith as { number?: number } | undefined)
-        ?.number
+      // The contact number: the next from the sequence, read alongside the
+      // clientKey check and taken only once it passes, so a duplicate (even
+      // one a batch catches and skips) uses none. A batch in one mutation
+      // takes one per row; the row is committed once (contacts/number).
+      if (command.createWith !== undefined) {
+        throw new Error('contacts.details: create takes no createWith')
+      }
       const [existing, sequence] = await Promise.all([
         p.clientKey
           ? ctx.db
@@ -113,13 +111,13 @@ export const details = defineContract({
               )
               .unique()
           : null,
-        fromBlock === undefined ? readSequence(ctx.db) : null,
+        readSequence(ctx.db),
       ])
       if (existing) {
         // The command was already executed (double submit / retried import).
         throw rejected('duplicate', existing._id)
       }
-      const number = fromBlock ?? (await takeNumbers(ctx.db, sequence, 1))
+      const number = await takeNumbers(ctx.db, sequence, 1)
       return ctx.db.insert('contacts', {
         ...fields,
         number,

@@ -4,8 +4,10 @@
  * creation order: a higher number means a newer contact. It is written
  * with a Luhn check digit (`formatNumber`), which isn't stored.
  *
- * The number is system-owned: no contract payload carries it. The details
- * contract's create branch sets it, and nothing changes it afterwards.
+ * The number is system-owned: no contract payload or create argument
+ * carries it. The details contract's create branch takes it from the
+ * sequence, and nothing changes it afterwards (`writers.test.ts` lists
+ * every write to `contacts`).
  *
  * One `contactNumberSequences` row per tenant holds the next number, in
  * its own table so only creates conflict on it (a counter on `tenants`
@@ -52,8 +54,10 @@ export function readSequence(
 /**
  * Take the next `n` numbers from `sequence` (what `readSequence` returned
  * in this transaction) and return the first: the block is first … first +
- * n - 1, in the order the caller creates its contacts. A batch takes its
- * block once, so the row is written once per batch, not once per contact.
+ * n - 1. The details contract's create branch takes one, after its
+ * duplicate check, so every number taken goes on a contact. Within one
+ * mutation the row's patches commit as one write, so a batch of creates
+ * conflicts with other creates no more than a single one does.
  */
 export async function takeNumbers(
   db: ScopedDatabaseWriter,
@@ -67,13 +71,20 @@ export async function takeNumbers(
     await db.insert('contactNumberSequences', { next: FIRST_NUMBER + n })
     return FIRST_NUMBER
   }
+  if (!Number.isInteger(sequence.next) || sequence.next < FIRST_NUMBER) {
+    throw new Error(`takeNumbers: sequence at ${sequence.next}`)
+  }
   await db.patch('contactNumberSequences', sequence._id, {
     next: sequence.next + n,
   })
   return sequence.next
 }
 
-/** `takeNumbers` with its own read of the sequence. */
+/**
+ * `takeNumbers` with its own read of the sequence, for numbering contacts
+ * that already exist (the backfill): the caller must put every number of
+ * the block on a contact in the same mutation. Creates never call it.
+ */
 export async function allocateNumbers(
   db: ScopedDatabaseWriter,
   n: number,
