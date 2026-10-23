@@ -228,7 +228,7 @@ test('two tabs on different groups each record their group once, then stay quiet
   act(() => second.unmount())
 })
 
-test('the Donations menu: Record a gift (disabled for now), then my recent gifts, each a link', async () => {
+test('the Donations menu: Record a gift, then my recent gifts, each a link', async () => {
   gifts = [
     gift({
       _id: 'g2' as RecentGift['_id'],
@@ -249,8 +249,9 @@ test('the Donations menu: Record a gift (disabled for now), then my recent gifts
   const menu = document.querySelector('[role="menu"]')!
   expect(menu).not.toBeNull()
   const items = [...menu.querySelectorAll('[role="menuitem"]')]
-  expect(items[0].textContent).toBe('Record a gift (coming soon)')
-  expect(items[0].getAttribute('aria-disabled')).toBe('true')
+  expect(items[0].textContent).toBe('Record a gift')
+  expect(items[0].getAttribute('href')).toBe('/t/alpha/gifts/new')
+  expect(items[0].getAttribute('aria-disabled')).toBeNull()
   expect(items.slice(1).map((i) => i.textContent)).toEqual([
     '£1,234.56Acme Ltd23 Oct 2026',
     '£20.00Jo Bloggsvoid23 Oct 2026',
@@ -296,17 +297,16 @@ function home(tenant: Tenant) {
   })
 }
 
-test('home: the four actions for staff, Record a gift disabled until its page exists', async () => {
+test('home: the four actions for staff', async () => {
   gifts = [gift({})]
   await home(group('alpha', { role: 'staff' }))
   // Each recent gift links to its page.
   expect(links()).toEqual([
+    ['Record a gift', '/t/alpha/gifts/new'],
     ['Find a contact', '/t/alpha/contacts'],
     ['New contact', '/t/alpha/contacts/new'],
     ['£20.00Jo Bloggs23 Oct 2026', '/t/alpha/gifts/g1'],
   ])
-  // Not a link, and says why in visible text, not only a tooltip.
-  expect(text()).toContain('Record a gift (coming soon)')
   expect(text()).toContain('My recent gifts')
 })
 

@@ -8,6 +8,8 @@ import type { Doc, Id } from '../_generated/dataModel'
 import { tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { groupsToRead, toMoments } from '../contacts/history'
+import { describeDonor } from '../contacts/donors'
+import { currentDeclaration } from '../giftaid/declarations'
 import { describe } from '../sources/code'
 import type { SourceCodeDescription } from '../sources/code'
 import type { RecentGift } from './types'
@@ -151,6 +153,34 @@ export const get = tenantQuery({
         displayName: contact.displayName,
         kind: contact.kind,
       },
+    }
+  },
+})
+
+/**
+ * What the record-gift page needs once a donor is picked, in one read
+ * round: kind and names, the home address a declaration would snapshot
+ * (primary, else first; empty strings when none), the acquisition code
+ * described (the gift's default code when not archived, g2q1), and the
+ * enduring declaration in force on `today` (the caller's date), for
+ * "✓ covered" instead of the tick (g2q6). Null for a missing or another
+ * tenant's id.
+ */
+export const donor = tenantQuery({
+  args: { contactId: v.id('contacts'), today: v.string() },
+  handler: async (ctx, { contactId, today }) => {
+    const [found, current] = await Promise.all([
+      describeDonor(ctx.db, contactId),
+      currentDeclaration(ctx, contactId, today),
+    ])
+    if (!found) return null
+    const { acquisitionCodeId, ...rest } = found
+    return {
+      ...rest,
+      acquisition: acquisitionCodeId
+        ? await describe(ctx.db, acquisitionCodeId)
+        : null,
+      current,
     }
   },
 })

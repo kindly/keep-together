@@ -19,9 +19,7 @@ function GroupHome() {
       <h1 className="text-xl font-semibold">{tenant.name}</h1>
       <nav aria-label="Actions" className="grid gap-3 sm:grid-cols-3">
         {canWrite && (
-          <RecordGiftAction
-            className={`${action} cursor-not-allowed text-neutral-400 hover:border-neutral-200`}
-          />
+          <RecordGiftAction className={action} />
         )}
         <Link
           to="/t/$slug/contacts"

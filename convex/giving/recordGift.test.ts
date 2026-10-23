@@ -735,3 +735,62 @@ describe('two tenants', () => {
     expect(recent.map((g) => g._id)).toEqual([inA.giftId])
   })
 })
+
+describe('the record-gift page’s donor', () => {
+  const donor = (contactId: Id<'contacts'>, who: Tenant = f.a) =>
+    who.as.query(api.giving.queries.donor, {
+      tenantId: who.tenantId,
+      contactId,
+      today: '2026-10-23',
+    })
+
+  test('a new person: names, no address, no code, not covered', async () => {
+    const id = await existing(f.a)
+    expect(await donor(id)).toMatchObject({
+      id,
+      kind: 'individual',
+      displayName: 'Jo Bloggs',
+      firstName: 'Jo',
+      home: { line1: '', postcode: '' },
+      acquisition: null,
+      current: null,
+    })
+  })
+
+  test('after a gift with Gift Aid: the code, the address and the declaration', async () => {
+    const { contactId, declarationId } = await record({
+      home: { line1: '12 High St', postcode: 'ab1 2cd' },
+      giftAid: {},
+    })
+    expect(await donor(contactId)).toMatchObject({
+      home: { line1: '12 High St', postcode: 'AB1 2CD' },
+      acquisition: { code: 'Street-Wesser-001', isActive: true },
+      current: {
+        id: declarationId,
+        scope: 'futureAndPast4y',
+        method: 'staffTickedNoEvidence',
+        madeOn: '2026-10-23',
+      },
+    })
+  })
+
+  test('a "this gift only" declaration is not current', async () => {
+    const { contactId } = await record({ giftAid: { scope: 'thisGift' } })
+    expect((await donor(contactId))?.current).toBeNull()
+  })
+
+  test('an archived acquisition code reads as archived', async () => {
+    const id = await existing(f.a, {}, online.version)
+    await f.t.run((ctx) => ctx.db.patch(online.version, { isActive: false }))
+    expect((await donor(id))?.acquisition).toMatchObject({
+      code: 'Online-Spring-001',
+      isActive: false,
+    })
+  })
+
+  test('tenant B’s contact reads as null in A', async () => {
+    const inB = await existing(f.b)
+    bSnapshot = await snapshot(f.t, f.b.tenantId)
+    expect(await donor(inB)).toBeNull()
+  })
+})

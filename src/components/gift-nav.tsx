@@ -14,9 +14,8 @@ import {
 } from './ui/dropdown-menu'
 
 // Where gifts are reached from (cash-gifts step 4): the header's Donations
-// menu and the group home page. Each recent gift links to its page (step
-// 5). The record-gift page (step 3) doesn't exist yet, so "Record a gift"
-// is shown disabled; that step turns it into a link here.
+// menu and the group home page: "Record a gift" (step 3) and each recent
+// gift, linking to its page (step 5).
 
 /** Amount, contact, date; a void gift struck through and marked. */
 function GiftSummary({ gift }: { gift: RecentGift }) {
@@ -35,15 +34,17 @@ function GiftSummary({ gift }: { gift: RecentGift }) {
   )
 }
 
-/**
- * "Record a gift", inert until its page exists (step 3). Says why in
- * visible text, which a tooltip wouldn't on touch or to a screen reader.
- */
+/** "Record a gift": the record-gift page (step 3). */
 export function RecordGiftAction({ className }: { className?: string }) {
+  const tenant = useTenant()
   return (
-    <span className={className}>
-      Record a gift <span className="text-xs font-normal">(coming soon)</span>
-    </span>
+    <Link
+      to="/t/$slug/gifts/new"
+      params={{ slug: tenant.slug }}
+      className={className}
+    >
+      Record a gift
+    </Link>
   )
 }
 
@@ -93,8 +94,10 @@ export function DonationsMenu({ tenantId }: { tenantId: Id<'tenants'> }) {
       <DropdownMenuContent align="start" className="w-80">
         {canWrite && (
           <>
-            <DropdownMenuItem disabled>
-              <RecordGiftAction />
+            <DropdownMenuItem asChild>
+              <Link to="/t/$slug/gifts/new" params={{ slug: tenant.slug }}>
+                Record a gift
+              </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>

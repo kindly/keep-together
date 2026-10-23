@@ -16,6 +16,7 @@ import type { Payloads } from './validators'
 export type Donor = {
   id: Id<'contacts'>
   kind: Doc<'contacts'>['kind']
+  displayName: string
   firstName: string
   lastName: string
   acquisitionCodeId: Id<'sourceCodes'> | null
@@ -34,6 +35,7 @@ export async function describeDonor(
   return {
     id,
     kind: contact.kind,
+    displayName: contact.displayName,
     firstName: contact.firstName,
     lastName: contact.lastName,
     acquisitionCodeId: contact.acquisitionCodeId ?? null,

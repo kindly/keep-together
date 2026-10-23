@@ -126,6 +126,21 @@ test.describe('isolation', () => {
     await expect(page.locator('body')).not.toContainText('£43.21')
   })
 
+  test("A's record-gift search finds none of B's contacts", async ({
+    page,
+    users,
+  }) => {
+    route('/t/$slug', '/t/$slug/gifts/new')
+    await page.goto(`/t/${users.a.slug}/gifts/new`)
+    await page.getByRole('combobox', { name: 'Donor' }).fill(`Bravo-${runId()}`)
+    // Only the two "new" choices: no match from B.
+    await expect(page.getByRole('option')).toHaveText([
+      /^New person/,
+      /^New organisation/,
+    ])
+    await expect(page.getByText('No contacts match.')).toBeVisible()
+  })
+
   test("A's list and search show none of B's contacts", async ({
     page,
     users,

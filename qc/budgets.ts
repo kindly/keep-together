@@ -124,6 +124,10 @@ export const budgets = {
   'settings.sourceCodes.addDetail': repeatable,
   'settings.sourceCodes.rename': repeatable,
   'settings.sourceCodes.archive': repeatable,
+  // Cash gifts step 3: recording a gift creates a record (contacts.create's
+  // class), from an existing contact or with a new one in the same save.
+  'gift.record': infrequent,
+  'gift.recordNewContact': infrequent,
   // Cash gifts step 5: the gift page and the contact page's panels.
   'gift.open': repeatable,
   'gift.save': repeatable,
