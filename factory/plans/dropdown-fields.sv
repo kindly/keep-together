@@ -1,4 +1,8 @@
-<sv-page label="plan: dropdown fields" category="plans">
+<sv-page label="plan: dropdown fields" category="archive">
+<sv-prose id="done">
+**Complete 2026-10-23: all 10 steps merged and deployed to every dev deployment; tags removed (data dropped, schema tightened at c3a98e1); last commit `e9d10fc`.**
+</sv-prose>
+
 
 <sv-prose id="b1">
 # Plan: dropdown fields (replacing tags)

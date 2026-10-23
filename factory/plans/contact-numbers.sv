@@ -1,4 +1,8 @@
-<sv-page label="plan: contact numbers" category="plans">
+<sv-page label="plan: contact numbers" category="archive">
+<sv-prose id="done">
+**Complete 2026-10-23: all 6 steps merged and deployed; every contact numbered, `contacts.number` required (e3ae3db); last commit `e9d10fc`.**
+</sv-prose>
+
 
 <sv-prose id="b1">
 # Plan: contact numbers

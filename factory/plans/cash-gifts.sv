@@ -1,4 +1,8 @@
-<sv-page label="plan: cash gifts" category="plans">
+<sv-page label="plan: cash gifts" category="archive">
+<sv-prose id="done">
+**Complete 2026-10-23 (slice 1): steps 1a, 1b, 2, 3, 4, 5 merged and deployed; record-gift page, gift page, Gifts and Gift Aid panels live; last commit `e7ddc71`. Open: gift.save QC budget (human's call), void/unvoid optimistic (flag), erasure questions above.**
+</sv-prose>
+
 
 <sv-prose id="b1">
 # Plan: cash gifts (first donations page)
