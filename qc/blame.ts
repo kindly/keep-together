@@ -342,8 +342,11 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
   // A mutation matches on the commit window first. A concurrent long
   // mutation on the instance can hold its log line past that window
   // (commit + 100 ms) while the response waits too; then, and only when
-  // the commit window has no call at all, fall back to send → response.
-  // Two candidates there stay unmatched, as anywhere.
+  // the commit window has no call at all and the response itself came
+  // late, look for the late line: after the commit window, up to the
+  // response. Never earlier: a call logged before our commit can't be our
+  // mutation, and another worker's call must never excuse ours. Two
+  // candidates there stay unmatched, as anywhere.
   const byCommit = (commitMs: number) => {
     const m = matchCalls(
       ctx.calls,
@@ -352,9 +355,21 @@ export function blame(s: BlameSample, ctx: BlameContext): Blame {
       s.at + commitMs - COMMIT_MATCH.beforeMs,
       s.at + commitMs + COMMIT_MATCH.afterMs,
     )
-    if (!m.none) return m
-    const f = sendWindow()
-    return f.none ? m : { ...f, how: `${f.how} (send → response)` }
+    if (
+      !m.none ||
+      s.responseMs === null ||
+      s.responseMs - commitMs <= COMMIT_MATCH.afterMs
+    )
+      return m
+    const f = matchCalls(
+      ctx.calls,
+      s.instance,
+      s.fns,
+      // Exclusive: a line at commit + 100 was in the commit window.
+      s.at + commitMs + COMMIT_MATCH.afterMs + 0.001,
+      s.at + s.responseMs + MATCH_SLACK_MS,
+    )
+    return f.none ? m : { ...f, how: `${f.how} (late log line)` }
   }
   const match =
     s.sendMs === null || answerAt === null

@@ -58,6 +58,20 @@ import type { LiveRun } from './live'
 // fails its budget instead gets one more sample, untimed and unjudged,
 // with tracing on (`tracePath`): the failure stays debuggable and no
 // judged sample is ever traced.
+//
+// Held results (review of 9e64046): a sample must do the work it claims
+// to measure. The Convex client keeps a removed query's last result until
+// the server acknowledges the removal, so a `before` that clears a search
+// and an action that types it again, faster than a round trip, draws the
+// old answer with nothing from the server. After every `before` the
+// harness therefore waits until the server has answered every query-set
+// change the page sent (`settle`). A flow whose result is meant to come
+// from the server says `server: true`, and a sample in which the watched
+// page got no query result from the server fails (HeldResultError).
+// What the app itself holds on purpose is a flow's own business:
+// `released` waits out a route loader's 5 s prewarm, and a reload in
+// `before` clears what the client keeps in memory (the contact page's
+// keep-alive cache, the rows the list remembers per filter).
 
 /** Timed samples per flow call; QC_REPEATS=1 is a fast functional run. */
 export const REPEATS = Number(process.env.QC_REPEATS ?? 5)
@@ -126,6 +140,11 @@ export interface SampleDetail {
   lastInMs: number | null
   /** The result was on screen: the sample. */
   endMs: number
+  /**
+   * The server sent the watched page a query result during the sample
+   * (`answered`). Absent without the tap, and on history from before it.
+   */
+  answered?: boolean
   /** Main-thread long tasks overlapping the sample, summed. */
   longTaskMs: number
   /** WebSockets the page opened during the sample (a reconnect). */
@@ -171,8 +190,13 @@ export interface FlowRecord {
   selfTest?: true
   /** Approved exception (qc/budgets.ts): judged, but never fails. */
   knownOver?: string
-  /** Failed: the Playwright trace of one extra, unjudged sample. */
+  /**
+   * Failed: the Playwright trace of one extra, unjudged sample. On the
+   * returned record only: the written one is final before it is taken.
+   */
   trace?: string
+  /** That extra sample threw (the trace shows how). */
+  traceError?: string
 }
 
 export interface FlowStep<TArg = undefined> {
@@ -202,6 +226,13 @@ export interface FlowStep<TArg = undefined> {
    * pages share the machine's clock.
    */
   inputPage?: Page
+  /**
+   * The result comes from the server: every sample must get a query result
+   * from it before \`until\` holds, or the flow fails with HeldResultError
+   * (the client already held the answer, so the sample timed a local
+   * re-render). Unchecked with the tap off (QC_LEGS=0).
+   */
+  server?: true
 }
 
 export interface FlowContext {
@@ -245,13 +276,17 @@ export function judge(samplesMs: Array<number>, budgetMs: number) {
 type RawEntry = [t: number, dir: 'out' | 'in', data: string]
 
 // A frame after parsing (in readLegs, outside the timed window).
-type WireEntry = [
+export type WireEntry = [
   t: number,
   dir: 'out' | 'in' | 'open',
   type: string,
   requestId: number | null,
   tsMs: number | null,
   fns?: Array<string>,
+  /** ModifyQuerySet: its newVersion. Transition: its endVersion.querySet. */
+  querySet?: number | null,
+  /** A Transition carrying a query result (QueryUpdated or QueryFailed). */
+  result?: boolean,
 ]
 
 interface QcWindow {
@@ -267,6 +302,10 @@ interface QcWindow {
   __qcSubs?: Record<string, string>
   /** The fold has seen a Connect: __qcSubs is the whole set. */
   __qcSubsKnown?: boolean
+  /** Fold __qcOut's frames up to `t` into __qcSubs (arm installs it). */
+  __qcFold?: (t: number) => void
+  /** settle: consecutive frames with no query-set change unanswered. */
+  __qcQuiet?: number
 }
 
 // Capture-phase listeners record the timestamp of each trusted input event
@@ -337,6 +376,42 @@ function arm([legs, now]: [legs: boolean, now: boolean]) {
         }
         return send.call(this, data)
       }
+      // The page's subscriptions as of `t`: every frame it sent so far,
+      // folded in order. A Connect starts the set again (the client
+      // re-adds them). Outside the timed window only.
+      w.__qcFold = (t: number) => {
+        const subs = (w.__qcSubs ??= {})
+        const out = w.__qcOut ?? []
+        let done = 0
+        try {
+          for (const [at, data] of out) {
+            if (at > t) break
+            done++
+            const type = /"type":"(\w+)"/.exec(data.slice(0, 200))?.[1]
+            if (type === 'Connect') {
+              for (const k of Object.keys(subs)) delete subs[k]
+              w.__qcSubsKnown = true
+            } else if (type === 'ModifyQuerySet') {
+              const m = JSON.parse(data) as {
+                modifications?: Array<{
+                  type: string
+                  queryId: number
+                  udfPath?: string
+                }>
+              }
+              for (const x of m.modifications ?? []) {
+                if (x.type === 'Add' && x.udfPath) subs[x.queryId] = x.udfPath
+                else if (x.type === 'Remove') delete subs[x.queryId]
+              }
+            }
+          }
+        } catch {
+          // A frame that won't parse: unknown until the next Connect.
+          for (const k of Object.keys(subs)) delete subs[k]
+          w.__qcSubsKnown = false
+        }
+        out.splice(0, done)
+      }
       try {
         new PerformanceObserver((list) => {
           for (const e of list.getEntries())
@@ -402,12 +477,13 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
       }
       if (type === 'ModifyQuerySet') {
         const m = JSON.parse(data) as {
+          newVersion?: number
           modifications?: Array<{ type: string; udfPath?: string }>
         }
         const adds = (m.modifications ?? []).flatMap((x) =>
           x.type === 'Add' && x.udfPath ? [x.udfPath] : [],
         )
-        return [[t, 'out', type, null, null, adds]]
+        return [[t, 'out', type, null, null, adds, m.newVersion ?? null]]
       }
       return type === 'Connect'
         ? [
@@ -417,14 +493,25 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
         : [[t, 'out', type, null, null]]
     }
     if (type === 'Transition') {
-      const head = /"endVersion":\{[^}]*"ts":"([^"]+)"/.exec(data.slice(0, 600))
-      const ts = head
-        ? tsMs(head[1])
-        : tsMs(
-            (JSON.parse(data) as { endVersion?: { ts?: string } }).endVersion
-              ?.ts,
-          )
-      return [[t, 'in', type, null, ts]]
+      const m = JSON.parse(data) as {
+        endVersion?: { ts?: string; querySet?: number }
+        modifications?: Array<{ type: string }>
+      }
+      const result = (m.modifications ?? []).some(
+        (x) => x.type === 'QueryUpdated' || x.type === 'QueryFailed',
+      )
+      return [
+        [
+          t,
+          'in',
+          type,
+          null,
+          tsMs(m.endVersion?.ts),
+          undefined,
+          m.endVersion?.querySet ?? null,
+          result,
+        ],
+      ]
     }
     if (type === 'MutationResponse' || type === 'ActionResponse') {
       const m = JSON.parse(data) as { requestId?: number; ts?: string }
@@ -445,7 +532,10 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
   const rel = (t: number | null | undefined) =>
     t === null || t === undefined ? null : Math.round((t - t0) * 10) / 10
   const origin = performance.timeOrigin
-  const legs: Partial<Legs> & { commitAt?: number | null } = {}
+  const legs: Partial<Legs> & {
+    commitAt?: number | null
+    addVersion?: number | null
+  } = {}
   if (side !== 'in') {
     // The request the action makes, if any; else the query change.
     const first =
@@ -456,6 +546,12 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
     legs.sendMs = rel(first?.[0])
     legs.sent = first?.[2] ?? null
     legs.fns = first?.[5] ?? []
+    // The query-set version of the first change that adds a query.
+    legs.addVersion =
+      wire.find(
+        ([, d, type, , , fns]) =>
+          d === 'out' && type === 'ModifyQuerySet' && (fns?.length ?? 0) > 0,
+      )?.[6] ?? null
     const resp =
       first && first[3] !== null
         ? wire.find(
@@ -485,41 +581,11 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
         d === 'out' &&
         (type === 'Mutation' || type === 'Action' || type === 'ModifyQuerySet'),
     ).length
-    // The page's subscriptions as of t1: every frame it sent so far, folded
-    // in order. A Connect starts the set again (the client re-adds them).
-    const subs = (w.__qcSubs ??= {})
-    const out = w.__qcOut ?? []
-    let done = 0
-    try {
-      for (const [t, data] of out) {
-        if (t > t1) break
-        done++
-        const type = /"type":"(\w+)"/.exec(data.slice(0, 200))?.[1]
-        if (type === 'Connect') {
-          for (const k of Object.keys(subs)) delete subs[k]
-          w.__qcSubsKnown = true
-        } else if (type === 'ModifyQuerySet') {
-          const m = JSON.parse(data) as {
-            modifications?: Array<{
-              type: string
-              queryId: number
-              udfPath?: string
-            }>
-          }
-          for (const x of m.modifications ?? []) {
-            if (x.type === 'Add' && x.udfPath) subs[x.queryId] = x.udfPath
-            else if (x.type === 'Remove') delete subs[x.queryId]
-          }
-        }
-      }
-    } catch {
-      // A frame that won't parse: unknown until the next Connect.
-      for (const k of Object.keys(subs)) delete subs[k]
-      w.__qcSubsKnown = false
-    }
-    out.splice(0, done)
-    // Only a set folded from the socket's Connect is the whole set.
-    if (w.__qcSubsKnown) legs.subs = [...new Set(Object.values(subs))].sort()
+    // The page's subscriptions as of t1. Only a set folded from the
+    // socket's Connect is the whole set.
+    w.__qcFold?.(t1)
+    if (w.__qcSubsKnown)
+      legs.subs = [...new Set(Object.values(w.__qcSubs ?? {}))].sort()
     legs.longTaskMs = Math.round(
       (w.__qcLong ?? [])
         .filter(([s, d]) => s + d >= t0 && s <= t1)
@@ -535,7 +601,16 @@ function readLegs([t0, t1, side]: [number, number, 'out' | 'in' | 'both']) {
   }
   const ins = wire
     .filter(([, d]) => d === 'in')
-    .map(([t, d, type, id, ts]): WireEntry => [rel(t)!, d, type, id, ts])
+    .map(([t, d, type, id, ts, fns, querySet, result]): WireEntry => [
+      rel(t)!,
+      d,
+      type,
+      id,
+      ts,
+      fns,
+      querySet,
+      result,
+    ])
   return { legs, ins }
 }
 
@@ -556,6 +631,109 @@ function cpuTicks(): [number, number] | null {
   }
 }
 
+// In the page, outside the timed window: true once the server has
+// answered every query-set change the page sent since its socket's last
+// Connect (each Transition carries the query-set version it brings the
+// page to), for three animation frames in a row, so a React effect that
+// unsubscribes a frame after `before` returns still counts.
+function settledFrames(): boolean {
+  const w = window as unknown as QcWindow
+  let sent = -1
+  let acked = -1
+  for (const [, d, data] of w.__qcWire ?? []) {
+    const type = /"type":"(\w+)"/.exec(data.slice(0, 200))?.[1]
+    if (d === 'out' && type === 'Connect') {
+      sent = -1
+      acked = -1
+    } else if (d === 'out' && type === 'ModifyQuerySet') {
+      const v = /"newVersion":(\d+)/.exec(data)?.[1]
+      if (v) sent = Math.max(sent, Number(v))
+    } else if (d === 'in' && type === 'Transition') {
+      const v = /"endVersion":\{[^}]*"querySet":(\d+)/.exec(
+        data.slice(0, 600),
+      )?.[1]
+      if (v) acked = Math.max(acked, Number(v))
+    }
+  }
+  if (acked < sent) {
+    w.__qcQuiet = 0
+    return false
+  }
+  w.__qcQuiet = (w.__qcQuiet ?? 0) + 1
+  return w.__qcQuiet >= 3
+}
+
+/**
+ * Wait until the server has answered every query-set change `page` sent,
+ * so the Convex client holds results only for queries it is subscribed to
+ * (see the top of the file). measureOnce runs it after every `before`.
+ */
+export async function settle(page: Page, timeoutMs = 15_000) {
+  if (!LEGS) return
+  await page.evaluate(() => {
+    ;(window as unknown as QcWindow).__qcQuiet = 0
+  })
+  await page.waitForFunction(settledFrames, undefined, {
+    polling: 'raf',
+    timeout: timeoutMs,
+  })
+}
+
+/**
+ * Wait until `page` holds no subscription to any of `fns` (canonical
+ * `module:name`), and the server has answered the removal: for a query
+ * the app holds on purpose after its page is gone (a route loader's
+ * prewarm), so a sample that needs it fetches it. Needs the tap from the
+ * page's first script (the `context` fixture installs it).
+ */
+export async function released(
+  page: Page,
+  fns: Array<string>,
+  timeoutMs = 15_000,
+) {
+  if (!LEGS) return
+  await page.waitForFunction(
+    (paths) => {
+      const w = window as unknown as QcWindow
+      if (!w.__qcFold) throw new Error('released: no WebSocket tap on the page')
+      w.__qcFold(performance.now())
+      if (!w.__qcSubsKnown) return false
+      const held = new Set(Object.values(w.__qcSubs ?? {}))
+      return paths.every((f) => !held.has(f))
+    },
+    fns,
+    { polling: 100, timeout: timeoutMs },
+  )
+  await settle(page, timeoutMs)
+}
+
+/** A `server: true` sample that drew a result the client already held. */
+export class HeldResultError extends Error {}
+
+/**
+ * Did the server send the watched page a query result for this sample?
+ * After a mutation, a Transition that reaches its commit. Otherwise a
+ * Transition carrying a query result, at or past the query-set version of
+ * the first change the sample sent that adds a query (when the input and
+ * watched pages are one socket and it sent one; a route preload on hover
+ * sends its add just before t0). `ins` are the watched page's frames in
+ * the sample.
+ */
+export function answered(
+  ins: Array<WireEntry>,
+  commitAt: number | null,
+  addVersion: number | null,
+): boolean {
+  return ins.some(([, , type, , ts, , querySet, result]) => {
+    if (type !== 'Transition') return false
+    if (commitAt !== null) return ts !== null && ts >= commitAt
+    return (
+      result === true &&
+      (addVersion === null || (querySet != null && querySet >= addVersion))
+    )
+  })
+}
+
 async function measureOnce<TArg>(
   page: Page,
   name: FlowName,
@@ -563,6 +741,8 @@ async function measureOnce<TArg>(
   timeoutMs: number,
 ): Promise<{ ms: number; detail: SampleDetail }> {
   await step.before?.()
+  await settle(page)
+  if (step.inputPage && step.inputPage !== page) await settle(step.inputPage)
   const pred = `(${step.until.toString()})(${JSON.stringify(step.arg ?? null)})`
   if (await page.evaluate(pred)) {
     throw new Error(
@@ -619,10 +799,22 @@ async function measureOnce<TArg>(
     inputPage === page
       ? await read(page, oOut, 'both').then((r) => [r, r])
       : [await read(inputPage, oIn, 'out'), await read(page, oOut, 'in')]
-  const { commitAt, ...legs } = {
+  const { commitAt, addVersion, ...legs } = {
     ...out?.legs,
     ...inn?.legs,
     commitAt: out?.legs.commitAt,
+    addVersion: inputPage === page ? out?.legs.addVersion : null,
+  }
+  const gotResult = inn
+    ? answered(inn.ins, commitAt ?? null, addVersion ?? null)
+    : undefined
+  if (step.server && gotResult === false) {
+    throw new HeldResultError(
+      `flow ${name}: \`until\` held ${round1(ms)} ms after the input with no query result from the server ` +
+        `(sent ${legs.sent ?? 'nothing'}, ${legs.bytesIn ?? 0} characters in): the client already held the answer, ` +
+        `so the sample timed a local re-render. \`before\` must reach a state where the result isn't held ` +
+        `(a distinct term, or \`released\` for a query the app holds on purpose)`,
+    )
   }
   return {
     ms,
@@ -643,6 +835,7 @@ async function measureOnce<TArg>(
       ),
       lastInMs: legs.lastInMs ?? null,
       endMs: round1(ms),
+      ...(gotResult !== undefined && { answered: gotResult }),
       longTaskMs: legs.longTaskMs ?? 0,
       connects: legs.connects ?? 0,
       hidden: legs.hidden ?? false,
@@ -768,28 +961,6 @@ export async function runFlow<TArg>(
       pass = j.pass
     }
   }
-  // Failed: trace one more sample, outside the judged set. Under
-  // `--trace on` the context is traced already and start() throws: that
-  // trace covers it.
-  let trace: string | undefined
-  const tracing = ctx.page.context().tracing
-  if (
-    !skipped &&
-    !pass &&
-    !budget.knownOver &&
-    ctx.tracePath &&
-    (await tracing
-      .start({ screenshots: true, snapshots: true, title: name })
-      .then(() => true)
-      .catch(() => false))
-  ) {
-    try {
-      await measureOnce(ctx.page, name, step, timeoutMs)
-    } finally {
-      await tracing.stop({ path: ctx.tracePath })
-    }
-    trace = ctx.tracePath
-  }
   const record: FlowRecord = {
     runId: runId(),
     flow: name,
@@ -810,15 +981,46 @@ export async function runFlow<TArg>(
     ...(skipped && { skipped }),
     ...(budget.selfTest && { selfTest: true as const }),
     ...(budget.knownOver && { knownOver: budget.knownOver }),
-    ...(trace && { trace }),
   }
+  // The verdict is written before anything else can go wrong.
   const dir = runDir()
   mkdirSync(dir, { recursive: true })
   appendFileSync(
     path.join(dir, `pid-${process.pid}.jsonl`),
     JSON.stringify(record) + '\n',
   )
-  return record
+  // Failed: trace one more sample, outside the judged set. Under
+  // `--trace on` the context is traced already and start() throws: that
+  // trace covers it. The sample can fail (a timeout, a held result): the
+  // trace still shows how, and the flow keeps its budget verdict.
+  if (skipped || pass || budget.knownOver || !ctx.tracePath) return record
+  const tracing = ctx.page.context().tracing
+  const started = await tracing
+    .start({ screenshots: true, snapshots: true, title: name })
+    .then(() => true)
+    .catch(() => false)
+  if (!started) return record
+  const tracePath = ctx.tracePath
+  let traceError: string | undefined
+  let saved = false
+  try {
+    await measureOnce(ctx.page, name, step, timeoutMs)
+  } catch (err) {
+    traceError = String(err)
+  } finally {
+    saved = await tracing.stop({ path: tracePath }).then(
+      () => true,
+      (err: unknown) => {
+        console.warn(`qc: flow ${name}: trace not saved: ${String(err)}`)
+        return false
+      },
+    )
+  }
+  return {
+    ...record,
+    ...(saved && { trace: tracePath }),
+    ...(traceError && { traceError }),
+  }
 }
 
 export class OverBudgetError extends Error {}

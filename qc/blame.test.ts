@@ -294,7 +294,7 @@ describe('matching the function', () => {
     expect(b.fnMatch).toMatch(/^unmatched: 0 /)
   })
 
-  test('a log line held past the commit window falls back to send → response', () => {
+  test('a log line held past the commit window matches late, up to the response', () => {
     // A concurrent long mutation on the instance delays our call's log
     // line to commit + 150 ms, and the response with it (the
     // fields.spec staff-switch case).
@@ -311,9 +311,7 @@ describe('matching the function', () => {
     }
     const b = blame(sample, { calls, probes: c.probes })
     expect(b.fnMs).toBe(30.3)
-    expect(b.fnMatch).toBe(
-      'contacts/mutations:setAcquisition (send → response)',
-    )
+    expect(b.fnMatch).toBe('contacts/mutations:setAcquisition (late log line)')
     // Without the fallback it read "unclear: 0 calls in the window".
     expect(b.why).not.toMatch(/calls in the window/)
   })
@@ -333,20 +331,57 @@ describe('matching the function', () => {
     )
     expect(b.fnMs).toBeNull()
     expect(b.fnMatch).toBe(
-      'unmatched: 2 contacts/mutations:setAcquisition calls in the window (send → response)',
+      'unmatched: 2 contacts/mutations:setAcquisition calls in the window (late log line)',
     )
     expect(b.verdict).toBe('unclear')
   })
 
-  test('a call in the commit window wins over the send → response window', () => {
-    // Another call of the function inside send → response but before the
-    // commit window: the commit match is used, the fallback never runs.
+  test('a call in the commit window wins over an earlier one', () => {
+    // Another call of the function after the send but before the commit
+    // window: the commit match is used, the fallback never runs.
     const c = cases.normal
     const mine = c.calls.find((x) => x.at === 1792608853027)!
     const early = { ...mine, at: c.sample.at + c.sample.sendMs! + 5, ms: 3 }
     const b = blame(c.sample, { calls: [...c.calls, early], probes: c.probes })
     expect(b.fnMs).toBe(30.3)
     expect(b.fnMatch).toBe('contacts/mutations:setAcquisition')
+  })
+
+  test("a stranger's call before our commit never excuses ours", () => {
+    // Our log line is missing; another worker's call of the same function
+    // completed between our send and our commit. It can't be ours: the
+    // sample stays unclear, which counts as ours.
+    const c = cases.normal
+    const mine = c.calls.find((x) => x.at === 1792608853027)!
+    const stranger = {
+      ...mine,
+      at: c.sample.at + c.sample.commitMs! - 20,
+      ms: 3,
+    }
+    const calls = [...c.calls.filter((x) => x !== mine), stranger]
+    const late = { ...c.sample, responseMs: c.sample.commitMs! + 165 }
+    for (const sample of [c.sample, late]) {
+      const b = blame(sample, { calls, probes: c.probes })
+      expect(b.fnMs).toBeNull()
+      expect(b.fnMatch).toMatch(/^unmatched: 0 /)
+      expect(b.verdict).toBe('unclear')
+    }
+  })
+
+  test('a late line only counts when the response was late too', () => {
+    // The response came 40 ms after the commit, so nothing held our log
+    // line: a call logged at commit + 150 is someone else's.
+    const c = cases.normal
+    const mine = c.calls.find((x) => x.at === 1792608853027)!
+    const calls = c.calls.map((x) =>
+      x === mine ? { ...x, at: c.sample.at + c.sample.commitMs! + 150 } : x,
+    )
+    const b = blame(
+      { ...c.sample, responseMs: c.sample.commitMs! + 40 },
+      { calls, probes: c.probes },
+    )
+    expect(b.fnMs).toBeNull()
+    expect(b.verdict).toBe('unclear')
   })
 
   test('a call on another instance is not matched', () => {

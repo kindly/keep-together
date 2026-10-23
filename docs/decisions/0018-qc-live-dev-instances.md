@@ -1,6 +1,7 @@
 # 0018 — QC runs the built SPA against a pool of live dev instances, with RTT-adjusted budgets and a coverage gate
 
 Status: accepted (2026-10-18; proposed 2026-10-17) · drafted by the step 0 spike
+(`docs/spikes/07-qc-harness.md`) for review. Plan: `factory/plans/qc-suite.sv`.
 
 **Amended in review (2026-10-18), superseding decision 4's numbers:**
 anything a user can do more than once per session must have **every
@@ -30,11 +31,21 @@ a cost that grows with the page (median 190 ms traced against 95 ms
 untraced on `contacts.loadMore`). This removes harness overhead, not app
 work, and it lowers the measured times of big pages, so history from
 before it reads high on them. A flow that fails its budget records a
-trace of one extra, unjudged sample instead. Raising a
-budget or adding an exception needs the human's OK. Details:
-`factory/plans/qc-suite.sv`, `qc/README.md`.
-(`docs/spikes/07-qc-harness.md`) for review. Plan:
-`factory/plans/qc-suite.sv`.
+trace of one extra, unjudged sample instead.
+**Amended 2026-10-23 (review of the tracing change):** removing tracing
+also changed the state some flows started from. Without it `before`
+finished inside one round trip, so a search cleared and typed again drew
+the result the Convex client still held for it, with nothing from the
+server; the search flows' p50 fell from ~39 ms to ~4 ms that way, not
+through tracing. Every timed sample must do the work it claims: after
+each `before` the harness waits until the server has answered every
+query-set change the page sent, and a flow whose result comes from the
+server (`server: true`) fails any sample that got no query result from
+it. Some flows' histories, filter flows included, timed held results
+before this too.
+
+Throughout: raising a budget or adding an exception needs the human's
+OK. Details: `factory/plans/qc-suite.sv`, `qc/README.md`.
 
 ## Context
 

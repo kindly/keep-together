@@ -1,11 +1,15 @@
-import { statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import path from 'node:path'
 import { expect, test } from './fixtures'
 import {
+  HeldResultError,
+  LEGS,
   OverBudgetError,
   RECORD,
   REPEATS,
   RTT_CEILING_MS,
   assertFlow,
+  runDir,
   runFlow,
   runId,
 } from './timing'
@@ -19,7 +23,9 @@ import type { FlowStep } from './timing'
 // sample forced over budget in the first set is re-measured and passes,
 // and one forced into both sets fails. The impossible budget also proves
 // a failed flow is traced (one extra sample, outside the judged set); the
-// passing ones prove nothing else is.
+// passing ones prove nothing else is. The held-result guard is proved
+// both ways: the generous flow, a real round trip, passes it, and a
+// sample the page answers alone fails it.
 
 function openContacts(page: Page, slug: string): FlowStep<string> {
   // The header's link: the group home also has a "Find a contact" card.
@@ -34,7 +40,49 @@ function openContacts(page: Page, slug: string): FlowStep<string> {
     action: () => link.click(),
     until: (name) => document.body.innerText.includes(name),
     arg: `Alpha-${runId()}`,
+    server: true,
   }
+}
+
+interface Clicked {
+  __qcClicked?: boolean
+}
+
+/** A click the page answers by itself: no request, nothing from the server. */
+function localClick(page: Page): FlowStep {
+  return {
+    before: async () => {
+      await page.evaluate(() => {
+        const w = window as unknown as Clicked
+        w.__qcClicked = false
+        document.addEventListener(
+          'mousedown',
+          () => {
+            w.__qcClicked = true
+          },
+          { once: true },
+        )
+      })
+    },
+    action: () => page.mouse.click(5, 5),
+    until: () => (window as unknown as Clicked).__qcClicked === true,
+    server: true,
+  }
+}
+
+/** This worker's written records for `flow`. */
+function written(flow: string) {
+  return readdirSync(runDir())
+    .filter((f) => f.startsWith('pid-'))
+    .flatMap((f) =>
+      readFileSync(path.join(runDir(), f), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as { flow: string; where: string }),
+    )
+    .filter(
+      (r) => r.flow === flow && r.where === test.info().titlePath.join(' › '),
+    )
 }
 
 interface Held {
@@ -93,8 +141,68 @@ test.describe('harness', () => {
     const judged = !RECORD && rttMs <= RTT_CEILING_MS
     expect(record.pass).toBe(judged ? true : null)
     expect(record.trace).toBeUndefined()
+    // Every sample got its answer from the server (the guard passed).
+    if (LEGS) expect(record.detail.every((d) => d.answered)).toBe(true)
     // Real samples: a client navigation plus a query takes milliseconds.
     expect(Math.min(...record.samplesMs)).toBeGreaterThan(1)
+  })
+
+  test('a held result fails the guard', async ({ page, users }) => {
+    test.skip(!LEGS, 'no WebSocket tap: the guard is off')
+    await page.goto(`/t/${users.a.slug}`)
+    await expect(
+      runFlow(
+        {
+          page,
+          rttMs: 0,
+          worker: test.info().parallelIndex,
+          where: test.info().titlePath.join(' › '),
+          warmUp: false,
+        },
+        'harness.generous',
+        localClick(page),
+      ),
+    ).rejects.toThrow(HeldResultError)
+  })
+
+  test('a failing traced sample keeps the verdict', async ({
+    page,
+    users,
+    rttMs,
+  }) => {
+    test.skip(RECORD, 'record mode never asserts')
+    test.skip(rttMs > RTT_CEILING_MS, 'RTT over the ceiling: not judged')
+    // The extra traced sample is call 2K + 1 (no warm-up, and every
+    // sample fails 1 ms, so the set is re-measured): its action throws.
+    const base = openContacts(page, users.a.slug)
+    let call = 0
+    const record = await runFlow(
+      {
+        page,
+        rttMs,
+        worker: test.info().parallelIndex,
+        where: test.info().titlePath.join(' › '),
+        warmUp: false,
+        tracePath: test.info().outputPath('trace-throws.zip'),
+      },
+      'harness.impossible',
+      {
+        ...base,
+        action: async () => {
+          if (++call > 2 * REPEATS) throw new Error('traced sample broke')
+          await base.action()
+        },
+      },
+    )
+    expect(call).toBe(2 * REPEATS + 1)
+    expect(record.pass).toBe(false)
+    expect(record.traceError).toMatch(/traced sample broke/)
+    expect(statSync(record.trace!).size).toBeGreaterThan(0)
+    expect(() => assertFlow(record)).toThrow(OverBudgetError)
+    // Written once, with its verdict, before the trace was taken.
+    const [w, ...more] = written('harness.impossible')
+    expect(more).toHaveLength(0)
+    expect(w).toMatchObject({ pass: false, samplesMs: record.samplesMs })
   })
 
   test.describe('spikes', () => {

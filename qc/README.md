@@ -143,7 +143,7 @@ blame, computed live in the worker for the judged set (see Ours).
 |---|---|
 | page | input → send, plus the Transition (or last message) → result on screen; long tasks shown when any |
 | to Convex ≈ | send → commit, less our function (server clock) |
-| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance. A mutation's call must complete from 10 ms before to 100 ms after its commit timestamp, both on the server clock, so clock skew can't move it. When that window holds no call at all (a concurrent long mutation on the instance held the log line past it, and the response with it), the match falls back to the send → response window below, marked `(send → response)`. Without a commit (a query change, an action), between the send and the response or screen message ± 10 ms on the page's clock. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
+| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance. A mutation's call must complete from 10 ms before to 100 ms after its commit timestamp, both on the server clock, so clock skew can't move it. When that window holds no call at all and the response itself came more than 100 ms after the commit (a concurrent long mutation on the instance held the log line past the window, and the response with it), the match looks for the late line between the end of the commit window and the response + 10 ms, marked `(late log line)`. Never before the commit window: a call logged before our commit can't be ours, and another worker's call must never excuse ours. Without a commit (a query change, an action), between the send and the response or screen message ± 10 ms on the page's clock. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
 | back ≈ | commit → response (server clock) |
 | Transition | response → the Transition carrying the result |
 | Convex + network | send → screen message, less our function, when there's no commit to split it (a query change) |
@@ -242,13 +242,36 @@ included, so its cost grows with the page: ~230 ms of snapshotting on one
 `contacts.loadMore` click, a median of 190 ms traced against 95 ms
 untraced (factory/out/builder-fields6-report.md). That is the harness's
 overhead, not the app's work: turning it off removes no app work, and it
-lowers the measured times of big pages. Compare history across this
-change with that in mind. A flow that fails its budget gets one more
+lowers the measured times of big pages. It also changed what some flows
+measured until the held-result rule below was added: without tracing a
+`before` finished inside one round trip, so a search cleared and typed
+again drew the answer the client still held (search p50 ~4 ms, with
+nothing from the server). Compare history across both changes with that
+in mind. A flow that fails its budget gets one more
 sample, untimed and unjudged, with tracing on, attached to the test as
 `trace` (worker-setup sign-ins write theirs to
-`test-results/.traces/<run>/`). A functional failure has a screenshot,
-not a trace; to trace one, rerun it with `pnpm qc --trace on <spec>` and
-ignore its times.
+`test-results/.traces/<run>/`); if that sample throws, the flow keeps its
+verdict and the record says `traceError`. A functional failure has a
+screenshot and, when the page logged anything, its console and uncaught
+errors (`console`), not a trace; to trace one, rerun it with
+`pnpm qc --trace on <spec>` and ignore its times.
+
+**Held results.** Every timed sample must do the work it claims to
+measure. The Convex client keeps a removed query's result until the
+server acknowledges the removal, so after every `before` the harness
+waits until the server has answered every query-set change the page
+sent (`settle` in `qc/timing.ts`). A flow whose result comes from the
+server says `server: true`, and a sample in which the watched page got
+no query result from the server before `until` held fails with
+`HeldResultError` (each sample records it as `answered`). The app also
+holds results on purpose, and a flow that should time the round trip has
+to step around them in `before`: a route loader's 5 s prewarm
+(`released(page, ['module:fn'])` waits until the page no longer
+subscribes to it), the contact page's 2-minute keep-alive cache, and the
+rows the contacts list remembers per filter while mounted (reload the
+page). `settings.nav` and `contact.revisit` are local by design (the
+Fields tab reads what the contacts list subscribes to; a revisit draws
+from the cache) and don't say `server: true`.
 
 Server execution times come from `convex logs`: every uncached call of
 our own functions on a user path must take under 100 ms, bar one spike
@@ -355,7 +378,8 @@ OK are the initial recorded ones (plan step 9b).
    `until` runs in the page every animation frame, so it can't close over
    test variables; pass data through `arg`. `start: 'navigation'` times a
    page load from navigation start; `inputPage` times propagation from one
-   tab to another. Each test makes the entities it changes: the seeded
+   tab to another. `server: true` when the result comes from the server
+   (see Held results). Each test makes the entities it changes: the seeded
    world is shared by every test in a worker.
 5. **Run** `pnpm qc qc/flows/<area>.spec.ts`, then a full `pnpm qc`.
 

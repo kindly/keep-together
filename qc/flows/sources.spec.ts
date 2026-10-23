@@ -1,5 +1,5 @@
 import { expect, test } from '../fixtures'
-import { runId } from '../timing'
+import { released, runId } from '../timing'
 import { secondTab, want } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
@@ -113,9 +113,12 @@ test.describe('source codes', { annotation: SOURCES_ROUTE }, () => {
             page.getByRole('heading', { name: 'Fields', exact: true }),
           ).toBeVisible()
         }
+        // The tab's loader prewarms the tree for 5 s after it is left.
+        await released(page, ['sources/queries:tree'])
       },
       action: () => sources.click(),
       until: sourcesLoaded,
+      server: true,
     })
     await expect(page).toHaveURL(sourcesPath(users.a.slug))
     await expect(sources).toHaveAttribute('aria-current', 'page')
