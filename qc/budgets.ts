@@ -77,6 +77,7 @@ export const budgets = {
   'contacts.search.postcode': repeatable,
   'contacts.search.emailPart': repeatable,
   'contacts.search.org': repeatable,
+  'contacts.search.number': repeatable,
   'contacts.showArchived': repeatable,
   'contacts.create': infrequent,
   'contact.save': repeatable,

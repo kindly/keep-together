@@ -1,6 +1,11 @@
+import { ConvexHttpClient } from 'convex/browser'
 import { expect, test } from '../fixtures'
+import type { Instance, QcUser } from '../fixtures'
 import type { Page } from '@playwright/test'
 import type { FlowName } from '../budgets'
+import { api } from '../../convex/_generated/api'
+import type { Id } from '../../convex/_generated/dataModel'
+import { formatNumber } from '../../convex/contacts/number'
 import {
   LIST_ROUTE,
   createContact,
@@ -38,6 +43,43 @@ const searchBox = (page: Page) =>
 function onlyRow(name: string) {
   const links = [...document.querySelectorAll('main ul li a')]
   return links.length === 1 && links[0].textContent.includes(name)
+}
+
+/**
+ * The written contact number of `user`'s only contact named `last`, read
+ * through the API: the pages don't show numbers yet (contact numbers
+ * step 4).
+ */
+async function writtenNumber(
+  inst: Instance,
+  user: QcUser,
+  tenantId: string,
+  last: string,
+): Promise<string> {
+  const client = new ConvexHttpClient(inst.url)
+  const { tokens } = await client.action(api.auth.signIn, {
+    provider: 'password',
+    params: { email: user.email, password: user.password, flow: 'signIn' },
+  })
+  if (!tokens) throw new Error(`no session for ${user.email}`)
+  client.setAuth(tokens.token)
+  const { rows } = await client.query(api.contacts.queries.search, {
+    tenantId: tenantId as Id<'tenants'>,
+    search: last,
+  })
+  expect(rows).toHaveLength(1)
+  expect(rows[0].number).not.toBeNull()
+  return formatNumber(rows[0].number!)
+}
+
+/** The `until` for "the first row is `name`'s, badged as a number match". */
+function numberFirst(name: string) {
+  const first = document.querySelector('main ul li a')
+  return (
+    first !== null &&
+    first.textContent.includes(name) &&
+    first.textContent.includes('contact no.')
+  )
 }
 
 async function toList(page: Page) {
@@ -163,6 +205,73 @@ test.describe('search by what you have in front of you', () => {
         `${word.toLowerCase()} allot`,
         'contacts.search.org',
       )
+    },
+  )
+})
+
+test.describe('search by contact number', () => {
+  test(
+    'the number off a paper form finds the contact first',
+    { annotation: [LIST_ROUTE] },
+    async ({
+      page,
+      browser,
+      baseURL,
+      session,
+      flow,
+      users,
+      world,
+      instance,
+    }) => {
+      const last = `qcs-${token()}`
+      await createContact(page, users.a.slug, last, 'Femi')
+      const written = await writtenNumber(
+        instance,
+        users.a,
+        world.tenants[0].tenantId,
+        last,
+      )
+      await toList(page)
+      const search = searchBox(page)
+      await flow(page, 'contacts.search.number', {
+        before: async () => {
+          await search.fill('')
+          await expect(listRows(page).nth(1)).toBeVisible()
+        },
+        action: () => search.fill(written),
+        until: numberFirst,
+        arg: last,
+      })
+
+      // Untimed: the sequence without its check digit, typed with a space.
+      await search.fill(`${written.slice(0, 3)} ${written.slice(3, 5)}`)
+      await expect(listRows(page).first()).toContainText(last)
+      await expect(listRows(page).first()).toContainText(
+        `contact no. ${written}`,
+      )
+      // A wrong check digit says so.
+      const typo = written.slice(0, 5) + ((Number(written[5]) + 1) % 10)
+      await search.fill(typo)
+      await expect(
+        page.getByText(
+          `${typo} isn’t a valid contact number. Check the last digit.`,
+        ),
+      ).toBeVisible()
+      await expect(page.locator('main')).not.toContainText(last)
+
+      // B, in its own group, never sees A's contact by its number (B may
+      // have its own contact with the same number).
+      const b = await secondTab(browser, baseURL!, await session(users.b))
+      await b.goto(`/t/${users.b.slug}/contacts`)
+      await expect(b.getByRole('heading', { name: 'Contacts' })).toBeVisible()
+      for (const term of [written, written.slice(0, 5)]) {
+        await searchBox(b).fill(term)
+        await expect(
+          b.getByText('No contacts match.').or(listRows(b).first()),
+        ).toBeVisible()
+        await expect(b.locator('main')).not.toContainText(last)
+      }
+      await b.context().close()
     },
   )
 })

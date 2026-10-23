@@ -44,6 +44,30 @@ export function formatNumber(sequence: number): string {
   return `${sequence}${checkDigit(sequence)}`
 }
 
+/**
+ * What a search entry says about contact numbers, spaces and hyphens
+ * ignored: five digits are a sequence typed without its check digit, six
+ * whose last digit checks are a written number (both `{ sequence }`), and
+ * six whose last digit doesn't check are `{ invalid, hint }`, the hint
+ * for the list to show (g2q2). Anything else, including a sequence below
+ * FIRST_NUMBER, isn't a number: null. Exact only, never a prefix (g2q4).
+ */
+export function parseNumber(
+  term: string,
+): { sequence: number } | { invalid: true; hint: string } | null {
+  const digits = term.replace(/[\s-]/g, '')
+  if (!/^\d{5,6}$/.test(digits)) return null
+  const sequence = Number(digits.slice(0, 5))
+  if (sequence < FIRST_NUMBER) return null
+  if (digits.length === 5 || checkDigit(sequence) === Number(digits[5])) {
+    return { sequence }
+  }
+  return {
+    invalid: true,
+    hint: `${digits} isn’t a valid contact number. Check the last digit.`,
+  }
+}
+
 /** The tenant's sequence row, or null before its first allocation. */
 export function readSequence(
   db: ScopedDatabaseReader,
