@@ -69,6 +69,7 @@ async function bulk(
         archiveVersion: 0,
         identifiersVersion: 0,
         acquisitionVersion: 0,
+        fieldsVersion: 0,
         ...(opts.source && { acquisitionCodeId: opts.source.version }),
       })
       await ctx.db.insert('contactSearch', {

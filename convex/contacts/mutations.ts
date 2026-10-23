@@ -320,7 +320,7 @@ export const bulkSetField = tenantMutation({
       }
       plans.push({
         id: contact._id,
-        expected: contact.fieldsVersion ?? 0,
+        expected: contact.fieldsVersion,
         values: withValue(fieldValuesOf(contact, bySlot), fieldId, optionId),
       })
     }
@@ -617,7 +617,7 @@ export const saveForm = tenantMutation({
       args.identifiers,
       contact.identifiersVersion,
     )
-    consider('fields', fieldValues, args.fields, contact.fieldsVersion ?? 0)
+    consider('fields', fieldValues, args.fields, contact.fieldsVersion)
 
     // Not awaited yet: its reads go out alongside the identifier check's.
     const prefetched = prefetchChanged(ctx.db, found, changed)
@@ -699,7 +699,7 @@ export const saveForm = tenantMutation({
       addresses: contact.addressesVersion,
       archive: contact.archiveVersion,
       identifiers: contact.identifiersVersion,
-      fields: contact.fieldsVersion ?? 0,
+      fields: contact.fieldsVersion,
     }
     for (const c of changed) counters[c.name] = (await c.run(group)).counter
 

@@ -289,32 +289,6 @@ describe('staff can manage lists, per list', () => {
       ],
     ])
   })
-
-  test('a row from before tags left, still holding the tag switch, keeps working', async () => {
-    const { t, a } = await setup()
-    // As written before dropdown fields step 7: every switch, tags too.
-    await t.run((ctx) =>
-      ctx.db.insert('tenantPreferences', {
-        tenantId: a.tenantId,
-        staffCanManageTags: true,
-        tagsVersion: 3,
-        staffCanManageIdentifierTypes: false,
-        identifierTypesVersion: 0,
-        staffCanManageSourceCodes: false,
-        sourceCodesVersion: 0,
-        staffCanManageFields: false,
-        fieldsVersion: 0,
-      }),
-    )
-    await set(a.as, a.tenantId, 'fields', true, 0)
-    expect(await prefs(a.as, a.tenantId)).toMatchObject({
-      staffCanManageFields: true,
-      fieldsVersion: 1,
-    })
-    expect(await prefs(a.as, a.tenantId)).not.toHaveProperty(
-      'staffCanManageTags',
-    )
-  })
 })
 
 describe('restoring a list revision', () => {

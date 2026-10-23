@@ -113,8 +113,8 @@ retire action are in `fields.ts`, and the values' contract
 N is `FIELD_SLOTS` (5). Raising it is loosen-only, but the push rebuilds
 `search_text` and waits for it. The search index's 16 filter fields cap it
 at 10 slots, and past about 8 values would move to a join table (ADR 0023
-decisions 3–5). Tags (`tags`, `contactTags`) are still in the schema until
-plan steps 7–9 remove them.
+decisions 3–5). Tags are gone: plan steps 7–9 removed their code, data
+and tables; their revisions stay in history, read-only.
 
 ## Invariants the tests enforce
 
