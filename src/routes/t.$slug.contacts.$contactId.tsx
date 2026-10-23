@@ -39,10 +39,6 @@ export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
       args: { tenantId: tenant._id },
     })
     convex.prewarmQuery({
-      query: api.contacts.queries.tags,
-      args: { tenantId: tenant._id, includeInactive: true },
-    })
-    convex.prewarmQuery({
       query: api.contacts.fields.list,
       args: { tenantId: tenant._id },
     })
@@ -52,7 +48,6 @@ export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
 const SLICE_QUERIES = [
   api.contacts.queries.getRoot,
   api.contacts.queries.getChannels,
-  api.contacts.queries.getTags,
   api.contacts.queries.getIdentifiers,
 ] as const
 
@@ -73,7 +68,6 @@ function useContactView(
   const args = { tenantId, id }
   const root = useQuery(api.contacts.queries.getRoot, args)
   const channels = useQuery(api.contacts.queries.getChannels, args)
-  const tags = useQuery(api.contacts.queries.getTags, args)
   const identifiers = useQuery(api.contacts.queries.getIdentifiers, args)
   // By the code's id, not the contact's, so a contact save doesn't re-run
   // it; an uncoded contact subscribes to nothing.
@@ -109,7 +103,6 @@ function useContactView(
     if (
       root === undefined ||
       channels === undefined ||
-      tags === undefined ||
       identifiers === undefined ||
       acquisition === undefined ||
       types === undefined ||
@@ -119,13 +112,12 @@ function useContactView(
     return assembleView({
       root,
       channels,
-      tags,
       identifiers,
       types,
       acquisition,
       fields,
     })
-  }, [root, channels, tags, identifiers, acquisition, types, fields])
+  }, [root, channels, identifiers, acquisition, types, fields])
 }
 
 /**

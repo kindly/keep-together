@@ -18,7 +18,9 @@
  * comms' emailSuppressions (E2a), `acquisitionVersion` (source codes),
  * `backfillContactTagName` (`contactTags.name`, perf tag name); see git
  * log. `backfillContactSearch` is not a two-phase step: it fills a
- * new derived table, and stays (rerunnable) as the way to rebuild it.
+ * new derived table, and stays (rerunnable) as the way to rebuild it; run
+ * it after deploying a change to what the search text holds (dropdown
+ * fields step 7 took tag names out of it).
  */
 import { migrations } from '../lib/migrations'
 import { scopeWriter } from '../lib/tenancy'
@@ -29,7 +31,8 @@ export const run = migrations.runner()
 /**
  * Search Q1: a `contactSearch` row for every contact, built exactly as the
  * contracts' projection hook builds it. Rewrites only rows that differ, so
- * a rerun is a read-only pass.
+ * a rerun is a read-only pass. Dropdown fields step 7 reruns it on every
+ * deployment, so tag names leave every row's text.
  *
  *   npx convex run contacts/migrations:run '{"fn":"contacts/migrations:backfillContactSearch"}'
  */

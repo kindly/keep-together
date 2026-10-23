@@ -185,17 +185,36 @@ test.describe(
       page,
       users,
     }) => {
-      // CACHE_MAX_IDLE is 100 and a contact leaves 5 queries: 22 contacts
-      // go past it.
-      test.setTimeout(240_000)
+      // CACHE_MAX_IDLE is 100 and a contact leaves 4 queries of its own:
+      // 27 contacts go past it. The first two visits measure that 4.
+      test.setTimeout(300_000)
       const visits: Array<{ last: string; path: string }> = []
-      for (let i = 0; i < 22; i++) {
+      for (let i = 0; i < 27; i++) {
         const last = uniqueName(`bound${i}`)
         const url = await createContact(page, users.a.slug, last)
         visits.push({ last, path: new URL(url).pathname })
       }
       const subs = await trackSubscriptions(page.context())
       await page.goto(`/t/${users.a.slug}/contacts`)
+      // What is left once the loader prewarms (5 s) lapse: the cache's
+      // queries, without the list page's own.
+      const heldNow = async () => {
+        await page.waitForTimeout(PAST_PREWARM_MS)
+        const live = subs.live()
+        return {
+          live,
+          held: live.filter(
+            (p) =>
+              ![
+                'platform/tenants:mine',
+                'contacts/queries:list',
+                // The list's source filter options.
+                'sources/queries:filterOptions',
+              ].includes(p),
+          ),
+        }
+      }
+      const afterVisit: Array<number> = []
       for (const { last, path } of visits) {
         // In-app navigation (the list shows at most 100 rows), so the
         // cache lives on between visits.
@@ -206,28 +225,28 @@ test.describe(
         await expect(page.getByRole('heading', { name: last })).toBeVisible()
         await expect(page.getByText('Loading…')).toHaveCount(0)
         await toList(page)
+        if (afterVisit.length < 2)
+          afterVisit.push((await heldNow()).held.length)
       }
-      // Let every loader prewarm (5 s) lapse: what is left is the list
-      // page's own queries plus what the cache holds.
-      await page.waitForTimeout(PAST_PREWARM_MS)
-      const live = subs.live()
-      const held = live.filter(
-        (p) =>
-          ![
-            'platform/tenants:mine',
-            'contacts/queries:list',
-            'contacts/queries:tags',
-            // The list's source filter options.
-            'sources/queries:filterOptions',
-          ].includes(p),
-      )
+      // The second contact added only its own queries; the first also
+      // brought the ones every contact shares. Enough visits to pass the
+      // cap, or the bound below proves nothing.
+      const perContact = afterVisit[1] - afterVisit[0]
+      const shared = afterVisit[0] - perContact
+      test.info().annotations.push({
+        type: 'idle queries',
+        description: `${perContact} per contact, ${shared} shared`,
+      })
+      expect(perContact).toBe(4)
+      expect(visits.length * perContact + shared).toBeGreaterThan(100)
+      const { live, held } = await heldNow()
       test.info().annotations.push({
         type: 'held queries',
         description: JSON.stringify(live),
       })
       expect(held.length).toBeGreaterThan(0)
       expect(held.length).toBeLessThanOrEqual(100)
-      // 22 contacts × 5 of their own queries is past the cap, so the last
+      // 27 contacts × 4 of their own queries is past the cap, so the last
       // ones left were dropped as they went idle (convex-helpers drops the
       // newest idle query, not the oldest): not every root is held, but
       // many more than the old cap's 4 contacts.

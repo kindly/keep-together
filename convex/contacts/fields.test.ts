@@ -1052,8 +1052,8 @@ describe('who manages fields', () => {
     )!
     expect(bPrefs).toMatchObject({ staffCanManageFields: false })
     expect(await mine(staff)).toMatchObject({
-      staffCanManageTags: false,
-      canManageTags: false,
+      staffCanManageIdentifierTypes: false,
+      canManageIdentifierTypes: false,
     })
   })
 

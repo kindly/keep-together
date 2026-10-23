@@ -42,16 +42,36 @@ test.describe('isolation', () => {
     await expect(page.getByLabel('New identifier type')).toHaveCount(0)
   })
 
-  // The field flows proper are step 6 of the dropdown fields plan.
-  test("B's fields are not A's to open", async ({ page, users }) => {
-    route('/t/$slug', '/t/$slug/settings/fields')
+  // A's field flows are fields.spec.ts. A has a seeded field and B none,
+  // so B's own field tab and list show none of A's.
+  test("B's fields are not A's to open, nor A's B's", async ({
+    page,
+    browser,
+    baseURL,
+    session,
+    users,
+    world,
+  }) => {
+    route('/t/$slug', '/t/$slug/settings/fields', '/t/$slug/contacts/')
+    const { label } = world.field
     await page.goto(`/t/${users.a.slug}/settings/fields`)
-    await expect(page.getByText(/of 5 in use/)).toBeVisible()
+    await expect(
+      page.getByTestId('field').filter({ hasText: label }),
+    ).toBeVisible()
     await page.goto(`/t/${users.b.slug}/settings/fields`)
     await expect(
       page.getByText(`No group called “${users.b.slug}” that you belong to.`),
     ).toBeVisible()
     await expect(page.getByLabel('New field')).toHaveCount(0)
+
+    const b = await secondTab(browser, baseURL!, await session(users.b))
+    await b.goto(`/t/${users.b.slug}/settings/fields`)
+    await expect(b.getByText('No fields yet.')).toBeVisible()
+    await expect(b.getByTestId('field')).toHaveCount(0)
+    await b.goto(`/t/${users.b.slug}/contacts`)
+    await expect(b.locator('main ul li a').first()).toBeVisible()
+    await expect(b.getByLabel(`Filter by ${label}`)).toHaveCount(0)
+    await b.context().close()
   })
 
   test("A's source codes show none of B's", async ({ page, users }) => {

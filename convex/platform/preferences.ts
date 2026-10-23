@@ -3,15 +3,16 @@
  * Settings page (secrets go in `tenantSettings`, encrypted). One row per
  * tenant at most, created by the first save; no row means every default.
  *
- * `staffCanManageTags`, `staffCanManageIdentifierTypes`,
- * `staffCanManageSourceCodes` and `staffCanManageFields` (each default
- * off, independent): whether staff, as well as admins, may create, rename
- * and archive / reactivate the tenant's tags, its identifier types, its
- * source codes and its dropdown fields and their options (the rule
- * is in lib/lists). Each is its own contract with its own
- * counter, so switching one never conflicts with the other. Putting tags
- * and identifiers on contacts is ordinary staff editing either way;
- * viewers never write.
+ * `staffCanManageIdentifierTypes`, `staffCanManageSourceCodes` and
+ * `staffCanManageFields` (each default off, independent): whether staff,
+ * as well as admins, may create, rename and archive / reactivate the
+ * tenant's identifier types, its source codes and its dropdown fields and
+ * their options (the rule is in lib/lists). Each is its own contract with
+ * its own counter, so switching one never conflicts with the other.
+ * Putting identifiers and field values on contacts is ordinary staff
+ * editing either way; viewers never write. (`staffCanManageTags` went with
+ * tags, dropdown fields step 7: its `tenantPreferences.tags` revisions
+ * stay, unrestorable.)
  */
 import { ConvexError, v } from 'convex/values'
 import type { Doc } from '../_generated/dataModel'
@@ -22,8 +23,6 @@ import { tenantMutation } from '../lib/tenancy'
 
 /** A new row: every switch at its default, every counter at 0. */
 const DEFAULTS = {
-  staffCanManageTags: false,
-  tagsVersion: 0,
   staffCanManageIdentifierTypes: false,
   identifierTypesVersion: 0,
   staffCanManageSourceCodes: false,
@@ -31,21 +30,6 @@ const DEFAULTS = {
   staffCanManageFields: false,
   fieldsVersion: 0,
 }
-
-export const tagsFields = { staffCanManageTags: v.boolean() }
-
-export const tags = defineContract({
-  name: 'tenantPreferences.tags',
-  entity: 'tenantPreferences',
-  version: 1,
-  counter: 'tagsVersion',
-  fields: tagsFields,
-  apply: async (ctx, p, root) => {
-    if (!root) return ctx.db.insert('tenantPreferences', { ...DEFAULTS, ...p })
-    await ctx.db.patch('tenantPreferences', root._id, p)
-    return root._id
-  },
-})
 
 export const identifierTypesFields = {
   staffCanManageIdentifierTypes: v.boolean(),
@@ -119,21 +103,6 @@ function staleIfUnseen(
     throw new ConvexError({ kind: 'stale' as const, contract, current })
   }
 }
-
-/** Turn "staff can manage tags" on or off. Admin only. */
-export const setStaffCanManageTags = tenantMutation({
-  minRole: 'admin',
-  args: { expected: v.optional(v.number()), ...tagsFields },
-  handler: async (ctx, { expected, ...payload }) => {
-    const row = await tenantPreferences(ctx.db)
-    staleIfUnseen(row, expected, tags.name, row?.tagsVersion)
-    return executeContract(ctx, tags, payload, {
-      entityId: row?._id,
-      expected,
-      source: 'ui',
-    })
-  },
-})
 
 /** Turn "staff can manage identifier types" on or off. Admin only. */
 export const setStaffCanManageIdentifierTypes = tenantMutation({

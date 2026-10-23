@@ -5,8 +5,6 @@ import type { Id } from '../_generated/dataModel'
 import { api, components, internal } from '../_generated/api'
 import { setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
-import { BULK_TAG_LIMIT } from './rules'
-import { REINDEX_TAG_BATCH } from './searchProjection'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
 
@@ -49,13 +47,6 @@ const wordsOf = async (id: Id<'contacts'> = priya) =>
 const counters = async (id: Id<'contacts'> = priya) => {
   const c = await f.t.run((ctx) => ctx.db.get('contacts', id))
   return c!
-}
-
-const tagNamed = async (who: Tenant, name: string) => {
-  const tags = await who.as.query(api.contacts.queries.tags, {
-    tenantId: who.tenantId,
-  })
-  return tags.find((t) => t.name.toLowerCase() === name)!
 }
 
 describe('the projection follows every searchable slice', () => {
@@ -151,40 +142,6 @@ describe('the projection follows every searchable slice', () => {
     expect((await rowOf()).archived).toBe(true)
   })
 
-  test('tags, and a tag rename re-indexes its contacts', async () => {
-    const volunteer = await tagNamed(f.a, 'volunteer')
-    await f.a.as.mutation(api.contacts.mutations.saveTags, {
-      tenantId: f.a.tenantId,
-      id: priya,
-      expected: 0,
-      tags: [{ tagId: volunteer._id }],
-    })
-    expect(await wordsOf()).toContain('volunteer')
-
-    // Tenant B's contact with B's own "volunteer" tag.
-    const other = await createContact(f.b, 'Haddad')
-    const bVolunteer = await tagNamed(f.b, 'volunteer')
-    await f.b.as.mutation(api.contacts.mutations.saveTags, {
-      tenantId: f.b.tenantId,
-      id: other,
-      expected: 0,
-      tags: [{ tagId: bVolunteer._id }],
-    })
-
-    await f.a.as.mutation(api.contacts.mutations.saveTag, {
-      tenantId: f.a.tenantId,
-      id: volunteer._id,
-      expected: volunteer.saveVersion,
-      name: 'Helper',
-      isActive: true,
-    })
-    await f.t.finishAllScheduledFunctions(() => {})
-    const w = await wordsOf()
-    expect(w).toContain('helper')
-    expect(w).not.toContain('volunteer')
-    expect(await wordsOf(other)).toContain('volunteer')
-  })
-
   test('identifiers', async () => {
     const { id: typeId } = await f.a.as.mutation(
       api.contacts.mutations.saveIdentifierType,
@@ -263,48 +220,6 @@ describe('tenant isolation', () => {
     expect((await rowOf(other)).tenantId).toBe(f.b.tenantId)
     expect((await rowOf(bob)).tenantId).toBe(f.a.tenantId)
   })
-
-  test("a tag rename in A never touches B's rows", async () => {
-    const other = await createContact(f.b, 'Haddad')
-    const bRow = await rowOf(other)
-    const member = await tagNamed(f.a, 'member')
-    await f.a.as.mutation(api.contacts.mutations.saveTag, {
-      tenantId: f.a.tenantId,
-      id: member._id,
-      expected: member.saveVersion,
-      name: 'Friend',
-      isActive: true,
-    })
-    await f.t.finishAllScheduledFunctions(() => {})
-    expect(await rowOf(other)).toEqual(bRow)
-  })
-})
-
-test('a rename re-indexes a tag on more contacts than one batch', async () => {
-  const member = await tagNamed(f.a, 'member')
-  const ids = [priya]
-  for (let i = 0; i < REINDEX_TAG_BATCH; i++) {
-    ids.push(await createContact(f.a, `Tan${i}`))
-  }
-  for (let i = 0; i < ids.length; i += BULK_TAG_LIMIT) {
-    await f.a.as.mutation(api.contacts.mutations.bulkTag, {
-      tenantId: f.a.tenantId,
-      contactIds: ids.slice(i, i + BULK_TAG_LIMIT),
-      tagId: member._id,
-      op: 'add',
-    })
-  }
-  await f.a.as.mutation(api.contacts.mutations.saveTag, {
-    tenantId: f.a.tenantId,
-    id: member._id,
-    expected: member.saveVersion,
-    name: 'Supporter',
-    isActive: true,
-  })
-  await f.t.finishAllScheduledFunctions(() => {})
-  const rows = (await allRows()).filter((r) => ids.includes(r.contactId))
-  expect(rows).toHaveLength(ids.length)
-  for (const r of rows) expect(r.text.split(' ')).toContain('supporter')
 })
 
 describe('backfill', () => {
@@ -347,5 +262,58 @@ describe('backfill', () => {
     expect(await allRows()).toEqual(settled)
     // The counters are untouched: it's not a contract.
     expect((await counters()).detailsVersion).toBe(0)
+  })
+  test('tags gone: re-projecting drops tag words from every row', async () => {
+    const other = await createContact(f.b, 'Haddad')
+    // Rows as the tag-era projection wrote them: each contact carries a
+    // tag, and the tag's name is in its search text.
+    await f.t.run(async (ctx) => {
+      for (const [who, contactId] of [
+        [f.a, priya],
+        [f.b, other],
+      ] as const) {
+        const tagId = await ctx.db.insert('tags', {
+          tenantId: who.tenantId,
+          name: 'Volunteer',
+          nameNormalized: 'volunteer',
+          isActive: true,
+          saveVersion: 0,
+        })
+        await ctx.db.insert('contactTags', {
+          tenantId: who.tenantId,
+          contactId,
+          key: `tag-${contactId}`,
+          tagId,
+          name: 'Volunteer',
+        })
+        const row = (await ctx.db.query('contactSearch').collect()).find(
+          (r) => r.contactId === contactId,
+        )!
+        await ctx.db.patch('contactSearch', row._id, {
+          text: `${row.text} volunteer`,
+        })
+      }
+    })
+    expect(await wordsOf()).toContain('volunteer')
+    await backfill()
+    for (const row of await allRows()) {
+      expect(row.text.split(' ')).not.toContain('volunteer')
+    }
+    expect(
+      (
+        await f.a.as.query(api.contacts.queries.search, {
+          tenantId: f.a.tenantId,
+          search: 'volunteer',
+        })
+      ).rows,
+    ).toEqual([])
+    // A save rebuilds the row without the tag too.
+    await f.b.as.mutation(api.contacts.mutations.saveDetails, {
+      tenantId: f.b.tenantId,
+      id: other,
+      expected: 0,
+      ...person('Haddad-Ali'),
+    })
+    expect(await wordsOf(other)).not.toContain('volunteer')
   })
 })

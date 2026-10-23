@@ -237,7 +237,7 @@ test.describe('identifiers on a contact', { annotation: CONTACT_ROUTE }, () => {
 })
 
 test.describe('as a viewer', { annotation: CONTACT_ROUTE }, () => {
-  test('identifiers and tags show read-only', async ({
+  test('identifiers show read-only', async ({
     browser,
     baseURL,
     session,
@@ -265,13 +265,6 @@ test.describe('as a viewer', { annotation: CONTACT_ROUTE }, () => {
     await expect(
       identifiers(viewer).getByRole('button', { name: 'add' }),
     ).toBeDisabled()
-
-    const tags = section(viewer, 'Tags')
-    await expect(tags.getByText('Member', { exact: true })).toBeVisible()
-    await expect(
-      tags.getByRole('button', { name: 'remove tag Member' }),
-    ).toBeDisabled()
-    await expect(tags.getByLabel('Add tag')).toBeDisabled()
 
     await expect(saveButton(viewer)).toHaveCount(0)
     await expect(

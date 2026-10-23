@@ -50,8 +50,6 @@ export const mine = query({
               role: m.role,
               // The Settings page's switches, with the counters their saves
               // need, and what they mean for this caller.
-              staffCanManageTags: staffMayManage(prefs, 'tags'),
-              tagsVersion: prefs?.tagsVersion ?? null,
               staffCanManageIdentifierTypes: staffMayManage(
                 prefs,
                 'identifierTypes',
@@ -61,7 +59,6 @@ export const mine = query({
               sourceCodesVersion: prefs?.sourceCodesVersion ?? null,
               staffCanManageFields: staffMayManage(prefs, 'fields'),
               fieldsVersion: prefs?.fieldsVersion ?? null,
-              canManageTags: mayManageList(m.role, prefs, 'tags'),
               canManageIdentifierTypes: mayManageList(
                 m.role,
                 prefs,
@@ -186,7 +183,6 @@ export async function insertTenant(
   await ctx.scheduler.runAfter(0, internal.contacts.seed.relationshipTypes, {
     tenantId,
   })
-  await ctx.scheduler.runAfter(0, internal.contacts.seed.tags, { tenantId })
   await ctx.scheduler.runAfter(0, internal.sources.seed.categories, {
     tenantId,
   })

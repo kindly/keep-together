@@ -209,7 +209,8 @@ export function retireGroupName(label: string): string {
 /**
  * How a `contacts.fields` value is being written: a live save, or a
  * restore re-applying history, which may put back an archived option or a
- * value on an archived field (as restore may re-add an archived tag).
+ * value on an archived field (as restore may re-add an archived
+ * identifier type).
  */
 export type FieldValueMode = 'save' | 'restore'
 
@@ -235,7 +236,7 @@ export type FieldValueVerdict =
  *     refuses one that doesn't, a restore skips it (`skip: 'wrong_kind'`);
  *   - on a save, a newly set value's field and option must both be active.
  *     A restore may put back an archived option or a value on an archived
- *     field, as it may re-add an archived tag.
+ *     field, as it may re-add an archived identifier type.
  */
 export function fieldValueVerdict(
   field: Pick<

@@ -14,7 +14,15 @@ without a source code) is *infrequent*: every sample under 150 ms. Every
 edit after it stays repeatable, under 100 ms.
 **Amended 2026-10-21 (human):** restoring a contact from its history is
 *rare*: every sample under 200 ms. Approved
-exceptions are marked `knownOver` with a reason and date. Raising a
+exceptions are marked `knownOver` with a reason and date.
+**Amended 2026-10-23 (human):** one server-rule exception, by call, not
+function: a `contacts/queries:list` call that logs it read a grown
+pinned page in full ("list re-run after a bulk write into an open page:
+~150 ms reading the grown range"). The backend reads a pinned range
+whole, whatever `maximumRowsRead` says. Such calls are timed and
+recorded in a row of their own, listed in a banner on every run, and
+never asserted; every other `list` call is judged as before
+(`SERVER_EXCEPTIONS` in `qc/budgets.ts`). Raising a
 budget or adding an exception needs the human's OK. Details:
 `factory/plans/qc-suite.sv`, `qc/README.md`.
 (`docs/spikes/07-qc-harness.md`) for review. Plan:

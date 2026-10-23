@@ -55,15 +55,6 @@ export const addressesFields = { addresses: v.array(addressRow) }
 
 export const archiveFields = { archived: v.boolean() }
 
-export const tagRow = v.object({
-  key: v.optional(v.string()), // omitted = new row
-  tagId: v.id('tags'), // identity field — immutable per key
-})
-
-export const tagsFields = { tags: v.array(tagRow) }
-
-export const tagFields = { name: v.string(), isActive: v.boolean() }
-
 export const identifierRow = v.object({
   key: v.optional(v.string()), // omitted = new row
   typeId: v.id('identifierTypes'), // identity field — immutable per key
@@ -112,8 +103,6 @@ export type Payloads = {
   methods: ObjectType<typeof methodsFields>
   addresses: ObjectType<typeof addressesFields>
   archive: ObjectType<typeof archiveFields>
-  tags: ObjectType<typeof tagsFields>
-  tag: ObjectType<typeof tagFields>
   identifiers: ObjectType<typeof identifiersFields>
   identifierType: ObjectType<typeof identifierTypeFields>
   acquisition: ObjectType<typeof acquisitionFields>

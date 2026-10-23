@@ -6,7 +6,7 @@
  * distinctive so the isolation spec can look for leaks.
  *
  * Identifiers (external-ids X5): A's Ada holds `shared` under the active
- * type "Membership number", and carries the Member tag. In B the same type
+ * type "Membership number". In B the same type
  * name holds `shared` on B's Ada, `bOnly` on B's Charles and `bReuse` on
  * B's Trust, then is archived: B has no active type (the form hides the
  * section there), A's search can prove B's values don't leak, and A can
@@ -18,8 +18,14 @@
  *   npx convex run --deployment <d> platform/qcSeed:fixture \
  *     '{"runId":"12","worker":0,"password":"qc-password-123"}'
  *
+ * Fields (dropdown fields, step 6): A has one active field, "Volunteer
+ * status" (Active / Lapsed / Prospect, for every kind), carried by no
+ * contact; B has none. Its other four slots are the specs' to use, and
+ * each spec frees what it takes.
+ *
  * `hold` puts an address on hold in one tenant, as a bounce would: specs
- * call it per sample, since an admin's release lifts it again.
+ * call it per sample, since an admin's release lifts it again. `crowd`
+ * adds many individuals to one tenant at once, for the paged list.
  */
 import { createAccount } from '@convex-dev/auth/server'
 import { ConvexError, v } from 'convex/values'
@@ -35,14 +41,10 @@ import {
   identifierType,
   methods,
   relationshipType,
-  tags,
 } from '../contacts/contracts'
-import {
-  ensureIdentifierTypes,
-  seedTags,
-  UK_RELATIONSHIP_TYPES,
-} from '../contacts/seed'
-import { normaliseTagName } from '../contacts/rules'
+import { ensureIdentifierTypes, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import { field, fieldOption } from '../contacts/fields'
+import { BULK_FIELD_LIMIT } from '../contacts/rules'
 import { suppressAddress } from '../comms/suppressions'
 import { insertTenant, tenantForSlug } from './tenants'
 import { ensureSeedCategories, seedDetails } from '../sources/seed'
@@ -76,6 +78,12 @@ export const qcIdentifiers = (runId: string, worker: number) => {
  */
 export const QC_EVENT_DETAIL = 'Gala'
 
+/** Tenant A's seeded dropdown field and its options, in order. */
+export const QC_FIELD = {
+  label: 'Volunteer status',
+  options: ['Active', 'Lapsed', 'Prospect'],
+} as const
+
 /**
  * The detail each side's Street category gets (names carry no hyphen),
  * with versions 001 and 002: Charles carries 001 and the Trust 002.
@@ -108,6 +116,7 @@ export const fixture = internalAction({
     }>
     identifierType: string
     identifiers: ReturnType<typeof qcIdentifiers>
+    field: typeof QC_FIELD
   }> => {
     requireEnabled()
     const base = prefix(runId, worker)
@@ -136,6 +145,7 @@ export const fixture = internalAction({
       tenants,
       identifierType: IDENTIFIER_TYPE,
       identifiers: qcIdentifiers(runId, worker),
+      field: QC_FIELD,
     }
   },
 })
@@ -197,7 +207,7 @@ export const world = internalMutation({
         }
       }
       // Seeded inline so the world is complete on return; the jobs
-      // insertTenant schedules then find the types, tags and source codes
+      // insertTenant schedules then find the types and source codes
       // and do nothing.
 
       const scoped = { db: scopeWriter(ctx, tenantId), userId, role: null }
@@ -210,7 +220,6 @@ export const world = internalMutation({
           { source: 'seed', group },
         )
       }
-      await seedTags(scoped, group)
       await ensureSeedCategories(scoped, group)
       // One detail per side, named for it: the isolation spec looks for
       // B's in A's Source codes tab.
@@ -291,18 +300,24 @@ export const world = internalMutation({
         )
       }
       if (suffix === 'a') {
-        const member = await scoped.db
-          .query('tags')
-          .withIndex('by_tenant_nameNormalized', (q) =>
-            q.eq('nameNormalized', normaliseTagName('Member')),
-          )
-          .unique()
-        await executeContract(
+        const { id: fieldId } = await executeContract(
           scoped,
-          tags,
-          { tags: [{ tagId: member!._id }] },
-          { entityId: contactIds[0], expected: 0, source: 'seed', group },
+          field,
+          {
+            label: QC_FIELD.label,
+            appliesTo: ['individual', 'organization', 'household'],
+            isActive: true,
+          },
+          { source: 'seed', group },
         )
+        for (const [position, optionLabel] of QC_FIELD.options.entries()) {
+          await executeContract(
+            scoped,
+            fieldOption,
+            { label: optionLabel, position, isActive: true },
+            { source: 'seed', group, createWith: { fieldId } },
+          )
+        }
       } else {
         await executeContract(
           scoped,
@@ -357,5 +372,71 @@ export const hold = internalMutation({
       { db: scopeWriter(ctx, tenantId), userId: null, role: null },
       { address, note: 'qc seed' },
     )
+  },
+})
+
+/**
+ * Contacts `crowdBatch` writes per transaction: what every bulk write here
+ * commits at once (bulk set field, retire), so pages
+ * subscribed meanwhile re-run as they would under a real one.
+ */
+const CROWD_BATCH = BULK_FIELD_LIMIT
+
+/**
+ * Add `count` individuals to a tenant, named `<lastName>, <first>`
+ * with `first` numbered `n0001`, `n0002`, …: the paged list's specs put
+ * them where they need them in the sort order. Each goes through the
+ * details contract, as a create in the UI would.
+ */
+export const crowd = internalAction({
+  args: {
+    tenantId: v.id('tenants'),
+    lastName: v.string(),
+    count: v.number(),
+  },
+  handler: async (ctx, { tenantId, lastName, count }): Promise<number> => {
+    requireEnabled()
+    for (let from = 0; from < count; from += CROWD_BATCH) {
+      await ctx.runMutation(internal.platform.qcSeed.crowdBatch, {
+        tenantId,
+        lastName,
+        from,
+        count: Math.min(CROWD_BATCH, count - from),
+      })
+    }
+    return count
+  },
+})
+
+export const crowdBatch = internalMutation({
+  args: {
+    tenantId: v.id('tenants'),
+    lastName: v.string(),
+    from: v.number(),
+    count: v.number(),
+  },
+  handler: async (ctx, { tenantId, lastName, from, count }) => {
+    requireEnabled()
+    if (!(await ctx.db.get('tenants', tenantId))) {
+      throw new ConvexError({ kind: 'not_found' as const })
+    }
+    const scoped = { db: scopeWriter(ctx, tenantId), userId: null, role: null }
+    const group = await commandGroup(scoped, 'qc crowd')
+    for (let i = from; i < from + count; i++) {
+      await executeContract(
+        scoped,
+        details,
+        {
+          kind: 'individual',
+          firstName: `n${String(i + 1).padStart(4, '0')}`,
+          lastName,
+          name: '',
+          title: '',
+          nickname: '',
+          isDeceased: false,
+        },
+        { source: 'seed', group },
+      )
+    }
   },
 })

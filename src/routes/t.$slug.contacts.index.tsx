@@ -1,20 +1,19 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery } from 'convex/react'
+import { useQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
-import { useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
-import { BULK_TAG_LIMIT } from '../../convex/contacts/rules'
 import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
 import { fieldArgs, fieldShown } from '../lib/field-filters'
 import type { FieldPick } from '../lib/field-filters'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
 import { holdList, releaseList } from '../lib/list-hold'
 import { usePagedList } from '../lib/paged-list'
+import type { ListRow } from '../lib/paged-list'
 import {
   BulkFieldControls,
   BulkFieldResult,
-  bulkFailure,
   useBulkSetField,
 } from '../components/bulk-set-field'
 
@@ -25,10 +24,6 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
     const tenant = cachedTenant(convex, params.slug)
     if (!tenant) return
     holdList(convex, { tenantId: tenant._id, includeArchived: false })
-    convex.prewarmQuery({
-      query: api.contacts.queries.tags,
-      args: { tenantId: tenant._id, includeInactive: true },
-    })
     convex.prewarmQuery({
       query: api.sources.queries.filterOptions,
       args: { tenantId: tenant._id },
@@ -71,18 +66,11 @@ const KINDS: Array<{ value: Kind | ''; label: string }> = [
 /** "not set" in a field filter's select ('' is "any"). */
 const NOT_SET = 'none'
 
-type Bulk =
-  | { state: 'idle' }
-  | { state: 'running'; op: 'add' | 'remove'; done: number; total: number }
-  | { state: 'done'; message: string }
-  | { state: 'failed'; message: string }
-
 function ContactList() {
   const tenant = useTenant()
   const canWrite = useCanWrite()
   const [search, setSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
-  const [tagFilter, setTagFilter] = useState<Id<'tags'> | ''>('')
   const [kind, setKind] = useState<Kind | ''>('')
   const [sourcePick, setSourcePick] = useState<SourcePick>(NO_SOURCE)
   const source = sourceArg(sourcePick)
@@ -90,9 +78,9 @@ function ContactList() {
   const [fieldPicks, setFieldPicks] = useState<Array<FieldPick>>([])
   const fieldFilters = fieldArgs(fieldPicks, fields, kind)
   const bulkField = useBulkSetField()
-  // Search text or a tag: one window (`search`). Otherwise browse a page at
-  // a time (`list`).
-  const searching = search.trim() !== '' || tagFilter !== ''
+  // Search text: one window (`search`). Otherwise browse a page at a time
+  // (`list`).
+  const searching = search.trim() !== ''
   const listed = useQuery(
     api.contacts.queries.search,
     searching
@@ -100,7 +88,6 @@ function ContactList() {
           tenantId: tenant._id,
           search,
           includeArchived,
-          ...(tagFilter && { tagId: tagFilter }),
           ...(kind && { kind }),
           ...(source && { source }),
           ...(fieldFilters.length > 0 && { fields: fieldFilters }),
@@ -128,22 +115,22 @@ function ContactList() {
   const partial = searching
     ? (listed?.truncated ?? false)
     : paged.status === 'more'
-  const tags = useQuery(api.contacts.queries.tags, {
-    tenantId: tenant._id,
-    includeInactive: true,
-  })
-  const tagName = new Map((tags ?? []).map((t) => [t._id as string, t]))
-  // Each option's chip: its field's label and its own, read live.
-  const chipOf = new Map(
-    (fields ?? []).flatMap((f) =>
-      f.options.map((o) => [
-        o._id as string,
-        {
-          text: `${f.label}: ${o.label}`,
-          active: f.isActive && o.isActive,
-        },
-      ]),
-    ),
+  // Each option's chip: its field's label and its own, read live. Kept
+  // while the query is, so unchanged rows skip re-rendering.
+  const chipOf = useMemo(
+    () =>
+      new Map(
+        (fields ?? []).flatMap((f) =>
+          f.options.map((o) => [
+            o._id as string,
+            {
+              text: `${f.label}: ${o.label}`,
+              active: f.isActive && o.isActive,
+            },
+          ]),
+        ),
+      ),
+    [fields],
   )
 
   const [selected, setSelected] = useState<ReadonlySet<Id<'contacts'>>>(
@@ -155,13 +142,16 @@ function ContactList() {
     contacts !== undefined &&
     contacts.length > 0 &&
     chosen.length === contacts.length
-  const toggle = (id: Id<'contacts'>) =>
-    setSelected((s) => {
-      const next = new Set(s)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+  const toggle = useCallback(
+    (id: Id<'contacts'>) =>
+      setSelected((s) => {
+        const next = new Set(s)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      }),
+    [],
+  )
 
   return (
     <main className="mx-auto max-w-5xl p-6">
@@ -193,19 +183,6 @@ function ContactList() {
             </button>
           ))}
         </div>
-        <select
-          aria-label="Filter by tag"
-          value={tagFilter}
-          onChange={(e) => setTagFilter(e.target.value as Id<'tags'> | '')}
-          className="rounded border border-neutral-300 px-2 py-1.5 text-sm"
-        >
-          <option value="">all tags</option>
-          {(tags ?? []).map((t) => (
-            <option key={t._id} value={t._id}>
-              {t.isActive ? t.name : `${t.name} (archived)`}
-            </option>
-          ))}
-        </select>
         <SourceFilter value={sourcePick} onChange={setSourcePick} />
         {(fields ?? [])
           .filter((f) => fieldShown(f, kind))
@@ -264,8 +241,6 @@ function ContactList() {
           onAll={(all) =>
             setSelected(new Set(all ? contacts.map((c) => c._id) : []))
           }
-          tags={(tags ?? []).filter((t) => t.isActive)}
-          allTags={tags ?? []}
           fields={(fields ?? []).filter((f) => f.isActive && !f.retiring)}
           bulkField={bulkField}
         />
@@ -276,7 +251,6 @@ function ContactList() {
       {searching && listed?.truncated && (contacts?.length ?? 0) > 0 && (
         <p className="mt-3 text-sm text-amber-800">
           Showing the first {contacts?.length} contacts
-          {tagFilter ? ' with this tag' : ''}
           {source ? ' with this source code' : ''}
           {fieldFilters.length > 0 ? ' with these field values' : ''}; there are
           more. Narrow the search to see them.
@@ -298,65 +272,22 @@ function ContactList() {
                   ? 'No contacts with these field values.'
                   : source
                     ? 'No contacts with this source code.'
-                    : tagFilter
-                      ? 'No contacts with this tag.'
-                      : kind
-                        ? 'No contacts of this kind.'
-                        : 'No contacts yet.'}
+                    : kind
+                      ? 'No contacts of this kind.'
+                      : 'No contacts yet.'}
         </p>
       ) : (
         <ul className="mt-3 divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
           {contacts.map((c) => (
-            <li key={c._id} className="flex items-center">
-              {canWrite && (
-                <input
-                  type="checkbox"
-                  aria-label={`select ${c.displayName}`}
-                  checked={selected.has(c._id)}
-                  onChange={() => toggle(c._id)}
-                  className="ml-4"
-                />
-              )}
-              <Link
-                to="/t/$slug/contacts/$contactId"
-                params={{ slug: tenant.slug, contactId: c._id }}
-                className="flex flex-1 items-baseline justify-between gap-4 px-4 py-2 hover:bg-neutral-50"
-              >
-                <span>
-                  {c.displayName}
-                  {c.archived && (
-                    <span className="ml-2 rounded bg-neutral-200 px-1.5 text-xs">
-                      archived
-                    </span>
-                  )}
-                  {c.tagIds.map((id) => {
-                    const t = tagName.get(id)
-                    return t ? (
-                      <span
-                        key={id}
-                        className={`ml-2 rounded-full border px-2 text-xs ${t.isActive ? 'border-neutral-300' : 'border-dashed border-neutral-300 text-neutral-500'}`}
-                      >
-                        {t.name}
-                      </span>
-                    ) : null
-                  })}
-                  {c.fieldOptionIds.map((id) => {
-                    const chip = chipOf.get(id)
-                    return chip ? (
-                      <span
-                        key={id}
-                        className={`ml-2 rounded border px-1.5 text-xs ${chip.active ? 'border-sky-200 bg-sky-50 text-sky-900' : 'border-dashed border-neutral-300 text-neutral-500'}`}
-                      >
-                        {chip.text}
-                      </span>
-                    ) : null
-                  })}
-                </span>
-                <span className="text-sm text-neutral-500">
-                  {c.email ?? c.kind}
-                </span>
-              </Link>
-            </li>
+            <ContactRow
+              key={c._id}
+              row={c}
+              slug={tenant.slug}
+              canWrite={canWrite}
+              checked={selected.has(c._id)}
+              onToggle={toggle}
+              chipOf={chipOf}
+            />
           ))}
         </ul>
       )}
@@ -373,6 +304,89 @@ function ContactList() {
     </main>
   )
 }
+
+type Chip = { text: string; active: boolean }
+
+/** Equal rows by value: a re-subscribed page brings new objects. */
+function sameRow(a: ListRow, b: ListRow) {
+  return (
+    a._id === b._id &&
+    a.displayName === b.displayName &&
+    a.archived === b.archived &&
+    a.email === b.email &&
+    a.kind === b.kind &&
+    a.fieldOptionIds.join() === b.fieldOptionIds.join()
+  )
+}
+
+/**
+ * One list row. Memoised: Load more adds a page without re-rendering the
+ * rows already shown (QC contacts.loadMore, 2026-10-23).
+ */
+const ContactRow = memo(
+  function ContactRow({
+    row: c,
+    slug,
+    canWrite,
+    checked,
+    onToggle,
+    chipOf,
+  }: {
+    row: ListRow
+    slug: string
+    canWrite: boolean
+    checked: boolean
+    onToggle: (id: Id<'contacts'>) => void
+    chipOf: ReadonlyMap<string, Chip>
+  }) {
+    return (
+      <li className="flex items-center">
+        {canWrite && (
+          <input
+            type="checkbox"
+            aria-label={`select ${c.displayName}`}
+            checked={checked}
+            onChange={() => onToggle(c._id)}
+            className="ml-4"
+          />
+        )}
+        <Link
+          to="/t/$slug/contacts/$contactId"
+          params={{ slug, contactId: c._id }}
+          className="flex flex-1 items-baseline justify-between gap-4 px-4 py-2 hover:bg-neutral-50"
+        >
+          <span>
+            {c.displayName}
+            {c.archived && (
+              <span className="ml-2 rounded bg-neutral-200 px-1.5 text-xs">
+                archived
+              </span>
+            )}
+            {c.fieldOptionIds.map((id) => {
+              const chip = chipOf.get(id)
+              return chip ? (
+                <span
+                  key={id}
+                  className={`ml-2 rounded border px-1.5 text-xs ${chip.active ? 'border-sky-200 bg-sky-50 text-sky-900' : 'border-dashed border-neutral-300 text-neutral-500'}`}
+                >
+                  {chip.text}
+                </span>
+              ) : null
+            })}
+          </span>
+          <span className="text-sm text-neutral-500">{c.email ?? c.kind}</span>
+        </Link>
+      </li>
+    )
+  },
+  (a, b) =>
+    sameRow(a.row, b.row) &&
+    a.slug === b.slug &&
+    a.canWrite === b.canWrite &&
+    a.checked === b.checked &&
+    a.onToggle === b.onToggle &&
+    a.chipOf === b.chipOf,
+)
 
 /**
  * One field's filter: any, "not set", or one of its options (archived ones
@@ -488,9 +502,8 @@ function SourceFilter({
 }
 
 /**
- * Add or remove one tag on the selected rows. Each batch is one
- * all-or-nothing `bulkTag` (one command group); the bar shows progress
- * while batches run and what changed when they finish.
+ * Select rows, then set or clear a field on them (`BulkFieldControls`);
+ * the run and its result belong to the page (`useBulkSetField`).
  */
 function BulkBar({
   chosen,
@@ -498,8 +511,6 @@ function BulkBar({
   shown,
   beyond,
   onAll,
-  tags,
-  allTags,
   fields,
   bulkField,
 }: {
@@ -509,62 +520,12 @@ function BulkBar({
   /** What "select all" leaves out, '' when it covers every match. */
   beyond: string
   onAll: (all: boolean) => void
-  tags: Array<{ _id: Id<'tags'>; name: string }>
-  allTags: Array<{ _id: Id<'tags'>; name: string }>
   /** Fields a value can be set on: active, not being retired. */
   fields: Array<FieldDefinition>
   /** The page's bulk "set field" run (it outlives this bar). */
   bulkField: ReturnType<typeof useBulkSetField>
 }) {
-  const tenant = useTenant()
-  const bulkTag = useMutation(api.contacts.mutations.bulkTag)
-  const [tagId, setTagId] = useState<Id<'tags'> | ''>('')
-  const [bulk, setBulk] = useState<Bulk>({ state: 'idle' })
-  const running = bulk.state === 'running'
-  // Removing may name an archived tag; adding only an active one.
-  const removable = tagId !== '' && allTags.some((t) => t._id === tagId)
-  const addable = tags.some((t) => t._id === tagId)
-
-  async function run(op: 'add' | 'remove') {
-    if (!tagId) return
-    const name = allTags.find((t) => t._id === tagId)?.name ?? 'tag'
-    const ids = [...chosen]
-    let changed = 0
-    setBulk({ state: 'running', op, done: 0, total: ids.length })
-    try {
-      for (let i = 0; i < ids.length; i += BULK_TAG_LIMIT) {
-        const batch = ids.slice(i, i + BULK_TAG_LIMIT)
-        const result = await bulkTag({
-          tenantId: tenant._id,
-          contactIds: batch,
-          tagId,
-          op,
-        })
-        changed += result.changed
-        setBulk({
-          state: 'running',
-          op,
-          done: i + batch.length,
-          total: ids.length,
-        })
-      }
-      const n = `${changed} contact${changed === 1 ? '' : 's'}`
-      setBulk({
-        state: 'done',
-        message:
-          op === 'add'
-            ? `Added “${name}” to ${n}`
-            : `Removed “${name}” from ${n}`,
-      })
-    } catch (err) {
-      const soFar = changed > 0 ? ` (${changed} changed before it stopped)` : ''
-      setBulk({
-        state: 'failed',
-        message: `${bulkFailure(err, 'Could not change tags')}${soFar}`,
-      })
-    }
-  }
-
+  const running = bulkField.bulk.state === 'running'
   return (
     <div className="mt-6 flex flex-wrap items-center gap-3 text-sm">
       <label className="flex items-center gap-2 text-neutral-600">
@@ -577,61 +538,17 @@ function BulkBar({
         select all {shown} shown{beyond}
       </label>
       {chosen.length > 0 && (
-        <>
-          <span className="font-medium">{chosen.length} selected</span>
-          <select
-            aria-label="Tag to change"
-            value={tagId}
-            disabled={running}
-            onChange={(e) => setTagId(e.target.value as Id<'tags'> | '')}
-            className="rounded border border-neutral-300 px-2 py-1"
-          >
-            <option value="">choose tag…</option>
-            {allTags.map((t) => (
-              <option key={t._id} value={t._id}>
-                {tags.some((a) => a._id === t._id)
-                  ? t.name
-                  : `${t.name} (archived)`}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            disabled={running || !addable}
-            onClick={() => void run('add')}
-            className="rounded bg-neutral-900 px-2 py-1 text-white hover:bg-neutral-700 disabled:opacity-40"
-          >
-            Add tag
-          </button>
-          <button
-            type="button"
-            disabled={running || !removable}
-            onClick={() => void run('remove')}
-            className="rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 disabled:opacity-40"
-          >
-            Remove tag
-          </button>
-        </>
+        <span className="font-medium">{chosen.length} selected</span>
       )}
       {chosen.length > 0 && fields.length > 0 && (
         <BulkFieldControls
           chosen={chosen}
           fields={fields}
-          running={bulkField.bulk.state === 'running'}
+          running={running}
           onRun={(ids, field, optionId) =>
             void bulkField.run(ids, field, optionId)
           }
         />
-      )}
-      <span role="status" className="text-neutral-600">
-        {bulk.state === 'running' &&
-          `${bulk.op === 'add' ? 'Adding' : 'Removing'}… ${bulk.done} of ${bulk.total}`}
-        {bulk.state === 'done' && bulk.message}
-      </span>
-      {bulk.state === 'failed' && (
-        <span role="alert" className="text-red-700">
-          {bulk.message}
-        </span>
       )}
     </div>
   )

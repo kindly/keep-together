@@ -101,7 +101,7 @@ describe('blame on recorded samples', () => {
       {
         instance: 'qc-3',
         at,
-        fn: 'contacts/mutations:bulkTag',
+        fn: 'contacts/mutations:bulkSetField',
         type: 'Mutation',
         ms: 250,
       },

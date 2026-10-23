@@ -508,10 +508,9 @@ describe("the contact page's per-slice queries", () => {
   /** What the contact page assembles from its per-slice queries. */
   const assembled = async (who: Tenant, tenantId: Id<'tenants'>, id = ada) => {
     const args = { tenantId, id }
-    const [root, channels, tags, rows, types] = await Promise.all([
+    const [root, channels, rows, types] = await Promise.all([
       who.as.query(api.contacts.queries.getRoot, args),
       who.as.query(api.contacts.queries.getChannels, args),
-      who.as.query(api.contacts.queries.getTags, args),
       who.as.query(api.contacts.queries.getIdentifiers, args),
       who.as.query(api.contacts.queries.listIdentifierTypes, {
         tenantId,
@@ -529,7 +528,6 @@ describe("the contact page's per-slice queries", () => {
     return {
       root,
       channels,
-      tags,
       identifiers: rows,
       acquisition,
       view:
@@ -537,7 +535,6 @@ describe("the contact page's per-slice queries", () => {
         assembleView({
           root,
           channels,
-          tags,
           identifiers: rows,
           types,
           acquisition,
@@ -546,14 +543,6 @@ describe("the contact page's per-slice queries", () => {
   }
 
   test("assemble exactly get's view, an archived type named; nothing across tenants", async () => {
-    const { id: tagId } = await f.a.as.mutation(
-      api.contacts.mutations.saveTag,
-      {
-        tenantId: f.a.tenantId,
-        name: 'Slice-query volunteer',
-        isActive: true,
-      },
-    )
     await form({
       methods: {
         expected: 0,
@@ -575,7 +564,6 @@ describe("the contact page's per-slice queries", () => {
           },
         ],
       },
-      tags: { expected: 0, tags: [{ tagId }] },
     })
     await saveIds(0, [
       { typeId: oldCrm, value: 'C-1' },
@@ -593,14 +581,12 @@ describe("the contact page's per-slice queries", () => {
       ['Old CRM', 'C-1', false],
     ])
     expect(view!.emails).toHaveLength(1)
-    expect(view!.tags).toHaveLength(1)
     expect((await assembled(f.a, f.a.tenantId)).view).toEqual(view)
 
     // B, in its own tenant, with A's contact id: nothing at all.
     expect(await assembled(f.b, f.b.tenantId)).toEqual({
       root: null,
       channels: { emails: [], phones: [], addresses: [] },
-      tags: [],
       identifiers: [],
       acquisition: null,
       view: null,
@@ -609,7 +595,6 @@ describe("the contact page's per-slice queries", () => {
     for (const query of [
       api.contacts.queries.getRoot,
       api.contacts.queries.getChannels,
-      api.contacts.queries.getTags,
       api.contacts.queries.getIdentifiers,
     ]) {
       const data = await errorData(

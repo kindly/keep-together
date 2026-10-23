@@ -40,11 +40,7 @@ import {
   relationship,
   relationshipType,
 } from '../contacts/contracts'
-import {
-  ensureIdentifierTypes,
-  seedTags,
-  UK_RELATIONSHIP_TYPES,
-} from '../contacts/seed'
+import { ensureIdentifierTypes, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import schema from '../schema'
 import {
   DONOR_COUNT,
@@ -191,7 +187,7 @@ export const tenant = internalMutation({
       }
     }
     // Seeded inline so the donors can link at once; the jobs insertTenant
-    // schedules then find the types, tags and source codes and do nothing.
+    // schedules then find the types and source codes and do nothing.
     const scoped = { db: scopeWriter(ctx, tenantId), userId: null, role: null }
     const types = await scoped.db
       .query('relationshipTypes')
@@ -208,7 +204,6 @@ export const tenant = internalMutation({
         )
       }
     }
-    await seedTags(scoped)
     await ensureSeedCategories(scoped)
     await seedDetails(scoped, SOURCE_DETAILS)
     await ensureIdentifierTypes(scoped, IDENTIFIER_TYPES)

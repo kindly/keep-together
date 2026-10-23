@@ -5,8 +5,8 @@ import { commandGroup, executeContract } from '../lib/contracts'
 import type { CommandGroup, ContractCtx } from '../lib/contracts'
 import { internalTenantMutation } from '../lib/tenancy'
 import type { Id } from '../_generated/dataModel'
-import { identifierType, relationshipType, tag } from './contracts'
-import { normaliseTagName } from './rules'
+import { identifierType, relationshipType } from './contracts'
+import { normaliseListName } from './rules'
 
 type Kind = 'individual' | 'organization' | 'household'
 
@@ -49,39 +49,6 @@ export const relationshipTypes = internalTenantMutation({
   },
 })
 
-/** Donor is not here: it becomes a computed segment once giving exists. */
-export const SEED_TAGS = ['Member', 'Volunteer']
-
-/**
- * The seed tags, unless the tenant already has any tags. Shared with the
- * platform seeds, which seed inline so their world is complete on return.
- */
-export async function seedTags(
-  ctx: ContractCtx,
-  group?: CommandGroup,
-): Promise<number> {
-  const existing = await ctx.db
-    .query('tags')
-    .withIndex('by_tenant_nameNormalized')
-    .first()
-  if (existing) return 0
-  const g = group ?? (await commandGroup(ctx, 'seed tags'))
-  for (const name of SEED_TAGS) {
-    await executeContract(
-      ctx,
-      tag,
-      { name, isActive: true },
-      { source: 'seed', group: g },
-    )
-  }
-  return SEED_TAGS.length
-}
-
-export const tags = internalTenantMutation({
-  args: {},
-  handler: async (ctx) => ({ seeded: await seedTags(ctx) }),
-})
-
 /**
  * Identifier types by name, created (active) where the tenant has none of
  * that name, under `group` or else a group of their own made only if one
@@ -99,7 +66,7 @@ export async function ensureIdentifierTypes(
     const existing = await ctx.db
       .query('identifierTypes')
       .withIndex('by_tenant_nameNormalized', (q) =>
-        q.eq('nameNormalized', normaliseTagName(name)),
+        q.eq('nameNormalized', normaliseListName(name)),
       )
       .unique()
     if (existing) {

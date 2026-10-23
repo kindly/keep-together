@@ -392,20 +392,27 @@ describe('restore to a moment', () => {
         .first()
       return created!._creationTime
     })
-    const [tag, other] = await f.a.as.query(api.contacts.queries.tags, {
-      tenantId,
+    const homeAddress = (line1: string) => ({
+      label: 'home' as const,
+      line1,
+      line2: '',
+      line3: '',
+      town: 'London',
+      postcode: 'N1 1AA',
+      country: 'GB',
+      isPrimary: true,
     })
-    await f.a.as.mutation(api.contacts.mutations.saveTags, {
+    await f.a.as.mutation(api.contacts.mutations.saveAddresses, {
       tenantId,
       id,
       expected: 0,
-      tags: [{ tagId: tag._id }],
+      addresses: [homeAddress('1 High St')],
     })
-    await f.a.as.mutation(api.contacts.mutations.saveTags, {
+    await f.a.as.mutation(api.contacts.mutations.saveAddresses, {
       tenantId,
       id,
       expected: 1,
-      tags: [{ tagId: tag._id }, { tagId: other._id }],
+      addresses: [homeAddress('2 Low St')],
     })
     await f.a.as.mutation(api.contacts.mutations.saveDetails, {
       tenantId,
@@ -422,10 +429,8 @@ describe('restore to a moment', () => {
     expect(result.restored).toEqual(['contacts.details'])
     const got = await f.a.as.query(api.contacts.queries.get, { tenantId, id })
     expect(got?.contact.nickname).toBe('')
-    expect(got?.contact.tagsVersion).toBe(2)
-    expect(got?.tags.map((t) => t.tagId).sort()).toEqual(
-      [tag._id, other._id].sort(),
-    )
+    expect(got?.contact.addressesVersion).toBe(2)
+    expect(got?.addresses.map((x) => x.line1)).toEqual(['2 Low St'])
   })
 
   test('a changed slice of an unregistered contract is refused', async () => {

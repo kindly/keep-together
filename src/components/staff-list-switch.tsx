@@ -6,10 +6,6 @@ import type { ListKind } from '../../convex/lib/lists'
 import { useIsAdmin, useTenant } from '../lib/tenant'
 
 const LABELS = {
-  tags: {
-    label: 'Staff can manage tags',
-    help: 'When off, only admins create, rename and archive tags. Staff can always put tags on contacts.',
-  },
   identifierTypes: {
     label: 'Staff can manage identifier types',
     help: 'When off, only admins create, rename and archive identifier types. Staff can always add identifiers to contacts.',
@@ -35,7 +31,6 @@ export function StaffListSwitch({ kind }: { kind: ListKind }) {
   const [error, setError] = useState<string | null>(null)
   // No optimistic update: the switch moves when the server's answer
   // arrives through `mine`, with the counter the next save needs.
-  const saveTags = useMutation(api.platform.preferences.setStaffCanManageTags)
   const saveTypes = useMutation(
     api.platform.preferences.setStaffCanManageIdentifierTypes,
   )
@@ -48,7 +43,6 @@ export function StaffListSwitch({ kind }: { kind: ListKind }) {
   if (!isAdmin) return null
 
   const checked = {
-    tags: tenant.staffCanManageTags,
     identifierTypes: tenant.staffCanManageIdentifierTypes,
     sourceCodes: tenant.staffCanManageSourceCodes,
     fields: tenant.staffCanManageFields,
@@ -57,13 +51,7 @@ export function StaffListSwitch({ kind }: { kind: ListKind }) {
   async function toggle(on: boolean) {
     setError(null)
     try {
-      if (kind === 'tags') {
-        await saveTags({
-          tenantId: tenant._id,
-          expected: tenant.tagsVersion ?? undefined,
-          staffCanManageTags: on,
-        })
-      } else if (kind === 'identifierTypes') {
+      if (kind === 'identifierTypes') {
         await saveTypes({
           tenantId: tenant._id,
           expected: tenant.identifierTypesVersion ?? undefined,

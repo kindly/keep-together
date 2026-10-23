@@ -60,6 +60,8 @@ export interface World {
   identifierType: string
   /** Seeded values: A's and B's Ada `shared`; B only `bOnly`, `bReuse`. */
   identifiers: { shared: string; bOnly: string; bReuse: string }
+  /** A's one seeded dropdown field (B has none), carried by no contact. */
+  field: { label: string; options: ReadonlyArray<string> }
 }
 
 export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>

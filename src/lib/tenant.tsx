@@ -11,10 +11,6 @@ export type Tenant = {
   slug: string
   name: string
   role: 'admin' | 'staff' | 'viewer'
-  /** The tenant's "staff can manage tags" switch. */
-  staffCanManageTags: boolean
-  /** Its counter, for the switch's save; null until first saved. */
-  tagsVersion: number | null
   /** The tenant's "staff can manage identifier types" switch. */
   staffCanManageIdentifierTypes: boolean
   /** Its counter, for the switch's save; null until first saved. */
@@ -27,8 +23,6 @@ export type Tenant = {
   staffCanManageFields: boolean
   /** Its counter, for the switch's save; null until first saved. */
   fieldsVersion: number | null
-  /** Whether this caller may manage tags, given role and switch. */
-  canManageTags: boolean
   /** Whether this caller may manage identifier types, given role and switch. */
   canManageIdentifierTypes: boolean
   /** Whether this caller may manage source codes, given role and switch. */
@@ -62,14 +56,13 @@ export function useIsAdmin(): boolean {
 }
 
 /**
- * Whether the caller may create, rename and archive the tenant's tags,
- * its identifier types, its source codes or its dropdown fields: admins, and staff when the
- * group allows it for that list. The backend enforces it (lib/lists).
+ * Whether the caller may create, rename and archive the tenant's
+ * identifier types, its source codes or its dropdown fields: admins, and
+ * staff when the group allows it for that list. The backend enforces it (lib/lists).
  */
 export function useCanManageList(kind: ListKind): boolean {
   const tenant = useTenant()
   return {
-    tags: tenant.canManageTags,
     identifierTypes: tenant.canManageIdentifierTypes,
     sourceCodes: tenant.canManageSourceCodes,
     fields: tenant.canManageFields,

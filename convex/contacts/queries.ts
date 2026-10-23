@@ -9,7 +9,6 @@ import {
   IDENTIFIER_TYPE_LIMIT,
   normaliseEmail,
   normaliseIdentifier,
-  normaliseTagName,
 } from './rules'
 import { contactKind } from '../lib/appSchema'
 import { matchesAll, parseSearch } from './search'
@@ -64,23 +63,6 @@ async function children(
   }
 }
 
-/**
- * A contact's tags with their names, alphabetical. The name is the copy on
- * the `contactTags` row, so no tag is read. Whether a tag is archived is
- * not here: the form takes it from the tenant's tag list (`tags`, archived
- * included).
- */
-async function tagsOf(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
-  const rows = await db
-    .query('contactTags')
-    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
-    .collect()
-  const out = rows.map((r) => ({ key: r.key, tagId: r.tagId, name: r.name }))
-  return out.sort((a, b) =>
-    normaliseTagName(a.name).localeCompare(normaliseTagName(b.name)),
-  )
-}
-
 /** A contact's identifier rows, unnamed (`nameIdentifiers` names them). */
 async function identifierRows(
   db: ScopedDatabaseReader,
@@ -114,21 +96,6 @@ async function identifiersOf(
   return nameIdentifiers(rows, (id) => types.get(id))
 }
 
-/** How many tags a tenant can hold before the picker list truncates. */
-export const TAG_LIST_LIMIT = 500
-
-/** The tenant's tags, alphabetical; archived ones only when asked (admin). */
-export const tags = tenantQuery({
-  args: { includeInactive: v.optional(v.boolean()) },
-  handler: async (ctx, { includeInactive }) => {
-    const rows = await ctx.db
-      .query('tags')
-      .withIndex('by_tenant_nameNormalized')
-      .take(TAG_LIST_LIMIT)
-    return includeInactive ? rows : rows.filter((t) => t.isActive)
-  },
-})
-
 /**
  * The tenant's identifier types, alphabetical; archived ones only when
  * asked (the settings page). Any member may read. Never truncated: the
@@ -142,48 +109,6 @@ export const listIdentifierTypes = tenantQuery({
       .withIndex('by_tenant_nameNormalized')
       .take(IDENTIFIER_TYPE_LIMIT)
     return includeInactive ? rows : rows.filter((t) => t.isActive)
-  },
-})
-
-/** The most assignments one `byTag` page reads (one contact read each). */
-export const BY_TAG_PAGE_LIMIT = 100
-
-/**
- * Contacts carrying a tag, in the order they were tagged. A page holds the
- * page's assignments (at most BY_TAG_PAGE_LIMIT) minus archived contacts
- * (unless asked), so it can be shorter than `numItems`; `isDone` is what
- * ends the list.
- */
-export const byTag = tenantQuery({
-  args: {
-    tagId: v.id('tags'),
-    includeArchived: v.optional(v.boolean()),
-    paginationOpts: paginationOptsValidator,
-  },
-  handler: async (ctx, { tagId, includeArchived, paginationOpts }) => {
-    const result = await ctx.db
-      .query('contactTags')
-      .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId))
-      .paginate({
-        ...paginationOpts,
-        numItems: Math.min(paginationOpts.numItems, BY_TAG_PAGE_LIMIT),
-      })
-    const contacts = await Promise.all(
-      result.page.map((r) => ctx.db.get(r.contactId)),
-    )
-    return {
-      ...result,
-      page: contacts
-        .filter((c) => c !== null)
-        .filter((c) => includeArchived || !c.archived)
-        .map((c) => ({
-          _id: c._id,
-          kind: c.kind,
-          displayName: c.displayName,
-          sortName: c.sortName,
-          archived: c.archived,
-        })),
-    }
   },
 })
 
@@ -271,15 +196,15 @@ async function contactsWithIdentifier(
 /** The most rows `list` returns, and `list` asks for a page. */
 export const LIST_LIMIT = 100
 /**
- * The most rows one `list` page reads. A page pinned to a range that has
- * grown past it comes back incomplete, marked `SplitRequired`.
+ * The most rows one `list` page shows. A page pinned to a range that has
+ * grown past it comes back marked `SplitRequired`, with no rows, for the
+ * client to split. Just over a page: each row shown costs about 0.8 ms on
+ * a dev deployment (measured when it was its first email and its tags, two
+ * index reads; now just the email), so a page that grew by more than a few
+ * rows would break the 100 ms server rule (qc/README.md); its halves don't
+ * (QC "Load more", 2026-10-23).
  */
-export const LIST_PAGE_MAX_ROWS = 2 * LIST_LIMIT
-/**
- * How many matching contacts a tag-filtered `list` collects (then sorts by
- * name), reading assignments in the order they were made.
- */
-export const LIST_TAG_SCAN = 200
+export const LIST_PAGE_MAX_ROWS = LIST_LIMIT + 10
 /**
  * The most `contactSearch` hits one search reads. Convex ranks rows that
  * match any term; those missing a term are dropped after, so it reads
@@ -287,8 +212,8 @@ export const LIST_TAG_SCAN = 200
  */
 export const LIST_SEARCH_SCAN = 2 * LIST_LIMIT
 /**
- * The most rows a filter that the index can't hold (a tag, or a kind under
- * a source filter) reads looking for matches before it stops and says so.
+ * The most rows a filter that the index can't hold (a kind under a source
+ * filter, or a second field filter) reads looking for matches before it stops and says so.
  */
 export const LIST_SCAN_CAP = 1000
 
@@ -468,7 +393,7 @@ function browseField(
 }
 
 /**
- * The contacts a browse (no search text, no tag) shows, in name order,
+ * The contacts a browse (no search text) shows, in name order,
  * with archived and kind in the index range: nothing read is then hidden,
  * so a window or page never fills with rows that don't show.
  */
@@ -532,22 +457,15 @@ function underSource(db: ScopedDatabaseReader, source: SourceFilter) {
 }
 
 /**
- * One contacts-list row: a contact with its first email, tag ids and
+ * One contacts-list row: a contact with its first email and its
  * field values (option ids, in slot order; labels come from the field
  * definitions, so a rename shows without a write here).
  */
-async function listRow(
-  db: ScopedDatabaseReader,
-  c: Doc<'contacts'>,
-  tagIdsRead: Promise<Array<Id<'tags'>>>,
-) {
-  const [email, tagIds] = await Promise.all([
-    db
-      .query('contactEmails')
-      .withIndex('by_tenant_contact', (q) => q.eq('contactId', c._id))
-      .first(),
-    tagIdsRead,
-  ])
+async function listRow(db: ScopedDatabaseReader, c: Doc<'contacts'>) {
+  const email = await db
+    .query('contactEmails')
+    .withIndex('by_tenant_contact', (q) => q.eq('contactId', c._id))
+    .first()
   return {
     _id: c._id,
     kind: c.kind,
@@ -555,27 +473,17 @@ async function listRow(
     sortName: c.sortName,
     archived: c.archived,
     email: email?.address ?? null,
-    tagIds,
     fieldOptionIds: optionIdsOf(c),
   }
 }
 
-/** A contact's tag ids. */
-async function tagIdsOf(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
-  const rows = await db
-    .query('contactTags')
-    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
-    .collect()
-  return rows.map((t) => t.tagId)
-}
-
 /**
- * The contacts list while browsing (no search text, no tag), a page at a
+ * The contacts list while browsing (no search text), a page at a
  * time in name order, at most LIST_LIMIT rows a page; archived hidden
  * unless asked, optionally one kind and one part of a source code
  * (`source`: a category, detail or version), and any number of dropdown
  * field values (`fields`, each an option or "not set"). Each row carries
- * its tag ids (names come from `tags`) and its field values.
+ * its field values.
  *
  * Archived and kind sit in the `contacts` index range, and archived in a
  * source filter's `contactSearch` range, so those pages are full. A kind
@@ -584,7 +492,7 @@ async function tagIdsOf(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
  * "none" only then. With no source, the first field filter is the range
  * (its `contactSearch` index pair, archived included); a kind and the
  * other field filters are checked per row, as is every field filter under
- * a source. Search text or a tag filter goes to `search`.
+ * a source. Search text goes to `search`.
  */
 export const list = tenantQuery({
   args: {
@@ -602,9 +510,10 @@ export const list = tenantQuery({
     const opts = {
       ...paginationOpts,
       numItems: Math.min(paginationOpts.numItems, LIST_LIMIT),
-      // A page pinned with `endCursor` reads its whole range however many
-      // rows have arrived in it since; past this it stops short with
-      // `SplitRequired` and a `splitCursor`, and the client splits it.
+      // Asks a page pinned with `endCursor` to stop short past this, with
+      // `SplitRequired` and a `splitCursor`. convex-test does; the real
+      // backend reads the whole pinned range regardless, so `tooBig` below
+      // makes the same answer of an oversized page.
       maximumRowsRead: LIST_PAGE_MAX_ROWS,
     }
     let result: { page: Array<Doc<'contacts'>> } & Omit<
@@ -617,6 +526,7 @@ export const list = tenantQuery({
           ? browseSource(ctx.db, source, includeArchived)
           : browseField(ctx.db, byField[0], includeArchived)
       ).paginate(opts)
+      if (tooBig(hits)) return toSplit(hits)
       const fieldsMatch = matchesFields(byField)
       const found = await Promise.all(
         hits.page
@@ -626,38 +536,72 @@ export const list = tenantQuery({
       result = { ...hits, page: found.filter((c) => c !== null) }
     } else {
       result = await browse(ctx.db, { kind, includeArchived }).paginate(opts)
+      if (tooBig(result)) return toSplit(result)
     }
     return {
       ...result,
-      page: await Promise.all(
-        result.page.map((c) => listRow(ctx.db, c, tagIdsOf(ctx.db, c._id))),
-      ),
+      page: await Promise.all(result.page.map((c) => listRow(ctx.db, c))),
     }
   },
 })
 
 /**
- * The contacts list with search text or a tag filter: one window of at
- * most LIST_LIMIT rows, not paged. Optionally also of one kind and under
+ * A page to split rather than show: cut short (`SplitRequired`), or a
+ * pinned range that has grown past LIST_PAGE_MAX_ROWS, which the real
+ * backend returns in full. Either way only with a `splitCursor` to split
+ * at; without one the page is shown as it is.
+ */
+export function tooBig(
+  p: Omit<PaginationResult<unknown>, 'page'> & { page: Array<unknown> },
+) {
+  return (
+    !!p.splitCursor &&
+    (p.pageStatus === 'SplitRequired' || p.page.length > LIST_PAGE_MAX_ROWS)
+  )
+}
+
+/**
+ * Logged by a `list` call that read a grown pinned range in full: the one
+ * call the QC server rule excepts (qc/budgets.ts SERVER_EXCEPTIONS, human
+ * 2026-10-23), found by this line in the call's own log.
+ */
+export const GROWN_PAGE_LOG = 'contacts list: grown page read in full'
+
+/**
+ * A page the client splits at its `splitCursor` (paged-list.ts) and never
+ * shows: no rows, so none is shaped (two reads each, ~0.8 ms a row). Its
+ * range is still read in full when the backend returned it so.
+ */
+export function toSplit(
+  p: Omit<PaginationResult<unknown>, 'page'> & { page: Array<unknown> },
+): Omit<PaginationResult<unknown>, 'page'> & { page: Array<never> } {
+  if (p.page.length > LIST_PAGE_MAX_ROWS) {
+    console.log(`${GROWN_PAGE_LOG}: ${p.page.length} rows`)
+  }
+  return { ...p, page: [], pageStatus: 'SplitRequired' }
+}
+
+/**
+ * The contacts list with search text: one window of at most LIST_LIMIT
+ * rows, not paged (without text, the same window over the filters; the
+ * SPA browses those with `list`). Optionally also of one kind and under
  * one part of a source code; archived hidden unless asked. Rows as `list`.
  *
  * A search finds a contact by anything in its `contactSearch` text (names,
- * emails and their parts, phones, postcodes, street, town, identifiers,
- * tags): every word must match, the last as a prefix. Exact matches come
+ * emails and their parts, phones, postcodes, street, town, identifiers):
+ * every word must match, the last as a prefix. Exact matches come
  * first: an email address, then an identifier, then a phone number
  * (normalised), then the rest in Convex's relevance order. That order
  * can't be resumed from a cursor, hence one window. The search index holds
  * the kind, archived and source filters and up to
- * SEARCH_INDEX_FIELD_FILTERS field values; a tag filter, "not set" and any
+ * SEARCH_INDEX_FIELD_FILTERS field values; "not set" and any
  * further field filters check the LIST_SEARCH_SCAN hits read.
  *
  * Without search text, the index holds every filter it can (see `browse`
- * `browseSource` and `browseField`); what it can't, a tag, a kind under a
+ * `browseSource` and `browseField`); what it can't, a kind under a
  * source or field, or a second field filter, is
  * checked row by row as the read goes on (`scan`) until enough match or
- * LIST_SCAN_CAP rows have been read. A tag filter alone reads the tag's
- * assignments that way, collecting LIST_TAG_SCAN matches; larger tags page
- * through `byTag`.
+ * LIST_SCAN_CAP rows have been read.
  *
  * `truncated` says more contacts may match than `rows` holds (a cap or
  * scan limit was hit), so the UI can say it shows only some of them.
@@ -669,14 +613,13 @@ export const search = tenantQuery({
   args: {
     search: v.optional(v.string()),
     includeArchived: v.optional(v.boolean()),
-    tagId: v.optional(v.id('tags')),
     kind: v.optional(contactKind),
     source: v.optional(sourceFilter),
     fields: v.optional(v.array(fieldFilter)),
   },
   handler: async (
     ctx,
-    { search: text, includeArchived, tagId, kind, source, fields },
+    { search: text, includeArchived, kind, source, fields },
   ) => {
     const term = text?.trim()
     const byField = await slotFilters(ctx.db, fields)
@@ -701,16 +644,6 @@ export const search = tenantQuery({
       (!kind || c.kind === kind) &&
       (includeArchived || !c.archived) &&
       fieldsMatch(c)
-    // A contact's tag ids, read once per call: the tag filter and the row's
-    // shape both need them.
-    const tagReads = new Map<Id<'contacts'>, Promise<Array<Id<'tags'>>>>()
-    const tagsOfRow = (id: Id<'contacts'>) => {
-      let read = tagReads.get(id)
-      if (!read) tagReads.set(id, (read = tagIdsOf(ctx.db, id)))
-      return read
-    }
-    const tagged = async (id: Id<'contacts'>) =>
-      !tagId || (await tagsOfRow(id)).includes(tagId)
     if (term) {
       const { terms, phone } = parseSearch(term)
       const [byEmail, byIdentifier, hits] = await Promise.all([
@@ -745,8 +678,7 @@ export const search = tenantQuery({
         ? matched.filter((h) => h.phones.includes(phone))
         : []
       // Exact matches first, each contact once; then read only as many
-      // full-text hits as can still be shown (all of them under a tag
-      // filter, which drops hits after).
+      // full-text hits as can still be shown.
       const seen = new Set<Id<'contacts'>>()
       const once = (id: Id<'contacts'>) =>
         !seen.has(id) && Boolean(seen.add(id))
@@ -759,22 +691,16 @@ export const search = tenantQuery({
         (c, i) => (!sourced || sourced[i]) && once(c._id),
       )
       const rest = [...byPhone, ...matched].map((h) => h.contactId).filter(once)
-      const wanted = tagId ? rest : rest.slice(0, LIST_LIMIT + 1 - exact.length)
+      const wanted = rest.slice(0, LIST_LIMIT + 1 - exact.length)
       const found = await Promise.all(wanted.map((id) => ctx.db.get(id)))
-      const all = [...exact, ...found.filter((c) => c !== null)]
-      const onTag = await Promise.all(all.map((c) => tagged(c._id)))
-      rows = all.filter((_, i) => onTag[i])
+      rows = [...exact, ...found.filter((c) => c !== null)]
       truncated = scanFull || rows.length > LIST_LIMIT
     } else if (source || byField.length) {
       const read = await scan(
         source
           ? browseSource(ctx.db, source, includeArchived)
           : browseField(ctx.db, byField[0], includeArchived),
-        async (batch) => {
-          const live = batch.filter(fits)
-          const onTag = await Promise.all(live.map((h) => tagged(h.contactId)))
-          return live.filter((_, i) => onTag[i])
-        },
+        async (batch) => batch.filter(fits),
         LIST_LIMIT + 1,
       )
       checked = read.read
@@ -783,20 +709,6 @@ export const search = tenantQuery({
       )
       rows = found.filter((c) => c !== null)
       truncated = read.capped || rows.length > LIST_LIMIT
-    } else if (tagId) {
-      const read = await scan(
-        ctx.db
-          .query('contactTags')
-          .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId)),
-        async (batch) =>
-          (await Promise.all(batch.map((r) => ctx.db.get(r.contactId)))).map(
-            (c) => (c && fits(c) ? c : null),
-          ),
-        LIST_TAG_SCAN,
-      )
-      checked = read.read
-      rows = read.kept.sort((a, b) => a.sortName.localeCompare(b.sortName))
-      truncated = !read.exhausted || rows.length > LIST_LIMIT
     } else {
       rows = await browse(ctx.db, { kind, includeArchived }).take(
         LIST_LIMIT + 1,
@@ -804,9 +716,7 @@ export const search = tenantQuery({
       truncated = rows.length > LIST_LIMIT
     }
     const shaped = await Promise.all(
-      rows
-        .slice(0, LIST_LIMIT)
-        .map((c) => listRow(ctx.db, c, tagsOfRow(c._id))),
+      rows.slice(0, LIST_LIMIT).map((c) => listRow(ctx.db, c)),
     )
     return {
       rows: shaped,
@@ -832,11 +742,10 @@ async function contactView(
   known?: Doc<'contacts'>,
 ) {
   const emails = emailRows(db, id)
-  const [contact, kids, tagList, identifierList, knownAcquisition, bySlot] =
+  const [contact, kids, identifierList, knownAcquisition, bySlot] =
     await Promise.all([
       known ?? db.get(id),
       children(db, id, emails),
-      tagsOf(db, id),
       identifiersOf(db, id),
       known && acquisitionOf(db, known.acquisitionCodeId),
       fieldsBySlot(db),
@@ -853,7 +762,6 @@ async function contactView(
   return {
     contact,
     ...kids,
-    tags: tagList,
     identifiers: identifierList,
     acquisition,
     fields: nameFieldValues(
@@ -924,7 +832,7 @@ export const sharedAddresses = tenantQuery({
 })
 
 /**
- * The contact page reads its contact one slice at a time, through the four
+ * The contact page reads its contact one slice at a time, through the three
  * queries below (and `getAcquisition` when it carries a code); the SPA assembles `get`'s view from them. The client sees
  * a save once every query the save invalidated has re-run, so a save should
  * re-run only the slices whose rows it wrote. Every save bumps its slice's
@@ -940,12 +848,6 @@ export const getRoot = tenantQuery({
 export const getChannels = tenantQuery({
   args: { id: v.id('contacts') },
   handler: async (ctx, { id }) => children(ctx.db, id, emailRows(ctx.db, id)),
-})
-
-/** The contact's tags with their names, alphabetical. */
-export const getTags = tenantQuery({
-  args: { id: v.id('contacts') },
-  handler: async (ctx, { id }) => tagsOf(ctx.db, id),
 })
 
 /**

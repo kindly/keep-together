@@ -82,7 +82,6 @@ const list = (
     search?: string
     includeArchived?: boolean
     kind?: 'individual' | 'organization'
-    tagId?: Id<'tags'>
   } = {},
   who: Tenant = f.a,
 ) =>
@@ -147,7 +146,7 @@ describe('without search text', () => {
     )
   })
 
-  test('with kind, archived and tag filters', async () => {
+  test('with kind and archived filters', async () => {
     const archive = await f.a.as.mutation(api.contacts.mutations.setArchived, {
       tenantId: f.a.tenantId,
       id: bob,
@@ -162,21 +161,6 @@ describe('without search text', () => {
       bob,
     ])
     expect(await ids(list(byStreet, { kind: 'organization' }))).toEqual([])
-
-    const tags = await f.a.as.query(api.contacts.queries.tags, {
-      tenantId: f.a.tenantId,
-    })
-    const tagId = tags[0]._id
-    await f.a.as.mutation(api.contacts.mutations.saveTags, {
-      tenantId: f.a.tenantId,
-      id: bob,
-      expected: 0,
-      tags: [{ tagId }],
-    })
-    expect(await ids(list(byStreet, { tagId, includeArchived: true }))).toEqual(
-      [bob],
-    )
-    expect(await ids(list(byStreet, { tagId }))).toEqual([])
   })
 
   test('a contact keeps matching once its code is archived', async () => {

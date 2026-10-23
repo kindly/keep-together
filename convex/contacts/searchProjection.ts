@@ -6,11 +6,8 @@
  * that contract's transaction, and it and the backfill are the only
  * writers of the table.
  */
-import { v } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
-import { internal } from '../_generated/api'
 import type { ContractCtx } from '../lib/contracts'
-import { internalTenantMutation } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { describe } from '../sources/code'
 import { searchRow } from './search'
@@ -68,15 +65,15 @@ function sameIds(existing: Doc<'contactSearch'>, ids: AcquisitionIds) {
 
 /**
  * Rebuild one contact's `contactSearch` row from its current state; writes
- * only if the row changed. Every read runs at once (tags are named by the
- * copy on their `contactTags` rows): this is on the save path.
+ * only if the row changed. Every read runs at once: this is on the save
+ * path.
  */
 export async function projectContactSearch(
   ctx: Pick<ContractCtx, 'db'>,
   contactId: Id<'contacts'>,
 ): Promise<void> {
   const db = ctx.db
-  const [contact, emails, phones, addresses, tagRows, idRows, existing] =
+  const [contact, emails, phones, addresses, idRows, existing] =
     await Promise.all([
       db.get(contactId),
       db
@@ -89,10 +86,6 @@ export async function projectContactSearch(
         .collect(),
       db
         .query('contactAddresses')
-        .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
-        .collect(),
-      db
-        .query('contactTags')
         .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
         .collect(),
       db
@@ -112,7 +105,6 @@ export async function projectContactSearch(
       phones: phones.map((p) => p.number),
       addresses,
       identifiers: idRows.map((r) => r.value),
-      tagNames: tagRows.map((r) => r.name),
     }),
     ...ids,
     ...slotValues(contact),
@@ -160,7 +152,6 @@ export async function projectContact(
     phones: [],
     addresses: [],
     identifiers: [],
-    tagNames: [],
   })
   await ctx.db.insert('contactSearch', {
     contactId: id,
@@ -216,69 +207,3 @@ export async function projectFields(
     await ctx.db.patch('contactSearch', existing._id, slotValues(contact))
   }
 }
-
-/** How many contacts one `reindexTag` batch rebuilds. */
-export const REINDEX_TAG_BATCH = 100
-
-/**
- * The `project` hook of `contacts.tag`: a rename changes the search text of
- * every contact carrying the tag, so it re-indexes them in scheduled
- * batches (a tag can be on more contacts than one transaction can touch).
- * Archiving or reactivating changes nothing searchable.
- */
-export async function projectTag(
-  ctx: ContractCtx,
-  id: Id<'tags'>,
-  before: Doc<'tags'> | null,
-): Promise<void> {
-  if (!before) return
-  const after = await ctx.db.get(id)
-  if (!after || after.name === before.name) return
-  if (!ctx.scheduler) {
-    throw new Error('contacts.tag: a rename needs a scheduler to re-index')
-  }
-  await ctx.scheduler.runAfter(
-    0,
-    internal.contacts.searchProjection.reindexTag,
-    {
-      tagId: id,
-      cursor: null,
-    },
-  )
-}
-
-/**
- * One batch of a tag rename's re-index; schedules the next. Each batch
- * copies the tag's current name onto its `contactTags` rows, then rebuilds
- * those contacts' search rows from them. Reading the name per batch (not
- * passing it along) means a second rename mid-run still ends on the latest.
- */
-export const reindexTag = internalTenantMutation({
-  args: { tagId: v.id('tags'), cursor: v.union(v.string(), v.null()) },
-  handler: async (ctx, { tagId, cursor }) => {
-    const [tag, page] = await Promise.all([
-      ctx.db.get(tagId),
-      ctx.db
-        .query('contactTags')
-        .withIndex('by_tenant_tag', (q) => q.eq('tagId', tagId))
-        .paginate({ numItems: REINDEX_TAG_BATCH, cursor }),
-    ])
-    if (tag) {
-      await Promise.all(
-        page.page
-          .filter((r) => r.name !== tag.name)
-          .map((r) => ctx.db.patch('contactTags', r._id, { name: tag.name })),
-      )
-    }
-    await Promise.all(
-      page.page.map((r) => projectContactSearch(ctx, r.contactId)),
-    )
-    if (!page.isDone) {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.contacts.searchProjection.reindexTag,
-        { tagId, cursor: page.continueCursor },
-      )
-    }
-  },
-})

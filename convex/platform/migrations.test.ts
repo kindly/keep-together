@@ -15,10 +15,10 @@ beforeEach(async () => {
 })
 
 /** Creates the tenant's preferences row through a real save. */
-const saveTagsSwitch = (who: Tenant, on: boolean) =>
-  who.as.mutation(api.platform.preferences.setStaffCanManageTags, {
+const saveTypesSwitch = (who: Tenant, on: boolean) =>
+  who.as.mutation(api.platform.preferences.setStaffCanManageIdentifierTypes, {
     tenantId: who.tenantId,
-    staffCanManageTags: on,
+    staffCanManageIdentifierTypes: on,
   })
 
 /** Rows lose the fields pair, as if created before fields step 1. */
@@ -49,7 +49,7 @@ const backfill = (opts: { batchSize?: number; cursor?: null } = {}) =>
 
 describe('backfillFieldsPreference', () => {
   test('a new row is created with the switch off at counter 0', async () => {
-    await saveTagsSwitch(f.a, true)
+    await saveTypesSwitch(f.a, true)
     expect(await rows()).toEqual([
       expect.objectContaining({
         tenantId: f.a.tenantId,
@@ -60,8 +60,8 @@ describe('backfillFieldsPreference', () => {
   })
 
   test('sets off / 0 on every tenant’s row, without revisions, and nothing else', async () => {
-    await saveTagsSwitch(f.a, true)
-    await saveTagsSwitch(f.b, false)
+    await saveTypesSwitch(f.a, true)
+    await saveTypesSwitch(f.b, false)
     await unbackfill()
     const before = await rows()
     expect(before).toHaveLength(2)
@@ -82,8 +82,8 @@ describe('backfillFieldsPreference', () => {
   })
 
   test('a rerun from the start changes nothing', async () => {
-    await saveTagsSwitch(f.a, true)
-    await saveTagsSwitch(f.b, true)
+    await saveTypesSwitch(f.a, true)
+    await saveTypesSwitch(f.b, true)
     await unbackfill()
     await backfill()
     const done = await rows()

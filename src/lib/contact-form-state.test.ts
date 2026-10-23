@@ -7,7 +7,6 @@ import {
   reduce,
   mergeFieldValues,
   mergeIdentifiers,
-  mergeTags,
   rekey,
   submission,
   tornSlices,
@@ -29,7 +28,6 @@ const slices: Slices = {
     phones: [],
   },
   addresses: { addresses: [] },
-  tags: { tags: [{ key: 't1', tagId: 'tagMember' as Id<'tags'> }] },
   identifiers: {
     identifiers: [
       { key: 'i1', typeId: 'typeOld' as Id<'identifierTypes'>, value: 'M1' },
@@ -41,7 +39,6 @@ const counters = {
   details: 0,
   methods: 0,
   addresses: 0,
-  tags: 0,
   identifiers: 0,
   fields: 0,
 }
@@ -163,7 +160,6 @@ describe('contact form state', () => {
           methods: 0,
           addresses: 0,
           archive: 0,
-          tags: 0,
           identifiers: 0,
           fields: 0,
         },
@@ -209,7 +205,6 @@ describe('contact form state', () => {
           methods: 0,
           addresses: 0,
           archive: 0,
-          tags: 0,
           identifiers: 0,
           fields: 0,
         },
@@ -241,7 +236,6 @@ describe('contact form state', () => {
           methods: 1,
           addresses: 0,
           archive: 0,
-          tags: 0,
           identifiers: 0,
           fields: 0,
         },
@@ -287,7 +281,6 @@ describe('contact form state', () => {
         methods: 0,
         addresses: 0,
         archive: 0,
-        tags: 0,
         identifiers: 0,
         fields: 0,
       },
@@ -384,7 +377,6 @@ describe('contact form state', () => {
           methods: 0,
           addresses: 0,
           archive: 0,
-          tags: 0,
           identifiers: 0,
           fields: 0,
         },
@@ -428,121 +420,68 @@ describe('contact form state', () => {
     expect(submission(s).details?.lastName).toBe('Byron')
   })
 
-  describe('the tags slice', () => {
-    const tag = (key: string, id: string) => ({
+  test('a stale identifiers save is noticed and cleared once the retry saves', () => {
+    const row = (key: string, value: string) => ({
       key,
-      tagId: id as Id<'tags'>,
+      typeId: 'typeOld' as Id<'identifierTypes'>,
+      value,
     })
-    const member = tag('t1', 'tagMember')
-
-    test('a tag added here and one added elsewhere both survive', () => {
-      let s = reduce(initialState(slices, counters), {
-        type: 'edit',
-        slice: 'tags',
-        value: { tags: [member, tag('t2', 'tagVolunteer')] },
-      })
-      s = reduce(s, {
-        type: 'server',
-        slices: { ...slices, tags: { tags: [member, tag('t9', 'tagDonor')] } },
-        counters: { ...counters, tags: 1 },
-      })
-      expect(s.local.tags.tags.map((t) => t.tagId)).toEqual([
-        'tagMember',
-        'tagDonor',
-        'tagVolunteer',
-      ])
-      expect(s.conflicts).toEqual([])
-      expect(s.dirty.tags).toBe(true)
-      expect(s.needsSave).toBe(true)
+    let s = reduce(initialState(slices, counters), {
+      type: 'edit',
+      slice: 'identifiers',
+      value: { identifiers: [] },
     })
-
-    test('a tag removed here stays removed when another tag arrives', () => {
-      const s = mergeTags(
-        { tags: [member] },
-        { tags: [] },
-        { tags: [member, tag('t9', 'tagDonor')] },
-      )
-      expect(s.tags).toEqual([tag('t9', 'tagDonor')])
+    const first = submission(s)
+    expect(Object.keys(first)).toEqual(['identifiers'])
+    s = reduce(s, { type: 'saving' })
+    const theirs = { identifiers: [row('i1', 'M1'), row('i9', 'M9')] }
+    s = reduce(s, {
+      type: 'server',
+      slices: { ...slices, identifiers: theirs },
+      counters: { ...counters, identifiers: 1 },
     })
-
-    test('both sides adding the same tag keeps the remote row, not dirty', () => {
-      let s = reduce(initialState(slices, counters), {
-        type: 'edit',
-        slice: 'tags',
-        value: { tags: [member, tag('mine', 'tagDonor')] },
-      })
-      s = reduce(s, {
-        type: 'server',
-        slices: {
-          ...slices,
-          tags: { tags: [member, tag('theirs', 'tagDonor')] },
+    s = reduce(s, {
+      type: 'saved',
+      submitted: first,
+      at: 1,
+      result: {
+        saved: [],
+        problems: {},
+        stale: { identifiers: 1 },
+        counters: {
+          details: 0,
+          methods: 0,
+          addresses: 0,
+          archive: 0,
+          identifiers: 1,
+          fields: 0,
         },
-        counters: { ...counters, tags: 1 },
-      })
-      expect(s.local.tags.tags).toEqual([member, tag('theirs', 'tagDonor')])
-      expect(s.dirty.tags).toBe(false)
+      },
     })
-
-    test('a stale tags save is noticed and cleared once the retry saves', () => {
-      let s = reduce(initialState(slices, counters), {
-        type: 'edit',
-        slice: 'tags',
-        value: { tags: [] },
-      })
-      const first = submission(s)
-      expect(Object.keys(first)).toEqual(['tags'])
-      s = reduce(s, { type: 'saving' })
-      const theirs = { tags: [member, tag('t9', 'tagDonor')] }
-      s = reduce(s, {
-        type: 'server',
-        slices: { ...slices, tags: theirs },
-        counters: { ...counters, tags: 1 },
-      })
-      s = reduce(s, {
-        type: 'saved',
-        submitted: first,
-        at: 1,
-        result: {
-          saved: [],
-          problems: {},
-          stale: { tags: 1 },
-          counters: {
-            details: 0,
-            methods: 0,
-            addresses: 0,
-            archive: 0,
-            tags: 1,
-            identifiers: 0,
-            fields: 0,
-          },
+    expect(s.stale).toEqual({ identifiers: 1 })
+    const retry = submission(s)
+    expect(retry.identifiers).toEqual({ identifiers: [row('i9', 'M9')] })
+    s = reduce(s, { type: 'saving' })
+    s = reduce(s, {
+      type: 'saved',
+      submitted: retry,
+      at: 2,
+      result: {
+        saved: ['identifiers'],
+        problems: {},
+        stale: {},
+        counters: {
+          details: 0,
+          methods: 0,
+          addresses: 0,
+          archive: 0,
+          identifiers: 2,
+          fields: 0,
         },
-      })
-      expect(s.stale).toEqual({ tags: 1 })
-      const retry = submission(s)
-      expect(retry.tags).toEqual({ tags: [tag('t9', 'tagDonor')] })
-      s = reduce(s, { type: 'saving' })
-      s = reduce(s, {
-        type: 'saved',
-        submitted: retry,
-        at: 2,
-        result: {
-          saved: ['tags'],
-          problems: {},
-          stale: {},
-          counters: {
-            details: 0,
-            methods: 0,
-            addresses: 0,
-            archive: 0,
-            tags: 2,
-            identifiers: 0,
-            fields: 0,
-          },
-        },
-      })
-      expect(s.stale).toEqual({})
-      expect(s.dirty.tags).toBe(false)
+      },
     })
+    expect(s.stale).toEqual({})
+    expect(s.dirty.identifiers).toBe(false)
   })
 })
 
@@ -840,7 +779,6 @@ describe('unsavedWork', () => {
           methods: 1,
           addresses: 0,
           archive: 0,
-          tags: 0,
           identifiers: 0,
           fields: 0,
         },
@@ -1068,26 +1006,31 @@ describe('a torn view (rows and counter delivered apart)', () => {
   })
 
   test('rows reordered by a rename elsewhere, counter unchanged: nothing to take', () => {
+    const row = (key: string, typeId: string, value: string) => ({
+      key,
+      typeId: typeId as Id<'identifierTypes'>,
+      value,
+    })
     const two = {
-      tags: [
-        { key: 't1', tagId: 'tagMember' as Id<'tags'> },
-        { key: 't2', tagId: 'tagVolunteer' as Id<'tags'> },
-      ],
+      identifiers: [row('i1', 'typeA', 'M1'), row('i2', 'typeB', 'M2')],
     }
-    const deliver = form({ ...slices, tags: two })
-    let s = initialState({ ...slices, tags: two }, counters)
+    const deliver = form({ ...slices, identifiers: two })
+    let s = initialState({ ...slices, identifiers: two }, counters)
     s = reduce(s, {
       type: 'edit',
-      slice: 'tags',
-      value: { tags: [two.tags[0]] },
+      slice: 'identifiers',
+      value: { identifiers: [two.identifiers[0]] },
     })
     s = deliver(
       s,
-      { ...slices, tags: { tags: [...two.tags].reverse() } },
+      {
+        ...slices,
+        identifiers: { identifiers: [...two.identifiers].reverse() },
+      },
       counters,
     )
-    expect(s.local.tags).toEqual({ tags: [two.tags[0]] })
-    expect(s.base.tags).toEqual(two)
+    expect(s.local.identifiers).toEqual({ identifiers: [two.identifiers[0]] })
+    expect(s.base.identifiers).toEqual(two)
     expect(s.conflicts).toEqual([])
   })
 })

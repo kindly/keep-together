@@ -1,5 +1,5 @@
 /**
- * Who may manage a tenant's lists (tags, identifier types, source codes,
+ * Who may manage a tenant's lists (identifier types, source codes,
  * dropdown fields):
  * admins, and staff while that list's own "staff can manage …"
  * preference is on (each off by default, independent of the others;
@@ -13,11 +13,10 @@ import type { Doc } from '../_generated/dataModel'
 import type { Role, ScopedDatabaseReader } from './tenancy'
 
 /** The lists a tenant's staff may be allowed to manage, one switch each. */
-export type ListKind = 'tags' | 'identifierTypes' | 'sourceCodes' | 'fields'
+export type ListKind = 'identifierTypes' | 'sourceCodes' | 'fields'
 
 /** Each list's switch on the tenant's preferences row. */
 export const STAFF_SWITCH = {
-  tags: 'staffCanManageTags',
   identifierTypes: 'staffCanManageIdentifierTypes',
   sourceCodes: 'staffCanManageSourceCodes',
   fields: 'staffCanManageFields',

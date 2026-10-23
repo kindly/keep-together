@@ -86,7 +86,6 @@ function toSlices(data: Data): Slices {
         isPrimary: a.isPrimary,
       })),
     },
-    tags: { tags: data.tags.map((t) => ({ key: t.key, tagId: t.tagId })) },
     identifiers: {
       identifiers: data.identifiers.map((r) => ({
         key: r.key,
@@ -107,7 +106,6 @@ function toCounters(data: Data): Counters {
     details: data.contact.detailsVersion,
     methods: data.contact.methodsVersion,
     addresses: data.contact.addressesVersion,
-    tags: data.contact.tagsVersion,
     identifiers: data.contact.identifiersVersion,
     fields: data.contact.fieldsVersion ?? 0,
   }
@@ -129,12 +127,6 @@ export function ContactForm({
   const history = useHistoryHold(id)
   const members = useQuery(api.platform.tenants.members, {
     tenantId: tenant._id,
-  })
-  // Every tag, archived too: an archived tag a contact still carries needs
-  // its name. One subscription shared with the list and the tags page.
-  const allTags = useQuery(api.contacts.queries.tags, {
-    tenantId: tenant._id,
-    includeInactive: true,
   })
   // "Also used by" lookups for the saved addresses: their own query, so a
   // save never waits on them; a new address's warning lands one round trip
@@ -191,7 +183,7 @@ export function ContactForm({
   )
   const latest = useRef(state)
   latest.current = state
-  // A tag pick, or an identifier row finished or removed, is a whole edit
+  // A field pick, or an identifier row finished or removed, is a whole edit
   // with nothing left to type: save it now, not after the autosave pause.
   const saveNow = useRef(false)
 
@@ -406,17 +398,6 @@ export function ContactForm({
             slug={tenant.slug}
           />
         )}
-
-        <TagFields
-          value={state.local.tags}
-          onChange={(v) => {
-            saveNow.current = true
-            edit('tags', v)
-          }}
-          problems={state.problems.tags ?? []}
-          known={data.tags}
-          allTags={allTags}
-        />
 
         <FieldValues
           value={state.local.fields}
@@ -808,101 +789,7 @@ function AddressFields({
   )
 }
 
-type TagInfo = { name: string; isActive?: boolean }
-
-/**
- * The contact's tags as chips, and a picker of the active tags it doesn't
- * carry. An archived tag it still carries shows (marked) and can be
- * removed, but is never offered.
- */
-function TagFields({
-  value,
-  onChange,
-  problems,
-  known,
-  allTags,
-}: {
-  value: Payloads['tags']
-  onChange: (v: Payloads['tags']) => void
-  problems: Array<Problem>
-  known: Data['tags']
-  allTags:
-    Array<{ _id: Id<'tags'>; name: string; isActive: boolean }> | undefined
-}) {
-  // The contact's own rows name its tags; whether one is archived comes
-  // only from `allTags`. A tag past TAG_LIST_LIMIT (or before `allTags`
-  // loads) shows without its "archived" mark: an accepted edge, as the
-  // contact's tags no longer read each tag document.
-  const info = new Map<string, TagInfo>(
-    known.map((t) => [t.tagId, { name: t.name }]),
-  )
-  for (const t of allTags ?? []) info.set(t._id, t)
-  const carried = new Set(value.tags.map((t) => t.tagId))
-  const offered = (allTags ?? []).filter(
-    (t) => t.isActive && !carried.has(t._id),
-  )
-  return (
-    <section>
-      <h2 className="mb-3 text-lg font-medium">Tags</h2>
-      <Message message={problemFor(problems, 'tags')} tone="error" />
-      <div className="flex flex-wrap items-center gap-2">
-        {value.tags.length === 0 && (
-          <span className="text-sm text-neutral-500">No tags.</span>
-        )}
-        <ul className="contents">
-          {value.tags.map((row) => {
-            const tag = info.get(row.tagId)
-            const name = tag?.name ?? '…'
-            return (
-              <li
-                key={row.key ?? row.tagId}
-                className={`flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-sm ${tag?.isActive === false ? 'border-dashed border-neutral-300 text-neutral-500' : 'border-neutral-300 bg-white'}`}
-              >
-                <span>{name}</span>
-                {tag?.isActive === false && (
-                  <span className="text-xs">(archived)</span>
-                )}
-                <button
-                  type="button"
-                  aria-label={`remove tag ${name}`}
-                  onClick={() =>
-                    onChange({
-                      tags: value.tags.filter((t) => t !== row),
-                    })
-                  }
-                  className="ml-0.5 text-neutral-500 hover:text-neutral-900"
-                >
-                  ×
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-        {offered.length > 0 && (
-          <select
-            aria-label="Add tag"
-            value=""
-            onChange={(e) => {
-              const tagId = e.target.value as Id<'tags'>
-              if (!tagId) return
-              onChange({
-                tags: [...value.tags, { key: crypto.randomUUID(), tagId }],
-              })
-            }}
-            className="rounded border border-neutral-300 px-2 py-1 text-sm"
-          >
-            <option value="">add tag…</option>
-            {offered.map((t) => (
-              <option key={t._id} value={t._id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-    </section>
-  )
-}
+type TypeInfo = { name: string; isActive?: boolean }
 
 /** A conflict as the notice names it: a field value by its field's label. */
 function conflictName(c: string, fields: Array<FieldDefinition>) {
@@ -1046,7 +933,7 @@ function IdentifierFields({
   slug: string
 }) {
   const savedKeys = new Set(saved.identifiers.map((r) => r.key))
-  const info = new Map<string, TagInfo>(
+  const info = new Map<string, TypeInfo>(
     known.map((r) => [r.typeId, { name: r.typeName, isActive: r.typeActive }]),
   )
   for (const t of types ?? []) info.set(t._id, { name: t.name, isActive: true })

@@ -29,14 +29,6 @@ function SettingsLayout() {
           className="-mx-3 flex shrink-0 overflow-x-auto border-b border-neutral-200 md:mx-0 md:w-44 md:flex-col md:self-start md:overflow-visible md:border-r md:border-b-0"
         >
           <Link
-            to="/t/$slug/settings/tags"
-            params={{ slug }}
-            className={tab}
-            activeProps={{ className: activeTab }}
-          >
-            Tags
-          </Link>
-          <Link
             to="/t/$slug/settings/fields"
             params={{ slug }}
             className={tab}

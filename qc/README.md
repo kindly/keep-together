@@ -87,6 +87,9 @@ Banners to look for:
   for a few seconds, and every flow on every instance waits it out
   (factory/out/builder-qcstall.md). They're judged as usual: the banner
   says where the time went, it doesn't excuse it. A wired link avoids it.
+- **`EXCEPTED`**: the server exceptions banner: every approved exception
+  (`SERVER_EXCEPTIONS` in `qc/budgets.ts`), on every run, with the calls
+  it excepted this run (see Budgets).
 - **`QC RUN FAILED, whatever the test counts above say`**: a gate the
   tests can't see failed: the coverage gate, a flow in `qc/budgets.ts`
   that nothing timed, or the worker-setup sign-in over budget.
@@ -275,7 +278,7 @@ is what it looks like. Server spikes are in the same banner.
 | `infrequent` | creating a record (a new contact); every later edit of it is `repeatable` | **under 150 ms, every sample** (human, 2026-10-19) |
 | `rare` | done seldom: restoring a contact from its history | **under 200 ms, every sample** (human, 2026-10-21) |
 | `oncePerSession` | sign-in, the first page load | its own budget, recorded: 1.5× the worst sample of three `QC_MODE=record` runs |
-| bulk | an action over many records, such as tagging up to 100 contacts | exempt from 100 ms; its own recorded budget, and the UI must show a progress state. The first bulk flow adds the `'bulk'` kind to `qc/budgets.ts` |
+| bulk | an action over many records, such as setting a field on up to 100 contacts | exempt from 100 ms; its own recorded budget, and the UI must show a progress state. The first bulk flow adds the `'bulk'` kind to `qc/budgets.ts` |
 
 Two marks change how a flow is judged:
 
@@ -284,10 +287,19 @@ Two marks change how a flow is judged:
   banner on every run, but being over budget doesn't fail the run. It
   must name the reason, who approved it and the date. Remove it with the
   fix.
+- **A server exception** (`SERVER_EXCEPTIONS` in `qc/budgets.ts`): one
+  function's calls that log a given line are timed and recorded in a row
+  of their own (`<fn> [excepted]`), listed in the `EXCEPTED` banner on
+  every run, and never asserted. The function's other calls are judged
+  as usual. The one there: a `contacts/queries:list` call that read a
+  grown pinned page in full, which the backend does whatever
+  `maximumRowsRead` says ("list re-run after a bulk write into an open
+  page: ~150 ms reading the grown range", human 2026-10-23;
+  `contacts.loadMore`'s insert into page 0 makes them).
 - **`pending: true`**: no spec times the flow yet; a run that doesn't
   time it warns instead of failing. Drop it when the spec lands.
 
-**Raising a budget, exempting a flow (a `knownOver` mark, the bulk kind,
+**Raising a budget, exempting a flow (a `knownOver` mark, a server exception, the bulk kind,
 or anything else that stops a sample failing) needs the human's explicit
 OK**, given in the task or on the plan page. A flow over budget means
 fixing the code, not the number. The only budgets set without a further

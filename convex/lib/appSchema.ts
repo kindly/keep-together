@@ -83,7 +83,6 @@ export const appTables = {
   // Per-tenant preferences: plain, non-secret switches admins set on the
   // Settings page (convex/platform/preferences.ts). At most one row per
   // tenant, created on first save; no row means every default.
-  //   tenantPreferences.tags → staffCanManageTags (tagsVersion)
   //   tenantPreferences.identifierTypes → staffCanManageIdentifierTypes
   //     (identifierTypesVersion)
   //   tenantPreferences.sourceCodes → staffCanManageSourceCodes
@@ -91,8 +90,10 @@ export const appTables = {
   //   tenantPreferences.fields → staffCanManageFields (fieldsVersion)
   tenantPreferences: defineTable({
     tenantId: v.id('tenants'),
-    staffCanManageTags: v.boolean(),
-    tagsVersion: v.number(),
+    // Tags, removed (dropdown fields step 7): optional until step 8 unsets
+    // them and step 9 drops them.
+    staffCanManageTags: v.optional(v.boolean()),
+    tagsVersion: v.optional(v.number()),
     staffCanManageIdentifierTypes: v.boolean(),
     identifierTypesVersion: v.number(),
     staffCanManageSourceCodes: v.boolean(),
@@ -147,7 +148,6 @@ export const appTables = {
   //   contacts.methods   → contactEmails / contactPhones rows (methodsVersion)
   //   contacts.addresses → contactAddresses rows (addressesVersion)
   //   contacts.archive   → archived (archiveVersion)
-  //   contacts.tags      → contactTags rows (tagsVersion)
   //   contacts.identifiers → contactIdentifiers rows (identifiersVersion)
   //   contacts.acquisition → acquisitionCodeId (acquisitionVersion)
   //   contacts.fields    → field1…fieldN (fieldsVersion; lib/fieldSlots)
@@ -171,7 +171,9 @@ export const appTables = {
     methodsVersion: v.number(),
     addressesVersion: v.number(),
     archiveVersion: v.number(),
-    tagsVersion: v.number(),
+    // The removed `contacts.tags` slice's counter (dropdown fields step 7):
+    // optional until step 8 unsets it and step 9 drops it.
+    tagsVersion: v.optional(v.number()),
     identifiersVersion: v.number(),
     // How the contact was recruited: a `sourceCodes` row at level
     // 'version' (the source code). Optional for good: absent = uncoded.
@@ -254,11 +256,9 @@ export const appTables = {
     .index('by_tenant_contact', ['tenantId', 'contactId'])
     .index('by_tenant_key', ['tenantId', 'key']),
 
-  // Assignment of a tag to a contact (`contacts.tags` slice). `tagId` is the
-  // identity field — immutable per key; re-tagging is remove + add.
-  // `name` is a derived copy of the tag's name, so readers needn't fetch the
-  // tag: not in the contract payload or revisions, set on insert and
-  // refreshed by a rename's `reindexTag` batches.
+  // Assignment of a tag to a contact, from the removed `contacts.tags`
+  // slice (dropdown fields step 7). Nothing reads or writes it; step 8
+  // deletes the rows and step 9 the table.
   contactTags: defineTable({
     tenantId: v.id('tenants'),
     contactId: v.id('contacts'),
@@ -412,25 +412,24 @@ export const appTables = {
     saveVersion: v.number(),
   }).index('by_tenant_field_position', ['tenantId', 'fieldId', 'position']),
 
-  // Its own aggregate (`contacts.identifierType`, saveVersion), like tags:
+  // Its own aggregate (`contacts.identifierType`, saveVersion):
   // names unique per tenant case-insensitively; archive = `isActive: false`
   // (out of the picker, rows kept and still found). None seeded.
   identifierTypes: defineTable({
     tenantId: v.id('tenants'),
     name: v.string(),
-    nameNormalized: v.string(), // normaliseTagName(name)
+    nameNormalized: v.string(), // normaliseListName(name)
     isActive: v.boolean(),
     saveVersion: v.number(),
   }).index('by_tenant_nameNormalized', ['tenantId', 'nameNormalized']),
 
-  // Its own aggregate (`contacts.tag`, saveVersion). Flat; names unique per
-  // tenant case-insensitively (checked in apply against `nameNormalized`).
-  // Retire = `isActive: false`: hidden from pickers, assignments kept.
-  // Seeded per tenant: member, volunteer.
+  // Tag definitions, from the removed `contacts.tag` contract (dropdown
+  // fields step 7). Nothing reads or writes them; step 8 deletes the rows
+  // and step 9 the table.
   tags: defineTable({
     tenantId: v.id('tenants'),
     name: v.string(),
-    nameNormalized: v.string(), // normaliseTagName(name)
+    nameNormalized: v.string(), // normaliseListName(name)
     isActive: v.boolean(),
     saveVersion: v.number(),
   }).index('by_tenant_nameNormalized', ['tenantId', 'nameNormalized']),
