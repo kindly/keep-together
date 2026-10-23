@@ -3,7 +3,7 @@ import migrationsTest from '@convex-dev/migrations/test'
 import { runToCompletion } from '@convex-dev/migrations'
 import { api, components, internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
-import { setup, snapshot } from '../../test/fixture'
+import { errorData, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
 import { MAX_BACKFILL_PER_TENANT } from './migrations'
 import { FIRST_NUMBER } from './number'
@@ -342,5 +342,176 @@ describe('backfillContactNumbers', () => {
     expect(after.contact).toEqual({ ...before.contact, number: FIRST_NUMBER })
     expect(after.search).toEqual(before.search)
     expect(after.revisions).toBe(before.revisions)
+  })
+})
+
+describe('dropTagData (dropdown fields step 8)', () => {
+  /**
+   * Tag data as step 7 left it, on every contact of `who`: a tag, a link
+   * to it, the slice's counter, its revision; and the tenant's tag switch.
+   * Returns the revision ids.
+   */
+  const tagEra = (who: Tenant) =>
+    f.t.run(async (ctx) => {
+      const tagId = await ctx.db.insert('tags', {
+        tenantId: who.tenantId,
+        name: 'Volunteer',
+        nameNormalized: 'volunteer',
+        isActive: true,
+        saveVersion: 0,
+      })
+      const revisionIds: Array<Id<'revisions'>> = []
+      for (const c of await ctx.db.query('contacts').collect()) {
+        if (c.tenantId !== who.tenantId) continue
+        await ctx.db.insert('contactTags', {
+          tenantId: who.tenantId,
+          contactId: c._id,
+          key: `t-${c._id}`,
+          tagId,
+          name: 'Volunteer',
+        })
+        await ctx.db.patch('contacts', c._id, { tagsVersion: 1 })
+        revisionIds.push(
+          await ctx.db.insert('revisions', {
+            tenantId: who.tenantId,
+            entity: 'contacts',
+            entityId: c._id,
+            contract: 'contacts.tags',
+            version: 1,
+            counter: 0,
+            payload: { tags: [{ key: `t-${c._id}`, tagId }] },
+            source: 'ui',
+            actor: who.userId,
+          }),
+        )
+      }
+      await ctx.db.insert('tenantPreferences', {
+        tenantId: who.tenantId,
+        staffCanManageTags: true,
+        tagsVersion: 2,
+        staffCanManageIdentifierTypes: false,
+        identifierTypesVersion: 0,
+        staffCanManageSourceCodes: true,
+        sourceCodesVersion: 1,
+        staffCanManageFields: false,
+        fieldsVersion: 0,
+      })
+      return revisionIds
+    })
+
+  const read = () =>
+    f.t.run(async (ctx) => ({
+      tags: await ctx.db.query('tags').collect(),
+      contactTags: await ctx.db.query('contactTags').collect(),
+      contacts: await ctx.db.query('contacts').collect(),
+      prefs: await ctx.db.query('tenantPreferences').collect(),
+      search: await ctx.db.query('contactSearch').collect(),
+      revisions: await ctx.db.query('revisions').collect(),
+    }))
+
+  /** The series, as the CLI starts it, run until every part is done. */
+  const dropTagData = async (batchSize?: number) => {
+    await f.t.mutation(internal.contacts.migrations.dropTagData, {
+      batchSize,
+    })
+    await f.t.finishAllScheduledFunctions(() => {})
+    const statuses = await f.t.run((ctx) =>
+      ctx.runQuery(components.migrations.lib.getStatus, {}),
+    )
+    return Object.fromEntries(
+      statuses.map((s) => [s.name.split(':').at(-1), s.isDone]),
+    )
+  }
+
+  const PARTS = {
+    deleteContactTags: true,
+    deleteTags: true,
+    unsetContactTagsVersion: true,
+    unsetTagPreferences: true,
+  }
+
+  test('empties both tag tables and unsets the tag fields, in every tenant, and nothing else', async () => {
+    await createContact(f.a, 'Lovelace')
+    await createContact(f.a, 'Babbage')
+    await createContact(f.b, 'Herschel')
+    await tagEra(f.a)
+    await tagEra(f.b)
+    const before = await read()
+    expect(before.contactTags).toHaveLength(3)
+    expect(new Set(before.tags.map((t) => t.tenantId)).size).toBe(2)
+
+    expect(await dropTagData(1)).toEqual(PARTS)
+    const after = await read()
+    expect(after.tags).toEqual([])
+    expect(after.contactTags).toEqual([])
+    expect(after.contacts).toEqual(
+      before.contacts.map(({ tagsVersion: _, ...c }) => c),
+    )
+    expect(after.contacts.some((c) => 'tagsVersion' in c)).toBe(false)
+    expect(after.prefs).toEqual(
+      before.prefs.map(
+        ({ staffCanManageTags: _s, tagsVersion: _v, ...row }) => row,
+      ),
+    )
+    // Derived rows and history are untouched: tag revisions stay.
+    expect(after.search).toEqual(before.search)
+    expect(after.revisions).toEqual(before.revisions)
+  })
+
+  test('a contact created now has no tagsVersion to unset', async () => {
+    await createContact(f.a, 'Lovelace')
+    const { contacts } = await read()
+    expect(contacts[0]).not.toHaveProperty('tagsVersion')
+  })
+
+  test('a rerun, and a run on a tenant with no tag data, change nothing', async () => {
+    await createContact(f.a, 'Lovelace')
+    await createContact(f.b, 'Herschel')
+    await tagEra(f.a) // B never had tags
+    const b = await snapshot(f.t, f.b.tenantId)
+    await dropTagData()
+    expect(await snapshot(f.t, f.b.tenantId)).toBe(b)
+    const [a, settled] = [await snapshot(f.t, f.a.tenantId), await read()]
+
+    await f.t.mutation(internal.contacts.migrations.dropTagData, {
+      reset: true,
+    })
+    await f.t.finishAllScheduledFunctions(() => {})
+    expect(await read()).toEqual(settled)
+    expect(await snapshot(f.t, f.a.tenantId)).toBe(a)
+    expect(await snapshot(f.t, f.b.tenantId)).toBe(b)
+  })
+
+  test('tag revisions still show in history and are still refused, per tenant', async () => {
+    const ada = await createContact(f.a, 'Lovelace')
+    await createContact(f.b, 'Herschel')
+    const [revisionId] = await tagEra(f.a)
+    await tagEra(f.b)
+    await dropTagData()
+
+    const history = (who: Tenant) =>
+      who.as.query(api.contacts.queries.history, {
+        tenantId: who.tenantId,
+        id: ada,
+        paginationOpts: { numItems: 10, cursor: null },
+      })
+    expect((await history(f.a)).page.some((m) => m.retired)).toBe(true)
+    expect((await history(f.b)).page).toEqual([])
+    expect(
+      await errorData(
+        f.a.as.mutation(api.contacts.mutations.restoreRevision, {
+          tenantId: f.a.tenantId,
+          revisionId,
+        }),
+      ),
+    ).toMatchObject({ kind: 'rejected', reason: 'retired_contract' })
+    expect(
+      await errorData(
+        f.b.as.mutation(api.contacts.mutations.restoreRevision, {
+          tenantId: f.b.tenantId,
+          revisionId,
+        }),
+      ),
+    ).toEqual({ kind: 'not_found' })
   })
 })

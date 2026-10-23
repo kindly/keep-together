@@ -157,9 +157,10 @@ test('contacts.number is written only by the create insert and the backfill', ()
 })
 
 // Migrations on `contacts` write through `migrateOne`'s return, not
-// `db.patch`, so they are listed by name: neither touches `number`
+// `db.patch`, so they are listed by name: none touches `number`
 // (backfillContactSearch writes `contactSearch`, backfillFieldsVersion
-// `fieldsVersion`). A new one fails here until it is checked and added.
+// `fieldsVersion`, unsetContactTagsVersion only removes `tagsVersion`). A
+// new one fails here until it is checked and added.
 test('every contacts migration is one checked by hand', () => {
   const migrations = FILES.flatMap(({ file, text }) =>
     [
@@ -171,5 +172,6 @@ test('every contacts migration is one checked by hand', () => {
   expect(migrations).toEqual([
     'contacts/migrations.ts:backfillContactSearch',
     'contacts/migrations.ts:backfillFieldsVersion',
+    'contacts/migrations.ts:unsetContactTagsVersion',
   ])
 })
