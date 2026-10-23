@@ -10,7 +10,10 @@ import type { Blame, Verdict } from './blame'
 //   under budget passes it. An attempt that is over and ours fails it.
 // - still over and not ours after the last attempt: our share of that
 //   attempt (page + our function + the critical path of the re-runs it
-//   waited for) is judged against the budget less SHARE_MARGIN_MS.
+//   waited for) is judged against the budget less SHARE_MARGIN_MS. The
+//   budget is the flow's failing line (`maxMs`, never its target), so the
+//   share budget follows the line: 150 − 50 = 100 ms for repeatable
+//   (human, 2026-10-23).
 //
 // An attempt whose logs didn't catch up (qc/live.ts) is unclear, so ours.
 //
@@ -20,7 +23,7 @@ import type { Blame, Verdict } from './blame'
 // a self-test checks today's rule, and a knownOver flow can't fail, so it
 // mustn't spend the run's retries.
 
-/** Our share must be under the budget less this. */
+/** Our share must be under the failing line less this. */
 export const SHARE_MARGIN_MS = 50
 /** Extra attempts for one slow sample that isn't ours. */
 export const RETRIES_PER_SAMPLE = 2

@@ -13,6 +13,7 @@ import {
 } from './judge'
 import type { JudgeDeps, Measured } from './judge'
 import { takeRetry } from './timing'
+import { budgetFor } from './budgets'
 import { cases } from './blame.fixture'
 
 type Fixture = { sample: BlameSample } & BlameContext
@@ -99,11 +100,26 @@ describe('judgeSlowSample', () => {
     )
   })
 
-  test('the budget − 50 applies per kind: rare 200 → 150', async () => {
-    const spell = verdict('convex/network', 140)
-    const { deps } = script([spell, spell, spell], [220, 230])
-    const j = await judgeSlowSample({ ms: 230, detail: null }, 200, deps)
-    expect(j).toMatchObject({ pass: true, shareBudgetMs: 150 })
+  test('our share is judged against the failing line − 50, per kind (human, 2026-10-23)', async () => {
+    for (const [flow, shareBudgetMs] of [
+      ['contact.save', 100],
+      ['contacts.create', 150],
+      ['contact.restore', 200],
+    ] as const) {
+      const line = budgetFor(flow).maxMs
+      expect(line - SHARE_MARGIN_MS).toBe(shareBudgetMs)
+      const over = line + 30
+      const under = verdict('convex/network', shareBudgetMs - 1)
+      const pass = script([under, under, under], [over, over])
+      expect(
+        await judgeSlowSample({ ms: over, detail: null }, line, pass.deps),
+      ).toMatchObject({ pass: true, shareBudgetMs })
+      const at = verdict('convex/network', shareBudgetMs)
+      const fail = script([at, at, at], [over, over])
+      expect(
+        await judgeSlowSample({ ms: over, detail: null }, line, fail.deps),
+      ).toMatchObject({ pass: false, rule: 'failed: our share over' })
+    }
   })
 
   test('a retry that comes back ours fails', async () => {

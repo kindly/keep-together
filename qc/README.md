@@ -86,14 +86,22 @@ After the run the reporter prints one row per flow:
 | `kind` | `repeat` (repeatable), `infreq` (infrequent), `rare`, `once` (once per session) or `bulk` |
 | `n` | timed samples across all workers |
 | `median`, `p95`, `max` | raw ms, input event to result on screen, network included |
-| `budget` | every sample must be under this |
+| `target` | tracked, never failed: a median at or over it is flagged `TARGET` (blank for kinds without one) |
+| `budget` | the failing line: every sample must be under this |
 | `headroom` | budget − max; negative means over |
 | `over` | samples at or over the budget |
 | `RTT` | median WebSocket round trip of the workers, for context only |
-| last column | `ok`, `OVER`, `KNOWN OVER` / `ok (known over)`, `not judged` (record mode or RTT ceiling), `self-test`; `(re-measured: 1st max N)` after a spike |
+| last column | `ok`, `OVER`, `KNOWN OVER` / `ok (known over)`, `not judged` (record mode or RTT ceiling), `self-test`; `· TARGET` when the flow is flagged against its target; `(re-measured: 1st max N)` after a spike |
 
 Banners to look for:
 
+- **`TARGET`**: every flow whose median is at or over its target, or rose
+  16 ms or more (about one frame) against the median of its medians over
+  its last 5 runs in `history.jsonl` (same flow, same kind, RTT under the
+  ceiling), listed on every run with the reason, target, line and max.
+  Tracked, **never failing**; with none flagged a one-line all-clear is
+  printed instead. A flow with no history gets no drift flag. Runs over
+  the RTT ceiling aren't checked. See Budgets.
 - **`KNOWN OVER`**: every approved exception in `qc/budgets.ts`, listed on
   every run with its samples, so none is forgotten.
 - **`RTT over 150 ms`**: the link is too slow to judge latency. Behaviour
@@ -117,7 +125,9 @@ Banners to look for:
   that nothing timed, or the worker-setup sign-in over budget.
 
 Each flow also gets one line in `qc-results/history.jsonl` (gitignored,
-local): samples, p50/p95, budget, pass, RTT, git sha and the run's
+local): samples, p50/p95, budget (the failing line), `targetMs` and the
+`target` check (`overTarget`, `baselineMs`, `riseMs`, `flagged`; absent on
+lines from before targets and for kinds without one), pass, RTT, git sha and the run's
 Convex server execution times. Its `detail` (and `firstDetail` for a
 re-measure) has one entry per sample: wall-clock time, worker and
 instance, and the sample's legs from a tap on the page's WebSocket:
@@ -212,7 +222,7 @@ over budget is blamed live in the worker (`qc/live.ts`, `qc/judge.ts`):
 |---|---|
 | `ours` | fails, as today; no retry |
 | `unclear` | counts as ours: fails, no retry |
-| `link` or `convex/network` (positive evidence: a first-hop stall, the probe elevated, or a spell) | measured again, up to **2** more attempts. An attempt under budget passes it (`passed on retry`); an attempt that is over and ours fails it. Still over and not ours after the last: **our share** of that attempt must be under **budget − 50 ms** (repeatable 100 → 50, infrequent 150 → 100, rare 200 → 150) to pass (`passed on our share`), else `failed: our share over` |
+| `link` or `convex/network` (positive evidence: a first-hop stall, the probe elevated, or a spell) | measured again, up to **2** more attempts. An attempt under budget passes it (`passed on retry`); an attempt that is over and ours fails it. Still over and not ours after the last: **our share** of that attempt must be under **budget − 50 ms**, the budget being the failing line, never the target (repeatable 150 → 100, infrequent 200 → 150, rare 250 → 200) to pass (`passed on our share`), else `failed: our share over` |
 
 - **Retry cap:** 10 extra attempts per run, across all workers (files in
   `qc-results/runs/<id>/retries/`). Past it a sample is judged as today
@@ -304,7 +314,20 @@ reported, not asserted.
 
 Budgets live in `qc/budgets.ts`. Every time is **raw**: from the input
 event to the result on screen, network included. There's no round-trip
-allowance and no median: **every sample must be under the budget.** Each
+allowance and no median: **every sample must be under the budget.**
+
+Budgets have two tiers (human, 2026-10-23; ADR 0018 amendment):
+
+- **The failing line** (`maxMs`, the `budget` column): every sample must
+  be under it. It alone decides pass and fail.
+- **The target** (`targetMs`): tracked, never failed. A flow whose median
+  is at or over its target, or whose median rose by 16 ms or more against
+  the median of its medians over its last 5 runs (same flow, same kind),
+  is flagged in the `TARGET` banner every run and in the trend report
+  (`qc/target.ts`). The trend report draws the target dotted under the
+  dashed line.
+
+Each
 flow call takes one untimed warm-up, then `QC_REPEATS` (default 5) timed
 samples.
 
@@ -332,13 +355,13 @@ function's other calls in the run are its re-measure: the server can't
 replay a call, and a stall is one moment, so one slow call per function
 is what it looks like. Server spikes are in the same banner.
 
-| Kind | Applies to | Budget |
-|---|---|---|
-| `repeatable` | anything a user can do more than once in a signed-in session: navigation, search, save, add, archive … | **under 100 ms, every sample** |
-| `infrequent` | creating a record (a new contact); every later edit of it is `repeatable` | **under 150 ms, every sample** (human, 2026-10-19) |
-| `rare` | done seldom: restoring a contact from its history | **under 200 ms, every sample** (human, 2026-10-21) |
-| `oncePerSession` | sign-in, the first page load | its own budget, recorded: 1.5× the worst sample of three `QC_MODE=record` runs |
-| bulk | an action over many records, such as setting a field on up to 100 contacts | exempt from 100 ms; its own recorded budget, and the UI must show a progress state. The first bulk flow adds the `'bulk'` kind to `qc/budgets.ts` |
+| Kind | Applies to | Failing line | Target (tracked) |
+|---|---|---|---|
+| `repeatable` | anything a user can do more than once in a signed-in session: navigation, search, save, add, archive … | **under 150 ms, every sample** (human, 2026-10-23) | median under 100 ms |
+| `infrequent` | creating a record (a new contact); every later edit of it is `repeatable` | **under 200 ms, every sample** (human, 2026-10-23) | median under 150 ms |
+| `rare` | done seldom: restoring a contact from its history | **under 250 ms, every sample** (human, 2026-10-23) | median under 200 ms |
+| `oncePerSession` | sign-in, the first page load | its own budget, recorded: 1.5× the worst sample of three `QC_MODE=record` runs | none |
+| bulk | an action over many records, such as setting a field on up to 100 contacts | exempt from the repeatable line; its own recorded budget, and the UI must show a progress state | none |
 
 Two marks change how a flow is judged:
 
@@ -346,7 +369,8 @@ Two marks change how a flow is judged:
   approved. The flow is still timed and recorded, and listed in the
   banner on every run, but being over budget doesn't fail the run. It
   must name the reason, who approved it and the date. Remove it with the
-  fix.
+  fix. None is set today: the marks on `contact.addEmail` and `gift.save`
+  were lifted with the two-tier budgets (human, 2026-10-23).
 - **A server exception** (`SERVER_EXCEPTIONS` in `qc/budgets.ts`): one
   function's calls that log a given line are timed and recorded in a row
   of their own (`<fn> [excepted]`), listed in the `EXCEPTED` banner on

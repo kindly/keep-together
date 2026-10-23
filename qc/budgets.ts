@@ -1,22 +1,31 @@
 // Client-perceived budgets per flow (factory/plans/qc-suite.sv, Latency).
 // Times are raw: from the input event to the result on screen, network
-// included, with no round-trip allowance. A flow passes when **every**
-// sample is under maxMs; there is no median.
+// included, with no round-trip allowance.
+//
+// Two tiers (human, 2026-10-23; ADR 0018 amendment):
+//
+// - **The failing line, `maxMs`.** A flow passes when **every** sample is
+//   under it; there is no median. Only the line decides pass and fail.
+// - **The target, `targetMs`: tracked, never failed.** A flow whose median
+//   is at or over its target, or whose median rose by 16 ms or more against
+//   its last 5 runs in history, is listed in the TARGET banner every run
+//   and marked in the trend report (qc/target.ts).
 //
 // - repeatable: anything a user can do more than once per signed-in
-//   session. Always 100 ms.
+//   session. Line 150 ms, target 100 ms.
 // - oncePerSession: sign-in and the first page load. Their own budgets,
 //   recorded first: 1.5× the worst sample of three `QC_MODE=record` runs,
-//   rounded up to 10 ms (step 9b).
+//   rounded up to 10 ms (step 9b). No target.
 // - infrequent: creating a record (a new contact). Done less often than the
-//   edits that follow it, so 150 ms; every later edit of that record is
-//   repeatable, 100 ms (human, 2026-10-19).
-// - rare: done seldom enough that 200 ms is fine (restoring a contact from
-//   its history) (human, 2026-10-21).
+//   edits that follow it (human, 2026-10-19): line 200 ms, target 150 ms;
+//   every later edit of that record is repeatable.
+// - rare: done seldom (restoring a contact from its history) (human,
+//   2026-10-21): line 250 ms, target 200 ms.
 // - bulk: an action over many records at once (setting a field on up to
 //   100 contacts).
-//   Exempt from 100 ms, with a progress state in the UI; its own budget
-//   is recorded like oncePerSession's (human, 2026-10-17).
+//   Exempt from the repeatable line, with a progress state in the UI; its
+//   own budget is recorded like oncePerSession's (human, 2026-10-17). No
+//   target.
 //
 // **Raising a budget, or exempting a flow, needs the human's explicit
 // OK.** A flow over budget means fixing the code.
@@ -25,25 +34,29 @@
 // (qc/reporter.ts). `pending: true` marks one whose spec isn't written yet
 // (QC steps 6–8): untimed, it only warns. Drop the mark with the spec.
 //
-// A judged flow with any sample at or over budget is re-measured once (K
-// fresh samples) and fails only if that set is over too (qc/timing.ts).
-// A sample over budget in that set is then judged on whose time it was
-// (qc/judge.ts, human 2026-10-21): ours or unclear fails; not ours (link
-// or Convex, with evidence) is retried up to twice, then passes only if
-// our share of it is under maxMs − 50. The numbers here are unchanged.
+// A judged flow with any sample at or over its line is re-measured once
+// (K fresh samples) and fails only if that set is over too
+// (qc/timing.ts). A sample over the line in that set is then judged on
+// whose time it was (qc/judge.ts, human 2026-10-21): ours or unclear
+// fails; not ours (link or Convex, with evidence) is retried up to twice,
+// then passes only if our share of it is under maxMs − 50 (100 ms for
+// repeatable).
 //
 // `knownOver` is an exception the human approved: the flow is still timed
 // and recorded in full, but being over budget doesn't fail the run. Every
 // run lists every knownOver flow in a banner, timed or not, so it can't be
-// forgotten. Remove the mark with the fix.
+// forgotten. Remove the mark with the fix. None is set today (the two
+// there were lifted with the two-tier budgets, human 2026-10-23).
 
 export type FlowKind =
   'repeatable' | 'infrequent' | 'rare' | 'oncePerSession' | 'bulk'
 
 export interface Budget {
   kind: FlowKind
-  /** Every sample must be under this, in ms. */
+  /** The failing line: every sample must be under this, in ms. */
   maxMs: number
+  /** Tracked, never failed: a median at or over this is flagged, in ms. */
+  targetMs?: number
   /** The harness's own self-test: never in history, never fails the run. */
   selfTest?: true
   /** No spec times it yet: missing from a run warns instead of failing. */
@@ -52,9 +65,9 @@ export interface Budget {
   knownOver?: string
 }
 
-const repeatable = { kind: 'repeatable', maxMs: 100 } as const
-const infrequent = { kind: 'infrequent', maxMs: 150 } as const
-const rare = { kind: 'rare', maxMs: 200 } as const
+const repeatable = { kind: 'repeatable', maxMs: 150, targetMs: 100 } as const
+const infrequent = { kind: 'infrequent', maxMs: 200, targetMs: 150 } as const
+const rare = { kind: 'rare', maxMs: 250, targetMs: 200 } as const
 
 export const budgets = {
   // Step 9b, recorded 2026-10-18 in runs tn357fbu, tn35ew84, tn35t6tx
@@ -81,11 +94,7 @@ export const budgets = {
   'contacts.showArchived': repeatable,
   'contacts.create': infrequent,
   'contact.save': repeatable,
-  'contact.addEmail': {
-    ...repeatable,
-    knownOver:
-      'save floor ~95 ms; mutation network leg drifted (58–75 ms), 104–111 ms some runs (human 2026-10-18)',
-  },
+  'contact.addEmail': repeatable,
   'contact.livePropagation': repeatable,
   // Back to a contact opened in the last 2 minutes: the keep-alive cache
   // (perf-storage step 2). Expected well under, at about one frame.
@@ -130,11 +139,7 @@ export const budgets = {
   'gift.recordNewContact': infrequent,
   // Cash gifts step 5: the gift page and the contact page's panels.
   'gift.open': repeatable,
-  'gift.save': {
-    ...repeatable,
-    knownOver:
-      'save floor: ~81 ms median, frame-quantised samples at 97/114 ms; server path at the contract minimum (factory/out/builder-cash-5-save-breakdown.md) (human 2026-10-23)',
-  },
+  'gift.save': repeatable,
   // Void and unvoid show the new status only once the server confirms it
   // (gifts are never optimistic, human 2026-10-23).
   'gift.void': repeatable,

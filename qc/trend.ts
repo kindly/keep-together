@@ -1,6 +1,7 @@
 import { BULK_FUNCTIONS } from './budgets.ts'
 import type { FlowKind } from './budgets.ts'
 import type { HistoryLine } from './reporter'
+import { DRIFT_MS, DRIFT_RUNS, targetReason } from './target.ts'
 
 const KIND_TEXT: Record<FlowKind, string> = {
   repeatable: 'repeatable',
@@ -40,7 +41,12 @@ export interface FlowPoint {
   /** A spike: the max of the first set, which was re-measured. */
   firstMaxMs?: number
   p50Ms: number
+  /** The failing line. */
   budgetMs: number
+  /** Tracked, never failed; absent before targets and for kinds without one. */
+  targetMs?: number
+  /** Over target or drifting up that run (qc/target.ts). */
+  target?: HistoryLine['target']
   n: number
   pass: boolean | null
   knownOver?: string
@@ -91,6 +97,8 @@ export interface LatestRow {
   maxMs: number
   p50Ms: number
   budgetMs: number
+  targetMs?: number
+  target?: HistoryLine['target']
   /** budget − max: negative is over. */
   headroomMs: number
   /** headroomMs / budgetMs, the sort key, so 2000 ms budgets compare fairly. */
@@ -226,6 +234,8 @@ export function shapeTrend(
         maxMs: p.maxMs,
         p50Ms: p.p50Ms,
         budgetMs: p.budgetMs,
+        ...(p.targetMs !== undefined && { targetMs: p.targetMs }),
+        ...(p.target && { target: p.target }),
         headroomMs,
         headroomRatio: headroomMs / p.budgetMs,
         pass: p.pass,
@@ -250,6 +260,8 @@ function flowPoint(l: HistoryLine): FlowPoint {
     maxMs: l.maxMs,
     p50Ms: l.p50Ms,
     budgetMs: l.budgetMs,
+    ...(l.targetMs !== undefined && { targetMs: l.targetMs }),
+    ...(l.target && { target: l.target }),
     n: l.n,
     pass: l.pass,
     ...(l.knownOver && { knownOver: l.knownOver }),
@@ -332,6 +344,8 @@ function chart(opts: {
   lines: Array<Line>
   budgetMs: number
   budgetLabel: string
+  /** Tracked, never failed: drawn dotted under the budget. */
+  targetMs?: number
   /** Point marks on the first line, by run index. */
   marks: Array<{ cls: string; title: string } | null>
 }): string {
@@ -369,6 +383,13 @@ function chart(opts: {
     `<line class="budget" x1="${PAD.l}" x2="${W - PAD.r}" y1="${f(by)}" y2="${f(by)}"/>`,
     `<text class="tick budget-label" x="${PAD.l - 4}" y="${f(by)}" dy="3">${esc(opts.budgetLabel)}</text>`,
   ]
+  if (opts.targetMs !== undefined) {
+    const ty = y(opts.targetMs)
+    parts.push(
+      `<line class="target" x1="${PAD.l}" x2="${W - PAD.r}" y1="${f(ty)}" y2="${f(ty)}"/>`,
+      `<text class="tick target-label" x="${PAD.l - 4}" y="${f(ty)}" dy="3">${opts.targetMs}</text>`,
+    )
+  }
   for (const l of [...opts.lines].reverse()) {
     const d = path(l.values)
     if (d) parts.push(`<path class="${l.cls}" d="${d}"/>`)
@@ -423,7 +444,8 @@ function flowCard(s: FlowSeries, runs: Array<Run>): string {
       cls: m,
       title: [
         `${when(r)} · ${r.runId} · ${shortSha(r)}`,
-        `max ${ms(p.maxMs)} · median ${ms(p.p50Ms)} · budget < ${p.budgetMs} · n ${p.n}`,
+        `max ${ms(p.maxMs)} · median ${ms(p.p50Ms)} · ${p.targetMs === undefined ? '' : `target < ${p.targetMs} · `}line < ${p.budgetMs} · n ${p.n}`,
+        ...(p.target?.flagged ? [`TARGET: ${targetReason(p)}`] : []),
         ...(p.firstMaxMs !== undefined
           ? [`spike: 1st set max ${ms(p.firstMaxMs)}, re-measured`]
           : []),
@@ -443,6 +465,13 @@ function flowCard(s: FlowSeries, runs: Array<Run>): string {
     .filter((m) => m !== 'ok')
     .map((m) => `<span class="tag ${m}">${MARK_TEXT[m]}</span>`)
     .concat(
+      s.points.some((p) => p?.target?.flagged)
+        ? [
+            `<span class="tag target" title="median at or over target, or up ${DRIFT_MS} ms or more on its last ${DRIFT_RUNS} runs">TARGET</span>`,
+          ]
+        : [],
+    )
+    .concat(
       s.leansOnShare
         ? [
             '<span class="tag over" title="passed on our share in most of the runs that timed it">leans on our share</span>',
@@ -452,7 +481,7 @@ function flowCard(s: FlowSeries, runs: Array<Run>): string {
     .join(' ')
   return `<figure class="card">
 <figcaption><b>${esc(s.flow)}</b> <span class="muted">${KIND_TEXT[s.kind]}</span> ${flags}
-<span class="legend"><i class="sw max"></i>max <i class="sw p50"></i>median${budgets.size > 1 ? ' · <b>budget changed</b>' : ''}</span></figcaption>
+<span class="legend"><i class="sw max"></i>max <i class="sw p50"></i>median${lastP.targetMs === undefined ? '' : ` · target ${lastP.targetMs}, line ${lastP.budgetMs}`}${budgets.size > 1 ? ' · <b>budget changed</b>' : ''}</span></figcaption>
 ${chart({
   runs,
   lines: [
@@ -461,6 +490,7 @@ ${chart({
   ],
   budgetMs: lastP.budgetMs,
   budgetLabel: `<${lastP.budgetMs}`,
+  ...(lastP.targetMs !== undefined && { targetMs: lastP.targetMs }),
   marks,
 })}
 </figure>`
@@ -523,17 +553,18 @@ function latestTable(t: Trend): string {
 <td class="muted">${KIND_SHORT[r.kind]}</td>
 <td class="num">${ms(r.p50Ms)}</td>
 <td class="num">${ms(r.maxMs)}</td>
+<td class="num">${r.targetMs === undefined ? '' : `&lt;${r.targetMs}`}</td>
 <td class="num">&lt;${r.budgetMs}</td>
 <td class="num"><b>${ms(r.headroomMs)}</b></td>
 <td class="hr"><span class="bar" style="width:${bar}%"></span><span class="pct">${pct}%</span></td>
-<td><span class="tag ${m}"${r.knownOver ? ` title="${esc(r.knownOver)}"` : ''}>${esc(status)}</span>${r.leansOnShare ? ' <span class="tag over">leans on our share</span>' : ''}</td>
+<td><span class="tag ${m}"${r.knownOver ? ` title="${esc(r.knownOver)}"` : ''}>${esc(status)}</span>${r.target?.flagged ? ` <span class="tag target" title="${esc(targetReason(r))}">TARGET</span>` : ''}${r.leansOnShare ? ' <span class="tag over">leans on our share</span>' : ''}</td>
 <td class="num">${r.signals?.bytesInP50 == null ? '' : ms(r.signals.bytesInP50)}</td>
 <td class="num">${r.signals?.requestsP50 ?? ''}</td>
 <td class="num">${r.signals?.commitLatencyP50 == null ? '' : ms(r.signals.commitLatencyP50)}</td>
 </tr>`
   })
   return `<table class="latest">
-<thead><tr><th>flow</th><th>kind</th><th class="num">median</th><th class="num">max</th><th class="num">budget</th><th class="num">headroom ms</th><th>headroom</th><th>status</th><th class="num" title="median characters (≈ bytes) the page received per sample">bytes in</th><th class="num" title="median requests the page sent per sample">requests</th><th class="num" title="median send → commit, less the probe">commit ms</th></tr></thead>
+<thead><tr><th>flow</th><th>kind</th><th class="num">median</th><th class="num">max</th><th class="num" title="tracked, never failed">target</th><th class="num" title="the failing line: every sample under it">budget</th><th class="num">headroom ms</th><th>headroom</th><th>status</th><th class="num" title="median characters (≈ bytes) the page received per sample">bytes in</th><th class="num" title="median requests the page sent per sample">requests</th><th class="num" title="median send → commit, less the probe">commit ms</th></tr></thead>
 <tbody>
 ${rows.join('\n')}
 </tbody>
@@ -549,11 +580,11 @@ export function renderTrend(t: Trend, generatedAt: string): string {
     : `<p class="muted">${t.runs.length} run${t.runs.length === 1 ? '' : 's'} from ${esc(when(t.runs[0]))} to ${esc(when(last))} · latest ${esc(last.runId)} at ${esc(shortSha(last))} · ${t.lines} history lines${t.skipped ? `, <b>${t.skipped} unreadable lines skipped</b>` : ''} · times are raw ms, input to screen · hover a point for its run</p>
 
 <h2>Latest run per flow</h2>
-<p class="muted">Least headroom first (budget − max, as a share of the budget). Every sample must be under budget.</p>
+<p class="muted">Least headroom first (budget − max, as a share of the budget). Every sample must be under budget, the failing line. The target is tracked, never failed: <span class="tag target">TARGET</span> marks a median at or over it, or up ${DRIFT_MS} ms or more on the flow's last ${DRIFT_RUNS} runs.</p>
 ${latestTable(t)}
 
 <h2>Flows over runs</h2>
-<p class="muted"><span class="tag over">OVER</span> failed · <span class="tag known">known over</span> approved exception (qc/budgets.ts) · <span class="tag spike">re-measured</span> a spike over budget, passed on its one re-measure (the point is the re-measure; hover for the first) · <span class="tag share">passed on our share</span> a slow sample that wasn't ours (link or Convex, with evidence) passed with our share under budget − 50 ms (qc/README.md "Ours") · <span class="tag rtt">RTT over ceiling</span> samples measured the link; latency not asserted · dashed line: budget</p>
+<p class="muted"><span class="tag over">OVER</span> failed · <span class="tag known">known over</span> approved exception (qc/budgets.ts) · <span class="tag spike">re-measured</span> a spike over budget, passed on its one re-measure (the point is the re-measure; hover for the first) · <span class="tag share">passed on our share</span> a slow sample that wasn't ours (link or Convex, with evidence) passed with our share under budget − 50 ms (qc/README.md "Ours") · <span class="tag rtt">RTT over ceiling</span> samples measured the link; latency not asserted · <span class="tag target">TARGET</span> median at or over target, or drifting up (tracked, never failing) · dashed line: budget (the failing line) · dotted line: target</p>
 <div class="grid">
 ${t.flows.map((s) => flowCard(s, t.runs)).join('\n')}
 </div>
@@ -599,6 +630,7 @@ const CSS = `
   --ok: #2f5fb3; --over: #c0392b; --known: #b7791f; --rtt: #8a8a85; --info: #8a8a85;
   --over-bg: #fbe9e7; --known-bg: #fdf3e1; --rtt-bg: #eeeeec;
   --spike: #7b4bb3; --spike-bg: #f1eaf9;
+  --target: #1f7a6d; --target-bg: #e3f3f0;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -607,6 +639,7 @@ const CSS = `
     --ok: #7aa2f7; --over: #ef6f61; --known: #e0a458; --rtt: #8a8a85; --info: #8a8a85;
     --over-bg: #3a1f1c; --known-bg: #362a17; --rtt-bg: #2a2a28;
     --spike: #b48ef0; --spike-bg: #2c2238;
+    --target: #5fc4b3; --target-bg: #17302c;
   }
 }
 * { box-sizing: border-box; }
@@ -626,6 +659,7 @@ code { font: 12.5px ui-monospace, monospace; }
 .tag.spike { background: var(--spike-bg); color: var(--spike); }
 .tag.share { background: var(--spike-bg); color: var(--over); }
 .tag.ok { color: var(--ok); background: transparent; }
+.tag.target { background: var(--target-bg); color: var(--target); }
 table.latest { border-collapse: collapse; width: 100%; max-width: 980px; margin-top: 8px;
   font-variant-numeric: tabular-nums; }
 .latest th, .latest td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line);
@@ -661,6 +695,8 @@ figcaption { font-size: 13px; }
 .chart .tick { font-size: 9.5px; fill: var(--muted); text-anchor: end; }
 .chart .tick.start { text-anchor: start; } .chart .tick.end { text-anchor: end; }
 .chart .budget-label { fill: var(--budget); }
+.chart .target { stroke: var(--target); stroke-dasharray: 1 3; stroke-width: 1.2; }
+.chart .target-label { fill: var(--target); }
 .chart .clip { font-size: 8px; fill: var(--over); text-anchor: middle; }
 .pt { stroke: var(--card); stroke-width: 1; }
 .pt.ok { fill: var(--ok); }

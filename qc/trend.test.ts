@@ -285,3 +285,53 @@ describe('ours (qc/judge.ts) in the trend', () => {
     expect(t.flows[0].leansOnShare).toBe(false)
   })
 })
+
+describe('two-tier budgets in the trend (human, 2026-10-23)', () => {
+  const old = line({ runId: 'r0', at: '2026-10-22T10:00:00.000Z' })
+  const flagged = line({
+    runId: 'r1',
+    at: '2026-10-23T10:00:00.000Z',
+    p50Ms: 120,
+    maxMs: 140,
+    budgetMs: 150,
+    targetMs: 100,
+    target: { overTarget: true, baselineMs: 80, riseMs: 40, flagged: true },
+  })
+
+  test('points and the latest row carry target and line; history before targets has neither', () => {
+    const t = shapeTrend([old, flagged], { lastRuns: 30 })
+    const [p0, p1] = t.flows[0].points
+    expect(p0!.targetMs).toBeUndefined()
+    expect(p0!.target).toBeUndefined()
+    expect(p1).toMatchObject({ budgetMs: 150, targetMs: 100 })
+    expect(t.latest[0]).toMatchObject({
+      budgetMs: 150,
+      targetMs: 100,
+      target: { flagged: true },
+      // Under the line: a pass, whatever the target says.
+      pass: true,
+    })
+    expect(flowMark(t.latest[0])).toBe('ok')
+  })
+
+  test('renders the target line, its column and the TARGET tag with the reason', () => {
+    const html = renderTrend(
+      shapeTrend([old, flagged], { lastRuns: 30 }),
+      'now',
+    )
+    expect(html).toContain('<line class="target"')
+    expect(html).toContain('target 100, line 150')
+    expect(html).toContain(
+      '<td class="num">&lt;100</td>\n<td class="num">&lt;150</td>',
+    )
+    expect(html).toContain(
+      'title="median 120 ≥ target 100; median 120 up 40 on 80 (last 5 runs)">TARGET</span>',
+    )
+  })
+
+  test('no target, no target line or tag', () => {
+    const html = renderTrend(shapeTrend([old], { lastRuns: 30 }), 'now')
+    expect(html).not.toContain('<line class="target"')
+    expect(html).not.toMatch(/tag target"[^>]*>TARGET<\/span><\/td>/)
+  })
+})

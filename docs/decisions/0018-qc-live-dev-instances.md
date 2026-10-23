@@ -172,3 +172,34 @@ whose time a slow sample was and judge on that:
 Consequence: a run can pass with samples over budget. Every such sample
 is listed with its evidence (`JUDGED`, history `detail[i].judge`), and
 the trend report shows a flow that leans on it.
+
+## Amendment: two-tier budgets (human, 2026-10-23)
+
+A per-sample maximum of 100 ms for repeatable flows failed on noise, not
+on regressions. The validated round trip floor of a save is ~80–97 ms
+(page, mutation, Convex commit and the Transition back), so a sample
+landing one frame late crossed 100 ms: frame quantisation alone failed
+flows, and two of them (`contact.addEmail`, `gift.save`) carried
+`knownOver` marks for it. 150 ms still feels immediate. So budgets have
+two tiers:
+
+- **The failing line**, every sample, re-measure rule unchanged:
+  repeatable **150 ms**, infrequent **200 ms**, rare **250 ms**.
+  oncePerSession and bulk keep their recorded budgets. Only the line
+  decides pass and fail.
+- **The target**, tracked, never failed: repeatable 100 ms (infrequent
+  150, rare 200). A flow whose **median** is at or over its target, or
+  whose median rose by **16 ms or more** (about one frame) against the
+  median of its medians over its last **5** runs in history (same flow,
+  same kind), is flagged in a `TARGET` banner on every run and in the
+  trend report. No history, no drift flag. This keeps a regression
+  visible long before it reaches the line.
+- The `knownOver` marks on `contact.addEmail` and `gift.save` are
+  lifted; the mechanism stays for future approved exceptions.
+- **The server rule is unchanged**: 100 ms per call, and the approved
+  list exception keeps its 250 ms ceiling.
+- **Our share** (amendment above) is judged against the failing line
+  less 50 ms, so 100 ms for repeatable.
+
+History lines record `targetMs` and the `target` check next to
+`budgetMs` (the line); lines from before carry neither.

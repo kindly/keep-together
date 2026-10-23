@@ -186,8 +186,10 @@ export interface FlowRecord {
   rttMs: number
   /** rttMs over RTT_CEILING_MS: these samples measure a bad link. */
   rttOver: boolean
-  /** Every sample must be under this. */
+  /** The failing line: every sample must be under this. */
   budgetMs: number
+  /** Tracked, never failed (qc/target.ts); absent for kinds without one. */
+  targetMs?: number
   medianMs: number
   maxMs: number
   /** null: not judged (record mode, or RTT over the ceiling). */
@@ -1005,6 +1007,7 @@ export async function runFlow<TArg>(
     rttMs: ctx.rttMs,
     rttOver,
     budgetMs: budget.maxMs,
+    ...(budget.targetMs !== undefined && { targetMs: budget.targetMs }),
     medianMs,
     maxMs,
     pass: skipped ? null : pass,

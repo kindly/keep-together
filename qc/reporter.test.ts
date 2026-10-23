@@ -327,6 +327,176 @@ describe('onEnd: the same status and gates with and without blame input', () => 
   })
 })
 
+describe('onEnd: two-tier budgets, the line alone decides (human, 2026-10-23)', () => {
+  const routes = readRoutes()
+  const repo = process.cwd()
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'qc-target-'))
+    mkdirSync(path.join(dir, 'src'))
+    copyFileSync(
+      path.join(repo, 'src/routeTree.gen.ts'),
+      path.join(dir, 'src/routeTree.gen.ts'),
+    )
+    process.chdir(dir)
+  })
+  afterEach(() => {
+    process.chdir(repo)
+    rmSync(dir, { recursive: true, force: true })
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+  })
+
+  // contact.save timed in worker setup, so the reporter itself judges it:
+  // line 150, target 100 unless `targetMs` is null.
+  const save = (
+    runId: string,
+    samplesMs: Array<number>,
+    pass: boolean,
+    targetMs: number | null = 100,
+  ): FlowRecord => ({
+    runId,
+    flow: 'contact.save',
+    worker: 0,
+    instance: 'qc-1',
+    where: 'worker setup',
+    kind: 'repeatable',
+    samplesMs,
+    detail: samplesMs.map(detail),
+    ...(!pass && {
+      firstSamplesMs: samplesMs.map((x) => x + 5),
+      firstDetail: samplesMs.map((x) => detail(x + 5)),
+    }),
+    rttMs: 30,
+    rttOver: false,
+    budgetMs: 150,
+    ...(targetMs !== null && { targetMs }),
+    medianMs: samplesMs[0],
+    maxMs: Math.max(...samplesMs),
+    pass,
+  })
+
+  const seedHistory = (p50s: Array<number>) => {
+    mkdirSync(path.join(dir, 'qc-results'), { recursive: true })
+    writeFileSync(
+      path.join(dir, 'qc-results', 'history.jsonl'),
+      p50s
+        .map(
+          (p50Ms, i) =>
+            JSON.stringify({
+              runId: `old${i}`,
+              at: `2026-10-2${i}T00:00:00.000Z`,
+              flow: 'contact.save',
+              kind: 'repeatable',
+              p50Ms,
+              rttOver: false,
+              // From before targets: no targetMs, no target.
+              budgetMs: 100,
+            }) + '\n',
+        )
+        .join(''),
+    )
+  }
+
+  const run = async (id: string, recs: Array<FlowRecord>) => {
+    vi.stubEnv('QC_RUN_ID', id)
+    const runPath = path.join(dir, 'qc-results', 'runs', id)
+    mkdirSync(runPath, { recursive: true })
+    writeFileSync(
+      path.join(runPath, 'pid-1.jsonl'),
+      recs.map((r) => JSON.stringify(r) + '\n').join(''),
+    )
+    const logged: Array<string> = []
+    vi.spyOn(console, 'log').mockImplementation((m: string) => {
+      logged.push(m)
+    })
+    const reporter = new QcReporter()
+    reporter.onBegin({
+      argv: ['node', 'playwright', 'test', 'qc/flows/contact.spec.ts'],
+    } as unknown as FullConfig)
+    reporter.onTestEnd(
+      {
+        annotations: routes.map((r) => ({ type: 'route', description: r })),
+      } as unknown as TestCase,
+      { status: 'passed', annotations: [] } as unknown as TestResult,
+    )
+    const res = await reporter.onEnd({ status: 'passed' } as FullResult)
+    vi.restoreAllMocks()
+    const out = logged.join('\n')
+    const history = readFileSync(
+      path.join(dir, 'qc-results', 'history.jsonl'),
+      'utf8',
+    )
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as HistoryLine)
+      .filter((l) => l.runId === id)
+    return {
+      status: res?.status,
+      gates: out
+        .split('\n')
+        .filter((l) => /QC RUN FAILED|over budget twice|coverage:/.test(l)),
+      history,
+      out,
+    }
+  }
+
+  test('over target and drifting up: flagged, never failing; history records target and line', async () => {
+    seedHistory([60, 61, 62, 60, 61])
+    const r = await run('t1', [save('t1', [125, 120, 130], true)])
+    expect(r.status).toBeUndefined()
+    expect(r.gates).toEqual([])
+    expect(r.out).toContain('1 flow over TARGET or drifting up')
+    expect(r.out).toContain(
+      'contact.save: TARGET: median 125 ≥ target 100; median 125 up 64 on 61 (last 5 runs) · target < 100, line < 150, max 130',
+    )
+    expect(r.out).toMatch(/contact\.save .*<100\s+<150 .* ok · TARGET/)
+    expect(r.history).toHaveLength(1)
+    expect(r.history[0]).toMatchObject({
+      flow: 'contact.save',
+      budgetMs: 150,
+      targetMs: 100,
+      pass: true,
+      target: { overTarget: true, baselineMs: 61, riseMs: 64, flagged: true },
+    })
+  })
+
+  test('under target, no history: no drift flag, a one-line all-clear', async () => {
+    const r = await run('t2', [save('t2', [80, 85, 82], true)])
+    expect(r.status).toBeUndefined()
+    expect(r.out).toContain(
+      'target: all 1 flows with a target are under it, none up 16 ms or more on their last 5 runs',
+    )
+    expect(r.history[0].target).toEqual({
+      overTarget: false,
+      baselineMs: null,
+      riseMs: null,
+      flagged: false,
+    })
+  })
+
+  test('the same samples with or without a target and its flag: the same status and gates', async () => {
+    seedHistory([60, 60, 60, 60, 60])
+    // Under the line but over target and drifting: passes either way.
+    const a = await run('t3', [save('t3', [140, 149, 145], true)])
+    const b = await run('t4', [save('t4', [140, 149, 145], true, null)])
+    expect(a.out).toContain('TARGET: median 145')
+    expect(b.out).not.toContain('TARGET')
+    expect(b.history[0].targetMs).toBeUndefined()
+    expect([a.status, b.status]).toEqual([undefined, undefined])
+    expect(a.gates).toEqual([])
+    expect(b.gates).toEqual([])
+    // At the line twice: fails either way, with the same gates.
+    const c = await run('t5', [save('t5', [150, 90, 95], false)])
+    const d = await run('t6', [save('t6', [150, 90, 95], false, null)])
+    expect([c.status, d.status]).toEqual(['failed', 'failed'])
+    expect(c.gates).toEqual(d.gates)
+    expect(c.gates.join('\n')).toMatch(
+      /contact.save over budget twice in worker 0 setup: 150, 90, 95 ms, .* budget < 150/,
+    )
+  })
+})
+
 test('the server exceptions banner lists every exception, with or without server data', () => {
   const none = serverExceptionBanner(null).join('\n')
   // Exceptions counted as exceptions; no server data, no call count.

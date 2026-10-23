@@ -24,6 +24,9 @@ import {
 } from './timing'
 import type { FlowRecord, SampleDetail } from './timing'
 import { SERVER_EXCEPTIONS, budgets } from './budgets'
+import { DRIFT_MS, DRIFT_RUNS, checkTarget, targetReason } from './target'
+import type { TargetCheck } from './target'
+import { parseHistory } from './trend'
 import { coverageGaps, readRoutes } from './coverage'
 import { BUDGET_MS, RESULTS_FILE, budgetMiss } from './server-timings'
 import { LINK_FILE, STALL_MS, linkDuring } from './link.setup'
@@ -69,6 +72,11 @@ import type { Budget, FlowKind, FlowName } from './budgets'
 // every run lists all of them in a banner with their samples. So does
 // every spike: a flow that passed only on its re-measure (qc/timing.ts),
 // or a server function that passed with one slow call.
+//
+// A flow with a target (qc/budgets.ts) is checked against it and against
+// its own history (qc/target.ts): over target or drifting up, it's listed
+// in a TARGET banner and its history line carries `target`. Tracked only:
+// pass and fail depend on the failing line alone.
 
 const HISTORY = path.join('qc-results', 'history.jsonl')
 
@@ -100,8 +108,12 @@ export interface HistoryLine {
   rttMs: number
   /** Some samples came from a worker over the RTT ceiling: drop them. */
   rttOver: boolean
-  /** Every sample must be under this. */
+  /** The failing line: every sample must be under this. */
   budgetMs: number
+  /** Tracked, never failed; absent for kinds without one, and before them. */
+  targetMs?: number
+  /** This run against the target and the flow's history (qc/target.ts). */
+  target?: TargetCheck
   /** Every call of this flow passed; null when none was judged. */
   pass: boolean | null
   /** Approved exception: `pass` is still the real judgement. */
@@ -222,6 +234,8 @@ export function summarise(
   base: Pick<HistoryLine, 'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'server'>,
   link: LinkFile | null,
   ctx: BlameContext,
+  /** history.jsonl before this run, oldest first: the drift baseline. */
+  past: Array<HistoryLine> = [],
 ): Array<HistoryLine> {
   const byFlow = new Map<FlowName, Array<FlowRecord>>()
   for (const r of records)
@@ -262,6 +276,13 @@ export function summarise(
             commitLatencyP50: p50(all.map((d) => commitLatency(d, ctx.probes))),
           }
         : undefined
+      const targetMs = rs[0].targetMs
+      const p50Ms = median(samplesMs)
+      const rttOver = rs.some((r) => r.rttOver)
+      const target = checkTarget(
+        { flow, kind: rs[0].kind, p50Ms, rttOver, runId: base.runId, targetMs },
+        past,
+      )
       return {
         ...base,
         flow,
@@ -274,13 +295,15 @@ export function summarise(
         }),
         ...(detail.length && { detail }),
         ...(firstDetail.length && { firstDetail }),
-        p50Ms: median(samplesMs),
+        p50Ms,
         p95Ms: percentile(samplesMs, 95),
         maxMs: Math.max(...samplesMs),
         overBudget: samplesMs.filter((x) => x >= budgetMs).length,
         rttMs: median(rs.map((r) => r.rttMs)),
-        rttOver: rs.some((r) => r.rttOver),
+        rttOver,
         budgetMs,
+        ...(targetMs !== undefined && { targetMs }),
+        ...(target && { target }),
         pass: judged.length ? judged.every((r) => r.pass) : null,
         ...(rs[0].knownOver && { knownOver: rs[0].knownOver }),
         ...(Object.keys(rules).length && { judged: rules }),
@@ -297,6 +320,7 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
     'median',
     'p95',
     'max',
+    'target',
     'budget',
     'headroom',
     'over',
@@ -316,6 +340,7 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
     `${Math.round(l.p50Ms)}`,
     `${Math.round(l.p95Ms)}`,
     `${Math.round(l.maxMs)}`,
+    l.targetMs === undefined ? '' : `<${l.targetMs}`,
     `<${l.budgetMs}`,
     `${Math.round(l.budgetMs - l.maxMs)}`,
     `${l.overBudget}`,
@@ -331,6 +356,7 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
           : l.knownOver
             ? 'KNOWN OVER'
             : 'OVER') +
+      (l.target?.flagged ? ' · TARGET' : '') +
       (l.firstSamplesMs
         ? ` (re-measured: 1st max ${Math.round(Math.max(...l.firstSamplesMs))})`
         : '') +
@@ -389,6 +415,29 @@ function knownOverBanner(lines: Array<HistoryLine>): Array<string> {
         : 'not timed this run'
       return `${name}: KNOWN OVER, not failing: ${b.knownOver} · ${samples}`
     }),
+  ])
+}
+
+/**
+ * Every flow over its target or drifting up (qc/target.ts), on every run.
+ * Tracked: never a failure. Exported for qc/reporter.test.ts.
+ */
+export function targetBanner(lines: Array<HistoryLine>): Array<string> {
+  const withTarget = lines.filter((l) => l.target)
+  const flagged = withTarget.filter((l) => l.target!.flagged)
+  if (!flagged.length) {
+    return withTarget.length
+      ? [
+          `target: all ${withTarget.length} flows with a target are under it, none up ${DRIFT_MS} ms or more on their last ${DRIFT_RUNS} runs`,
+        ]
+      : []
+  }
+  return banner([
+    `${flagged.length} flow${flagged.length === 1 ? '' : 's'} over TARGET or drifting up (median ≥ target, or up ≥ ${DRIFT_MS} ms on the median of its last ${DRIFT_RUNS} runs): tracked, never failing.`,
+    ...flagged.map(
+      (l) =>
+        `${l.flow}: TARGET: ${targetReason(l)} · target < ${l.targetMs}, line < ${l.budgetMs}, max ${Math.round(l.maxMs)}`,
+    ),
   ])
 }
 
@@ -604,6 +653,9 @@ export default class QcReporter implements Reporter {
       )
       const link = readLink(runDir(id))
       const blameCtx = readBlameContext(runDir(id))
+      const past = existsSync(HISTORY)
+        ? parseHistory(readFileSync(HISTORY, 'utf8')).lines
+        : []
       const lines = summarise(
         records,
         {
@@ -616,10 +668,11 @@ export default class QcReporter implements Reporter {
         },
         link,
         blameCtx,
+        past,
       )
       const rtts = [...new Set(records.map((r) => `w${r.worker} ${r.rttMs}`))]
       out.push(
-        `qc ${id} · ${RECORD ? 'RECORD MODE (nothing asserted)' : 'asserting'} · raw ms, input to screen; every sample must be under budget; headroom = budget − max · RTT by worker: ${rtts.sort().join(', ')}`,
+        `qc ${id} · ${RECORD ? 'RECORD MODE (nothing asserted)' : 'asserting'} · raw ms, input to screen; every sample must be under budget (the failing line); target is tracked, never failing; headroom = budget − max · RTT by worker: ${rtts.sort().join(', ')}`,
       )
       if (records.some((r) => r.rttOver)) {
         out.push(
@@ -634,6 +687,7 @@ export default class QcReporter implements Reporter {
       }
       summary = lines
       out.push(table(lines, selfTest))
+      out.push(...targetBanner(lines))
       out.push(...spikeBanner(lines, selfTest, lines[0]?.server ?? null))
       out.push(...linkBanner(lines, selfTest, link))
       out.push(...blameList(lines, selfTest))
