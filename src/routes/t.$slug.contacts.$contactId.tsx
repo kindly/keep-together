@@ -10,6 +10,8 @@ import type { ContactView } from '../lib/contact-seed'
 import type { SourceCodeDescription } from '../../convex/sources/code'
 import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
 import { ContactForm } from '../components/contact-form'
+import { ContactGiftAid } from '../components/contact-giftaid'
+import { ContactGifts } from '../components/contact-gifts'
 import { ContactHistory } from '../components/contact-history'
 import { ContactNotes } from '../components/contact-notes'
 import { LeaveGuard } from '../components/leave-guard'
@@ -166,6 +168,14 @@ function ContactPage() {
             fields={fields ?? []}
           />
           <ContactNotes contactId={id} />
+          <ContactGifts
+            contactId={id}
+            individual={data.contact.kind === 'individual'}
+          />
+          {/* Only a person can make a Gift Aid declaration (HMRC 3.6.7). */}
+          {data.contact.kind === 'individual' && (
+            <ContactGiftAid contactId={id} />
+          )}
         </div>
         {/* Keyed like the form: a restore notice belongs to its contact. */}
         <ContactHistory

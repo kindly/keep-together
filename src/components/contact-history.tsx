@@ -1,6 +1,11 @@
 import { useConvex, useMutation } from 'convex/react'
 import type { ConvexReactClient } from 'convex/react'
-import type { FunctionArgs, FunctionReturnType } from 'convex/server'
+import type {
+  FunctionArgs,
+  FunctionReference,
+  FunctionReturnType,
+  PaginationOptions,
+} from 'convex/server'
 import {
   useCallback,
   useEffect,
@@ -232,15 +237,24 @@ function asError(error: unknown) {
   return error instanceof Error ? error : new Error(String(error))
 }
 
+/** A query answering history pages as moments (a contact's, a gift's). */
+type MomentsQuery = FunctionReference<
+  'query',
+  'public',
+  { paginationOpts: PaginationOptions },
+  HistoryPage
+>
+
 /**
  * One fetch of a history page: subscribed until its first answer, as
  * `ConvexReactClient.query` does, but cancellable (unsubscribed at once).
  */
-function fetchHistoryPage(
+export function fetchHistoryPage<TQuery extends MomentsQuery>(
   convex: ConvexReactClient,
-  args: FunctionArgs<typeof api.contacts.queries.history>,
+  query: TQuery,
+  args: FunctionArgs<TQuery>,
 ): PageFetch {
-  const watch = convex.watchQuery(api.contacts.queries.history, args)
+  const watch = convex.watchQuery<MomentsQuery>(query, args)
   let stop: (() => void) | null = null
   let cancelled = false
   const cancel = () => {
@@ -278,7 +292,11 @@ function historyFeed(
   let feed = store.get(key) as HistoryFeed | undefined
   if (!feed) {
     feed = new HistoryFeed((paginationOpts) =>
-      fetchHistoryPage(convex, { tenantId, id, paginationOpts }),
+      fetchHistoryPage(convex, api.contacts.queries.history, {
+        tenantId,
+        id,
+        paginationOpts,
+      }),
     )
     store.set(key, feed)
   }

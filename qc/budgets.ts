@@ -124,6 +124,14 @@ export const budgets = {
   'settings.sourceCodes.addDetail': repeatable,
   'settings.sourceCodes.rename': repeatable,
   'settings.sourceCodes.archive': repeatable,
+  // Cash gifts step 5: the gift page and the contact page's panels.
+  'gift.open': repeatable,
+  'gift.save': repeatable,
+  'gift.void': repeatable,
+  'gift.unvoid': repeatable,
+  'contact.gifts.loadMore': repeatable,
+  'contact.giftaid.cancel': repeatable,
+  'contact.giftaid.void': repeatable,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },

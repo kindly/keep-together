@@ -28,18 +28,18 @@ vi.mock('@tanstack/react-router', () => ({
     options,
     useParams: () => use(TabParams) ?? params,
   }),
+  // Other props pass through, as a menu item's role does (asChild).
   Link: ({
     to,
     params: p,
     children,
-    className,
+    ...rest
   }: {
     to: string
     params?: Record<string, string>
     children: ReactNode
-    className?: string
   }) => (
-    <a href={fill(to, p)} className={className}>
+    <a href={fill(to, p)} {...rest}>
       {children}
     </a>
   ),
@@ -228,7 +228,7 @@ test('two tabs on different groups each record their group once, then stay quiet
   act(() => second.unmount())
 })
 
-test('the Donations menu: Record a gift (disabled for now), then my recent gifts', async () => {
+test('the Donations menu: Record a gift (disabled for now), then my recent gifts, each a link', async () => {
   gifts = [
     gift({
       _id: 'g2' as RecentGift['_id'],
@@ -254,6 +254,10 @@ test('the Donations menu: Record a gift (disabled for now), then my recent gifts
   expect(items.slice(1).map((i) => i.textContent)).toEqual([
     '£1,234.56Acme Ltd23 Oct 2026',
     '£20.00Jo Bloggsvoid23 Oct 2026',
+  ])
+  expect(items.slice(1).map((i) => i.getAttribute('href'))).toEqual([
+    '/t/alpha/gifts/g2',
+    '/t/alpha/gifts/g1',
   ])
 })
 
@@ -295,14 +299,15 @@ function home(tenant: Tenant) {
 test('home: the four actions for staff, Record a gift disabled until its page exists', async () => {
   gifts = [gift({})]
   await home(group('alpha', { role: 'staff' }))
+  // Each recent gift links to its page.
   expect(links()).toEqual([
     ['Find a contact', '/t/alpha/contacts'],
     ['New contact', '/t/alpha/contacts/new'],
+    ['£20.00Jo Bloggs23 Oct 2026', '/t/alpha/gifts/g1'],
   ])
   // Not a link, and says why in visible text, not only a tooltip.
   expect(text()).toContain('Record a gift (coming soon)')
   expect(text()).toContain('My recent gifts')
-  expect(text()).toContain('£20.00Jo Bloggs23 Oct 2026')
 })
 
 test('home: a viewer can only find contacts, and has no gifts of their own', async () => {

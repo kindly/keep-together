@@ -17,6 +17,7 @@ import { Route as TSlugTagsRouteImport } from './routes/t.$slug.tags'
 import { Route as TSlugContactsIndexRouteImport } from './routes/t.$slug.contacts.index'
 import { Route as TSlugContactsContactIdRouteImport } from './routes/t.$slug.contacts.$contactId'
 import { Route as TSlugContactsNewRouteImport } from './routes/t.$slug.contacts.new'
+import { Route as TSlugGiftsGiftIdRouteImport } from './routes/t.$slug.gifts.$giftId'
 import { Route as TSlugSettingsIndexRouteImport } from './routes/t.$slug.settings.index'
 import { Route as TSlugSettingsFieldsRouteImport } from './routes/t.$slug.settings.fields'
 import { Route as TSlugSettingsGroupsRouteImport } from './routes/t.$slug.settings.groups'
@@ -64,6 +65,11 @@ const TSlugContactsNewRoute = TSlugContactsNewRouteImport.update({
   path: '/contacts/new',
   getParentRoute: () => TSlugRoute,
 } as any)
+const TSlugGiftsGiftIdRoute = TSlugGiftsGiftIdRouteImport.update({
+  id: '/gifts/$giftId',
+  path: '/gifts/$giftId',
+  getParentRoute: () => TSlugRoute,
+} as any)
 const TSlugSettingsIndexRoute = TSlugSettingsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -104,6 +110,7 @@ export interface FileRoutesByFullPath {
   '/t/$slug/': typeof TSlugIndexRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
+  '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
@@ -118,6 +125,7 @@ export interface FileRoutesByTo {
   '/t/$slug': typeof TSlugIndexRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
+  '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
@@ -135,6 +143,7 @@ export interface FileRoutesById {
   '/t/$slug/': typeof TSlugIndexRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
+  '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
@@ -153,6 +162,7 @@ export interface FileRouteTypes {
     | '/t/$slug/'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
+    | '/t/$slug/gifts/$giftId'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/identifiers'
@@ -167,6 +177,7 @@ export interface FileRouteTypes {
     | '/t/$slug'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
+    | '/t/$slug/gifts/$giftId'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/identifiers'
@@ -183,6 +194,7 @@ export interface FileRouteTypes {
     | '/t/$slug/'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
+    | '/t/$slug/gifts/$giftId'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/identifiers'
@@ -253,6 +265,13 @@ declare module '@tanstack/react-router' {
       path: '/contacts/new'
       fullPath: '/t/$slug/contacts/new'
       preLoaderRoute: typeof TSlugContactsNewRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/gifts/$giftId': {
+      id: '/t/$slug/gifts/$giftId'
+      path: '/gifts/$giftId'
+      fullPath: '/t/$slug/gifts/$giftId'
+      preLoaderRoute: typeof TSlugGiftsGiftIdRouteImport
       parentRoute: typeof TSlugRoute
     }
     '/t/$slug/settings/': {
@@ -328,6 +347,7 @@ interface TSlugRouteChildren {
   TSlugIndexRoute: typeof TSlugIndexRoute
   TSlugContactsContactIdRoute: typeof TSlugContactsContactIdRoute
   TSlugContactsNewRoute: typeof TSlugContactsNewRoute
+  TSlugGiftsGiftIdRoute: typeof TSlugGiftsGiftIdRoute
   TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
 }
 
@@ -337,6 +357,7 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugIndexRoute: TSlugIndexRoute,
   TSlugContactsContactIdRoute: TSlugContactsContactIdRoute,
   TSlugContactsNewRoute: TSlugContactsNewRoute,
+  TSlugGiftsGiftIdRoute: TSlugGiftsGiftIdRoute,
   TSlugContactsIndexRoute: TSlugContactsIndexRoute,
 }
 

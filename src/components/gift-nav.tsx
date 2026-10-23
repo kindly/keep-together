@@ -1,8 +1,9 @@
+import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
 import type { RecentGift } from '../lib/gifts'
-import { useCanWrite } from '../lib/tenant'
+import { useCanWrite, useTenant } from '../lib/tenant'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,9 +14,9 @@ import {
 } from './ui/dropdown-menu'
 
 // Where gifts are reached from (cash-gifts step 4): the header's Donations
-// menu and the group home page. The record-gift page (step 3) and the gift
-// page (step 5) don't exist yet, so "Record a gift" is shown disabled and
-// a recent gift isn't a link; those steps turn them into links here.
+// menu and the group home page. Each recent gift links to its page (step
+// 5). The record-gift page (step 3) doesn't exist yet, so "Record a gift"
+// is shown disabled; that step turns it into a link here.
 
 /** Amount, contact, date; a void gift struck through and marked. */
 function GiftSummary({ gift }: { gift: RecentGift }) {
@@ -48,6 +49,7 @@ export function RecordGiftAction({ className }: { className?: string }) {
 
 /** The caller's recent gifts inline, for the home page. */
 export function RecentGifts({ tenantId }: { tenantId: Id<'tenants'> }) {
+  const tenant = useTenant()
   const gifts = useMyRecentGifts(tenantId)
   if (gifts === undefined)
     return <p className="text-sm text-neutral-500">Loading…</p>
@@ -60,8 +62,14 @@ export function RecentGifts({ tenantId }: { tenantId: Id<'tenants'> }) {
   return (
     <ul className="divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
       {gifts.map((g) => (
-        <li key={g._id} className="px-3 py-2 text-sm">
-          <GiftSummary gift={g} />
+        <li key={g._id} className="text-sm">
+          <Link
+            to="/t/$slug/gifts/$giftId"
+            params={{ slug: tenant.slug, giftId: g._id }}
+            className="block px-3 py-2 hover:bg-neutral-50"
+          >
+            <GiftSummary gift={g} />
+          </Link>
         </li>
       ))}
     </ul>
@@ -74,6 +82,7 @@ export function RecentGifts({ tenantId }: { tenantId: Id<'tenants'> }) {
  */
 export function DonationsMenu({ tenantId }: { tenantId: Id<'tenants'> }) {
   const [open, setOpen] = useState(false)
+  const tenant = useTenant()
   const canWrite = useCanWrite()
   const gifts = useMyRecentGifts(tenantId, open)
   return (
@@ -97,11 +106,14 @@ export function DonationsMenu({ tenantId }: { tenantId: Id<'tenants'> }) {
         ) : gifts.length === 0 ? (
           <DropdownMenuItem disabled>None yet.</DropdownMenuItem>
         ) : (
-          // Selecting one only closes the menu until step 5 makes it a
-          // link to the gift.
           gifts.map((g) => (
-            <DropdownMenuItem key={g._id}>
-              <GiftSummary gift={g} />
+            <DropdownMenuItem key={g._id} asChild>
+              <Link
+                to="/t/$slug/gifts/$giftId"
+                params={{ slug: tenant.slug, giftId: g._id }}
+              >
+                <GiftSummary gift={g} />
+              </Link>
             </DropdownMenuItem>
           ))
         )}

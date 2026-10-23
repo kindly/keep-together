@@ -9,6 +9,7 @@ import { tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { groupsToRead, toMoments } from '../contacts/history'
 import { describe } from '../sources/code'
+import type { SourceCodeDescription } from '../sources/code'
 import type { RecentGift } from './types'
 
 /** Gifts in "my recent gifts" (the menu and the group home page). */
@@ -50,27 +51,41 @@ export const myRecent = tenantQuery({
  * share it (`describe` is a chain of reads per call).
  */
 function codeReader(db: ScopedDatabaseReader) {
-  const codes = new Map<Id<'sourceCodes'>, Promise<string | null>>()
+  const codes = new Map<
+    Id<'sourceCodes'>,
+    Promise<SourceCodeDescription | null>
+  >()
   return (id: Id<'sourceCodes'>) => {
     let code = codes.get(id)
     if (!code) {
-      code = describe(db, id).then((d) => d?.code ?? null)
+      code = describe(db, id)
       codes.set(id, code)
     }
     return code
   }
 }
 
-/** Each allocation with its code as it reads now (null: not this tenant's). */
+/**
+ * Each allocation with its code as it reads now (null: not this
+ * tenant's), whether that code is still assignable (`isActive`: false
+ * once it or a parent is archived) and its dates, for the gift page's
+ * picker.
+ */
 async function describeAllocations(
   codeOf: ReturnType<typeof codeReader>,
   gift: Doc<'contributions'>,
 ) {
   return Promise.all(
-    gift.allocations.map(async (a) => ({
-      ...a,
-      code: await codeOf(a.sourceCodeId),
-    })),
+    gift.allocations.map(async (a) => {
+      const d = await codeOf(a.sourceCodeId)
+      return {
+        ...a,
+        code: d?.code ?? null,
+        isActive: d?.isActive ?? false,
+        startDate: d?.startDate,
+        endDate: d?.endDate,
+      }
+    }),
   )
 }
 

@@ -1,5 +1,12 @@
 import { useQueries } from 'convex/react'
-import type { FunctionArgs, FunctionReturnType } from 'convex/server'
+import { getFunctionName, makeFunctionReference } from 'convex/server'
+import type {
+  FunctionArgs,
+  FunctionReference,
+  FunctionReturnType,
+  PaginationOptions,
+  PaginationResult,
+} from 'convex/server'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../convex/_generated/api'
 
@@ -16,6 +23,9 @@ import { api } from '../../convex/_generated/api'
  * `SplitRecommended` comes on every full page, so it splits nothing).
  * Until both halves arrive the page keeps showing its last rows, and the
  * list says it is loading (no Load more meanwhile).
+ *
+ * The machinery is `usePagedQuery`, for any query paged the same way (a
+ * contact's gifts too); `usePagedList` is it for the contacts list.
  */
 
 type ListArgs = FunctionArgs<typeof api.contacts.queries.list>
@@ -55,6 +65,24 @@ export function firstPage(filters: ListFilters): ListArgs {
   }
 }
 
+/**
+ * A paged query `usePagedQuery` can walk: public, taking `paginationOpts`,
+ * answering a page of rows with ids.
+ */
+type PagedQuery = FunctionReference<
+  'query',
+  'public',
+  { paginationOpts: PaginationOptions },
+  PaginationResult<{ _id: string }>
+>
+/** A paged query's arguments, bar the page. */
+export type PagedArgs<TQuery extends PagedQuery> = Omit<
+  FunctionArgs<TQuery>,
+  'paginationOpts'
+>
+type RowOf<TQuery extends PagedQuery> =
+  FunctionReturnType<TQuery>['page'][number]
+
 /** One page's range: from `cursor`, to `end` once pinned. */
 type Range = { cursor: string | null; end?: string }
 /**
@@ -70,22 +98,24 @@ const leavesOf = (s: Slot): Array<Range> =>
 
 const rangeKey = (r: Range) => JSON.stringify([r.cursor, r.end ?? null])
 
-export type PagedList = {
+export type Paged<TRow> = {
   /** Undefined until page 0 has loaded. */
-  rows: Array<ListRow> | undefined
+  rows: Array<TRow> | undefined
   /** More may follow (`loadMore`); 'done' only once the last page says so. */
   status: 'loading' | 'more' | 'done'
   loadMore: () => void
 }
 
+export type PagedList = Paged<ListRow>
+
 const warned = new Set<string>()
 /** Says once per range that a SplitRequired page can't be split. */
-function unsplittable(r: Range) {
-  const k = rangeKey(r)
+function unsplittable(name: string, r: Range) {
+  const k = `${name}:${rangeKey(r)}`
   if (warned.has(k)) return
   warned.add(k)
   console.warn(
-    `contacts list: page ${k} asked to split with no usable splitCursor; shown as it is`,
+    `${name}: page ${rangeKey(r)} asked to split with no usable splitCursor; shown as it is`,
   )
 }
 
@@ -99,26 +129,45 @@ function invalidCursor(e: Error) {
 }
 
 export function usePagedList(filters: ListFilters | 'skip'): PagedList {
-  const key = filters === 'skip' ? 'skip' : JSON.stringify(listFilters(filters))
+  return usePagedQuery(
+    api.contacts.queries.list,
+    filters === 'skip' ? 'skip' : listFilters(filters),
+    LIST_PAGE_SIZE,
+    'contacts list',
+  )
+}
+
+/**
+ * `query` a page of `pageSize` at a time, as the contacts list is (see
+ * the top of this file). `args` are compared as JSON, so give them in a
+ * fixed key order: page 0 is exactly `{...args, paginationOpts:
+ * {numItems: pageSize, cursor: null}}`. `name` labels console warnings.
+ */
+export function usePagedQuery<TQuery extends PagedQuery>(
+  query: TQuery,
+  args: PagedArgs<TQuery> | 'skip',
+  pageSize: number,
+  name: string,
+): Paged<RowOf<TQuery>> {
+  type QueryArgs = FunctionArgs<TQuery>
+  type PageResult = FunctionReturnType<TQuery>
+  type Row = RowOf<TQuery>
+  const filters = args
+  const key = filters === 'skip' ? 'skip' : JSON.stringify(filters)
   const [state, setState] = useState<{ key: string; slots: Array<Slot> }>({
     key,
     slots: [{ cursor: null }],
   })
   const slots = state.key === key ? state.slots : [{ cursor: null }]
-  const argsOf = (r: Range): ListArgs => {
-    const first = firstPage(filters as ListFilters)
-    return r.cursor === null && r.end === undefined
-      ? first
-      : {
-          ...first,
-          paginationOpts: {
-            numItems: LIST_PAGE_SIZE,
-            cursor: r.cursor,
-            ...(r.end !== undefined && { endCursor: r.end }),
-          },
-        }
-  }
-  const request: Record<string, ListArgs> = {}
+  const argsOf = (r: Range): QueryArgs => ({
+    ...(filters as object),
+    paginationOpts: {
+      numItems: pageSize,
+      cursor: r.cursor,
+      ...(r.end !== undefined && { endCursor: r.end }),
+    },
+  })
+  const request: Record<string, QueryArgs> = {}
   if (filters !== 'skip') {
     for (const s of slots) {
       for (const r of leavesOf(s)) request[rangeKey(r)] = argsOf(r)
@@ -128,26 +177,30 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
   // results are new each time, so a fresh object per render never settles
   // ("too many re-renders"). Same requests, same object.
   const requestKey = JSON.stringify(request)
+  // By name: `api.…` builds a new reference object on every access.
+  const queryName = getFunctionName(query)
   const queries = useMemo(() => {
-    const args = JSON.parse(requestKey) as Record<string, ListArgs>
+    const ref = makeFunctionReference<'query'>(queryName)
+    type Request = Parameters<typeof useQueries>[0][string]
+    const parsed = JSON.parse(requestKey) as Record<string, Request['args']>
     const out: Parameters<typeof useQueries>[0] = {}
-    for (const [k, a] of Object.entries(args)) {
-      out[k] = { query: api.contacts.queries.list, args: a }
+    for (const [k, a] of Object.entries(parsed)) {
+      out[k] = { query: ref, args: a }
     }
     return out
-  }, [requestKey])
+  }, [queryName, requestKey])
   const results = useQueries(queries)
   // A page re-subscribing (pinned, or the filters changed back) shows what
   // it last showed rather than blinking to "Loading…": by its range, or for
   // a page just pinned, by where it starts (halves never stand in). So
   // does a page to split: its SplitRequired answer has no rows to show
   // (or only part of its range), so it is never what a page last showed.
-  const last = useRef(new Map<string, Page>())
+  const last = useRef(new Map<string, PageResult>())
   const lastShown = (r: Range, slot: boolean) =>
     last.current.get(`${key}#${rangeKey(r)}`) ??
     (slot ? last.current.get(`${key}@${r.cursor}`) : undefined)
-  const resultOf = (r: Range, slot = true): Page | undefined => {
-    const got = results[rangeKey(r)] as Page | Error | undefined
+  const resultOf = (r: Range, slot = true): PageResult | undefined => {
+    const got = results[rangeKey(r)] as PageResult | Error | undefined
     if (got instanceof Error) {
       if (invalidCursor(got)) return undefined
       throw got
@@ -166,7 +219,7 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
   // the parts, flattened, to replace it), else what to subscribe next.
   // A part answering SplitRequired splits again; parts never stand in.
   type Resolved =
-    | { done: true; rows: Array<ListRow>; tail: Page; parts: Array<Range> }
+    | { done: true; rows: Array<Row>; tail: PageResult; parts: Array<Range> }
     | { done: false; slot: Slot; changed: boolean }
   const resolve = (s: Slot, top: boolean): Resolved => {
     if (s.halves) {
@@ -202,7 +255,7 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
         // Nowhere to split, or a split that wouldn't shrink the range
         // (it would split forever): shown as it is, like `list` shows a
         // page with no splitCursor, and the list goes on.
-        unsplittable(s)
+        unsplittable(name, s)
         const shown = page.page.length
           ? page
           : { ...page, page: lastShown(s, top)?.page ?? [] }
@@ -233,18 +286,18 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
   // one grown past what it shapes. Not SplitRecommended: the backend says
   // it of every full page, and page 0 must keep the hold's args
   // (list-hold.ts).
-  const rows: Array<ListRow> = []
+  const rows: Array<Row> = []
   // A row moving across a page boundary while a page shows its last rows
   // would show twice: once is enough.
   const seen = new Set<string>()
-  const push = (page: Array<ListRow>) => {
+  const push = (page: Array<Row>) => {
     for (const row of page) {
       if (seen.has(row._id)) continue
       seen.add(row._id)
       rows.push(row)
     }
   }
-  let tail: Page | undefined
+  let tail: PageResult | undefined
   let complete = filters !== 'skip'
   let walking = complete
   let reset = false

@@ -8,6 +8,7 @@ import {
   section,
   uniqueName,
 } from './contact.helpers'
+import { recordGift, recorder } from './gift.helpers'
 import type { Page } from '@playwright/test'
 
 // The mandatory isolation spec (factory/plans/qc-suite.sv, "Isolation";
@@ -98,6 +99,27 @@ test.describe('isolation', () => {
       await expect(page.getByText('No such contact.')).toBeVisible()
       await expect(page.locator('body')).not.toContainText(`Bravo-${runId()}`)
     }
+  })
+
+  test("B's gift is not A's to open, nor in A's panels", async ({
+    page,
+    users,
+    world,
+    instance,
+  }) => {
+    route('/t/$slug', '/t/$slug/gifts/$giftId', '/t/$slug/contacts/$contactId')
+    const asB = await recorder(instance, users.b, world.tenants[1].tenantId)
+    const id = await recordGift(asB, world.tenants[1].contactIds[0], 4321n)
+    await page.goto(`/t/${users.a.slug}/gifts/${id}`)
+    await expect(page.getByText('No such gift.')).toBeVisible()
+    await expect(page.locator('body')).not.toContainText('£43.21')
+    await expect(page.locator('body')).not.toContainText(`Bravo-${runId()}`)
+    // A's own contact's Gifts panel lists none of B's.
+    await page.goto(
+      `/t/${users.a.slug}/contacts/${world.tenants[0].contactIds[0]}`,
+    )
+    await expect(page.getByRole('heading', { name: 'Gifts' })).toBeVisible()
+    await expect(page.locator('body')).not.toContainText('£43.21')
   })
 
   test("A's list and search show none of B's contacts", async ({

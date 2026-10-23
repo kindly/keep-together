@@ -475,6 +475,15 @@ describe('editing a gift', () => {
     await f.t.run((ctx) => ctx.db.patch(street.version, { isActive: false }))
     await save(id, 0, giftArgs({ amount: 2000n, receivedOn: '2026-10-19' }))
     expect((await gift(id)).receivedOn).toBe('2026-10-19')
+    // The gift page's picker shows it marked archived.
+    const view = await f.a.as.query(api.giving.queries.get, {
+      tenantId: f.a.tenantId,
+      id,
+    })
+    expect(view?.allocations[0]).toMatchObject({
+      code: 'Street-Wesser-001',
+      isActive: false,
+    })
     await f.t.run((ctx) => ctx.db.patch(online.category, { isActive: false }))
     expect(
       await errorData(
@@ -729,7 +738,9 @@ describe('queries', () => {
       reference: 'R-1',
       status: 'void',
       contact: { _id: jo, displayName: 'Jo Bloggs', kind: 'individual' },
-      allocations: [{ code: 'Street-Wessex-001', amount: 2000n }],
+      allocations: [
+        { code: 'Street-Wessex-001', isActive: true, amount: 2000n },
+      ],
     })
     const history = await f.a.as.query(api.giving.queries.history, {
       ...t,
