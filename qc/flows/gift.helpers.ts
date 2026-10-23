@@ -88,6 +88,24 @@ export async function declare(
   return id
 }
 
+/**
+ * A new individual with no gifts or declarations: one per sample where a
+ * flow would otherwise pile rows onto one contact (a real donor has one or
+ * two declarations, not dozens).
+ */
+export function newDonor(r: Recorder, lastName: string): Promise<string> {
+  return r.client.mutation(api.contacts.mutations.create, {
+    tenantId: r.tenantId,
+    kind: 'individual',
+    title: '',
+    firstName: 'Qc',
+    lastName,
+    nickname: '',
+    name: '',
+    isDeceased: false,
+  })
+}
+
 /** The contact id at the end of a contact page's URL. */
 export function contactIdOf(url: string): string {
   return new URL(url).pathname.split('/').at(-1)!

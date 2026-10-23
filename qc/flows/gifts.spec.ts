@@ -11,10 +11,13 @@ import {
   GIFT_ROUTE,
   contactIdOf,
   declare,
+  newDonor,
   recordGift,
   recorder,
+  today,
 } from './gift.helpers'
 import { api } from '../../convex/_generated/api'
+import type { Id } from '../../convex/_generated/dataModel'
 import type { Page } from '@playwright/test'
 
 // Cash gifts step 5: the gift page (view, edit, void / unvoid, history)
@@ -349,13 +352,17 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
       gifts(page).getByRole('link', { name: /£20\.00/ }),
     ).toContainText('Gift Aid')
 
-    // Record cancellation, from today: each sample declares again, and the
-    // cancellation ends every declaration in force.
+    // Record cancellation, from today. Each sample starts untimed from a
+    // fresh donor with two declarations (as a real donor might have), so
+    // the panel's read doesn't grow through the run; the cancellation ends
+    // both.
     await flow(page, 'contact.giftaid.cancel', {
       before: async () => {
-        const k = (await cards.count()) + 1
-        await declare(r, contactId, '2025-03-01')
-        await expect(cards).toHaveCount(k)
+        const donor = await newDonor(r, uniqueName('giftaid-cancel'))
+        await declare(r, donor, '2025-01-01')
+        await declare(r, donor, '2025-03-01')
+        await page.goto(`/t/${users.a.slug}/contacts/${donor}`)
+        await expect(cards).toHaveCount(2)
         await giftAid(page)
           .getByRole('button', { name: 'Record cancellation' })
           .click()
@@ -363,7 +370,7 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
           .getByRole('button', { name: 'Save cancellation' })
           .click()
         await expect(page.getByRole('alertdialog')).toBeVisible()
-        await want(page, String(k))
+        await want(page, '2')
       },
       // The confirm is the timed click, as for a void.
       action: () => confirm(page, 'Record cancellation').click(),
@@ -378,17 +385,31 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
     await expect(giftAid(page).getByTestId('giftaid-coverage')).toHaveText(
       'No declaration covers a gift made today.',
     )
-    // The gift before the cancellations is still covered.
+    // A cancellation leaves a gift before it covered: the first donor's,
+    // cancelled untimed.
+    await r.client.mutation(api.giftaid.mutations.recordCancellation, {
+      tenantId: r.tenantId,
+      contactId: contactId as Id<'contacts'>,
+      cancelledFrom: today(),
+    })
+    await page.goto(contactUrl)
+    await expect(giftAid(page).getByTestId('giftaid-coverage')).toHaveText(
+      'No declaration covers a gift made today.',
+    )
     await page.goto(`/t/${users.a.slug}/gifts/${gift}`)
     await expect(page.getByTestId('gift-coverage')).toContainText('✓ Covered')
     await page.goto(contactUrl)
 
-    // Mark made in error: a reason, then a confirm.
-    const voided = giftAid(page).getByText('made in error', { exact: true })
+    // Mark made in error: a reason, then a confirm. Each sample starts
+    // untimed from a fresh donor with two declarations, as for the
+    // cancellation; the newer is marked.
     await flow(page, 'contact.giftaid.void', {
       before: async () => {
-        await declare(r, contactId, '2025-04-01')
-        const before = await voided.count()
+        const donor = await newDonor(r, uniqueName('giftaid-void'))
+        await declare(r, donor, '2025-01-01')
+        await declare(r, donor, '2025-04-01')
+        await page.goto(`/t/${users.a.slug}/contacts/${donor}`)
+        await expect(cards).toHaveCount(2)
         const fresh = cards.first()
         await expect(fresh).toContainText('made 1 Apr 2025')
         await expect(
@@ -398,7 +419,7 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
         await fresh.getByLabel('Why was it made in error?').fill('wrong donor')
         await fresh.getByRole('button', { name: 'Mark made in error' }).click()
         await expect(page.getByRole('alertdialog')).toBeVisible()
-        await want(page, String(before + 1))
+        await want(page, '1')
       },
       action: () => confirm(page, 'Mark made in error').click(),
       until: () => {
@@ -412,6 +433,7 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
     await expect(cards.first()).toContainText('wrong donor')
     // No reason: refused before the confirm.
     await declare(r, contactId, '2025-05-01')
+    await page.goto(contactUrl)
     const last = cards.first()
     await expect(last).toContainText('made 1 May 2025')
     await last.getByRole('button', { name: 'Mark made in error' }).click()
