@@ -1,6 +1,7 @@
 import { defineTable } from 'convex/server'
 import { v } from 'convex/values'
 import { SLOT_FIELD_NAMES, slotFields, withSlotIndexes } from './fieldSlots'
+import { declarationMethod, declarationScope } from '../giftaid/validators'
 
 /**
  * Every domain table carries `tenantId` and every index on it starts with
@@ -636,6 +637,47 @@ export const appTables = {
       'sourceCodeId',
       'contactId',
     ]),
+
+  // ── giftaid (cash gifts plan, step 1b) ────────────────────────────────
+  // One row per Gift Aid declaration: a dated chain per contact, never a
+  // flag (rule 1). Its own aggregate, individuals only (HMRC 3.6.7).
+  //   giftaid.declaration  → contactId, scope, madeOn, method and the
+  //     snapshot (declarationVersion). Create-only: never edited.
+  //   giftaid.cancellation → cancelledFrom, cancellationNote
+  //     (cancellationVersion)
+  //   giftaid.void → voidReason, voidedAt, voidedBy (voidVersion).
+  //     Create-only: "made in error", the declaration never applied.
+  // System-owned: `enteredBy`, set on create. Coverage of a gift is derived
+  // from these rows (giftaid/declarations), never stored on the gift.
+  // Erasure must keep the whole row, snapshot included, for HMRC's 6-year
+  // audit period (3.30): it is the evidence a claimed gift rests on.
+  giftAidDeclarations: defineTable({
+    tenantId: v.id('tenants'),
+    contactId: v.id('contacts'),
+    scope: declarationScope,
+    // The gift a `thisGift` declaration was made with; absent otherwise.
+    contributionId: v.optional(v.id('contributions')),
+    madeOn: v.string(), // ISO date
+    method: declarationMethod,
+    wordingVersion: v.string(), // giftaid/validators HMRC_MODEL_WORDING_VERSION
+    // The name and home address the declaration was made under.
+    firstName: v.string(),
+    lastName: v.string(),
+    addressLine1: v.string(),
+    postcode: v.string(),
+    cancelledFrom: v.optional(v.string()), // ISO date; absent = not cancelled
+    cancellationNote: v.optional(v.string()),
+    // Present = voided: recorded in error, never covers anything.
+    voidReason: v.optional(v.string()),
+    voidedAt: v.optional(v.number()),
+    voidedBy: v.optional(v.id('users')), // absent = system
+    enteredBy: v.optional(v.id('users')), // absent = system
+    declarationVersion: v.number(),
+    cancellationVersion: v.number(),
+    voidVersion: v.number(),
+  })
+    // Prefix `contactId` = a contact's chain, in date order.
+    .index('by_tenant_contact_madeOn', ['tenantId', 'contactId', 'madeOn']),
 
   // ── comms ─────────────────────────────────────────────────────────────
   // Suppression per address (domain rule 5: centralised in comms). One row

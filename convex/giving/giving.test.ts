@@ -358,6 +358,7 @@ describe('tenancy', () => {
     expect(await seen(f.a.tenantId)).toEqual({
       contactId: jo,
       receivedOn: '2026-10-20',
+      status: 'completed',
     })
     expect(await seen(f.b.tenantId)).toBeNull()
   })
