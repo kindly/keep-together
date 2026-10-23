@@ -16,8 +16,8 @@ import {
 } from './contact.helpers'
 
 // Search plan Q2: one search box finds a contact by a phone, a postcode,
-// part of an email, or an organisation name, each under 100 ms like the
-// name search (contacts.search in contacts.spec.ts). Each test makes its
+// part of an email, or an organisation name, each judged as repeatable
+// (150 ms line, 100 ms target) like the name search (contacts.search in contacts.spec.ts). Each test makes its
 // own contact with values no other contact in the worker's tenant has
 // (random per test), so "exactly one row" means the search found it.
 
