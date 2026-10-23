@@ -1,5 +1,6 @@
 import { convexOn, expect, test } from '../fixtures'
 import { runId } from '../timing'
+import { holdQuiet } from '../quiet'
 import { secondTab } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
@@ -266,17 +267,21 @@ test.describe('contacts list', () => {
     async ({ browser, baseURL, flow, instance, session, users, world }) => {
       test.setTimeout(120_000)
       // In B, whose list no timed flow browses, so A's list stays the size
-      // the other flows were budgeted on.
+      // the other flows were budgeted on. Held quiet (qc/quiet.ts): each
+      // batch is a 100-contact commit, and another worker's sample on this
+      // instance would otherwise commit behind it.
       const crowd = (lastName: string, count: number) =>
-        convexOn(instance, [
-          'run',
-          'platform/qcSeed:crowd',
-          JSON.stringify({
-            tenantId: world.tenants[1].tenantId,
-            lastName,
-            count,
-          }),
-        ])
+        holdQuiet(instance.name, `contacts.loadMore crowd ${count}`, () =>
+          convexOn(instance, [
+            'run',
+            'platform/qcSeed:crowd',
+            JSON.stringify({
+              tenantId: world.tenants[1].tenantId,
+              lastName,
+              count,
+            }),
+          ]),
+        )
       // After B's seeded `Bravo-<run>` contacts: more than two pages.
       await crowd(uniq('Crowd'), 2 * LIST_PAGE_SIZE)
       const b = await secondTab(browser, baseURL!, await session(users.b))

@@ -1,4 +1,11 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import {
@@ -163,6 +170,58 @@ test.describe('harness', () => {
         localClick(page),
       ),
     ).rejects.toThrow(HeldResultError)
+  })
+
+  test("a hold's wait is outside the timed window", async ({ page, users }) => {
+    // A hold on an instance no other worker uses, by a live process that
+    // isn't this one (the runner). It's taken at the end of `before`, so
+    // the sample meets it, and released HOLD_MS later.
+    const HOLD_MS = 1000
+    const instance = `harness-w${test.info().parallelIndex}`
+    const dir = path.join(runDir(), 'quiet')
+    mkdirSync(dir, { recursive: true })
+    const hold = path.join(dir, `hold-${instance}.json`)
+    const step = openContacts(page, users.a.slug)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const record = await runFlow(
+        {
+          page,
+          rttMs: 0,
+          worker: test.info().parallelIndex,
+          instance,
+          where: test.info().titlePath.join(' › '),
+          repeats: 1,
+          warmUp: false,
+        },
+        'harness.generous',
+        {
+          ...step,
+          before: async () => {
+            await step.before!()
+            writeFileSync(
+              hold,
+              JSON.stringify({
+                pid: process.ppid,
+                who: 'harness',
+                at: Date.now(),
+              }),
+            )
+            timer = setTimeout(() => rmSync(hold, { force: true }), HOLD_MS)
+          },
+        },
+      )
+      const [d] = record.detail
+      // Most of the hold is waited out (the settle after `before` takes
+      // a few frames of it)...
+      expect(d.quietWaitMs).toBeGreaterThanOrEqual(HOLD_MS / 2)
+      // ...and none of it is in the sample: the click to the list.
+      expect(record.samplesMs[0]).toBeLessThan(HOLD_MS / 2)
+      expect(d.endMs).toBe(record.samplesMs[0])
+    } finally {
+      clearTimeout(timer)
+      rmSync(hold, { force: true })
+    }
   })
 
   test('a failing traced sample keeps the verdict', async ({

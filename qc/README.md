@@ -55,6 +55,28 @@ only on the pool). Nothing is wiped between runs, so data accumulates;
 `--reset` replaces every instance's data with an empty snapshot when it
 gets in the way. The human's own dev deployment is never a pool member.
 
+### Quiet holds
+
+Workers share instances, and a deployment commits one transaction at a
+time. A spec that writes in bulk mid-run (the paged list's crowd, 100
+contacts a commit) makes every sample another worker commits meanwhile
+wait behind it: the field flows paid ~70 ms on their commit → response
+leg that way, and blame could only call it unclear. So a bulk write
+goes inside `holdQuiet(instance.name, who, fn)` (`qc/quiet.ts`):
+
+- each timed sample marks itself busy on its instance from the tap to
+  the result; before marking it waits, unmarked, for any other worker's
+  hold, so the wait is never in the sample (`quietWaitMs` records it);
+- the holder waits for samples already under way, then writes;
+- every wait gives up after 2 min with an error naming the holder or
+  the busy pids, and a mark whose process is gone (or older than 5 min)
+  is ignored and removed.
+
+Interference the suite makes is removed this way, never excused in
+blame. A new bulk seed during a run takes a hold too; seeds in worker
+setup don't, since no timed flow runs before them on that worker, but
+they do run while other workers time `auth.signIn`, so keep them small.
+
 ## Reading the output
 
 After the run the reporter prints one row per flow:

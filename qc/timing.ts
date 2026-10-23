@@ -17,6 +17,7 @@ import type { FlowKind, FlowName } from './budgets'
 import { RETRY_CAP_PER_RUN, judgeSlowSample } from './judge'
 import type { SampleJudgement } from './judge'
 import type { LiveRun } from './live'
+import { sampling } from './quiet'
 
 // Client-perceived latency (factory/plans/qc-suite.sv, "What latency
 // means"). Timed inside the page: t0 is the event timestamp of the *last*
@@ -155,6 +156,11 @@ export interface SampleDetail {
   hostCpu: number | null
   /** The host's 1-minute load average. */
   load1: number
+  /**
+   * Waited this long, before arming, for another worker's bulk write to
+   * release the instance (qc/quiet.ts). Outside the sample: context only.
+   */
+  quietWaitMs?: number
   /** At or over budget in the judged set: how it was judged (qc/judge.ts). */
   judge?: SampleJudgement
 }
@@ -739,6 +745,7 @@ async function measureOnce<TArg>(
   name: FlowName,
   step: FlowStep<TArg>,
   timeoutMs: number,
+  instance?: string,
 ): Promise<{ ms: number; detail: SampleDetail }> {
   await step.before?.()
   await settle(page)
@@ -751,21 +758,31 @@ async function measureOnce<TArg>(
   }
   const start = step.start ?? 'input'
   const inputPage = step.inputPage ?? page
-  // The tap goes on both pages, so their sockets are caught before t0.
-  await inputPage.evaluate(arm, [LEGS, true] as [boolean, boolean])
-  if (inputPage !== page)
-    await page.evaluate(arm, [LEGS, true] as [boolean, boolean])
-  const cpu0 = cpuTicks()
-  await step.action()
-  // The predicate and the clock read happen in the same frame callback.
-  const handle = await page.waitForFunction(
-    `(() => (${pred}) ? performance.now() : false)()`,
-    undefined,
-    { polling: 'raf', timeout: timeoutMs },
-  )
-  const t1 = (await handle.jsonValue()) as number
-  await handle.dispose()
-  const cpu1 = cpuTicks()
+  // From the tap to the result, marked busy on the instance; a bulk write
+  // holding it (qc/quiet.ts) is waited out first, before anything is armed.
+  const timed = async () => {
+    // The tap goes on both pages, so their sockets are caught before t0.
+    await inputPage.evaluate(arm, [LEGS, true] as [boolean, boolean])
+    if (inputPage !== page)
+      await page.evaluate(arm, [LEGS, true] as [boolean, boolean])
+    const cpu0 = cpuTicks()
+    await step.action()
+    // The predicate and the clock read happen in the same frame callback.
+    const handle = await page.waitForFunction(
+      `(() => (${pred}) ? performance.now() : false)()`,
+      undefined,
+      { polling: 'raf', timeout: timeoutMs },
+    )
+    const t1 = (await handle.jsonValue()) as number
+    await handle.dispose()
+    return { t1, cpu0, cpu1: cpuTicks() }
+  }
+  const {
+    value: { t1, cpu0, cpu1 },
+    waitedMs: quietWaitMs,
+  } = instance
+    ? await sampling(instance, timed)
+    : { value: await timed(), waitedMs: 0 }
   const hostCpu =
     cpu0 && cpu1 && cpu1[1] > cpu0[1]
       ? Math.round(((cpu1[0] - cpu0[0]) / (cpu1[1] - cpu0[1])) * 100) / 100
@@ -841,6 +858,7 @@ async function measureOnce<TArg>(
       hidden: legs.hidden ?? false,
       hostCpu,
       load1: round1(loadavg()[0]),
+      ...(quietWaitMs > 0 && { quietWaitMs }),
     },
   }
 }
@@ -905,14 +923,20 @@ export async function runFlow<TArg>(
   const budget = budgetFor(name)
   const timeoutMs = Math.max(15_000, 10 * budget.maxMs)
   if ((ctx.warmUp ?? true) && !warmed.has(name)) {
-    await measureOnce(ctx.page, name, step, timeoutMs)
+    await measureOnce(ctx.page, name, step, timeoutMs, ctx.instance)
     warmed.add(name)
   }
   const measureSet = async () => {
     const set: Array<number> = []
     const detail: Array<SampleDetail> = []
     for (let i = 0; i < (ctx.repeats ?? REPEATS); i++) {
-      const sample = await measureOnce(ctx.page, name, step, timeoutMs)
+      const sample = await measureOnce(
+        ctx.page,
+        name,
+        step,
+        timeoutMs,
+        ctx.instance,
+      )
       set.push(round1(sample.ms))
       detail.push(sample.detail)
     }
@@ -951,7 +975,13 @@ export async function runFlow<TArg>(
               ...(ctx.instance && { instance: ctx.instance }),
             }),
           measure: async () => {
-            const s = await measureOnce(ctx.page, name, step, timeoutMs)
+            const s = await measureOnce(
+              ctx.page,
+              name,
+              step,
+              timeoutMs,
+              ctx.instance,
+            )
             return { ms: round1(s.ms), detail: s.detail }
           },
           takeRetry: () => takeRetry(),
@@ -1004,7 +1034,7 @@ export async function runFlow<TArg>(
   let traceError: string | undefined
   let saved = false
   try {
-    await measureOnce(ctx.page, name, step, timeoutMs)
+    await measureOnce(ctx.page, name, step, timeoutMs, ctx.instance)
   } catch (err) {
     traceError = String(err)
   } finally {
