@@ -22,6 +22,7 @@ import {
   parsePounds,
   penceToInput,
   refusal,
+  useSetGiftStatus,
 } from '../lib/gifts'
 import {
   describeDeclaration,
@@ -98,7 +99,7 @@ function GiftView({ gift }: { gift: Gift }) {
       ),
     [convex, tenant._id, gift._id],
   )
-  const setStatus = useMutation(api.giving.mutations.setStatus)
+  const setStatus = useSetGiftStatus()
   const [editing, setEditing] = useState(false)
   // The status change being confirmed, with the counter seen when asked.
   const [confirming, setConfirming] = useState<{
@@ -143,7 +144,12 @@ function GiftView({ gift }: { gift: Gift }) {
     <main className="mx-auto grid max-w-5xl gap-8 p-6 md:grid-cols-[1fr_18rem]">
       <div className="flex flex-col gap-6">
         <header className="flex flex-col gap-1">
-          <h1 className="flex flex-wrap items-baseline gap-2 text-xl font-semibold">
+          {/* The status counter, which only the server moves: QC checks a
+              void it saw at once (optimistic) was confirmed. */}
+          <h1
+            data-status-version={gift.statusVersion}
+            className="flex flex-wrap items-baseline gap-2 text-xl font-semibold"
+          >
             <span className={isVoid ? 'text-neutral-500 line-through' : ''}>
               {formatPence(gift.amount)}
             </span>
