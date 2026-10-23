@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import type { Id } from '../../convex/_generated/dataModel'
 import {
+  amountPence,
   asksForAddress,
   defaultCode,
   differsNote,
@@ -35,7 +36,7 @@ function info(over: Partial<DonorInfo> = {}): DonorInfo {
     lastName: 'Bloggs',
     home: { line1: '', postcode: '' },
     acquisition: null,
-    current: null,
+    covering: null,
     ...over,
   }
 }
@@ -100,7 +101,7 @@ describe('Gift Aid offer', () => {
       giftAidOffer(
         existing,
         info({
-          current: {
+          covering: {
             id: 'd' as Id<'giftAidDeclarations'>,
             scope: 'future',
             method: 'paperForm',
@@ -292,5 +293,20 @@ describe('the source code', () => {
     ).toBe('Differs from Jo’s source, Street-Wesser-001')
     // No code of their own: nothing to differ from.
     expect(differsNote(draft(), info())).toBeNull()
+  })
+})
+
+describe('amounts', () => {
+  test('a space inside is ambiguous; around it is fine', () => {
+    expect(amountPence('12 50')).toBe('ambiguous')
+    expect(amountPence('1 250.00')).toBe('ambiguous')
+    expect(amountPence('12 .50')).toBe('ambiguous')
+    expect(amountPence(' 12.50 ')).toBe(1250n)
+    expect(amountPence('£ 12.50')).toBe(1250n)
+  })
+
+  test('past int64 pence is too large', () => {
+    expect(amountPence('92233720368547758.07')).toBe(2n ** 63n - 1n)
+    expect(amountPence('92233720368547758.08')).toBe('tooLarge')
   })
 })

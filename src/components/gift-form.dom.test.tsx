@@ -6,22 +6,30 @@ import type { Root } from 'react-dom/client'
 import { getFunctionName } from 'convex/server'
 import { ConvexError } from 'convex/values'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { formatNumber } from '../../convex/contacts/number'
 import type { DonorInfo } from '../lib/gift-form'
 import { GiftForm } from './gift-form'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const record = vi.fn()
+const readBack = vi.fn()
 let search: unknown
+/** Per search term, overriding `search`; undefined = still loading. */
+let searchFor: Map<string, unknown> | null = null
 let donor: DonorInfo | null | undefined
 const asked: Array<[string, unknown]> = []
 vi.mock('convex/react', () => ({
+  useConvex: () => ({ query: readBack }),
   useMutation: () => record,
   useQuery: (ref: unknown, args: unknown) => {
     const name = getFunctionName(ref as never)
     asked.push([name, args])
     if (args === 'skip') return undefined
-    if (name === 'contacts/queries:search') return search
+    if (name === 'contacts/queries:search')
+      return searchFor
+        ? searchFor.get((args as { search: string }).search)
+        : search
     if (name === 'giving/queries:donor') return donor
     if (name === 'sources/queries:picker')
       return {
@@ -42,25 +50,29 @@ vi.mock('../lib/tenant', () => ({
 }))
 vi.mock('@tanstack/react-router', () => ({
   Link: ({
+    to,
     children,
     params,
     className,
+    target,
   }: {
+    to: string
     children: ReactNode
     params: Record<string, string>
     className?: string
+    target?: string
   }) => (
-    <a href={`/t/${params.slug}/gifts/${params.giftId}`} className={className}>
+    <a
+      href={to.replace(/\$(\w+)/g, (_, k: string) => params[k])}
+      className={className}
+      target={target}
+    >
       {children}
     </a>
   ),
 }))
 
-const row = (
-  id: string,
-  displayName: string,
-  number: number | null = null,
-) => ({
+const row = (id: string, displayName: string, number = 10000) => ({
   _id: id,
   kind: 'individual',
   displayName,
@@ -84,15 +96,17 @@ function jo(over: Partial<DonorInfo> = {}): DonorInfo {
       code: 'Street-Wesser-001',
       isActive: true,
     },
-    current: null,
+    covering: null,
     ...over,
-  } as DonorInfo
+  } as unknown as DonorInfo
 }
 
 let root: Root
 let el: HTMLDivElement
 beforeEach(() => {
   record.mockReset()
+  readBack.mockReset()
+  searchFor = null
   asked.length = 0
   search = {
     rows: [row('jo', 'Jo Bloggs'), row('al', 'Al Smith')],
@@ -134,10 +148,22 @@ async function type(input: HTMLInputElement, value: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
-const labelled = (text: string) =>
-  [...el.querySelectorAll('label')]
-    .find((l) => l.textContent.startsWith(text))!
-    .querySelector('input')!
+/** The input a label names: by `for`, or inside it. */
+const labelled = (text: string) => {
+  const l = [...el.querySelectorAll('label')].find((x) =>
+    x.textContent.startsWith(text),
+  )!
+  return (
+    l.htmlFor ? document.getElementById(l.htmlFor) : l.querySelector('input')
+  ) as HTMLInputElement
+}
+const rerender = () => act(() => root.render(<GiftForm />))
+const press = (key: string) =>
+  act(async () => {
+    donorBox().dispatchEvent(
+      new KeyboardEvent('keydown', { key, bubbles: true }),
+    )
+  })
 
 async function find(text: string) {
   await act(async () => donorBox().focus())
@@ -150,16 +176,23 @@ async function click(b: HTMLElement) {
   await act(async () => b.click())
 }
 
-test('a number match is listed first and marked, but only a pick chooses it', async () => {
+test('a number match is listed first and marked, but only a pick chooses it; every row shows its number', async () => {
   search = {
     ...(search as object),
-    rows: [row('jo', 'Jo Bloggs', 12345), row('al', 'Al Smith')],
+    rows: [row('jo', 'Jo Bloggs', 12345), row('al', 'Al Smith', 12346)],
     numberMatch: 'jo',
   }
   await find('123455')
   const first = options()[0]
   expect(first.textContent).toContain('contact no. 123455')
   expect(first.className).toContain('bg-emerald')
+  // Only the match is marked; the other row's number is plain.
+  expect(options()[1].className).not.toContain('bg-emerald')
+  // The combobox names the active option.
+  expect(donorBox().getAttribute('aria-activedescendant')).toBe(first.id)
+  await press('ArrowDown')
+  expect(donorBox().getAttribute('aria-activedescendant')).toBe(options()[1].id)
+  await press('ArrowUp')
   // Still searching: nothing picked, no donor read.
   expect(donorBox()).not.toBeNull()
   expect(
@@ -168,7 +201,7 @@ test('a number match is listed first and marked, but only a pick chooses it', as
   // Then New person / New organisation from the text.
   expect(options().map((o) => o.textContent)).toEqual([
     'Jo Bloggscontact no. 123455',
-    'Al Smith',
+    `Al Smithcontact no. ${formatNumber(12346)}`,
     'New person “123455”',
     'New organisation “123455”',
   ])
@@ -221,12 +254,12 @@ test('an archived own code leaves the code empty and required', async () => {
 
 test('covered by a declaration: ✓, no tick', async () => {
   donor = jo({
-    current: {
+    covering: {
       id: 'd1',
       scope: 'futureAndPast4y',
       method: 'paperForm',
       madeOn: '2026-03-03',
-    } as DonorInfo['current'],
+    } as DonorInfo['covering'],
   })
   await find('jo')
   await pickOption(0)
@@ -351,6 +384,10 @@ test('a failed save keeps the key: the retry that finds it saved says so', async
   await find('jo')
   await pickOption(0)
   await type(labelled('Amount'), '20')
+  readBack.mockResolvedValue({
+    amount: 2000n,
+    contact: { displayName: 'Jo Bloggs' },
+  })
   record.mockRejectedValueOnce(new Error('connection lost'))
   await click(submit())
   expect(el.querySelector('[role="alert"]')!.textContent).toBe(
@@ -382,4 +419,132 @@ test('a new person from the search text, sent in the one save', async () => {
   expect(codeShown()).toBe('No source code.')
   await click(button('Change'))
   expect(donorBox()).not.toBeNull()
+})
+
+const loaded = (
+  rows: Array<ReturnType<typeof row>>,
+  numberMatch = null as string | null,
+) => ({
+  rows,
+  truncated: false,
+  tooBroad: false,
+  numberMatch,
+  invalidNumber: null,
+})
+
+test('a fast Enter before the results come picks nothing, then the match', async () => {
+  searchFor = new Map()
+  await find('Jo Bloggs')
+  await press('Enter')
+  // Not "New person “Jo Bloggs”": still searching.
+  expect(donorBox()).not.toBeNull()
+  expect(el.textContent).toContain(
+    'Still searching: press Enter again once the results show.',
+  )
+  searchFor.set('Jo Bloggs', loaded([row('jo', 'Jo Bloggs')]))
+  rerender()
+  await press('Enter')
+  expect(el.querySelector('[data-testid="donor"]')!.textContent).toContain(
+    'Jo Bloggs',
+  )
+  expect(asked).toContainEqual([
+    'giving/queries:donor',
+    expect.objectContaining({ contactId: 'jo' }),
+  ])
+})
+
+test('a corrected number: the old match is not marked, and Enter waits for the new one', async () => {
+  searchFor = new Map([
+    ['100016', loaded([row('ada', 'Ada Lovelace', 10001)], 'ada')],
+  ])
+  await find('100016')
+  expect(options()[0].className).toContain('bg-emerald')
+  await type(donorBox(), '100024')
+  // The stale rows stay on screen, unmarked.
+  expect(options()[0].textContent).toContain('Ada Lovelace')
+  expect(options()[0].className).not.toContain('bg-emerald')
+  await press('Enter')
+  expect(donorBox()).not.toBeNull()
+  searchFor.set('100024', loaded([row('cb', 'Charles Babbage', 10002)], 'cb'))
+  rerender()
+  expect(options()[0].className).toContain('bg-emerald')
+  await press('Enter')
+  expect(el.querySelector('[data-testid="donor"]')!.textContent).toContain(
+    'Charles Babbage',
+  )
+})
+
+test('a refused save is announced, its fields marked, and the first takes focus', async () => {
+  await click(submit())
+  const alert = el.querySelector('[role="alert"]')!
+  expect(alert.textContent).toBe(
+    'Not saved: Find the donor, or add them; Pick a source code; Enter the amount',
+  )
+  await act(async () => new Promise((r) => setTimeout(r, 0)))
+  expect(document.activeElement).toBe(donorBox())
+  const amount = labelled('Amount')
+  expect(amount.getAttribute('aria-invalid')).toBe('true')
+  expect(
+    document.getElementById(amount.getAttribute('aria-describedby')!)!
+      .textContent,
+  ).toBe('Enter the amount')
+  // The message isn't part of the field's name.
+  expect(
+    [...el.querySelectorAll('label')].find((l) => l.htmlFor === amount.id)!
+      .textContent,
+  ).toBe('Amount (£)')
+})
+
+test('an amount with a space inside is asked about, never guessed', async () => {
+  await find('jo')
+  await pickOption(0)
+  await type(labelled('Amount'), '12 50')
+  await click(submit())
+  expect(record).not.toHaveBeenCalled()
+  expect(el.textContent).toContain(
+    'Is that pounds and pence? Write it like 12.50, with no spaces',
+  )
+})
+
+test('"Already saved" says what the server holds, not what the form holds now', async () => {
+  await find('jo')
+  await pickOption(0)
+  await type(labelled('Amount'), '30')
+  readBack.mockResolvedValue({
+    amount: 2000n,
+    contact: { displayName: 'Jo Bloggs' },
+  })
+  record.mockRejectedValueOnce(
+    new ConvexError({ kind: 'rejected', reason: 'duplicate', message: 'g1' }),
+  )
+  await click(submit())
+  expect(readBack).toHaveBeenCalledWith(expect.anything(), {
+    tenantId: 'tenantA',
+    id: 'g1',
+  })
+  expect(el.querySelector('[role="status"]')!.textContent).toBe(
+    'Already saved: £20.00 from Jo Bloggs (open)',
+  )
+})
+
+test('the address on file links to the contact page to change it', async () => {
+  donor = jo({ home: { line1: '12 High St', postcode: 'AB1 2CD' } })
+  await find('jo')
+  await pickOption(0)
+  await click(giftAid()!.querySelector('input[type="checkbox"]')!)
+  const link = [...giftAid()!.querySelectorAll('a')].find((a) =>
+    a.textContent.includes('change it'),
+  )!
+  expect(link.getAttribute('href')).toBe('/t/alpha/contacts/jo')
+  expect(link.getAttribute('target')).toBe('_blank')
+})
+
+test('coverage is asked for on the gift’s date', async () => {
+  await find('jo')
+  await pickOption(0)
+  await type(labelled('Date received'), '2026-09-15')
+  expect(asked).toContainEqual([
+    'giving/queries:donor',
+    expect.objectContaining({ contactId: 'jo', date: '2026-09-15' }),
+  ])
 })

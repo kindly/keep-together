@@ -469,7 +469,7 @@ describe('Gift Aid', () => {
     },
   )
 
-  test('the address typed is the snapshot, even when the contact’s primary is incomplete (F3)', async () => {
+  test('the address typed is the snapshot, and completes the contact’s incomplete primary in place (F3, M3)', async () => {
     const jo = await existing(f.a)
     await f.a.as.mutation(api.contacts.mutations.saveAddresses, {
       tenantId: f.a.tenantId,
@@ -498,10 +498,47 @@ describe('Gift Aid', () => {
       postcode: 'LS1 1AA',
     })
     const rows = await rowsOf('contactAddresses', jo)
-    expect(rows.map((r) => [r.town, r.isPrimary])).toEqual([
-      ['Leeds', true],
-      ['', false],
+    expect(
+      rows.map((r) => [r.line1, r.postcode, r.town, r.isPrimary]),
+      // The address contract trims; only the snapshot collapses spaces.
+    ).toEqual([['3  Mill Lane', 'LS1 1AA', 'Leeds', true]])
+  })
+
+  test('a primary with line 1 and no postcode gets its postcode, and a complete one elsewhere is kept', async () => {
+    const jo = await existing(f.a)
+    const row = (over: object) => ({
+      label: 'home' as const,
+      line1: '',
+      line2: '',
+      line3: '',
+      town: '',
+      postcode: '',
+      country: 'GB',
+      isPrimary: false,
+      ...over,
+    })
+    await f.a.as.mutation(api.contacts.mutations.saveAddresses, {
+      tenantId: f.a.tenantId,
+      id: jo,
+      expected: 0,
+      addresses: [
+        row({ label: 'work', line1: '1 Office Rd', postcode: 'ZZ1 1ZZ' }),
+        row({ line1: '7 Elm Row', isPrimary: true }),
+      ],
+    })
+    const [, before] = await rowsOf('contactAddresses', jo)
+    await record({
+      contact: jo,
+      home: { line1: '7 Elm Row', postcode: 'eh1 1aa' },
+      giftAid: {},
+    })
+    const rows = await rowsOf('contactAddresses', jo)
+    expect(rows.map((r) => [r.line1, r.postcode, r.isPrimary])).toEqual([
+      ['1 Office Rd', 'ZZ1 1ZZ', false],
+      ['7 Elm Row', 'EH1 1AA', true],
     ])
+    // The same row, by id.
+    expect(rows[1].key).toBe(before.key)
   })
 
   test('blank address fields add no address', async () => {
@@ -737,11 +774,15 @@ describe('two tenants', () => {
 })
 
 describe('the record-gift page’s donor', () => {
-  const donor = (contactId: Id<'contacts'>, who: Tenant = f.a) =>
+  const donor = (
+    contactId: Id<'contacts'>,
+    who: Tenant = f.a,
+    date = '2026-10-23',
+  ) =>
     who.as.query(api.giving.queries.donor, {
       tenantId: who.tenantId,
       contactId,
-      today: '2026-10-23',
+      date,
     })
 
   test('a new person: names, no address, no code, not covered', async () => {
@@ -753,7 +794,7 @@ describe('the record-gift page’s donor', () => {
       firstName: 'Jo',
       home: { line1: '', postcode: '' },
       acquisition: null,
-      current: null,
+      covering: null,
     })
   })
 
@@ -765,7 +806,7 @@ describe('the record-gift page’s donor', () => {
     expect(await donor(contactId)).toMatchObject({
       home: { line1: '12 High St', postcode: 'AB1 2CD' },
       acquisition: { code: 'Street-Wesser-001', isActive: true },
-      current: {
+      covering: {
         id: declarationId,
         scope: 'futureAndPast4y',
         method: 'staffTickedNoEvidence',
@@ -774,9 +815,28 @@ describe('the record-gift page’s donor', () => {
     })
   })
 
-  test('a "this gift only" declaration is not current', async () => {
+  test('a "this gift only" declaration covers no other gift', async () => {
     const { contactId } = await record({ giftAid: { scope: 'thisGift' } })
-    expect((await donor(contactId))?.current).toBeNull()
+    expect((await donor(contactId))?.covering).toBeNull()
+  })
+
+  test('judged on the gift’s date: before a "future" declaration, or after a cancellation, not covered', async () => {
+    const { contactId, declarationId } = await record({
+      giftAid: { scope: 'future', madeOn: '2026-10-01' },
+    })
+    expect((await donor(contactId, f.a, '2026-10-01'))?.covering?.id).toBe(
+      declarationId,
+    )
+    expect((await donor(contactId, f.a, '2026-09-15'))?.covering).toBeNull()
+    await f.a.as.mutation(api.giftaid.mutations.recordCancellation, {
+      tenantId: f.a.tenantId,
+      contactId,
+      cancelledFrom: '2026-10-20',
+    })
+    expect((await donor(contactId, f.a, '2026-10-10'))?.covering?.id).toBe(
+      declarationId,
+    )
+    expect((await donor(contactId, f.a, '2026-10-21'))?.covering).toBeNull()
   })
 
   test('an archived acquisition code reads as archived', async () => {

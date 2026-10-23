@@ -134,14 +134,15 @@ export function donorKind(
 /**
  * What the Gift Aid section shows: nothing for an organisation or
  * household (HMRC 3.6.7) or before the donor is known; "✓ covered" for a
- * person with an enduring declaration in force (g2q6); else the tick.
+ * person with a declaration covering this gift's date (g2q6, judged by
+ * `giving/queries:donor` on the draft's date); else the tick.
  */
 export function giftAidOffer(
   donor: DonorChoice | null,
   info: DonorInfo | null | undefined,
 ): 'none' | 'covered' | 'tick' {
   if (donorKind(donor, info) !== 'individual') return 'none'
-  if (donor?.kind === 'existing' && info?.current) return 'covered'
+  if (donor?.kind === 'existing' && info?.covering) return 'covered'
   return 'tick'
 }
 
@@ -213,8 +214,15 @@ export function draftProblems(
   if (!draft.code) {
     problems.push({ field: 'sourceCode', message: 'Pick a source code' })
   }
-  const pence = parsePounds(draft.amountText)
-  if (pence === null) {
+  const pence = amountPence(draft.amountText)
+  if (pence === 'ambiguous') {
+    problems.push({
+      field: 'amount',
+      message: 'Is that pounds and pence? Write it like 12.50, with no spaces',
+    })
+  } else if (pence === 'tooLarge') {
+    problems.push({ field: 'amount', message: 'That amount is too large' })
+  } else if (pence === null) {
     problems.push({
       field: 'amount',
       message: draft.amountText.trim()
@@ -257,10 +265,28 @@ export function noAddressWarning(
   return 'No home address: the declaration is saved, but Gift Aid can’t be claimed until one is added'
 }
 
+/** The largest amount storable (`v.int64()` pence). */
+const MAX_PENCE = 2n ** 63n - 1n
+
+/**
+ * The typed amount as pence. A space inside the number ("12 50") is
+ * `ambiguous`, never guessed: £12.50 or £1,250? One past int64 is
+ * `tooLarge`. Otherwise `parsePounds`.
+ */
+export function amountPence(
+  text: string,
+): bigint | null | 'ambiguous' | 'tooLarge' {
+  if (/\d\s+[\d.,]/.test(text.trim())) return 'ambiguous'
+  const pence = parsePounds(text)
+  if (pence !== null && pence > MAX_PENCE) return 'tooLarge'
+  return pence
+}
+
 /** The pence a valid draft gives (`draftProblems` is empty). */
 export function amountOf(draft: GiftDraft): bigint {
-  const pence = parsePounds(draft.amountText)
-  if (pence === null) throw new Error('amount checked by draftProblems')
+  const pence = amountPence(draft.amountText)
+  if (typeof pence !== 'bigint')
+    throw new Error('amount checked by draftProblems')
   return pence
 }
 

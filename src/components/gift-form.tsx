@@ -1,8 +1,14 @@
 import { Link } from '@tanstack/react-router'
-import { useMutation, useQuery } from 'convex/react'
+import { useConvex, useMutation, useQuery } from 'convex/react'
 import { ConvexError } from 'convex/values'
 import { useEffect, useId, useRef, useState } from 'react'
-import type { FormEvent, KeyboardEvent, ReactNode, Ref } from 'react'
+import type {
+  FormEvent,
+  InputHTMLAttributes,
+  KeyboardEvent,
+  ReactNode,
+  Ref,
+} from 'react'
 import { api } from '../../convex/_generated/api'
 import type { Id } from '../../convex/_generated/dataModel'
 import { formatNumber } from '../../convex/contacts/number'
@@ -13,6 +19,7 @@ import {
   describeDeclaration,
 } from '../lib/giftaid'
 import {
+  amountPence,
   asksForAddress,
   defaultCode,
   differsNote,
@@ -35,16 +42,35 @@ import type {
   Problem,
   TickMethod,
 } from '../lib/gift-form'
-import { METHOD_LABELS, formatPence, parsePounds, refusal } from '../lib/gifts'
+import { METHOD_LABELS, formatPence, refusal } from '../lib/gifts'
 import { useTenant } from '../lib/tenant'
 import { useReportUnsaved } from '../lib/unsaved'
 import { SourceCodePicker, localToday } from './source-code-picker'
 
-const field = 'rounded border border-neutral-300 px-2 py-1.5 text-sm'
+const fieldClass = 'rounded border border-neutral-300 px-2 py-1.5 text-sm'
 const label = 'flex flex-col gap-1 text-sm text-neutral-700'
 
 /** How many search matches the donor box lists. */
 const SHOWN_MATCHES = 8
+
+/**
+ * The fields a problem can name, in the order the form shows them: the
+ * first one with a problem takes focus when a save is refused.
+ */
+const FIELD_ORDER = [
+  'contact',
+  'firstName',
+  'lastName',
+  'name',
+  'email',
+  'sourceCode',
+  'allocations',
+  'amount',
+  'receivedOn',
+  'reference',
+  'line1',
+  'postcode',
+]
 
 /**
  * The tick's methods, each said plainly (HMRC 3.10, 3.31): what staff are
@@ -69,20 +95,69 @@ const TICK_METHODS: Array<{ value: TickMethod; explain: string }> = [
   },
 ]
 
+/** The id of a field's input, and of its problem line. */
+const fieldId = (form: string, of: string) => `${form}-${of}`
+const problemId = (form: string, of: string) => `${form}-${of}-problem`
+
+/** A field's problems, as one line its input points at (`aria-describedby`). */
 function FieldProblems({
   problems,
   of,
+  form,
 }: {
   problems: Array<Problem>
   of: string
+  form: string
 }) {
-  return problems
-    .filter((p) => p.field === of)
-    .map((p) => (
-      <span key={p.message} className="text-xs text-red-700">
-        {p.message}
-      </span>
-    ))
+  const mine = problems.filter((p) => p.field === of)
+  if (!mine.length) return null
+  return (
+    <span id={problemId(form, of)} className="text-xs text-red-700">
+      {mine.map((p) => p.message).join(' ')}
+    </span>
+  )
+}
+
+/** What an input carries when `of` has problems. */
+function invalidProps(problems: Array<Problem>, of: string, form: string) {
+  return problems.some((p) => p.field === of)
+    ? {
+        'aria-invalid': true as const,
+        'aria-describedby': problemId(form, of),
+      }
+    : {}
+}
+
+/**
+ * A labelled text input with its problems under it, outside the label so
+ * they aren't part of the field's name.
+ */
+function TextField({
+  form,
+  of,
+  label: text,
+  problems,
+  className,
+  ...input
+}: {
+  form: string
+  of: string
+  label: ReactNode
+  problems: Array<Problem>
+} & InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <div className={label}>
+      <label htmlFor={fieldId(form, of)}>{text}</label>
+      <input
+        id={fieldId(form, of)}
+        type="text"
+        className={`${fieldClass} ${className ?? ''}`}
+        {...invalidProps(problems, of, form)}
+        {...input}
+      />
+      <FieldProblems problems={problems} of={of} form={form} />
+    </div>
+  )
 }
 
 function Warning({ children }: { children: ReactNode }) {
@@ -96,8 +171,9 @@ function Warning({ children }: { children: ReactNode }) {
 /** What the last save recorded, for the "Saved" line (g1q7). */
 type Saved = {
   giftId: Id<'contributions'>
-  amount: bigint
-  name: string
+  /** Unknown only when an already-saved gift couldn't be read back. */
+  amount: bigint | null
+  name: string | null
   /** The save had already landed (a retry after a lost answer). */
   already: boolean
 }
@@ -110,10 +186,14 @@ type Saved = {
  *
  * `clientKey` is minted per gift and kept across retries of it, so a
  * double click or a retry after a lost answer records one gift; a new
- * one is minted only once a save has landed.
+ * one is minted only once a save has landed. A retry that finds its gift
+ * already saved says what the stored gift is, read back from the server,
+ * not what the form holds now.
  */
 export function GiftForm() {
   const tenant = useTenant()
+  const convex = useConvex()
+  const form = useId()
   const today = localToday()
   const record = useMutation(api.giving.mutations.recordGift)
   const [draft, setDraft] = useState<GiftDraft>(() => freshDraft(today))
@@ -126,22 +206,41 @@ export function GiftForm() {
   const inFlight = useRef(false)
   const [saved, setSaved] = useState<Saved | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const codeRef = useRef<HTMLInputElement>(null)
 
   const existingId = draft.donor?.kind === 'existing' ? draft.donor.id : null
-  const info = useQuery(
+  // Coverage is judged on the gift's date (an empty date input: today).
+  const fetched = useQuery(
     api.giving.queries.donor,
     existingId
-      ? { tenantId: tenant._id, contactId: existingId, today }
+      ? {
+          tenantId: tenant._id,
+          contactId: existingId,
+          date: draft.receivedOn || today,
+        }
       : 'skip',
   )
+  // While a changed date is re-read, the donor's last answer stays on
+  // screen; saving waits for the fresh one.
+  const last = useRef<{ id: Id<'contacts'>; info: DonorInfo | null } | null>(
+    null,
+  )
+  if (fetched !== undefined && existingId)
+    last.current = { id: existingId, info: fetched }
+  const shownInfo = existingId
+    ? (fetched ??
+      (last.current?.id === existingId ? last.current.info : undefined))
+    : undefined
+  const infoReady = existingId === null || fetched !== undefined
+
   // The donor's own code fills an empty code once their details arrive
   // (g2q1). A code staff picked first stays.
   const defaulted = useRef<Id<'contacts'> | null>(null)
   useEffect(() => {
-    if (!info || !existingId || defaulted.current === existingId) return
+    if (!fetched || !existingId || defaulted.current === existingId) return
     defaulted.current = existingId
-    setDraft((d) => (d.code ? d : { ...d, code: defaultCode(info) }))
-  }, [info, existingId])
+    setDraft((d) => (d.code ? d : { ...d, code: defaultCode(fetched) }))
+  }, [fetched, existingId])
 
   const dirty = isDirty(draft, fresh)
   useReportUnsaved(saving ? 'busy' : dirty ? 'unsaved' : 'clean')
@@ -166,10 +265,23 @@ export function GiftForm() {
     if (donor) setSaved(null)
   }
 
-  const shownInfo = existingId ? info : undefined
-  const pence = parsePounds(draft.amountText)
+  /** Refused: say so in the alert, and take the user to the first field. */
+  function refuse(found: Array<Problem>) {
+    setProblems(found)
+    setError(`Not saved: ${found.map((p) => p.message).join('; ')}`)
+    const first = FIELD_ORDER.find((f) => found.some((p) => p.field === f))
+    // After React has rendered the problems (and any field they open).
+    setTimeout(() => {
+      if (first === 'contact') searchRef.current?.focus()
+      else if (first === 'sourceCode' || first === 'allocations')
+        codeRef.current?.focus()
+      else if (first) document.getElementById(fieldId(form, first))?.focus()
+    }, 0)
+  }
+
+  const pence = amountPence(draft.amountText)
   const warnings =
-    pence !== null && pence > 0n && draft.receivedOn
+    typeof pence === 'bigint' && pence > 0n && draft.receivedOn
       ? giftWarnings({ receivedOn: draft.receivedOn, amount: pence }, today)
       : []
   const offer = giftAidOffer(draft.donor, shownInfo)
@@ -178,26 +290,39 @@ export function GiftForm() {
   const differs = differsNote(draft, shownInfo)
   const explain = TICK_METHODS.find((m) => m.value === draft.declarationMethod)
 
+  /** The stored gift a repeated save names, as the "Saved" line shows it. */
+  async function readBack(giftId: Id<'contributions'>): Promise<Saved> {
+    try {
+      const gift = await convex.query(api.giving.queries.get, {
+        tenantId: tenant._id,
+        id: giftId,
+      })
+      return {
+        giftId,
+        amount: gift?.amount ?? null,
+        name: gift?.contact?.displayName ?? null,
+        already: true,
+      }
+    } catch {
+      return { giftId, amount: null, name: null, already: true }
+    }
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     if (inFlight.current) return
     // An existing donor's Gift Aid state must be known before saving.
-    if (existingId && info === undefined) return
+    if (!infoReady) return
     const found = draftProblems(draft, shownInfo)
-    setProblems(found)
+    if (found.length) return refuse(found)
+    setProblems([])
     setError(null)
-    if (found.length) return
     const args = toArgs(draft, shownInfo, clientKey)
-    const done = (giftId: Id<'contributions'>, already: boolean) => {
-      const next = freshDraft(today, draft)
-      setSaved({
-        giftId,
-        amount: args.amount,
-        name: donorName(draft.donor!),
-        already,
-      })
-      setDraft(next)
-      setFresh(next)
+    const done = (next: Saved) => {
+      const blank = freshDraft(today, draft)
+      setSaved(next)
+      setDraft(blank)
+      setFresh(blank)
       setClientKey(crypto.randomUUID())
       defaulted.current = null
       searchRef.current?.focus()
@@ -206,7 +331,12 @@ export function GiftForm() {
     setSaving(true)
     try {
       const { giftId } = await record({ tenantId: tenant._id, ...args })
-      done(giftId, false)
+      done({
+        giftId,
+        amount: args.amount,
+        name: donorName(draft.donor!),
+        already: false,
+      })
     } catch (err) {
       const data =
         err instanceof ConvexError
@@ -218,10 +348,9 @@ export function GiftForm() {
             })
           : null
       if (data?.kind === 'rejected' && data.reason === 'duplicate') {
-        done(data.message as Id<'contributions'>, true)
+        done(await readBack(data.message as Id<'contributions'>))
       } else if (data?.kind === 'invalid' && data.problems) {
-        setProblems(data.problems)
-        setError('Not saved: check the fields marked')
+        refuse(data.problems)
       } else {
         setError(refusal(err, 'Could not save the gift: try again', ''))
       }
@@ -243,8 +372,9 @@ export function GiftForm() {
           role="status"
           className="rounded border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900"
         >
-          {saved.already ? 'Already saved' : 'Saved'}:{' '}
-          {formatPence(saved.amount)} from {saved.name}{' '}
+          {saved.already ? 'Already saved' : 'Saved'}
+          {saved.amount !== null && `: ${formatPence(saved.amount)}`}
+          {saved.name !== null && ` from ${saved.name}`}{' '}
           <Link
             to="/t/$slug/gifts/$giftId"
             params={{ slug: tenant.slug, giftId: saved.giftId }}
@@ -256,11 +386,19 @@ export function GiftForm() {
       )}
 
       <section className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium">Donor</h2>
+        <h2 className="text-sm font-medium" id={`${form}-donor`}>
+          Donor
+        </h2>
         {draft.donor === null ? (
-          <DonorSearch onPick={pickDonor} inputRef={searchRef} />
+          <DonorSearch
+            onPick={pickDonor}
+            inputRef={searchRef}
+            id={fieldId(form, 'contact')}
+            {...invalidProps(problems, 'contact', form)}
+          />
         ) : (
           <DonorShown
+            form={form}
             donor={draft.donor}
             info={shownInfo}
             problems={problems}
@@ -272,13 +410,14 @@ export function GiftForm() {
             }}
           />
         )}
-        <FieldProblems problems={problems} of="contact" />
+        <FieldProblems problems={problems} of="contact" form={form} />
       </section>
 
       <section className="flex flex-col gap-1">
         <h2 className="text-sm font-medium">Source code</h2>
         <SourceCodePicker
           value={draft.code?.shown ?? null}
+          inputRef={codeRef}
           onPick={(entry) =>
             set({
               code: {
@@ -290,33 +429,31 @@ export function GiftForm() {
           onClear={() => set({ code: null })}
         />
         {differs && <span className="text-xs text-neutral-500">{differs}</span>}
-        <FieldProblems problems={problems} of="sourceCode" />
-        <FieldProblems problems={problems} of="allocations" />
+        <FieldProblems problems={problems} of="sourceCode" form={form} />
+        <FieldProblems problems={problems} of="allocations" form={form} />
       </section>
 
       <div className="flex flex-wrap gap-4">
-        <label className={label}>
-          Amount (£)
-          <input
-            type="text"
-            inputMode="decimal"
-            autoComplete="off"
-            value={draft.amountText}
-            onChange={(e) => set({ amountText: e.target.value })}
-            className={`${field} w-32`}
-          />
-          <FieldProblems problems={problems} of="amount" />
-        </label>
-        <label className={label}>
-          Date received
-          <input
-            type="date"
-            value={draft.receivedOn}
-            onChange={(e) => set({ receivedOn: e.target.value })}
-            className={field}
-          />
-          <FieldProblems problems={problems} of="receivedOn" />
-        </label>
+        <TextField
+          form={form}
+          of="amount"
+          label="Amount (£)"
+          problems={problems}
+          inputMode="decimal"
+          autoComplete="off"
+          value={draft.amountText}
+          onChange={(e) => set({ amountText: e.target.value })}
+          className="w-32"
+        />
+        <TextField
+          form={form}
+          of="receivedOn"
+          label="Date received"
+          problems={problems}
+          type="date"
+          value={draft.receivedOn}
+          onChange={(e) => set({ receivedOn: e.target.value })}
+        />
       </div>
       {warnings.map((w) => (
         <Warning key={w.anchor}>{w.message}</Warning>
@@ -338,27 +475,28 @@ export function GiftForm() {
           ))}
         </div>
         {draft.method === 'card' && (
-          <label className={label}>
-            <span>
-              Reference{' '}
-              <span className="text-xs text-neutral-500">
-                (optional: the reader’s receipt or transaction id)
-              </span>
-            </span>
-            <input
-              type="text"
-              value={draft.reference}
-              onChange={(e) => set({ reference: e.target.value })}
-              className={`${field} max-w-sm`}
-            />
-            <FieldProblems problems={problems} of="reference" />
-          </label>
+          <TextField
+            form={form}
+            of="reference"
+            problems={problems}
+            label={
+              <>
+                Reference{' '}
+                <span className="text-xs text-neutral-500">
+                  (optional: the reader’s receipt or transaction id)
+                </span>
+              </>
+            }
+            value={draft.reference}
+            onChange={(e) => set({ reference: e.target.value })}
+            className="max-w-sm"
+          />
         )}
       </fieldset>
 
-      {offer === 'covered' && shownInfo?.current && (
+      {offer === 'covered' && shownInfo?.covering && (
         <p className="text-sm text-emerald-800" data-testid="gift-aid">
-          ✓ Gift Aid: covered by {describeDeclaration(shownInfo.current)}
+          ✓ Gift Aid: covered by {describeDeclaration(shownInfo.covering)}
         </p>
       )}
       {offer === 'none' && donorKind(draft.donor, shownInfo) !== undefined && (
@@ -397,7 +535,7 @@ export function GiftForm() {
                     onChange={(e) =>
                       set({ scope: e.target.value as GiftDraft['scope'] })
                     }
-                    className={field}
+                    className={fieldClass}
                   >
                     {(['futureAndPast4y', 'future', 'thisGift'] as const).map(
                       (s) => (
@@ -415,7 +553,7 @@ export function GiftForm() {
                     onChange={(e) =>
                       set({ declarationMethod: e.target.value as TickMethod })
                     }
-                    className={field}
+                    className={fieldClass}
                   >
                     {TICK_METHODS.map((m) => (
                       <option key={m.value} value={m.value}>
@@ -433,36 +571,43 @@ export function GiftForm() {
                   {explain.explain}
                 </p>
               )}
-              {onFile ? (
+              {onFile && existingId ? (
                 <p className="text-sm text-neutral-700">
                   Declared under their home address: {onFile.line1},{' '}
-                  {onFile.postcode}
+                  {onFile.postcode}{' '}
+                  <Link
+                    to="/t/$slug/contacts/$contactId"
+                    params={{ slug: tenant.slug, contactId: existingId }}
+                    target="_blank"
+                    rel="noopener"
+                    className="text-neutral-500 underline hover:text-neutral-900"
+                  >
+                    (change it on their contact page)
+                  </Link>
                 </p>
               ) : (
                 asksForAddress(draft, shownInfo) && (
                   <div className="flex flex-wrap gap-4">
-                    <label className={label}>
-                      House number or name, street
-                      <input
-                        type="text"
-                        autoComplete="off"
-                        value={draft.line1}
-                        onChange={(e) => set({ line1: e.target.value })}
-                        className={`${field} w-64`}
-                      />
-                      <FieldProblems problems={problems} of="line1" />
-                    </label>
-                    <label className={label}>
-                      Postcode
-                      <input
-                        type="text"
-                        autoComplete="off"
-                        value={draft.postcode}
-                        onChange={(e) => set({ postcode: e.target.value })}
-                        className={`${field} w-28`}
-                      />
-                      <FieldProblems problems={problems} of="postcode" />
-                    </label>
+                    <TextField
+                      form={form}
+                      of="line1"
+                      label="House number or name, street"
+                      problems={problems}
+                      autoComplete="off"
+                      value={draft.line1}
+                      onChange={(e) => set({ line1: e.target.value })}
+                      className="w-64"
+                    />
+                    <TextField
+                      form={form}
+                      of="postcode"
+                      label="Postcode"
+                      problems={problems}
+                      autoComplete="off"
+                      value={draft.postcode}
+                      onChange={(e) => set({ postcode: e.target.value })}
+                      className="w-28"
+                    />
                   </div>
                 )
               )}
@@ -472,14 +617,13 @@ export function GiftForm() {
         </fieldset>
       )}
 
-      {error && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
-      )}
+      {/* Always in the page, so a refusal is announced when it appears. */}
+      <p role="alert" className="text-sm text-red-700 empty:hidden">
+        {error}
+      </p>
       <button
         type="submit"
-        disabled={saving || (existingId !== null && info === undefined)}
+        disabled={saving || !infoReady}
         className="self-start rounded bg-neutral-900 px-4 py-2 text-sm text-white hover:bg-neutral-700 disabled:opacity-50"
       >
         {saving ? 'Saving…' : 'Record gift'}
@@ -492,57 +636,78 @@ type Option =
   | { kind: 'match'; row: SearchRow; numberMatch: boolean }
   | { kind: 'new'; contactKind: 'individual' | 'organization' }
 
-type SearchRow = NonNullable<ReturnType<typeof useSearch>>['rows'][number]
+type SearchRow = NonNullable<
+  ReturnType<typeof useSearch>['result']
+>['rows'][number]
 
-function useSearch(text: string, open: boolean) {
+/**
+ * `contacts.search` for `term`. Until the answer for `term` comes, the
+ * last answer stays on screen (as the code picker does), but `fresh` is
+ * false: those rows answer an older term.
+ */
+function useSearch(term: string, open: boolean) {
   const tenant = useTenant()
-  const term = text.trim()
-  // Until the new answer comes, the last one stands (as the code picker).
   const now = useQuery(
     api.contacts.queries.search,
     open && term ? { tenantId: tenant._id, search: term } : 'skip',
   )
   const last = useRef(now)
   if (now !== undefined) last.current = now
-  return term ? (now ?? last.current) : undefined
+  if (!term) return { result: undefined, fresh: false }
+  return { result: now ?? last.current, fresh: now !== undefined }
 }
 
 /**
- * The donor quick search (`contacts.search`): matches as you type, then
- * "New person" and "New organisation" filled in from the text (g1q3). A
- * contact found by its number is listed first and marked, but only a
- * pick (click or Enter) chooses it, never the search by itself (contact
- * numbers g2q5).
+ * The donor quick search (`contacts.search`): matches as you type, each
+ * with its contact number (contact numbers g1q4), then "New person" and
+ * "New organisation" filled in from the text (g1q3). A contact found by
+ * its number is listed first and marked, but only a pick (click or
+ * Enter) chooses it, never the search by itself (g2q5).
+ *
+ * Enter picks only from results that answer what is typed now: while
+ * they are loading, or still the last term's, it does nothing and says
+ * so. Otherwise a fast typist's Enter could pick "New person" (a
+ * duplicate contact) or the previous number's contact.
  */
 export function DonorSearch({
   onPick,
   inputRef,
+  id,
+  ...invalid
 }: {
   onPick: (donor: DonorChoice) => void
   inputRef?: Ref<HTMLInputElement>
+  id?: string
+  'aria-invalid'?: true
+  'aria-describedby'?: string
 }) {
   const listId = useId()
   const [text, setText] = useState('')
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
-  const found = useSearch(text, open)
+  const [waitHint, setWaitHint] = useState(false)
   const term = text.trim()
+  const { result: found, fresh } = useSearch(term, open)
   const options: Array<Option> = term
     ? [
         ...(found?.rows ?? []).slice(0, SHOWN_MATCHES).map((row) => ({
           kind: 'match' as const,
           row,
-          numberMatch: found?.numberMatch === row._id,
+          // Never marked from an older term's answer.
+          numberMatch: fresh && found?.numberMatch === row._id,
         })),
         { kind: 'new', contactKind: 'individual' },
         { kind: 'new', contactKind: 'organization' },
       ]
     : []
+  const shown = open && options.length > 0
+  const optionId = (i: number) => `${listId}-${i}`
 
   function pick(o: Option) {
     setOpen(false)
     setText('')
     setActive(0)
+    setWaitHint(false)
     onPick(
       o.kind === 'match'
         ? { kind: 'existing', id: o.row._id, displayName: o.row.displayName }
@@ -554,8 +719,13 @@ export function DonorSearch({
     if (e.key === 'Enter') {
       // Never submits the form from here.
       e.preventDefault()
+      if (!open || !term) return
+      if (!fresh) {
+        setWaitHint(true)
+        return
+      }
       const o = options.at(active)
-      if (open && o) pick(o)
+      if (o) pick(o)
     } else if (e.key === 'ArrowDown') {
       e.preventDefault()
       setOpen(true)
@@ -569,17 +739,23 @@ export function DonorSearch({
   }
 
   const more =
-    (found?.rows.length ?? 0) > SHOWN_MATCHES || (found?.truncated ?? false)
+    fresh &&
+    ((found?.rows.length ?? 0) > SHOWN_MATCHES || (found?.truncated ?? false))
   return (
     <div className="relative max-w-md">
       <input
         ref={inputRef}
+        id={id}
         type="text"
         role="combobox"
         aria-label="Donor"
-        aria-expanded={open && options.length > 0}
+        aria-expanded={shown}
         aria-controls={listId}
         aria-autocomplete="list"
+        aria-activedescendant={
+          shown && options.at(active) ? optionId(active) : undefined
+        }
+        {...invalid}
         autoComplete="off"
         autoFocus
         value={text}
@@ -588,87 +764,99 @@ export function DonorSearch({
           setText(e.target.value)
           setActive(0)
           setOpen(true)
+          setWaitHint(false)
         }}
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
         onKeyDown={onKeyDown}
         className="w-full rounded border border-neutral-300 px-3 py-1.5 text-sm"
       />
-      {open && options.length > 0 && (
-        <ul
-          id={listId}
-          role="listbox"
-          aria-label="Donor matches"
-          className="absolute z-10 mt-1 max-h-96 w-full overflow-auto rounded border border-neutral-200 bg-white text-sm shadow"
-        >
-          {found === undefined && (
-            <li className="px-3 py-2 text-neutral-500">Searching…</li>
-          )}
-          {found && found.rows.length === 0 && (
-            <li className="px-3 py-2 text-neutral-500">
-              {found.tooBroad
-                ? 'Too many to look through: type more.'
-                : (found.invalidNumber ?? 'No contacts match.')}
-            </li>
-          )}
-          {options.map((o, i) => (
-            <li
-              key={o.kind === 'match' ? o.row._id : `new-${o.contactKind}`}
-              role="option"
-              aria-selected={i === active}
-              // Keep focus in the input, so the click lands as a pick.
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => pick(o)}
-              onMouseEnter={() => setActive(i)}
-              className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 ${
-                o.kind === 'new' ? 'border-t border-neutral-100' : ''
-              } ${
-                o.kind === 'match' && o.numberMatch
-                  ? i === active
-                    ? 'bg-emerald-100'
-                    : 'bg-emerald-50'
-                  : i === active
-                    ? 'bg-neutral-100'
-                    : ''
-              }`}
-            >
-              {o.kind === 'match' ? (
-                <>
-                  <span className="flex-1 truncate">{o.row.displayName}</span>
-                  {o.numberMatch && (
-                    <span className="rounded bg-emerald-200 px-1.5 text-xs text-emerald-900">
+      {shown && (
+        <div className="absolute z-10 mt-1 w-full rounded border border-neutral-200 bg-white text-sm shadow">
+          <p
+            role="status"
+            className="px-3 py-1.5 text-xs text-neutral-500 empty:hidden"
+          >
+            {!fresh
+              ? waitHint
+                ? 'Still searching: press Enter again once the results show.'
+                : 'Searching…'
+              : found && found.rows.length === 0
+                ? found.tooBroad
+                  ? 'Too many to look through: type more.'
+                  : (found.invalidNumber ?? 'No contacts match.')
+                : ''}
+          </p>
+          <ul
+            id={listId}
+            role="listbox"
+            aria-label="Donor matches"
+            className={`max-h-96 overflow-auto ${fresh ? '' : 'opacity-60'}`}
+          >
+            {options.map((o, i) => (
+              <li
+                key={o.kind === 'match' ? o.row._id : `new-${o.contactKind}`}
+                id={optionId(i)}
+                role="option"
+                aria-selected={i === active}
+                // Keep focus in the input, so the click lands as a pick.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pick(o)}
+                onMouseEnter={() => setActive(i)}
+                className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 ${
+                  o.kind === 'new' ? 'border-t border-neutral-100' : ''
+                } ${
+                  o.kind === 'match' && o.numberMatch
+                    ? i === active
+                      ? 'bg-emerald-100'
+                      : 'bg-emerald-50'
+                    : i === active
+                      ? 'bg-neutral-100'
+                      : ''
+                }`}
+              >
+                {o.kind === 'match' ? (
+                  <>
+                    <span className="flex-1 truncate">{o.row.displayName}</span>
+                    <span
+                      className={`rounded px-1.5 text-xs ${
+                        o.numberMatch
+                          ? 'bg-emerald-200 text-emerald-900'
+                          : 'text-neutral-500'
+                      }`}
+                    >
                       contact no. {formatNumber(o.row.number)}
                     </span>
-                  )}
-                  {o.row.kind !== 'individual' && (
-                    <span className="text-xs text-neutral-500">
-                      {o.row.kind === 'organization'
-                        ? 'organisation'
-                        : 'household'}
-                    </span>
-                  )}
-                  {o.row.email && (
-                    <span className="truncate text-xs text-neutral-500">
-                      {o.row.email}
-                    </span>
-                  )}
-                </>
-              ) : (
-                <span>
-                  {o.contactKind === 'individual'
-                    ? 'New person'
-                    : 'New organisation'}{' '}
-                  <span className="text-neutral-500">“{term}”</span>
-                </span>
-              )}
-            </li>
-          ))}
+                    {o.row.kind !== 'individual' && (
+                      <span className="text-xs text-neutral-500">
+                        {o.row.kind === 'organization'
+                          ? 'organisation'
+                          : 'household'}
+                      </span>
+                    )}
+                    {o.row.email && (
+                      <span className="truncate text-xs text-neutral-500">
+                        {o.row.email}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span>
+                    {o.contactKind === 'individual'
+                      ? 'New person'
+                      : 'New organisation'}{' '}
+                    <span className="text-neutral-500">“{term}”</span>
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
           {more && (
-            <li className="px-3 py-1.5 text-xs text-neutral-500">
+            <p className="px-3 py-1.5 text-xs text-neutral-500">
               More contacts match: type more to narrow.
-            </li>
+            </p>
           )}
-        </ul>
+        </div>
       )}
     </div>
   )
@@ -676,12 +864,14 @@ export function DonorSearch({
 
 /** The picked donor, or a new one's fields, with "Change" back to the search. */
 function DonorShown({
+  form,
   donor,
   info,
   problems,
   onChange,
   onClear,
 }: {
+  form: string
   donor: DonorChoice
   info: DonorInfo | null | undefined
   problems: Array<Problem>
@@ -732,50 +922,47 @@ function DonorShown({
       </div>
       {donor.contactKind === 'individual' ? (
         <div className="flex flex-wrap gap-4">
-          <label className={label}>
-            First name
-            <input
-              type="text"
-              value={donor.firstName}
-              onChange={(e) => typed({ firstName: e.target.value })}
-              className={field}
-            />
-            <FieldProblems problems={problems} of="firstName" />
-          </label>
-          <label className={label}>
-            Last name
-            <input
-              type="text"
-              value={donor.lastName}
-              onChange={(e) => typed({ lastName: e.target.value })}
-              className={field}
-            />
-            <FieldProblems problems={problems} of="lastName" />
-          </label>
-          <label className={label}>
-            <span>
-              Email <span className="text-xs text-neutral-500">(optional)</span>
-            </span>
-            <input
-              type="email"
-              value={donor.email}
-              onChange={(e) => typed({ email: e.target.value })}
-              className={field}
-            />
-            <FieldProblems problems={problems} of="email" />
-          </label>
+          <TextField
+            form={form}
+            of="firstName"
+            label="First name"
+            problems={problems}
+            value={donor.firstName}
+            onChange={(e) => typed({ firstName: e.target.value })}
+          />
+          <TextField
+            form={form}
+            of="lastName"
+            label="Last name"
+            problems={problems}
+            value={donor.lastName}
+            onChange={(e) => typed({ lastName: e.target.value })}
+          />
+          <TextField
+            form={form}
+            of="email"
+            label={
+              <>
+                Email{' '}
+                <span className="text-xs text-neutral-500">(optional)</span>
+              </>
+            }
+            problems={problems}
+            type="email"
+            value={donor.email}
+            onChange={(e) => typed({ email: e.target.value })}
+          />
         </div>
       ) : (
-        <label className={label}>
-          Name
-          <input
-            type="text"
-            value={donor.name}
-            onChange={(e) => typed({ name: e.target.value })}
-            className={`${field} max-w-md`}
-          />
-          <FieldProblems problems={problems} of="name" />
-        </label>
+        <TextField
+          form={form}
+          of="name"
+          label="Name"
+          problems={problems}
+          value={donor.name}
+          onChange={(e) => typed({ name: e.target.value })}
+          className="max-w-md"
+        />
       )}
     </div>
   )

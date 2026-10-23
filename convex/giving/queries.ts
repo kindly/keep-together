@@ -9,7 +9,7 @@ import { tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { groupsToRead, toMoments } from '../contacts/history'
 import { describeDonor } from '../contacts/donors'
-import { currentDeclaration } from '../giftaid/declarations'
+import { coverage } from '../giftaid/declarations'
 import { describe } from '../sources/code'
 import type { SourceCodeDescription } from '../sources/code'
 import type { RecentGift } from './types'
@@ -162,16 +162,18 @@ export const get = tenantQuery({
  * round: kind and names, the home address a declaration would snapshot
  * (primary, else first; empty strings when none), the acquisition code
  * described (the gift's default code when not archived, g2q1), and the
- * enduring declaration in force on `today` (the caller's date), for
- * "✓ covered" instead of the tick (g2q6). Null for a missing or another
- * tenant's id.
+ * declaration that would cover a gift dated `date` (the gift being
+ * entered; not yet saved, so never a "this gift only" one), for
+ * "✓ covered" instead of the tick (g2q6). Judged on the gift's date, not
+ * today: a back-dated gift before a declaration, or after a
+ * cancellation, gets the tick. Null for a missing or another tenant's id.
  */
 export const donor = tenantQuery({
-  args: { contactId: v.id('contacts'), today: v.string() },
-  handler: async (ctx, { contactId, today }) => {
-    const [found, current] = await Promise.all([
+  args: { contactId: v.id('contacts'), date: v.string() },
+  handler: async (ctx, { contactId, date }) => {
+    const [found, covering] = await Promise.all([
       describeDonor(ctx.db, contactId),
-      currentDeclaration(ctx, contactId, today),
+      coverage(ctx, contactId, date),
     ])
     if (!found) return null
     const { acquisitionCodeId, ...rest } = found
@@ -180,7 +182,7 @@ export const donor = tenantQuery({
       acquisition: acquisitionCodeId
         ? await describe(ctx.db, acquisitionCodeId)
         : null,
-      current,
+      covering,
     }
   },
 })

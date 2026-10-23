@@ -20,7 +20,7 @@ export type Donor = {
   firstName: string
   lastName: string
   acquisitionCodeId: Id<'sourceCodes'> | null
-  /** The primary address's line 1 and postcode, or empty strings. */
+  /** The primary (else first) address's line 1 and postcode, or empty strings. */
   home: { line1: string; postcode: string }
 }
 
@@ -93,12 +93,16 @@ export async function addFirstEmail(
 }
 
 /**
- * Add a UK home address (line 1 and postcode, what Gift Aid needs) to the
- * contact's addresses, keeping the ones it has. It becomes the primary
- * only if there is none. Built from the rows read in this transaction, so
- * it needs no `expected`. Returns line 1 and postcode as stored (tidied).
+ * Give the contact a UK home address (line 1 and postcode, what Gift Aid
+ * needs), keeping the addresses it has. The row a declaration would
+ * snapshot (primary, else first: `describeDonor`'s home) is completed in
+ * place when it lacks line 1 or postcode, so it stays the primary
+ * (addresses are editable in place, ADR 0014). Otherwise the address is
+ * added, as the primary only if there is none. Built from the rows read
+ * in this transaction, so it needs no `expected`. Returns line 1 and
+ * postcode as stored (tidied).
  */
-export async function addHomeAddress(
+export async function setHomeAddress(
   ctx: ContractCtx,
   contactId: Id<'contacts'>,
   home: { line1: string; postcode: string },
@@ -109,32 +113,42 @@ export async function addHomeAddress(
     addressRows(ctx.db, contactId),
   ])
   if (!contact) throw rejected('unknown_contact', 'Contact must exist')
+  const current = rows.find((a) => a.isPrimary) ?? rows.at(0)
+  const partial =
+    current && (!current.line1.trim() || !current.postcode.trim())
+      ? current
+      : null
   const kept = rows.map((a) => ({
     key: a.key,
     label: a.label,
-    line1: a.line1,
+    line1: a.key === partial?.key ? home.line1 : a.line1,
     line2: a.line2,
     line3: a.line3,
     town: a.town,
-    postcode: a.postcode,
+    postcode: a.key === partial?.key ? home.postcode : a.postcode,
     country: a.country,
     isPrimary: a.isPrimary,
   }))
-  const added = {
-    label: 'home' as const,
-    line1: home.line1,
-    line2: '',
-    line3: '',
-    town: '',
-    postcode: home.postcode,
-    country: 'GB',
-    isPrimary: !kept.some((a) => a.isPrimary),
-  }
-  const key = crypto.randomUUID()
+  const key = partial?.key ?? crypto.randomUUID()
+  const added = partial
+    ? []
+    : [
+        {
+          key,
+          label: 'home' as const,
+          line1: home.line1,
+          line2: '',
+          line3: '',
+          town: '',
+          postcode: home.postcode,
+          country: 'GB',
+          isPrimary: !kept.some((a) => a.isPrimary),
+        },
+      ]
   await executeContract(
     ctx,
     addresses,
-    { addresses: [...kept, { key, ...added }] },
+    { addresses: [...kept, ...added] },
     {
       entityId: contactId,
       expected: contact.addressesVersion,
