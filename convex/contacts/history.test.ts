@@ -344,26 +344,12 @@ describe('sharedAddresses', () => {
 describe('tags, retired (dropdown fields step 7)', () => {
   /**
    * A `contacts.tags` revision as the removed contract wrote it, between
-   * the details saves around it: its tag row, its counter bump, its
-   * revision. Returns the revision.
+   * the details saves around it. Returns the revision.
    */
   const tagRevision = (who: Tenant, contactId: Id<'contacts'>) =>
     f.t.run(async (ctx) => {
-      const tagId = await ctx.db.insert('tags', {
-        tenantId: who.tenantId,
-        name: 'Volunteer',
-        nameNormalized: 'volunteer',
-        isActive: true,
-        saveVersion: 0,
-      })
-      await ctx.db.insert('contactTags', {
-        tenantId: who.tenantId,
-        contactId,
-        key: 't1',
-        tagId,
-        name: 'Volunteer',
-      })
-      await ctx.db.patch('contacts', contactId, { tagsVersion: 1 })
+      // The tag rows went with step 8: the revision is all that's left.
+      const tagId = 'tag-volunteer'
       return ctx.db.insert('revisions', {
         tenantId: who.tenantId,
         entity: 'contacts',

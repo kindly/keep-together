@@ -104,7 +104,7 @@ async function saveFields(
   return who.as.mutation(api.contacts.mutations.saveForm, {
     tenantId: who.tenantId,
     id,
-    fields: { expected: expected ?? current.fieldsVersion ?? 0, values },
+    fields: { expected: expected ?? current.fieldsVersion, values },
   })
 }
 

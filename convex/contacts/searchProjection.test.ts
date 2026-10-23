@@ -265,27 +265,10 @@ describe('backfill', () => {
   })
   test('tags gone: re-projecting drops tag words from every row', async () => {
     const other = await createContact(f.b, 'Haddad')
-    // Rows as the tag-era projection wrote them: each contact carries a
-    // tag, and the tag's name is in its search text.
+    // Rows as the tag-era projection wrote them: each contact's tag name
+    // is in its search text (the tag rows themselves went in step 8).
     await f.t.run(async (ctx) => {
-      for (const [who, contactId] of [
-        [f.a, priya],
-        [f.b, other],
-      ] as const) {
-        const tagId = await ctx.db.insert('tags', {
-          tenantId: who.tenantId,
-          name: 'Volunteer',
-          nameNormalized: 'volunteer',
-          isActive: true,
-          saveVersion: 0,
-        })
-        await ctx.db.insert('contactTags', {
-          tenantId: who.tenantId,
-          contactId,
-          key: `tag-${contactId}`,
-          tagId,
-          name: 'Volunteer',
-        })
+      for (const contactId of [priya, other]) {
         const row = (await ctx.db.query('contactSearch').collect()).find(
           (r) => r.contactId === contactId,
         )!

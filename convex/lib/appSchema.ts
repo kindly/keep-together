@@ -104,18 +104,12 @@ export const appTables = {
   //   tenantPreferences.fields → staffCanManageFields (fieldsVersion)
   tenantPreferences: defineTable({
     tenantId: v.id('tenants'),
-    // Tags, removed (dropdown fields step 7): optional until step 8 unsets
-    // them and step 9 drops them.
-    staffCanManageTags: v.optional(v.boolean()),
-    tagsVersion: v.optional(v.number()),
     staffCanManageIdentifierTypes: v.boolean(),
     identifierTypesVersion: v.number(),
     staffCanManageSourceCodes: v.boolean(),
     sourceCodesVersion: v.number(),
-    // Dropdown fields step 1: optional until the tighten (step 9); rows
-    // created before are backfilled (platform/migrations).
-    staffCanManageFields: v.optional(v.boolean()),
-    fieldsVersion: v.optional(v.number()),
+    staffCanManageFields: v.boolean(),
+    fieldsVersion: v.number(),
   }).index('by_tenant', ['tenantId']),
 
   // ── command log (ADR 0013 / 0017) ─────────────────────────────────────
@@ -186,9 +180,6 @@ export const appTables = {
     methodsVersion: v.number(),
     addressesVersion: v.number(),
     archiveVersion: v.number(),
-    // The removed `contacts.tags` slice's counter (dropdown fields step 7):
-    // optional until step 8 unsets it and step 9 drops it.
-    tagsVersion: v.optional(v.number()),
     identifiersVersion: v.number(),
     // How the contact was recruited: a `sourceCodes` row at level
     // 'version' (the source code). Optional for good: absent = uncoded.
@@ -198,9 +189,7 @@ export const appTables = {
     // (lib/fieldSlots). Optional for good: absent = not set. Ids only, so
     // renaming an option never rewrites contacts.
     ...slotFields(v.optional(v.id('contactFieldOptions'))),
-    // Optional until the tighten (dropdown fields step 9); contacts created
-    // before step 1 are backfilled (contacts/migrations).
-    fieldsVersion: v.optional(v.number()),
+    fieldsVersion: v.number(),
     // The contact number's sequence (contacts/number; shown with its check
     // digit). Optional until the tighten (contact numbers step 6); contacts
     // created before step 1 are backfilled (step 2).
@@ -275,20 +264,6 @@ export const appTables = {
   })
     .index('by_tenant_contact', ['tenantId', 'contactId'])
     .index('by_tenant_key', ['tenantId', 'key']),
-
-  // Assignment of a tag to a contact, from the removed `contacts.tags`
-  // slice (dropdown fields step 7). Nothing reads or writes it; step 8
-  // deletes the rows and step 9 the table.
-  contactTags: defineTable({
-    tenantId: v.id('tenants'),
-    contactId: v.id('contacts'),
-    key: v.string(),
-    tagId: v.id('tags'),
-    name: v.string(),
-  })
-    .index('by_tenant_contact', ['tenantId', 'contactId'])
-    .index('by_tenant_key', ['tenantId', 'key'])
-    .index('by_tenant_tag', ['tenantId', 'tagId']),
 
   // An external identifier (`contacts.identifiers` slice): the contact's id
   // in another system. `typeId` and `value` are identity fields, immutable
@@ -436,17 +411,6 @@ export const appTables = {
   // names unique per tenant case-insensitively; archive = `isActive: false`
   // (out of the picker, rows kept and still found). None seeded.
   identifierTypes: defineTable({
-    tenantId: v.id('tenants'),
-    name: v.string(),
-    nameNormalized: v.string(), // normaliseListName(name)
-    isActive: v.boolean(),
-    saveVersion: v.number(),
-  }).index('by_tenant_nameNormalized', ['tenantId', 'nameNormalized']),
-
-  // Tag definitions, from the removed `contacts.tag` contract (dropdown
-  // fields step 7). Nothing reads or writes them; step 8 deletes the rows
-  // and step 9 the table.
-  tags: defineTable({
     tenantId: v.id('tenants'),
     name: v.string(),
     nameNormalized: v.string(), // normaliseListName(name)

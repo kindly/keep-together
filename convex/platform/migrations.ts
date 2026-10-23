@@ -14,29 +14,9 @@
  * every deployment that will take the tightening; the tightening commit
  * deletes the backfill and its test. Past backfills: `ownerToAdmin`
  * (auth-roles R1), `splitStaffCanManageLists` (settings-per-category),
- * `backfillSourceCodesPreference` (source codes);
- * see git log.
+ * `backfillSourceCodesPreference` (source codes),
+ * `backfillFieldsPreference` (dropdown fields 1); see git log.
  */
 import { migrations } from '../lib/migrations'
 
 export const run = migrations.runner()
-
-/**
- * Dropdown fields step 1: `staffCanManageFields = false` with
- * `fieldsVersion = 0` on preferences rows created before the switch
- * existed. That is the default a row-less tenant reads and what a new row
- * is created with, so no revision: the `tenantPreferences.fields` contract's
- * history starts at its first real save. A no-op on rows that have it.
- *
- *   npx convex run platform/migrations:run '{"fn":"platform/migrations:backfillFieldsPreference"}'
- */
-export const backfillFieldsPreference = migrations.define({
-  table: 'tenantPreferences',
-  migrateOne: (_ctx, row) =>
-    row.fieldsVersion === undefined
-      ? {
-          staffCanManageFields: row.staffCanManageFields ?? false,
-          fieldsVersion: 0,
-        }
-      : undefined,
-})

@@ -107,7 +107,7 @@ function toCounters(data: Data): Counters {
     methods: data.contact.methodsVersion,
     addresses: data.contact.addressesVersion,
     identifiers: data.contact.identifiersVersion,
-    fields: data.contact.fieldsVersion ?? 0,
+    fields: data.contact.fieldsVersion,
   }
 }
 
