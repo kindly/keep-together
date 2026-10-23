@@ -10,7 +10,7 @@
 - **Goal**: every contact gets a short sequential number, per organisation, that staff can write on a paper Gift Aid form and type into quick search. *(human, cash-gifts chat 3)*
 - **Allocated in the create transaction** from one counter row per tenant, in its own table `contactNumberSequences` (not on `tenants`). Imports take a block per batch. *(g1q1)*
   - **Higher number = newer contact** is an invariant worth keeping: it's tested, and imports number their rows in order. The only exception is the one-off rollout gap, acceptable because there's no real data yet. *(g1q7 + rider)*
-- **Format:** sequence from **10001**, plus a **Luhn** check digit, written as six plain digits: `100017`. Spaces and hyphens are ignored when typed. *(g1q2, g1q3)*
+- **Format:** sequence from **10001**, plus a **Luhn** check digit, written as six plain digits: `100016`. Spaces and hyphens are ignored when typed. *(g1q2, g1q3)*
 - **Shown** in the contact page header (with a copy button), the contacts list (its own column), and search results and the contact picker. Not in history; export comes later. *(g1q4)*
 - **Old-system numbers are external identifiers**, never contact numbers. *(g1q5)*
 - **Never reused, never changed.** Kept by archive, erasure (rule 3) and merge (a tombstone keeps its own, and its number finds the survivor). No renumbering, not even by admins. *(g1q6)*
@@ -18,7 +18,7 @@
 - **Search** reads digits-only entries both ways: the number through `by_tenant_number`, and the phone as today. *(round 2)*
   - **An exact number match ranks first** with a "contact no." badge, then phone matches, then full text. *(g2q1)*
   - **A wrong check digit is flagged**: "100018 isn't a valid contact number. Check the last digit." Other matches still show. *(g2q2)*
-  - **The 5-digit sequence without its check digit also finds the contact**, ranked first and shown as the full `100017`. *(g2q3)*
+  - **The 5-digit sequence without its check digit also finds the contact**, ranked first and shown as the full `100016`. *(g2q3)*
   - **Exact only**: no prefix matching, and the number stays out of `contactSearch.text`. *(g2q4)*
   - **The contact picker offers a number match first and highlighted, but never picks it automatically.** No contact picker exists yet; the cash-gifts plan builds one and inherits this rule. *(g2q5)*
 </sv-prose>
@@ -26,7 +26,7 @@
 <sv-prose id="b2">
 ## Goal
 
-Each contact has a **contact number**: a short integer, unique within its organisation, handed out in order (10001, 10002, …) and written with a Luhn check digit (`100017`). Staff write it on paper forms (Gift Aid declarations, cash-gift slips) and type it into quick search. An exact match comes first, the way an email or identifier match does now. The number never changes and is never reused. A merged-away contact's number still finds the survivor, and an anonymised contact keeps its number.
+Each contact has a **contact number**: a short integer, unique within its organisation, handed out in order (10001, 10002, …) and written with a Luhn check digit (`100016`). Staff write it on paper forms (Gift Aid declarations, cash-gift slips) and type it into quick search. An exact match comes first, the way an email or identifier match does now. The number never changes and is never reused. A merged-away contact's number still finds the survivor, and an anonymised contact keeps its number.
 
 **Out of scope:** numbers for anything other than contacts (gifts, batches, claims); numbers the organisation chooses or edits; carrying an old system's member numbers over as contact numbers (those are external identifiers, ADR 0019 amendment / `external-ids` plan; see g1q5); printing forms; barcodes or QR codes.
 
@@ -110,7 +110,7 @@ Steps 3 and 4 depend on 1. Step 6 is last and goes in its own commit.
 
 <sv-ask id="g1q3" round="1">
 **Starting value and how it's written.** The sequence starts at 10001, so it's five digits until 99,999 contacts (far beyond a small group). How is it shown and written?
-- * **Six digits, no separator: `100017`** (sequence 10001 + check digit 7). One thing to copy. Search ignores spaces and hyphens if someone adds them.
+- * **Six digits, no separator: `100016`** (sequence 10001 + check digit 7). One thing to copy. Search ignores spaces and hyphens if someone adds them.
 - Check digit split off: `10001-7`. The structure is visible, but people may leave off the `-7`.
 - Smaller start (1001, so `10017`). Shorter, and four-digit sequences run out at 9,999 contacts and then grow.
 </sv-ask>
@@ -120,7 +120,7 @@ Steps 3 and 4 depend on 1. Step 6 is last and goes in its own commit.
 - * Contact page header, next to the name, with a copy button
 - * Contacts list, its own narrow column
 - * Search results and the contact picker (e.g. the cash-gift page's donor field)
-- History: the "created" entry says "contact no. 100017"
+- History: the "created" entry says "contact no. 100016"
 - Printed or exported output (CSV export). Later, when export exists.
 </sv-ask>
 
@@ -156,11 +156,11 @@ Round 1: allocation, format, display, old numbers, the never-change rule, rollou
 <sv-prose id="b7">
 ### Round 2: reading a typed number
 
-Today a digits-only entry of 6+ digits becomes a phone search: digits match a whole phone number or its **last 6 digits** (`PHONE_TAIL`), ranked first. A contact number is also 6 digits, so `100017` could be both. The plan: a 6-digit entry always runs **both** lookups, the number one through the `by_tenant_number` index (one indexed read, alongside the email and identifier lookups). These questions are about everything around that.
+Today a digits-only entry of 6+ digits becomes a phone search: digits match a whole phone number or its **last 6 digits** (`PHONE_TAIL`), ranked first. A contact number is also 6 digits, so `100016` could be both. The plan: a 6-digit entry always runs **both** lookups, the number one through the `by_tenant_number` index (one indexed read, alongside the email and identifier lookups). These questions are about everything around that.
 </sv-prose>
 
 <sv-ask id="g2q1" round="2">
-**Ranking a 6-digit entry.** Staff type `100017`. One contact has that number, and someone else's phone ends in `100017`.
+**Ranking a 6-digit entry.** Staff type `100016`. One contact has that number, and someone else's phone ends in `100016`.
 - * **The contact number match first**, with a "contact no." badge on the row, then the phone matches, then full text. A number is what staff copied off a form, and a phone-tail match is the coincidence.
 - Phone match first. Keeps today's behaviour for anyone who searches by phone tail.
 </sv-ask>
@@ -173,12 +173,12 @@ Today a digits-only entry of 6+ digits becomes a phone search: digits match a wh
 
 <sv-ask id="g2q3" round="2">
 **Typed without the check digit.** Staff type the 5-digit sequence `10001`, leaving off the last digit.
-- * **Find it anyway, ranked first, showing the full `100017`** on the row. The name on the row is what staff confirm against, so a typo shows up as a wrong name.
+- * **Find it anyway, ranked first, showing the full `100016`** on the row. The name on the row is what staff confirm against, so a typo shows up as a wrong name.
 - Don't: only the full six digits find a number. Strictest, and it's how the check digit catches typos in the box itself.
 </sv-ask>
 
 <sv-ask id="g2q4" round="2">
-**Partial numbers while typing.** Should `1000` (on its way to `100017`) list every contact whose number starts `1000`?
+**Partial numbers while typing.** Should `1000` (on its way to `100016`) list every contact whose number starts `1000`?
 - * **No: exact matches only.** At 4 digits a prefix matches thousands of contacts. The search text never carries the number, so it never adds noise to name or postcode searches.
 - Yes, prefix matching on numbers.
 </sv-ask>
@@ -194,5 +194,5 @@ Round 2: how search reads a typed number. If nothing else is open after this, ro
 </sv-ask>
 
 <sv-ask id="g3fin" round="3" role="close">
-**Confirm the plan.** The design tree at the top is the whole of it: allocation in the create transaction, `100017`-style numbers with a Luhn digit, the display places, never changed or reused, the two-phase rollout and search. The brief sections spell out the steps and tests. Approve to hand it to the controller for building, or send "revise" with what's wrong.
+**Confirm the plan.** The design tree at the top is the whole of it: allocation in the create transaction, `100016`-style numbers with a Luhn digit, the display places, never changed or reused, the two-phase rollout and search. The brief sections spell out the steps and tests. Approve to hand it to the controller for building, or send "revise" with what's wrong.
 </sv-ask>
