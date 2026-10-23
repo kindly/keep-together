@@ -21,7 +21,6 @@ import {
   formatPence,
   penceToInput,
   refusal,
-  useSetGiftStatus,
 } from '../lib/gifts'
 import {
   describeDeclaration,
@@ -99,7 +98,9 @@ function GiftView({ gift }: { gift: Gift }) {
       ),
     [convex, tenant._id, gift._id],
   )
-  const setStatus = useSetGiftStatus()
+  // Never optimistic (gifts are financial records): the page shows the
+  // new status once the server confirms it.
+  const setStatus = useMutation(api.giving.mutations.setStatus)
   const [editing, setEditing] = useState(false)
   // The status change being confirmed, with the counter seen when asked.
   const [confirming, setConfirming] = useState<{
@@ -144,8 +145,7 @@ function GiftView({ gift }: { gift: Gift }) {
     <main className="mx-auto grid max-w-5xl gap-8 p-6 md:grid-cols-[1fr_18rem]">
       <div className="flex flex-col gap-6">
         <header className="flex flex-col gap-1">
-          {/* The status counter, which only the server moves: QC checks a
-              void it saw at once (optimistic) was confirmed. */}
+          {/* The status counter: QC checks a refused change left it alone. */}
           <h1
             data-status-version={gift.statusVersion}
             className="flex flex-wrap items-baseline gap-2 text-xl font-semibold"

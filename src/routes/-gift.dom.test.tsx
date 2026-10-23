@@ -39,10 +39,8 @@ vi.mock('convex/react', () => ({
     if (name === 'platform/tenants:members') return members
     return { declarations: [], currentId: null }
   },
-  useMutation: (m: FunctionReference<'mutation'>) => {
-    const run = mutations[getFunctionName(m)]
-    return Object.assign(run, { withOptimisticUpdate: () => run })
-  },
+  useMutation: (m: FunctionReference<'mutation'>) =>
+    mutations[getFunctionName(m)],
   useConvex: () => ({}),
 }))
 vi.mock('../components/contact-history', () => ({

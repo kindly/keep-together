@@ -56,6 +56,9 @@ modules), one tenant inside, registered with the shared platform.
   does a per-field three-way merge (base / local / remote) and retries;
   only a field changed by both sides is shown as a conflict. The form
   ignores subscription echoes of its own last save by counter.
+- **No optimistic financial records:** gifts and other financial records
+  are never shown optimistically; the UI shows a change once the server
+  confirms it (human, 2026-10-23).
 - **Webhooks:** one HTTP route per provider; the path carries the tenant
   slug; the handler loads that tenant's secret from `tenantSettings`,
   verifies the signature, then calls an internal scoped mutation.

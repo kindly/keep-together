@@ -1,13 +1,5 @@
-import type { OptimisticLocalStore } from 'convex/browser'
 import { expect, test } from 'vitest'
-import type { Id } from '../../convex/_generated/dataModel'
-import {
-  formatDay,
-  formatPence,
-  parsePounds,
-  penceToInput,
-  setStatusLocally,
-} from './gifts'
+import { formatDay, formatPence, parsePounds, penceToInput } from './gifts'
 
 test('pence format as pounds, exactly, whatever the size', () => {
   expect(formatPence(0n)).toBe('£0.00')
@@ -43,33 +35,4 @@ test('pence round-trip through the amount field', () => {
   expect(penceToInput(123456n)).toBe('1234.56')
   for (const p of [1n, 99n, 100n, 2050n, 9007199254740991999n])
     expect(parsePounds(penceToInput(p))).toBe(p)
-})
-
-test('a status change shows in the cached gift, counter untouched', () => {
-  const key = (args: unknown) => JSON.stringify(args)
-  const cache = new Map<string, unknown>()
-  const store = {
-    getQuery: (_q: unknown, args: unknown) => cache.get(key(args)),
-    setQuery: (_q: unknown, args: unknown, value: unknown) =>
-      cache.set(key(args), value),
-    getAllQueries: () => [],
-  } as unknown as OptimisticLocalStore
-  const args = {
-    tenantId: 't1' as Id<'tenants'>,
-    id: 'g1' as Id<'contributions'>,
-  }
-  cache.set(key(args), { _id: 'g1', status: 'completed', statusVersion: 4 })
-  setStatusLocally(store, { ...args, expected: 4, status: 'void' })
-  expect(cache.get(key(args))).toEqual({
-    _id: 'g1',
-    status: 'void',
-    statusVersion: 4,
-  })
-  // A gift not loaded is left alone.
-  const other = {
-    tenantId: 't1' as Id<'tenants'>,
-    id: 'g2' as Id<'contributions'>,
-  }
-  setStatusLocally(store, { ...other, expected: 0, status: 'void' })
-  expect(cache.has(key(other))).toBe(false)
 })

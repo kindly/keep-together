@@ -119,85 +119,14 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
     const badge = heading(page).getByText('void', { exact: true })
     const voidButton = page.getByRole('button', { name: 'Void', exact: true })
     const unvoid = page.getByRole('button', { name: 'Unvoid' })
-    // Void and unvoid are optimistic (lib/gifts setStatusLocally): the
-    // page shows the new status before the server answers, and the timed
-    // window ends on what the user sees. Outside it, each sample's write
-    // must then be confirmed: the status counter, which only the server
-    // moves, goes up by one and the status stays (no roll-back). Checked
-    // at the start of the next sample and after the last.
-    let pending: { version: number; isVoid: boolean } | null = null
-    // By CSS: an open confirm hides the page from the role tree.
+    // By CSS: an open confirm hides the page from the role tree. Its
+    // status counter only moves when the server confirms a change.
     const counter = page.locator('main h1')
     const statusVersion = async () =>
       Number(await counter.getAttribute('data-status-version'))
-    // Untimed detail, not judged (budgets.ts): click to server-confirmed,
-    // measured in the page so nothing is added to the timed window. A
-    // capture listener notes the click, an observer the counter's move.
-    const confirmMs: Record<'void' | 'unvoid', Array<number>> = {
-      void: [],
-      unvoid: [],
-    }
-    const expectConfirmed = async () => {
-      if (!pending) return
-      await expect(counter).toHaveAttribute(
-        'data-status-version',
-        String(pending.version),
-      )
-      await expect(badge).toHaveCount(pending.isVoid ? 1 : 0)
-      const ms = await page.evaluate(() => {
-        const w = window as unknown as {
-          __qcConfirm?: { clickAt?: number; confirmedAt?: number }
-        }
-        const c = w.__qcConfirm
-        return c?.clickAt !== undefined && c.confirmedAt !== undefined
-          ? c.confirmedAt - c.clickAt
-          : null
-      })
-      if (ms !== null) confirmMs[pending.isVoid ? 'void' : 'unvoid'].push(ms)
-      pending = null
-    }
-    const expecting = async (isVoid: boolean) => {
-      pending = { version: (await statusVersion()) + 1, isVoid }
-      await page.evaluate((version) => {
-        const w = window as unknown as {
-          __qcConfirm?: { clickAt?: number; confirmedAt?: number }
-        }
-        const c: { clickAt?: number; confirmedAt?: number } = {}
-        w.__qcConfirm = c
-        document.addEventListener(
-          'click',
-          () => {
-            c.clickAt ??= performance.now()
-          },
-          { capture: true, once: true },
-        )
-        const h1 = document.querySelector('main h1')!
-        const seen = new MutationObserver(() => {
-          if (h1.getAttribute('data-status-version') === String(version)) {
-            c.confirmedAt = performance.now()
-            seen.disconnect()
-          }
-        })
-        seen.observe(h1, { attributes: true })
-      }, pending.version)
-    }
-    const noteConfirms = () => {
-      for (const kind of ['void', 'unvoid'] as const) {
-        const ms = confirmMs[kind]
-        if (!ms.length) continue
-        test.info().annotations.push({
-          type: `gift.${kind} server confirm (untimed)`,
-          description: `${ms.map((m) => m.toFixed(1)).join(', ')} ms`,
-        })
-        console.log(
-          `gift.${kind} server confirm (untimed): ${ms.map((m) => m.toFixed(1)).join(', ')} ms`,
-        )
-      }
-    }
     // Void asks first; the confirm is the timed click.
     await flow(page, 'gift.void', {
       before: async () => {
-        await expectConfirmed()
         if (await unvoid.isVisible()) {
           await unvoid.click()
           await confirm(page, 'Unvoid').click()
@@ -205,15 +134,14 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
         }
         await voidButton.click()
         await expect(page.getByRole('alertdialog')).toBeVisible()
-        await expecting(true)
       },
       action: () => confirm(page, 'Void').click(),
+      server: true,
       until: () =>
         [...document.querySelectorAll('main h1 span')].some(
           (s) => s.textContent === 'void',
         ),
     })
-    await expectConfirmed()
     await expect(badge).toBeVisible()
     await expect(page.getByTestId('gift-coverage')).toHaveText(
       'None: a void gift is never claimed',
@@ -232,7 +160,6 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
     // Unvoid asks first too; the confirm is the timed click.
     await flow(page, 'gift.unvoid', {
       before: async () => {
-        await expectConfirmed()
         if (await voidButton.isVisible()) {
           await voidButton.click()
           await confirm(page, 'Void').click()
@@ -240,20 +167,18 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
         }
         await unvoid.click()
         await expect(page.getByRole('alertdialog')).toBeVisible()
-        await expecting(false)
       },
       action: () => confirm(page, 'Unvoid').click(),
+      server: true,
       until: () =>
         ![...document.querySelectorAll('main h1 span')].some(
           (s) => s.textContent === 'void',
         ),
     })
-    await expectConfirmed()
-    noteConfirms()
 
-    // A refused void rolls back: the confirm keeps the counter it opened
-    // with, someone voids and unvoids meanwhile, so the void is stale. The
-    // page may show it for a moment, then must not.
+    // A refused void changes nothing: the confirm keeps the counter it
+    // opened with, someone voids and unvoids meanwhile, so the void is
+    // stale.
     await voidButton.click()
     await expect(page.getByRole('alertdialog')).toBeVisible()
     const before = await statusVersion()

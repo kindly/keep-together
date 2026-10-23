@@ -1,6 +1,4 @@
-import { useMutation, useQuery } from 'convex/react'
-import type { OptimisticLocalStore } from 'convex/browser'
-import type { FunctionArgs } from 'convex/server'
+import { useQuery } from 'convex/react'
 import { ConvexError } from 'convex/values'
 import type { Doc, Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
@@ -17,30 +15,6 @@ export function useMyRecentGifts(
   enabled = true,
 ): Array<RecentGift> | undefined {
   return useQuery(api.giving.queries.myRecent, enabled ? { tenantId } : 'skip')
-}
-
-/**
- * Void / unvoid shown at once: the gift page's cached `giving.get` takes
- * the new status before the server answers. The counter is left alone, so
- * the next `expected` and the history key wait for the real write; the
- * server's result replaces this, and a refusal (stale, say) rolls it back,
- * both by Convex.
- */
-export function setStatusLocally(
-  store: OptimisticLocalStore,
-  { tenantId, id, status }: FunctionArgs<typeof api.giving.mutations.setStatus>,
-) {
-  // Same key order as the page's query args: the store matches on them.
-  const args = { tenantId, id }
-  const gift = store.getQuery(api.giving.queries.get, args)
-  if (gift) store.setQuery(api.giving.queries.get, args, { ...gift, status })
-}
-
-/** `giving.setStatus`, shown optimistically (setStatusLocally). */
-export function useSetGiftStatus() {
-  return useMutation(api.giving.mutations.setStatus).withOptimisticUpdate(
-    setStatusLocally,
-  )
 }
 
 export const METHOD_LABELS: Record<Doc<'contributions'>['method'], string> = {

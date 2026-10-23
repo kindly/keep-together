@@ -135,10 +135,8 @@ export const budgets = {
     knownOver:
       'save floor: ~81 ms median, frame-quantised samples at 97/114 ms; server path at the contract minimum (factory/out/builder-cash-5-save-breakdown.md) (human 2026-10-23)',
   },
-  // Void and unvoid show the new status optimistically: these two time
-  // the click to that display, not the server round trip. The spec checks
-  // each write is then confirmed, and records click-to-confirmed as an
-  // untimed annotation ("gift.void server confirm"), not judged.
+  // Void and unvoid show the new status only once the server confirms it
+  // (gifts are never optimistic, human 2026-10-23).
   'gift.void': repeatable,
   'gift.unvoid': repeatable,
   'contact.gifts.loadMore': repeatable,
