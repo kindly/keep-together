@@ -610,9 +610,11 @@ export function toSplit(
  * A search finds a contact by anything in its `contactSearch` text (names,
  * emails and their parts, phones, postcodes, street, town, identifiers):
  * every word must match, the last as a prefix. Exact matches come
- * first: a contact number (`parseNumber`: the written six digits or the
- * five-digit sequence), an email address, an identifier, then a phone
- * number (normalised), then the rest in Convex's relevance order. A
+ * first: a written contact number (`parseNumber`: six digits whose check
+ * digit holds), an email address, an identifier, a bare five-digit
+ * sequence (after identifiers: an old member number is often five
+ * digits), then a phone number (normalised), then the rest in Convex's
+ * relevance order. A
  * six-digit entry is read both ways, as a number and as a phone. That order
  * can't be resumed from a cursor, hence one window. The search index holds
  * the kind, archived and source filters and up to
@@ -625,10 +627,12 @@ export function toSplit(
  * checked row by row as the read goes on (`scan`) until enough match or
  * LIST_SCAN_CAP rows have been read.
  *
- * `numberMatch` is the row its contact number found (always the first),
- * for a "contact no." badge; a picker offers it first, highlighted, and
- * never picks it by itself (g2q5). `invalidNumber` is the hint for six
- * digits whose check digit is wrong; the other matches still show.
+ * `numberMatch` is the row its contact number found, when that row is
+ * first (null when an identifier outranks it), for a "contact no." badge;
+ * a picker offers it first, highlighted, and never picks it by itself
+ * (g2q5). `invalidNumber` is the hint for six digits whose check digit is
+ * wrong, when nothing matched exactly or by phone (most such entries are
+ * phone tails).
  *
  * `truncated` says more contacts may match than `rows` holds (a cap or
  * scan limit was hit), so the UI can say it shows only some of them.
@@ -676,7 +680,6 @@ export const search = tenantQuery({
     if (term) {
       const { terms, phone } = parseSearch(term)
       const number = parseNumber(term)
-      if (number && 'invalid' in number) invalidNumber = number.hint
       const [byNumber, byEmail, byIdentifier, hits] = await Promise.all([
         number && 'sequence' in number
           ? contactWithNumber(ctx.db, number.sequence)
@@ -717,7 +720,15 @@ export const search = tenantQuery({
       const once = (id: Id<'contacts'>) =>
         !seen.has(id) && Boolean(seen.add(id))
       const inSource = source ? underSource(ctx.db, source) : null
-      const candidates = [...byNumber, ...byEmail, ...byIdentifier].filter(fits)
+      // A written number (Luhn-checked) leads. A bare five-digit sequence
+      // is weaker: an old system's member number, kept as an identifier,
+      // is often five digits in the same range, so it goes first.
+      const written = number && 'sequence' in number && number.written
+      const candidates = (
+        written
+          ? [...byNumber, ...byEmail, ...byIdentifier]
+          : [...byEmail, ...byIdentifier, ...byNumber]
+      ).filter(fits)
       const sourced = inSource
         ? await Promise.all(candidates.map(inSource))
         : null
@@ -728,6 +739,16 @@ export const search = tenantQuery({
         numberMatch = byNumber[0]._id
       }
       const rest = [...byPhone, ...matched].map((h) => h.contactId).filter(once)
+      // Six digits are as often a phone tail as a mistyped number: the
+      // hint only when nothing matched exactly or by phone, tail included.
+      if (
+        number &&
+        'invalid' in number &&
+        exact.length === 0 &&
+        !(phone && matched.some((h) => h.phones.some((p) => p.endsWith(phone))))
+      ) {
+        invalidNumber = number.hint
+      }
       const wanted = rest.slice(0, LIST_LIMIT + 1 - exact.length)
       const found = await Promise.all(wanted.map((id) => ctx.db.get(id)))
       rows = [...exact, ...found.filter((c) => c !== null)]

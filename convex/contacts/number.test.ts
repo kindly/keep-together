@@ -346,10 +346,16 @@ describe('reading a typed number (parseNumber)', () => {
       '10-00-16',
       '1000 1',
     ]) {
-      expect(parseNumber(typed), typed).toEqual({ sequence: FIRST_NUMBER })
+      expect(parseNumber(typed), typed).toEqual({
+        sequence: FIRST_NUMBER,
+        written: typed.replace(/[\s-]/g, '').length === 6,
+      })
     }
     for (let seq = FIRST_NUMBER; seq < FIRST_NUMBER + 500; seq++) {
-      expect(parseNumber(formatNumber(seq))).toEqual({ sequence: seq })
+      expect(parseNumber(formatNumber(seq))).toEqual({
+        sequence: seq,
+        written: true,
+      })
     }
   })
 

@@ -219,6 +219,22 @@ describe('what one search box finds', () => {
 describe('by contact number', () => {
   const numberOf = (id: Id<'contacts'>) =>
     f.t.run(async (ctx) => (await ctx.db.get(id))!.number!)
+  /** Give `id` one identifier, of a type named "Old member no.". */
+  const identify = async (id: Id<'contacts'>, value: string) => {
+    const { id: typeId } = await f.a.as.mutation(
+      api.contacts.mutations.saveIdentifierType,
+      {
+        tenantId: f.a.tenantId,
+        name: `Old member no. ${value}`,
+        isActive: true,
+      },
+    )
+    await f.a.as.mutation(api.contacts.mutations.saveForm, {
+      tenantId: f.a.tenantId,
+      id,
+      identifiers: { expected: 0, identifiers: [{ typeId, value }] },
+    })
+  }
 
   test('exact number first, then a phone ending in the same digits', async () => {
     await contact(f.a, { last: 'Achterberg' })
@@ -258,17 +274,57 @@ describe('by contact number', () => {
     }
   })
 
-  test('a wrong check digit says so and still lists phone matches', async () => {
+  test('a wrong check digit says so when nothing else matched', async () => {
     const target = await contact(f.a, { last: 'Mensah' })
     const written = formatNumber(await numberOf(target))
     const typo = written.slice(0, 5) + ((Number(written[5]) + 1) % 10)
-    const byPhone = await contact(f.a, { last: 'Osei', phone: `01452 ${typo}` })
     const found = await list(typo)
     expect(found.invalidNumber).toBe(
       `${typo} isn’t a valid contact number. Check the last digit.`,
     )
     expect(found.numberMatch).toBeNull()
-    expect(found.rows.map((r) => r._id)).toEqual([byPhone])
+    expect(found.rows).toEqual([])
+  })
+
+  test('no hint when six digits match a phone or an identifier', async () => {
+    // 900123 fails the check digit (90012's is 6): a phone tail, not a typo.
+    const byPhone = await contact(f.a, {
+      last: 'Okonjo',
+      phone: '07700 900123',
+    })
+    const tail = await list('900123')
+    expect(tail.rows.map((r) => r._id)).toEqual([byPhone])
+    expect(tail.invalidNumber).toBeNull()
+    expect(tail.numberMatch).toBeNull()
+
+    const byId = await contact(f.a, { last: 'Ferreira' })
+    await identify(byId, '100018')
+    const exact = await list('100018')
+    expect(exact.rows.map((r) => r._id)).toEqual([byId])
+    expect(exact.invalidNumber).toBeNull()
+  })
+
+  test('an old member number ranks above a bare five-digit sequence', async () => {
+    const oldMember = await contact(f.a, { last: 'Achterberg' })
+    const numbered = await contact(f.a, { last: 'Mensah' })
+    const writtenId = await contact(f.a, { last: 'Lindqvist' })
+    const sequence = await numberOf(numbered)
+    const written = formatNumber(sequence)
+    await identify(oldMember, String(sequence))
+    await identify(writtenId, written)
+    // Five digits: the identifier first; the number match isn't badged.
+    // The written-number identifier follows as a prefix match.
+    const bare = await list(String(sequence))
+    expect(bare.rows.map((r) => r._id)).toEqual([
+      oldMember,
+      numbered,
+      writtenId,
+    ])
+    expect(bare.numberMatch).toBeNull()
+    // Six digits with a valid check digit: the number still leads.
+    const full = await list(written)
+    expect(full.rows.map((r) => r._id)).toEqual([numbered, writtenId])
+    expect(full.numberMatch).toBe(numbered)
   })
 
   test('no prefix matching, and the number is not in the search text', async () => {

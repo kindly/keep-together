@@ -45,17 +45,11 @@ function onlyRow(name: string) {
   return links.length === 1 && links[0].textContent.includes(name)
 }
 
-/**
- * The written contact number of `user`'s only contact named `last`, read
- * through the API: the pages don't show numbers yet (contact numbers
- * step 4).
- */
-async function writtenNumber(
+/** A client signed in as `user`, to read what the pages don't show. */
+async function signedIn(
   inst: Instance,
   user: QcUser,
-  tenantId: string,
-  last: string,
-): Promise<string> {
+): Promise<ConvexHttpClient> {
   const client = new ConvexHttpClient(inst.url)
   const { tokens } = await client.action(api.auth.signIn, {
     provider: 'password',
@@ -63,6 +57,19 @@ async function writtenNumber(
   })
   if (!tokens) throw new Error(`no session for ${user.email}`)
   client.setAuth(tokens.token)
+  return client
+}
+
+/**
+ * The written contact number of the only contact named `last`, read
+ * through the API: the pages don't show numbers yet (contact numbers
+ * step 4).
+ */
+async function writtenNumber(
+  client: ConvexHttpClient,
+  tenantId: string,
+  last: string,
+): Promise<string> {
   const { rows } = await client.query(api.contacts.queries.search, {
     tenantId: tenantId as Id<'tenants'>,
     search: last,
@@ -226,8 +233,7 @@ test.describe('search by contact number', () => {
       const last = `qcs-${token()}`
       await createContact(page, users.a.slug, last, 'Femi')
       const written = await writtenNumber(
-        instance,
-        users.a,
+        await signedIn(instance, users.a),
         world.tenants[0].tenantId,
         last,
       )
@@ -260,15 +266,35 @@ test.describe('search by contact number', () => {
       await expect(page.locator('main')).not.toContainText(last)
 
       // B, in its own group, never sees A's contact by its number (B may
-      // have its own contact with the same number).
+      // have its own contact with the same number). The page must show
+      // what B's own search returns, so a stale or unsettled list can't
+      // pass for an empty one.
+      const asB = await signedIn(instance, users.b)
       const b = await secondTab(browser, baseURL!, await session(users.b))
       await b.goto(`/t/${users.b.slug}/contacts`)
       await expect(b.getByRole('heading', { name: 'Contacts' })).toBeVisible()
       for (const term of [written, written.slice(0, 5)]) {
+        const inB = await asB.query(api.contacts.queries.search, {
+          tenantId: world.tenants[1].tenantId as Id<'tenants'>,
+          search: term,
+        })
+        expect(inB.rows.some((r) => r.displayName.includes(last))).toBe(false)
+        await searchBox(b).fill('')
+        await expect(b.getByText('No contacts match.')).toBeHidden()
         await searchBox(b).fill(term)
-        await expect(
-          b.getByText('No contacts match.').or(listRows(b).first()),
-        ).toBeVisible()
+        if (inB.rows.length === 0) {
+          await expect(b.getByText('No contacts match.')).toBeVisible()
+        } else {
+          await expect(listRows(b)).toHaveCount(inB.rows.length)
+          await expect(listRows(b).first()).toContainText(
+            inB.rows[0].displayName,
+          )
+          if (inB.numberMatch) {
+            await expect(listRows(b).first()).toContainText(
+              `contact no. ${written}`,
+            )
+          }
+        }
         await expect(b.locator('main')).not.toContainText(last)
       }
       await b.context().close()
