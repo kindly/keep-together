@@ -97,7 +97,8 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
     await page.getByRole('button', { name: 'Edit' }).click()
     await page.getByLabel('Amount (£)').fill('0')
     await page.getByRole('button', { name: 'Save' }).click()
-    await expect(page.getByRole('alert')).toContainText(
+    // One message, not the amount's and its share's joined.
+    await expect(page.getByRole('alert')).toHaveText(
       'The amount must be over £0',
     )
     await page.getByLabel('Amount (£)').fill('12.345')

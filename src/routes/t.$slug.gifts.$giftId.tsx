@@ -446,6 +446,12 @@ function GiftEdit({
       setError('Enter the amount in pounds, like 20 or 20.50')
       return
     }
+    // Said here once: the server would refuse both the amount and its one
+    // share, which reads as the same problem twice.
+    if (amount <= 0n) {
+      setError('The amount must be over £0')
+      return
+    }
     if (single && !code) {
       setError('Pick a source code')
       return

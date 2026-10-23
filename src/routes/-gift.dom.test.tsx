@@ -198,6 +198,17 @@ test('a save refused as stale keeps the typed changes and retries once their ver
   )
 })
 
+test('a £0 amount is one message, sent nowhere', async () => {
+  render()
+  await click(button(el, 'Edit'))
+  await type(input('Amount'), '0')
+  await act(async () => form().requestSubmit())
+  expect(form().querySelector('[role="alert"]')?.textContent).toBe(
+    'The amount must be over £0',
+  )
+  expect(mutations['giving/mutations:save']).not.toHaveBeenCalled()
+})
+
 test('Unvoid confirms first, as Void does', async () => {
   gift = makeGift({ status: 'void', statusVersion: 3 })
   render()
