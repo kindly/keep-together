@@ -70,7 +70,7 @@ Step 3 in detail: `parseNumber(term)` in `contacts/number.ts` strips spaces and 
 1. **Loosen + allocate** (`convex/lib/appSchema.ts`, `convex/contacts/number.ts` new, `convex/contacts/contracts.ts` details create branch, `convex/contacts/view.ts` / list row shape, tests). Every create gets a number from this deploy on. Test fixtures and `platform/devSeed` create through the contract, so they get numbers without changes.
 2. **Backfill** (`convex/contacts/migrations.ts`, `docs/migrations.md` row). Can run in parallel with 3.
 3. **Search** (`convex/contacts/search.ts` `parseSearch` learns number shapes, `convex/contacts/queries.ts` exact lookup beside email/identifier, contact picker if it has its own search path). Can run in parallel with 2.
-4. **Display** (`src/routes/…` contact page header, list column, history header per g1q4; uses `formatNumber`).
+4. **Display** (`src/routes/…` contact page header, list column (not history, per g1q4); uses `formatNumber`).
 5. **QC** (`qc/flows/search.spec.ts` new flow `contacts.search.number`; `qc/budgets.ts`). `contacts.create` is re-measured as it stands.
 6. **Tighten** (`appSchema.ts`). Deploy only where step 2 is done.
 
