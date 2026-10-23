@@ -488,9 +488,8 @@ async function listRow(db: ScopedDatabaseReader, c: Doc<'contacts'>) {
     kind: c.kind,
     displayName: c.displayName,
     sortName: c.sortName,
-    // The contact number's sequence (formatNumber shows it); null until the
-    // backfill reaches a contact created before numbers.
-    number: c.number ?? null,
+    // The contact number's sequence (formatNumber shows it).
+    number: c.number,
     archived: c.archived,
     email: email?.address ?? null,
     fieldOptionIds: optionIdsOf(c),

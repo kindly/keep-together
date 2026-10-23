@@ -238,7 +238,7 @@ describe('with search text', () => {
 
   test('a contact number match obeys the filter at every level', async () => {
     const sequence = await f.t.run(
-      async (ctx) => (await ctx.db.get(ada))!.number!,
+      async (ctx) => (await ctx.db.get(ada))!.number,
     )
     for (const search of [formatNumber(sequence), String(sequence)]) {
       for (const source of [

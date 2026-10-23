@@ -368,7 +368,7 @@ const ContactRow = memo(
         >
           <span>
             {c.displayName}
-            {numberMatch && c.number !== null && (
+            {numberMatch && (
               <span className="ml-2 rounded bg-emerald-100 px-1.5 text-xs text-emerald-900">
                 contact no. {formatNumber(c.number)}
               </span>

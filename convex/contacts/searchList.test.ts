@@ -218,7 +218,7 @@ describe('what one search box finds', () => {
 
 describe('by contact number', () => {
   const numberOf = (id: Id<'contacts'>) =>
-    f.t.run(async (ctx) => (await ctx.db.get(id))!.number!)
+    f.t.run(async (ctx) => (await ctx.db.get(id))!.number)
   /** Give `id` one identifier, of a type named "Old member no.". */
   const identify = async (id: Id<'contacts'>, value: string) => {
     const { id: typeId } = await f.a.as.mutation(
@@ -441,7 +441,7 @@ describe('tenant isolation on every new path', () => {
     const aThird = await contact(f.a, { last: 'Okonjo' })
     const bFirst = await contact(f.b, { last: 'Haddad' })
     const number = (id: Id<'contacts'>) =>
-      f.t.run(async (ctx) => formatNumber((await ctx.db.get(id))!.number!))
+      f.t.run(async (ctx) => formatNumber((await ctx.db.get(id))!.number))
     const shared = await number(aFirst)
     expect(await number(bFirst)).toBe(shared)
 

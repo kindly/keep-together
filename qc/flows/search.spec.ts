@@ -76,7 +76,7 @@ async function writtenNumber(
   })
   expect(rows).toHaveLength(1)
   expect(rows[0].number).not.toBeNull()
-  return formatNumber(rows[0].number!)
+  return formatNumber(rows[0].number)
 }
 
 /** The `until` for "the first row is `name`'s, badged as a number match". */

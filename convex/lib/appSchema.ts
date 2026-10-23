@@ -202,9 +202,8 @@ export const appTables = {
     // before step 1 are backfilled (contacts/migrations).
     fieldsVersion: v.optional(v.number()),
     // The contact number's sequence (contacts/number; shown with its check
-    // digit). Optional until the tighten (contact numbers step 6); contacts
-    // created before step 1 are backfilled (step 2).
-    number: v.optional(v.number()),
+    // digit), from the tenant's `contactNumberSequences` row on create.
+    number: v.number(),
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
     .index('by_tenant_number', ['tenantId', 'number'])
