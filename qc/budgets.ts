@@ -158,3 +158,28 @@ export const BULK_FUNCTIONS: Record<string, number> = {
   'contacts/mutations:bulkTag': 370,
   'contacts/mutations:bulkSetField': 370,
 }
+
+/**
+ * Approved exceptions to the server rule, by the call itself, not the
+ * function: a call of `fn` whose own log has a line containing `logLine`
+ * is timed and recorded, listed in a banner on every run, and never
+ * asserted. Every other call of `fn` is judged as usual. The human's OK is
+ * needed for each, as for `knownOver`.
+ *
+ * - The contacts list reading a pinned page whose range a bulk write grew
+ *   (contacts.loadMore's insert into page 0): the backend reads the whole
+ *   range, ~0.5–0.7 ms a row, before `list` answers it with no rows to
+ *   split (convex/contacts/queries.ts GROWN_PAGE_LOG).
+ */
+export const SERVER_EXCEPTIONS: Array<{
+  fn: string
+  logLine: string
+  reason: string
+}> = [
+  {
+    fn: 'contacts/queries:list',
+    logLine: 'contacts list: grown page read in full',
+    reason:
+      'list re-run after a bulk write into an open page: ~150 ms reading the grown range (human 2026-10-23)',
+  },
+]

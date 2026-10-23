@@ -23,7 +23,7 @@ import {
   runId,
 } from './timing'
 import type { FlowRecord, SampleDetail } from './timing'
-import { budgets } from './budgets'
+import { SERVER_EXCEPTIONS, budgets } from './budgets'
 import { coverageGaps, readRoutes } from './coverage'
 import { BUDGET_MS, RESULTS_FILE, budgetMiss } from './server-timings'
 import { LINK_FILE, STALL_MS, linkDuring } from './link.setup'
@@ -146,6 +146,8 @@ export interface ServerSummary {
   pass: boolean
   /** Asserted functions that passed with one call over budget. */
   spikes?: Array<string>
+  /** Every approved server exception, with this run's excepted calls. */
+  exceptions?: Array<string>
   /** Uncached executions only; `asserted` ones are judged. */
   functions: Array<{
     fn: string
@@ -167,6 +169,7 @@ function readServer(dir: string): ServerSummary | null {
   return {
     pass: t.errors.length === 0 && t.failures.length === 0,
     spikes: t.spikes,
+    exceptions: t.exceptions,
     functions: t.functions
       .filter((f) => !f.cached)
       .map((f) => {
@@ -381,6 +384,25 @@ function knownOverBanner(lines: Array<HistoryLine>): Array<string> {
         : 'not timed this run'
       return `${name}: KNOWN OVER, not failing: ${b.knownOver} · ${samples}`
     }),
+  ])
+}
+
+/**
+ * Every approved server exception (SERVER_EXCEPTIONS), on every run, with
+ * the calls it excepted: like knownOver flows, so none is forgotten.
+ */
+export function serverExceptionBanner(
+  server: Pick<ServerSummary, 'exceptions'> | null,
+): Array<string> {
+  if (!SERVER_EXCEPTIONS.length) return []
+  const lines =
+    server?.exceptions ??
+    SERVER_EXCEPTIONS.map(
+      (x) => `${x.fn}: EXCEPTED, not asserted: ${x.reason} · no server data`,
+    )
+  return banner([
+    `${SERVER_EXCEPTIONS.length} server calls are EXCEPTED (approved, qc/budgets.ts SERVER_EXCEPTIONS): timed, never asserted.`,
+    ...lines,
   ])
 }
 
@@ -638,6 +660,7 @@ export default class QcReporter implements Reporter {
     }
 
     out.push(...knownOverBanner(summary))
+    out.push(...serverExceptionBanner(readServer(runDir(id))))
 
     const timed = new Set(records.map((r) => r.flow))
     const untimed = (Object.entries(budgets) as Array<[FlowName, Budget]>)

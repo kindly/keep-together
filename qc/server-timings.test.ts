@@ -4,11 +4,14 @@ import {
   aggregate,
   budgetMiss,
   checkBudgets,
+  exceptionOf,
+  exceptions,
   isPing,
   spikes,
 } from './server-timings'
 import type { LogEvent } from './server-timings'
-import { BULK_FUNCTIONS } from './budgets'
+import { BULK_FUNCTIONS, SERVER_EXCEPTIONS } from './budgets'
+import { GROWN_PAGE_LOG } from '../convex/contacts/queries'
 
 const ev = (over: Partial<LogEvent> & { ms?: number }): LogEvent => ({
   kind: 'Completion',
@@ -138,4 +141,67 @@ test('pings are anonymous HTTP-API calls of platform/tenants:mine', () => {
     isPing(ev({ caller: 'HttpApi', identifier: 'platform/tenants:mine' })),
   ).toBe(true)
   expect(isPing(ev({ identifier: 'platform/tenants:mine' }))).toBe(false)
+})
+
+describe('server exceptions', () => {
+  const grown = (ms: number) =>
+    ev({
+      ms,
+      logLines: [`[LOG] '${GROWN_PAGE_LOG}: 212 rows'`],
+    })
+
+  test("the exception's line is the one `list` logs", () => {
+    expect(SERVER_EXCEPTIONS.map((x) => x.logLine)).toContain(GROWN_PAGE_LOG)
+    // Structured log lines match too.
+    expect(
+      exceptionOf(
+        ev({ logLines: [{ level: 'LOG', messages: [`'${GROWN_PAGE_LOG}'`] }] }),
+      ),
+    ).toBe(SERVER_EXCEPTIONS[0].reason)
+  })
+
+  test('a grown-page list call is recorded in its own row, never asserted', () => {
+    const fns = aggregate([grown(154), grown(125), ev({ ms: 40 })])
+    expect(
+      fns.map((f) => [f.identifier, f.asserted, f.n, f.max, f.exception]),
+    ).toEqual([
+      ['contacts/queries:list', true, 1, 40, undefined],
+      [
+        'contacts/queries:list [excepted]',
+        false,
+        2,
+        154,
+        SERVER_EXCEPTIONS[0].reason,
+      ],
+    ])
+    expect(checkBudgets({ functions: fns })).toEqual([])
+    expect(exceptions({ functions: fns })).toEqual([
+      `contacts/queries:list: EXCEPTED, not asserted: ${SERVER_EXCEPTIONS[0].reason} · 2 calls this run, p50 125 ms, max 154 ms`,
+    ])
+  })
+
+  test('an ordinary slow list call still fails, beside excepted ones', () => {
+    const fns = aggregate([grown(154), ev({ ms: 120 }), ev({ ms: 110 })])
+    expect(checkBudgets({ functions: fns })).toEqual([
+      'Query contacts/queries:list: two calls ≥ 100 ms: 120 and 110 ms (n=2)',
+    ])
+    // And a single slow one is still only a spike when others are under.
+    const spiked = aggregate([grown(154), ev({ ms: 120 }), ev({ ms: 30 })])
+    expect(checkBudgets({ functions: spiked })).toEqual([])
+    expect(spikes({ functions: spiked })).toHaveLength(1)
+  })
+
+  test("the line excepts only its own function's calls", () => {
+    const other = ev({
+      ms: 300,
+      identifier: 'contacts/queries:search',
+      logLines: [GROWN_PAGE_LOG],
+    })
+    const fns = aggregate([other, { ...other }])
+    expect(fns[0].asserted).toBe(true)
+    expect(checkBudgets({ functions: fns })).toHaveLength(1)
+    expect(exceptions({ functions: fns })).toEqual([
+      `contacts/queries:list: EXCEPTED, not asserted: ${SERVER_EXCEPTIONS[0].reason} · no call this run`,
+    ])
+  })
 })

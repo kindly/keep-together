@@ -659,12 +659,23 @@ export function tooBig(
 }
 
 /**
- * A page the client splits at its `splitCursor` (paged-list.ts) and never
- * shows: no rows, so none is shaped (two reads each, ~0.8 ms a row).
+ * Logged by a `list` call that read a grown pinned range in full: the one
+ * call the QC server rule excepts (qc/budgets.ts SERVER_EXCEPTIONS, human
+ * 2026-10-23), found by this line in the call's own log.
  */
-function toSplit(
-  p: Omit<PaginationResult<unknown>, 'page'>,
+export const GROWN_PAGE_LOG = 'contacts list: grown page read in full'
+
+/**
+ * A page the client splits at its `splitCursor` (paged-list.ts) and never
+ * shows: no rows, so none is shaped (two reads each, ~0.8 ms a row). Its
+ * range is still read in full when the backend returned it so.
+ */
+export function toSplit(
+  p: Omit<PaginationResult<unknown>, 'page'> & { page: Array<unknown> },
 ): Omit<PaginationResult<unknown>, 'page'> & { page: Array<never> } {
+  if (p.page.length > LIST_PAGE_MAX_ROWS) {
+    console.log(`${GROWN_PAGE_LOG}: ${p.page.length} rows`)
+  }
   return { ...p, page: [], pageStatus: 'SplitRequired' }
 }
 

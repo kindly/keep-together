@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from 'vitest'
 import type { Doc, Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
 import { setup } from '../../test/fixture'
@@ -7,6 +7,8 @@ import {
   LIST_LIMIT,
   LIST_PAGE_MAX_ROWS,
   LIST_SCAN_CAP,
+  GROWN_PAGE_LOG,
+  toSplit,
   tooBig,
 } from './queries'
 
@@ -388,4 +390,31 @@ test('a pinned page the backend returned in full, past the cap, is split unshape
     false,
   )
   expect(tooBig(page(0, { pageStatus: 'SplitRequired' }))).toBe(true)
+})
+
+test('only a grown range read in full logs the line QC excepts', () => {
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+  const page = (n: number) => ({
+    page: Array.from({ length: n }, () => ({})),
+    isDone: false,
+    continueCursor: 'c',
+    splitCursor: 's',
+    pageStatus: 'SplitRecommended' as const,
+  })
+  try {
+    expect(toSplit(page(LIST_PAGE_MAX_ROWS + 5))).toMatchObject({
+      page: [],
+      pageStatus: 'SplitRequired',
+      splitCursor: 's',
+    })
+    expect(log).toHaveBeenCalledWith(
+      `${GROWN_PAGE_LOG}: ${LIST_PAGE_MAX_ROWS + 5} rows`,
+    )
+    log.mockClear()
+    // Cut short by the read cap (convex-test): cheap, so not excepted.
+    toSplit({ ...page(LIST_PAGE_MAX_ROWS), pageStatus: 'SplitRequired' })
+    expect(log).not.toHaveBeenCalled()
+  } finally {
+    log.mockRestore()
+  }
 })

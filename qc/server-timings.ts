@@ -9,7 +9,7 @@ import {
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ChildProcess } from 'node:child_process'
-import { BULK_FUNCTIONS } from './budgets'
+import { BULK_FUNCTIONS, SERVER_EXCEPTIONS } from './budgets'
 
 // Server-time collector (factory/plans/qc-suite.sv step 5, spike 07 item a).
 //
@@ -27,6 +27,12 @@ import { BULK_FUNCTIONS } from './budgets'
 //
 // Bulk functions (BULK_FUNCTIONS in ./budgets, exempt from 100 ms like their
 // `bulk` flows) are asserted against their own limit instead.
+//
+// Excepted calls (SERVER_EXCEPTIONS in ./budgets, each approved by the
+// human): a call whose own log carries the exception's line is timed in
+// a row of its own (`<fn> [excepted]`), never asserted, and listed with
+// its reason on every run (exceptions()). The function's other calls are
+// judged as usual.
 //
 // Not asserted: cached queries (~0 ms, served without running), `auth:*`
 // (Convex Auth hashes passwords in JS: auth:store is ~150 ms p95),
@@ -76,6 +82,8 @@ export interface LogEvent {
   caller: string
   identityType: string
   timestamp: number
+  /** The call's console output, as the log stream gives it. */
+  logLines?: Array<unknown>
 }
 
 export interface FunctionStats {
@@ -93,6 +101,8 @@ export interface FunctionStats {
   max: number
   /** The second-slowest call; null when n = 1. */
   second: number | null
+  /** Excepted calls (SERVER_EXCEPTIONS): the approved reason. */
+  exception?: string
 }
 
 export interface ServerTimings {
@@ -117,6 +127,7 @@ export interface ServerTimings {
     type: string
     ms: number
     cached?: true
+    excepted?: true
   }>
 }
 
@@ -365,6 +376,7 @@ export async function startServerTimings(
           type: e.udfType,
           ms: round(e.executionTime * 1000),
           ...(e.cachedResult && { cached: true }),
+          ...(exceptionOf(e) && { excepted: true as const }),
         })),
       }
     },
@@ -404,12 +416,27 @@ function percentile(sorted: Array<number>, p: number): number {
 
 const round = (ms: number) => Math.round(ms * 10) / 10
 
+/**
+ * The approved reason a call isn't asserted (SERVER_EXCEPTIONS): its
+ * function's, when one of its own log lines carries the exception's line.
+ */
+export function exceptionOf(ev: LogEvent): string | null {
+  const found = SERVER_EXCEPTIONS.find(
+    (x) =>
+      x.fn === ev.identifier &&
+      (ev.logLines ?? []).some((l) =>
+        (typeof l === 'string' ? l : JSON.stringify(l)).includes(x.logLine),
+      ),
+  )
+  return found?.reason ?? null
+}
+
 export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
   const groups = new Map<string, { ev: LogEvent; ms: Array<number> }>()
   for (const ev of events) {
     const cached = ev.cachedResult === true
     const admin = ev.identityType === 'instance_admin'
-    const key = `${ev.udfType}|${ev.identifier}|${cached}|${admin}`
+    const key = `${ev.udfType}|${ev.identifier}|${cached}|${admin}|${exceptionOf(ev) ?? ''}`
     const g = groups.get(key) ?? { ev, ms: [] }
     g.ms.push(ev.executionTime * 1000)
     groups.set(key, g)
@@ -418,7 +445,9 @@ export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
     .map(({ ev, ms }) => {
       ms.sort((a, b) => a - b)
       const cached = ev.cachedResult === true
+      const exception = exceptionOf(ev)
       const asserted =
+        exception === null &&
         !cached &&
         ev.componentPath === null &&
         ev.identityType !== 'instance_admin' &&
@@ -428,7 +457,9 @@ export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
         identifier:
           ev.identityType === 'instance_admin'
             ? `${ev.identifier} [admin]`
-            : ev.identifier,
+            : exception !== null
+              ? `${ev.identifier} [excepted]`
+              : ev.identifier,
         udfType: ev.udfType,
         cached,
         asserted,
@@ -441,6 +472,7 @@ export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
         p95: round(percentile(ms, 0.95)),
         max: round(ms[ms.length - 1]),
         second: ms.length > 1 ? round(ms[ms.length - 2]) : null,
+        ...(exception !== null && { exception }),
       }
     })
     .sort(
@@ -481,6 +513,22 @@ export function spikes(t: Pick<ServerTimings, 'functions'>): Array<string> {
       (f) =>
         `${f.udfType} ${f.identifier}: one call ${f.max} ms, the other ${f.n - 1} under (next slowest ${f.second} ms)`,
     )
+}
+
+/**
+ * Every approved server exception, with this run's excepted calls if any,
+ * for a banner on every run (like knownOver flows).
+ */
+export function exceptions(t: Pick<ServerTimings, 'functions'>): Array<string> {
+  return SERVER_EXCEPTIONS.map((x) => {
+    const f = t.functions.find(
+      (g) => g.exception === x.reason && g.identifier.startsWith(`${x.fn} `),
+    )
+    const calls = f
+      ? `${f.n} call${f.n === 1 ? '' : 's'} this run, p50 ${f.p50} ms, max ${f.max} ms`
+      : 'no call this run'
+    return `${x.fn}: EXCEPTED, not asserted: ${x.reason} · ${calls}`
+  })
 }
 
 /** One message per asserted function over its budget. */
@@ -526,6 +574,8 @@ export type ServerTimingsFile = ServerTimings & {
   failures: Array<string>
   /** Functions that passed with one call over budget. */
   spikes: Array<string>
+  /** Every approved server exception, with this run's calls (exceptions()). */
+  exceptions: Array<string>
 }
 
 /** Writes server-timings.{json,txt} into `dir` (the run's runDir()). */
@@ -541,6 +591,7 @@ export function writeResults(t: ServerTimings, dir: string) {
     budgetMs: BUDGET_MS,
     failures: checkBudgets(t),
     spikes: spikes(t),
+    exceptions: exceptions(t),
   }
   writeFileSync(
     path.join(dir, RESULTS_FILE),

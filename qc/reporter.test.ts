@@ -16,7 +16,7 @@ import type {
   TestCase,
   TestResult,
 } from '@playwright/test/reporter'
-import QcReporter, { summarise } from './reporter'
+import QcReporter, { serverExceptionBanner, summarise } from './reporter'
 import type { HistoryLine } from './reporter'
 import { readBlameContext } from './blame'
 import type { BlameContext } from './blame'
@@ -325,4 +325,16 @@ describe('onEnd: the same status and gates with and without blame input', () => 
       /contact.save over budget twice in worker 0 setup/,
     )
   })
+})
+
+test('the server exceptions banner lists every exception, with or without server data', () => {
+  const none = serverExceptionBanner(null).join('\n')
+  expect(none).toContain('EXCEPTED')
+  expect(none).toContain(
+    'contacts/queries:list: EXCEPTED, not asserted: list re-run after a bulk write into an open page: ~150 ms reading the grown range (human 2026-10-23) · no server data',
+  )
+  const some = serverExceptionBanner({
+    exceptions: ['contacts/queries:list: EXCEPTED, not asserted: … · 2 calls'],
+  }).join('\n')
+  expect(some).toContain('· 2 calls')
 })
