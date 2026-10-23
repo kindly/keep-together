@@ -270,6 +270,26 @@ describe('every public mutation and action', () => {
     await t.run((ctx) =>
       ctx.db.patch('contactFieldOptions', optionId, { used: true }),
     )
+    // A gift, under a code of its own (version 001 of a new detail).
+    const street = await t.run(async (ctx) =>
+      (await ctx.db.query('sourceCodes').collect()).find(
+        (r) => r.tenantId === a.tenantId && r.level === 'category',
+      ),
+    )
+    const { versionId } = await a.as.mutation(api.sources.mutations.create, {
+      tenantId: a.tenantId,
+      parentId: street!._id,
+      name: 'Wesser',
+      isActive: true,
+    })
+    await a.as.mutation(api.giving.mutations.create, {
+      tenantId: a.tenantId,
+      contactId: c1,
+      receivedOn: '2026-10-20',
+      amount: 2000n,
+      method: 'cash',
+      allocations: [{ sourceCodeId: versionId!, amount: 2000n }],
+    })
     // Another tenant's rows must never be picked: ids come from tenant A.
     await b.as.mutation(api.contacts.mutations.create, {
       tenantId: b.tenantId,
@@ -287,6 +307,7 @@ describe('every public mutation and action', () => {
         'sourceCodes',
         'contactFields',
         'contactFieldOptions',
+        'contributions',
         'revisions',
       ] as const satisfies ReadonlyArray<TableNames>) {
         const row = (await ctx.db.query(table).collect()).find(

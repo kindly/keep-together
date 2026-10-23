@@ -56,15 +56,16 @@ export function groupsToRead(
 }
 
 /**
- * How a moment names a slice: the contract's name within the module,
- * unless it reads badly to staff.
+ * How a moment names a slice: the contract's name within its module
+ * (contacts, or giving for a gift's history), unless it reads badly to
+ * staff.
  */
 const SLICE_LABELS: Record<string, string> = {
   'contacts.acquisition': 'acquisition code',
 }
 
 export function sliceLabel(contract: string): string {
-  return SLICE_LABELS[contract] ?? contract.replace(/^contacts\./, '')
+  return SLICE_LABELS[contract] ?? contract.replace(/^(contacts|giving)\./, '')
 }
 
 /**

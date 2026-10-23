@@ -5,6 +5,7 @@ import { contactContracts } from '../contacts/contracts'
 import { fieldContracts } from '../contacts/fields'
 import { commsContracts } from '../comms/contracts'
 import { sourceContracts } from '../sources/code'
+import { givingContracts } from '../giving/contracts'
 import {
   canonical,
   defineContract,
@@ -505,6 +506,7 @@ describe('registry invariants (meta-test)', () => {
       ...Object.values(commsContracts),
       ...Object.values(sourceContracts),
       ...Object.values(fieldContracts),
+      ...Object.values(givingContracts),
     ]) {
       const table = (
         schema.tables as Record<
@@ -536,6 +538,7 @@ describe('registry invariants (meta-test)', () => {
     commsContracts,
     sourceContracts,
     fieldContracts,
+    givingContracts,
   }
   test.each(
     Object.entries(REGISTRIES).flatMap(([registryName, reg]) =>

@@ -66,7 +66,10 @@ export async function snapshot(
         (r) => (r as { tenantId?: Id<'tenants'> }).tenantId === tenantId,
       )
     }
-    return JSON.stringify(out)
+    // Money is int64 (bigint), which JSON can't write as it is.
+    return JSON.stringify(out, (_k, v: unknown) =>
+      typeof v === 'bigint' ? `${v}n` : v,
+    )
   })
 }
 
