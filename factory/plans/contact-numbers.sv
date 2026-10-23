@@ -110,7 +110,7 @@ Steps 3 and 4 depend on 1. Step 6 is last and goes in its own commit.
 
 <sv-ask id="g1q3" round="1">
 **Starting value and how it's written.** The sequence starts at 10001, so it's five digits until 99,999 contacts (far beyond a small group). How is it shown and written?
-- * **Six digits, no separator: `100016`** (sequence 10001 + check digit 7). One thing to copy. Search ignores spaces and hyphens if someone adds them.
+- * **Six digits, no separator: `100016`** (sequence 10001 + check digit 6). One thing to copy. Search ignores spaces and hyphens if someone adds them.
 - Check digit split off: `10001-7`. The structure is visible, but people may leave off the `-7`.
 - Smaller start (1001, so `10017`). Shorter, and four-digit sequences run out at 9,999 contacts and then grow.
 </sv-ask>
