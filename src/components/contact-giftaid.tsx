@@ -1,8 +1,9 @@
 import { useMutation, useQuery } from 'convex/react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
+import { openAt } from '../../convex/giftaid/rules'
 import { formatDay, refusal } from '../lib/gifts'
 import {
   METHOD_LABELS,
@@ -29,9 +30,9 @@ const small =
  * each declaration as made, newest first: scope, date, how it was made,
  * the wording, and the name and address it was made under (the snapshot),
  * with its warnings. "Record cancellation" ends every declaration in force
- * on a date; "Mark made in error" voids one that should never have been
- * recorded, with a reason, after a confirm. Declarations themselves are
- * never edited.
+ * on a date, after a confirm; "Mark made in error" voids one that should
+ * never have been recorded, with a reason, after a confirm. Declarations
+ * themselves are never edited.
  */
 export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
   const tenant = useTenant()
@@ -40,8 +41,11 @@ export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
   const members = useQuery(api.platform.tenants.members, {
     tenantId: tenant._id,
   })
+  // "system" means an import or a webhook: never say it while loading.
   const name = (userId: Id<'users'> | undefined) =>
-    members?.find((m) => m.userId === userId)?.name ?? 'system'
+    members === undefined
+      ? '…'
+      : (members.find((m) => m.userId === userId)?.name ?? 'system')
   const [cancelling, setCancelling] = useState(false)
   if (data === undefined)
     return (
@@ -51,9 +55,21 @@ export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
     )
   const { declarations, currentId } = data
   const current = declarations.find((d) => d._id === currentId)
-  // Something a cancellation could still end.
+  // Each "Mark made in error" names its declaration; two alike (same day
+  // and method) also say which one they are.
+  const described = declarations.map(describeDeclaration)
+  const labels = described.map((text, i) =>
+    described.indexOf(text) === described.lastIndexOf(text)
+      ? text
+      : `${text}, ${i + 1} of ${declarations.length}`,
+  )
+  // Something a cancellation could still end, or move earlier: one
+  // already cancelled from a date after today can be cancelled sooner.
+  const today = localToday()
   const cancellable = declarations.some(
-    (d) => d.voidedAt === undefined && d.cancelledFrom === undefined,
+    (d) =>
+      d.voidedAt === undefined &&
+      (d.cancelledFrom === undefined || d.cancelledFrom > today),
   )
   return (
     <Panel>
@@ -66,11 +82,12 @@ export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
         <p className="text-sm text-neutral-500">No declarations.</p>
       ) : (
         <ul className="flex flex-col gap-2">
-          {declarations.map((d) => (
+          {declarations.map((d, i) => (
             <DeclarationCard
               key={d._id}
               declaration={d}
               current={d._id === currentId}
+              label={labels[i]}
               name={name}
             />
           ))}
@@ -81,6 +98,7 @@ export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
         (cancelling ? (
           <CancellationForm
             contactId={contactId}
+            declarations={declarations}
             onDone={() => setCancelling(false)}
           />
         ) : (
@@ -110,10 +128,13 @@ function Panel({ children }: { children: React.ReactNode }) {
 function DeclarationCard({
   declaration: d,
   current,
+  label,
   name,
 }: {
   declaration: Declaration
   current: boolean
+  /** Which declaration this is, for its button's accessible name. */
+  label: string
   name: (userId: Id<'users'> | undefined) => string
 }) {
   const canWrite = useCanWrite()
@@ -174,18 +195,22 @@ function DeclarationCard({
           </>
         )}
       </dl>
-      {d.warnings.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {d.warnings.map((w) => (
-            <li
-              key={`${w.anchor}:${w.label}`}
-              className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-900"
-            >
-              <span className="font-medium">{w.label}:</span> {w.message}
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* Live, so a warning that appears later (say the donor's address
+          changed) is announced. */}
+      <div aria-live="polite">
+        {d.warnings.length > 0 && (
+          <ul className="flex flex-col gap-1">
+            {d.warnings.map((w) => (
+              <li
+                key={`${w.anchor}:${w.label}`}
+                className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs text-amber-900"
+              >
+                <span className="font-medium">{w.label}:</span> {w.message}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       {canWrite &&
         !voided &&
         (voiding ? (
@@ -194,6 +219,7 @@ function DeclarationCard({
           <button
             type="button"
             className={`${small} self-start`}
+            aria-label={`Mark made in error: ${label}`}
             onClick={() => setVoiding(true)}
           >
             Mark made in error
@@ -205,23 +231,38 @@ function DeclarationCard({
 
 /**
  * The cancellation's date (from when the donor's declarations stop
- * applying) and an optional note. Ends every declaration in force then.
+ * applying) and an optional note, then a confirm: it ends every
+ * declaration in force then (rules `openAt`, as the mutation counts them),
+ * and there is no un-cancel.
  */
 function CancellationForm({
   contactId,
+  declarations,
   onDone,
 }: {
   contactId: Id<'contacts'>
+  declarations: Array<Declaration>
   onDone: () => void
 }) {
   const tenant = useTenant()
   const record = useMutation(api.giftaid.mutations.recordCancellation)
   const [cancelledFrom, setCancelledFrom] = useState(localToday())
   const [note, setNote] = useState('')
+  const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  async function submit(e: FormEvent) {
-    e.preventDefault()
+  const first = useRef<HTMLInputElement>(null)
+  useEffect(() => first.current?.focus(), [])
+  const ending = declarations.filter((d) => openAt(d, cancelledFrom)).length
+  // A cancellation already set for a later date is moved to this one.
+  const moving = declarations.some(
+    (d) =>
+      d.voidedAt === undefined &&
+      d.cancelledFrom !== undefined &&
+      d.cancelledFrom > cancelledFrom &&
+      d.madeOn <= cancelledFrom,
+  )
+  async function run() {
     setError(null)
     setSaving(true)
     try {
@@ -244,15 +285,26 @@ function CancellationForm({
       setSaving(false)
     }
   }
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (ending === 0) {
+      setError('No declaration was in force on that date')
+      return
+    }
+    setError(null)
+    setConfirming(true)
+  }
+  const plural = ending === 1 ? 'declaration' : `${ending} declarations`
   return (
     <form
-      onSubmit={(e) => void submit(e)}
+      onSubmit={submit}
       aria-label="Record cancellation"
       className="flex flex-col gap-2 rounded border border-neutral-200 bg-white p-2"
     >
       <label className="flex flex-col gap-1 text-sm">
         Cancelled from
         <input
+          ref={first}
           type="date"
           required
           value={cancelledFrom}
@@ -271,6 +323,8 @@ function CancellationForm({
       <p className="text-xs text-neutral-500">
         Gifts on or after this date won’t be covered by any declaration in force
         then.
+        {moving &&
+          ' A cancellation already recorded for a later date is moved to this one.'}
       </p>
       {error && (
         <p role="alert" className="text-xs text-red-700">
@@ -290,6 +344,18 @@ function CancellationForm({
           Cancel
         </button>
       </div>
+      <ConfirmDialog
+        open={confirming}
+        title={`Cancel the ${plural} in force on ${formatDay(cancelledFrom)}?`}
+        description={`This ends every declaration open on ${formatDay(cancelledFrom)}: gifts from that date on won't be covered by them. This can't be undone: if the donor declares again, record a new declaration.`}
+        confirm="Record cancellation"
+        cancel="Go back"
+        onConfirm={() => {
+          setConfirming(false)
+          void run()
+        }}
+        onCancel={() => setConfirming(false)}
+      />
     </form>
   )
 }
@@ -311,6 +377,8 @@ function VoidForm({
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const first = useRef<HTMLInputElement>(null)
+  useEffect(() => first.current?.focus(), [])
   async function run() {
     setError(null)
     setSaving(true)
@@ -345,6 +413,7 @@ function VoidForm({
       <label className="flex flex-col gap-1 text-xs">
         Why was it made in error?
         <input
+          ref={first}
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           className={field}

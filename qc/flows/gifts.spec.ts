@@ -113,6 +113,7 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
       before: async () => {
         if (await unvoid.isVisible()) {
           await unvoid.click()
+          await confirm(page, 'Unvoid').click()
           await expect(voidButton).toBeVisible()
         }
         await voidButton.click()
@@ -130,6 +131,7 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
     )
     // Cancel on the confirm leaves the gift as it is.
     await unvoid.click()
+    await confirm(page, 'Unvoid').click()
     await expect(badge).toHaveCount(0)
     await voidButton.click()
     await page
@@ -138,6 +140,7 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
       .click()
     await expect(badge).toHaveCount(0)
 
+    // Unvoid asks first too; the confirm is the timed click.
     await flow(page, 'gift.unvoid', {
       before: async () => {
         if (await voidButton.isVisible()) {
@@ -145,8 +148,10 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
           await confirm(page, 'Void').click()
           await expect(unvoid).toBeVisible()
         }
+        await unvoid.click()
+        await expect(page.getByRole('alertdialog')).toBeVisible()
       },
-      action: () => unvoid.click(),
+      action: () => confirm(page, 'Unvoid').click(),
       until: () =>
         ![...document.querySelectorAll('main h1 span')].some(
           (s) => s.textContent === 'void',
@@ -173,6 +178,7 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
     const r = await recorder(instance, users.a, world.tenants[0].tenantId)
     const contactId = world.tenants[0].contactIds[1]
     const id = await recordGift(r, contactId, 777n)
+    await declare(r, contactId, '2025-01-01')
     const context = await browser.newContext({
       baseURL,
       storageState: await session(users.viewer),
@@ -183,8 +189,13 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
     await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Void' })).toHaveCount(0)
     await page.goto(`/t/${users.viewer.slug}/contacts/${contactId}`)
+    // The declaration shows, so its controls would have rendered by now.
+    await expect(giftAid(page).getByTestId('declaration').first()).toBeVisible()
     await expect(
       giftAid(page).getByRole('button', { name: 'Record cancellation' }),
+    ).toHaveCount(0)
+    await expect(
+      giftAid(page).getByRole('button', { name: /Mark made in error/ }),
     ).toHaveCount(0)
     await context.close()
   })
@@ -290,12 +301,14 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
         await giftAid(page)
           .getByRole('button', { name: 'Record cancellation' })
           .click()
+        await giftAid(page)
+          .getByRole('button', { name: 'Save cancellation' })
+          .click()
+        await expect(page.getByRole('alertdialog')).toBeVisible()
         await want(page, String(k))
       },
-      action: () =>
-        giftAid(page)
-          .getByRole('button', { name: 'Save cancellation' })
-          .click(),
+      // The confirm is the timed click, as for a void.
+      action: () => confirm(page, 'Record cancellation').click(),
       until: () => {
         const w = (window as unknown as { __qcWant?: string }).__qcWant
         const badges = [

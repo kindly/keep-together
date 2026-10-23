@@ -1,7 +1,7 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useConvex, useMutation, useQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Doc, Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
@@ -28,6 +28,7 @@ import {
   giftCoverage,
   useDeclarations,
 } from '../lib/giftaid'
+import { threeWayMerge } from '../lib/merge'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/gifts/$giftId')({
@@ -99,12 +100,19 @@ function GiftView({ gift }: { gift: Gift }) {
   )
   const setStatus = useMutation(api.giving.mutations.setStatus)
   const [editing, setEditing] = useState(false)
-  const [confirmVoid, setConfirmVoid] = useState<number | null>(null)
+  // The status change being confirmed, with the counter seen when asked.
+  const [confirming, setConfirming] = useState<{
+    status: Doc<'contributions'>['status']
+    expected: number
+  } | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const isVoid = gift.status === 'void'
+  // "system" means an import or a webhook: never say it while loading.
   const name = (userId: Id<'users'> | null | undefined) =>
-    members?.find((m) => m.userId === userId)?.name ?? 'system'
+    members === undefined
+      ? '…'
+      : (members.find((m) => m.userId === userId)?.name ?? 'system')
   const warnings = giftWarnings(gift, localToday())
   const coverage = giftCoverage(declarations, gift)
 
@@ -245,7 +253,10 @@ function GiftView({ gift }: { gift: Gift }) {
                 className={secondary}
                 disabled={busy}
                 onClick={() =>
-                  void changeStatus('completed', gift.statusVersion)
+                  setConfirming({
+                    status: 'completed',
+                    expected: gift.statusVersion,
+                  })
                 }
               >
                 Unvoid
@@ -255,7 +266,12 @@ function GiftView({ gift }: { gift: Gift }) {
                 type="button"
                 className={secondary}
                 disabled={busy}
-                onClick={() => setConfirmVoid(gift.statusVersion)}
+                onClick={() =>
+                  setConfirming({
+                    status: 'void',
+                    expected: gift.statusVersion,
+                  })
+                }
               >
                 Void
               </button>
@@ -268,17 +284,27 @@ function GiftView({ gift }: { gift: Gift }) {
           </p>
         )}
         <ConfirmDialog
-          open={confirmVoid !== null}
-          title="Void this gift?"
-          description="It stays on record but counts for nothing. You can unvoid it later."
-          confirm="Void"
+          open={confirming !== null}
+          {...(confirming?.status === 'completed'
+            ? {
+                title: 'Unvoid this gift?',
+                description:
+                  'It counts again, and Gift Aid can be claimed on it if a declaration covers it. You can void it again later.',
+                confirm: 'Unvoid',
+              }
+            : {
+                title: 'Void this gift?',
+                description:
+                  'It stays on record but counts for nothing. You can unvoid it later.',
+                confirm: 'Void',
+              })}
           cancel="Cancel"
           onConfirm={() => {
-            const expected = confirmVoid ?? gift.statusVersion
-            setConfirmVoid(null)
-            void changeStatus('void', expected)
+            if (!confirming) return
+            setConfirming(null)
+            void changeStatus(confirming.status, confirming.expected)
           }}
-          onCancel={() => setConfirmVoid(null)}
+          onCancel={() => setConfirming(null)}
         />
       </div>
       <GiftHistory
@@ -293,10 +319,58 @@ function GiftView({ gift }: { gift: Gift }) {
 /** The code the edit form holds: the gift's, or one picked just now. */
 type PickedCode = { id: Id<'sourceCodes'>; shown: ShownCode }
 
+/** What the edit form holds, as compared field by field in a merge. */
+type EditFields = {
+  receivedOn: string
+  amount: string
+  method: Gift['method']
+  reference: string
+  code: Id<'sourceCodes'> | null
+}
+
+const FIELD_NAMES: Record<keyof EditFields, string> = {
+  receivedOn: 'date',
+  amount: 'amount',
+  method: 'method',
+  reference: 'reference',
+  code: 'source code',
+}
+
+/** The single allocation's code as the form holds it. */
+function pickedOf(gift: Gift): PickedCode | null {
+  const single = gift.allocations.length === 1 ? gift.allocations[0] : null
+  return single
+    ? {
+        id: single.sourceCodeId,
+        shown: {
+          code: single.code ?? 'unknown code',
+          isActive: single.isActive,
+          startDate: single.startDate,
+          endDate: single.endDate,
+        },
+      }
+    : null
+}
+
+function fieldsOf(gift: Gift): EditFields {
+  return {
+    receivedOn: gift.receivedOn,
+    amount: penceToInput(gift.amount),
+    method: gift.method,
+    reference: gift.reference ?? '',
+    code: pickedOf(gift)?.id ?? null,
+  }
+}
+
 /**
- * The gift's fields, saved together against `giftVersion`: someone else's
- * edit since the form opened is refused as stale. A gift split across
- * several codes keeps its amount and split (there is no split entry).
+ * The gift's fields, saved together against `giftVersion`. Someone else's
+ * edit while the form is open is merged in field by field, as the contact
+ * form does (lib/merge): a field only they changed takes their value, one
+ * you changed keeps yours, and the form says which fields changed and
+ * which you both changed. `expected` moves to their version, so Save then
+ * overwrites knowingly; a save that raced their edit is refused as stale
+ * and retries the same way once it arrives. A gift split across several
+ * codes keeps its amount and split (there is no split entry).
  */
 function GiftEdit({
   gift,
@@ -310,26 +384,56 @@ function GiftEdit({
   const tenant = useTenant()
   const save = useMutation(api.giving.mutations.save)
   const single = gift.allocations.length === 1 ? gift.allocations[0] : null
-  const [expected] = useState(gift.giftVersion)
+  const [expected, setExpected] = useState(gift.giftVersion)
+  // The server state the form was last reconciled against.
+  const [base, setBase] = useState(() => fieldsOf(gift))
   const [receivedOn, setReceivedOn] = useState(gift.receivedOn)
   const [amountText, setAmountText] = useState(penceToInput(gift.amount))
   const [method, setMethod] = useState(gift.method)
   const [reference, setReference] = useState(gift.reference ?? '')
-  const [code, setCode] = useState<PickedCode | null>(
-    single
-      ? {
-          id: single.sourceCodeId,
-          shown: {
-            code: single.code ?? 'unknown code',
-            isActive: single.isActive,
-            startDate: single.startDate,
-            endDate: single.endDate,
-          },
-        }
-      : null,
-  )
+  const [code, setCode] = useState<PickedCode | null>(() => pickedOf(gift))
+  const [merged, setMerged] = useState<{
+    changed: Array<keyof EditFields>
+    conflicts: Array<keyof EditFields>
+  } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const first = useRef<HTMLInputElement>(null)
+  useEffect(() => first.current?.focus(), [])
+
+  // Someone else saved: merge their version in (adjusting state while
+  // rendering, as React advises). Not mid-save, when the newer version may
+  // be our own write coming back; the form closes when that resolves.
+  if (!saving && gift.giftVersion > expected) {
+    const remote = fieldsOf(gift)
+    const m = threeWayMerge(
+      base,
+      {
+        receivedOn,
+        amount: amountText,
+        method,
+        reference,
+        code: code?.id ?? null,
+      },
+      remote,
+    )
+    setReceivedOn(m.value.receivedOn)
+    setAmountText(m.value.amount)
+    setMethod(m.value.method)
+    setReference(m.value.reference)
+    if (m.value.code !== (code?.id ?? null)) setCode(pickedOf(gift))
+    const changed = (Object.keys(remote) as Array<keyof EditFields>).filter(
+      (k) => remote[k] !== base[k],
+    )
+    setMerged((was) => ({
+      changed: [...new Set([...(was?.changed ?? []), ...changed])],
+      conflicts: [...new Set([...(was?.conflicts ?? []), ...m.conflicts])],
+    }))
+    setBase(remote)
+    setExpected(gift.giftVersion)
+    setError(null)
+  }
+
   const amount = single ? parsePounds(amountText) : gift.amount
   const warnings =
     amount !== null && receivedOn
@@ -373,7 +477,7 @@ function GiftEdit({
         refusal(
           err,
           'Could not save the gift',
-          'Someone else changed this gift since you opened it: cancel to see their change, then edit again',
+          'Someone else changed this gift just now: their change is merged in here as it arrives. Check it, then save again',
         ),
       )
     } finally {
@@ -383,12 +487,39 @@ function GiftEdit({
   }
 
   return (
-    <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-4">
+    <form
+      onSubmit={(e) => void submit(e)}
+      aria-label="Edit gift"
+      className="flex flex-col gap-4"
+    >
+      {merged && (
+        <div
+          role="status"
+          className="flex flex-col gap-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-sm text-amber-900"
+        >
+          <p data-testid="gift-merged">
+            Someone else changed this gift while you were editing
+            {merged.changed.length > 0 &&
+              ` (${merged.changed.map((k) => FIELD_NAMES[k]).join(', ')})`}
+            : their change has been merged in, and Save keeps your edits on top
+            of it.
+          </p>
+          {merged.conflicts.length > 0 && (
+            <p>
+              Changed by both of you:{' '}
+              {merged.conflicts.map((k) => FIELD_NAMES[k]).join(', ')}. Your
+              value is kept — check it.
+            </p>
+          )}
+        </div>
+      )}
       <label className="flex flex-col gap-1 text-sm">
         Received
         <input
+          ref={first}
           type="date"
           required
+          aria-describedby="gift-edit-warnings"
           value={receivedOn}
           onChange={(e) => setReceivedOn(e.target.value)}
           className={`${field} w-48`}
@@ -401,10 +532,13 @@ function GiftEdit({
           value={amountText}
           onChange={(e) => setAmountText(e.target.value)}
           disabled={!single}
+          aria-describedby={
+            single ? 'gift-edit-warnings' : 'gift-edit-warnings gift-split-hint'
+          }
           className={`${field} w-48`}
         />
         {!single && (
-          <span className="text-xs text-neutral-500">
+          <span id="gift-split-hint" className="text-xs text-neutral-500">
             Split across several codes: the amount can’t be changed here.
           </span>
         )}
@@ -459,18 +593,21 @@ function GiftEdit({
             .join(', ')}
         </p>
       )}
-      {warnings.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {warnings.map((w) => (
-            <li
-              key={w.anchor}
-              className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-sm text-amber-900"
-            >
-              {w.message}
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* Always there, so a warning appearing as you type is announced. */}
+      <div id="gift-edit-warnings" aria-live="polite">
+        {warnings.length > 0 && (
+          <ul className="flex flex-col gap-1">
+            {warnings.map((w) => (
+              <li
+                key={w.anchor}
+                className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-sm text-amber-900"
+              >
+                {w.message}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       {error && (
         <p role="alert" className="text-sm text-red-700">
           {error}

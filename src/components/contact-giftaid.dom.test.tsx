@@ -191,8 +191,84 @@ test('Mark made in error needs a reason, then a confirm', async () => {
   })
 })
 
-test('Record cancellation sends the date and note, and shows a refusal', async () => {
+test('each Mark made in error says which declaration it is for', () => {
+  declarations = {
+    declarations: [
+      declaration({ _id: 'd2' as Id<'giftAidDeclarations'>, method: 'oral' }),
+      declaration({}),
+      declaration({ _id: 'd0' as Id<'giftAidDeclarations'> }),
+    ],
+    currentId: null,
+  }
+  render()
+  expect(
+    buttons(el, 'Mark made in error').map((b) => b.getAttribute('aria-label')),
+  ).toEqual([
+    'Mark made in error: declaration of 3 Mar 2026 (made orally)',
+    'Mark made in error: declaration of 3 Mar 2026 (paper form), 2 of 3',
+    'Mark made in error: declaration of 3 Mar 2026 (paper form), 3 of 3',
+  ])
+})
+
+test('an opened form takes the focus', async () => {
   declarations = { declarations: [declaration({})], currentId: null }
+  render()
+  await click(buttons(el, 'Record cancellation')[0])
+  expect(document.activeElement?.getAttribute('type')).toBe('date')
+  await click(buttons(cards()[0], 'Mark made in error')[0])
+  expect(
+    document.activeElement?.closest('form')?.getAttribute('aria-label'),
+  ).toBe('Mark made in error')
+})
+
+test('a cancellation from a later date can still be moved earlier', async () => {
+  declarations = {
+    declarations: [declaration({ cancelledFrom: '2999-01-01' })],
+    currentId: 'd1' as Id<'giftAidDeclarations'>,
+  }
+  render()
+  await click(buttons(el, 'Record cancellation')[0])
+  const form = el.querySelector<HTMLFormElement>(
+    'form[aria-label="Record cancellation"]',
+  )!
+  expect(form.textContent).toContain(
+    'A cancellation already recorded for a later date is moved to this one.',
+  )
+  await submit(form)
+  expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain(
+    'Cancel the declaration in force on',
+  )
+})
+
+test('a date no declaration was in force on is refused before any confirm', async () => {
+  declarations = { declarations: [declaration({})], currentId: null }
+  render()
+  await click(buttons(el, 'Record cancellation')[0])
+  const form = el.querySelector<HTMLFormElement>(
+    'form[aria-label="Record cancellation"]',
+  )!
+  await type(form.querySelector('input')!, '2026-01-01')
+  await submit(form)
+  expect(form.querySelector('[role="alert"]')?.textContent).toBe(
+    'No declaration was in force on that date',
+  )
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+  expect(
+    mutations['giftaid/mutations:recordCancellation'],
+  ).not.toHaveBeenCalled()
+})
+
+test('Record cancellation confirms, sends the date and note, and shows a refusal', async () => {
+  declarations = {
+    declarations: [
+      declaration({
+        _id: 'd2' as Id<'giftAidDeclarations'>,
+        madeOn: '2026-04-01',
+      }),
+      declaration({}),
+    ],
+    currentId: null,
+  }
   render()
   await click(buttons(el, 'Record cancellation')[0])
   const form = el.querySelector<HTMLFormElement>(
@@ -202,6 +278,12 @@ test('Record cancellation sends the date and note, and shows a refusal', async (
   await type(date, '2026-09-01')
   await type(note, ' donor phoned ')
   const run = mutations['giftaid/mutations:recordCancellation']
+  const confirmed = async () => {
+    await submit(form)
+    const dialog = document.querySelector('[role="alertdialog"]')!
+    expect(run).not.toHaveBeenCalledTimes(2)
+    await click(buttons(dialog, 'Record cancellation')[0])
+  }
   const { ConvexError } = await import('convex/values')
   run.mockRejectedValueOnce(
     new ConvexError({
@@ -215,6 +297,14 @@ test('Record cancellation sends the date and note, and shows a refusal', async (
     }),
   )
   await submit(form)
+  const dialog = document.querySelector('[role="alertdialog"]')!
+  expect(dialog.textContent).toContain(
+    'Cancel the 2 declarations in force on 1 Sept 2026?',
+  )
+  expect(dialog.textContent).toContain('This ends every declaration open on')
+  expect(dialog.textContent).toContain("This can't be undone")
+  expect(run).not.toHaveBeenCalled()
+  await click(buttons(dialog, 'Record cancellation')[0])
   expect(run).toHaveBeenCalledWith({
     tenantId: 'tenantA',
     contactId: 'c1',
@@ -225,6 +315,6 @@ test('Record cancellation sends the date and note, and shows a refusal', async (
     'No declaration was in force on that date',
   )
   // Saved: the form closes.
-  await submit(form)
+  await confirmed()
   expect(el.querySelector('form[aria-label="Record cancellation"]')).toBeNull()
 })

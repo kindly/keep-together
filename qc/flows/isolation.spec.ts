@@ -118,7 +118,11 @@ test.describe('isolation', () => {
     await page.goto(
       `/t/${users.a.slug}/contacts/${world.tenants[0].contactIds[0]}`,
     )
-    await expect(page.getByRole('heading', { name: 'Gifts' })).toBeVisible()
+    // Loaded first (rows or "No gifts yet."), so the check isn't vacuous.
+    const panel = section(page, 'Gifts')
+    await expect(
+      panel.getByRole('link').or(panel.getByText('No gifts yet.')).first(),
+    ).toBeVisible()
     await expect(page.locator('body')).not.toContainText('£43.21')
   })
 
