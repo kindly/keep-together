@@ -4,6 +4,13 @@
  * was given, `giftVersion`) and `giving.status` (`statusVersion`). Both
  * rebuild the allocation projection. Gifts are never deleted.
  * Apply functions are pure state application — restore re-runs them.
+ *
+ * A gift is editable whatever its status, void included: nothing is locked
+ * yet. The claim lock that comes with Gift Aid claims must gate BOTH
+ * contracts' applies (so every restore path is covered too:
+ * `restoreRevision` and any whole-gift `restoreEntityTo`), not just the
+ * `save` mutation — otherwise un-void plus a restore could change a
+ * claimed gift's amount.
  */
 import type { Id } from '../_generated/dataModel'
 import type { Command, ContractCtx } from '../lib/contracts'

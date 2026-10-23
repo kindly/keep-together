@@ -3,7 +3,9 @@ import type { Doc, Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
-import { scopeReader } from '../lib/tenancy'
+import { canonical, restoreEntityTo } from '../lib/contracts'
+import { scopeReader, scopeWriter } from '../lib/tenancy'
+import { givingContracts } from './contracts'
 import { describeGift } from './gifts'
 import { RECENT_LIMIT } from './queries'
 import { formatPence, isIsoDate } from './rules'
@@ -542,6 +544,80 @@ describe('void and restore', () => {
       revisionId: first._id,
     })
     expect((await allocations(id))[0].sourceCodeId).toBe(street.version)
+  })
+})
+
+describe('restoring a gift to a moment', () => {
+  /** Run `restoreEntityTo` on gift `id` as tenant A, to time `at`. */
+  const restoreTo = (id: Id<'contributions'>, at: number) =>
+    f.t.run((ctx) =>
+      restoreEntityTo(
+        { db: scopeWriter(ctx, f.a.tenantId), userId: f.a.userId, role: null },
+        givingContracts,
+        'contributions',
+        id,
+        at,
+      ),
+    )
+  const latest = async (id: Id<'contributions'>) =>
+    Math.max(...(await revisions(id)).map((r) => r._creationTime))
+
+  test('brings back the amounts, and only the slice that changed', async () => {
+    const id = await create()
+    const moment = await latest(id)
+    await save(
+      id,
+      0,
+      giftArgs({
+        amount: 3000n,
+        allocations: [
+          { sourceCodeId: street.version, amount: 1000n },
+          { sourceCodeId: online.version, amount: 2000n },
+        ],
+      }),
+    )
+    const result = await restoreTo(id, moment)
+    expect(result.restored).toEqual(['giving.gift'])
+    const g = await gift(id)
+    expect(g).toMatchObject({ amount: 2000n, giftVersion: 2, statusVersion: 1 })
+    expect(g.allocations).toEqual([
+      expect.objectContaining({ sourceCodeId: street.version, amount: 2000n }),
+    ])
+    expect((await allocations(id)).map((r) => r.amount)).toEqual([2000n])
+    await bUntouched()
+  })
+
+  test('a gift already in that state restores nothing', async () => {
+    const id = await create()
+    const moment = await latest(id)
+    // Stored int64s read back as bigints and compare equal to themselves.
+    expect(await restoreTo(id, moment)).toEqual({ restored: [], group: null })
+    const [{ key }] = (await gift(id)).allocations
+    const back = (amount: bigint) =>
+      giftArgs({
+        amount,
+        allocations: [{ key, sourceCodeId: street.version, amount }],
+      })
+    await save(id, 0, back(2500n))
+    await save(id, 1, back(2000n))
+    // The gift is back as it was then: nothing to restore.
+    expect(await restoreTo(id, moment)).toEqual({ restored: [], group: null })
+  })
+
+  test('a stored payload is canonically equal to the one sent', async () => {
+    const sent = giftArgs({ amount: 1234567n })
+    const id = await create(sent)
+    const stored = (await revisions(id)).find(
+      (r) => r.contract === 'giving.gift',
+    )!
+    const [{ key }] = (await gift(id)).allocations
+    expect(canonical(stored.payload)).toBe(
+      canonical({
+        ...sent,
+        allocations: [{ ...sent.allocations[0], key }],
+      }),
+    )
+    expect(canonical({ amount: 5n })).not.toBe(canonical({ amount: 5 }))
   })
 })
 

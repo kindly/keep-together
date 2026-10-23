@@ -4,7 +4,7 @@
  */
 import { paginationOptsValidator } from 'convex/server'
 import { v } from 'convex/values'
-import type { Doc } from '../_generated/dataModel'
+import type { Doc, Id } from '../_generated/dataModel'
 import { tenantQuery } from '../lib/tenancy'
 import type { ScopedDatabaseReader } from '../lib/tenancy'
 import { groupsToRead, toMoments } from '../contacts/history'
@@ -45,15 +45,31 @@ export const myRecent = tenantQuery({
   },
 })
 
+/**
+ * A code lookup for one query: each code is read once however many rows
+ * share it (`describe` is a chain of reads per call).
+ */
+function codeReader(db: ScopedDatabaseReader) {
+  const codes = new Map<Id<'sourceCodes'>, Promise<string | null>>()
+  return (id: Id<'sourceCodes'>) => {
+    let code = codes.get(id)
+    if (!code) {
+      code = describe(db, id).then((d) => d?.code ?? null)
+      codes.set(id, code)
+    }
+    return code
+  }
+}
+
 /** Each allocation with its code as it reads now (null: not this tenant's). */
 async function describeAllocations(
-  db: ScopedDatabaseReader,
+  codeOf: ReturnType<typeof codeReader>,
   gift: Doc<'contributions'>,
 ) {
   return Promise.all(
     gift.allocations.map(async (a) => ({
       ...a,
-      code: (await describe(db, a.sourceCodeId))?.code ?? null,
+      code: await codeOf(a.sourceCodeId),
     })),
   )
 }
@@ -84,12 +100,13 @@ export const byContact = tenantQuery({
         numItems: Math.min(paginationOpts.numItems, BY_CONTACT_LIMIT),
         maximumRowsRead: 2 * BY_CONTACT_LIMIT,
       })
+    const codeOf = codeReader(ctx.db)
     return {
       ...result,
       page: await Promise.all(
         result.page.map(async (g) => ({
           ...g,
-          allocations: await describeAllocations(ctx.db, g),
+          allocations: await describeAllocations(codeOf, g),
         })),
       ),
     }
@@ -109,7 +126,7 @@ export const get = tenantQuery({
     if (!gift) return null
     const [contact, allocations] = await Promise.all([
       ctx.db.get(gift.contactId),
-      describeAllocations(ctx.db, gift),
+      describeAllocations(codeReader(ctx.db), gift),
     ])
     return {
       ...gift,
