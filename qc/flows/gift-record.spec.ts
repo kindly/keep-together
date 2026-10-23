@@ -60,7 +60,10 @@ test.describe('record a gift', { annotation: [NEW] }, () => {
     await flow(page, 'gift.record', {
       before: async () => {
         await donorBox(page).fill(lastName)
-        await page.getByRole('option', { name: new RegExp(lastName) }).click()
+        // The match, not "New person “…”" made from the same text.
+        await page
+          .getByRole('option', { name: new RegExp(`^Qc ${lastName}`) })
+          .click()
         await expect(page.getByTestId('donor')).toContainText(lastName)
         // The first gift fills the contact's code; later ones default to it.
         if (

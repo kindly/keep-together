@@ -65,7 +65,7 @@ test('home links to contacts, and the group name leads back', async ({
   await expect(page).toHaveURL(`/t/${users.a.slug}/contacts/new`)
 })
 
-test('the Donations menu offers Record a gift, not yet live', async ({
+test('the Donations menu offers Record a gift', async ({
   page,
   users,
 }) => {
@@ -74,8 +74,8 @@ test('the Donations menu offers Record a gift, not yet live', async ({
   await page.getByRole('button', { name: 'Donations', exact: true }).click()
   const menu = page.getByRole('menu')
   await expect(
-    menu.getByRole('menuitem', { name: /Record a gift/ }),
-  ).toHaveAttribute('aria-disabled', 'true')
+    menu.getByRole('menuitem', { name: 'Record a gift' }),
+  ).toHaveAttribute('href', `/t/${users.a.slug}/gifts/new`)
   await expect(menu.getByText('My recent gifts')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(menu).toHaveCount(0)
