@@ -20,8 +20,12 @@ export type Donor = {
   firstName: string
   lastName: string
   acquisitionCodeId: Id<'sourceCodes'> | null
-  /** The primary (else first) address's line 1 and postcode, or empty strings. */
-  home: { line1: string; postcode: string }
+  /**
+   * The primary (else first) address's line 1 and postcode, or empty
+   * strings; `completable` when typing a postcode for it completes that
+   * row in place (`setHomeAddress`) rather than adding a new one.
+   */
+  home: { line1: string; postcode: string; completable: boolean }
 }
 
 /** The donor, or null for a missing or another tenant's id. Two reads. */
@@ -39,8 +43,21 @@ export async function describeDonor(
     firstName: contact.firstName,
     lastName: contact.lastName,
     acquisitionCodeId: contact.acquisitionCodeId ?? null,
-    home: { line1: home?.line1 ?? '', postcode: home?.postcode ?? '' },
+    home: {
+      line1: home?.line1 ?? '',
+      postcode: home?.postcode ?? '',
+      completable: home !== undefined && completesInPlace(home),
+    },
   }
+}
+
+/** A UK home address with no postcode: `setHomeAddress` completes it in place. */
+function completesInPlace(a: Doc<'contactAddresses'>): boolean {
+  return (
+    a.label === 'home' &&
+    a.country.trim().toUpperCase() === 'GB' &&
+    !a.postcode.trim()
+  )
 }
 
 function addressRows(db: ScopedDatabaseReader, contactId: Id<'contacts'>) {
@@ -96,11 +113,13 @@ export async function addFirstEmail(
  * Give the contact a UK home address (line 1 and postcode, what Gift Aid
  * needs), keeping the addresses it has. The row a declaration would
  * snapshot (primary, else first: `describeDonor`'s home) is completed in
- * place when it lacks line 1 or postcode, so it stays the primary
- * (addresses are editable in place, ADR 0014). Otherwise the address is
- * added, as the primary only if there is none. Built from the rows read
- * in this transaction, so it needs no `expected`. Returns line 1 and
- * postcode as stored (tidied).
+ * place, by key, when it is a UK home address with no postcode: it keeps
+ * its other fields and stays where it was (addresses are editable in
+ * place, ADR 0014). Anything else (an overseas, work or other row, or a
+ * home row that has a postcode) is left as it is, and the address is
+ * added as the new primary, since claims use the current address (g2q7).
+ * Built from the rows read in this transaction, so it needs no
+ * `expected`. Returns line 1 and postcode as stored (tidied).
  */
 export async function setHomeAddress(
   ctx: ContractCtx,
@@ -114,10 +133,7 @@ export async function setHomeAddress(
   ])
   if (!contact) throw rejected('unknown_contact', 'Contact must exist')
   const current = rows.find((a) => a.isPrimary) ?? rows.at(0)
-  const partial =
-    current && (!current.line1.trim() || !current.postcode.trim())
-      ? current
-      : null
+  const partial = current && completesInPlace(current) ? current : null
   const kept = rows.map((a) => ({
     key: a.key,
     label: a.label,
@@ -127,7 +143,8 @@ export async function setHomeAddress(
     town: a.town,
     postcode: a.key === partial?.key ? home.postcode : a.postcode,
     country: a.country,
-    isPrimary: a.isPrimary,
+    // An added address becomes the primary.
+    isPrimary: partial ? a.isPrimary : false,
   }))
   const key = partial?.key ?? crypto.randomUUID()
   const added = partial
@@ -142,7 +159,7 @@ export async function setHomeAddress(
           town: '',
           postcode: home.postcode,
           country: 'GB',
-          isPrimary: !kept.some((a) => a.isPrimary),
+          isPrimary: true,
         },
       ]
   await executeContract(

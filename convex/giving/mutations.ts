@@ -142,8 +142,9 @@ const { contactId: _, ...giftOnlyFields } = giftFields
  *
  *   1. `contact` is an existing contact's id, or a new contact, created
  *      with the gift's code as its acquisition code (and its email);
- *      `home` (line 1 and postcode) completes its home address in place
- *      when that lacks either, else is added (g3q3, `setHomeAddress`);
+ *      `home` (line 1 and postcode) completes its UK home address in place
+ *      when that has no postcode, else is added as the primary (g3q3,
+ *      `setHomeAddress`);
  *   2. the gift (`giving.gift`, then `giving.status` completed);
  *   3. an existing contact with no acquisition code gets the gift's code
  *      (g2q1); one it already has stays;

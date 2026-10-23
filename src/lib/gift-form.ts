@@ -174,14 +174,17 @@ export function asksForAddress(
 }
 
 /**
- * A complete address on file, partly: its fields prefill the tick's
- * fields (an address with line 1 and no postcode gets its postcode typed).
+ * What the tick's fields start with: the address on file when typing its
+ * postcode completes it in place (a UK home address with no postcode);
+ * otherwise empty, since what is typed is added as a new address.
  */
 export function partialHome(info: DonorInfo | null | undefined): {
   line1: string
   postcode: string
 } {
-  return info ? { ...info.home } : { line1: '', postcode: '' }
+  return info?.home.completable
+    ? { line1: info.home.line1, postcode: info.home.postcode }
+    : { line1: '', postcode: '' }
 }
 
 export type Problem = { field: string; message: string }
@@ -218,10 +221,10 @@ export function draftProblems(
   if (pence === 'ambiguous') {
     problems.push({
       field: 'amount',
-      message: 'Is that pounds and pence? Write it like 12.50, with no spaces',
+      message: AMOUNT_MESSAGES.ambiguous,
     })
   } else if (pence === 'tooLarge') {
-    problems.push({ field: 'amount', message: 'That amount is too large' })
+    problems.push({ field: 'amount', message: AMOUNT_MESSAGES.tooLarge })
   } else if (pence === null) {
     problems.push({
       field: 'amount',
@@ -263,6 +266,12 @@ export function noAddressWarning(
   if (!asksForAddress(draft, info)) return null
   if (draft.line1.trim() || draft.postcode.trim()) return null
   return 'No home address: the declaration is saved, but Gift Aid can’t be claimed until one is added'
+}
+
+/** What `amountPence`'s refusals say, on every amount field. */
+export const AMOUNT_MESSAGES = {
+  ambiguous: 'Is that pounds and pence? Write it like 12.50, with no spaces',
+  tooLarge: 'That amount is too large',
 }
 
 /** The largest amount storable (`v.int64()` pence). */

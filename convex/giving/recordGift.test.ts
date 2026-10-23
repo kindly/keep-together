@@ -393,7 +393,7 @@ describe('Gift Aid', () => {
     })
   })
 
-  test('an added address keeps the ones the contact has, and their primary', async () => {
+  test('an added address keeps the ones the contact has, and becomes the primary', async () => {
     const jo = await existing(f.a)
     await f.a.as.mutation(api.contacts.mutations.saveAddresses, {
       tenantId: f.a.tenantId,
@@ -418,8 +418,8 @@ describe('Gift Aid', () => {
     })
     const rows = await rowsOf('contactAddresses', jo)
     expect(rows.map((r) => [r.line1, r.isPrimary])).toEqual([
-      ['1 Office Rd', true],
-      ['3 Mill Lane', false],
+      ['1 Office Rd', false],
+      ['3 Mill Lane', true],
     ])
   })
 
@@ -540,6 +540,48 @@ describe('Gift Aid', () => {
     // The same row, by id.
     expect(rows[1].key).toBe(before.key)
   })
+
+  test.each([
+    ['an overseas home address', { label: 'home', country: 'FR' }],
+    ['a work address', { label: 'work', country: 'GB' }],
+  ] as const)(
+    '%s with no postcode is left alone; the typed one is added as the primary',
+    async (_, over) => {
+      const jo = await existing(f.a)
+      await f.a.as.mutation(api.contacts.mutations.saveAddresses, {
+        tenantId: f.a.tenantId,
+        id: jo,
+        expected: 0,
+        addresses: [
+          {
+            line1: '9 Rue Haute',
+            line2: '',
+            line3: '',
+            town: 'Lyon',
+            postcode: '',
+            isPrimary: true,
+            ...over,
+          },
+        ],
+      })
+      const { declarationId } = await record({
+        contact: jo,
+        home: { line1: '3 Mill Lane', postcode: 'M1 1AA' },
+        giftAid: {},
+      })
+      const rows = await rowsOf('contactAddresses', jo)
+      expect(
+        rows.map((r) => [r.line1, r.postcode, r.country, r.isPrimary]),
+      ).toEqual([
+        ['9 Rue Haute', '', over.country, false],
+        ['3 Mill Lane', 'M1 1AA', 'GB', true],
+      ])
+      expect(await get(declarationId!)).toMatchObject({
+        addressLine1: '3 Mill Lane',
+        postcode: 'M1 1AA',
+      })
+    },
+  )
 
   test('blank address fields add no address', async () => {
     const { contactId } = await record({ home: { line1: ' ', postcode: '' } })

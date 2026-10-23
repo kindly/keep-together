@@ -11,6 +11,7 @@ import {
   isDirty,
   newDonor,
   noAddressWarning,
+  partialHome,
   splitName,
   toArgs,
 } from './gift-form'
@@ -34,7 +35,7 @@ function info(over: Partial<DonorInfo> = {}): DonorInfo {
     displayName: 'Jo Bloggs',
     firstName: 'Jo',
     lastName: 'Bloggs',
-    home: { line1: '', postcode: '' },
+    home: { line1: '', postcode: '', completable: false },
     acquisition: null,
     covering: null,
     ...over,
@@ -121,7 +122,9 @@ describe('Gift Aid offer', () => {
 })
 
 describe('the address under the tick (g3q3, cash-2 L1)', () => {
-  const complete = info({ home: { line1: '12 High St', postcode: 'AB1 2CD' } })
+  const complete = info({
+    home: { line1: '12 High St', postcode: 'AB1 2CD', completable: false },
+  })
 
   test('a complete address on file: no fields, and nothing typed is sent', () => {
     const d = draft({ giftAid: true, line1: '9', postcode: '' })
@@ -165,6 +168,24 @@ describe('the address under the tick (g3q3, cash-2 L1)', () => {
     expect(draftProblems(d, info())).toEqual([])
     expect(noAddressWarning(d, info())).toMatch(/can’t be claimed/)
     expect(toArgs(d, info(), 'k').home).toBeUndefined()
+  })
+
+  test('the fields start with the address on file only when it is completed in place', () => {
+    expect(
+      partialHome(
+        info({
+          home: { line1: '5 Engine St', postcode: '', completable: true },
+        }),
+      ),
+    ).toEqual({ line1: '5 Engine St', postcode: '' })
+    // An overseas or work row: what is typed is a new address.
+    expect(
+      partialHome(
+        info({
+          home: { line1: '9 Rue Haute', postcode: '', completable: false },
+        }),
+      ),
+    ).toEqual({ line1: '', postcode: '' })
   })
 
   test('not ticked: no fields, nothing sent', () => {

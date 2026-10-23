@@ -131,6 +131,10 @@ export const budgets = {
   // Cash gifts step 5: the gift page and the contact page's panels.
   'gift.open': repeatable,
   'gift.save': repeatable,
+  // Void and unvoid show the new status optimistically: these two time
+  // the click to that display, not the server round trip. The spec checks
+  // each write is then confirmed, and records click-to-confirmed as an
+  // untimed annotation ("gift.void server confirm"), not judged.
   'gift.void': repeatable,
   'gift.unvoid': repeatable,
   'contact.gifts.loadMore': repeatable,

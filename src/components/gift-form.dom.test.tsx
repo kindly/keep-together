@@ -90,7 +90,7 @@ function jo(over: Partial<DonorInfo> = {}): DonorInfo {
     displayName: 'Jo Bloggs',
     firstName: 'Jo',
     lastName: 'Bloggs',
-    home: { line1: '', postcode: '' },
+    home: { line1: '', postcode: '', completable: false },
     acquisition: {
       versionId: 'street',
       code: 'Street-Wesser-001',
@@ -279,7 +279,9 @@ test('an organisation gets no tick', async () => {
 })
 
 test('the tick: staff ticked by default, explained; an address on file is used', async () => {
-  donor = jo({ home: { line1: '12 High St', postcode: 'AB1 2CD' } })
+  donor = jo({
+    home: { line1: '12 High St', postcode: 'AB1 2CD', completable: false },
+  })
   await find('jo')
   await pickOption(0)
   await click(giftAid()!.querySelector('input[type="checkbox"]')!)
@@ -528,7 +530,9 @@ test('"Already saved" says what the server holds, not what the form holds now', 
 })
 
 test('the address on file links to the contact page to change it', async () => {
-  donor = jo({ home: { line1: '12 High St', postcode: 'AB1 2CD' } })
+  donor = jo({
+    home: { line1: '12 High St', postcode: 'AB1 2CD', completable: false },
+  })
   await find('jo')
   await pickOption(0)
   await click(giftAid()!.querySelector('input[type="checkbox"]')!)
@@ -547,4 +551,26 @@ test('coverage is asked for on the gift’s date', async () => {
     'giving/queries:donor',
     expect.objectContaining({ contactId: 'jo', date: '2026-09-15' }),
   ])
+})
+
+test('a highlight moved on old rows goes back to the first when new rows arrive', async () => {
+  searchFor = new Map([
+    ['jo', loaded([row('jo', 'Jo Bloggs'), row('al', 'Al Smith')])],
+  ])
+  await find('jo')
+  await type(donorBox(), 'jo b')
+  // Old rows on screen; move to the second.
+  await press('ArrowDown')
+  expect(options()[1].getAttribute('aria-selected')).toBe('true')
+  searchFor.set(
+    'jo b',
+    loaded([row('jb', 'Jo Brown'), row('jx', 'Jo Bloggs-Other')]),
+  )
+  rerender()
+  expect(options()[0].getAttribute('aria-selected')).toBe('true')
+  expect(donorBox().getAttribute('aria-activedescendant')).toBe(options()[0].id)
+  await press('Enter')
+  expect(el.querySelector('[data-testid="donor"]')!.textContent).toContain(
+    'Jo Brown',
+  )
 })

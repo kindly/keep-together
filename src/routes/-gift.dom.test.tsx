@@ -211,6 +211,22 @@ test('a £0 amount is one message, sent nowhere', async () => {
   expect(mutations['giving/mutations:save']).not.toHaveBeenCalled()
 })
 
+test('"12 50" is asked about, never saved as £1,250 (as on the record page)', async () => {
+  render()
+  await click(button(el, 'Edit'))
+  await type(input('Amount'), '12 50')
+  await act(async () => form().requestSubmit())
+  expect(form().querySelector('[role="alert"]')?.textContent).toBe(
+    'Is that pounds and pence? Write it like 12.50, with no spaces',
+  )
+  await type(input('Amount'), '92233720368547758.08')
+  await act(async () => form().requestSubmit())
+  expect(form().querySelector('[role="alert"]')?.textContent).toBe(
+    'That amount is too large',
+  )
+  expect(mutations['giving/mutations:save']).not.toHaveBeenCalled()
+})
+
 test('Unvoid confirms first, as Void does', async () => {
   gift = makeGift({ status: 'void', statusVersion: 3 })
   render()

@@ -684,10 +684,19 @@ export function DonorSearch({
   const listId = useId()
   const [text, setText] = useState('')
   const [open, setOpen] = useState(false)
-  const [active, setActive] = useState(0)
   const [waitHint, setWaitHint] = useState(false)
   const term = text.trim()
   const { result: found, fresh } = useSearch(term, open)
+  // The highlighted option, held against the answer it was moved in: when
+  // new rows arrive it is back on the first, so it can never land on a
+  // different contact at the same position.
+  const [cursor, setCursor] = useState({ i: 0, of: found })
+  const active = cursor.of === found ? cursor.i : 0
+  const setActive = (next: number | ((i: number) => number)) =>
+    setCursor({
+      i: typeof next === 'function' ? next(active) : next,
+      of: found,
+    })
   const options: Array<Option> = term
     ? [
         ...(found?.rows ?? []).slice(0, SHOWN_MATCHES).map((row) => ({

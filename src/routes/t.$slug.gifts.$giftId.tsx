@@ -19,7 +19,6 @@ import {
   METHOD_LABELS,
   formatDay,
   formatPence,
-  parsePounds,
   penceToInput,
   refusal,
   useSetGiftStatus,
@@ -30,6 +29,7 @@ import {
   useDeclarations,
 } from '../lib/giftaid'
 import { threeWayMerge } from '../lib/merge'
+import { AMOUNT_MESSAGES, amountPence } from '../lib/gift-form'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/gifts/$giftId')({
@@ -440,7 +440,9 @@ function GiftEdit({
     setError(null)
   }
 
-  const amount = single ? parsePounds(amountText) : gift.amount
+  // As the record page reads it: "12 50" is asked about, never £1,250.
+  const typed = single ? amountPence(amountText) : gift.amount
+  const amount = typeof typed === 'bigint' ? typed : null
   const warnings =
     amount !== null && receivedOn
       ? giftWarnings({ receivedOn, amount }, localToday())
@@ -448,6 +450,10 @@ function GiftEdit({
 
   async function submit(e: FormEvent) {
     e.preventDefault()
+    if (typed === 'ambiguous' || typed === 'tooLarge') {
+      setError(AMOUNT_MESSAGES[typed])
+      return
+    }
     if (amount === null) {
       setError('Enter the amount in pounds, like 20 or 20.50')
       return
