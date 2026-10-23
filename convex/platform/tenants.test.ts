@@ -250,6 +250,45 @@ describe('opened: the group a user last used', () => {
     expect(await snapshot(t, b.tenantId)).toBe(beforeB)
   })
 
+  test('calls trading the mark back and forth write once a minute at most', async () => {
+    // Two tabs on different groups, each calling as `mine` moves (the H1
+    // loop): after one write each, repeats inside a minute write nothing.
+    const { t, a } = await setup()
+    const gamma = await t.mutation(internal.platform.tenants.create, {
+      slug: 'gamma',
+      name: 'Gamma',
+      adminEmail: 'alpha@example.com',
+    })
+    await t.finishAllScheduledFunctions(() => {})
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: gamma })
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: a.tenantId })
+    const rows = await lastUsed(t)
+    for (let i = 0; i < 5; i++) {
+      await a.as.mutation(api.platform.tenants.opened, { tenantId: gamma })
+      await a.as.mutation(api.platform.tenants.opened, {
+        tenantId: a.tenantId,
+      })
+    }
+    expect(await lastUsed(t)).toEqual(rows)
+
+    // A minute on, coming back to gamma counts again.
+    await t.run(async (ctx) => {
+      const m = await ctx.db
+        .query('memberships')
+        .withIndex('by_tenant_user', (q) =>
+          q.eq('tenantId', gamma).eq('userId', a.userId),
+        )
+        .unique()
+      await ctx.db.patch('memberships', m!._id, {
+        lastUsedAt: Date.now() - 61_000,
+      })
+    })
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: gamma })
+    const mine = await a.as.query(api.platform.tenants.mine, {})
+    const at = (slug: string) => mine.find((x) => x.slug === slug)!.lastUsedAt!
+    expect(at('gamma')).toBeGreaterThan(at('alpha'))
+  })
+
   test('a viewer may record it too: it changes no tenant data', async () => {
     const { t, a, b } = await setup()
     await t.run((ctx) =>

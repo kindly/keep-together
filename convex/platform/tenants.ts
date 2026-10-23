@@ -88,8 +88,14 @@ export const mine = query({
  * The caller opened this group: remember it, so signing in lands them back
  * here (cash-gifts g3q1). Only for people in more than one group, and only
  * when it isn't already their last used, so moving around inside a group
- * writes nothing.
+ * writes nothing. Nor when this group was marked within the last minute:
+ * the client calls once per entry, so a burst of calls is a misbehaving
+ * client (two tabs trading the mark), and one write a minute bounds it.
+ * The cost: leaving a group and coming back inside a minute lands next
+ * sign-in in the other one.
  */
+const OPENED_QUIET_MS = 60_000
+
 export const opened = mutation({
   args: { tenantId: v.id('tenants') },
   handler: async (ctx, { tenantId }) => {
@@ -105,10 +111,12 @@ export const opened = mutation({
       .collect()
     if (all.length < 2) return
     const latest = Math.max(...all.map((m) => m.lastUsedAt ?? 0))
-    if (membership.lastUsedAt !== undefined && membership.lastUsedAt === latest)
+    const last = membership.lastUsedAt
+    const now = Date.now()
+    if (last !== undefined && (last === latest || now - last < OPENED_QUIET_MS))
       return
     await ctx.db.patch('memberships', membership._id, {
-      lastUsedAt: Math.max(Date.now(), latest + 1),
+      lastUsedAt: Math.max(now, latest + 1),
     })
   },
 })

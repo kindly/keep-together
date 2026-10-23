@@ -34,11 +34,14 @@ function GiftSummary({ gift }: { gift: RecentGift }) {
   )
 }
 
-/** "Record a gift", disabled until its page exists (step 3). */
+/**
+ * "Record a gift", inert until its page exists (step 3). Says why in
+ * visible text, which a tooltip wouldn't on touch or to a screen reader.
+ */
 export function RecordGiftAction({ className }: { className?: string }) {
   return (
-    <span aria-disabled="true" title="Coming soon" className={className}>
-      Record a gift
+    <span className={className}>
+      Record a gift <span className="text-xs font-normal">(coming soon)</span>
     </span>
   )
 }
@@ -76,24 +79,26 @@ export function DonationsMenu({ tenantId }: { tenantId: Id<'tenants'> }) {
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger className="text-sm whitespace-nowrap hover:underline data-[state=open]:underline">
-        Donations ▾
+        Donations <span aria-hidden="true">▾</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-80">
         {canWrite && (
           <>
             <DropdownMenuItem disabled>
               <RecordGiftAction />
-              <span className="ml-auto text-xs">coming soon</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>
         )}
         <DropdownMenuLabel>My recent gifts</DropdownMenuLabel>
+        {/* Only menu items inside role=menu: the states are disabled ones. */}
         {gifts === undefined ? (
-          <p className="px-2 py-1.5 text-sm text-neutral-500">Loading…</p>
+          <DropdownMenuItem disabled>Loading…</DropdownMenuItem>
         ) : gifts.length === 0 ? (
-          <p className="px-2 py-1.5 text-sm text-neutral-500">None yet.</p>
+          <DropdownMenuItem disabled>None yet.</DropdownMenuItem>
         ) : (
+          // Selecting one only closes the menu until step 5 makes it a
+          // link to the gift.
           gifts.map((g) => (
             <DropdownMenuItem key={g._id}>
               <GiftSummary gift={g} />

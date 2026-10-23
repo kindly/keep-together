@@ -1,6 +1,6 @@
 import { Link, Outlet, createFileRoute } from '@tanstack/react-router'
 import { Authenticated, Unauthenticated, useMutation } from 'convex/react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { api } from '../../convex/_generated/api'
 import { TenantContext, useMyTenants } from '../lib/tenant'
 import type { Tenant } from '../lib/tenant'
@@ -92,9 +92,11 @@ function Resolved({ slug }: { slug: string }) {
 
 /**
  * Tells the server which group this is, so signing in lands here next
- * time (cash-gifts g3q1). Only for people in several groups, and only when
- * this one isn't already their last used: `mine` then carries the new
- * time and this stays quiet.
+ * time (cash-gifts g3q1). Once per entry into a group, judged by `mine`
+ * as it stood then: only for people in several groups, and only when this
+ * one isn't already their last used. Never again while staying in it, so
+ * two tabs on different groups can't keep taking the "last used" mark
+ * from each other as `mine` updates.
  */
 function RememberOpened({
   tenant,
@@ -107,7 +109,12 @@ function RememberOpened({
   const several = tenants.length > 1
   const latest = Math.max(...tenants.map((t) => t.lastUsedAt ?? 0))
   const isLatest = tenant.lastUsedAt !== null && tenant.lastUsedAt === latest
+  // The group this entry was judged for; isLatest changing later is
+  // another tab's doing, not a new entry.
+  const judged = useRef<Tenant['_id'] | null>(null)
   useEffect(() => {
+    if (judged.current === tenant._id) return
+    judged.current = tenant._id
     if (!several || isLatest) return
     opened({ tenantId: tenant._id }).catch(console.error)
   }, [opened, several, isLatest, tenant._id])

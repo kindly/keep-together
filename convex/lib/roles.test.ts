@@ -12,7 +12,7 @@ import { describe, expect, test } from 'vitest'
 import { api } from '../_generated/api'
 import type { Id, TableNames } from '../_generated/dataModel'
 import schema from '../schema'
-import { errorData, modules, setup } from '../../test/fixture'
+import { errorData, modules, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
 import type { ListKind } from './lists'
 import { tenantAction, tenantMutation, tenantQuery } from './tenancy'
@@ -329,7 +329,7 @@ describe('every public mutation and action', () => {
 
     const checked: Array<string> = []
     for (const w of writes) {
-      if (NOT_TENANT_SCOPED.has(w.path) || ANY_MEMBER.has(w.path)) continue
+      if (NOT_TENANT_SCOPED.has(w.path)) continue
       expect(
         w.args.value?.tenantId,
         `${w.path} must be declared with a scoped constructor (no tenantId arg)`,
@@ -340,6 +340,23 @@ describe('every public mutation and action', () => {
           ? as.mutation(makeFunctionReference<'mutation'>(w.path), args)
           : as.action(makeFunctionReference<'action'>(w.path), args)
 
+      if (ANY_MEMBER.has(w.path)) {
+        // A viewer succeeds, and no tenant's domain data moves: only the
+        // caller's own membership may change.
+        const before = [
+          await snapshot(t, a.tenantId),
+          await snapshot(t, b.tenantId),
+        ]
+        await call(viewer).catch((e: Error) => {
+          throw new Error(`${w.path}: a viewer's call ${e.message}`)
+        })
+        expect(
+          [await snapshot(t, a.tenantId), await snapshot(t, b.tenantId)],
+          w.path,
+        ).toEqual(before)
+        checked.push(w.path)
+        continue
+      }
       const asViewer = await errorData(call(viewer)).catch((e: Error) => {
         throw new Error(`${w.path}: a viewer's call ${e.message}`)
       })

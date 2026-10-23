@@ -3,7 +3,7 @@ import { runId } from '../timing'
 
 // Groups and navigation (factory/plans/qc-suite.sv, step 6; cash-gifts
 // step 4): "/" lands in a group's home, never a list; the home's actions
-// and the header (timed: `groups.open`, home to contacts); Settings →
+// and the header (timed: `home.toContacts`); Settings →
 // Switch group; and a slug that isn't yours. Signed in as user A. A user
 // with no group is covered by sign-up (auth.spec.ts), since every seeded
 // user owns one. Every seeded user has one group, so the Switch group tab
@@ -32,7 +32,7 @@ test('"/" goes straight to your group’s home', async ({ page, users }) => {
     0,
   )
   await expect(
-    header.getByRole('button', { name: 'Donations ▾' }),
+    header.getByRole('button', { name: 'Donations', exact: true }),
   ).toBeVisible()
   // No gifts yet: the giving backend is still a stub here.
   await expect(page.getByText('My recent gifts')).toBeVisible()
@@ -45,7 +45,7 @@ test('home links to contacts, and the group name leads back', async ({
 }) => {
   route('/t/$slug', '/t/$slug/', '/t/$slug/contacts/')
   const link = page.getByRole('link', { name: 'Find a contact' })
-  await flow(page, 'groups.open', {
+  await flow(page, 'home.toContacts', {
     before: async () => {
       await page.goto(`/t/${users.a.slug}`)
       await expect(link).toBeVisible()
@@ -71,7 +71,7 @@ test('the Donations menu offers Record a gift, not yet live', async ({
 }) => {
   route('/t/$slug/')
   await page.goto(`/t/${users.a.slug}`)
-  await page.getByRole('button', { name: 'Donations ▾' }).click()
+  await page.getByRole('button', { name: 'Donations', exact: true }).click()
   const menu = page.getByRole('menu')
   await expect(
     menu.getByRole('menuitem', { name: /Record a gift/ }),

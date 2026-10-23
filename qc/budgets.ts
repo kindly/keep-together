@@ -61,7 +61,11 @@ export const budgets = {
   // Raised 740 → 1000 by the human (2026-10-18): the recorded 1.5× set had no
   // slack under machine load; sign-in is once per session.
   'auth.signIn': { kind: 'oncePerSession', maxMs: 1000 },
-  'groups.open': repeatable,
+  // `groups.open` (groups list on "/" → a group's contacts, layout mount
+  // included) is retired: cash-gifts step 4 removed the groups list, so
+  // its start point no longer exists. Its history stays under that name.
+  // The nearest flow now, inside a mounted layout, is a new measurement:
+  'home.toContacts': repeatable,
   'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 410 },
   'contacts.nav': repeatable,
   'contacts.search': repeatable,

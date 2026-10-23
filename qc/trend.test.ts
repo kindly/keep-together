@@ -71,7 +71,7 @@ describe('shapeTrend', () => {
     line({
       runId: 'r3',
       at: '2026-10-17T12:00:02.000Z',
-      flow: 'groups.open',
+      flow: 'home.toContacts',
       maxMs: 120,
       pass: false,
       knownOver: 'perf task pending',
@@ -84,7 +84,7 @@ describe('shapeTrend', () => {
     line({
       runId: 'r2',
       at: '2026-10-17T11:00:00.000Z',
-      flow: 'groups.open',
+      flow: 'home.toContacts',
       maxMs: 300,
       rttOver: true,
       server: server([['contacts/queries:list', true, 40, 120]]),
@@ -104,7 +104,7 @@ describe('shapeTrend', () => {
     const t = shapeTrend(history, { lastRuns: 30 })
     const save = t.flows.find((f) => f.flow === 'contact.save')!
     expect(save.points.map((p) => p?.maxMs ?? null)).toEqual([70, null, 95])
-    const groups = t.flows.find((f) => f.flow === 'groups.open')!
+    const groups = t.flows.find((f) => f.flow === 'home.toContacts')!
     expect(groups.points.map((p) => p && flowMark(p))).toEqual([
       null,
       'rtt',
@@ -115,7 +115,7 @@ describe('shapeTrend', () => {
   test('latest table: least headroom first, as a share of the budget', () => {
     const t = shapeTrend(history, { lastRuns: 30 })
     expect(t.latest.map((r) => [r.flow, r.headroomMs, r.current])).toEqual([
-      ['groups.open', -20, true],
+      ['home.toContacts', -20, true],
       ['contact.save', 5, true],
       // 1500 ms of headroom is 75%: sorts after 5 ms of 100.
       ['auth.signIn', 1500, true],

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from 'react'
+import { act, createContext, use } from 'react'
 import type { ComponentType, ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
@@ -19,12 +19,14 @@ const fill = (to: string, params: Record<string, string> = {}) =>
   to.replace(/\$(\w+)/g, (_, k: string) => params[k])
 
 let params: Record<string, string> = {}
+// A tab's own params, for tests that render two tabs side by side.
+const TabParams = createContext<Record<string, string> | null>(null)
 const navigated: Array<string> = []
 const navigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (options: object) => ({
     options,
-    useParams: () => params,
+    useParams: () => use(TabParams) ?? params,
   }),
   Link: ({
     to,
@@ -150,6 +152,11 @@ test('header: the group name leads home, then Contacts · Donations ▾ · Setti
     ['Settings', '/t/alpha/settings'],
   ])
   expect(nav.textContent).toContain('Donations ▾')
+  // The glyph is decoration: the button's name is just "Donations".
+  const trigger = [...nav.querySelectorAll('button')].find((b) =>
+    b.textContent.startsWith('Donations'),
+  )!
+  expect(trigger.querySelector('[aria-hidden="true"]')?.textContent).toBe('▾')
   expect(nav.textContent).not.toContain('keep-together')
 })
 
@@ -179,6 +186,48 @@ test('several groups: opening one that was not last used records it, once', asyn
   expect(opened).not.toHaveBeenCalled()
 })
 
+test('two tabs on different groups each record their group once, then stay quiet', async () => {
+  // The server as `mine` reports it: every call stamps a later time, which
+  // both tabs then see (the worst case: no server-side quiet window).
+  let clock = 10
+  const used: Record<string, number | null> = { alpha: null, beta: null }
+  const mine = () =>
+    Object.entries(used).map(([slug, lastUsedAt]) =>
+      group(slug, { lastUsedAt }),
+    )
+  opened.mockImplementation(({ tenantId }: { tenantId: string }) => {
+    used[tenantId.replace('id-', '')] = ++clock
+    return Promise.resolve(null)
+  })
+  const { Route } = await import('./t.$slug')
+  const Page = (Route as unknown as { options: { component: ComponentType } })
+    .options.component
+  const other = document.createElement('div')
+  document.body.append(other)
+  const second = createRoot(other)
+  const tab = (slug: string) => (
+    <TabParams value={{ slug }}>
+      <Page />
+    </TabParams>
+  )
+  // Tab 1 is open on alpha; then tab 2 opens on beta. After that, each
+  // round `mine` pushes the server's state to both tabs.
+  tenants = mine()
+  await act(async () => root.render(tab('alpha')))
+  for (let round = 0; round < 6; round++) {
+    tenants = mine()
+    await act(async () => {
+      root.render(tab('alpha'))
+      second.render(tab('beta'))
+    })
+  }
+  expect(opened.mock.calls).toEqual([
+    [{ tenantId: 'id-alpha' }],
+    [{ tenantId: 'id-beta' }],
+  ])
+  act(() => second.unmount())
+})
+
 test('the Donations menu: Record a gift (disabled for now), then my recent gifts', async () => {
   gifts = [
     gift({
@@ -200,7 +249,7 @@ test('the Donations menu: Record a gift (disabled for now), then my recent gifts
   const menu = document.querySelector('[role="menu"]')!
   expect(menu).not.toBeNull()
   const items = [...menu.querySelectorAll('[role="menuitem"]')]
-  expect(items[0].textContent).toContain('Record a gift')
+  expect(items[0].textContent).toBe('Record a gift (coming soon)')
   expect(items[0].getAttribute('aria-disabled')).toBe('true')
   expect(items.slice(1).map((i) => i.textContent)).toEqual([
     '£1,234.56Acme Ltd23 Oct 2026',
@@ -221,7 +270,11 @@ test('the Donations menu has no Record a gift for a viewer', async () => {
   })
   const menu = document.querySelector('[role="menu"]')!
   expect(menu.textContent).not.toContain('Record a gift')
-  expect(menu.textContent).toContain('None yet.')
+  // Nothing but menu items (and the label) inside the menu.
+  const none = [...menu.querySelectorAll('[role="menuitem"]')]
+  expect(none.map((i) => i.textContent)).toEqual(['None yet.'])
+  expect(none[0].getAttribute('aria-disabled')).toBe('true')
+  expect(menu.querySelector('p')).toBeNull()
 })
 
 function home(tenant: Tenant) {
@@ -246,8 +299,8 @@ test('home: the four actions for staff, Record a gift disabled until its page ex
     ['Find a contact', '/t/alpha/contacts'],
     ['New contact', '/t/alpha/contacts/new'],
   ])
-  const record = [...el.querySelectorAll('[aria-disabled="true"]')]
-  expect(record.map((r) => r.textContent)).toEqual(['Record a gift'])
+  // Not a link, and says why in visible text, not only a tooltip.
+  expect(text()).toContain('Record a gift (coming soon)')
   expect(text()).toContain('My recent gifts')
   expect(text()).toContain('£20.00Jo Bloggs23 Oct 2026')
 })
