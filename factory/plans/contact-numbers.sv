@@ -16,6 +16,7 @@
 - **Never reused, never changed.** Kept by archive, erasure (rule 3) and merge (a tombstone keeps its own, and its number finds the survivor). No renumbering, not even by admins. *(g1q6)*
 - **QC:** new flow `contacts.search.number`, repeatable (100 ms); `contacts.create` stays infrequent (150 ms), re-measured. *(g1q8)*
 - **Search** reads digits-only entries both ways: the number through `by_tenant_number`, and the phone as today. *(round 2)*
+  - Known limit (step 3 review, 2026-10-23): number search stops at sequence 99999; widening needs a way to tell a 7-digit number from a phone fragment. A bare 5-digit term ranks after exact email/identifier matches (old member numbers).
   - **An exact number match ranks first** with a "contact no." badge, then phone matches, then full text. *(g2q1)*
   - **A wrong check digit is flagged**: "100018 isn't a valid contact number. Check the last digit." Other matches still show. *(g2q2)*
   - **The 5-digit sequence without its check digit also finds the contact**, ranked first and shown as the full `100016`. *(g2q3)*
