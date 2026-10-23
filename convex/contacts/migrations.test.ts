@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, test } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from 'vitest'
 import migrationsTest from '@convex-dev/migrations/test'
 import { runToCompletion } from '@convex-dev/migrations'
 import { api, components, internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
 import { setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
+import { MAX_BACKFILL_PER_TENANT } from './migrations'
 import { FIRST_NUMBER } from './number'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
@@ -281,6 +282,49 @@ describe('backfillContactNumbers', () => {
       )
       expect(await next(who)).toBe(FIRST_NUMBER + ns.length)
     }
+  })
+
+  test('a tenant over the cap is skipped whole and logged; the others are numbered', async () => {
+    await createContact(f.a, 'Lovelace')
+    await createContact(f.b, 'Herschel')
+    await createContact(f.b, 'Fry')
+    await unnumber()
+    // Tenant A (created first, so its batch runs first) goes one over.
+    expect((await f.t.run((ctx) => ctx.db.query('tenants').first()))?._id).toBe(
+      f.a.tenantId,
+    )
+    await f.t.run(async (ctx) => {
+      const c = (await ctx.db.query('contacts').collect()).find(
+        (c) => c.tenantId === f.a.tenantId,
+      )!
+      const { _id, _creationTime, ...copy } = c
+      for (let i = 1; i < MAX_BACKFILL_PER_TENANT + 1; i++) {
+        await ctx.db.insert('contacts', copy)
+      }
+    })
+    const before = await snapshot(f.t, f.a.tenantId)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const status = await backfill()
+      expect(status.isDone).toBe(true)
+      expect(error).toHaveBeenCalledWith(
+        expect.stringMatching(
+          new RegExp(
+            `skipped tenant ${f.a.tenantId} .*more than ${MAX_BACKFILL_PER_TENANT}`,
+          ),
+        ),
+      )
+    } finally {
+      error.mockRestore()
+    }
+    // A: no number taken, no sequence row, nothing written.
+    expect(await snapshot(f.t, f.a.tenantId)).toBe(before)
+    // (t.run returns the missing row's undefined as null.)
+    expect(await next(f.a)).toBeNull()
+    expect(await numbers(f.b)).toEqual([
+      ['Herschel', FIRST_NUMBER],
+      ['Fry', FIRST_NUMBER + 1],
+    ])
   })
 
   test('the contact’s other fields and its search row are untouched', async () => {
