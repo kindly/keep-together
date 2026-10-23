@@ -89,8 +89,8 @@ export type Contract<
   /** Bump whenever the payload shape or semantics change; register an upcaster. */
   version: number
   /**
-   * The root is an entry in one of the tenant's lists (tags, identifier
-   * types): every execution, restore included, needs a caller who may
+   * The root is an entry in one of the tenant's lists (identifier types,
+   * source codes, dropdown fields): every execution, restore included, needs a caller who may
    * manage that list (lib/lists). Internal callers (role null) are trusted.
    */
   managesList?: ListKind

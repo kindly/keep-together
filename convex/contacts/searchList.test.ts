@@ -77,7 +77,7 @@ async function contact(
 
 const list = (
   search: string,
-  extra: { includeArchived?: boolean; kind?: Kind; tagId?: Id<'tags'> } = {},
+  extra: { includeArchived?: boolean; kind?: Kind } = {},
   who: Tenant = f.a,
 ) =>
   who.as.query(api.contacts.queries.search, {
@@ -178,25 +178,6 @@ describe('what one search box finds', () => {
     }
     expect((await ids('smithjones', {}, f.b)).length).toBe(1)
     expect(await ids('smithjones', {}, f.b)).not.toContain(sj)
-  })
-
-  test('a tag name', async () => {
-    const id = await contact(f.a, { last: 'Achebe' })
-    const tags = await f.a.as.query(api.contacts.queries.tags, {
-      tenantId: f.a.tenantId,
-    })
-    const volunteer = tags.find((t) => t.name === 'Volunteer')!
-    await f.a.as.mutation(api.contacts.mutations.saveTags, {
-      tenantId: f.a.tenantId,
-      id,
-      expected: 0,
-      tags: [{ tagId: volunteer._id }],
-    })
-    expect(await ids('volunteer')).toEqual([id])
-    // The tag filter intersects a search.
-    await contact(f.a, { last: 'Achebe-Ward' })
-    expect((await ids('achebe')).length).toBe(2)
-    expect(await ids('achebe', { tagId: volunteer._id })).toEqual([id])
   })
 
   test('exact email, then exact identifier, then exact phone, then the rest', async () => {

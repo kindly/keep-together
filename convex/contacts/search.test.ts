@@ -22,7 +22,6 @@ const none: SearchChildren = {
   phones: [],
   addresses: [],
   identifiers: [],
-  tagNames: [],
 }
 const words = (text: string) => text.split(' ')
 
@@ -163,24 +162,18 @@ describe('searchText', () => {
     expect(compact).toEqual(expect.arrayContaining(['sw1a1aa', 'sw1a', '1aa']))
   })
 
-  test('identifier values and tag names', () => {
+  test('identifier values', () => {
     const w = words(
-      searchText(person, {
-        ...none,
-        identifiers: ['CIVI-4471'],
-        tagNames: ['Christmas fair'],
-      }),
+      searchText(person, { ...none, identifiers: ['CIVI-4471', 'Gala 2024'] }),
     )
-    expect(w).toEqual(
-      expect.arrayContaining(['civi-4471', 'christmas', 'fair']),
-    )
+    expect(w).toEqual(expect.arrayContaining(['civi-4471', 'gala', '2024']))
   })
 
   test('every word once', () => {
     const text = searchText(person, {
       ...none,
       emails: ['zoe@ndiaye.org'],
-      tagNames: ['Zoe'],
+      identifiers: ['Zoe'],
     })
     expect(words(text)).toEqual([...new Set(words(text))])
   })

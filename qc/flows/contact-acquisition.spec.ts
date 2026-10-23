@@ -158,7 +158,7 @@ test.describe('the source filter', () => {
       const rows = page.locator('main ul li a')
 
       // A trusted ArrowDown from the option just above (selectOption's
-      // events are synthetic and start no timer), as tags.filter does.
+      // events are synthetic and start no timer), as fields.filter does.
       const above = async (select: typeof category, label: string) => {
         // Once the options have loaded.
         await expect(

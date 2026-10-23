@@ -6,7 +6,7 @@
  * distinctive so the isolation spec can look for leaks.
  *
  * Identifiers (external-ids X5): A's Ada holds `shared` under the active
- * type "Membership number", and carries the Member tag. In B the same type
+ * type "Membership number". In B the same type
  * name holds `shared` on B's Ada, `bOnly` on B's Charles and `bReuse` on
  * B's Trust, then is archived: B has no active type (the form hides the
  * section there), A's search can prove B's values don't leak, and A can
@@ -41,15 +41,10 @@ import {
   identifierType,
   methods,
   relationshipType,
-  tags,
 } from '../contacts/contracts'
-import {
-  ensureIdentifierTypes,
-  seedTags,
-  UK_RELATIONSHIP_TYPES,
-} from '../contacts/seed'
+import { ensureIdentifierTypes, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import { field, fieldOption } from '../contacts/fields'
-import { BULK_FIELD_LIMIT, normaliseTagName } from '../contacts/rules'
+import { BULK_FIELD_LIMIT } from '../contacts/rules'
 import { suppressAddress } from '../comms/suppressions'
 import { insertTenant, tenantForSlug } from './tenants'
 import { ensureSeedCategories, seedDetails } from '../sources/seed'
@@ -212,7 +207,7 @@ export const world = internalMutation({
         }
       }
       // Seeded inline so the world is complete on return; the jobs
-      // insertTenant schedules then find the types, tags and source codes
+      // insertTenant schedules then find the types and source codes
       // and do nothing.
 
       const scoped = { db: scopeWriter(ctx, tenantId), userId, role: null }
@@ -225,7 +220,6 @@ export const world = internalMutation({
           { source: 'seed', group },
         )
       }
-      await seedTags(scoped, group)
       await ensureSeedCategories(scoped, group)
       // One detail per side, named for it: the isolation spec looks for
       // B's in A's Source codes tab.
@@ -324,18 +318,6 @@ export const world = internalMutation({
             { source: 'seed', group, createWith: { fieldId } },
           )
         }
-        const member = await scoped.db
-          .query('tags')
-          .withIndex('by_tenant_nameNormalized', (q) =>
-            q.eq('nameNormalized', normaliseTagName('Member')),
-          )
-          .unique()
-        await executeContract(
-          scoped,
-          tags,
-          { tags: [{ tagId: member!._id }] },
-          { entityId: contactIds[0], expected: 0, source: 'seed', group },
-        )
       } else {
         await executeContract(
           scoped,
@@ -395,7 +377,7 @@ export const hold = internalMutation({
 
 /**
  * Contacts `crowdBatch` writes per transaction: what every bulk write here
- * commits at once (bulk tag and set field, retire, tag re-index), so pages
+ * commits at once (bulk set field, retire), so pages
  * subscribed meanwhile re-run as they would under a real one.
  */
 const CROWD_BATCH = BULK_FIELD_LIMIT

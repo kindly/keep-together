@@ -278,7 +278,7 @@ is what it looks like. Server spikes are in the same banner.
 | `infrequent` | creating a record (a new contact); every later edit of it is `repeatable` | **under 150 ms, every sample** (human, 2026-10-19) |
 | `rare` | done seldom: restoring a contact from its history | **under 200 ms, every sample** (human, 2026-10-21) |
 | `oncePerSession` | sign-in, the first page load | its own budget, recorded: 1.5× the worst sample of three `QC_MODE=record` runs |
-| bulk | an action over many records, such as tagging up to 100 contacts | exempt from 100 ms; its own recorded budget, and the UI must show a progress state. The first bulk flow adds the `'bulk'` kind to `qc/budgets.ts` |
+| bulk | an action over many records, such as setting a field on up to 100 contacts | exempt from 100 ms; its own recorded budget, and the UI must show a progress state. The first bulk flow adds the `'bulk'` kind to `qc/budgets.ts` |
 
 Two marks change how a flow is judged:
 

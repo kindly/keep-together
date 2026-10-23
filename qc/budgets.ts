@@ -13,7 +13,8 @@
 //   repeatable, 100 ms (human, 2026-10-19).
 // - rare: done seldom enough that 200 ms is fine (restoring a contact from
 //   its history) (human, 2026-10-21).
-// - bulk: an action over many records at once (tagging up to 100 contacts).
+// - bulk: an action over many records at once (setting a field on up to
+//   100 contacts).
 //   Exempt from 100 ms, with a progress state in the UI; its own budget
 //   is recorded like oncePerSession's (human, 2026-10-17).
 //
@@ -57,8 +58,9 @@ const rare = { kind: 'rare', maxMs: 200 } as const
 
 export const budgets = {
   // Step 9b, recorded 2026-10-18 in runs tn357fbu, tn35ew84, tn35t6tx
-  // (sha 1cd6e46): signIn worst 488 ms, coldLoad worst 272 ms, bulkTag
-  // worst 329 ms; each budget is 1.5× that, rounded up to 10 ms.
+  // (sha 1cd6e46): signIn worst 488 ms, coldLoad worst 272 ms, bulkTag (since
+  // removed with tags) worst 329 ms; each budget is 1.5× that, rounded up to
+  // 10 ms.
   // Raised 740 → 1000 by the human (2026-10-18): the recorded 1.5× set had no
   // slack under machine load; sign-in is once per session.
   'auth.signIn': { kind: 'oncePerSession', maxMs: 1000 },
@@ -89,8 +91,6 @@ export const budgets = {
   'contact.note.save': repeatable,
   'contact.note.pin': repeatable,
   'contact.note.archive': repeatable,
-  'contact.tag.add': repeatable,
-  'contact.tag.remove': repeatable,
   'contact.identifier.add': repeatable,
   'contact.identifier.remove': repeatable,
   'contact.hold.release': repeatable,
@@ -100,7 +100,7 @@ export const budgets = {
   'contacts.filter.sourceVersion': repeatable,
   'contacts.loadMore': repeatable,
   // Dropdown fields (plan step 6): the classes of the tag flows they
-  // replace (human, g1q14, 2026-10-21).
+  // replaced (human, g1q14, 2026-10-21; the tag flows left in step 7).
   'fields.create': repeatable,
   'fields.option.add': repeatable,
   'fields.archive': repeatable,
@@ -108,13 +108,8 @@ export const budgets = {
   'contact.field.set': repeatable,
   'contact.field.clear': repeatable,
   'settings.staffFields.toggle': repeatable,
-  'tags.create': repeatable,
-  'tags.rename': repeatable,
-  'tags.archive': repeatable,
-  'tags.filter': repeatable,
   'settings.nav': repeatable,
   'settings.tab': repeatable,
-  'settings.staffTags.toggle': repeatable,
   'settings.staffIdentifierTypes.toggle': repeatable,
   'settings.identifierTypes.create': repeatable,
   'settings.identifierTypes.rename': repeatable,
@@ -124,9 +119,8 @@ export const budgets = {
   'settings.sourceCodes.addDetail': repeatable,
   'settings.sourceCodes.rename': repeatable,
   'settings.sourceCodes.archive': repeatable,
-  // Recorded with auth.signIn above.
-  'contacts.bulkTag': { kind: 'bulk', maxMs: 500 },
-  // bulkTag's budget, for the flow that replaces it (human, g1q14).
+  // bulkTag's budget (recorded with auth.signIn above), for the flow that
+  // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },
 
   // qc/harness.spec.ts: proves the timing path can fail and pass.
@@ -145,17 +139,16 @@ export function budgetFor(name: FlowName): Budget {
 
 /**
  * Server functions behind `bulk` flows: an action over many records at once
- * (bulkTag runs one contract and one search-projection rebuild per contact,
- * about 700 extra reads at 100 contacts since search Q1). Exempt from the
- * 100 ms server rule like their flows (human, 2026-10-18): each has its own
- * limit in ms, recorded like the `bulk` flow budgets. bulkTag: worst 242.6 ms
- * over runs tn357fbu, tn35ew84, tn35t6tx (2026-10-18), × 1.5, rounded up.
- * bulkSetField takes bulkTag's limit, as the function replacing it (human,
- * dropdown fields g1q14, 2026-10-21).
+ * (bulkSetField runs one contract and one search-projection rebuild per
+ * contact). Exempt from the 100 ms server rule like their flows (human,
+ * 2026-10-18): each has its own limit in ms, recorded like the `bulk` flow
+ * budgets. bulkSetField takes the limit of bulkTag, the function it
+ * replaced (human, dropdown fields g1q14, 2026-10-21): bulkTag's worst was
+ * 242.6 ms over runs tn357fbu, tn35ew84, tn35t6tx (2026-10-18), × 1.5,
+ * rounded up.
  * qc/server-timings.ts asserts them against it instead of 100 ms.
  */
 export const BULK_FUNCTIONS: Record<string, number> = {
-  'contacts/mutations:bulkTag': 370,
   'contacts/mutations:bulkSetField': 370,
 }
 

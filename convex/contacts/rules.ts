@@ -214,27 +214,6 @@ export function prepareRelationshipType(
   return out
 }
 
-/** A contact's tags: keyed rows, each tag at most once. */
-export function prepareTags(p: Payloads['tags']): Payloads['tags'] {
-  const tags = mintKeys(p.tags, 'tags')
-  const seen = new Set<string>()
-  for (const t of tags) {
-    if (seen.has(t.tagId)) {
-      throw invalid([
-        { field: 'tags', message: 'A tag can be added only once' },
-      ])
-    }
-    seen.add(t.tagId)
-  }
-  return { tags }
-}
-
-/**
- * The most contacts one `bulkTag` call changes; larger selections are
- * batched by the caller (the SPA imports it from here).
- */
-export const BULK_TAG_LIMIT = 100
-
 /**
  * A contact's dropdown field values: each field at most once (a field holds
  * one option or nothing), in field-id order so equal states compare equal.
@@ -259,24 +238,15 @@ export function prepareFields(p: Payloads['fields']): Payloads['fields'] {
 export const BULK_FIELD_LIMIT = 100
 
 /**
- * The uniqueness form of a tag name: names compare case-insensitively
- * (`Volunteer` and `volunteer` are the same tag). Applied to a prepared
- * name, so whitespace is already tidied.
+ * The uniqueness form of a list entry's name (an identifier type):
+ * names compare case-insensitively (`Member no` and `member no` are the
+ * same type). Applied to a prepared name, so whitespace is already tidied.
  */
-export function normaliseTagName(name: string): string {
+export function normaliseListName(name: string): string {
   return name.toLowerCase()
 }
 
 const tidyName = (name: string) => name.trim().replace(/\s+/g, ' ')
-
-/** Trimmed, inner whitespace runs collapsed, never blank. */
-export function prepareTag(p: Payloads['tag']): Payloads['tag'] {
-  const out = { ...p, name: tidyName(p.name) }
-  if (!out.name) {
-    throw invalid([{ field: 'name', message: 'A tag needs a name' }])
-  }
-  return out
-}
 
 /**
  * The matching form of an identifier value: trimmed, case-insensitive
@@ -320,7 +290,7 @@ export function prepareIdentifiers(
  */
 export const IDENTIFIER_TYPE_LIMIT = 200
 
-/** Like a tag name: tidied, never blank, unique case-insensitively. */
+/** Trimmed, inner whitespace runs collapsed, never blank, unique case-insensitively. */
 export function prepareIdentifierType(
   p: Payloads['identifierType'],
 ): Payloads['identifierType'] {

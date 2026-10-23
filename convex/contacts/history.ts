@@ -4,6 +4,7 @@
  * query does the reads.
  */
 import type { Doc, Id } from '../_generated/dataModel'
+import { RETIRED_CONTRACTS, isRetired } from './retired'
 
 export type Moment = {
   /** The command group, or the revision when it had none. */
@@ -16,6 +17,11 @@ export type Moment = {
   groupName: string | null
   slices: Array<string>
   restored: boolean
+  /**
+   * Every revision in it is of a retired contract (tags): history only, so
+   * the panel offers no restore to it.
+   */
+  retired: boolean
 }
 
 /**
@@ -30,6 +36,7 @@ export function joinMoments(moments: Array<Moment>): Array<Moment> {
       out[out.length - 1] = {
         ...last,
         slices: [...new Set([...last.slices, ...m.slices])],
+        retired: last.retired && m.retired,
       }
     } else {
       out.push(m)
@@ -57,10 +64,11 @@ export function groupsToRead(
 
 /**
  * How a moment names a slice: the contract's name within the module,
- * unless it reads badly to staff.
+ * unless it reads badly to staff or the contract is retired.
  */
 const SLICE_LABELS: Record<string, string> = {
   'contacts.acquisition': 'acquisition code',
+  ...RETIRED_CONTRACTS,
 }
 
 export function sliceLabel(contract: string): string {
@@ -85,6 +93,7 @@ export function toMoments(
     if (at !== undefined) {
       const m = moments[at]
       if (!m.slices.includes(slice)) m.slices.push(slice)
+      m.retired &&= isRetired(r.contract)
       continue
     }
     index.set(key, moments.length)
@@ -99,6 +108,7 @@ export function toMoments(
         : null,
       slices: [slice],
       restored: r.restoredFrom !== undefined,
+      retired: isRetired(r.contract),
     })
   }
   return moments

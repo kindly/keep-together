@@ -38,7 +38,6 @@ export async function setup() {
     await t.mutation(internal.contacts.seed.relationshipTypes, {
       tenantId: ids.tenantId,
     })
-    await t.mutation(internal.contacts.seed.tags, { tenantId: ids.tenantId })
     await t.mutation(internal.sources.seed.categories, {
       tenantId: ids.tenantId,
     })

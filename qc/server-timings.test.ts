@@ -36,7 +36,10 @@ describe('aggregate', () => {
         ev({}),
         ev({ cachedResult: true }),
         ev({ identifier: 'contacts/mutations:saveForm', udfType: 'Mutation' }),
-        ev({ identifier: 'contacts/mutations:bulkTag', udfType: 'Mutation' }),
+        ev({
+          identifier: 'contacts/mutations:bulkSetField',
+          udfType: 'Mutation',
+        }),
         ev({ identifier: 'auth:store', udfType: 'Mutation' }),
         ev({
           identityType: 'instance_admin',
@@ -49,7 +52,7 @@ describe('aggregate', () => {
       ]),
     ).toEqual([
       ['auth:store', false, false],
-      ['contacts/mutations:bulkTag', false, true],
+      ['contacts/mutations:bulkSetField', false, true],
       ['contacts/mutations:saveForm', false, true],
       ['contacts/queries:list', false, true],
       ['contacts/queries:list', true, false],
@@ -95,14 +98,20 @@ describe('budgets', () => {
 
   test('a bulk function is judged against its own limit, not 100 ms', () => {
     const bulk = (ms: number) =>
-      ev({ ms, identifier: 'contacts/mutations:bulkTag', udfType: 'Mutation' })
+      ev({
+        ms,
+        identifier: 'contacts/mutations:bulkSetField',
+        udfType: 'Mutation',
+      })
     const under = aggregate([bulk(136), bulk(133), bulk(90)])
-    expect(under[0].budgetMs).toBe(BULK_FUNCTIONS['contacts/mutations:bulkTag'])
+    expect(under[0].budgetMs).toBe(
+      BULK_FUNCTIONS['contacts/mutations:bulkSetField'],
+    )
     expect(checkBudgets({ functions: under })).toEqual([])
     expect(spikes({ functions: under })).toEqual([])
     const over = aggregate([bulk(1100), bulk(1050), bulk(90)])
     expect(checkBudgets({ functions: over })).toEqual([
-      `Mutation contacts/mutations:bulkTag: two calls ≥ ${BULK_FUNCTIONS['contacts/mutations:bulkTag']} ms: 1100 and 1050 ms (n=3)`,
+      `Mutation contacts/mutations:bulkSetField: two calls ≥ ${BULK_FUNCTIONS['contacts/mutations:bulkSetField']} ms: 1100 and 1050 ms (n=3)`,
     ])
     // Anything else keeps the 100 ms rule.
     expect(aggregate([ev({})])[0].budgetMs).toBe(100)

@@ -21,7 +21,6 @@ type Fixture = Awaited<ReturnType<typeof setup>>
 type Kind = Doc<'contacts'>['kind']
 
 let f: Fixture
-let member: Id<'tags'>
 let code: {
   category: Id<'sourceCodes'>
   detail: Id<'sourceCodes'>
@@ -33,8 +32,8 @@ const HIDDEN = 2 * LIST_LIMIT + 50
 
 /**
  * `n` contacts written straight to the tables (a contract per contact
- * would make these tests slow): the root, its `contactSearch` row and an
- * optional tag. Names are `${prefix} ${i}`, so a prefix sets name order.
+ * would make these tests slow): the root and its `contactSearch` row.
+ * Names are `${prefix} ${i}`, so a prefix sets name order.
  */
 async function bulk(
   who: Tenant,
@@ -43,7 +42,6 @@ async function bulk(
   opts: {
     archived?: boolean
     kind?: Kind
-    tagId?: Id<'tags'>
     source?: typeof code
   } = {},
 ): Promise<Array<Id<'contacts'>>> {
@@ -69,7 +67,6 @@ async function bulk(
         methodsVersion: 0,
         addressesVersion: 0,
         archiveVersion: 0,
-        tagsVersion: 0,
         identifiersVersion: 0,
         acquisitionVersion: 0,
         ...(opts.source && { acquisitionCodeId: opts.source.version }),
@@ -88,15 +85,6 @@ async function bulk(
           acquisitionCategoryId: opts.source.category,
         }),
       })
-      if (opts.tagId) {
-        await ctx.db.insert('contactTags', {
-          tenantId: who.tenantId,
-          contactId,
-          key: `${prefix}-${i}`,
-          tagId: opts.tagId,
-          name: 'Member',
-        })
-      }
       ids.push(contactId)
     }
     return ids
@@ -108,7 +96,6 @@ const list = (
     search?: string
     includeArchived?: boolean
     kind?: Kind
-    tagId?: Id<'tags'>
     source?: { level: 'category' | 'detail' | 'version'; id: Id<'sourceCodes'> }
   },
   who: Tenant = f.a,
@@ -120,10 +107,6 @@ const ids = async (...a: Parameters<typeof list>) =>
 
 beforeEach(async () => {
   f = await setup()
-  const tags = await f.a.as.query(api.contacts.queries.tags, {
-    tenantId: f.a.tenantId,
-  })
-  member = tags.find((t) => t.name === 'Member')!._id
   const category = await f.t.run(
     async (ctx) =>
       (await ctx.db
@@ -176,34 +159,26 @@ describe('archived contacts first in name order, "show archived" off', () => {
       expect(sourced.rows.every((r) => !r.archived)).toBe(true)
     }
   })
-
-  test('with a tag', async () => {
-    await bulk(f.a, HIDDEN, 'Aaa', { archived: true, tagId: member })
-    const live = await bulk(f.a, 2, 'Zed', { tagId: member })
-    expect(await list({ tagId: member })).toMatchObject({
-      truncated: false,
-      tooBroad: false,
-    })
-    expect(await ids({ tagId: member })).toEqual(live)
-  })
 })
 
 describe('a filter the index cannot hold reads on to a cap', () => {
-  test('a tag under a source: untagged contacts first', async () => {
+  const byVersion = () => ({ level: 'version' as const, id: code.version })
+
+  test('a kind under a source: the other kind first', async () => {
     await bulk(f.a, HIDDEN, 'Aaa', { source: code })
-    const tagged = await bulk(f.a, 1, 'Zed', { source: code, tagId: member })
-    expect(
-      await ids({
-        source: { level: 'version', id: code.version },
-        tagId: member,
-      }),
-    ).toEqual(tagged)
+    const orgs = await bulk(f.a, 1, 'Zed', {
+      source: code,
+      kind: 'organization',
+    })
+    expect(await ids({ source: byVersion(), kind: 'organization' })).toEqual(
+      orgs,
+    )
   })
 
   test('past the cap it says it looked, never "none"', async () => {
-    await bulk(f.a, LIST_SCAN_CAP, 'Aaa', { archived: true, tagId: member })
-    await bulk(f.a, 1, 'Zed', { tagId: member })
-    const result = await list({ tagId: member })
+    await bulk(f.a, LIST_SCAN_CAP, 'Aaa', { source: code })
+    await bulk(f.a, 1, 'Zed', { source: code, kind: 'organization' })
+    const result = await list({ source: byVersion(), kind: 'organization' })
     expect(result).toMatchObject({
       rows: [],
       truncated: true,
@@ -211,29 +186,14 @@ describe('a filter the index cannot hold reads on to a cap', () => {
       checked: LIST_SCAN_CAP,
     })
   })
-
-  test('a search whose full window has no tagged contact is too broad', async () => {
-    await bulk(f.a, 2 * LIST_LIMIT, 'Haddad')
-    expect(await list({ search: 'haddad', tagId: member })).toMatchObject({
-      rows: [],
-      tooBroad: true,
-    })
-    // A window that isn't full and has no match does mean none.
-    await bulk(f.a, 3, 'Osei')
-    expect(await list({ search: 'osei', tagId: member })).toMatchObject({
-      rows: [],
-      tooBroad: false,
-    })
-  })
 })
 
 describe('tenancy', () => {
   test("B's list never shows A's contacts and A's never hide B's", async () => {
-    await bulk(f.a, HIDDEN, 'Aaa', { tagId: member, source: code })
+    await bulk(f.a, HIDDEN, 'Aaa', { source: code })
     await bulk(f.b, HIDDEN, 'Aaa', { archived: true })
     const inB = await bulk(f.b, 2, 'Zed')
     expect(await ids({}, f.b)).toEqual(inB)
-    expect(await ids({ tagId: member }, f.b)).toEqual([])
     expect(
       await ids({ source: { level: 'version', id: code.version } }, f.b),
     ).toEqual([])
@@ -336,8 +296,13 @@ describe('the paged list (browsing)', () => {
 })
 
 test('a scan that ends on the cap knows it has seen everything', async () => {
-  await bulk(f.a, LIST_SCAN_CAP, 'Aaa', { archived: true, tagId: member })
-  expect(await list({ tagId: member })).toMatchObject({
+  await bulk(f.a, LIST_SCAN_CAP, 'Aaa', { source: code })
+  expect(
+    await list({
+      source: { level: 'version', id: code.version },
+      kind: 'organization',
+    }),
+  ).toMatchObject({
     rows: [],
     truncated: false,
     tooBroad: false,

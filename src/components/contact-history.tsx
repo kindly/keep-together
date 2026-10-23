@@ -406,7 +406,8 @@ export function skippedFieldsNote(
 
 /**
  * The timeline as moments, newest first, a page at a time; "Restore to
- * here" re-executes every slice's state at that time, from any page.
+ * here" re-executes every slice's state at that time, from any page. A
+ * moment of retired contracts only (tags) is read-only: no restore.
  */
 export function ContactHistory({
   id,
@@ -529,6 +530,14 @@ export function ContactHistory({
                     restored
                   </span>
                 )}
+                {m.retired && (
+                  <span
+                    title="Tags have been removed: this stays in history but can’t be restored"
+                    className="rounded bg-neutral-100 px-1 text-xs text-neutral-600"
+                  >
+                    read-only
+                  </span>
+                )}
               </div>
               <div className="text-neutral-700">
                 {m.groupName ?? m.slices.join(', ')} · {name(m.actor)} ·{' '}
@@ -539,7 +548,7 @@ export function ContactHistory({
                   {m.slices.join(', ')}
                 </div>
               )}
-              {i > 0 && canWrite && (
+              {i > 0 && canWrite && !m.retired && (
                 <button
                   type="button"
                   onClick={() =>

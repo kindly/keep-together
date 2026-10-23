@@ -42,13 +42,7 @@ async function callers(t: T, a: Tenant) {
 async function staffManage(who: Tenant, kind: ListKind, on: boolean) {
   const mine = await who.as.query(api.platform.tenants.mine, {})
   const prefs = mine.find((m) => m._id === who.tenantId)!
-  if (kind === 'tags') {
-    await who.as.mutation(api.platform.preferences.setStaffCanManageTags, {
-      tenantId: who.tenantId,
-      expected: prefs.tagsVersion ?? undefined,
-      staffCanManageTags: on,
-    })
-  } else if (kind === 'identifierTypes') {
+  if (kind === 'identifierTypes') {
     await who.as.mutation(
       api.platform.preferences.setStaffCanManageIdentifierTypes,
       {
@@ -76,7 +70,6 @@ async function staffManage(who: Tenant, kind: ListKind, on: boolean) {
 }
 
 const LIST_KINDS = [
-  'tags',
   'identifierTypes',
   'sourceCodes',
   'fields',
@@ -99,7 +92,6 @@ const NOT_TENANT_SCOPED = new Set(['auth:signIn', 'auth:signOut'])
 
 /** Admin-only writes (`minRole: 'admin'`): staff are refused too. */
 const ADMIN_ONLY = new Set([
-  'platform/preferences:setStaffCanManageTags',
   'platform/preferences:setStaffCanManageIdentifierTypes',
   'platform/preferences:setStaffCanManageSourceCodes',
   'platform/preferences:setStaffCanManageFields',
@@ -112,7 +104,6 @@ const ADMIN_ONLY = new Set([
  * on, whatever the other list's says.
  */
 const LIST_MANAGERS = new Map<string, ListKind>([
-  ['contacts/mutations:saveTag', 'tags'],
   ['contacts/mutations:saveIdentifierType', 'identifierTypes'],
   ['sources/mutations:create', 'sourceCodes'],
   ['sources/mutations:save', 'sourceCodes'],
@@ -282,7 +273,6 @@ describe('every public mutation and action', () => {
         'contactNotes',
         'relationships',
         'relationshipTypes',
-        'tags',
         'identifierTypes',
         'sourceCodes',
         'contactFields',

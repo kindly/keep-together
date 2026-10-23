@@ -5,11 +5,11 @@ import type { Page } from '@playwright/test'
 // Settings: the tabbed layout every member reaches from the "Settings"
 // nav link (tabs in a column on the left, a scrollable row on a phone),
 // its Identifier types tab (external-ids X4a: create, rename, archive /
-// reactivate), and the two admin switches, one per tab, that open tags and
-// identifier types to staff independently. The Tags tab's own flows are in
-// tags.spec.ts. User A is an admin of tenant A. No types are seeded, and
-// the world is shared by every test in a worker, so each test makes its
-// own types, and leaves both switches off.
+// reactivate), and the identifier types admin switch, which opens that
+// list to staff and no other. The Fields tab, the first, has its own flows
+// in fields.spec.ts. User A is an admin of tenant A. No types are seeded,
+// and the world is shared by every test in a worker, so each test makes
+// its own types, and leaves the switches off.
 
 const IDENTIFIERS_ROUTE = {
   type: 'route',
@@ -20,10 +20,10 @@ const SETTINGS_INDEX_ROUTE = {
   type: 'route',
   description: '/t/$slug/settings/',
 }
-const TAGS_ROUTE = { type: 'route', description: '/t/$slug/settings/tags' }
+const FIELDS_ROUTE = { type: 'route', description: '/t/$slug/settings/fields' }
 
 const identifiersPath = (slug: string) => `/t/${slug}/settings/identifiers`
-const tagsPath = (slug: string) => `/t/${slug}/settings/tags`
+const fieldsPath = (slug: string) => `/t/${slug}/settings/fields`
 
 /** The settings tab bar. */
 const tabs = (page: Page) =>
@@ -62,13 +62,16 @@ function switchIsWant(label: string) {
   return s != null && s.checked === (w === 'on')
 }
 
-/** The settings tab headed window.__qcWant has loaded its list. */
+/**
+ * The settings tab headed window.__qcWant has loaded its list: identifier
+ * types' "In use", or the Fields tab's "Fields (n of 5 in use)".
+ */
 function tabLoaded() {
   const w = (window as unknown as { __qcWant?: string }).__qcWant
   return (
     document.querySelector('main h2')?.textContent === w &&
     [...document.querySelectorAll('main h3')].some(
-      (h) => h.textContent === 'In use',
+      (h) => h.textContent === 'In use' || /^Fields /.test(h.textContent),
     )
   )
 }
@@ -86,14 +89,14 @@ test.describe('settings tabs', () => {
       .annotations.push(
         SETTINGS_ROUTE,
         SETTINGS_INDEX_ROUTE,
-        TAGS_ROUTE,
+        FIELDS_ROUTE,
         IDENTIFIERS_ROUTE,
       )
     await page.goto(`/t/${users.a.slug}/contacts`)
     const settings = page.getByRole('link', { name: 'Settings', exact: true })
     const contacts = page.getByRole('link', { name: 'Contacts', exact: true })
-    await want(page, 'Tags')
-    // The link opens the first tab, Tags.
+    await want(page, 'Fields')
+    // The link opens the first tab, Fields.
     await flow(page, 'settings.nav', {
       before: async () => {
         if (page.url().includes('/settings')) {
@@ -104,20 +107,20 @@ test.describe('settings tabs', () => {
       action: () => settings.click(),
       until: tabLoaded,
     })
-    await expect(page).toHaveURL(tagsPath(users.a.slug))
+    await expect(page).toHaveURL(fieldsPath(users.a.slug))
 
-    const tagsTab = tabs(page).getByRole('link', { name: 'Tags' })
+    const fieldsTab = tabs(page).getByRole('link', { name: 'Fields' })
     const typesTab = tabs(page).getByRole('link', { name: 'Identifier types' })
-    await expect(tagsTab).toHaveAttribute('aria-current', 'page')
+    await expect(fieldsTab).toHaveAttribute('aria-current', 'page')
     await expect(typesTab).not.toHaveAttribute('aria-current', 'page')
 
-    let to = 'Tags'
+    let to = 'Fields'
     await flow(page, 'settings.tab', {
       before: async () => {
-        to = to === 'Tags' ? 'Identifier types' : 'Tags'
+        to = to === 'Fields' ? 'Identifier types' : 'Fields'
         await want(page, to)
       },
-      action: () => (to === 'Tags' ? tagsTab : typesTab).click(),
+      action: () => (to === 'Fields' ? fieldsTab : typesTab).click(),
       until: tabLoaded,
     })
     await typesTab.click()
@@ -127,20 +130,20 @@ test.describe('settings tabs', () => {
     // Desktop: the tabs stand in a column left of the content.
     const heading = page.getByRole('heading', { name: 'Identifier types' })
     const box = async () => ({
-      tags: (await tagsTab.boundingBox())!,
+      fields: (await fieldsTab.boundingBox())!,
       types: (await typesTab.boundingBox())!,
       content: (await heading.boundingBox())!,
     })
     let b = await box()
-    expect(b.types.y).toBeGreaterThan(b.tags.y)
-    expect(b.types.x).toBe(b.tags.x)
-    expect(b.content.x).toBeGreaterThanOrEqual(b.tags.x + b.tags.width)
+    expect(b.types.y).toBeGreaterThan(b.fields.y)
+    expect(b.types.x).toBe(b.fields.x)
+    expect(b.content.x).toBeGreaterThanOrEqual(b.fields.x + b.fields.width)
     // Phone: one row above the content, and no page-wide horizontal scroll.
     await page.setViewportSize({ width: 375, height: 700 })
     b = await box()
-    expect(b.types.y).toBe(b.tags.y)
-    expect(b.types.x).toBeGreaterThan(b.tags.x)
-    expect(b.content.y).toBeGreaterThanOrEqual(b.tags.y + b.tags.height)
+    expect(b.types.y).toBe(b.fields.y)
+    expect(b.types.x).toBeGreaterThan(b.fields.x)
+    expect(b.content.y).toBeGreaterThanOrEqual(b.fields.y + b.fields.height)
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -247,32 +250,25 @@ test.describe('settings for staff and viewers', () => {
           { type: 'route', description: '/t/$slug/contacts/' },
           SETTINGS_ROUTE,
           SETTINGS_INDEX_ROUTE,
-          TAGS_ROUTE,
+          FIELDS_ROUTE,
           IDENTIFIERS_ROUTE,
         )
       const user = users[role]
       const other = await secondTab(browser, baseURL!, await session(user))
       await other.goto(`/t/${user.slug}/contacts`)
-      await expect(
-        other.getByRole('link', { name: 'Tags', exact: true }),
-      ).toHaveCount(0)
       await other.getByRole('link', { name: 'Settings', exact: true }).click()
-      await other.waitForURL(new RegExp(`${tagsPath(user.slug)}$`))
+      await other.waitForURL(new RegExp(`${fieldsPath(user.slug)}$`))
       await expect(tabs(other).getByRole('link')).toHaveText([
-        'Tags',
         'Fields',
         'Identifier types',
         'Source codes',
       ])
-      await expect(
-        other.locator('main li', { hasText: 'Member' }),
-      ).toBeVisible()
-      // Read-only: staff manage a list only when an admin allows it (both
+      // Read-only: staff manage a list only when an admin allows it (all
       // off here), viewers never; neither sees the switches.
-      await expect(other.getByLabel('New tag name')).toHaveCount(0)
       await expect(
-        other.locator('main li', { hasText: 'Member' }).getByRole('button'),
-      ).toHaveCount(0)
+        other.getByRole('heading', { name: /^Fields / }),
+      ).toBeVisible()
+      await expect(other.getByLabel('New field')).toHaveCount(0)
       await expect(other.getByRole('switch')).toHaveCount(0)
 
       await tabs(other).getByRole('link', { name: 'Identifier types' }).click()
@@ -287,102 +283,71 @@ test.describe('settings for staff and viewers', () => {
   }
 })
 
-const SWITCHES = {
-  tags: {
-    label: 'Staff can manage tags',
-    flow: 'settings.staffTags.toggle',
-    path: tagsPath,
-  },
-  identifierTypes: {
-    label: 'Staff can manage identifier types',
-    flow: 'settings.staffIdentifierTypes.toggle',
-    path: identifiersPath,
-  },
-} as const
-
 test.describe('staff can manage lists, per list', () => {
-  for (const kind of ['tags', 'identifierTypes'] as const) {
-    const other = kind === 'tags' ? 'identifierTypes' : 'tags'
-    test(`the ${kind} switch opens ${kind} alone to staff, live`, async ({
-      page,
-      browser,
-      baseURL,
-      flow,
-      session,
-      users,
-    }) => {
-      test
-        .info()
-        .annotations.push(SETTINGS_ROUTE, TAGS_ROUTE, IDENTIFIERS_ROUTE)
-      const { label } = SWITCHES[kind]
-      await page.goto(SWITCHES[kind].path(users.a.slug))
-      const sw = page.getByRole('switch', { name: label })
-      // Each tab carries only its own switch.
-      await expect(page.getByRole('switch')).toHaveCount(1)
-      // The tenant is shared by the worker's tests: it starts, and is left, off.
-      await expect(sw).not.toBeChecked()
-      const staff = await secondTab(
-        browser,
-        baseURL!,
-        await session(users.staff),
+  test('the identifier types switch opens identifier types alone to staff, live', async ({
+    page,
+    browser,
+    baseURL,
+    flow,
+    session,
+    users,
+  }) => {
+    test
+      .info()
+      .annotations.push(SETTINGS_ROUTE, FIELDS_ROUTE, IDENTIFIERS_ROUTE)
+    const label = 'Staff can manage identifier types'
+    await page.goto(identifiersPath(users.a.slug))
+    const sw = page.getByRole('switch', { name: label })
+    // Each tab carries only its own switch.
+    await expect(page.getByRole('switch')).toHaveCount(1)
+    // The tenant is shared by the worker's tests: it starts, and is left, off.
+    await expect(sw).not.toBeChecked()
+    const staff = await secondTab(browser, baseURL!, await session(users.staff))
+    // The input is visually hidden; its label takes the (trusted) click.
+    const toggle = page.getByText(label, { exact: true })
+    // The tab's "create" input, or none while the list is read-only.
+    const createIn = async (tab: 'Fields' | 'Identifier types') => {
+      await tabs(staff).getByRole('link', { name: tab }).click()
+      return staff.getByLabel(
+        tab === 'Fields' ? 'New field' : 'New identifier type',
       )
-      // The input is visually hidden; its label takes the (trusted) click.
-      const toggle = page.getByText(label, { exact: true })
-      try {
-        await staff.goto(tagsPath(users.staff.slug))
-        await expect(
-          staff.locator('main li', { hasText: 'Member' }),
-        ).toBeVisible()
-        await expect(staff.getByLabel('New tag name')).toHaveCount(0)
+    }
+    try {
+      await staff.goto(identifiersPath(users.staff.slug))
+      await expect(
+        staff.getByRole('heading', { name: 'In use', exact: true }),
+      ).toBeVisible()
+      await expect(staff.getByLabel('New identifier type')).toHaveCount(0)
 
-        await flow(page, SWITCHES[kind].flow, {
-          before: async () => want(page, (await sw.isChecked()) ? 'off' : 'on'),
-          action: () => toggle.click(),
-          until: switchIsWant,
-          arg: label,
-        })
-        if (!(await sw.isChecked())) await toggle.click()
-        await expect(sw).toBeChecked()
+      await flow(page, 'settings.staffIdentifierTypes.toggle', {
+        before: async () => want(page, (await sw.isChecked()) ? 'off' : 'on'),
+        action: () => toggle.click(),
+        until: switchIsWant,
+        arg: label,
+      })
+      if (!(await sw.isChecked())) await toggle.click()
+      await expect(sw).toBeChecked()
 
-        // Staff's open pages follow: this list becomes theirs, the other
-        // stays read-only.
-        const createIn = async (k: typeof kind) => {
-          await tabs(staff)
-            .getByRole('link', {
-              name: k === 'tags' ? 'Tags' : 'Identifier types',
-            })
-            .click()
-          return staff.getByLabel(
-            k === 'tags' ? 'New tag name' : 'New identifier type',
-          )
-        }
-        const input = await createIn(kind)
-        const name = uniqueName(`staff-${kind}`)
-        await input.fill(name)
-        await staff
-          .getByRole('button', {
-            name: kind === 'tags' ? 'Create tag' : 'Create type',
-          })
-          .click()
-        await expect(staff.locator('main li', { hasText: name })).toBeVisible()
-        await expect(await createIn(other)).toHaveCount(0)
+      // Staff's open pages follow: identifier types become theirs, fields
+      // stay read-only.
+      const input = await createIn('Identifier types')
+      const name = uniqueName('staff-identifierTypes')
+      await input.fill(name)
+      await staff.getByRole('button', { name: 'Create type' }).click()
+      await expect(staff.locator('main li', { hasText: name })).toBeVisible()
+      await expect(await createIn('Fields')).toHaveCount(0)
 
-        // Off again: the open page goes read-only.
-        await createIn(kind)
+      // Off again: the open page goes read-only.
+      await createIn('Identifier types')
+      await toggle.click()
+      await expect(sw).not.toBeChecked()
+      await expect(staff.getByLabel('New identifier type')).toHaveCount(0)
+    } finally {
+      if (await sw.isChecked()) {
         await toggle.click()
         await expect(sw).not.toBeChecked()
-        await expect(
-          staff.getByLabel(
-            kind === 'tags' ? 'New tag name' : 'New identifier type',
-          ),
-        ).toHaveCount(0)
-      } finally {
-        if (await sw.isChecked()) {
-          await toggle.click()
-          await expect(sw).not.toBeChecked()
-        }
-        await staff.context().close()
       }
-    })
-  }
+      await staff.context().close()
+    }
+  })
 })

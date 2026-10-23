@@ -10,7 +10,7 @@ import {
   restore,
   restoreEntityTo,
 } from '../lib/contracts'
-import type { CommandGroup, ContractCtx, Problem } from '../lib/contracts'
+import type { CommandGroup, Problem } from '../lib/contracts'
 import type { FieldRestoreNote } from './contracts'
 import { tenantPreferences } from '../lib/lists'
 import { tenantMutation } from '../lib/tenancy'
@@ -29,14 +29,11 @@ import {
   identifierType,
   identifiers,
   methods,
-  tag,
-  tags,
 } from './contracts'
 import {
   BULK_FIELD_LIMIT,
-  BULK_TAG_LIMIT,
   IDENTIFIER_TYPE_LIMIT,
-  normaliseTagName,
+  normaliseListName,
 } from './rules'
 import {
   acquisitionFields,
@@ -46,8 +43,6 @@ import {
   identifierTypeFields,
   identifiersFields,
   methodsFields,
-  tagFields,
-  tagsFields,
 } from './validators'
 import type { Payloads } from './validators'
 import { fieldValuesOf, fieldsBySlot } from './fieldDefs'
@@ -55,6 +50,7 @@ import { fieldValueVerdict, fieldValuesFields } from './fieldTypes'
 import type { FieldValue } from './fieldTypes'
 import { sortValues, withValue } from './fieldValues'
 import { slotFieldName } from '../lib/fieldSlots'
+import { RETIRED_CONTRACTS, isRetired } from './retired'
 import type { FieldSlot } from '../lib/fieldSlots'
 
 /**
@@ -164,77 +160,34 @@ export const setAcquisition = tenantMutation({
   },
 })
 
-// ── tags ───────────────────────────────────────────────────────────────────
-
-export const saveTags = tenantMutation({
-  args: { id: v.id('contacts'), expected: v.number(), ...tagsFields },
-  handler: async (ctx, { id, expected, ...payload }) => {
-    const contact = await ctx.db.get(id)
-    if (!contact) throw new ConvexError({ kind: 'not_found' as const })
-    return executeContract(ctx, tags, payload, {
-      entityId: id,
-      expected,
-      source: 'ui',
-    })
-  },
-})
-
 /**
- * A tag or identifier type save's reads, all at once: the list-manager
- * switch, the row, the name clash and, for a new type, the cap. The
- * contract then finds them cached (the save-path prefetch, by `saveForm`).
+ * An identifier type save's reads, all at once: the list-manager switch,
+ * the row, the name clash and, for a new type, the cap. The contract then
+ * finds them cached (the save-path prefetch, by `saveForm`).
  */
-async function prefetchListSave(
+async function prefetchTypeSave(
   db: ScopedDatabaseReader,
-  table: 'tags' | 'identifierTypes',
-  id: Id<'tags'> | Id<'identifierTypes'> | undefined,
+  id: Id<'identifierTypes'> | undefined,
   name: string,
 ) {
-  const nameNormalized = normaliseTagName(name)
+  const nameNormalized = normaliseListName(name)
   await Promise.all([
     tenantPreferences(db),
     id ? db.get(id) : null,
     db
-      .query(table)
+      .query('identifierTypes')
       .withIndex('by_tenant_nameNormalized', (q) =>
         q.eq('nameNormalized', nameNormalized),
       )
       .first(),
-    table === 'identifierTypes' && !id
-      ? db
-          .query(table)
+    id
+      ? null
+      : db
+          .query('identifierTypes')
           .withIndex('by_tenant_nameNormalized')
-          .take(IDENTIFIER_TYPE_LIMIT)
-      : null,
+          .take(IDENTIFIER_TYPE_LIMIT),
   ])
 }
-
-/**
- * Create a tag (no `id`) or rename / archive / reactivate one. Admins, and
- * staff when the tenant lets them manage tags (the contract is
- * `managesList: 'tags'`; lib/lists).
- */
-export const saveTag = tenantMutation({
-  args: {
-    id: v.optional(v.id('tags')),
-    expected: v.optional(v.number()),
-    ...tagFields,
-  },
-  handler: async (ctx, { id, expected, ...payload }) => {
-    if (id !== undefined && expected === undefined) {
-      // Without it two admins renaming one tag silently overwrite each other.
-      throw invalid([
-        { field: 'expected', message: 'An update needs the version it edits' },
-      ])
-    }
-    await prefetchListSave(ctx.db, 'tags', id, payload.name)
-    return executeContract(ctx, tag, payload, {
-      entityId: id,
-      expected,
-      source: 'ui',
-    })
-  },
-})
 
 /**
  * Create an identifier type (no `id`) or rename / archive / reactivate one.
@@ -255,7 +208,7 @@ export const saveIdentifierType = tenantMutation({
         { field: 'expected', message: 'An update needs the version it edits' },
       ])
     }
-    await prefetchListSave(ctx.db, 'identifierTypes', id, payload.name)
+    await prefetchTypeSave(ctx.db, id, payload.name)
     return executeContract(ctx, identifierType, payload, {
       entityId: id,
       expected,
@@ -263,91 +216,6 @@ export const saveIdentifierType = tenantMutation({
     })
   },
 })
-
-async function contactTagRows(
-  db: ScopedDatabaseReader,
-  contactId: Id<'contacts'>,
-) {
-  return db
-    .query('contactTags')
-    .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
-    .collect()
-}
-
-/**
- * Add or remove one tag on a batch of contacts, as one command group: one
- * `contacts.tags` revision per contact that changes, none for contacts
- * already in the wanted state. The whole batch is refused if any contact
- * is unknown or not yet migrated, or if an inactive tag is being added.
- */
-export const bulkTag = tenantMutation({
-  args: {
-    contactIds: v.array(v.id('contacts')),
-    tagId: v.id('tags'),
-    op: v.union(v.literal('add'), v.literal('remove')),
-  },
-  handler: async (ctx, { contactIds, tagId, op }) =>
-    applyBulkTag(ctx, [...new Set(contactIds)], tagId, op),
-})
-
-async function applyBulkTag(
-  ctx: ContractCtx,
-  contactIds: Array<Id<'contacts'>>,
-  tagId: Id<'tags'>,
-  op: 'add' | 'remove',
-) {
-  if (contactIds.length > BULK_TAG_LIMIT) {
-    throw invalid([
-      {
-        field: 'contactIds',
-        message: `At most ${BULK_TAG_LIMIT} contacts per batch`,
-      },
-    ])
-  }
-  const t = await ctx.db.get(tagId)
-  if (!t) throw rejected('unknown_tag', 'Tag must exist')
-  if (op === 'add' && !t.isActive) {
-    throw rejected('unknown_tag', 'Tag must exist and be active')
-  }
-  const plans: Array<{
-    id: Id<'contacts'>
-    expected: number
-    rows: Array<{ key: string; tagId: Id<'tags'> }>
-  }> = []
-  for (const id of contactIds) {
-    const contact = await ctx.db.get(id)
-    if (!contact) throw rejected('unknown_contact', 'Contact must exist')
-    const expected = contact.tagsVersion
-    const rows = (await contactTagRows(ctx.db, id)).map((r) => ({
-      key: r.key,
-      tagId: r.tagId,
-    }))
-    const has = rows.some((r) => r.tagId === tagId)
-    if (op === 'add' && !has) {
-      plans.push({
-        id,
-        expected,
-        rows: [...rows, { key: crypto.randomUUID(), tagId }],
-      })
-    } else if (op === 'remove' && has) {
-      plans.push({ id, expected, rows: rows.filter((r) => r.tagId !== tagId) })
-    }
-  }
-  if (plans.length === 0) return { changed: 0, group: null }
-  const group = await commandGroup(
-    ctx,
-    `${op === 'add' ? 'add' : 'remove'} tag ${t.name}`,
-  )
-  for (const plan of plans) {
-    await executeContract(
-      ctx,
-      tags,
-      { tags: plan.rows },
-      { entityId: plan.id, expected: plan.expected, source: 'ui', group },
-    )
-  }
-  return { changed: plans.length, group: group.id }
-}
 
 // ── dropdown field values ──────────────────────────────────────────────────
 
@@ -489,8 +357,7 @@ export const bulkSetField = tenantMutation({
 const slice = <TFields extends PropertyValidators>(fields: TFields) =>
   v.optional(v.object({ expected: v.number(), ...fields }))
 
-type Slice =
-  'details' | 'methods' | 'addresses' | 'tags' | 'identifiers' | 'fields'
+type Slice = 'details' | 'methods' | 'addresses' | 'identifiers' | 'fields'
 
 async function contactIdentifierRows(
   db: ScopedDatabaseReader,
@@ -517,30 +384,27 @@ export async function currentPayloads(
     details: Payloads['details']
     methods: Payloads['methods']
     addresses: Payloads['addresses']
-    tags: Payloads['tags']
     identifiers: Payloads['identifiers']
     fields: Payloads['fields']
   }
 } | null> {
-  const [contact, emails, phones, addrs, tagRows, idRows, bySlot] =
-    await Promise.all([
-      db.get(id),
-      db
-        .query('contactEmails')
-        .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
-        .collect(),
-      db
-        .query('contactPhones')
-        .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
-        .collect(),
-      db
-        .query('contactAddresses')
-        .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
-        .collect(),
-      contactTagRows(db, id),
-      contactIdentifierRows(db, id),
-      fieldsBySlot(db),
-    ])
+  const [contact, emails, phones, addrs, idRows, bySlot] = await Promise.all([
+    db.get(id),
+    db
+      .query('contactEmails')
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
+      .collect(),
+    db
+      .query('contactPhones')
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
+      .collect(),
+    db
+      .query('contactAddresses')
+      .withIndex('by_tenant_contact', (q) => q.eq('contactId', id))
+      .collect(),
+    contactIdentifierRows(db, id),
+    fieldsBySlot(db),
+  ])
   if (!contact) return null
   const current = {
     details: {
@@ -581,7 +445,6 @@ export async function currentPayloads(
         isPrimary: a.isPrimary,
       })),
     },
-    tags: { tags: tagRows.map((r) => ({ key: r.key, tagId: r.tagId })) },
     identifiers: {
       identifiers: idRows.map((r) => ({
         key: r.key,
@@ -608,13 +471,11 @@ export async function currentPayloads(
 
 /**
  * First level, beside `currentPayloads`: the projection's row, and the
- * submitted tags' documents (the tags contract checks the new ones and
- * copies their names; which are new isn't known yet).
+ * submitted field values' field and option documents.
  */
 async function prefetchSearchRow(
   db: ScopedDatabaseReader,
   contactId: Id<'contacts'>,
-  submittedTags: Array<{ tagId: Id<'tags'> }> | undefined,
   submittedFields: Array<FieldValue> | undefined,
 ) {
   await Promise.all([
@@ -622,7 +483,6 @@ async function prefetchSearchRow(
       .query('contactSearch')
       .withIndex('by_tenant_contact', (q) => q.eq('contactId', contactId))
       .unique(),
-    ...(submittedTags ?? []).map((r) => db.get(r.tagId)),
     // What `resolveFieldValue` reads for each value.
     ...(submittedFields ?? []).flatMap((r) => [
       db.get(r.fieldId),
@@ -633,10 +493,8 @@ async function prefetchSearchRow(
 
 /**
  * Second level, once the current rows are known: what `reconcile` will
- * look up for the changed slices (only keys new to the contact for tags
- * and identifiers, which pass it their rows; every key for the others).
- * The projection names tags from the `contactTags` rows, so it reads no
- * tag documents.
+ * look up for the changed slices (only keys new to the contact for
+ * identifiers, which pass it their rows; every key for the others).
  */
 async function prefetchChanged(
   db: ScopedDatabaseReader,
@@ -649,7 +507,7 @@ async function prefetchChanged(
     if (key === undefined) return
     reads.push(
       db
-        .query(table as 'contactTags')
+        .query(table as 'contactIdentifiers')
         .withIndex('by_tenant_key', (q) => q.eq('key', key))
         .first(),
     )
@@ -669,10 +527,6 @@ async function prefetchChanged(
     } else if (name === 'addresses') {
       const p = prepared as Payloads['addresses']
       for (const r of p.addresses) lookup('contactAddresses', r.key)
-    } else if (name === 'tags') {
-      const p = prepared as Payloads['tags']
-      for (const r of newKeys(p.tags, current.tags.tags))
-        lookup('contactTags', r.key)
     } else if (name === 'identifiers') {
       const p = prepared as Payloads['identifiers']
       for (const r of newKeys(p.identifiers, current.identifiers.identifiers))
@@ -698,14 +552,13 @@ export const saveForm = tenantMutation({
     details: slice(detailsFields),
     methods: slice(methodsFields),
     addresses: slice(addressesFields),
-    tags: slice(tagsFields),
     identifiers: slice(identifiersFields),
     fields: slice(fieldValuesFields),
   },
   handler: async (ctx, args) => {
     const [found] = await Promise.all([
       currentPayloads(ctx.db, args.id),
-      prefetchSearchRow(ctx.db, args.id, args.tags?.tags, args.fields?.values),
+      prefetchSearchRow(ctx.db, args.id, args.fields?.values),
     ])
     if (!found) throw new ConvexError({ kind: 'not_found' as const })
     const { contact, bySlot, current } = found
@@ -769,7 +622,6 @@ export const saveForm = tenantMutation({
     consider('details', details, args.details, contact.detailsVersion)
     consider('methods', methods, args.methods, contact.methodsVersion)
     consider('addresses', addresses, args.addresses, contact.addressesVersion)
-    consider('tags', tags, args.tags, contact.tagsVersion)
     consider(
       'identifiers',
       identifiers,
@@ -857,7 +709,6 @@ export const saveForm = tenantMutation({
       methods: contact.methodsVersion,
       addresses: contact.addressesVersion,
       archive: contact.archiveVersion,
-      tags: contact.tagsVersion,
       identifiers: contact.identifiersVersion,
       fields: contact.fieldsVersion ?? 0,
     }
@@ -895,13 +746,20 @@ async function fieldRestoreNotes(
  * Restore one stored revision as a new command. `skippedFields`: the
  * fields it left as they were (`FieldRestoreNote`: `retired`,
  * `wrong_kind`, or `added_after` "kept: added after this version"), by
- * label.
+ * label. A revision of a retired contract (tags) is history only: refused
+ * (`retired_contract`), nothing written.
  */
 export const restoreRevision = tenantMutation({
   args: { revisionId: v.id('revisions') },
   handler: async (ctx, { revisionId }) => {
-    const result = await restore(ctx, contactContracts, revisionId)
     const revision = await ctx.db.get(revisionId)
+    if (revision && isRetired(revision.contract)) {
+      throw rejected(
+        'retired_contract',
+        'Tags have been removed: this change stays in history but can’t be restored',
+      )
+    }
+    const result = await restore(ctx, contactContracts, revisionId)
     const skippedFields =
       revision?.contract === fieldValues.name
         ? await fieldRestoreNotes(ctx.db, revision)
@@ -912,7 +770,8 @@ export const restoreRevision = tenantMutation({
 
 /**
  * Restore the whole Contact to the moment `at` — the latest state of every
- * content slice at that time (archive excluded; it has its own toggle).
+ * content slice at that time (archive excluded; it has its own toggle; so
+ * are retired contracts, whose revisions are history only).
  * `skippedFields` as `restoreRevision`'s.
  */
 export const restoreTo = tenantMutation({
@@ -925,7 +784,7 @@ export const restoreTo = tenantMutation({
       id,
       at,
       {
-        exclude: ['contacts.archive'],
+        exclude: ['contacts.archive', ...Object.keys(RETIRED_CONTRACTS)],
         label: `restore to ${new Date(at).toISOString()}`,
       },
     )

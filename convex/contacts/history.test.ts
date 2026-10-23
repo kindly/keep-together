@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test } from 'vitest'
-import type { Id } from '../_generated/dataModel'
+import type { Doc, Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
-import { groupsToRead, joinMoments } from './history'
+import { groupsToRead, joinMoments, toMoments } from './history'
 import type { Moment } from './history'
 import { HISTORY_PAGE_LIMIT, SHARED_ADDRESS_LIMIT } from './queries'
 import { contactWarnings } from './warnings'
@@ -243,12 +243,12 @@ describe('group names on revisions', () => {
       joinMoments([
         m('g1', ['details']),
         m('g1', ['methods', 'details']),
-        m('r1', ['tags']),
+        m('r1', ['identifiers']),
         m('g2', ['details']),
       ]).map((x) => [x.key, x.slices]),
     ).toEqual([
       ['g1', ['details', 'methods']],
-      ['r1', ['tags']],
+      ['r1', ['identifiers']],
       ['g2', ['details']],
     ])
   })
@@ -338,5 +338,129 @@ describe('sharedAddresses', () => {
         message: expect.stringMatching(/^Not checked/),
       }),
     ])
+  })
+})
+
+describe('tags, retired (dropdown fields step 7)', () => {
+  /**
+   * A `contacts.tags` revision as the removed contract wrote it, between
+   * the details saves around it: its tag row, its counter bump, its
+   * revision. Returns the revision.
+   */
+  const tagRevision = (who: Tenant, contactId: Id<'contacts'>) =>
+    f.t.run(async (ctx) => {
+      const tagId = await ctx.db.insert('tags', {
+        tenantId: who.tenantId,
+        name: 'Volunteer',
+        nameNormalized: 'volunteer',
+        isActive: true,
+        saveVersion: 0,
+      })
+      await ctx.db.insert('contactTags', {
+        tenantId: who.tenantId,
+        contactId,
+        key: 't1',
+        tagId,
+        name: 'Volunteer',
+      })
+      await ctx.db.patch('contacts', contactId, { tagsVersion: 1 })
+      return ctx.db.insert('revisions', {
+        tenantId: who.tenantId,
+        entity: 'contacts',
+        entityId: contactId,
+        contract: 'contacts.tags',
+        version: 1,
+        counter: 0,
+        payload: { tags: [{ key: 't1', tagId }] },
+        source: 'ui',
+        actor: who.userId,
+      })
+    })
+
+  test('show in history, read-only, among the live slices', async () => {
+    await rename('Countess')
+    await tagRevision(f.a, ada)
+    await rename('Ada')
+    const moments = await allMoments()
+    expect(moments.map((m) => [m.slices, m.retired])).toEqual([
+      [['details'], false],
+      [['tags (retired)'], true],
+      [['details'], false],
+      [['details'], false],
+    ])
+  })
+
+  test('a moment mixing a retired slice with a live one stays restorable', () => {
+    const r = (contract: string) =>
+      ({
+        _id: contract,
+        _creationTime: 1,
+        contract,
+        group: 'g1',
+        groupName: 'contact form save',
+        source: 'ui',
+      }) as unknown as Doc<'revisions'>
+    const [moment] = toMoments(
+      [r('contacts.tags'), r('contacts.details')],
+      new Map(),
+    )
+    expect(moment.slices).toEqual(['tags (retired)', 'details'])
+    expect(moment.retired).toBe(false)
+  })
+
+  test('restoring a tag revision is refused, and writes nothing', async () => {
+    const revisionId = await tagRevision(f.a, ada)
+    const before = await snapshot(f.t, f.a.tenantId)
+    expect(
+      await errorData(
+        f.a.as.mutation(api.contacts.mutations.restoreRevision, {
+          tenantId: f.a.tenantId,
+          revisionId,
+        }),
+      ),
+    ).toMatchObject({ kind: 'rejected', reason: 'retired_contract' })
+    expect(await snapshot(f.t, f.a.tenantId)).toBe(before)
+    // Another tenant's revision id is not found, not refused as retired.
+    expect(
+      await errorData(
+        f.b.as.mutation(api.contacts.mutations.restoreRevision, {
+          tenantId: f.b.tenantId,
+          revisionId,
+        }),
+      ),
+    ).toEqual({ kind: 'not_found' })
+  })
+
+  test('a restore to a moment steps over tag revisions, either side', async () => {
+    await rename('Countess')
+    const [{ _creationTime: at }] = await revisions()
+    await tagRevision(f.a, ada)
+    await rename('Ada')
+    await tagRevision(f.a, ada)
+    const result = await f.a.as.mutation(api.contacts.mutations.restoreTo, {
+      tenantId: f.a.tenantId,
+      id: ada,
+      at,
+    })
+    expect(result.restored).toEqual(['contacts.details'])
+    const got = await f.a.as.query(api.contacts.queries.get, {
+      tenantId: f.a.tenantId,
+      id: ada,
+    })
+    expect(got?.contact.nickname).toBe('Countess')
+  })
+
+  test("B's history never shows A's tag revisions", async () => {
+    const bob = await f.b.as.mutation(api.contacts.mutations.create, {
+      tenantId: f.b.tenantId,
+      ...individual,
+    })
+    await tagRevision(f.a, ada)
+    const bPage = await f.b.as.query(api.contacts.queries.history, {
+      tenantId: f.b.tenantId,
+      id: bob,
+      paginationOpts: { numItems: 10, cursor: null },
+    })
+    expect(bPage.page.map((m) => m.slices)).toEqual([['details']])
   })
 })

@@ -7,7 +7,7 @@ import type { Id } from '../_generated/dataModel'
 import type { SourceCodeDescription } from '../sources/code'
 import { FIELD_SLOT_NUMBERS, slotFieldName } from '../lib/fieldSlots'
 import type { FieldSlot } from '../lib/fieldSlots'
-import { normaliseTagName } from './rules'
+import { normaliseListName } from './rules'
 import type { FieldDefinition } from './fieldTypes'
 import type { SlotValues } from './fieldValues'
 
@@ -40,8 +40,8 @@ export function nameIdentifiers(
   })
   return out.sort(
     (a, b) =>
-      normaliseTagName(a.typeName).localeCompare(
-        normaliseTagName(b.typeName),
+      normaliseListName(a.typeName).localeCompare(
+        normaliseListName(b.typeName),
       ) || a.value.localeCompare(b.value),
   )
 }
@@ -98,7 +98,7 @@ export function nameFieldValues(
 
 /**
  * `get`'s view from the contact page's per-slice queries (`getRoot`,
- * `getChannels`, `getTags`, `getIdentifiers`, `getAcquisition`), naming
+ * `getChannels`, `getIdentifiers`, `getAcquisition`), naming
  * identifier rows from the tenant's identifier types, archived ones
  * included, and field values from the field definitions
  * (`api.contacts.fields.list`; none named until the page passes them).
@@ -106,11 +106,9 @@ export function nameFieldValues(
 export function assembleView<
   TRoot extends SlotValues,
   TChannels extends object,
-  TTag,
 >(parts: {
   root: TRoot
   channels: TChannels
-  tags: Array<TTag>
   identifiers: Array<IdentifierRow>
   types: Array<{ _id: Id<'identifierTypes'>; name: string; isActive: boolean }>
   acquisition: SourceCodeDescription | null
@@ -125,7 +123,6 @@ export function assembleView<
   return {
     contact: parts.root,
     ...parts.channels,
-    tags: parts.tags,
     identifiers: nameIdentifiers(parts.identifiers, (id) => types.get(id)),
     acquisition: parts.acquisition,
     fields: nameFieldValues(

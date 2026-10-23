@@ -15,12 +15,11 @@ import { same, threeWayMerge } from './merge'
 import type { Unsaved } from './unsaved'
 
 export type SliceName =
-  'details' | 'methods' | 'addresses' | 'tags' | 'identifiers' | 'fields'
+  'details' | 'methods' | 'addresses' | 'identifiers' | 'fields'
 export type Slices = {
   details: Payloads['details']
   methods: Payloads['methods']
   addresses: Payloads['addresses']
-  tags: Payloads['tags']
   identifiers: Payloads['identifiers']
   fields: Payloads['fields']
 }
@@ -40,7 +39,6 @@ export const SLICES: Array<SliceName> = [
   'details',
   'methods',
   'addresses',
-  'tags',
   'identifiers',
   'fields',
 ]
@@ -149,29 +147,9 @@ export function rekey(
 }
 
 /**
- * Tags merge as a set, not per field: our adds and removes (local against
- * base) are replayed onto the remote rows, so two people tagging one
- * contact never conflict. A tag both sides added keeps the remote row.
- */
-export function mergeTags(
-  base: Slices['tags'],
-  local: Slices['tags'],
-  remote: Slices['tags'],
-): Slices['tags'] {
-  const had = new Set(base.tags.map((t) => t.tagId))
-  const has = new Set(local.tags.map((t) => t.tagId))
-  const removed = new Set([...had].filter((id) => !has.has(id)))
-  const kept = remote.tags.filter((t) => !removed.has(t.tagId))
-  const present = new Set(kept.map((t) => t.tagId))
-  const added = local.tags.filter(
-    (t) => !had.has(t.tagId) && !present.has(t.tagId),
-  )
-  return { tags: [...kept, ...added] }
-}
-
-/**
- * Identifier rows are immutable per key, so they merge as a set of rows
- * like tags: our adds and removes are replayed onto the remote rows.
+ * Identifier rows are immutable per key, so they merge as a set of rows:
+ * our adds and removes are replayed onto the remote rows, so two people
+ * adding identifiers to one contact never conflict.
  */
 export function mergeIdentifiers(
   base: Slices['identifiers'],
@@ -301,8 +279,8 @@ export function tornSlices(
 }
 
 /**
- * Same rows, whatever their order: the server sorts tags and identifiers
- * by name, so a rename elsewhere reorders them without changing them.
+ * Same rows, whatever their order: the server sorts identifiers by type
+ * name, so a rename elsewhere reorders them without changing them.
  */
 function sameRows(a: unknown, b: unknown): boolean {
   const byKey = (_: string, v: unknown) =>
@@ -331,7 +309,6 @@ export function initialState(slices: Slices, counters: Counters): FormState {
       details: false,
       methods: false,
       addresses: false,
-      tags: false,
       identifiers: false,
       fields: false,
     },
@@ -375,36 +352,27 @@ export function reduce(state: FormState, action: Action): FormState {
           continue
         }
         const merged =
-          slice === 'tags'
+          slice === 'identifiers'
             ? {
-                value: mergeTags(
-                  state.base.tags,
-                  state.local.tags,
-                  remote as Slices['tags'],
+                value: mergeIdentifiers(
+                  state.base.identifiers,
+                  state.local.identifiers,
+                  remote as Slices['identifiers'],
                 ),
                 conflicts: [],
               }
-            : slice === 'identifiers'
-              ? {
-                  value: mergeIdentifiers(
-                    state.base.identifiers,
-                    state.local.identifiers,
-                    remote as Slices['identifiers'],
-                  ),
-                  conflicts: [],
-                }
-              : slice === 'fields'
-                ? mergeFieldValues(
-                    state.base.fields,
-                    state.local.fields,
-                    remote as Slices['fields'],
-                  )
-                : mergeFilled(
-                    slice,
-                    state.base[slice] as never,
-                    state.local[slice] as never,
-                    remote as never,
-                  )
+            : slice === 'fields'
+              ? mergeFieldValues(
+                  state.base.fields,
+                  state.local.fields,
+                  remote as Slices['fields'],
+                )
+              : mergeFilled(
+                  slice,
+                  state.base[slice] as never,
+                  state.local[slice] as never,
+                  remote as never,
+                )
         put(next.base, slice, remote)
         put(next.local, slice, merged.value)
         conflicts = [

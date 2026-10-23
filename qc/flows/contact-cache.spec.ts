@@ -185,11 +185,11 @@ test.describe(
       page,
       users,
     }) => {
-      // CACHE_MAX_IDLE is 100 and a contact leaves 5 queries: 22 contacts
+      // CACHE_MAX_IDLE is 100 and a contact leaves 4 queries: 27 contacts
       // go past it.
-      test.setTimeout(240_000)
+      test.setTimeout(300_000)
       const visits: Array<{ last: string; path: string }> = []
-      for (let i = 0; i < 22; i++) {
+      for (let i = 0; i < 27; i++) {
         const last = uniqueName(`bound${i}`)
         const url = await createContact(page, users.a.slug, last)
         visits.push({ last, path: new URL(url).pathname })
@@ -216,7 +216,6 @@ test.describe(
           ![
             'platform/tenants:mine',
             'contacts/queries:list',
-            'contacts/queries:tags',
             // The list's source filter options.
             'sources/queries:filterOptions',
           ].includes(p),
@@ -227,7 +226,7 @@ test.describe(
       })
       expect(held.length).toBeGreaterThan(0)
       expect(held.length).toBeLessThanOrEqual(100)
-      // 22 contacts × 5 of their own queries is past the cap, so the last
+      // 27 contacts × 4 of their own queries is past the cap, so the last
       // ones left were dropped as they went idle (convex-helpers drops the
       // newest idle query, not the oldest): not every root is held, but
       // many more than the old cap's 4 contacts.

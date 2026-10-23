@@ -54,7 +54,6 @@ export type SearchChildren = {
   phones: Array<string>
   addresses: Array<{ line1: string; town: string; postcode: string }>
   identifiers: Array<string>
-  tagNames: Array<string>
 }
 
 /**
@@ -78,7 +77,8 @@ function joinedForms(name: string): Array<string> {
  * joined forms of all but the sort name, each email
  * whole and split at `@` and `.`, each phone as digits and its last
  * PHONE_TAIL digits, each postcode compact and spaced, address line 1 and
- * town, identifier values, tag names. Not notes, not relationships.
+ * town, identifier values. Not notes, not relationships, not dropdown
+ * field values (the list filters by those, g1q11).
  */
 export function searchText(
   contact: SearchContact,
@@ -111,7 +111,7 @@ export function searchText(
   for (const a of children.addresses) {
     parts.push(a.line1, a.town, ...postcodeForms(a.postcode))
   }
-  parts.push(...children.identifiers, ...children.tagNames)
+  parts.push(...children.identifiers)
 
   const words = new Set<string>()
   for (const part of parts) {

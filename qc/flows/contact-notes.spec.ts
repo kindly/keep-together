@@ -165,7 +165,7 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
   }) => {
     test.info().annotations.push({
       type: 'route',
-      description: '/t/$slug/settings/tags',
+      description: '/t/$slug/settings/fields',
     })
     const url = await createContact(page, users.a.slug, uniqueName('leave'))
     await addNote(page, 'before')
@@ -176,7 +176,7 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
     await top.getByRole('button', { name: 'edit' }).click()
     await top.getByRole('textbox').fill('saved on the way out')
     await page.getByRole('link', { name: 'Settings', exact: true }).click()
-    await page.waitForURL(/\/settings\/tags$/)
+    await page.waitForURL(/\/settings\/fields$/)
     await expect(leave).toBeHidden()
     // Back inside the app (same document, so the router sees it).
     await page.goBack()
@@ -200,7 +200,7 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
     await page.getByRole('link', { name: 'Settings', exact: true }).click()
     await expect(leave).toBeVisible()
     await leave.getByRole('button', { name: 'Leave anyway' }).click()
-    await page.waitForURL(/\/settings\/tags$/)
+    await page.waitForURL(/\/settings\/fields$/)
     await page.goBack()
     await page.waitForURL(url)
     await expect(items(page).nth(0).locator('p')).toHaveText(
@@ -227,7 +227,7 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
   }) => {
     test.info().annotations.push({
       type: 'route',
-      description: '/t/$slug/settings/tags',
+      description: '/t/$slug/settings/fields',
     })
     const url = await createContact(page, users.a.slug, uniqueName('slow'))
     await addNote(page, 'before')
@@ -257,7 +257,7 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
       await expect(status).toBeVisible()
       expect(other.url()).toBe(url)
       // The save lands: the page leaves with no question.
-      await other.waitForURL(/\/settings\/tags$/)
+      await other.waitForURL(/\/settings\/fields$/)
       await expect(status).toBeHidden()
       await expect(
         other.getByRole('alertdialog', { name: /You have unsaved changes/ }),

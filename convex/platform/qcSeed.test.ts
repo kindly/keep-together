@@ -4,7 +4,7 @@ import { api, internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
 import schema from '../schema'
 import { errorData, modules } from '../../test/fixture'
-import { SEED_TAGS, UK_RELATIONSHIP_TYPES } from '../contacts/seed'
+import { UK_RELATIONSHIP_TYPES } from '../contacts/seed'
 import { SEED_CATEGORIES } from '../sources/rules'
 import {
   IDENTIFIER_TYPE,
@@ -159,11 +159,11 @@ test('every seeded write went through a contract and left a revision', async () 
     }))
     expect(types).toHaveLength(UK_RELATIONSHIP_TYPES.length)
     const isA = tenantId === world.tenants[0].tenantId
-    // A: Ada's identifier and tag. B: every contact's identifier. Both:
+    // A: Ada's identifier. B: every contact's identifier. Both:
     // Charles's and the Trust's acquisition code.
     const extra = isA
       ? [
-          ['contacts.identifiers', 'contacts.tags'],
+          ['contacts.identifiers'],
           ['contacts.acquisition'],
           ['contacts.acquisition'],
         ]
@@ -186,7 +186,6 @@ test('every seeded write went through a contract and left a revision', async () 
     const typeRevisions = isA ? 1 : 2
     expect(revisions).toHaveLength(
       UK_RELATIONSHIP_TYPES.length +
-        SEED_TAGS.length +
         SEED_CATEGORIES.length +
         // The side's Street detail and Event's Gala, each with its 001
         // and a 002.
@@ -342,7 +341,6 @@ test("identifiers: A finds its own, never B's; B has no active type", async () =
     id: tenantA.contactIds[0],
   })
   expect(ada?.identifiers.map((r) => r.value)).toEqual([shared])
-  expect(ada?.tags).toHaveLength(1)
 
   const types = await t.run((ctx) => ctx.db.query('identifierTypes').collect())
   expect(types.map((x) => [x.tenantId, x.name, x.isActive]).sort()).toEqual(
