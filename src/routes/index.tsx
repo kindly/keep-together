@@ -1,17 +1,17 @@
-import { Link, createFileRoute } from '@tanstack/react-router'
+import { Navigate, createFileRoute } from '@tanstack/react-router'
 import { useAuthActions } from '@convex-dev/auth/react'
 import { AuthLoading, Authenticated, Unauthenticated } from 'convex/react'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { PASSWORD_MIN_LENGTH } from '../../convex/lib/password'
 import { authErrorMessage } from '../lib/auth-errors'
-import { useMyTenants } from '../lib/tenant'
+import { landingTenant, useMyTenants } from '../lib/tenant'
 
 export const Route = createFileRoute('/')({ component: Home })
 
-// Slice zero: sign in, see your groups. Groups are created by the operator
-// from the CLI (README, "Create a tenant"). Plain Tailwind for now;
-// shadcn components arrive with the first designed page.
+// Sign in, then straight into a group: never a list of groups (cash-gifts
+// g2q3, g3q1). Groups are created by the operator from the CLI (README,
+// "Create a tenant"); switching between them is in Settings.
 function Home() {
   return (
     <main className="mx-auto max-w-lg p-6">
@@ -23,7 +23,7 @@ function Home() {
         <SignIn />
       </Unauthenticated>
       <Authenticated>
-        <Groups />
+        <Landing />
       </Authenticated>
     </main>
   )
@@ -94,44 +94,20 @@ function SignIn() {
   )
 }
 
-function Groups() {
+/** Into the group last used (else the first by name), or "no group yet". */
+function Landing() {
   const { signOut } = useAuthActions()
   const tenants = useMyTenants()
-
+  if (tenants === undefined)
+    return <p className="mt-6 text-sm text-neutral-500">Loading…</p>
+  const landing = landingTenant(tenants)
+  if (landing)
+    return <Navigate to="/t/$slug" params={{ slug: landing.slug }} replace />
   return (
     <section className="mt-6 flex flex-col gap-6">
-      <div>
-        <h2 className="text-lg font-medium">Your groups</h2>
-        {tenants === undefined ? (
-          <p className="mt-2 text-sm text-neutral-500">Loading…</p>
-        ) : tenants.length === 0 ? (
-          <p className="mt-2 text-sm text-neutral-500">
-            You don't belong to a group yet. Ask your group's admin for an
-            invite.
-          </p>
-        ) : (
-          <ul className="mt-2 divide-y divide-neutral-200 rounded border border-neutral-200">
-            {tenants.map((t) => (
-              <li
-                key={t._id}
-                className="flex items-baseline justify-between px-3 py-2"
-              >
-                <Link
-                  to="/t/$slug/contacts"
-                  params={{ slug: t.slug }}
-                  className="underline"
-                >
-                  {t.name}
-                </Link>
-                <span className="text-xs text-neutral-500">
-                  {t.slug} · {t.role}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
+      <p className="text-sm text-neutral-500">
+        You don't belong to a group yet. Ask your group's admin for an invite.
+      </p>
       <button
         type="button"
         onClick={() => void signOut()}

@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 import { api, internal } from '../_generated/api'
 import { errorData, setup, snapshot } from '../../test/fixture'
 import { create } from './tenants'
@@ -71,6 +71,7 @@ test('create makes the user with adminEmail its admin, and seeds reference data'
       slug: 'anytown-hall',
       name: 'Anytown Village Hall',
       role: 'admin',
+      lastUsedAt: null,
       staffCanManageIdentifierTypes: false,
       identifierTypesVersion: null,
       staffCanManageSourceCodes: false,
@@ -173,4 +174,141 @@ test('a new tenant leaves existing tenants untouched and sees none of their data
       b.as.query(api.platform.tenants.members, { tenantId: gamma }),
     ),
   ).toMatchObject({ kind: 'forbidden' })
+})
+
+describe('opened: the group a user last used', () => {
+  async function lastUsed(t: Awaited<ReturnType<typeof setup>>['t']) {
+    return t.run(async (ctx) =>
+      Object.fromEntries(
+        (await ctx.db.query('memberships').collect()).map((m) => [
+          `${m.userId}:${m.tenantId}`,
+          m.lastUsedAt,
+        ]),
+      ),
+    )
+  }
+
+  test('one group: nothing is written', async () => {
+    const { t, a } = await setup()
+    const before = await lastUsed(t)
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: a.tenantId })
+    expect(await lastUsed(t)).toEqual(before)
+    expect(
+      (await a.as.query(api.platform.tenants.mine, {}))[0].lastUsedAt,
+    ).toBeNull()
+  })
+
+  test('several groups: the latest one opened wins, and a repeat writes nothing', async () => {
+    const { t, a, b } = await setup()
+    const gamma = await t.mutation(internal.platform.tenants.create, {
+      slug: 'gamma',
+      name: 'Gamma',
+      adminEmail: 'alpha@example.com',
+    })
+    await t.finishAllScheduledFunctions(() => {})
+    const beforeA = await snapshot(t, a.tenantId)
+    const beforeB = await snapshot(t, b.tenantId)
+    const used = async () =>
+      Object.fromEntries(
+        (await a.as.query(api.platform.tenants.mine, {})).map((x) => [
+          x.slug,
+          x.lastUsedAt,
+        ]),
+      )
+    expect(await used()).toEqual({ alpha: null, gamma: null })
+
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: gamma })
+    const first = await used()
+    expect(first.alpha).toBeNull()
+    expect(first.gamma).toEqual(expect.any(Number))
+
+    // Already the last used: no write, so moving around a group is free.
+    const rows = await lastUsed(t)
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: gamma })
+    expect(await lastUsed(t)).toEqual(rows)
+
+    // Back to alpha: later than gamma, even within the same millisecond.
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: a.tenantId })
+    const second = await used()
+    expect(second.gamma).toBe(first.gamma)
+    expect(second.alpha!).toBeGreaterThan(first.gamma!)
+
+    // Beta's user is untouched and can't mark a group they aren't in.
+    expect(
+      (await b.as.query(api.platform.tenants.mine, {}))[0].lastUsedAt,
+    ).toBeNull()
+    expect(
+      await errorData(
+        b.as.mutation(api.platform.tenants.opened, { tenantId: gamma }),
+      ),
+    ).toMatchObject({ kind: 'forbidden' })
+    // A platform field: no tenant's domain data changes.
+    expect(await snapshot(t, a.tenantId)).toBe(beforeA)
+    expect(await snapshot(t, b.tenantId)).toBe(beforeB)
+  })
+
+  test('calls trading the mark back and forth write once a minute at most', async () => {
+    // Two tabs on different groups, each calling as `mine` moves (the H1
+    // loop): after one write each, repeats inside a minute write nothing.
+    const { t, a } = await setup()
+    const gamma = await t.mutation(internal.platform.tenants.create, {
+      slug: 'gamma',
+      name: 'Gamma',
+      adminEmail: 'alpha@example.com',
+    })
+    await t.finishAllScheduledFunctions(() => {})
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: gamma })
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: a.tenantId })
+    const rows = await lastUsed(t)
+    for (let i = 0; i < 5; i++) {
+      await a.as.mutation(api.platform.tenants.opened, { tenantId: gamma })
+      await a.as.mutation(api.platform.tenants.opened, {
+        tenantId: a.tenantId,
+      })
+    }
+    expect(await lastUsed(t)).toEqual(rows)
+
+    // A minute on, coming back to gamma counts again.
+    await t.run(async (ctx) => {
+      const m = await ctx.db
+        .query('memberships')
+        .withIndex('by_tenant_user', (q) =>
+          q.eq('tenantId', gamma).eq('userId', a.userId),
+        )
+        .unique()
+      await ctx.db.patch('memberships', m!._id, {
+        lastUsedAt: Date.now() - 61_000,
+      })
+    })
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: gamma })
+    const mine = await a.as.query(api.platform.tenants.mine, {})
+    const at = (slug: string) => mine.find((x) => x.slug === slug)!.lastUsedAt!
+    expect(at('gamma')).toBeGreaterThan(at('alpha'))
+  })
+
+  test('a viewer may record it too: it changes no tenant data', async () => {
+    const { t, a, b } = await setup()
+    await t.run((ctx) =>
+      ctx.db.insert('memberships', {
+        tenantId: b.tenantId,
+        userId: a.userId,
+        role: 'viewer',
+      }),
+    )
+    await a.as.mutation(api.platform.tenants.opened, { tenantId: b.tenantId })
+    const mine = await a.as.query(api.platform.tenants.mine, {})
+    expect(mine.find((x) => x.slug === 'beta')).toMatchObject({
+      role: 'viewer',
+      lastUsedAt: expect.any(Number),
+    })
+  })
+
+  test('signed out: refused', async () => {
+    const { t, a } = await setup()
+    expect(
+      await errorData(
+        t.mutation(api.platform.tenants.opened, { tenantId: a.tenantId }),
+      ),
+    ).toMatchObject({ kind: 'unauthenticated' })
+  })
 })

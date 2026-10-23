@@ -264,15 +264,16 @@ test.describe('isolation', () => {
     await expect(saved(page)).toBeVisible()
   })
 
-  test("A's groups list shows only A's group", async ({ page, users }) => {
-    route('/')
+  test("A lands in A's group, and Switch group lists only it", async ({
+    page,
+    users,
+  }) => {
+    route('/', '/t/$slug/', '/t/$slug/settings/groups')
     await page.goto('/')
-    await expect(
-      page.getByRole('heading', { name: 'Your groups' }),
-    ).toBeVisible()
-    const links = page.locator('a[href^="/t/"]')
-    await expect(links).toHaveCount(1)
-    await expect(links).toHaveAttribute('href', `/t/${users.a.slug}/contacts`)
+    await expect(page).toHaveURL(`/t/${users.a.slug}`)
+    await page.goto(`/t/${users.a.slug}/settings/groups`)
+    await expect(page.getByRole('listitem')).toHaveCount(1)
+    await expect(page.getByRole('listitem')).toContainText(users.a.slug)
     await expect(page.locator('body')).not.toContainText(users.b.slug)
     await expect(page.locator('body')).not.toContainText('Bravo')
   })

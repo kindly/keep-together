@@ -76,6 +76,9 @@ export const appTables = {
     tenantId: v.id('tenants'),
     userId: v.id('users'),
     role: v.union(v.literal('admin'), v.literal('staff'), v.literal('viewer')),
+    // When the user last opened this group (ms), to land them back in it
+    // on sign-in. Only kept for people in more than one group.
+    lastUsedAt: v.optional(v.number()),
   })
     .index('by_tenant_user', ['tenantId', 'userId'])
     .index('by_user', ['userId']),

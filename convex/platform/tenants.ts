@@ -7,7 +7,12 @@ import { ConvexError, v } from 'convex/values'
 import { internal } from '../_generated/api'
 import type { Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
-import { internalMutation, internalQuery, query } from '../_generated/server'
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from '../_generated/server'
 import { requireMember, roleValidator } from '../lib/tenancy'
 import { mayManageList, staffMayManage } from '../lib/lists'
 import { preferencesFor } from './preferences'
@@ -48,6 +53,8 @@ export const mine = query({
               slug: t.slug,
               name: t.name,
               role: m.role,
+              // For landing a user in more than one group (g3q1).
+              lastUsedAt: m.lastUsedAt ?? null,
               // The Settings page's switches, with the counters their saves
               // need, and what they mean for this caller.
               staffCanManageIdentifierTypes: staffMayManage(
@@ -71,6 +78,43 @@ export const mine = query({
       }),
     )
     return tenants.filter((t) => t !== null)
+  },
+})
+
+/**
+ * The caller opened this group: remember it, so signing in lands them back
+ * here (cash-gifts g3q1). Only for people in more than one group, and only
+ * when it isn't already their last used, so moving around inside a group
+ * writes nothing. Nor when this group was marked within the last minute:
+ * the client calls once per entry, so a burst of calls is a misbehaving
+ * client (two tabs trading the mark), and one write a minute bounds it.
+ * The cost: leaving a group and coming back inside a minute lands next
+ * sign-in in the other one.
+ */
+const OPENED_QUIET_MS = 60_000
+
+export const opened = mutation({
+  args: { tenantId: v.id('tenants') },
+  handler: async (ctx, { tenantId }) => {
+    const { membership, userId } = await requireMember(ctx, tenantId)
+    // Always set for a member; the scope's type allows null for internal
+    // functions.
+    if (!membership || !userId) {
+      throw new ConvexError({ kind: 'unauthenticated' as const })
+    }
+    const all = await ctx.db
+      .query('memberships')
+      .withIndex('by_user', (q) => q.eq('userId', userId))
+      .collect()
+    if (all.length < 2) return
+    const latest = Math.max(...all.map((m) => m.lastUsedAt ?? 0))
+    const last = membership.lastUsedAt
+    const now = Date.now()
+    if (last !== undefined && (last === latest || now - last < OPENED_QUIET_MS))
+      return
+    await ctx.db.patch('memberships', membership._id, {
+      lastUsedAt: Math.max(now, latest + 1),
+    })
   },
 })
 

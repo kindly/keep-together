@@ -12,7 +12,7 @@ import { describe, expect, test } from 'vitest'
 import { api } from '../_generated/api'
 import type { Id, TableNames } from '../_generated/dataModel'
 import schema from '../schema'
-import { errorData, modules, setup } from '../../test/fixture'
+import { errorData, modules, setup, snapshot } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
 import type { ListKind } from './lists'
 import { tenantAction, tenantMutation, tenantQuery } from './tenancy'
@@ -89,6 +89,12 @@ const person = (lastName: string) => ({
 
 /** Functions registered without a tenant (Convex Auth's sign-in flow). */
 const NOT_TENANT_SCOPED = new Set(['auth:signIn', 'auth:signOut'])
+
+/**
+ * The caller's own bookkeeping on their membership, which changes no
+ * tenant data: every member may, viewers included (platform/tenants.test).
+ */
+const ANY_MEMBER = new Set(['platform/tenants:opened'])
 
 /** Admin-only writes (`minRole: 'admin'`): staff are refused too. */
 const ADMIN_ONLY = new Set([
@@ -321,12 +327,12 @@ describe('every public mutation and action', () => {
     // Guard against the enumeration silently finding nothing.
     expect(writes.map((w) => w.path)).toContain('contacts/mutations:create')
     expect(writes.map((w) => w.path)).toContain('contacts/notes:save')
-    // A stale ADMIN_ONLY / LIST_MANAGERS entry (renamed or deleted
-    // function) fails here.
-    for (const p of [...ADMIN_ONLY, ...LIST_MANAGERS.keys()]) {
+    // A stale ADMIN_ONLY / LIST_MANAGERS / ANY_MEMBER entry (renamed or
+    // deleted function) fails here.
+    for (const p of [...ADMIN_ONLY, ...LIST_MANAGERS.keys(), ...ANY_MEMBER]) {
       expect(
         writes.map((w) => w.path),
-        `ADMIN_ONLY / LIST_MANAGERS ${p}`,
+        `ADMIN_ONLY / LIST_MANAGERS / ANY_MEMBER ${p}`,
       ).toContain(p)
     }
     // Tenant B's switches are all on, and must not reach tenant A.
@@ -345,6 +351,23 @@ describe('every public mutation and action', () => {
           ? as.mutation(makeFunctionReference<'mutation'>(w.path), args)
           : as.action(makeFunctionReference<'action'>(w.path), args)
 
+      if (ANY_MEMBER.has(w.path)) {
+        // A viewer succeeds, and no tenant's domain data moves: only the
+        // caller's own membership may change.
+        const before = [
+          await snapshot(t, a.tenantId),
+          await snapshot(t, b.tenantId),
+        ]
+        await call(viewer).catch((e: Error) => {
+          throw new Error(`${w.path}: a viewer's call ${e.message}`)
+        })
+        expect(
+          [await snapshot(t, a.tenantId), await snapshot(t, b.tenantId)],
+          w.path,
+        ).toEqual(before)
+        checked.push(w.path)
+        continue
+      }
       const asViewer = await errorData(call(viewer)).catch((e: Error) => {
         throw new Error(`${w.path}: a viewer's call ${e.message}`)
       })

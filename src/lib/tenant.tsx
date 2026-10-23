@@ -11,6 +11,8 @@ export type Tenant = {
   slug: string
   name: string
   role: 'admin' | 'staff' | 'viewer'
+  /** When the caller last opened this group (ms); null if never recorded. */
+  lastUsedAt: number | null
   /** The tenant's "staff can manage identifier types" switch. */
   staffCanManageIdentifierTypes: boolean
   /** Its counter, for the switch's save; null until first saved. */
@@ -104,4 +106,23 @@ export function cachedTenant(
     .watchQuery(api.platform.tenants.mine, {})
     .localQueryResult()
     ?.find((t) => t.slug === slug)
+}
+
+/**
+ * The group signing in lands in (cash-gifts g2q3, g3q1): the one last
+ * used, else the first by name; null with no groups.
+ */
+export function landingTenant<T extends Pick<Tenant, 'name' | 'lastUsedAt'>>(
+  tenants: Array<T>,
+): T | null {
+  let best: T | null = null
+  for (const t of tenants) {
+    if (
+      best === null ||
+      (t.lastUsedAt ?? -1) > (best.lastUsedAt ?? -1) ||
+      (t.lastUsedAt === best.lastUsedAt && t.name.localeCompare(best.name) < 0)
+    )
+      best = t
+  }
+  return best
 }

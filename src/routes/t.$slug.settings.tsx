@@ -1,4 +1,11 @@
-import { Link, Outlet, createFileRoute } from '@tanstack/react-router'
+import {
+  Link,
+  Outlet,
+  createFileRoute,
+  useNavigate,
+} from '@tanstack/react-router'
+import { useAuthActions } from '@convex-dev/auth/react'
+import { useMyTenants } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings')({
   component: SettingsLayout,
@@ -13,11 +20,16 @@ const activeTab = 'border-neutral-900 font-medium text-neutral-900'
 
 /**
  * Settings: one tab per child route, every one visible to every member.
- * Each tab opens with its admin-only switch, and is editable by whoever
- * may manage that list (read-only for the rest). The backend enforces it.
+ * Each list's tab opens with its admin-only switch, and is editable by
+ * whoever may manage that list (read-only for the rest). The backend
+ * enforces it. Then the account's own: Switch group (only for people in
+ * more than one) and Sign out.
  */
 function SettingsLayout() {
   const { slug } = Route.useParams()
+  const { signOut } = useAuthActions()
+  const navigate = useNavigate()
+  const several = (useMyTenants()?.length ?? 0) > 1
   return (
     <main className="mx-auto flex max-w-4xl flex-col gap-6 p-6">
       <h1 className="text-xl font-semibold">Settings</h1>
@@ -52,6 +64,23 @@ function SettingsLayout() {
           >
             Source codes
           </Link>
+          {several && (
+            <Link
+              to="/t/$slug/settings/groups"
+              params={{ slug }}
+              className={tab}
+              activeProps={{ className: activeTab }}
+            >
+              Switch group
+            </Link>
+          )}
+          <button
+            type="button"
+            onClick={() => void signOut().then(() => navigate({ to: '/' }))}
+            className={`${tab} text-left`}
+          >
+            Sign out
+          </button>
         </nav>
         <div className="min-w-0 flex-1">
           <Outlet />
