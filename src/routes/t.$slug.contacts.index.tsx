@@ -364,9 +364,17 @@ const ContactRow = memo(
         <Link
           to="/t/$slug/contacts/$contactId"
           params={{ slug, contactId: c._id }}
-          className="flex flex-1 items-baseline justify-between gap-4 px-4 py-2 hover:bg-neutral-50"
+          className="flex flex-1 items-baseline gap-4 px-4 py-2 hover:bg-neutral-50"
         >
-          <span>
+          {/* Its own column: written out on every row, blank until a
+              contact made before numbers is backfilled. */}
+          <span
+            title="contact no."
+            className="w-14 shrink-0 font-mono text-sm text-neutral-500 tabular-nums"
+          >
+            {c.number !== null ? formatNumber(c.number) : ''}
+          </span>
+          <span className="flex-1">
             {c.displayName}
             {numberMatch && c.number !== null && (
               <span className="ml-2 rounded bg-emerald-100 px-1.5 text-xs text-emerald-900">

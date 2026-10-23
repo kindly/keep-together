@@ -5,7 +5,6 @@ import type { Page } from '@playwright/test'
 import type { FlowName } from '../budgets'
 import { api } from '../../convex/_generated/api'
 import type { Id } from '../../convex/_generated/dataModel'
-import { formatNumber } from '../../convex/contacts/number'
 import {
   LIST_ROUTE,
   createContact,
@@ -60,23 +59,11 @@ async function signedIn(
   return client
 }
 
-/**
- * The written contact number of the only contact named `last`, read
- * through the API: the pages don't show numbers yet (contact numbers
- * step 4).
- */
-async function writtenNumber(
-  client: ConvexHttpClient,
-  tenantId: string,
-  last: string,
-): Promise<string> {
-  const { rows } = await client.query(api.contacts.queries.search, {
-    tenantId: tenantId as Id<'tenants'>,
-    search: last,
-  })
-  expect(rows).toHaveLength(1)
-  expect(rows[0].number).not.toBeNull()
-  return formatNumber(rows[0].number!)
+/** The contact number in a contact page's header, as staff copy it. */
+async function shownNumber(page: Page): Promise<string> {
+  const shown = page.getByTestId('contact-number')
+  await expect(shown).toHaveText(/^\d{6}$/)
+  return (await shown.textContent())!
 }
 
 /** The `until` for "the first row is `name`'s, badged as a number match". */
@@ -233,11 +220,7 @@ test.describe('search by contact number', () => {
     }) => {
       const last = `qcs-${token()}`
       await createContact(page, users.a.slug, last, 'Femi')
-      const written = await writtenNumber(
-        await signedIn(instance, users.a),
-        world.tenants[0].tenantId,
-        last,
-      )
+      const written = await shownNumber(page)
       await toList(page)
       const search = searchBox(page)
       await flow(page, 'contacts.search.number', {
@@ -265,6 +248,11 @@ test.describe('search by contact number', () => {
         ),
       ).toBeVisible()
       await expect(page.locator('main')).not.toContainText(last)
+      // Found by name, the row still shows the number, in its own column.
+      await search.fill(last)
+      await expect(listRows(page)).toHaveCount(1)
+      await expect(listRows(page).first()).toContainText(written)
+      await expect(listRows(page).first()).not.toContainText('contact no.')
 
       // B, in its own group, never sees A's contact by its number (B may
       // have its own contact with the same number). The page must show
