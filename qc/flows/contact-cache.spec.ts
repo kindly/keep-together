@@ -259,7 +259,10 @@ test.describe('the cache and tenancy', { annotation: CONTACT_ROUTE }, () => {
     expect(count(subs.live(), 'contacts/queries:getRoot')).toBe(1)
 
     // Sign out in the app (no reload), then in as B.
-    await page.getByRole('link', { name: 'keep-together' }).click()
+    await page
+      .getByRole('navigation', { name: 'Main' })
+      .getByRole('link', { name: 'Settings' })
+      .click()
     await page.getByRole('button', { name: 'Sign out' }).click()
     await expect(page.getByPlaceholder('Email')).toBeVisible()
     // Sign-out unmounted the cache, and it let go of A's queries at once.
@@ -269,10 +272,7 @@ test.describe('the cache and tenancy', { annotation: CONTACT_ROUTE }, () => {
     await page.getByPlaceholder('Email').fill(users.b.email)
     await page.getByPlaceholder('Password').fill(users.b.password)
     await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(
-      page.getByRole('heading', { name: 'Your groups' }),
-    ).toBeVisible()
-    await expect(page.locator('body')).toContainText(users.b.slug)
+    await expect(page).toHaveURL(`/t/${users.b.slug}`)
 
     // Client-side navigation, so the same client and its state carry on.
     const clientNav = (to: string) =>

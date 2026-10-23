@@ -97,6 +97,12 @@ const person = (lastName: string) => ({
 /** Functions registered without a tenant (Convex Auth's sign-in flow). */
 const NOT_TENANT_SCOPED = new Set(['auth:signIn', 'auth:signOut'])
 
+/**
+ * The caller's own bookkeeping on their membership, which changes no
+ * tenant data: every member may, viewers included (platform/tenants.test).
+ */
+const ANY_MEMBER = new Set(['platform/tenants:opened'])
+
 /** Admin-only writes (`minRole: 'admin'`): staff are refused too. */
 const ADMIN_ONLY = new Set([
   'platform/preferences:setStaffCanManageTags',
@@ -310,12 +316,12 @@ describe('every public mutation and action', () => {
     // Guard against the enumeration silently finding nothing.
     expect(writes.map((w) => w.path)).toContain('contacts/mutations:create')
     expect(writes.map((w) => w.path)).toContain('contacts/notes:save')
-    // A stale ADMIN_ONLY / LIST_MANAGERS entry (renamed or deleted
-    // function) fails here.
-    for (const p of [...ADMIN_ONLY, ...LIST_MANAGERS.keys()]) {
+    // A stale ADMIN_ONLY / LIST_MANAGERS / ANY_MEMBER entry (renamed or
+    // deleted function) fails here.
+    for (const p of [...ADMIN_ONLY, ...LIST_MANAGERS.keys(), ...ANY_MEMBER]) {
       expect(
         writes.map((w) => w.path),
-        `ADMIN_ONLY / LIST_MANAGERS ${p}`,
+        `ADMIN_ONLY / LIST_MANAGERS / ANY_MEMBER ${p}`,
       ).toContain(p)
     }
     // Tenant B's switches are all on, and must not reach tenant A.
@@ -323,7 +329,7 @@ describe('every public mutation and action', () => {
 
     const checked: Array<string> = []
     for (const w of writes) {
-      if (NOT_TENANT_SCOPED.has(w.path)) continue
+      if (NOT_TENANT_SCOPED.has(w.path) || ANY_MEMBER.has(w.path)) continue
       expect(
         w.args.value?.tenantId,
         `${w.path} must be declared with a scoped constructor (no tenantId arg)`,

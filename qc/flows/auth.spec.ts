@@ -2,8 +2,9 @@ import { expect, test } from '../fixtures'
 import { runId } from '../timing'
 import type { Page } from '@playwright/test'
 
-// Auth flows (factory/plans/qc-suite.sv, step 6): sign up, sign in, the
-// two error messages, sign out, and a group URL while signed out. The
+// Auth flows (factory/plans/qc-suite.sv, step 6): sign up, sign in (into
+// a group's home, cash-gifts step 4), the two error messages, sign out
+// (from Settings), and a group URL while signed out. The
 // timed sign-in (`auth.signIn`) is the worker fixture's; these check
 // behaviour. Every test starts signed out in a fresh context, so signing
 // out never ends the session the other specs share through storageState.
@@ -39,7 +40,7 @@ async function expectNoRawError(page: Page) {
   )
 }
 
-test('sign up lands on an empty groups list', async ({ page }) => {
+test('sign up with no group says so', async ({ page }) => {
   route('/')
   await page.goto('/')
   await page
@@ -48,7 +49,6 @@ test('sign up lands on an empty groups list', async ({ page }) => {
   await expect(page.getByText('At least 8 characters.')).toBeVisible()
   await fillCredentials(page, freshEmail(), `qc-${runId()}-signup`)
   await page.getByRole('button', { name: 'Create account' }).click()
-  await expect(page.getByRole('heading', { name: 'Your groups' })).toBeVisible()
   await expect(
     page.getByText("You don't belong to a group yet.", { exact: false }),
   ).toBeVisible()
@@ -71,15 +71,14 @@ test('sign up with a weak password says why', async ({ page }) => {
   ).toBeVisible()
 })
 
-test('sign in shows your groups', async ({ page, users }) => {
-  route('/')
+test('sign in lands in your group', async ({ page, users }) => {
+  route('/', '/t/$slug/')
   await page.goto('/')
   await fillCredentials(page, users.a.email, users.a.password)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('heading', { name: 'Your groups' })).toBeVisible()
-  await expect(page.getByRole('link', { name: /qc group/ })).toHaveAttribute(
-    'href',
-    `/t/${users.a.slug}/contacts`,
+  await expect(page).toHaveURL(`/t/${users.a.slug}`)
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(
+    'qc group',
   )
 })
 
@@ -92,25 +91,26 @@ test('a wrong password says so, and nothing more', async ({ page, users }) => {
     page.getByText('Wrong email or password.', { exact: true }),
   ).toBeVisible()
   await expectNoRawError(page)
-  await expect(page.getByRole('heading', { name: 'Your groups' })).toHaveCount(
-    0,
-  )
+  await expect(page).toHaveURL('/')
 })
 
 test('sign out returns to the sign-in form and stays out', async ({
   page,
   users,
 }) => {
-  route('/')
+  route('/', '/t/$slug/settings')
   await page.goto('/')
   await fillCredentials(page, users.a.email, users.a.password)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('heading', { name: 'Your groups' })).toBeVisible()
+  await expect(page).toHaveURL(`/t/${users.a.slug}`)
+  // Sign out lives in Settings now that "/" never lists groups.
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .getByRole('link', { name: 'Settings' })
+    .click()
   await page.getByRole('button', { name: 'Sign out' }).click()
+  await expect(page).toHaveURL('/')
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Your groups' })).toHaveCount(
-    0,
-  )
   await page.reload()
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
   await page.goto(`/t/${users.a.slug}/contacts`)

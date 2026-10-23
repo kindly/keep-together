@@ -243,7 +243,10 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
               await page.getByPlaceholder('Password').fill(password)
             },
             action: () => page.getByRole('button', { name: 'Sign in' }).click(),
-            until: (s) => document.body.innerText.includes(s),
+            // Signing in lands on the group's home: its header drawn.
+            until: (s) =>
+              location.pathname === `/t/${s}` &&
+              document.querySelector('nav[aria-label="Main"]') !== null,
             arg: slug,
           },
         )
