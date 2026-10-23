@@ -66,12 +66,17 @@ export function yearsBefore(date: string, years: number): string {
  * "today" means to the staff entering a declaration.
  */
 export function ukDate(at: number): string {
-  return new Intl.DateTimeFormat('en-CA', {
+  // Assembled from parts so it never depends on a locale's date pattern
+  // (small-ICU runtimes fall back to en-US's `10/23/2026`).
+  const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/London',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(at)
+  }).formatToParts(at)
+  const part = (type: 'year' | 'month' | 'day') =>
+    parts.find((p) => p.type === type)!.value
+  return `${part('year')}-${part('month')}-${part('day')}`
 }
 
 /** What coverage needs to know about one declaration. */

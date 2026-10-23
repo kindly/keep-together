@@ -9,7 +9,7 @@ import { declarationWarnings } from './warnings'
 
 /**
  * A contact's declarations, newest first by date made, each with its
- * warnings; and which one is current on `today` (the caller's date: a
+ * warnings (none on a voided one: it never applied, so nothing to fix); and which one is current on `today` (the caller's date: a
  * query never reads the clock), if any. At most DECLARATION_LIMIT, which
  * the contract enforces, so nothing is cut off.
  */
@@ -21,7 +21,7 @@ export const byContact = tenantQuery({
     return {
       declarations: declarations.reverse().map((d) => ({
         ...d,
-        warnings: declarationWarnings(d),
+        warnings: d.voidedAt === undefined ? declarationWarnings(d) : [],
       })),
       currentId: current?._id ?? null,
     }

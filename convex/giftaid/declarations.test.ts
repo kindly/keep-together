@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import type { Id } from '../_generated/dataModel'
 import type { MutationCtx } from '../_generated/server'
 import { api } from '../_generated/api'
@@ -248,6 +248,21 @@ describe('giftaid.declaration', () => {
     ])
   })
 
+  describe('at 23:30 UTC in BST, already tomorrow in the UK', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date(Date.UTC(2026, 6, 1, 23, 30)))
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    test('the UK date stores; the day after is refused', async () => {
+      await declare({ madeOn: '2026-07-02' })
+      expect(await kind(declare({ madeOn: '2026-07-03' }))).toBe('invalid')
+    })
+  })
+
   test('onScreenByDonor is refused until a donor screen exists; staff ticked stores', async () => {
     const err = await errorData(declare({ method: 'onScreenByDonor' }))
     expect(err.kind).toBe('invalid')
@@ -411,6 +426,13 @@ describe('voidDeclaration (made in error)', () => {
         ),
       ),
     ).toBe('voided')
+  })
+
+  test('a voided declaration lists no warnings', async () => {
+    const { id } = await declare({ method: 'staffTickedNoEvidence' })
+    await voidIt(id)
+    const d = (await panel()).declarations.find((x) => x._id === id)!
+    expect(d.warnings).toEqual([])
   })
 
   test('create-only: a second void, a restore and a restore-to-before leave it voided', async () => {
