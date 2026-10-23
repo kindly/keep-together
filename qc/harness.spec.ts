@@ -19,12 +19,16 @@ import type { FlowStep } from './timing'
 // and one forced into both sets fails.
 
 function openContacts(page: Page, slug: string): FlowStep<string> {
+  // The header's link: the group home also has a "Find a contact" card.
+  const link = page
+    .getByRole('navigation', { name: 'Main' })
+    .locator(`a[href="/t/${slug}/contacts"]`)
   return {
     before: async () => {
       await page.goto('/')
-      await expect(page.locator(`a[href="/t/${slug}/contacts"]`)).toBeVisible()
+      await expect(link).toBeVisible()
     },
-    action: () => page.locator(`a[href="/t/${slug}/contacts"]`).click(),
+    action: () => link.click(),
     until: (name) => document.body.innerText.includes(name),
     arg: `Alpha-${runId()}`,
   }
