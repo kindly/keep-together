@@ -294,10 +294,12 @@ test.describe('contacts list', () => {
       expect(new Set(before).size).toBe(before.length)
 
       // Page 0 is now pinned to end where page 1 starts. Contacts arriving
-      // in its range grow it past the server's per-page read limit
-      // (maximumRowsRead, LIST_PAGE_MAX_ROWS in convex/contacts/queries.ts),
-      // so it comes back short and split, and the list splits it
-      // (paged-list.ts). Every row still shows, once.
+      // in its range grow it past LIST_PAGE_MAX_ROWS
+      // (convex/contacts/queries.ts). The backend reads the grown range in
+      // full (whatever maximumRowsRead says), and `list` answers it with no
+      // rows, SplitRequired and a splitCursor: that call is the server
+      // exception in qc/budgets.ts. The list keeps its rows on screen while
+      // it loads the halves (paged-list.ts). Every row still shows, once.
       const early = uniq('Aardvark')
       const arriving = 250
       // 100 a transaction, as every bulk write here commits.

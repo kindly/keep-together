@@ -157,7 +157,11 @@ test('after Load more, an empty SplitRequired page 0 splits and settles', async 
     pageStatus: 'SplitRequired',
   } as Result
   await push()
-  expect(got).toMatchObject({ rows: [], status: 'loading' })
+  // Its last rows stay, with page 1's, while the halves load.
+  expect(got).toMatchObject({
+    rows: [{ _id: 'a' }, { _id: 'z' }],
+    status: 'loading',
+  })
   server[keyOf({ cursor: null, endCursor: 's' })] = {
     page: [{ _id: 'a' }, { _id: 'b' }],
     isDone: false,
@@ -176,6 +180,112 @@ test('after Load more, an empty SplitRequired page 0 splits and settles', async 
   const settled = renders
   await render()
   expect(renders - settled).toBeLessThanOrEqual(2)
+})
+
+test('a half that grew again splits in turn; the rows stay meanwhile', async () => {
+  server[keyOf({ cursor: null })] = {
+    page: [{ _id: 'a' }],
+    isDone: false,
+    continueCursor: 'c1',
+  }
+  await render()
+  await act(() => got.loadMore())
+  server[keyOf({ cursor: 'c1' })] = {
+    page: [{ _id: 'z' }],
+    isDone: true,
+    continueCursor: 'c2',
+  }
+  const split = (end: string, at: string) =>
+    ({
+      page: [],
+      isDone: false,
+      continueCursor: end,
+      splitCursor: at,
+      pageStatus: 'SplitRequired',
+    }) as unknown as Result
+  server[keyOf({ cursor: null, endCursor: 'c1' })] = split('c1', 's')
+  await push()
+  // The first half grew past what list shapes too.
+  server[keyOf({ cursor: null, endCursor: 's' })] = split('s', 't')
+  server[keyOf({ cursor: 's', endCursor: 'c1' })] = {
+    page: [{ _id: 'c' }],
+    isDone: false,
+    continueCursor: 'c1',
+  }
+  await push()
+  expect(got).toMatchObject({
+    rows: [{ _id: 'a' }, { _id: 'z' }],
+    status: 'loading',
+  })
+  server[keyOf({ cursor: null, endCursor: 't' })] = {
+    page: [{ _id: 'a' }],
+    isDone: false,
+    continueCursor: 't',
+  }
+  server[keyOf({ cursor: 't', endCursor: 's' })] = {
+    page: [{ _id: 'b' }],
+    isDone: false,
+    continueCursor: 's',
+  }
+  await push()
+  expect(got).toMatchObject({
+    rows: [{ _id: 'a' }, { _id: 'b' }, { _id: 'c' }, { _id: 'z' }],
+    status: 'done',
+  })
+  const settled = renders
+  await render()
+  expect(renders - settled).toBeLessThanOrEqual(2)
+})
+
+test('a later page that grew splits under the rows before and its own', async () => {
+  server[keyOf({ cursor: null })] = {
+    page: [{ _id: 'a' }],
+    isDone: false,
+    continueCursor: 'c1',
+  }
+  await render()
+  await act(() => got.loadMore())
+  server[keyOf({ cursor: null, endCursor: 'c1' })] =
+    server[keyOf({ cursor: null })]
+  server[keyOf({ cursor: 'c1' })] = {
+    page: [{ _id: 'm' }],
+    isDone: false,
+    continueCursor: 'c2',
+  }
+  await push()
+  await act(() => got.loadMore())
+  server[keyOf({ cursor: 'c2' })] = {
+    page: [{ _id: 'z' }],
+    isDone: true,
+    continueCursor: 'c3',
+  }
+  server[keyOf({ cursor: 'c1', endCursor: 'c2' })] = {
+    page: [],
+    isDone: false,
+    continueCursor: 'c2',
+    splitCursor: 's',
+    pageStatus: 'SplitRequired',
+  } as Result
+  await push()
+  expect(got).toMatchObject({
+    rows: [{ _id: 'a' }, { _id: 'm' }, { _id: 'z' }],
+    status: 'loading',
+  })
+  server[keyOf({ cursor: 'c1', endCursor: 's' })] = {
+    page: [{ _id: 'm' }],
+    isDone: false,
+    continueCursor: 's',
+  }
+  server[keyOf({ cursor: 's', endCursor: 'c2' })] = {
+    page: [{ _id: 'n' }],
+    isDone: false,
+    continueCursor: 'c2',
+  }
+  await push()
+  expect(got).toMatchObject({
+    rows: [{ _id: 'a' }, { _id: 'm' }, { _id: 'n' }, { _id: 'z' }],
+    status: 'done',
+  })
 })
 
 test('a full page marked SplitRecommended settles unsplit', async () => {

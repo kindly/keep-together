@@ -148,6 +148,8 @@ export interface ServerSummary {
   spikes?: Array<string>
   /** Every approved server exception, with this run's excepted calls. */
   exceptions?: Array<string>
+  /** How many calls the exceptions excepted this run. */
+  exceptedCalls?: number
   /** Uncached executions only; `asserted` ones are judged. */
   functions: Array<{
     fn: string
@@ -170,6 +172,9 @@ function readServer(dir: string): ServerSummary | null {
     pass: t.errors.length === 0 && t.failures.length === 0,
     spikes: t.spikes,
     exceptions: t.exceptions,
+    exceptedCalls: t.functions
+      .filter((f) => f.exception !== undefined)
+      .reduce((n, f) => n + f.n, 0),
     functions: t.functions
       .filter((f) => !f.cached)
       .map((f) => {
@@ -392,7 +397,7 @@ function knownOverBanner(lines: Array<HistoryLine>): Array<string> {
  * the calls it excepted: like knownOver flows, so none is forgotten.
  */
 export function serverExceptionBanner(
-  server: Pick<ServerSummary, 'exceptions'> | null,
+  server: Pick<ServerSummary, 'exceptions' | 'exceptedCalls'> | null,
 ): Array<string> {
   if (!SERVER_EXCEPTIONS.length) return []
   const lines =
@@ -400,8 +405,10 @@ export function serverExceptionBanner(
     SERVER_EXCEPTIONS.map(
       (x) => `${x.fn}: EXCEPTED, not asserted: ${x.reason} · no server data`,
     )
+  const n = SERVER_EXCEPTIONS.length
+  const calls = server?.exceptedCalls
   return banner([
-    `${SERVER_EXCEPTIONS.length} server calls are EXCEPTED (approved, qc/budgets.ts SERVER_EXCEPTIONS): timed, never asserted.`,
+    `${n} server exception${n === 1 ? '' : 's'} (approved, qc/budgets.ts SERVER_EXCEPTIONS)${calls === undefined ? '' : `, ${calls} call${calls === 1 ? '' : 's'} EXCEPTED this run`}: timed, never asserted.`,
     ...lines,
   ])
 }

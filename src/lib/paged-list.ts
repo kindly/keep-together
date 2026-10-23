@@ -13,9 +13,9 @@ import { api } from '../../convex/_generated/api'
  * contiguous while rows come and go. A pinned page whose range grows is
  * split in two at its `splitCursor`: `list` answers `SplitRequired`, with
  * no rows, once it holds more than a page and a bit (the backend's own
- * `SplitRecommended` comes on every full page, so it splits nothing). The
- * list stops at such a page (and says it is loading) until both halves
- * arrive.
+ * `SplitRecommended` comes on every full page, so it splits nothing).
+ * Until both halves arrive the page keeps showing its last rows, and the
+ * list says it is loading (no Load more meanwhile).
  */
 
 type ListArgs = FunctionArgs<typeof api.contacts.queries.list>
@@ -57,8 +57,16 @@ export function firstPage(filters: ListFilters): ListArgs {
 
 /** One page's range: from `cursor`, to `end` once pinned. */
 type Range = { cursor: string | null; end?: string }
-/** A page, and the two halves replacing it while a split loads. */
-type Slot = Range & { halves?: [Range, Range] }
+/**
+ * A page, and the parts replacing it while a split loads: two halves,
+ * each of which may split again before it has loaded. Once every part is
+ * in, the parts become pages of their own.
+ */
+type Slot = Range & { halves?: [Slot, Slot] }
+
+/** The ranges a slot subscribes to: itself, or the leaves of its split. */
+const leavesOf = (s: Slot): Array<Range> =>
+  s.halves ? s.halves.flatMap(leavesOf) : [{ cursor: s.cursor, end: s.end }]
 
 const rangeKey = (r: Range) => JSON.stringify([r.cursor, r.end ?? null])
 
@@ -102,7 +110,7 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
   const request: Record<string, ListArgs> = {}
   if (filters !== 'skip') {
     for (const s of slots) {
-      for (const r of [s, ...(s.halves ?? [])]) request[rangeKey(r)] = argsOf(r)
+      for (const r of leavesOf(s)) request[rangeKey(r)] = argsOf(r)
     }
   }
   // `useQueries` re-subscribes whenever this object is a new one, and its
@@ -120,80 +128,125 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
   const results = useQueries(queries)
   // A page re-subscribing (pinned, or the filters changed back) shows what
   // it last showed rather than blinking to "Loading…": by its range, or for
-  // a page just pinned, by where it starts (halves never stand in).
+  // a page just pinned, by where it starts (halves never stand in). So
+  // does a page to split: its SplitRequired answer has no rows to show
+  // (or only part of its range), so it is never what a page last showed.
   const last = useRef(new Map<string, Page>())
+  const lastShown = (r: Range, slot: boolean) =>
+    last.current.get(`${key}#${rangeKey(r)}`) ??
+    (slot ? last.current.get(`${key}@${r.cursor}`) : undefined)
   const resultOf = (r: Range, slot = true): Page | undefined => {
-    const exact = `${key}#${rangeKey(r)}`
-    const start = `${key}@${r.cursor}`
     const got = results[rangeKey(r)] as Page | Error | undefined
     if (got instanceof Error) {
       if (invalidCursor(got)) return undefined
       throw got
     }
     if (got) {
-      last.current.set(exact, got)
-      if (slot) last.current.set(start, got)
+      if (got.pageStatus !== 'SplitRequired') {
+        last.current.set(`${key}#${rangeKey(r)}`, got)
+        if (slot) last.current.set(`${key}@${r.cursor}`, got)
+      }
       return got
     }
-    return (
-      last.current.get(exact) ?? (slot ? last.current.get(start) : undefined)
-    )
+    return lastShown(r, slot)
   }
 
-  // Walk the pages in order: rows up to the first one not loaded (or
-  // incomplete), and what each page needs doing (pin, split, swap halves).
+  // One slot's split, part by part: its rows once every part is in (and
+  // the parts, flattened, to replace it), else what to subscribe next.
+  // A part answering SplitRequired splits again; parts never stand in.
+  type Resolved =
+    | { done: true; rows: Array<ListRow>; tail: Page; parts: Array<Range> }
+    | { done: false; slot: Slot; changed: boolean }
+  const resolve = (s: Slot): Resolved => {
+    if (s.halves) {
+      const [a, b] = s.halves.map(resolve)
+      if (a.done && b.done) {
+        return {
+          done: true,
+          rows: [...a.rows, ...b.rows],
+          tail: b.tail,
+          parts: [...a.parts, ...b.parts],
+        }
+      }
+      const changed = (!a.done && a.changed) || (!b.done && b.changed)
+      return {
+        done: false,
+        changed,
+        slot: changed
+          ? {
+              ...s,
+              halves: [
+                a.done ? s.halves[0] : a.slot,
+                b.done ? s.halves[1] : b.slot,
+              ],
+            }
+          : s,
+      }
+    }
+    const page = resultOf(s, false)
+    if (page?.pageStatus === 'SplitRequired' && page.splitCursor) {
+      return {
+        done: false,
+        changed: true,
+        slot: {
+          ...s,
+          halves: [
+            { cursor: s.cursor, end: page.splitCursor },
+            { cursor: page.splitCursor, end: s.end ?? page.continueCursor },
+          ],
+        },
+      }
+    }
+    return page && page.pageStatus !== 'SplitRequired'
+      ? { done: true, rows: page.page, tail: page, parts: [s] }
+      : { done: false, changed: false, slot: s }
+  }
+
+  // Walk the pages in order: what each needs doing (pin, split, swap in
+  // its parts), and the rows to show. A page still loading, or being
+  // split, shows what it last showed; the list is then 'loading' (no Load
+  // more), and stops only at a page with nothing to show yet. Only
+  // SplitRequired splits a page, which `list` answers (with no rows) for
+  // one grown past what it shapes. Not SplitRecommended: the backend says
+  // it of every full page, and page 0 must keep the hold's args
+  // (list-hold.ts).
   const rows: Array<ListRow> = []
   let tail: Page | undefined
   let complete = filters !== 'skip'
+  let walking = complete
   let reset = false
   const next: Array<Slot> = []
   let changed = false
   for (const s of slots) {
-    if (!complete) {
+    if (!walking) {
       next.push(s)
       continue
     }
-    const got = results[rangeKey(s)]
-    if (got instanceof Error && invalidCursor(got)) reset = true
-    const page = resultOf(s)
-    if (s.halves) {
-      const [a, b] = s.halves.map((h) => resultOf(h, false))
-      if (a && b) {
-        // Both halves are in: they replace the page.
-        next.push(s.halves[0], s.halves[1])
-        changed = true
-        rows.push(...a.page, ...b.page)
-        tail = b
-        continue
-      }
-      // Until then the page stands (or, if incomplete, holds the list).
-      next.push(s)
-    } else if (
-      page?.splitCursor &&
-      // Not on SplitRecommended alone: the backend says it of every
-      // 100-row page, and page 0 must keep the hold's args (list-hold.ts).
-      // `list` itself answers SplitRequired, with no rows, for a page grown
-      // past what it shapes.
-      (page.pageStatus === 'SplitRequired' ||
-        page.page.length > 2 * LIST_PAGE_SIZE)
-    ) {
-      next.push({
-        ...s,
-        halves: [
-          { cursor: s.cursor, end: page.splitCursor },
-          { cursor: page.splitCursor, end: s.end ?? page.continueCursor },
-        ],
-      })
-      changed = true
-    } else {
-      next.push(s)
+    for (const r of leavesOf(s)) {
+      const got = results[rangeKey(r)]
+      if (got instanceof Error && invalidCursor(got)) reset = true
     }
-    if (!page || page.pageStatus === 'SplitRequired') {
-      complete = false
+    const r = resolve(s)
+    if (r.done) {
+      // A page that split: its parts are pages now.
+      if (s.halves) changed = true
+      next.push(...r.parts)
+      rows.push(...r.rows)
+      tail = r.tail
+      // As the page shows now, for when it re-subscribes (pinned).
+      if (!s.halves) resultOf(s)
       continue
     }
-    rows.push(...page.page)
-    tail = page
+    if (r.changed) changed = true
+    next.push(r.slot)
+    complete = false
+    const shown = lastShown(s, true)
+    if (!shown) {
+      walking = false
+      continue
+    }
+    rows.push(...shown.page)
+    tail = shown
   }
   useEffect(() => {
     if (reset) setState({ key, slots: [{ cursor: null }] })

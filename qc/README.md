@@ -87,7 +87,7 @@ Banners to look for:
   for a few seconds, and every flow on every instance waits it out
   (factory/out/builder-qcstall.md). They're judged as usual: the banner
   says where the time went, it doesn't excuse it. A wired link avoids it.
-- **`EXCEPTED`**: every approved server exception
+- **`EXCEPTED`**: the server exceptions banner: every approved exception
   (`SERVER_EXCEPTIONS` in `qc/budgets.ts`), on every run, with the calls
   it excepted this run (see Budgets).
 - **`QC RUN FAILED, whatever the test counts above say`**: a gate the

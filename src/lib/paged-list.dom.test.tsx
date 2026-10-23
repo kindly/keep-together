@@ -99,8 +99,9 @@ test('a page marked SplitRequired holds the list until its halves replace it', a
     pageStatus: 'SplitRequired',
   }
   await render()
-  // Incomplete: nothing past its start shows, and the list is loading.
-  expect(got).toMatchObject({ rows: [], status: 'loading' })
+  // Being split: its last rows stay on screen, and the ones after it,
+  // while the list is loading (no Load more).
+  expect(got).toMatchObject({ rows: [row('a'), row('z')], status: 'loading' })
   expect(asked()).toEqual(
     expect.arrayContaining([at(null, 's'), at('s', 'c1'), at('c1')]),
   )
@@ -173,8 +174,8 @@ test('an empty SplitRequired page (list grew past what it shapes) splits', async
     pageStatus: 'SplitRequired',
   }
   await render()
-  // Page 0's last rows are not shown in its place: it holds the list.
-  expect(got).toMatchObject({ rows: [], status: 'loading' })
+  // Its empty answer never replaces what it showed: no "none" flash.
+  expect(got).toMatchObject({ rows: [row('a'), row('z')], status: 'loading' })
   server[at(null, 's')] = {
     page: [row('a'), row('b')],
     isDone: false,
