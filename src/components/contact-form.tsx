@@ -33,6 +33,7 @@ import type { Held } from '../lib/email-hold'
 import { useHistoryHold } from './contact-history'
 import { EmailHold } from './email-hold'
 import { ContactAcquisition } from './contact-acquisition'
+import { ContactNumber } from './contact-number'
 
 type Data = NonNullable<FunctionReturnType<typeof api.contacts.queries.get>>
 type Label = 'home' | 'work' | 'other'
@@ -316,6 +317,7 @@ export function ContactForm({
           {data.contact.displayName || 'New contact'}
         </h1>
         <p className="text-sm text-neutral-500">{data.contact.kind}</p>
+        <ContactNumber sequence={data.contact.number} />
       </header>
 
       {(generalWarnings.length > 0 ||
