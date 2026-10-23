@@ -115,9 +115,10 @@ export async function takeNumbers(
 }
 
 /**
- * `takeNumbers` with its own read of the sequence, for numbering contacts
- * that already exist (the backfill): the caller must put every number of
- * the block on a contact in the same mutation. Creates never call it.
+ * `takeNumbers` with its own read of the sequence, for a block of contacts
+ * created together (a future import batch): the caller must put every
+ * number of the block on a contact in the same mutation. Creates never
+ * call it.
  */
 export async function allocateNumbers(
   db: ScopedDatabaseWriter,

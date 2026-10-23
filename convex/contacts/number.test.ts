@@ -129,7 +129,7 @@ describe('allocation', () => {
     // The invariant over the whole tenant: number order is creation order.
     const rows = await numbered(f.a)
     const byTime = [...rows].sort((x, y) => x[1] - y[1]).map(([n]) => n)
-    expect(byTime).toEqual([...byTime].sort((x, y) => x! - y!))
+    expect(byTime).toEqual([...byTime].sort((x, y) => x - y))
     expect(new Set(byTime).size).toBe(rows.length)
   })
 
@@ -147,7 +147,7 @@ describe('allocation', () => {
     expect(await numberOf(await create(f.a, 'Grace'))).toBe(FIRST_NUMBER + 3)
   })
 
-  test('the backfill block (allocateNumbers) is skipped by creates', async () => {
+  test('a block (allocateNumbers) is skipped by creates', async () => {
     await create(f.a, 'Ada')
     const first = await f.t.run((ctx) =>
       allocateNumbers(scopeWriter(ctx, f.a.tenantId), 5),
@@ -280,16 +280,6 @@ describe('the row shapes carry it', () => {
       paginationOpts: { numItems: 10, cursor: null },
     })
     expect(list.page.map((r) => r.number)).toEqual([FIRST_NUMBER])
-  })
-
-  test('an unnumbered contact (before the backfill) lists as null', async () => {
-    const ada = await create(f.a, 'Ada')
-    await f.t.run((ctx) => ctx.db.patch('contacts', ada, { number: undefined }))
-    const list = await f.a.as.query(api.contacts.queries.list, {
-      tenantId: f.a.tenantId,
-      paginationOpts: { numItems: 10, cursor: null },
-    })
-    expect(list.page.map((r) => r.number)).toEqual([null])
   })
 })
 

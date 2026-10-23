@@ -70,6 +70,9 @@ async function bulk(
         identifiersVersion: 0,
         acquisitionVersion: 0,
         fieldsVersion: 0,
+        // Not from the tenant's sequence (no create ran); these tests
+        // never read numbers.
+        number: 0,
         ...(opts.source && { acquisitionCodeId: opts.source.version }),
       })
       await ctx.db.insert('contactSearch', {

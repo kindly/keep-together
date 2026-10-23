@@ -366,17 +366,16 @@ const ContactRow = memo(
           params={{ slug, contactId: c._id }}
           className="flex flex-1 items-baseline gap-4 px-4 py-2 hover:bg-neutral-50"
         >
-          {/* Its own column: written out on every row, blank until a
-              contact made before numbers is backfilled. */}
+          {/* Its own column, written out on every row. */}
           <span
             title="contact no."
             className="w-14 shrink-0 font-mono text-sm text-neutral-500 tabular-nums"
           >
-            {c.number !== null ? formatNumber(c.number) : ''}
+            {formatNumber(c.number)}
           </span>
           <span className="flex-1">
             {c.displayName}
-            {numberMatch && c.number !== null && (
+            {numberMatch && (
               <span className="ml-2 rounded bg-emerald-100 px-1.5 text-xs text-emerald-900">
                 contact no. {formatNumber(c.number)}
               </span>

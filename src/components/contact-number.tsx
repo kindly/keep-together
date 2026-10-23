@@ -7,15 +7,14 @@ const copyKeys = () =>
 
 /**
  * The contact number as staff write it (`100016`), with a copy button for
- * pasting it into an email or a spreadsheet. Nothing until the contact has
- * a number (one created before numbers, not yet backfilled).
+ * pasting it into an email or a spreadsheet.
  *
  * The clipboard API needs a secure context; served over plain http (a
  * local build over Tailscale) it is missing, so the button selects the
  * number instead, ready for Ctrl+C (⌘C on a Mac). Either outcome is also
  * announced through a polite live region.
  */
-export function ContactNumber({ sequence }: { sequence: number | undefined }) {
+export function ContactNumber({ sequence }: { sequence: number }) {
   // A fresh object per click, so a repeat click restarts the reset timer.
   const [status, setStatus] = useState<
     { kind: 'copied' } | { kind: 'selected'; keys: string } | null
@@ -26,7 +25,6 @@ export function ContactNumber({ sequence }: { sequence: number | undefined }) {
     const t = setTimeout(() => setStatus(null), 2000)
     return () => clearTimeout(t)
   }, [status])
-  if (sequence === undefined) return null
   const written = formatNumber(sequence)
   const select = () => {
     const range = document.createRange()

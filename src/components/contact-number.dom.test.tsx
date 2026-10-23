@@ -21,7 +21,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-const render = (sequence: number | undefined) =>
+const render = (sequence: number) =>
   act(() => root.render(<ContactNumber sequence={sequence} />))
 const button = () => el.querySelector('button')!
 const announced = () => el.querySelector('[aria-live="polite"]')!.textContent
@@ -35,11 +35,6 @@ test('shows the written number, check digit included', () => {
     'copy: contact number 100016',
   )
   expect(announced()).toBe('')
-})
-
-test('shows nothing for a contact not yet numbered', () => {
-  render(undefined)
-  expect(el.textContent).toBe('')
 })
 
 test('copy puts the written number on the clipboard', async () => {
