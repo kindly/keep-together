@@ -78,6 +78,17 @@ export type PagedList = {
   loadMore: () => void
 }
 
+const warned = new Set<string>()
+/** Says once per range that a SplitRequired page can't be split. */
+function unsplittable(r: Range) {
+  const k = rangeKey(r)
+  if (warned.has(k)) return
+  warned.add(k)
+  console.warn(
+    `contacts list: page ${k} asked to split with no usable splitCursor; shown as it is`,
+  )
+}
+
 /** A Convex error saying a cursor no longer exists (the index changed). */
 function invalidCursor(e: Error) {
   const data = (e as { data?: { paginationError?: string } }).data
@@ -157,9 +168,9 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
   type Resolved =
     | { done: true; rows: Array<ListRow>; tail: Page; parts: Array<Range> }
     | { done: false; slot: Slot; changed: boolean }
-  const resolve = (s: Slot): Resolved => {
+  const resolve = (s: Slot, top: boolean): Resolved => {
     if (s.halves) {
-      const [a, b] = s.halves.map(resolve)
+      const [a, b] = s.halves.map((h) => resolve(h, false))
       if (a.done && b.done) {
         return {
           done: true,
@@ -184,20 +195,32 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
       }
     }
     const page = resultOf(s, false)
-    if (page?.pageStatus === 'SplitRequired' && page.splitCursor) {
+    if (page?.pageStatus === 'SplitRequired') {
+      const at = page.splitCursor
+      const end = s.end ?? page.continueCursor
+      if (!at || at === s.cursor || at === end) {
+        // Nowhere to split, or a split that wouldn't shrink the range
+        // (it would split forever): shown as it is, like `list` shows a
+        // page with no splitCursor, and the list goes on.
+        unsplittable(s)
+        const shown = page.page.length
+          ? page
+          : { ...page, page: lastShown(s, top)?.page ?? [] }
+        return { done: true, rows: shown.page, tail: page, parts: [s] }
+      }
       return {
         done: false,
         changed: true,
         slot: {
           ...s,
           halves: [
-            { cursor: s.cursor, end: page.splitCursor },
-            { cursor: page.splitCursor, end: s.end ?? page.continueCursor },
+            { cursor: s.cursor, end: at },
+            { cursor: at, end },
           ],
         },
       }
     }
-    return page && page.pageStatus !== 'SplitRequired'
+    return page
       ? { done: true, rows: page.page, tail: page, parts: [s] }
       : { done: false, changed: false, slot: s }
   }
@@ -211,6 +234,16 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
   // it of every full page, and page 0 must keep the hold's args
   // (list-hold.ts).
   const rows: Array<ListRow> = []
+  // A row moving across a page boundary while a page shows its last rows
+  // would show twice: once is enough.
+  const seen = new Set<string>()
+  const push = (page: Array<ListRow>) => {
+    for (const row of page) {
+      if (seen.has(row._id)) continue
+      seen.add(row._id)
+      rows.push(row)
+    }
+  }
   let tail: Page | undefined
   let complete = filters !== 'skip'
   let walking = complete
@@ -226,12 +259,12 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
       const got = results[rangeKey(r)]
       if (got instanceof Error && invalidCursor(got)) reset = true
     }
-    const r = resolve(s)
+    const r = resolve(s, true)
     if (r.done) {
       // A page that split: its parts are pages now.
       if (s.halves) changed = true
       next.push(...r.parts)
-      rows.push(...r.rows)
+      push(r.rows)
       tail = r.tail
       // As the page shows now, for when it re-subscribes (pinned).
       if (!s.halves) resultOf(s)
@@ -245,7 +278,7 @@ export function usePagedList(filters: ListFilters | 'skip'): PagedList {
       walking = false
       continue
     }
-    rows.push(...shown.page)
+    push(shown.page)
     tail = shown
   }
   useEffect(() => {

@@ -288,6 +288,92 @@ test('a later page that grew splits under the rows before and its own', async ()
   })
 })
 
+/** Page 0 loaded, Load more pressed, page 1 ('z', the last) in. */
+async function afterLoadMore() {
+  server[keyOf({ cursor: null })] = {
+    page: [{ _id: 'a' }, { _id: 'b' }],
+    isDone: false,
+    continueCursor: 'c1',
+  }
+  await render()
+  await act(() => got.loadMore())
+  server[keyOf({ cursor: 'c1' })] = {
+    page: [{ _id: 'z' }],
+    isDone: true,
+    continueCursor: 'c2',
+  }
+}
+
+test('a split at the range end is no split: no loop, shown, said once', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await afterLoadMore()
+    // The reviewer's probe: page 0 pinned to c1 asked to split at c1.
+    server[keyOf({ cursor: null, endCursor: 'c1' })] = {
+      page: [],
+      isDone: false,
+      continueCursor: 'c1',
+      splitCursor: 'c1',
+      pageStatus: 'SplitRequired',
+    } as Result
+    await push()
+    await push()
+    expect(got).toMatchObject({
+      rows: [{ _id: 'a' }, { _id: 'b' }, { _id: 'z' }],
+      status: 'done',
+    })
+    const settled = renders
+    await render()
+    expect(renders - settled).toBeLessThanOrEqual(2)
+    expect(warn).toHaveBeenCalledTimes(1)
+  } finally {
+    warn.mockRestore()
+  }
+})
+
+test('SplitRequired with no splitCursor shows its rows and stops loading', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    await afterLoadMore()
+    server[keyOf({ cursor: null, endCursor: 'c1' })] = {
+      page: [{ _id: 'a' }, { _id: 'b' }, { _id: 'c' }],
+      isDone: false,
+      continueCursor: 'c1',
+      pageStatus: 'SplitRequired',
+    } as Result
+    await push()
+    await push()
+    expect(got).toMatchObject({
+      rows: [{ _id: 'a' }, { _id: 'b' }, { _id: 'c' }, { _id: 'z' }],
+      status: 'done',
+    })
+  } finally {
+    warn.mockRestore()
+  }
+})
+
+test('a row moving across a boundary mid-split shows once', async () => {
+  await afterLoadMore()
+  server[keyOf({ cursor: null, endCursor: 'c1' })] = {
+    page: [],
+    isDone: false,
+    continueCursor: 'c1',
+    splitCursor: 's',
+    pageStatus: 'SplitRequired',
+  } as Result
+  // b moved past page 0's end (a rename) while page 0 shows its last rows.
+  server[keyOf({ cursor: 'c1' })] = {
+    page: [{ _id: 'b' }, { _id: 'z' }],
+    isDone: true,
+    continueCursor: 'c2',
+  }
+  await push()
+  expect(got).toMatchObject({
+    rows: [{ _id: 'a' }, { _id: 'b' }, { _id: 'z' }],
+    status: 'loading',
+  })
+})
+
 test('a full page marked SplitRecommended settles unsplit', async () => {
   server[keyOf({ cursor: null })] = {
     page: [{ _id: 'a' }],
