@@ -29,10 +29,12 @@ import {
   prepareTags,
 } from './rules'
 import { describe, markUsed } from '../sources/code'
+import { readSequence, takeNumbers } from './number'
 import {
   acquisitionFields,
   addressesFields,
   archiveFields,
+  detailsCreateFields,
   detailsFields,
   identifierTypeFields,
   identifiersFields,
@@ -80,7 +82,7 @@ export const details = defineContract({
       return rest
     },
   },
-  apply: async (ctx, p, root) => {
+  apply: async (ctx, p, root, command) => {
     const names = computedNames(p)
     const fields = {
       title: p.title,
@@ -94,20 +96,33 @@ export const details = defineContract({
       ...names,
     }
     if (root === null) {
-      if (p.clientKey) {
-        const existing = await ctx.db
-          .query('contacts')
-          .withIndex('by_tenant_clientKey', (q) =>
-            q.eq('clientKey', p.clientKey),
-          )
-          .unique()
-        if (existing) {
-          // The command was already executed (double submit / retried import).
-          throw rejected('duplicate', existing._id)
-        }
+      // The contact number: one from the caller's block (a batch takes one
+      // per batch, `allocateNumbers`), or the next from the sequence, read
+      // alongside the clientKey check and taken only once it passes.
+      validate(v.object(detailsCreateFields), command.createWith ?? {}, {
+        throw: true,
+      })
+      const fromBlock = (command.createWith as { number?: number } | undefined)
+        ?.number
+      const [existing, sequence] = await Promise.all([
+        p.clientKey
+          ? ctx.db
+              .query('contacts')
+              .withIndex('by_tenant_clientKey', (q) =>
+                q.eq('clientKey', p.clientKey),
+              )
+              .unique()
+          : null,
+        fromBlock === undefined ? readSequence(ctx.db) : null,
+      ])
+      if (existing) {
+        // The command was already executed (double submit / retried import).
+        throw rejected('duplicate', existing._id)
       }
+      const number = fromBlock ?? (await takeNumbers(ctx.db, sequence, 1))
       return ctx.db.insert('contacts', {
         ...fields,
+        number,
         clientKey: p.clientKey,
         kind: p.kind,
         archived: false,

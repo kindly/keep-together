@@ -20,6 +20,13 @@ export const detailsFields = {
   deceasedDate: v.optional(v.string()),
 }
 
+/**
+ * Create-only argument of `contacts.details`, never part of a payload: the
+ * contact number, when the caller took a block for its batch
+ * (contacts/number). Absent, the contract takes the next one itself.
+ */
+export const detailsCreateFields = { number: v.optional(v.number()) }
+
 export const emailRow = v.object({
   key: v.optional(v.string()), // omitted = new row
   label: channelLabel,

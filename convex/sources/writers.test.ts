@@ -1,15 +1,21 @@
 /// <reference types="vite/client" />
 import { expect, test } from 'vitest'
 
-// code.ts memoises the parts a call reads (`readPart`) and drops the memo
-// before every write it makes. That is only sound while every write to
-// `sourceCodes` is in code.ts, so this test holds the line: a writer
-// anywhere else fails here, not as a stale read in production.
+// Tables with a single home module, which every write to them must be in:
+//   - `sourceCodes` in sources/code.ts: it memoises the parts a call reads
+//     (`readPart`) and drops the memo before every write it makes, which is
+//     only sound while every write is there. A writer anywhere else fails
+//     here, not as a stale read in production.
+//   - `contactNumberSequences` in contacts/number.ts: the counter behind
+//     contact numbers (higher = newer, never reused), taken only there.
 //
 // Read through Vite, not node:fs: Convex typechecks everything under
 // convex/ without Node's types when it deploys.
 
-const HOME = 'sources/code.ts'
+const HOMES = {
+  sourceCodes: 'sources/code.ts',
+  contactNumberSequences: 'contacts/number.ts',
+}
 
 /** Every non-test, non-generated .ts file under convex/, by path from it. */
 const FILES = Object.entries(
@@ -54,12 +60,15 @@ test('the matcher finds wrapped calls and the table-less form', () => {
   ).toEqual(["'sourceCodes'", "'sourceCodes'", 'id', 'table'])
 })
 
-test('every write to sourceCodes is in sources/code.ts', () => {
-  expect(FILES.length).toBeGreaterThan(20) // the glob found the module tree
-  const sourceCodes = ALL.filter((w) => w.arg === "'sourceCodes'")
-  expect(sourceCodes.length).toBeGreaterThan(0)
-  expect(sourceCodes.filter((w) => w.file !== HOME)).toEqual([])
-})
+test.each(Object.entries(HOMES))(
+  'every write to %s is in %s',
+  (table, home) => {
+    expect(FILES.length).toBeGreaterThan(20) // the glob found the module tree
+    const found = ALL.filter((w) => w.arg === `'${table}'`)
+    expect(found.length).toBeGreaterThan(0)
+    expect(found.filter((w) => w.file !== home)).toEqual([])
+  },
+)
 
 /**
  * Writes whose table is a variable, so the check above can't see which
@@ -71,6 +80,7 @@ const DYNAMIC_WRITES = {
   'contacts/contracts.ts': ['table'],
   // executeContract's counter bump: on `sources.code` it writes
   // `saveVersion`, which no memoised reader uses (code.ts, `readPart`).
+  // No contract's entity is `contactNumberSequences`.
   'lib/contracts.ts': ['contract.entity'],
 } as Partial<Record<string, Array<string>>>
 

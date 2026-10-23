@@ -151,7 +151,8 @@ export const appTables = {
   //   contacts.identifiers → contactIdentifiers rows (identifiersVersion)
   //   contacts.acquisition → acquisitionCodeId (acquisitionVersion)
   //   contacts.fields    → field1…fieldN (fieldsVersion; lib/fieldSlots)
-  // System-managed (no contract): displayName / sortName, counters.
+  // System-managed (no contract): displayName / sortName, counters,
+  // number (set on create, never changed: contacts/number).
   contacts: defineTable({
     tenantId: v.id('tenants'),
     clientKey: v.optional(v.string()), // client-minted on create → idempotent double submits / retried imports
@@ -184,8 +185,13 @@ export const appTables = {
     // Optional until the tighten (dropdown fields step 9); contacts created
     // before step 1 are backfilled (contacts/migrations).
     fieldsVersion: v.optional(v.number()),
+    // The contact number's sequence (contacts/number; shown with its check
+    // digit). Optional until the tighten (contact numbers step 6); contacts
+    // created before step 1 are backfilled (step 2).
+    number: v.optional(v.number()),
   })
     .index('by_tenant_sort', ['tenantId', 'sortName'])
+    .index('by_tenant_number', ['tenantId', 'number'])
     .index('by_tenant_acquisition', ['tenantId', 'acquisitionCodeId'])
     .index('by_tenant_kind_sort', ['tenantId', 'kind', 'sortName']) // list's kind filter
     // The list without archived contacts: every filter in the index range,
@@ -491,6 +497,17 @@ export const appTables = {
     ])
     // The archived list: newest first regardless of pin.
     .index('by_tenant_contact_archived', ['tenantId', 'contactId', 'archived']),
+
+  // ── contact numbers (plan: contact numbers) ───────────────────────────
+  // The next contact number, one row per tenant, created by the first
+  // allocation. Not a contract's root: contacts/number.ts is its only
+  // writer (the details contract's create branch and the backfill take
+  // numbers through it). Its own table, not a field on `tenants`, so only
+  // creates conflict on it.
+  contactNumberSequences: defineTable({
+    tenantId: v.id('tenants'),
+    next: v.number(),
+  }).index('by_tenant', ['tenantId']),
 
   // ── sources (source codes plan) ───────────────────────────────────────
   // One row per part of a source code, at any of three levels: a category

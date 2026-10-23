@@ -532,7 +532,7 @@ function underSource(db: ScopedDatabaseReader, source: SourceFilter) {
 }
 
 /**
- * One contacts-list row: a contact with its first email, tag ids and
+ * One contacts-list row: a contact with its number, first email, tag ids and
  * field values (option ids, in slot order; labels come from the field
  * definitions, so a rename shows without a write here).
  */
@@ -553,6 +553,9 @@ async function listRow(
     kind: c.kind,
     displayName: c.displayName,
     sortName: c.sortName,
+    // The contact number's sequence (formatNumber shows it); null until the
+    // backfill reaches a contact created before numbers.
+    number: c.number ?? null,
     archived: c.archived,
     email: email?.address ?? null,
     tagIds,
