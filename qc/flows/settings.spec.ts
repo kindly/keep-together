@@ -29,6 +29,34 @@ const fieldsPath = (slug: string) => `/t/${slug}/settings/fields`
 const tabs = (page: Page) =>
   page.getByRole('navigation', { name: 'Settings sections' })
 
+/** The Fields tab's card for a field. */
+const fieldCard = (page: Page, label: string) =>
+  page
+    .getByTestId('field')
+    .filter({ has: page.getByText(label, { exact: true }) })
+
+/**
+ * Wait for the Fields tab's list, with the seeded field on it and a slot
+ * free: with every slot taken a manager gets no "New field" either, so a
+ * check for its absence would prove nothing.
+ */
+async function fieldsLoaded(page: Page, seeded: string) {
+  const heading = page.getByRole('heading', { name: /^Fields / })
+  const inUse = /\((\d+) of (\d+) in use\)/
+  await expect(heading).toHaveText(inUse)
+  const [, used, slots] = (await heading.textContent())!.match(inUse)!
+  expect(Number(used)).toBeLessThan(Number(slots))
+  await expect(fieldCard(page, seeded)).toBeVisible()
+}
+
+/** The Fields tab is read-only: no "New field", no edit on a card. */
+async function fieldsReadOnly(page: Page, seeded: string) {
+  await expect(page.getByLabel('New field')).toHaveCount(0)
+  await expect(
+    fieldCard(page, seeded).getByRole('button', { name: 'edit' }),
+  ).toHaveCount(0)
+}
+
 /** The page's row for a type. */
 const typeRow = (page: Page, name: string) =>
   page.locator('main li').filter({ has: page.getByText(name, { exact: true }) })
@@ -153,6 +181,27 @@ test.describe('settings tabs', () => {
   })
 })
 
+test.describe('old tags URLs', () => {
+  test(
+    '/tags and /settings/tags land on the Fields tab',
+    {
+      annotation: [
+        { type: 'route', description: '/t/$slug/tags' },
+        { type: 'route', description: '/t/$slug/settings/tags' },
+        SETTINGS_ROUTE,
+        FIELDS_ROUTE,
+      ],
+    },
+    async ({ page, users, world }) => {
+      for (const from of ['tags', 'settings/tags']) {
+        await page.goto(`/t/${users.a.slug}/${from}`)
+        await page.waitForURL(new RegExp(`${fieldsPath(users.a.slug)}$`))
+        await expect(fieldCard(page, world.field.label)).toBeVisible()
+      }
+    },
+  )
+})
+
 test.describe('identifier types', { annotation: IDENTIFIERS_ROUTE }, () => {
   test('create, rename, archive and reactivate', async ({
     page,
@@ -243,6 +292,7 @@ test.describe('settings for staff and viewers', () => {
       baseURL,
       session,
       users,
+      world,
     }) => {
       test
         .info()
@@ -265,10 +315,8 @@ test.describe('settings for staff and viewers', () => {
       ])
       // Read-only: staff manage a list only when an admin allows it (all
       // off here), viewers never; neither sees the switches.
-      await expect(
-        other.getByRole('heading', { name: /^Fields / }),
-      ).toBeVisible()
-      await expect(other.getByLabel('New field')).toHaveCount(0)
+      await fieldsLoaded(other, world.field.label)
+      await fieldsReadOnly(other, world.field.label)
       await expect(other.getByRole('switch')).toHaveCount(0)
 
       await tabs(other).getByRole('link', { name: 'Identifier types' }).click()
@@ -291,6 +339,7 @@ test.describe('staff can manage lists, per list', () => {
     flow,
     session,
     users,
+    world,
   }) => {
     test
       .info()
@@ -305,9 +354,11 @@ test.describe('staff can manage lists, per list', () => {
     const staff = await secondTab(browser, baseURL!, await session(users.staff))
     // The input is visually hidden; its label takes the (trusted) click.
     const toggle = page.getByText(label, { exact: true })
-    // The tab's "create" input, or none while the list is read-only.
+    // Open a tab; the identifier types tab's "create" input, or none while
+    // the list is read-only.
     const createIn = async (tab: 'Fields' | 'Identifier types') => {
       await tabs(staff).getByRole('link', { name: tab }).click()
+      if (tab === 'Fields') await fieldsLoaded(staff, world.field.label)
       return staff.getByLabel(
         tab === 'Fields' ? 'New field' : 'New identifier type',
       )
@@ -335,7 +386,8 @@ test.describe('staff can manage lists, per list', () => {
       await input.fill(name)
       await staff.getByRole('button', { name: 'Create type' }).click()
       await expect(staff.locator('main li', { hasText: name })).toBeVisible()
-      await expect(await createIn('Fields')).toHaveCount(0)
+      await createIn('Fields')
+      await fieldsReadOnly(staff, world.field.label)
 
       // Off again: the open page goes read-only.
       await createIn('Identifier types')

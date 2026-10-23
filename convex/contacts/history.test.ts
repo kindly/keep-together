@@ -451,16 +451,15 @@ describe('tags, retired (dropdown fields step 7)', () => {
   })
 
   test("B's history never shows A's tag revisions", async () => {
-    const bob = await f.b.as.mutation(api.contacts.mutations.create, {
-      tenantId: f.b.tenantId,
-      ...individual,
-    })
     await tagRevision(f.a, ada)
-    const bPage = await f.b.as.query(api.contacts.queries.history, {
-      tenantId: f.b.tenantId,
-      id: bob,
-      paginationOpts: { numItems: 10, cursor: null },
-    })
-    expect(bPage.page.map((m) => m.slices)).toEqual([['details']])
+    const read = (side: typeof f.a) =>
+      side.as.query(api.contacts.queries.history, {
+        tenantId: side.tenantId,
+        id: ada,
+        paginationOpts: { numItems: 10, cursor: null },
+      })
+    // A sees the tag revision on Ada; B, asking for Ada's id, sees nothing.
+    expect((await read(f.a)).page.some((m) => m.retired)).toBe(true)
+    expect((await read(f.b)).page).toEqual([])
   })
 })

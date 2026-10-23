@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TSlugRouteImport } from './routes/t.$slug'
 import { Route as TSlugSettingsRouteImport } from './routes/t.$slug.settings'
+import { Route as TSlugTagsRouteImport } from './routes/t.$slug.tags'
 import { Route as TSlugContactsIndexRouteImport } from './routes/t.$slug.contacts.index'
 import { Route as TSlugContactsContactIdRouteImport } from './routes/t.$slug.contacts.$contactId'
 import { Route as TSlugContactsNewRouteImport } from './routes/t.$slug.contacts.new'
@@ -19,6 +20,7 @@ import { Route as TSlugSettingsIndexRouteImport } from './routes/t.$slug.setting
 import { Route as TSlugSettingsFieldsRouteImport } from './routes/t.$slug.settings.fields'
 import { Route as TSlugSettingsIdentifiersRouteImport } from './routes/t.$slug.settings.identifiers'
 import { Route as TSlugSettingsSourcesRouteImport } from './routes/t.$slug.settings.sources'
+import { Route as TSlugSettingsTagsRouteImport } from './routes/t.$slug.settings.tags'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -33,6 +35,11 @@ const TSlugRoute = TSlugRouteImport.update({
 const TSlugSettingsRoute = TSlugSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugTagsRoute = TSlugTagsRouteImport.update({
+  id: '/tags',
+  path: '/tags',
   getParentRoute: () => TSlugRoute,
 } as any)
 const TSlugContactsIndexRoute = TSlugContactsIndexRouteImport.update({
@@ -71,27 +78,36 @@ const TSlugSettingsSourcesRoute = TSlugSettingsSourcesRouteImport.update({
   path: '/sources',
   getParentRoute: () => TSlugSettingsRoute,
 } as any)
+const TSlugSettingsTagsRoute = TSlugSettingsTagsRouteImport.update({
+  id: '/tags',
+  path: '/tags',
+  getParentRoute: () => TSlugSettingsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/t/$slug': typeof TSlugRouteWithChildren
   '/t/$slug/settings': typeof TSlugSettingsRouteWithChildren
+  '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
+  '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/t/$slug': typeof TSlugRouteWithChildren
+  '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
+  '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts': typeof TSlugContactsIndexRoute
   '/t/$slug/settings': typeof TSlugSettingsIndexRoute
 }
@@ -100,11 +116,13 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/t/$slug': typeof TSlugRouteWithChildren
   '/t/$slug/settings': typeof TSlugSettingsRouteWithChildren
+  '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
+  '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
 }
@@ -114,22 +132,26 @@ export interface FileRouteTypes {
     | '/'
     | '/t/$slug'
     | '/t/$slug/settings'
+    | '/t/$slug/tags'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/identifiers'
     | '/t/$slug/settings/sources'
+    | '/t/$slug/settings/tags'
     | '/t/$slug/contacts/'
     | '/t/$slug/settings/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/t/$slug'
+    | '/t/$slug/tags'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/identifiers'
     | '/t/$slug/settings/sources'
+    | '/t/$slug/settings/tags'
     | '/t/$slug/contacts'
     | '/t/$slug/settings'
   id:
@@ -137,11 +159,13 @@ export interface FileRouteTypes {
     | '/'
     | '/t/$slug'
     | '/t/$slug/settings'
+    | '/t/$slug/tags'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/identifiers'
     | '/t/$slug/settings/sources'
+    | '/t/$slug/settings/tags'
     | '/t/$slug/contacts/'
     | '/t/$slug/settings/'
   fileRoutesById: FileRoutesById
@@ -172,6 +196,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/t/$slug/settings'
       preLoaderRoute: typeof TSlugSettingsRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/tags': {
+      id: '/t/$slug/tags'
+      path: '/tags'
+      fullPath: '/t/$slug/tags'
+      preLoaderRoute: typeof TSlugTagsRouteImport
       parentRoute: typeof TSlugRoute
     }
     '/t/$slug/contacts/': {
@@ -223,6 +254,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugSettingsSourcesRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
+    '/t/$slug/settings/tags': {
+      id: '/t/$slug/settings/tags'
+      path: '/tags'
+      fullPath: '/t/$slug/settings/tags'
+      preLoaderRoute: typeof TSlugSettingsTagsRouteImport
+      parentRoute: typeof TSlugSettingsRoute
+    }
   }
 }
 
@@ -230,6 +268,7 @@ interface TSlugSettingsRouteChildren {
   TSlugSettingsFieldsRoute: typeof TSlugSettingsFieldsRoute
   TSlugSettingsIdentifiersRoute: typeof TSlugSettingsIdentifiersRoute
   TSlugSettingsSourcesRoute: typeof TSlugSettingsSourcesRoute
+  TSlugSettingsTagsRoute: typeof TSlugSettingsTagsRoute
   TSlugSettingsIndexRoute: typeof TSlugSettingsIndexRoute
 }
 
@@ -237,6 +276,7 @@ const TSlugSettingsRouteChildren: TSlugSettingsRouteChildren = {
   TSlugSettingsFieldsRoute: TSlugSettingsFieldsRoute,
   TSlugSettingsIdentifiersRoute: TSlugSettingsIdentifiersRoute,
   TSlugSettingsSourcesRoute: TSlugSettingsSourcesRoute,
+  TSlugSettingsTagsRoute: TSlugSettingsTagsRoute,
   TSlugSettingsIndexRoute: TSlugSettingsIndexRoute,
 }
 
@@ -246,6 +286,7 @@ const TSlugSettingsRouteWithChildren = TSlugSettingsRoute._addFileChildren(
 
 interface TSlugRouteChildren {
   TSlugSettingsRoute: typeof TSlugSettingsRouteWithChildren
+  TSlugTagsRoute: typeof TSlugTagsRoute
   TSlugContactsContactIdRoute: typeof TSlugContactsContactIdRoute
   TSlugContactsNewRoute: typeof TSlugContactsNewRoute
   TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
@@ -253,6 +294,7 @@ interface TSlugRouteChildren {
 
 const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugSettingsRoute: TSlugSettingsRouteWithChildren,
+  TSlugTagsRoute: TSlugTagsRoute,
   TSlugContactsContactIdRoute: TSlugContactsContactIdRoute,
   TSlugContactsNewRoute: TSlugContactsNewRoute,
   TSlugContactsIndexRoute: TSlugContactsIndexRoute,
