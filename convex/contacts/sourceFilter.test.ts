@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from 'vitest'
 import type { Id } from '../_generated/dataModel'
 import { api } from '../_generated/api'
+import { formatNumber } from './number'
 import { setup } from '../../test/fixture'
 import type { Tenant } from '../../test/fixture'
 
@@ -233,6 +234,34 @@ describe('with search text', () => {
     expect(
       await ids(list({ level: 'version', id: wesser2 }, { search })),
     ).toEqual([])
+  })
+
+  test('a contact number match obeys the filter at every level', async () => {
+    const sequence = await f.t.run(
+      async (ctx) => (await ctx.db.get(ada))!.number!,
+    )
+    for (const search of [formatNumber(sequence), String(sequence)]) {
+      for (const source of [
+        { level: 'category', id: street.category },
+        { level: 'detail', id: street.detail },
+        { level: 'version', id: wesser1 },
+      ] as const) {
+        const found = await list(source, { search })
+        expect(
+          found.rows.map((r) => r._id),
+          search,
+        ).toEqual([ada])
+        expect(found.numberMatch, search).toBe(ada)
+      }
+      for (const source of [
+        { level: 'category', id: online.category },
+        { level: 'version', id: wesser2 },
+      ] as const) {
+        const found = await list(source, { search })
+        expect(found.rows, search).toEqual([])
+        expect(found.numberMatch, search).toBeNull()
+      }
+    }
   })
 })
 

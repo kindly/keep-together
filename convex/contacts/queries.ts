@@ -12,6 +12,7 @@ import {
 } from './rules'
 import { contactKind } from '../lib/appSchema'
 import { matchesAll, parseSearch } from './search'
+import { parseNumber } from './number'
 import type { AlsoUsedBy } from './warnings'
 import { groupsToRead, toMoments } from './history'
 import { describe } from '../sources/code'
@@ -191,6 +192,22 @@ async function contactsWithIdentifier(
   const ids = [...new Set(rows.map((r) => r.contactId))]
   const contacts = await Promise.all(ids.map((id) => db.get(id)))
   return contacts.filter((c) => c !== null)
+}
+
+/**
+ * The contact whose number `sequence` is, if any: an exact read of
+ * `by_tenant_number`, never a prefix. Numbers are unique per tenant, so
+ * the first row is the only one.
+ */
+async function contactWithNumber(
+  db: ScopedDatabaseReader,
+  sequence: number,
+): Promise<Array<Doc<'contacts'>>> {
+  const contact = await db
+    .query('contacts')
+    .withIndex('by_tenant_number', (q) => q.eq('number', sequence))
+    .first()
+  return contact ? [contact] : []
 }
 
 /** The most rows `list` returns, and `list` asks for a page. */
@@ -593,8 +610,12 @@ export function toSplit(
  * A search finds a contact by anything in its `contactSearch` text (names,
  * emails and their parts, phones, postcodes, street, town, identifiers):
  * every word must match, the last as a prefix. Exact matches come
- * first: an email address, then an identifier, then a phone number
- * (normalised), then the rest in Convex's relevance order. That order
+ * first: a written contact number (`parseNumber`: six digits whose check
+ * digit holds), an email address, an identifier, a bare five-digit
+ * sequence (after identifiers: an old member number is often five
+ * digits), then a phone number (normalised), then the rest in Convex's
+ * relevance order. A
+ * six-digit entry is read both ways, as a number and as a phone. That order
  * can't be resumed from a cursor, hence one window. The search index holds
  * the kind, archived and source filters and up to
  * SEARCH_INDEX_FIELD_FILTERS field values; "not set" and any
@@ -605,6 +626,13 @@ export function toSplit(
  * source or field, or a second field filter, is
  * checked row by row as the read goes on (`scan`) until enough match or
  * LIST_SCAN_CAP rows have been read.
+ *
+ * `numberMatch` is the row its contact number found, when that row is
+ * first (null when an identifier outranks it), for a "contact no." badge;
+ * a picker offers it first, highlighted, and never picks it by itself
+ * (g2q5). `invalidNumber` is the hint for six digits whose check digit is
+ * wrong, when nothing matched exactly or by phone (most such entries are
+ * phone tails).
  *
  * `truncated` says more contacts may match than `rows` holds (a cap or
  * scan limit was hit), so the UI can say it shows only some of them.
@@ -638,6 +666,8 @@ export const search = tenantQuery({
     let truncated: boolean
     // Rows the capped read looked at, for the UI's "none in the first N".
     let checked = 0
+    let numberMatch: Id<'contacts'> | null = null
+    let invalidNumber: string | null = null
     const fits = (
       c: {
         kind: Doc<'contacts'>['kind']
@@ -649,7 +679,11 @@ export const search = tenantQuery({
       fieldsMatch(c)
     if (term) {
       const { terms, phone } = parseSearch(term)
-      const [byEmail, byIdentifier, hits] = await Promise.all([
+      const number = parseNumber(term)
+      const [byNumber, byEmail, byIdentifier, hits] = await Promise.all([
+        number && 'sequence' in number
+          ? contactWithNumber(ctx.db, number.sequence)
+          : Promise.resolve([]),
         contactsWithEmail(ctx.db, term).then((r) => r.contacts),
         contactsWithIdentifier(ctx.db, term),
         terms.length
@@ -686,14 +720,35 @@ export const search = tenantQuery({
       const once = (id: Id<'contacts'>) =>
         !seen.has(id) && Boolean(seen.add(id))
       const inSource = source ? underSource(ctx.db, source) : null
-      const candidates = [...byEmail, ...byIdentifier].filter(fits)
+      // A written number (Luhn-checked) leads. A bare five-digit sequence
+      // is weaker: an old system's member number, kept as an identifier,
+      // is often five digits in the same range, so it goes first.
+      const written = number && 'sequence' in number && number.written
+      const candidates = (
+        written
+          ? [...byNumber, ...byEmail, ...byIdentifier]
+          : [...byEmail, ...byIdentifier, ...byNumber]
+      ).filter(fits)
       const sourced = inSource
         ? await Promise.all(candidates.map(inSource))
         : null
       const exact = candidates.filter(
         (c, i) => (!sourced || sourced[i]) && once(c._id),
       )
+      if (byNumber.length && exact[0]?._id === byNumber[0]._id) {
+        numberMatch = byNumber[0]._id
+      }
       const rest = [...byPhone, ...matched].map((h) => h.contactId).filter(once)
+      // Six digits are as often a phone tail as a mistyped number: the
+      // hint only when nothing matched exactly or by phone, tail included.
+      if (
+        number &&
+        'invalid' in number &&
+        exact.length === 0 &&
+        !(phone && matched.some((h) => h.phones.some((p) => p.endsWith(phone))))
+      ) {
+        invalidNumber = number.hint
+      }
       const wanted = rest.slice(0, LIST_LIMIT + 1 - exact.length)
       const found = await Promise.all(wanted.map((id) => ctx.db.get(id)))
       rows = [...exact, ...found.filter((c) => c !== null)]
@@ -726,6 +781,8 @@ export const search = tenantQuery({
       truncated,
       tooBroad: truncated && shaped.length === 0,
       checked,
+      numberMatch,
+      invalidNumber,
     }
   },
 })

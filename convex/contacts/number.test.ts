@@ -12,6 +12,7 @@ import {
   allocateNumbers,
   checkDigit,
   formatNumber,
+  parseNumber,
 } from './number'
 
 type Fixture = Awaited<ReturnType<typeof setup>>
@@ -333,5 +334,55 @@ describe('check digit (Luhn)', () => {
       }
     }
     expect(missed).toBeGreaterThan(0) // the exception is real, not untested
+  })
+})
+
+describe('reading a typed number (parseNumber)', () => {
+  test('the written number and the bare sequence both read as the sequence', () => {
+    for (const typed of [
+      '100016',
+      '10001',
+      ' 100 016 ',
+      '10-00-16',
+      '1000 1',
+    ]) {
+      expect(parseNumber(typed), typed).toEqual({
+        sequence: FIRST_NUMBER,
+        written: typed.replace(/[\s-]/g, '').length === 6,
+      })
+    }
+    for (let seq = FIRST_NUMBER; seq < FIRST_NUMBER + 500; seq++) {
+      expect(parseNumber(formatNumber(seq))).toEqual({
+        sequence: seq,
+        written: true,
+      })
+    }
+  })
+
+  test('a wrong check digit is flagged with the hint', () => {
+    expect(parseNumber('100018')).toEqual({
+      invalid: true,
+      hint: '100018 isn’t a valid contact number. Check the last digit.',
+    })
+    expect(parseNumber('100 01-8')).toMatchObject({ invalid: true })
+  })
+
+  test('anything else is not a number: no prefix, no phone, no words', () => {
+    for (const typed of [
+      '',
+      '1000',
+      '1001',
+      '1000163',
+      '07700900123',
+      '+44100016',
+      '100016a',
+      'ada',
+      // Below the first number: never issued, so neither found nor flagged.
+      '10000',
+      '012345',
+      '000000',
+    ]) {
+      expect(parseNumber(typed), typed).toBeNull()
+    }
   })
 })

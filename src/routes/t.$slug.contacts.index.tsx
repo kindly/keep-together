@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
+import { formatNumber } from '../../convex/contacts/number'
 import { fieldArgs, fieldShown } from '../lib/field-filters'
 import type { FieldPick } from '../lib/field-filters'
 import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
@@ -248,6 +249,11 @@ function ContactList() {
       {/* Outside the bar: a set moves rows out of a list filtered on the
           field, which can empty the selection, or the list, mid-run. */}
       <BulkFieldResult bulk={bulkField.bulk} onDismiss={bulkField.dismiss} />
+      {searching && listed?.invalidNumber && (
+        <p role="status" className="mt-3 text-sm text-amber-800">
+          {listed.invalidNumber}
+        </p>
+      )}
       {searching && listed?.truncated && (contacts?.length ?? 0) > 0 && (
         <p className="mt-3 text-sm text-amber-800">
           Showing the first {contacts?.length} contacts
@@ -287,6 +293,7 @@ function ContactList() {
               checked={selected.has(c._id)}
               onToggle={toggle}
               chipOf={chipOf}
+              numberMatch={searching && listed?.numberMatch === c._id}
             />
           ))}
         </ul>
@@ -313,6 +320,7 @@ function sameRow(a: ListRow, b: ListRow) {
     a._id === b._id &&
     a.displayName === b.displayName &&
     a.archived === b.archived &&
+    a.number === b.number &&
     a.email === b.email &&
     a.kind === b.kind &&
     a.fieldOptionIds.join() === b.fieldOptionIds.join()
@@ -331,6 +339,7 @@ const ContactRow = memo(
     checked,
     onToggle,
     chipOf,
+    numberMatch,
   }: {
     row: ListRow
     slug: string
@@ -338,6 +347,8 @@ const ContactRow = memo(
     checked: boolean
     onToggle: (id: Id<'contacts'>) => void
     chipOf: ReadonlyMap<string, Chip>
+    /** Found by its contact number: badged, with the number written out. */
+    numberMatch: boolean
   }) {
     return (
       <li className="flex items-center">
@@ -357,6 +368,11 @@ const ContactRow = memo(
         >
           <span>
             {c.displayName}
+            {numberMatch && c.number !== null && (
+              <span className="ml-2 rounded bg-emerald-100 px-1.5 text-xs text-emerald-900">
+                contact no. {formatNumber(c.number)}
+              </span>
+            )}
             {c.archived && (
               <span className="ml-2 rounded bg-neutral-200 px-1.5 text-xs">
                 archived
@@ -384,6 +400,7 @@ const ContactRow = memo(
     a.slug === b.slug &&
     a.canWrite === b.canWrite &&
     a.checked === b.checked &&
+    a.numberMatch === b.numberMatch &&
     a.onToggle === b.onToggle &&
     a.chipOf === b.chipOf,
 )
