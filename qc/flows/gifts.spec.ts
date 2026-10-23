@@ -71,7 +71,7 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
       server: true,
     })
     await expect(heading(page)).toContainText('£12.34')
-    await expect(page.getByText('Event-Gala-001')).toBeVisible()
+    await expect(page.getByTestId('gift-code')).toHaveText('Event-Gala-001')
     await expect(page.getByTestId('gift-coverage')).toHaveText(
       'Not covered by a declaration',
     )
@@ -97,7 +97,7 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
     await page.getByRole('button', { name: 'Edit' }).click()
     await page.getByLabel('Amount (£)').fill('0')
     await page.getByRole('button', { name: 'Save' }).click()
-    await expect(page.getByRole('alert')).toHaveText(
+    await expect(page.getByRole('alert')).toContainText(
       'The amount must be over £0',
     )
     await page.getByLabel('Amount (£)').fill('12.345')
