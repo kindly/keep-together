@@ -43,6 +43,7 @@
     - **No donor view or confirmation mechanism in slice 1.** Staff tick Gift Aid and fill in the declaration fields themselves, accepting that many of those ticks are not yet valid declarations in HMRC's terms. *(chat 3)* Because the record says honestly **how** it was made, a later claim step can tell which declarations count. Nothing gets rewritten.
   - **Evidence held:** at least a "we have the form" mark, ideally an **uploaded scan** of it. *(chat 1; open: in slice 1 or next?)*
 - **Erasure keeps what a Gift Aid audit needs** (the declaration, plus the name and address it was made under) for the 6-year retention period. *(chat 1; open: how exactly)*
+  - Open for the erasure ADR (reviewers of step 1b, 2026-10-23): the 6-year clock should start at the end of the accounting period of the last claim relying on a declaration (only the claim step knows it); a voided declaration was never relied on, so its snapshot may be anonymised at once, keeping voidReason/voidedAt/voidedBy; free-text PII in voidReason and cancellationNote needs handling; a wrong-contact void holds another person's snapshot.
 - ~~Visible short contact ids~~ → **their own plan**, handed back to the controller. This page only gains search by that number once it exists. *(chat 3)*
 </sv-prose>
 
