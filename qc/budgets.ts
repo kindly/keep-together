@@ -130,7 +130,11 @@ export const budgets = {
   'gift.recordNewContact': infrequent,
   // Cash gifts step 5: the gift page and the contact page's panels.
   'gift.open': repeatable,
-  'gift.save': repeatable,
+  'gift.save': {
+    ...repeatable,
+    knownOver:
+      'save floor: ~81 ms median, frame-quantised samples at 97/114 ms; server path at the contract minimum (factory/out/builder-cash-5-save-breakdown.md) (human 2026-10-23)',
+  },
   // Void and unvoid show the new status optimistically: these two time
   // the click to that display, not the server round trip. The spec checks
   // each write is then confirmed, and records click-to-confirmed as an
