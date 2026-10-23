@@ -24,6 +24,7 @@ import type * as contacts_notes from "../contacts/notes.js";
 import type * as contacts_number from "../contacts/number.js";
 import type * as contacts_queries from "../contacts/queries.js";
 import type * as contacts_relationships from "../contacts/relationships.js";
+import type * as contacts_retired from "../contacts/retired.js";
 import type * as contacts_rules from "../contacts/rules.js";
 import type * as contacts_search from "../contacts/search.js";
 import type * as contacts_searchProjection from "../contacts/searchProjection.js";
@@ -92,6 +93,7 @@ declare const fullApi: ApiFromModules<{
   "contacts/number": typeof contacts_number;
   "contacts/queries": typeof contacts_queries;
   "contacts/relationships": typeof contacts_relationships;
+  "contacts/retired": typeof contacts_retired;
   "contacts/rules": typeof contacts_rules;
   "contacts/search": typeof contacts_search;
   "contacts/searchProjection": typeof contacts_searchProjection;
