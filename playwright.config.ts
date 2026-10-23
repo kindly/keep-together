@@ -92,7 +92,12 @@ export default defineConfig({
     baseURL: `http://localhost:${instances[0].port}`,
     headless: true,
     viewport: { width: 1280, height: 800 },
-    trace: 'retain-on-failure',
+    // Off: tracing snapshots the DOM around every action, timed ones too,
+    // and inflated big pages' times (~230 ms on one Load more). A flow
+    // over budget traces one extra, unjudged sample instead (qc/timing.ts).
+    // Functional failures keep a screenshot.
+    trace: 'off',
+    screenshot: 'only-on-failure',
   },
   projects: [
     {

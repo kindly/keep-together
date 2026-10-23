@@ -403,12 +403,13 @@ export function serverExceptionBanner(
   const lines =
     server?.exceptions ??
     SERVER_EXCEPTIONS.map(
-      (x) => `${x.fn}: EXCEPTED, not asserted: ${x.reason} · no server data`,
+      (x) =>
+        `${x.fn}: EXCEPTED from the 100 ms rule: ${x.reason} · ceiling < ${x.ceilingMs} ms · no server data`,
     )
   const n = SERVER_EXCEPTIONS.length
   const calls = server?.exceptedCalls
   return banner([
-    `${n} server exception${n === 1 ? '' : 's'} (approved, qc/budgets.ts SERVER_EXCEPTIONS)${calls === undefined ? '' : `, ${calls} call${calls === 1 ? '' : 's'} EXCEPTED this run`}: timed, never asserted.`,
+    `${n} server exception${n === 1 ? '' : 's'} (approved, qc/budgets.ts SERVER_EXCEPTIONS)${calls === undefined ? '' : `, ${calls} call${calls === 1 ? '' : 's'} EXCEPTED this run`}: timed, held only to their ceilings.`,
     ...lines,
   ])
 }

@@ -1,5 +1,6 @@
 import { convexOn, expect, test } from '../fixtures'
 import { runId } from '../timing'
+import { holdQuiet } from '../quiet'
 import { secondTab } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
@@ -130,6 +131,7 @@ test.describe('contacts list', () => {
         action: () => search.fill(lastName),
         until: onlyRow,
         arg: lastName,
+        server: true,
       })
     },
   )
@@ -176,6 +178,7 @@ test.describe('contacts list', () => {
           return links.length === 1 && links[0].getAttribute('href') === href
         },
         arg: adaHref,
+        server: true,
       })
       await rows(page).first().click()
       await expect(page).toHaveURL(adaHref)
@@ -211,6 +214,7 @@ test.describe('contacts list', () => {
         action: () => toggle.check(),
         until: onlyRow,
         arg: lastName,
+        server: true,
       })
       await expect(row(page, lastName)).toContainText('archived')
     },
@@ -224,17 +228,19 @@ test.describe('contacts list', () => {
       const name = `Nora ${lastName}`
       await createIndividual(page, users.a.slug, 'Nora', lastName)
       await toList(page, users.a.slug)
-      // Every repeat starts on the list, with the row rendered.
+      // Every repeat starts on a freshly loaded list, with the row
+      // rendered: a contact opened in the last 2 minutes draws from the
+      // keep-alive cache (contact.revisit times that), so a client
+      // navigation back would never ask the server.
       await flow(page, 'contacts.nav', {
         before: async () => {
-          if (!(await row(page, lastName).isVisible())) {
-            await toList(page, users.a.slug)
-          }
+          await page.goto(listPath(users.a.slug))
           await expect(row(page, lastName)).toBeVisible()
         },
         action: () => row(page, lastName).click(),
         until: (n) => document.querySelector('main h1')?.textContent === n,
         arg: name,
+        server: true,
       })
       // And back: every repeat starts on the contact page.
       await flow(page, 'contacts.nav', {
@@ -250,6 +256,7 @@ test.describe('contacts list', () => {
             a.textContent.includes(n),
           ),
         arg: lastName,
+        server: true,
       })
     },
   )
@@ -260,17 +267,21 @@ test.describe('contacts list', () => {
     async ({ browser, baseURL, flow, instance, session, users, world }) => {
       test.setTimeout(120_000)
       // In B, whose list no timed flow browses, so A's list stays the size
-      // the other flows were budgeted on.
+      // the other flows were budgeted on. Held quiet (qc/quiet.ts): each
+      // batch is a 100-contact commit, and another worker's sample on this
+      // instance would otherwise commit behind it.
       const crowd = (lastName: string, count: number) =>
-        convexOn(instance, [
-          'run',
-          'platform/qcSeed:crowd',
-          JSON.stringify({
-            tenantId: world.tenants[1].tenantId,
-            lastName,
-            count,
-          }),
-        ])
+        holdQuiet(instance.name, `contacts.loadMore crowd ${count}`, () =>
+          convexOn(instance, [
+            'run',
+            'platform/qcSeed:crowd',
+            JSON.stringify({
+              tenantId: world.tenants[1].tenantId,
+              lastName,
+              count,
+            }),
+          ]),
+        )
       // After B's seeded `Bravo-<run>` contacts: more than two pages.
       await crowd(uniq('Crowd'), 2 * LIST_PAGE_SIZE)
       const b = await secondTab(browser, baseURL!, await session(users.b))

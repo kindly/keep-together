@@ -1,4 +1,5 @@
 import { expect, test } from '../fixtures'
+import { released } from '../timing'
 import { secondTab, section, uniqueName, want } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
@@ -124,7 +125,10 @@ test.describe('settings tabs', () => {
     const settings = page.getByRole('link', { name: 'Settings', exact: true })
     const contacts = page.getByRole('link', { name: 'Contacts', exact: true })
     await want(page, 'Fields')
-    // The link opens the first tab, Fields.
+    // The link opens the first tab, Fields. No round trip to time: the
+    // Fields tab reads what the contacts list is itself subscribed to
+    // (fields, the group, source filter options), so it draws at once.
+    // That is the app's behaviour, not a held answer.
     await flow(page, 'settings.nav', {
       before: async () => {
         if (page.url().includes('/settings')) {
@@ -142,14 +146,22 @@ test.describe('settings tabs', () => {
     await expect(fieldsTab).toHaveAttribute('aria-current', 'page')
     await expect(typesTab).not.toHaveAttribute('aria-current', 'page')
 
+    // Each tab's loader prewarms its query for 5 s after the tab is left,
+    // so a sample first waits until the tab it opens holds nothing.
     let to = 'Fields'
     await flow(page, 'settings.tab', {
       before: async () => {
         to = to === 'Fields' ? 'Identifier types' : 'Fields'
         await want(page, to)
+        await released(page, [
+          to === 'Fields'
+            ? 'contacts/fields:list'
+            : 'contacts/queries:listIdentifierTypes',
+        ])
       },
       action: () => (to === 'Fields' ? fieldsTab : typesTab).click(),
       until: tabLoaded,
+      server: true,
     })
     await typesTab.click()
     await expect(page).toHaveURL(identifiersPath(users.a.slug))

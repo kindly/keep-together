@@ -55,6 +55,28 @@ only on the pool). Nothing is wiped between runs, so data accumulates;
 `--reset` replaces every instance's data with an empty snapshot when it
 gets in the way. The human's own dev deployment is never a pool member.
 
+### Quiet holds
+
+Workers share instances, and a deployment commits one transaction at a
+time. A spec that writes in bulk mid-run (the paged list's crowd, 100
+contacts a commit) makes every sample another worker commits meanwhile
+wait behind it: the field flows paid ~70 ms on their commit → response
+leg that way, and blame could only call it unclear. So a bulk write
+goes inside `holdQuiet(instance.name, who, fn)` (`qc/quiet.ts`):
+
+- each timed sample marks itself busy on its instance from the tap to
+  the result; before marking it waits, unmarked, for any other worker's
+  hold, so the wait is never in the sample (`quietWaitMs` records it);
+- the holder waits for samples already under way, then writes;
+- every wait gives up after 2 min with an error naming the holder or
+  the busy pids, and a mark whose process is gone (or older than 5 min)
+  is ignored and removed.
+
+Interference the suite makes is removed this way, never excused in
+blame. A new bulk seed during a run takes a hold too; seeds in worker
+setup don't, since no timed flow runs before them on that worker, but
+they do run while other workers time `auth.signIn`, so keep them small.
+
 ## Reading the output
 
 After the run the reporter prints one row per flow:
@@ -88,8 +110,8 @@ Banners to look for:
   (factory/out/builder-qcstall.md). They're judged as usual: the banner
   says where the time went, it doesn't excuse it. A wired link avoids it.
 - **`EXCEPTED`**: the server exceptions banner: every approved exception
-  (`SERVER_EXCEPTIONS` in `qc/budgets.ts`), on every run, with the calls
-  it excepted this run (see Budgets).
+  (`SERVER_EXCEPTIONS` in `qc/budgets.ts`), on every run, with its
+  ceiling and the calls it excepted this run (see Budgets).
 - **`QC RUN FAILED, whatever the test counts above say`**: a gate the
   tests can't see failed: the coverage gate, a flow in `qc/budgets.ts`
   that nothing timed, or the worker-setup sign-in over budget.
@@ -143,7 +165,7 @@ blame, computed live in the worker for the judged set (see Ours).
 |---|---|
 | page | input → send, plus the Transition (or last message) → result on screen; long tasks shown when any |
 | to Convex ≈ | send → commit, less our function (server clock) |
-| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance. A mutation's call must complete from 10 ms before to 100 ms after its commit timestamp, both on the server clock, so clock skew can't move it; without a commit (a query change, an action), between the send and the response or screen message ± 10 ms on the page's clock. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
+| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance. A mutation's call must complete from 10 ms before to 100 ms after its commit timestamp, both on the server clock, so clock skew can't move it. When that window holds no call at all and the response itself came more than 100 ms after the commit (a concurrent long mutation on the instance held the log line past the window, and the response with it), the match looks for the late line between the end of the commit window and the response + 10 ms, marked `(late log line)`. Never before the commit window: a call logged before our commit can't be ours, and another worker's call must never excuse ours. Without a commit (a query change, an action), between the send and the response or screen message ± 10 ms on the page's clock. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
 | back ≈ | commit → response (server clock) |
 | Transition | response → the Transition carrying the result |
 | Convex + network | send → screen message, less our function, when there's no commit to split it (a query change) |
@@ -233,7 +255,45 @@ over budget is blamed live in the worker (`qc/live.ts`, `qc/judge.ts`):
 `pnpm qc:report` renders that history to
 `qc-report/trend.html`: per-flow p50/p95 over the last 30 runs against the
 budget line. The Playwright HTML report is in `qc-report/playwright/`,
-with traces for failed tests.
+with a screenshot for each failed test and a trace for each flow that
+failed its budget.
+
+**Tracing is off for timed samples** (human, 2026-10-23). Playwright's
+tracing snapshots the whole DOM around every action, the timed click
+included, so its cost grows with the page: ~230 ms of snapshotting on one
+`contacts.loadMore` click, a median of 190 ms traced against 95 ms
+untraced (factory/out/builder-fields6-report.md). That is the harness's
+overhead, not the app's work: turning it off removes no app work, and it
+lowers the measured times of big pages. It also changed what some flows
+measured until the held-result rule below was added: without tracing a
+`before` finished inside one round trip, so a search cleared and typed
+again drew the answer the client still held (search p50 ~4 ms, with
+nothing from the server). Compare history across both changes with that
+in mind. A flow that fails its budget gets one more
+sample, untimed and unjudged, with tracing on, attached to the test as
+`trace` (worker-setup sign-ins write theirs to
+`test-results/.traces/<run>/`); if that sample throws, the flow keeps its
+verdict and the record says `traceError`. A functional failure has a
+screenshot and, when the page logged anything, its console and uncaught
+errors (`console`), not a trace; to trace one, rerun it with
+`pnpm qc --trace on <spec>` and ignore its times.
+
+**Held results.** Every timed sample must do the work it claims to
+measure. The Convex client keeps a removed query's result until the
+server acknowledges the removal, so after every `before` the harness
+waits until the server has answered every query-set change the page
+sent (`settle` in `qc/timing.ts`). A flow whose result comes from the
+server says `server: true`, and a sample in which the watched page got
+no query result from the server before `until` held fails with
+`HeldResultError` (each sample records it as `answered`). The app also
+holds results on purpose, and a flow that should time the round trip has
+to step around them in `before`: a route loader's 5 s prewarm
+(`released(page, ['module:fn'])` waits until the page no longer
+subscribes to it), the contact page's 2-minute keep-alive cache, and the
+rows the contacts list remembers per filter while mounted (reload the
+page). `settings.nav` and `contact.revisit` are local by design (the
+Fields tab reads what the contacts list subscribes to; a revisit draws
+from the cache) and don't say `server: true`.
 
 Server execution times come from `convex logs`: every uncached call of
 our own functions on a user path must take under 100 ms, bar one spike
@@ -290,12 +350,15 @@ Two marks change how a flow is judged:
 - **A server exception** (`SERVER_EXCEPTIONS` in `qc/budgets.ts`): one
   function's calls that log a given line are timed and recorded in a row
   of their own (`<fn> [excepted]`), listed in the `EXCEPTED` banner on
-  every run, and never asserted. The function's other calls are judged
+  every run, and exempt from the 100 ms rule. Each excepted call must
+  still be under the exception's `ceilingMs`: one at or over it fails the
+  run, with no spike allowance. The function's other calls are judged
   as usual. The one there: a `contacts/queries:list` call that read a
   grown pinned page in full, which the backend does whatever
   `maximumRowsRead` says ("list re-run after a bulk write into an open
   page: ~150 ms reading the grown range", human 2026-10-23;
-  `contacts.loadMore`'s insert into page 0 makes them).
+  `contacts.loadMore`'s insert into page 0 makes them), with a ceiling
+  of 250 ms (human 2026-10-23).
 - **`pending: true`**: no spec times the flow yet; a run that doesn't
   time it warns instead of failing. Drop it when the spec lands.
 
@@ -337,7 +400,8 @@ OK are the initial recorded ones (plan step 9b).
    `until` runs in the page every animation frame, so it can't close over
    test variables; pass data through `arg`. `start: 'navigation'` times a
    page load from navigation start; `inputPage` times propagation from one
-   tab to another. Each test makes the entities it changes: the seeded
+   tab to another. `server: true` when the result comes from the server
+   (see Held results). Each test makes the entities it changes: the seeded
    world is shared by every test in a worker.
 5. **Run** `pnpm qc qc/flows/<area>.spec.ts`, then a full `pnpm qc`.
 

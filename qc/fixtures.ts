@@ -224,6 +224,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
             where: 'worker setup',
             repeats: 1,
             warmUp: false,
+            tracePath: path.join(
+              'test-results',
+              '.traces',
+              runId(),
+              `w${workerInfo.parallelIndex}-${'ab'[i]}-auth.signIn.zip`,
+            ),
           },
           'auth.signIn',
           {
@@ -315,9 +321,30 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   },
 
   // The default page's context: the WebSocket tap from its first script.
-  context: async ({ context }, use) => {
+  // Its console and uncaught page errors are kept and attached to a test
+  // that fails: with tracing off (playwright.config.ts) a flaky failure
+  // otherwise leaves only a screenshot and the call log.
+  context: async ({ context }, use, testInfo) => {
     await tapContext(context)
+    const log: Array<string> = []
+    const at = () => new Date().toISOString().slice(11, 23)
+    context.on('console', (m) => {
+      const where = m.location()
+      log.push(
+        `${at()} console.${m.type()} ${m.text()}` +
+          (where.url ? ` (${where.url}:${where.lineNumber})` : ''),
+      )
+    })
+    context.on('weberror', (e) =>
+      log.push(`${at()} pageerror ${e.error().stack ?? String(e.error())}`),
+    )
     await use(context)
+    if (testInfo.status !== testInfo.expectedStatus && log.length) {
+      await testInfo.attach('console', {
+        body: log.join('\n'),
+        contentType: 'text/plain',
+      })
+    }
   },
 
   storageState: async ({ session }, use) => {
@@ -333,6 +360,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           worker: testInfo.parallelIndex,
           instance: instance.name,
           where: testInfo.titlePath.join(' › '),
+          tracePath: testInfo.outputPath(`trace-${name}.zip`),
         },
         name,
         step,
@@ -341,6 +369,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         body: JSON.stringify(record, null, 2),
         contentType: 'application/json',
       })
+      // Named `trace`, the HTML report opens it in the trace viewer.
+      if (record.trace)
+        await testInfo.attach('trace', {
+          path: record.trace,
+          contentType: 'application/zip',
+        })
       assertFlow(record)
       return record
     })

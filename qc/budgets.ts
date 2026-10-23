@@ -160,9 +160,13 @@ export const BULK_FUNCTIONS: Record<string, number> = {
 /**
  * Approved exceptions to the server rule, by the call itself, not the
  * function: a call of `fn` whose own log has a line containing `logLine`
- * is timed and recorded, listed in a banner on every run, and never
- * asserted. Every other call of `fn` is judged as usual. The human's OK is
- * needed for each, as for `knownOver`.
+ * is timed and recorded, listed in a banner on every run, and exempt
+ * from the 100 ms rule. Every other call of `fn` is judged as usual. The
+ * human's OK is needed for each, as for `knownOver`.
+ *
+ * Excepted is not unbounded: each excepted call must still be under its
+ * exception's `ceilingMs`. One at or over it fails the run, with no spike
+ * allowance (qc/server-timings.ts checkBudgets).
  *
  * - The contacts list reading a pinned page whose range a bulk write grew
  *   (contacts.loadMore's insert into page 0): the backend reads the whole
@@ -173,11 +177,15 @@ export const SERVER_EXCEPTIONS: Array<{
   fn: string
   logLine: string
   reason: string
+  /** Every excepted call must be under this, in ms. */
+  ceilingMs: number
 }> = [
   {
     fn: 'contacts/queries:list',
     logLine: 'contacts list: grown page read in full',
     reason:
       'list re-run after a bulk write into an open page: ~150 ms reading the grown range (human 2026-10-23)',
+    // Ceiling (human, 2026-10-23).
+    ceilingMs: 250,
   },
 ]

@@ -30,9 +30,10 @@ import { BULK_FUNCTIONS, SERVER_EXCEPTIONS } from './budgets'
 //
 // Excepted calls (SERVER_EXCEPTIONS in ./budgets, each approved by the
 // human): a call whose own log carries the exception's line is timed in
-// a row of its own (`<fn> [excepted]`), never asserted, and listed with
+// a row of its own (`<fn> [excepted]`), exempt from the 100 ms rule, and listed with
 // its reason on every run (exceptions()). The function's other calls are
-// judged as usual.
+// judged as usual. Each excepted call must still be under its exception's
+// ceiling (`ceilingMs`): one at or over it fails the run, no spike allowed.
 //
 // Not asserted: cached queries (~0 ms, served without running), `auth:*`
 // (Convex Auth hashes passwords in JS: auth:store is ~150 ms p95),
@@ -103,6 +104,8 @@ export interface FunctionStats {
   second: number | null
   /** Excepted calls (SERVER_EXCEPTIONS): the approved reason. */
   exception?: string
+  /** Excepted calls: every one must be under this, in ms. */
+  ceilingMs?: number
 }
 
 export interface ServerTimings {
@@ -421,14 +424,17 @@ const round = (ms: number) => Math.round(ms * 10) / 10
  * function's, when one of its own log lines carries the exception's line.
  */
 export function exceptionOf(ev: LogEvent): string | null {
-  const found = SERVER_EXCEPTIONS.find(
+  return exceptionFor(ev)?.reason ?? null
+}
+
+function exceptionFor(ev: LogEvent) {
+  return SERVER_EXCEPTIONS.find(
     (x) =>
       x.fn === ev.identifier &&
       (ev.logLines ?? []).some((l) =>
         (typeof l === 'string' ? l : JSON.stringify(l)).includes(x.logLine),
       ),
   )
-  return found?.reason ?? null
 }
 
 export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
@@ -445,7 +451,8 @@ export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
     .map(({ ev, ms }) => {
       ms.sort((a, b) => a - b)
       const cached = ev.cachedResult === true
-      const exception = exceptionOf(ev)
+      const excepted = exceptionFor(ev)
+      const exception = excepted?.reason ?? null
       const asserted =
         exception === null &&
         !cached &&
@@ -472,7 +479,10 @@ export function aggregate(events: Array<LogEvent>): Array<FunctionStats> {
         p95: round(percentile(ms, 0.95)),
         max: round(ms[ms.length - 1]),
         second: ms.length > 1 ? round(ms[ms.length - 2]) : null,
-        ...(exception !== null && { exception }),
+        ...(excepted && {
+          exception: excepted.reason,
+          ceilingMs: excepted.ceilingMs,
+        }),
       }
     })
     .sort(
@@ -527,25 +537,32 @@ export function exceptions(t: Pick<ServerTimings, 'functions'>): Array<string> {
     const calls = f
       ? `${f.n} call${f.n === 1 ? '' : 's'} this run, p50 ${f.p50} ms, max ${f.max} ms`
       : 'no call this run'
-    return `${x.fn}: EXCEPTED, not asserted: ${x.reason} · ${calls}`
+    return `${x.fn}: EXCEPTED from the 100 ms rule: ${x.reason} · ceiling < ${x.ceilingMs} ms · ${calls}`
   })
 }
 
-/** One message per asserted function over its budget. */
+/**
+ * One message per asserted function over its budget, and per excepted row
+ * with a call at or over its ceiling.
+ */
 export function checkBudgets(
   t: Pick<ServerTimings, 'functions'>,
 ): Array<string> {
-  return t.functions
-    .filter((f) => f.asserted)
-    .flatMap((f) => {
-      const miss = budgetMiss(f, f.budgetMs!)
-      return miss ? [`${f.udfType} ${f.identifier}: ${miss}`] : []
-    })
+  return t.functions.flatMap((f) => {
+    if (f.ceilingMs !== undefined && f.max >= f.ceilingMs)
+      return [
+        `${f.udfType} ${f.identifier}: an excepted call took ${f.max} ms ≥ its ceiling ${f.ceilingMs} ms (n=${f.n})`,
+      ]
+    if (!f.asserted) return []
+    const miss = budgetMiss(f, f.budgetMs!)
+    return miss ? [`${f.udfType} ${f.identifier}: ${miss}`] : []
+  })
 }
 
 export function formatTable(t: ServerTimings): string {
   const rows = t.functions.map((f) => {
-    const budget = f.budgetMs === null ? '—' : `<${f.budgetMs}`
+    const limit = f.budgetMs ?? f.ceilingMs ?? null
+    const budget = limit === null ? '—' : `<${limit}`
     return [
       String(f.n).padStart(5),
       f.p50.toFixed(1).padStart(7),

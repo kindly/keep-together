@@ -169,7 +169,7 @@ describe('server exceptions', () => {
     ).toBe(SERVER_EXCEPTIONS[0].reason)
   })
 
-  test('a grown-page list call is recorded in its own row, never asserted', () => {
+  test('a grown-page list call is recorded in its own row, exempt from 100 ms', () => {
     const fns = aggregate([grown(154), grown(125), ev({ ms: 40 })])
     expect(
       fns.map((f) => [f.identifier, f.asserted, f.n, f.max, f.exception]),
@@ -185,8 +185,27 @@ describe('server exceptions', () => {
     ])
     expect(checkBudgets({ functions: fns })).toEqual([])
     expect(exceptions({ functions: fns })).toEqual([
-      `contacts/queries:list: EXCEPTED, not asserted: ${SERVER_EXCEPTIONS[0].reason} · 2 calls this run, p50 125 ms, max 154 ms`,
+      `contacts/queries:list: EXCEPTED from the 100 ms rule: ${SERVER_EXCEPTIONS[0].reason} · ceiling < 250 ms · 2 calls this run, p50 125 ms, max 154 ms`,
     ])
+  })
+
+  test('an excepted call under the 250 ms ceiling passes', () => {
+    expect(SERVER_EXCEPTIONS[0].ceilingMs).toBe(250)
+    const fns = aggregate([grown(249.9), grown(120), ev({ ms: 40 })])
+    expect(fns[1]).toMatchObject({ max: 249.9, ceilingMs: 250 })
+    expect(checkBudgets({ functions: fns })).toEqual([])
+  })
+
+  test('an excepted call at or over the ceiling fails the run, even as the only slow one', () => {
+    // No spike allowance: the other excepted call is far under.
+    for (const ms of [250, 251]) {
+      const fns = aggregate([grown(ms), grown(120), ev({ ms: 40 })])
+      expect(checkBudgets({ functions: fns })).toEqual([
+        `Query contacts/queries:list [excepted]: an excepted call took ${ms} ms ≥ its ceiling 250 ms (n=2)`,
+      ])
+    }
+    // Alone, too.
+    expect(checkBudgets({ functions: aggregate([grown(300)]) })).toHaveLength(1)
   })
 
   test('an ordinary slow list call still fails, beside excepted ones', () => {
@@ -210,7 +229,7 @@ describe('server exceptions', () => {
     expect(fns[0].asserted).toBe(true)
     expect(checkBudgets({ functions: fns })).toHaveLength(1)
     expect(exceptions({ functions: fns })).toEqual([
-      `contacts/queries:list: EXCEPTED, not asserted: ${SERVER_EXCEPTIONS[0].reason} · no call this run`,
+      `contacts/queries:list: EXCEPTED from the 100 ms rule: ${SERVER_EXCEPTIONS[0].reason} · ceiling < 250 ms · no call this run`,
     ])
   })
 })

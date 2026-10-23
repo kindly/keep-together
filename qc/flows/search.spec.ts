@@ -127,6 +127,7 @@ async function timeSearch(
     action: () => search.fill(term),
     until: onlyRow,
     arg: name,
+    server: true,
   })
 }
 

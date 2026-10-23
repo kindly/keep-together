@@ -168,8 +168,14 @@ test.describe('the source filter', () => {
         return options[options.indexOf(label) - 1]
       }
       const categoryAbove = await above(category, 'Street')
+      // Each sample starts on a freshly loaded list: the list keeps the
+      // rows it last showed for a filter while it stays mounted
+      // (src/lib/paged-list.ts), so going back to a category would draw
+      // from memory with nothing from the server.
       await flow(page, 'contacts.filter.sourceCategory', {
         before: async () => {
+          await page.goto(listPath(users.a.slug))
+          await above(category, categoryAbove)
           await category.selectOption({ label: categoryAbove })
           await expect(
             page.locator(`main a[href="${href(charles)}"]`),
@@ -179,16 +185,24 @@ test.describe('the source filter', () => {
         action: () => category.press('ArrowDown'),
         until: exactly,
         arg: [href(charles), href(trust)],
+        server: true,
       })
 
       const version = page.getByLabel('Filter by source version')
-      await page
-        .getByLabel('Filter by source detail')
-        .selectOption({ label: `Alpha${runId()}` })
-      await expect(version).toBeVisible()
+      const detail = page.getByLabel('Filter by source detail')
+      // Street, then its Alpha detail: the version filter shows.
+      const toDetail = async () => {
+        await category.selectOption({ label: 'Street' })
+        await detail.selectOption({ label: `Alpha${runId()}` })
+        await expect(version).toBeVisible()
+      }
+      await toDetail()
       const versionAbove = await above(version, '002')
       await flow(page, 'contacts.filter.sourceVersion', {
         before: async () => {
+          await page.goto(listPath(users.a.slug))
+          await above(category, 'Street')
+          await toDetail()
           await version.selectOption({ label: versionAbove })
           await expect(
             page.locator(`main a[href="${href(trust)}"]`),
@@ -198,6 +212,7 @@ test.describe('the source filter', () => {
         action: () => version.press('ArrowDown'),
         until: exactly,
         arg: [href(trust)],
+        server: true,
       })
 
       // With search text too: the Trust's name, under the version it isn't on.

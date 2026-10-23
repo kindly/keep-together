@@ -454,8 +454,14 @@ test.describe('fields on the contacts list', { annotation: LIST_ROUTE }, () => {
           'One',
           'Two',
         ])
+        // Each sample starts on a freshly loaded list: the list keeps the
+        // rows it last showed for a filter while it stays mounted
+        // (src/lib/paged-list.ts), so going back to One would draw from
+        // memory with nothing from the server.
         await flow(page, 'fields.filter', {
           before: async () => {
+            await page.goto(`/t/${users.a.slug}/contacts`)
+            await want(page, last)
             await filter.selectOption({ label: `${label} not set` })
             await expect(page.getByText('Loading…')).toBeHidden()
             await expect(links.filter({ hasText: last })).toBeHidden()
@@ -463,6 +469,7 @@ test.describe('fields on the contacts list', { annotation: LIST_ROUTE }, () => {
           },
           action: () => filter.press('ArrowDown'),
           until: onlyRowIsWant,
+          server: true,
         })
         // The row shows its value as a labelled chip.
         await expect(links.first()).toContainText(`${label}: One`)
