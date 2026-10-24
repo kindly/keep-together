@@ -1,5 +1,6 @@
 import { expect, test } from '../fixtures'
 import { runId } from '../timing'
+import { FEATURES } from '../../src/lib/data/ported'
 
 // Groups and navigation (factory/plans/qc-suite.sv, step 6; cash-gifts
 // step 4): "/" lands in a group's home, never a list; the home's actions
@@ -31,11 +32,19 @@ test('"/" goes straight to your group’s home', async ({ page, users }) => {
   await expect(header.getByRole('link', { name: 'keep-together' })).toHaveCount(
     0,
   )
-  await expect(
-    header.getByRole('button', { name: 'Donations', exact: true }),
-  ).toBeVisible()
-  // No gifts yet: the giving backend is still a stub here.
-  await expect(page.getByText('My recent gifts')).toBeVisible()
+  // The Donations menu and recent gifts come with B2 (src/lib/data/ported.ts).
+  const donations = header.getByRole('button', {
+    name: 'Donations',
+    exact: true,
+  })
+  if (FEATURES.gifts) {
+    await expect(donations).toBeVisible()
+    // No gifts yet: the giving backend is still a stub here.
+    await expect(page.getByText('My recent gifts')).toBeVisible()
+  } else {
+    await expect(donations).toHaveCount(0)
+    await expect(page.getByText('My recent gifts')).toHaveCount(0)
+  }
 })
 
 test('home links to contacts, and the group name leads back', async ({
@@ -65,10 +74,7 @@ test('home links to contacts, and the group name leads back', async ({
   await expect(page).toHaveURL(`/t/${users.a.slug}/contacts/new`)
 })
 
-test('the Donations menu offers Record a gift', async ({
-  page,
-  users,
-}) => {
+test('the Donations menu offers Record a gift', async ({ page, users }) => {
   route('/t/$slug/')
   await page.goto(`/t/${users.a.slug}`)
   await page.getByRole('button', { name: 'Donations', exact: true }).click()

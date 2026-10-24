@@ -103,8 +103,18 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
       until: paneSaved,
     })
     await expect(page.getByText('No email, phone or address yet')).toBeHidden()
+    expect(await emails.count()).toBe(n)
+    // Two at least, whatever QC_REPEATS timed (warm-up + 1 is already 2).
+    while ((await emails.count()) < 2) {
+      await add.click()
+      await emails
+        .last()
+        .getByPlaceholder('email address')
+        .fill(`${last}-${++n}@example.com`.toLowerCase())
+      await saveButton(page).click()
+      await expect(saved(page)).toBeVisible()
+    }
     const count = await emails.count()
-    expect(count).toBe(n)
 
     // Label the second, make it primary, remove the first.
     await emails.nth(1).getByRole('combobox').selectOption('work')
