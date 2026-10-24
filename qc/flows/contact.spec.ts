@@ -104,8 +104,9 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     })
     await expect(page.getByText('No email, phone or address yet')).toBeHidden()
     expect(await emails.count()).toBe(n)
-    // Two at least, whatever QC_REPEATS timed (warm-up + 1 is already 2).
-    while ((await emails.count()) < 2) {
+    // Three at least, whatever QC_REPEATS timed: one goes, and two must
+    // be left to tell primary from not.
+    while ((await emails.count()) < 3) {
       await add.click()
       await emails
         .last()
