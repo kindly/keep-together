@@ -413,7 +413,48 @@ diverge.
 
 ## Reviewer's verdict (step 4)
 
-_To be added by reviewer-rs._
+reviewer-rs, 2026-10-24. Full findings: `factory/out/reviewer-rs.md` in the
+main checkout. Codex hasn't been run; its command is in that file.
+
+**I agree with no-go for now.** The numbers support it:
+- At QC tenant sizes, reads are level on both stacks.
+- Saves are the only win a user would feel, at about one round trip.
+- Losing live queries makes the 781 ms stale path the common one.
+- Q7, the cost that ADR 0017 exists to avoid, is unmeasured.
+
+**Tenancy holds; I found no cross-organisation path.** A request reaches an
+org file only through a membership row:
+- the slug is used only as a SQL parameter;
+- the tenant id is checked as 32 hex characters before it becomes a path;
+- handlers can't reach `Store`;
+- files are stamped, `ATTACH` is off and readers are read-only;
+- restore checks that the revision belongs to this contact;
+- child keys that another contact holds are refused.
+
+No SQL is built from input, and FTS terms are alphanumeric and quoted.
+
+What I would add before any further step:
+
+- **The Vite `/api` proxy is unconditional**, and the dev server is served on
+  `.ts.net`. With `KEEP_DEV_AUTH=1`, anyone on the tailnet can sign in as any
+  user without a password. `qc-crowd` needs no session at all. Proxy only
+  when `VITE_BACKEND=rust`, and treat dev auth as no auth.
+- **Org handles.** One global mutex is held while an org file opens and
+  migrates, so a slow migration stalls every organisation. Handles are never
+  closed, so file descriptors run out at roughly 150–200 orgs. Add this to
+  the Risks.
+- **Contract discipline is by review, not construction.** `OrgTx` derefs to
+  a raw connection, so Q3 "holds" by convention, as on Convex.
+- **Method caveats:**
+  - Q1's heading says 70–400×, but its own table gives about 20–330×, and
+    the verdict says 20–200×.
+  - The cold-load gap is overstated by about 30–60 ms. The loopback has no
+    TLS, and the stub auth does no work.
+  - Rust's p95 is the maximum of 10 samples.
+
+  None of these changes the verdict.
+- The 3–5 days for auth, email, jobs and hosting looks optimistic. Real auth
+  on Rust is the largest unestimated item.
 
 ## Reproducing it
 
