@@ -32,6 +32,7 @@ Env (`api`):
 | `KEEP_CLIENT_IP_HEADER` | unset (peer address) | the proxy's client-address header for rate limits (`Fly-Client-IP` on Fly); never where clients reach the api directly |
 | `KEEP_MAIL` | `log` | `smtp`: send via `KEEP_SMTP_URL` (`smtp://localhost:1025`, Mailpit) as `KEEP_MAIL_FROM` (`comms::mail`) |
 | `KEEP_QC_SEED=1` | off | with dev auth: `POST /api/dev/qc-seed` and `qc-crowd` (≤ 10k) |
+| `KEEP_QC_TOKEN` | unset | with `KEEP_ENV=staging` only: `/api/qc/{seed,crowd,hold,session}` for the nightly QC run, the token in `x-keep-qc-token` (≥ 64 chars); `qc-` groups and `@qc.keep-together.invalid` users only; 404 when off or wrong; with `KEEP_ENV=prod` the boot stops (`routes::qc_seed`) |
 | `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`) |
 
 The 10k measurement (`scripts/perf-search10k-rs/`):

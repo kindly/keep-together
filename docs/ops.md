@@ -336,6 +336,11 @@ TOTP secrets survive the reset, so an authenticator app keeps working
 across deploys. Locally, `KEEP_ENV=dev keep dev seed-riverside` makes the
 same world and prints generated sign-ins.
 
+`KEEP_QC_TOKEN` (a Fly secret, also made by `scripts/fly/staging.sh`)
+opens `/api/qc/*` on staging for the nightly `pnpm qc --target staging`:
+it seeds and signs into `qc-` groups only, never riverside. The api
+refuses to boot with it under `KEEP_ENV=prod`.
+
 ## To verify on the first real run
 
 Checked locally (podman, 2026-10-24, file replicas instead of S3): the
