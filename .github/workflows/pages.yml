@@ -18,7 +18,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Pinned to the last Convex build while main moves to Rust
+      # (factory/plans/migration-rust.sv, r2q10). Retired once keep-staging
+      # is up and staging becomes the demo.
       - uses: actions/checkout@v4
+        with:
+          ref: convex-final
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
