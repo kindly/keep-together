@@ -124,6 +124,27 @@ impl Default for Runtime {
     }
 }
 
+/// Forget rate-limit keys that have fully replenished (hourly), so the
+/// in-memory maps don't grow with every address ever tried.
+pub struct LimitSweep(pub Arc<Runtime>);
+
+impl crate::jobs::Job for LimitSweep {
+    fn name(&self) -> &'static str {
+        "auth-limit-sweep"
+    }
+    fn every(&self) -> Duration {
+        Duration::from_secs(60 * 60)
+    }
+    fn run(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            self.0.limits.sweep();
+            Ok(())
+        })
+    }
+}
+
 // ── cookies ────────────────────────────────────────────────────────────────
 
 pub(crate) fn session_token(headers: &HeaderMap) -> Option<&str> {

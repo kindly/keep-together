@@ -6,6 +6,7 @@ import { assertFlow, probeRtt, runFlow, runId, tapContext } from './timing'
 import type { FlowName } from './budgets'
 import type { FlowRecord, FlowStep } from './timing'
 import { pendingStep } from './pending'
+import { nextTotp } from './totp'
 import type { QcWorld } from '../src/lib/data/rust-types/QcWorld'
 
 // QC fixtures (factory/plans/qc-suite.sv step 4; migration-rust F3). Specs
@@ -15,8 +16,8 @@ import type { QcWorld } from '../src/lib/data/rust-types/QcWorld'
 // data dir, or staging; qc/.instances.json, written by scripts/qc.mjs),
 // its RTT, a freshly seeded world (`POST /api/dev/qc-seed`: two tenants,
 // `r<run>w<n>-a|b`; admins A and B, plus a staff and a viewer member of
-// tenant A), and one timed UI sign-in per admin (`auth.signIn`; the dev
-// stub until A4: an email, no password). Tests start signed in as user A
+// tenant A), and one timed UI sign-in per admin (`auth.signIn`: password,
+// then a TOTP code from the seeded secret). Tests start signed in as user A
 // on the worker's own instance, each browser context with a session of
 // its own (`session`).
 //
@@ -50,8 +51,9 @@ export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>
 
 export interface QcUser {
   email: string
-  /** Empty: the dev stub signs in by email alone (A4 brings passwords). */
   password: string
+  /** The seeded TOTP secret (base32): codes from `nextTotp`. */
+  totpSecret: string
   /** The user's tenant (A, staff, viewer: tenants[0]; B: tenants[1]). */
   slug: string
 }
@@ -209,7 +211,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   users: [
     async ({ browser, instance, rttMs, world }, use, workerInfo) => {
       const signIn = async (i: 0 | 1): Promise<QcUser> => {
-        const { email } = world.users[i]
+        const { email, password, totpSecret } = world.users[i]
         const { slug } = world.tenants[i]
         const context = await browser.newContext({
           baseURL: instance.baseURL,
@@ -240,13 +242,21 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           },
           'auth.signIn',
           {
+            // The password step is set-up; the timed gesture is the
+            // code's Verify, the one that lands in the group.
             before: async () => {
               // A re-measure starts signed in: drop the session.
               await context.clearCookies()
               await page.goto('/')
               await page.getByPlaceholder('Email').fill(email)
+              await page.getByPlaceholder('Password').fill(password)
+              await page.getByRole('button', { name: 'Sign in' }).click()
+              await page.getByPlaceholder('Code').waitFor()
             },
-            action: () => page.getByRole('button', { name: 'Sign in' }).click(),
+            action: async () => {
+              await page.getByPlaceholder('Code').fill(await nextTotp(totpSecret))
+              await page.getByRole('button', { name: 'Verify' }).click()
+            },
             // Signing in lands on the group's home: its header drawn.
             until: (s) =>
               location.pathname === `/t/${s}` &&
@@ -255,12 +265,14 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           },
         )
         await context.close()
-        return { email, password: '', slug }
+        return { email, password, totpSecret, slug }
       }
       const a = await signIn(0)
       const member = (role: 'staff' | 'viewer'): QcUser => {
-        const { email } = world.users.find((u) => u.role === role)!
-        return { ...a, email }
+        const { email, password, totpSecret } = world.users.find(
+          (u) => u.role === role,
+        )!
+        return { ...a, email, password, totpSecret }
       }
       await use({
         a,

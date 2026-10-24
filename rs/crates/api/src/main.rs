@@ -93,9 +93,10 @@ async fn main() {
         // A minute after boot (`first_after`), then hourly.
         jobs.register(SnapshotJob::new(config));
     }
+    let state = AppState::new(store, dev_auth).with_auth(auth_runtime(dev_auth));
+    jobs.register(api::auth::LimitSweep(state.auth.clone()));
     jobs.spawn();
 
-    let state = AppState::new(store, dev_auth).with_auth(auth_runtime(dev_auth));
     let mut router = app(state, api::routes::router());
     if let Some(static_dir) = api::static_files::dir_from_env() {
         router = api::static_files::with_static(router, static_dir);

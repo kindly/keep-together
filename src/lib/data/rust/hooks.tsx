@@ -136,25 +136,6 @@ export function SessionLoading({ children }: { children: ReactNode }) {
   return useMe() === undefined ? children : null
 }
 
-/** `POST /api/dev/login`: the stub's cookie session, no password. */
-export function useDevLogin() {
-  const qc = useQueryClient()
-  return async (email: string) => {
-    await post('dev/login', { email })
-    // Everything read was the last user's: drop it, refetch what's shown.
-    await qc.resetQueries()
-  }
-}
-
-export function useSignOut() {
-  const qc = useQueryClient()
-  return async () => {
-    await post('dev/logout')
-    // Everything read was the last user's: drop it, refetch what's shown.
-    await qc.resetQueries()
-  }
-}
-
 // ── cold load ──────────────────────────────────────────────────────────────
 
 /** The list's key with no filters: the page the boot carries. */

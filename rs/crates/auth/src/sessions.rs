@@ -19,7 +19,12 @@
 //!    API then signals live streams to close.
 //! 5. An expired row reads as no session; a job sweeps them.
 //! 6. A row holds no role: each request re-reads the membership.
-//! 7. A dev-login session (`dev`) counts only while the server runs with
+//! 7. A TOTP secret being enrolled (`pending_secret`) lives on its session
+//!    for [`crate::PARTIAL_TTL_MS`] at most: cleared when enrolment
+//!    completes (the row is replaced or the column nulled), unusable once
+//!    expired, and nulled by the sweep. It is never logged or returned
+//!    after the enrol response.
+//! 8. A dev-login session (`dev`) counts only while the server runs with
 //!    dev auth; the API ignores it otherwise.
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -64,7 +69,7 @@ pub struct Session {
     pub expires_at: i64,
     /// The last password + second factor proof (`full` only).
     pub authenticated_at: Option<i64>,
-    /// A TOTP secret being enrolled.
+    /// A TOTP secret being enrolled, while unexpired.
     pub pending_secret: Option<String>,
     pub email_code_hash: Option<String>,
     pub email_code_expires: Option<i64>,
@@ -111,7 +116,7 @@ pub fn get(conn: &Connection, token: &str, now: i64) -> rusqlite::Result<Option<
 pub fn by_id(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Option<Session>> {
     conn.query_row(
         "SELECT s.token_hash, s.user_id, u.email, s.stage, s.expires_at, s.authenticated_at,
-                s.pending_secret, s.email_code_hash, s.email_code_expires, s.email_code_attempts,
+                CASE WHEN s.pending_secret_expires > ?2 THEN s.pending_secret END, s.email_code_hash, s.email_code_expires, s.email_code_attempts,
                 s.dev
          FROM auth_sessions s JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = ?1 AND s.expires_at > ?2",
@@ -159,6 +164,7 @@ fn replace(
     let token = secret::token();
     let n = conn.execute(
         "UPDATE auth_sessions SET token_hash = ?2, authenticated_at = ?3,
+             pending_secret = NULL, pending_secret_expires = NULL,
              email_code_hash = NULL, email_code_expires = NULL, email_code_attempts = 0
          WHERE token_hash = ?1",
         params![s.id, secret::hash(&token), authenticated_at],
@@ -171,16 +177,22 @@ fn replace(
 
 pub fn set_stage(conn: &Connection, id: &str, stage: Stage) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE auth_sessions SET stage = ?2, pending_secret = NULL WHERE token_hash = ?1",
+        "UPDATE auth_sessions SET stage = ?2, pending_secret = NULL, pending_secret_expires = NULL
+         WHERE token_hash = ?1",
         params![id, stage.as_str()],
     )?;
     Ok(())
 }
 
-pub fn set_pending_secret(conn: &Connection, id: &str, secret_b32: &str) -> rusqlite::Result<()> {
+pub fn set_pending_secret(
+    conn: &Connection,
+    id: &str,
+    secret_b32: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE auth_sessions SET pending_secret = ?2 WHERE token_hash = ?1",
-        params![id, secret_b32],
+        "UPDATE auth_sessions SET pending_secret = ?2, pending_secret_expires = ?3 WHERE token_hash = ?1",
+        params![id, secret_b32, now + PARTIAL_TTL_MS],
     )?;
     Ok(())
 }
@@ -244,7 +256,13 @@ pub fn revoke_others(conn: &Connection, user: i64, keep: &str) -> rusqlite::Resu
     )
 }
 
-/// Delete expired sessions. Returns how many.
+/// Delete expired sessions and null expired enrolment secrets. Returns
+/// how many sessions went.
 pub fn sweep(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE auth_sessions SET pending_secret = NULL, pending_secret_expires = NULL
+         WHERE pending_secret_expires <= ?1",
+        [now],
+    )?;
     conn.execute("DELETE FROM auth_sessions WHERE expires_at <= ?1", [now])
 }

@@ -39,6 +39,7 @@ const STEPS: &[&str] = &[
         expires_at INTEGER NOT NULL,
         authenticated_at INTEGER,
         pending_secret TEXT,
+        pending_secret_expires INTEGER,
         email_code_hash TEXT,
         email_code_expires INTEGER,
         email_code_attempts INTEGER NOT NULL DEFAULT 0,
@@ -77,4 +78,7 @@ const STEPS: &[&str] = &[
         tenant_id TEXT,
         detail TEXT NOT NULL DEFAULT ''
     ) STRICT;",
+    // 2: the dev stub's session table (F1, base schema): auth_sessions
+    // replaced it; nothing reads it.
+    "DROP TABLE IF EXISTS sessions;",
 ];

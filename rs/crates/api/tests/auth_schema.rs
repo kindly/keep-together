@@ -33,6 +33,18 @@ fn tables(path: &Path) -> Vec<String> {
         .collect()
 }
 
+fn has_table(path: &Path, name: &str) -> bool {
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+        == 1
+}
+
 #[test]
 fn a_release_adding_auth_is_copied_first_and_rolls_back() {
     let tmp = tempfile::tempdir().unwrap();
@@ -96,6 +108,10 @@ fn a_release_adding_auth_is_copied_first_and_rolls_back() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(tables(&platform).is_empty());
+    assert!(
+        has_table(&platform, "sessions"),
+        "the previous release's table is back"
+    );
     let auth_version: i64 = rusqlite::Connection::open(&platform)
         .unwrap()
         .query_row(

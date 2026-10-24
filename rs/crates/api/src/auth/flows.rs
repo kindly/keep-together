@@ -419,7 +419,7 @@ pub async fn enrol_totp(
     blocking(move || {
         st.store
             .platform()
-            .with_write(|tx| sessions::set_pending_secret(tx, &s.id, &pending))
+            .with_write(|tx| sessions::set_pending_secret(tx, &s.id, &pending, contracts::now_ms()))
     })
     .await?;
     Ok(Json(TotpEnrolment {

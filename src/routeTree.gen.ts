@@ -10,6 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AccountRouteImport } from './routes/account'
+import { Route as InviteRouteImport } from './routes/invite'
+import { Route as ResetRouteImport } from './routes/reset'
+import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as TSlugRouteImport } from './routes/t.$slug'
 import { Route as TSlugIndexRouteImport } from './routes/t.$slug.index'
 import { Route as TSlugSettingsRouteImport } from './routes/t.$slug.settings'
@@ -23,12 +27,33 @@ import { Route as TSlugSettingsIndexRouteImport } from './routes/t.$slug.setting
 import { Route as TSlugSettingsFieldsRouteImport } from './routes/t.$slug.settings.fields'
 import { Route as TSlugSettingsGroupsRouteImport } from './routes/t.$slug.settings.groups'
 import { Route as TSlugSettingsIdentifiersRouteImport } from './routes/t.$slug.settings.identifiers'
+import { Route as TSlugSettingsMembersRouteImport } from './routes/t.$slug.settings.members'
 import { Route as TSlugSettingsSourcesRouteImport } from './routes/t.$slug.settings.sources'
 import { Route as TSlugSettingsTagsRouteImport } from './routes/t.$slug.settings.tags'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AccountRoute = AccountRouteImport.update({
+  id: '/account',
+  path: '/account',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InviteRoute = InviteRouteImport.update({
+  id: '/invite',
+  path: '/invite',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetRoute = ResetRouteImport.update({
+  id: '/reset',
+  path: '/reset',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignInRoute = SignInRouteImport.update({
+  id: '/sign-in',
+  path: '/sign-in',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TSlugRoute = TSlugRouteImport.update({
@@ -97,6 +122,11 @@ const TSlugSettingsIdentifiersRoute =
     path: '/identifiers',
     getParentRoute: () => TSlugSettingsRoute,
   } as any)
+const TSlugSettingsMembersRoute = TSlugSettingsMembersRouteImport.update({
+  id: '/members',
+  path: '/members',
+  getParentRoute: () => TSlugSettingsRoute,
+} as any)
 const TSlugSettingsSourcesRoute = TSlugSettingsSourcesRouteImport.update({
   id: '/sources',
   path: '/sources',
@@ -110,6 +140,10 @@ const TSlugSettingsTagsRoute = TSlugSettingsTagsRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/account': typeof AccountRoute
+  '/invite': typeof InviteRoute
+  '/reset': typeof ResetRoute
+  '/sign-in': typeof SignInRoute
   '/t/$slug': typeof TSlugRouteWithChildren
   '/t/$slug/settings': typeof TSlugSettingsRouteWithChildren
   '/t/$slug/tags': typeof TSlugTagsRoute
@@ -121,6 +155,7 @@ export interface FileRoutesByFullPath {
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
+  '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
@@ -128,6 +163,10 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/account': typeof AccountRoute
+  '/invite': typeof InviteRoute
+  '/reset': typeof ResetRoute
+  '/sign-in': typeof SignInRoute
   '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug': typeof TSlugIndexRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
@@ -137,6 +176,7 @@ export interface FileRoutesByTo {
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
+  '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts': typeof TSlugContactsIndexRoute
@@ -145,6 +185,10 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/account': typeof AccountRoute
+  '/invite': typeof InviteRoute
+  '/reset': typeof ResetRoute
+  '/sign-in': typeof SignInRoute
   '/t/$slug': typeof TSlugRouteWithChildren
   '/t/$slug/settings': typeof TSlugSettingsRouteWithChildren
   '/t/$slug/tags': typeof TSlugTagsRoute
@@ -156,6 +200,7 @@ export interface FileRoutesById {
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
+  '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
@@ -165,6 +210,10 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/account'
+    | '/invite'
+    | '/reset'
+    | '/sign-in'
     | '/t/$slug'
     | '/t/$slug/settings'
     | '/t/$slug/tags'
@@ -176,6 +225,7 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/identifiers'
+    | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/tags'
     | '/t/$slug/contacts/'
@@ -183,6 +233,10 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/account'
+    | '/invite'
+    | '/reset'
+    | '/sign-in'
     | '/t/$slug/tags'
     | '/t/$slug'
     | '/t/$slug/contacts/$contactId'
@@ -192,6 +246,7 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/identifiers'
+    | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/tags'
     | '/t/$slug/contacts'
@@ -199,6 +254,10 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/account'
+    | '/invite'
+    | '/reset'
+    | '/sign-in'
     | '/t/$slug'
     | '/t/$slug/settings'
     | '/t/$slug/tags'
@@ -210,6 +269,7 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/identifiers'
+    | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/tags'
     | '/t/$slug/contacts/'
@@ -218,6 +278,10 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AccountRoute: typeof AccountRoute
+  InviteRoute: typeof InviteRoute
+  ResetRoute: typeof ResetRoute
+  SignInRoute: typeof SignInRoute
   TSlugRoute: typeof TSlugRouteWithChildren
 }
 
@@ -228,6 +292,34 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/account': {
+      id: '/account'
+      path: '/account'
+      fullPath: '/account'
+      preLoaderRoute: typeof AccountRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invite': {
+      id: '/invite'
+      path: '/invite'
+      fullPath: '/invite'
+      preLoaderRoute: typeof InviteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset': {
+      id: '/reset'
+      path: '/reset'
+      fullPath: '/reset'
+      preLoaderRoute: typeof ResetRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sign-in': {
+      id: '/sign-in'
+      path: '/sign-in'
+      fullPath: '/sign-in'
+      preLoaderRoute: typeof SignInRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/t/$slug': {
@@ -321,6 +413,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugSettingsIdentifiersRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
+    '/t/$slug/settings/members': {
+      id: '/t/$slug/settings/members'
+      path: '/members'
+      fullPath: '/t/$slug/settings/members'
+      preLoaderRoute: typeof TSlugSettingsMembersRouteImport
+      parentRoute: typeof TSlugSettingsRoute
+    }
     '/t/$slug/settings/sources': {
       id: '/t/$slug/settings/sources'
       path: '/sources'
@@ -342,6 +441,7 @@ interface TSlugSettingsRouteChildren {
   TSlugSettingsFieldsRoute: typeof TSlugSettingsFieldsRoute
   TSlugSettingsGroupsRoute: typeof TSlugSettingsGroupsRoute
   TSlugSettingsIdentifiersRoute: typeof TSlugSettingsIdentifiersRoute
+  TSlugSettingsMembersRoute: typeof TSlugSettingsMembersRoute
   TSlugSettingsSourcesRoute: typeof TSlugSettingsSourcesRoute
   TSlugSettingsTagsRoute: typeof TSlugSettingsTagsRoute
   TSlugSettingsIndexRoute: typeof TSlugSettingsIndexRoute
@@ -351,6 +451,7 @@ const TSlugSettingsRouteChildren: TSlugSettingsRouteChildren = {
   TSlugSettingsFieldsRoute: TSlugSettingsFieldsRoute,
   TSlugSettingsGroupsRoute: TSlugSettingsGroupsRoute,
   TSlugSettingsIdentifiersRoute: TSlugSettingsIdentifiersRoute,
+  TSlugSettingsMembersRoute: TSlugSettingsMembersRoute,
   TSlugSettingsSourcesRoute: TSlugSettingsSourcesRoute,
   TSlugSettingsTagsRoute: TSlugSettingsTagsRoute,
   TSlugSettingsIndexRoute: TSlugSettingsIndexRoute,
@@ -386,6 +487,10 @@ const TSlugRouteWithChildren = TSlugRoute._addFileChildren(TSlugRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AccountRoute: AccountRoute,
+  InviteRoute: InviteRoute,
+  ResetRoute: ResetRoute,
+  SignInRoute: SignInRoute,
   TSlugRoute: TSlugRouteWithChildren,
 }
 export const routeTree = rootRouteImport

@@ -1,9 +1,11 @@
-import { ConvexError } from 'convex/values'
-import type { AuthErrorData } from '../../convex/lib/authErrors'
+import { RustApiError } from './data/rust/client'
 
 export const WRONG_CREDENTIALS = 'Wrong email or password.'
-export const ACCOUNT_EXISTS =
-  'Could not create an account with that email. If you already have one, sign in instead.'
+export const WRONG_CODE = "That code didn't work. Check it and try again."
+export const RATE_LIMITED = 'Too many attempts. Wait a minute and try again.'
+export const SESSION_ENDED = 'Your sign-in expired. Start again.'
+export const LINK_EXPIRED =
+  'This link has expired or was already used. Ask for a new one.'
 export const NETWORK =
   'Could not reach the server. Check your connection and try again.'
 export const UNEXPECTED = 'Something went wrong, please try again.'
@@ -11,36 +13,37 @@ export const UNEXPECTED = 'Something went wrong, please try again.'
 export const weakPasswordMessage = (minLength: number) =>
   `Password must be at least ${minLength} characters.`
 
+/** Known refusals (`rejected.reason`) and what the forms say. */
+const REASONS: Record<string, string> = {
+  invalid_credentials: WRONG_CREDENTIALS,
+  wrong_code: WRONG_CODE,
+  link_expired: LINK_EXPIRED,
+}
+
 /**
- * What the sign-in form shows for an error from Convex Auth's `signIn`.
- * Never the raw message: on a dev deployment it carries the server stack
- * and local file paths, and on production it is a bare "Server Error".
- * Known failures arrive as ConvexErrors coded on the server
- * (convex/lib/authErrors.ts); the only thing matched here is the client's
- * own network failure, which never reaches the server.
+ * What an auth form shows for an error from the Rust API: our own
+ * sentences for the refusals we know, the server's sentence for other
+ * `rejected` (each is a fixed string of ours, never an error's text), the
+ * problems of an `invalid`, and a generic line for anything else.
  */
 export function authErrorMessage(err: unknown): string {
-  if (err instanceof ConvexError) {
-    const data = err.data as Partial<AuthErrorData> | undefined
-    switch (data?.kind) {
-      case 'invalidCredentials':
-        return WRONG_CREDENTIALS
-      case 'accountExists':
-        return ACCOUNT_EXISTS
-      case 'weakPassword':
-        return typeof data.minLength === 'number'
-          ? weakPasswordMessage(data.minLength)
-          : UNEXPECTED
-      default:
-        return UNEXPECTED
-    }
+  if (!(err instanceof RustApiError)) return UNEXPECTED
+  const e = err.error
+  if (err.status === 0) return NETWORK
+  switch (e.kind) {
+    case 'rejected':
+      return REASONS[e.reason] ?? e.message
+    case 'invalid':
+      return e.problems.map((p) => p.message).join(' ') || UNEXPECTED
+    case 'rate_limited':
+      return RATE_LIMITED
+    case 'unauthenticated':
+      return SESSION_ENDED
+    default:
+      return UNEXPECTED
   }
-  const message = err instanceof Error ? err.message : ''
-  if (
-    message.includes('Connection lost') ||
-    (err instanceof TypeError && /fetch|network|load failed/i.test(message))
-  ) {
-    return NETWORK
-  }
-  return UNEXPECTED
 }
+
+/** Whether `err` asks for a step-up before retrying. */
+export const needsStepUp = (err: unknown) =>
+  err instanceof RustApiError && err.error.kind === 'step_up_required'

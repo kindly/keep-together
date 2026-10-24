@@ -463,3 +463,87 @@ async fn dev_routes_need_a_loopback_host() {
         );
     }
 }
+
+fn pending_secrets(w: &World) -> i64 {
+    w.store
+        .platform()
+        .with_read(|c| {
+            c.query_row(
+                "SELECT count(*) FROM auth_sessions WHERE pending_secret IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .unwrap()
+}
+
+/// Enrol a new invitee up to the TOTP secret: (enrol cookie, secret).
+async fn enrolling(w: &World) -> (String, String) {
+    let ann = w.sign_in("ann@alpha.org").await;
+    w.post(
+        "/api/t/alpha/members/invite",
+        Some(&ann),
+        json!({ "email": "new@alpha.org", "role": "staff" }),
+    )
+    .await;
+    let token = w.emailed_token("new@alpha.org").await;
+    let r = w
+        .post(
+            "/api/auth/invite/accept",
+            None,
+            json!({ "token": token, "password": "new person's pw" }),
+        )
+        .await;
+    let enrol = r.cookie().unwrap();
+    let r = w
+        .post("/api/auth/enrol/totp", Some(&enrol), json!({}))
+        .await;
+    (enrol, r.body["secret"].as_str().unwrap().to_owned())
+}
+
+#[tokio::test]
+async fn the_enrolment_secret_is_cleared_when_enrolment_completes() {
+    let w = world();
+    let (enrol, secret) = enrolling(&w).await;
+    assert_eq!(pending_secrets(&w), 1);
+    let code = auth::totp::code_at(&secret, authworld::now_secs()).unwrap();
+    let r = w
+        .post(
+            "/api/auth/enrol/confirm",
+            Some(&enrol),
+            json!({ "method": "totp", "code": code }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(pending_secrets(&w), 0);
+}
+
+#[tokio::test]
+async fn an_expired_enrolment_secret_is_unusable_and_swept() {
+    let w = world();
+    let (enrol, secret) = enrolling(&w).await;
+    let now = contracts::now_ms();
+    w.store
+        .platform()
+        .with_write(|tx| {
+            tx.execute(
+                "UPDATE auth_sessions SET pending_secret_expires = ?1 WHERE pending_secret IS NOT NULL",
+                [now - 1],
+            )
+        })
+        .unwrap();
+    let code = auth::totp::code_at(&secret, authworld::now_secs()).unwrap();
+    let r = w
+        .post(
+            "/api/auth/enrol/confirm",
+            Some(&enrol),
+            json!({ "method": "totp", "code": code }),
+        )
+        .await;
+    assert_eq!(r.reason(), "wrong_code");
+    w.store
+        .platform()
+        .with_write(|tx| auth::sessions::sweep(tx, contracts::now_ms()))
+        .unwrap();
+    assert_eq!(pending_secrets(&w), 0);
+}

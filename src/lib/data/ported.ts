@@ -15,6 +15,11 @@ export type RouteId = FileRouteTypes['id']
 export const PORTED: ReadonlyArray<RouteId> = [
   '__root__',
   '/',
+  // A4: auth (the members page joins once A3's settings layout is ported).
+  '/sign-in',
+  '/reset',
+  '/invite',
+  '/account',
   '/t/$slug',
   '/t/$slug/',
   '/t/$slug/contacts/',

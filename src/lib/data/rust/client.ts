@@ -26,6 +26,8 @@ export function describe(error: ApiError): string {
       return 'Signed out: sign in again'
     case 'forbidden':
       return 'Not allowed'
+    case 'step_up_required':
+      return 'Confirm it’s you first'
     case 'not_found':
       return 'Not found'
     case 'stale':
@@ -36,6 +38,8 @@ export function describe(error: ApiError): string {
       return error.problems.map((p) => p.message).join('; ') || 'Invalid'
     case 'rejected':
       return error.message
+    case 'rate_limited':
+      return 'Too many attempts: wait a minute'
     case 'internal':
       return 'Could not save'
   }

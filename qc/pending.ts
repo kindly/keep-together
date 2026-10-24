@@ -36,8 +36,8 @@ export const PENDING: ReadonlyArray<Pending> = [
   { step: 'A3', file: 'settings.spec.ts' },
   { step: 'A3', title: /Switch group/ },
   { step: 'A3', title: /B's settings are not A's/ },
-  // A4: real auth (sign-up, passwords, sign-out flows).
-  { step: 'A4', file: 'auth.spec.ts' },
+  // A4's members page, under A3's settings layout.
+  { step: 'A3', file: 'members.spec.ts' },
   // B1: the Fields tab, bulk set, history with moments.
   { step: 'B1', title: /fields tab/ },
   { step: 'B1', title: /B's fields are not A's/ },
