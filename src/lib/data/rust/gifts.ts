@@ -450,7 +450,7 @@ export function useRecordGift() {
 /**
  * Correct, void or un-void a gift. Each resolves once the server has
  * committed, with the gift as it now is, which lands in the gift's query
- * (never what was sent); throws `RustApiError` when refused (`stale`
+ * (never what was sent, nor an answer older than what is shown); throws `RustApiError` when refused (`stale`
  * carries the slice as it is now).
  */
 export function useGiftWrites(id: string) {
@@ -471,8 +471,25 @@ export function useGiftWrites(id: string) {
     }
     ownWrite(slug, done.id, contract, done.counter)
     // A refetch begun before our commit would land the older view on top.
+    // One begun after it (an event's, reading a later commit) is lost
+    // when cancelled: it is run again once the answer is in.
+    const inFlight = qc.isFetching({ queryKey: view, exact: true }) > 0
     await qc.cancelQueries({ queryKey: view, exact: true })
-    qc.setQueryData(view, giftViewFromWire(done.view))
+    // So would this answer, if it was delayed past a later commit that a
+    // refetch has already shown: install it only if neither slice is
+    // behind what is cached, else read the gift again. Never the older
+    // financial state, not even for a moment.
+    const cached = qc.getQueryData<GiftView>(view)
+    if (
+      cached &&
+      (cached.giftVersion > done.view.giftVersion ||
+        cached.statusVersion > done.view.statusVersion)
+    )
+      void qc.invalidateQueries({ queryKey: view, exact: true })
+    else {
+      qc.setQueryData(view, giftViewFromWire(done.view))
+      if (inFlight) void qc.invalidateQueries({ queryKey: view, exact: true })
+    }
     // The panels, the recent list, the history, the donor's coverage.
     void qc.invalidateQueries({
       queryKey: keys.gifts(slug),

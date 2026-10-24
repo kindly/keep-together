@@ -1659,3 +1659,34 @@ async fn every_gift_route_keeps_two_orgs_apart() {
         Value::Null
     );
 }
+
+/// codex C1 #9: pence travel as JSON numbers, so an amount past 2^53 − 1
+/// would reach the SPA rounded. The largest exact one records and reads
+/// back exactly; one more is refused, the allocation too, storing nothing.
+#[tokio::test]
+async fn amounts_stop_at_the_largest_integer_javascript_holds_exactly() {
+    let g = setup().await;
+    let max = giving::PENCE_MAX;
+    assert_eq!(max, 9_007_199_254_740_991);
+    let out = g
+        .record(json!({
+            "amount": max,
+            "allocations": [{ "sourceCodeId": g.street.version, "amount": max }],
+        }))
+        .await;
+    let view = g.gift(out["giftId"].as_str().unwrap()).await;
+    assert_eq!(view["amount"].as_i64(), Some(max));
+    assert_eq!(view["allocations"][0]["amount"].as_i64(), Some(max));
+
+    let before = g.fingerprint("alpha");
+    for (amount, share) in [(max + 1, max + 1), (max, max + 1)] {
+        let out = g
+            .refused(json!({
+                "amount": amount,
+                "allocations": [{ "sourceCodeId": g.street.version, "amount": share }],
+            }))
+            .await;
+        assert_eq!(out["kind"], "invalid", "{out}");
+    }
+    assert_eq!(g.fingerprint("alpha"), before);
+}

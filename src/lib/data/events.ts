@@ -92,7 +92,9 @@ const INVALIDATES: Partial<
 
 /**
  * Writes this tab made and has already refetched after (the save hooks
- * call `ownWrite` with each answer): their events change nothing here.
+ * call `ownWrite` with each answer): their events refetch only what
+ * shows the entity elsewhere (gifts showing a donor or code; see
+ * `applyEvent`), not the entity's own reads.
  * Only when the answer arrives first: the api publishes after commit,
  * before it writes the response, so the event can win the race. Then the
  * event refetches what the save's own invalidation refetches too, and
@@ -156,7 +158,16 @@ function invalidate(
 
 /** Apply one event to the cache. Exported for the tests. */
 export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
+  // Other entities' reads that show this one. Run for our own writes
+  // too: a save hook refreshes its own entity's reads, not these (a
+  // donor renamed here still shows its old name on gifts otherwise).
+  // A code's first use marks it used: the tree offers archive, not delete.
+  if (e.contract === 'contacts.acquisition') invalidate(qc, keys.sources(slug))
+  // B2: gifts show their donor's name and address and their codes' names.
+  if (e.entity === 'contacts' || e.entity === 'source_codes')
+    invalidate(qc, keys.gifts(slug))
   const key = ownKey(slug, e.id, e.contract, e.counter)
+  // Our own write's echo: its hook has refetched the entity's reads.
   if (own.delete(key)) return
   const invalidates = INVALIDATES[e.entity]
   if (!invalidates) {
@@ -164,11 +175,6 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
     return
   }
   for (const queryKey of invalidates(slug, e)) invalidate(qc, queryKey)
-  // A code's first use marks it used: the tree offers archive, not delete.
-  if (e.contract === 'contacts.acquisition') invalidate(qc, keys.sources(slug))
-  // B2: gifts show their donor's name and address and their codes' names.
-  if (e.entity === 'contacts' || e.entity === 'source_codes')
-    invalidate(qc, keys.gifts(slug))
   if (e.entity === 'contacts') {
     // The view only if this is newer than the counter it holds (an echo
     // of a refetch already made changes nothing); its history always. A
@@ -184,12 +190,17 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
   }
 }
 
-/** The last event id each tenant's stream got (see the top). */
-const cursors = new Map<string, number>()
+/**
+ * The last event id each tenant's stream got (see the top). Opaque:
+ * `<generation>.<seq>`, the generation telling a file put back from a
+ * backup from the history this tab saw (the server resets a cursor of
+ * another generation).
+ */
+const cursors = new Map<string, string>()
 
 /** A cold load's `/boot`: the stream opens after its snapshot. */
-export function setCursor(slug: string, seq: number) {
-  cursors.set(slug, seq)
+export function setCursor(slug: string, cursor: string) {
+  cursors.set(slug, cursor)
 }
 
 /** Waits before reopening a refused stream: 1 s, 2 s, 5 s, then 10 s. */
@@ -205,15 +216,17 @@ export function useOrgEvents(slug: string) {
     let failures = 0
     // Every event and reset carries an id: the cursor follows it.
     const seen = (m: MessageEvent) => {
-      const id = Number(m.lastEventId)
-      if (m.lastEventId !== '' && Number.isSafeInteger(id))
-        cursors.set(slug, id)
+      if (m.lastEventId !== '') cursors.set(slug, m.lastEventId)
     }
     const open = () => {
       const after = cursors.get(slug)
       const path = tenantPath(slug, 'events')
       const s = (source = new EventSource(
-        apiUrl(after === undefined ? path : `${path}?after=${after}`),
+        apiUrl(
+          after === undefined
+            ? path
+            : `${path}?after=${encodeURIComponent(after)}`,
+        ),
         { withCredentials: true },
       ))
       s.onopen = () => {

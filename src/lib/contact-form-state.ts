@@ -465,11 +465,22 @@ export function reduce(state: FormState, action: Action): FormState {
           dirty[slice] = isDirty(slice, state.local[slice], submitted as never)
         }
       }
-      // A stale slice keeps its old counter: the newer state has not been
-      // seen yet, and the subscription must be allowed to merge it in.
+      // A counter moves only with the state it stands for: a submitted
+      // slice the server saved or found unchanged, so `base` now holds
+      // what that counter means. Every other slice keeps its old counter:
+      // a stale one, a refused one (validity is checked before staleness,
+      // so another tab may have moved it), one not submitted (its counter
+      // comes without its rows). The newer state has not been seen yet,
+      // and the next delivery must be allowed to merge it in: adopting the
+      // counter alone would make that delivery look like an echo, and the
+      // next save of the slice would overwrite the other change unseen.
       const counters = { ...state.counters }
       for (const slice of SLICES) {
-        if (action.result.stale[slice] === undefined)
+        if (
+          action.submitted[slice] !== undefined &&
+          action.result.stale[slice] === undefined &&
+          !action.result.problems[slice]
+        )
           counters[slice] = action.result.counters[slice]
       }
       // An earlier notice is resolved once this save holds the counter it

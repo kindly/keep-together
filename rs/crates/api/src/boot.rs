@@ -9,7 +9,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use crate::auth::{Account, Me};
-use crate::events::head_seq;
+use crate::events::head_cursor;
 use crate::tenant::TenantInfo;
 use crate::timing::Timing;
 use crate::{ApiError, Tenant};
@@ -26,11 +26,10 @@ pub struct Boot {
     pub fields: Vec<FieldDefinition>,
     /// As `GET contacts` with no parameters.
     pub first_page: ContactPage,
-    /// The newest revision id in the snapshot `fields` and `firstPage`
-    /// were read from: open `/events?after=<seq>` so no change committed
-    /// since is missed.
-    #[ts(type = "number")]
-    pub seq: i64,
+    /// The stream cursor (`<generation>.<revision id>`) at the snapshot
+    /// `fields` and `firstPage` were read from: open `/events?after=<seq>`
+    /// so no change committed since is missed.
+    pub seq: String,
 }
 
 pub async fn boot(
@@ -44,7 +43,7 @@ pub async fn boot(
             Ok((
                 definitions(r)?,
                 queries::list(r, &ListQuery::default())?,
-                head_seq(r)?,
+                head_cursor(r)?,
             ))
         })
     )?;

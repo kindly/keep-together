@@ -1143,13 +1143,13 @@ fn restore_to_here_runs_only_the_slices_that_differ_in_one_named_group() {
     .unwrap();
     let mut ran = done.restored.clone();
     ran.sort();
-    // Fields had no revision by then: a slice never saved before the
-    // moment stays as it is (as Convex's restoreEntityTo). Never the
-    // archive switch.
-    assert_eq!(ran, ["contacts.details"]);
+    // Fields had no revision by then: a slice first saved after the
+    // moment goes back to empty (codex C1 #3; Convex's restoreEntityTo
+    // left it as it was). Never the archive switch.
+    assert_eq!(ran, ["contacts.details", "contacts.fields"]);
     let v = view(&world.a, &ann);
     assert_eq!(v.details.last_name, "Smith");
-    assert_eq!(v.fields.values, [value(&vol, &o[0])]);
+    assert!(v.fields.values.is_empty());
     assert!(v.archived);
     let h = r(&world.a, |c| page(c, &ann, None, 10));
     assert_eq!(
@@ -1273,4 +1273,36 @@ fn restore_to_here_is_bounded_by_the_moments_revision_not_its_millisecond() {
         )),
         Err(ContractError::NotFound)
     ));
+}
+
+/// Review M2 (C1 #3): a restore to before the contact's first field value
+/// empties the slice as a revision of that moment would: a field created
+/// after the moment keeps its value and is reported, an older one's value
+/// is cleared.
+#[test]
+fn a_restore_to_empty_keeps_values_of_fields_created_after_the_moment() {
+    let world = world();
+    let (old, oo) = field_at(&world.a, 1_000, "Region", &Kind::ALL, &["North"]);
+    let ann = add_at(&world.a, 2_000, person("Ann", "Smith"));
+    let (late, lo) = field_at(&world.a, 3_000, "Volunteer", &Kind::ALL, &["Yes"]);
+    set_values_at(
+        &world.a,
+        4_000,
+        &ann,
+        vec![value(&old, &oo[0]), value(&late, &lo[0])],
+    );
+    let done = at(&world.a, 5_000, |ctx| {
+        restore_contact(ctx, &ann, RestoreRequest::At { at: 2_500 })
+    })
+    .unwrap();
+    assert!(done.restored.iter().any(|c| c == "contacts.fields"));
+    assert_eq!(values_of(&world.a, &ann), [value(&late, &lo[0])]);
+    assert_eq!(done.skipped_fields.len(), 1);
+    assert_eq!(
+        (
+            done.skipped_fields[0].label.as_str(),
+            done.skipped_fields[0].reason
+        ),
+        ("Volunteer", FieldRestoreReason::AddedAfter)
+    );
 }

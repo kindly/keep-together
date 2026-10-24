@@ -256,6 +256,109 @@ test("a refetch in flight when the answer lands can't put the older view back", 
   expect(qc.getQueryData<GiftView>(view)).toMatchObject({ status: 'void' })
 })
 
+test('codex C1 #6: a delayed answer never replaces a newer gift; the gift is read again', async () => {
+  const view = keys.gift(SLUG, GIFT)
+  qc.setQueryData(view, giftViewFromWire(wireGift()))
+  const writes = mount(() => useGiftWrites(GIFT))
+  // A saves (giftVersion 0 → 1); the answer is slow.
+  let answer!: (r: Response) => void
+  answers.push(() => new Promise((r) => (answer = r)))
+  let done!: Promise<unknown>
+  act(() => {
+    done = writes().save(0, {
+      contactId: 'c1' as never,
+      receivedOn: '2026-10-20',
+      amount: 1000n,
+      method: 'card',
+      allocations: [{ key: 'k1', sourceCodeId: 's1' as never, amount: 1000n }],
+    })
+  })
+  // B commits version 2 and an event's refetch shows it first.
+  qc.setQueryData(
+    view,
+    giftViewFromWire(
+      wireGift({
+        amount: 3000,
+        allocations: [{ ...wireGift().allocations[0], amount: 3000 }],
+        giftVersion: 2,
+      }),
+    ),
+  )
+  // A's answer (version 1) lands late.
+  await act(async () => {
+    answer(
+      new Response(
+        JSON.stringify({
+          id: GIFT,
+          counter: 1,
+          view: wireGift({
+            amount: 1000,
+            allocations: [{ ...wireGift().allocations[0], amount: 1000 }],
+            giftVersion: 1,
+          }),
+        }),
+        { status: 200 },
+      ),
+    )
+    await done
+  })
+  // Version 1 never shows: version 2 stays, and the gift is read again.
+  expect(qc.getQueryData<GiftView>(view)).toMatchObject({
+    amount: 3000n,
+    giftVersion: 2,
+  })
+  expect(qc.getQueryState(view)?.isInvalidated).toBe(true)
+})
+
+test('review M1: an event’s refetch in flight when the answer lands is run again, so the newer gift wins', async () => {
+  const view = keys.gift(SLUG, GIFT)
+  const at = (amount: number, giftVersion: number) =>
+    wireGift({
+      amount,
+      allocations: [{ ...wireGift().allocations[0], amount }],
+      giftVersion,
+    })
+  // The gift's page is open at version 0.
+  answers.push(json(200, at(123456705, 0)))
+  const writes = mount(() => {
+    useGift(GIFT)
+    return useGiftWrites(GIFT)
+  })
+  await act(async () => {})
+  // B commits version 2; its event's refetch starts and hangs.
+  answers.push(() => new Promise<Response>(() => {}))
+  act(() =>
+    applyEvent(qc, SLUG, {
+      seq: 9,
+      entity: 'gifts',
+      id: GIFT,
+      contract: 'giving.gift',
+      counter: 2,
+    }),
+  )
+  await act(async () => {})
+  expect(qc.isFetching({ queryKey: view, exact: true })).toBe(1)
+  // A's answer (version 1) lands, cancelling that refetch; then the read
+  // run again answers version 2.
+  answers.push(json(200, { id: GIFT, counter: 1, view: at(1000, 1) }))
+  answers.push(json(200, at(3000, 2)))
+  await act(async () => {
+    await writes().save(0, {
+      contactId: 'c1' as never,
+      receivedOn: '2026-10-20',
+      amount: 1000n,
+      method: 'card',
+      allocations: [{ key: 'k1', sourceCodeId: 's1' as never, amount: 1000n }],
+    })
+  })
+  await vi.waitFor(() =>
+    expect(qc.getQueryData<GiftView>(view)).toMatchObject({
+      amount: 3000n,
+      giftVersion: 2,
+    }),
+  )
+})
+
 test('the record save sends JSON integer pence and refuses what JSON would round', async () => {
   const record = mount(() => useRecordGift())
   answers.push(

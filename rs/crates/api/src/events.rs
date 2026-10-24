@@ -3,17 +3,28 @@
 //! and refetch what they show; the stream can't leak more than a viewer
 //! may read.
 //!
-//! - Each change is an unnamed message: `id:` is the revision id (`seq`),
-//!   `data:` the event JSON.
-//! - `Last-Event-ID: n` (or `?after=n`, for the first connect, which
+//! - Each change is an unnamed message: `id:` is the cursor
+//!   `<generation>.<seq>` (the file's recovery generation, the revision
+//!   id), `data:` the event JSON.
+//! - `Last-Event-ID: g.n` (or `?after=g.n`, for the first connect, which
 //!   `EventSource` can't give a header; the header wins, since a browser
 //!   reconnect keeps the URL but sends its latest id) replays `revisions`
 //!   with `id > n`, at most [`REPLAY_MAX`]. Further behind, an unreadable
-//!   id, or an id *ahead* of the file (it was restored from a backup or
-//!   rolled back), gets one `event: reset` instead, whose `id:` is the
-//!   file's head; the client refetches everything. A subscriber that lags
-//!   the live channel is treated the same way.
-//! - A cold load opens the stream with `?after=` the `seq` its `/boot`
+//!   cursor, one of another generation, or one *ahead* of the file gets
+//!   one `event: reset` instead, whose `id:` is the file's head; the
+//!   client refetches everything. A subscriber that lags the live channel
+//!   is treated the same way.
+//! - A bare number is a tab on the bundle from before generations: it
+//!   gets ids it can keep (`Ids::Legacy`), so it resets once, not on
+//!   every reopen.
+//! - The generation is a random id in the org file ([`MIGRATION`]),
+//!   rotated whenever the file is put back from a copy (`restore.sh`,
+//!   `rollback-migration.sh`, so the restore drill too). A restored file's
+//!   revision ids are reused for different commands once writes carry on,
+//!   so a cursor's seq alone can't tell that history was replaced: a tab
+//!   at 100, a restore to 80 and new writes to 110 would replay nothing
+//!   of 81–100's replacements. The generation can.
+//! - A cold load opens the stream with `?after=` the cursor its `/boot`
 //!   response carried, so nothing committed in between is missed.
 //! - A keep-alive comment every 20 s.
 
@@ -40,6 +51,105 @@ use crate::{ApiError, Tenant, blocking};
 pub const REPLAY_MAX: i64 = 1000;
 pub const KEEP_ALIVE: Duration = Duration::from_secs(20);
 
+/// The org file's recovery generation: a random id, one row
+/// ([`generation`]), rotated by the scripts that put a file back from a
+/// copy: `UPDATE recovery SET generation = lower(hex(randomblob(16)))`.
+pub const MIGRATION: &str = "
+CREATE TABLE recovery (generation TEXT NOT NULL) STRICT;
+INSERT INTO recovery (generation) VALUES (lower(hex(randomblob(16))));
+";
+
+/// Give a file put back from a copy a new recovery generation. A file
+/// from before the table existed is left: it gets a fresh one when it
+/// migrates. `restore.sh` and `rollback-migration.sh` run the same SQL.
+pub fn rotate_generation(conn: &Connection) -> rusqlite::Result<()> {
+    let has: bool = conn.query_row(
+        "SELECT count(*) = 1 FROM sqlite_master WHERE type = 'table' AND name = 'recovery'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has {
+        conn.execute(
+            "UPDATE recovery SET generation = lower(hex(randomblob(16)))",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// The file's recovery generation (see the top).
+pub fn generation(conn: &Connection) -> rusqlite::Result<String> {
+    conn.query_row("SELECT generation FROM recovery LIMIT 1", [], |row| {
+        row.get(0)
+    })
+}
+
+/// An event id: `<generation>.<seq>`.
+fn cursor_id(generation: &str, seq: i64) -> String {
+    format!("{generation}.{seq}")
+}
+
+/// The cursor at this snapshot's head: what `/boot` hands the stream.
+pub fn head_cursor(conn: &Connection) -> rusqlite::Result<String> {
+    Ok(cursor_id(&generation(conn)?, head_seq(conn)?))
+}
+
+/// How a stream writes its ids.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ids {
+    /// `<generation>.<seq>`.
+    Cursor,
+    /// For a tab still running the bundle from before generations, which
+    /// keeps only an id that is a safe integer (and else reopens with its
+    /// old number, a reset every time): `tag << 32 | seq`, the tag
+    /// (1..=2^20) taken from the generation, so the id stays below 2^53
+    /// and a restore still resets it. Such a tab resets once, then
+    /// resumes like any other.
+    Legacy,
+}
+
+const LEGACY_SHIFT: u32 = 32;
+
+/// The generation's tag in a legacy id: its first 20 bits, plus one (a
+/// pre-generation number, below 2^32, has tag 0).
+fn legacy_tag(generation: &str) -> i64 {
+    generation
+        .get(..5)
+        .and_then(|h| i64::from_str_radix(h, 16).ok())
+        .unwrap_or(0)
+        + 1
+}
+
+impl Ids {
+    fn id(self, generation: &str, seq: i64) -> String {
+        match self {
+            Ids::Legacy if (0..1 << LEGACY_SHIFT).contains(&seq) => {
+                ((legacy_tag(generation) << LEGACY_SHIFT) | seq).to_string()
+            }
+            _ => cursor_id(generation, seq),
+        }
+    }
+}
+
+/// How a cursor's stream writes ids, and the seq it names if it is of
+/// `generation` (else the client gets a reset).
+fn parse_cursor(cursor: &str, generation: &str) -> (Ids, Option<i64>) {
+    let cursor = cursor.trim();
+    if let Some((g, seq)) = cursor.split_once('.') {
+        return (
+            Ids::Cursor,
+            (g == generation).then(|| seq.parse().ok()).flatten(),
+        );
+    }
+    match cursor.parse::<i64>() {
+        Ok(n) if n >= 0 => {
+            let ours = n >> LEGACY_SHIFT == legacy_tag(generation);
+            (Ids::Legacy, ours.then_some(n & ((1 << LEGACY_SHIFT) - 1)))
+        }
+        _ => (Ids::Cursor, None),
+    }
+}
+
 enum Item {
     Change(OrgEvent),
     /// Refetch everything; resume after this seq.
@@ -47,13 +157,13 @@ enum Item {
 }
 
 impl Item {
-    fn event(&self) -> Event {
+    fn event(&self, generation: &str, ids: Ids) -> Event {
         match self {
             Item::Change(e) => Event::default()
-                .id(e.seq.to_string())
+                .id(ids.id(generation, e.seq))
                 .data(serde_json::to_string(e).unwrap_or_default()),
             Item::Reset(head) => Event::default()
-                .id(head.to_string())
+                .id(ids.id(generation, *head))
                 .event("reset")
                 .data(""),
         }
@@ -73,8 +183,8 @@ fn catch_up(db: &OrgDb, after: i64) -> Result<(Vec<Item>, i64), ApiError> {
     db.read(|r| {
         let head = head_seq(r)?;
         if after > head {
-            // The file went back in time (restore, rollback): ids after
-            // `head` will be reused for different commands.
+            // The file went back in time and its generation wasn't
+            // rotated: ids after `head` will be reused.
             return Ok((vec![Item::Reset(head)], head));
         }
         let mut stmt = r.prepare_cached(
@@ -113,18 +223,21 @@ struct State {
     queue: VecDeque<Item>,
     /// The last seq the client has (or was reset past).
     last: i64,
+    /// The file's recovery generation, in every id sent.
+    generation: String,
+    ids: Ids,
 }
 
 async fn next(mut s: State) -> Option<(Result<Event, Infallible>, State)> {
     loop {
         if let Some(item) = s.queue.pop_front() {
-            return Some((Ok(item.event()), s));
+            return Some((Ok(item.event(&s.generation, s.ids)), s));
         }
         match s.rx.recv().await {
             Ok(e) if e.seq <= s.last => continue,
             Ok(e) => {
                 s.last = e.seq;
-                return Some((Ok(Item::Change(e).event()), s));
+                return Some((Ok(Item::Change(e).event(&s.generation, s.ids)), s));
             }
             Err(RecvError::Lagged(_)) => {
                 let db = s.db.clone();
@@ -148,15 +261,24 @@ pub(crate) async fn stream(
     // Subscribe first, then read: nothing committed in between is missed
     // (duplicates are skipped by seq).
     let rx = db.subscribe();
-    let resume = last_event_id.map(|v| v.trim().parse::<i64>().ok());
+    let resume = last_event_id.map(str::to_owned);
     let read = db.clone();
-    let (queue, last) = blocking(move || match resume {
-        None => Ok((Vec::new(), head(&read)?)),
-        Some(None) => {
-            let head = head(&read)?;
-            Ok((vec![Item::Reset(head)], head))
-        }
-        Some(Some(after)) => catch_up(&read, after),
+    let (queue, last, generation, ids) = blocking(move || {
+        let generation = read.read(|r| generation(r)).map_err(ApiError::from)?;
+        // Unreadable, or of another generation (the file was put back
+        // from a copy since): refetch everything.
+        let (ids, queue, last) = match resume.map(|c| parse_cursor(&c, &generation)) {
+            None => (Ids::Cursor, Vec::new(), head(&read)?),
+            Some((ids, None)) => {
+                let head = head(&read)?;
+                (ids, vec![Item::Reset(head)], head)
+            }
+            Some((ids, Some(after))) => {
+                let (queue, last) = catch_up(&read, after)?;
+                (ids, queue, last)
+            }
+        };
+        Ok::<_, ApiError>((queue, last, generation, ids))
     })
     .await?;
     Ok(stream::unfold(
@@ -165,6 +287,8 @@ pub(crate) async fn stream(
             rx,
             queue: queue.into(),
             last,
+            generation,
+            ids,
         },
         next,
     ))
@@ -175,7 +299,7 @@ pub struct EventsQuery {
     after: Option<String>,
 }
 
-/// `GET /api/t/{slug}/events[?after=n]` (viewer and above).
+/// `GET /api/t/{slug}/events[?after=g.n]` (viewer and above).
 pub async fn events(
     Extension(tenant): Extension<Tenant>,
     Extension(account): Extension<Account>,
@@ -246,6 +370,8 @@ mod tests {
             rx,
             queue: VecDeque::new(),
             last: 1,
+            generation: "g".into(),
+            ids: Ids::Cursor,
         };
         let mut seen = vec![];
         for _ in 0..4 {

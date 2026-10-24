@@ -63,11 +63,11 @@ class FakeSource {
     this.onopen?.()
   }
   emit(e: OrgEvent) {
-    this.onmessage?.({ data: JSON.stringify(e), lastEventId: String(e.seq) })
+    this.onmessage?.({ data: JSON.stringify(e), lastEventId: `g1.${e.seq}` })
   }
   reset(head = 0) {
     for (const f of this.listeners.reset ?? [])
-      f({ data: '', lastEventId: String(head) })
+      f({ data: '', lastEventId: `g1.${head}` })
   }
   /** The server refused a reconnect: the browser gives up for good. */
   refused() {
@@ -509,7 +509,7 @@ describe('the contact page live, over the event stream', () => {
 
   test('a cold load’s boot cursor: the stream opens after it, and refetches nothing', async () => {
     const { setCursor } = await import('../events')
-    setCursor('a', 41)
+    setCursor('a', 'g1.41')
     const { ContactForm } = await import('../../../components/contact-form')
     const { useContact, useOrgEvents } = await import('../index')
     const Wrap = await providers('a')
@@ -529,7 +529,7 @@ describe('the contact page live, over the event stream', () => {
     )
     await vi.waitFor(() => expect(field('Known as')).toBe(''))
     const [events] = FakeSource.all
-    expect(events.url).toBe('/api/t/a/events?after=41')
+    expect(events.url).toBe('/api/t/a/events?after=g1.41')
     act(() => events.open())
     await new Promise((r) => setTimeout(r, 50))
     expect(gets()).toBe(1)
@@ -546,7 +546,7 @@ describe('the contact page live, over the event stream', () => {
       timeout: 2_000,
     })
     expect(FakeSource.all[1].url).toBe(
-      `/api/t/a/events?after=${server.counters.details}`,
+      `/api/t/a/events?after=g1.${server.counters.details}`,
     )
     // Its replay lands as usual, and nothing is refetched just for opening.
     const before = gets()
@@ -563,7 +563,7 @@ describe('the contact page live, over the event stream', () => {
     await vi.waitFor(() => expect(FakeSource.all).toHaveLength(2), {
       timeout: 2_000,
     })
-    expect(FakeSource.all[1].url).toBe('/api/t/a/events?after=77')
+    expect(FakeSource.all[1].url).toBe('/api/t/a/events?after=g1.77')
   })
 
   test('leaving the tenant and coming back replays from where it stopped', async () => {
@@ -574,7 +574,7 @@ describe('the contact page live, over the event stream', () => {
     expect(events.closed).toBe(true)
     root = createRoot(el)
     const again = await open(
-      `/api/t/a/events?after=${server.counters.details}`,
+      `/api/t/a/events?after=g1.${server.counters.details}`,
       'seen',
     )
     expect(FakeSource.all).toHaveLength(2)

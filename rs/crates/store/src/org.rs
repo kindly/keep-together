@@ -121,15 +121,24 @@ impl OrgDb {
     where
         E: From<rusqlite::Error>,
     {
-        let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        // Declared before `raw`, so dropped after it: on any exit, panic
+        // included, the transaction is rolled back first and then the
+        // connection made ready for the next one.
+        let mut writer = Writer {
+            conn: self.writer.lock().unwrap_or_else(|e| e.into_inner()),
+            scope: &self.scope,
+        };
+        // A panic that got past an earlier guard (or a poisoned lock) must
+        // not stop this transaction from beginning: `BEGIN IMMEDIATE` fails
+        // under `query_only`.
+        writer.ready();
         let raw = RawTx {
-            tx: conn.transaction_with_behavior(TransactionBehavior::Immediate)?,
+            tx: writer
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?,
             events: RefCell::new(Vec::new()),
             scope: &self.scope,
         };
-        // A panic in an earlier transaction's projection hook unwinds
-        // past its reset: start every transaction unscoped.
-        raw.narrow_writes_to(None);
         let out = f(&raw);
         // Whatever `f` did, the connection is writable again for the next
         // transaction (and for the rollback).
@@ -164,6 +173,30 @@ impl OrgDb {
     /// Committed changes from now on, in commit order.
     pub fn subscribe(&self) -> broadcast::Receiver<OrgEvent> {
         self.events.subscribe()
+    }
+}
+
+/// The locked writer connection, made ready again when dropped.
+struct Writer<'a> {
+    conn: std::sync::MutexGuard<'a, Connection>,
+    scope: &'a Scope,
+}
+
+impl Writer<'_> {
+    /// No open transaction, writable, unscoped: the state every write
+    /// begins from. Best effort; a failure shows at the next `BEGIN`.
+    fn ready(&mut self) {
+        if !self.conn.is_autocommit() {
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+        let _ = self.conn.pragma_update(None, "query_only", "OFF");
+        *self.scope.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+impl Drop for Writer<'_> {
+    fn drop(&mut self) {
+        self.ready();
     }
 }
 

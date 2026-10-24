@@ -160,6 +160,57 @@ pub struct PendingKey {
     pub since: i64,
 }
 
+/// Work an org file shows part way, per job: the keys to mark pending.
+type Unfinished = fn(&rusqlite::Connection) -> rusqlite::Result<Vec<String>>;
+
+/// Every job whose work an org file records as unfinished.
+const UNFINISHED: &[(&str, Unfinished)] = &[(crate::routes::fields::RETIRE_JOB, |c| {
+    Ok(contacts::fields::retiring_fields(c)?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect())
+})];
+
+/// At boot, after the migrations: mark pending any work an org file
+/// shows unfinished that `platform.db` doesn't list. A recovery copies
+/// `platform.db` and the org files at different moments (snapshots,
+/// replicas), so a retire started between the two is in the org file
+/// with no marker, and the job, visiting only marked orgs, would never
+/// carry it on. Each file is read once on its own connection: no handle
+/// stays open. Returns the markers added and the files that couldn't be
+/// read (logged; the boot goes on).
+pub fn reconcile_pending(store: &Store) -> Result<(usize, Vec<String>), StoreError> {
+    let mut added = 0;
+    let mut failed = Vec::new();
+    for id in store.each_org()? {
+        let found = store.read_org_file(&id, |c| {
+            let mut out = Vec::new();
+            for (job, unfinished) in UNFINISHED {
+                out.extend(unfinished(c)?.into_iter().map(|key| (*job, key)));
+            }
+            Ok(out)
+        });
+        let found = match found {
+            Ok(found) => found,
+            Err(StoreError::MissingFile(_)) => continue,
+            Err(e) => {
+                failed.push(format!("{id}: {e}"));
+                continue;
+            }
+        };
+        for (job, key) in found {
+            added += store.platform().with_write(|tx| {
+                tx.execute(
+                    "INSERT OR IGNORE INTO pending_jobs (tenant_id, job, key, since)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![id.as_str(), job, key, contracts::now_ms()],
+                )
+            })?;
+        }
+    }
+    Ok((added, failed))
+}
+
 /// How old a marker must be before a job may clear it for work it finds
 /// not started: the marker is written before the work's first commit
 /// (write-ahead), so a fresh one may belong to work about to start.

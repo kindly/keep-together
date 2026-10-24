@@ -135,6 +135,12 @@ pub fn prepare_suppression(mut p: Payload) -> Result<Payload, ContractError> {
     if p.address_normalized.is_empty() {
         problems.push(Problem::new("addressNormalized", "Address needed"));
     }
+    if contacts::rules::too_long(&p.address_normalized, contacts::rules::EMAIL_MAX) {
+        problems.push(Problem::new(
+            "addressNormalized",
+            format!("At most {} characters", contacts::rules::EMAIL_MAX),
+        ));
+    }
     // A suppression says why; only a release is a release.
     if p.suppressed == (p.reason == Reason::Release) {
         problems.push(Problem::new(

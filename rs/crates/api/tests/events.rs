@@ -106,7 +106,8 @@ impl Stream {
         let msg = self.next(Duration::from_secs(2)).await.expect("an event");
         assert_eq!(msg.event, None, "{msg:?}");
         let event: OrgEvent = serde_json::from_str(&msg.data).unwrap();
-        assert_eq!(msg.id, Some(event.seq.to_string()));
+        let seq = msg.id.as_deref().and_then(|id| id.split_once('.'));
+        assert_eq!(seq.map(|(_, n)| n), Some(event.seq.to_string().as_str()));
         event
     }
 
@@ -114,6 +115,25 @@ impl Stream {
         let msg = self.next(Duration::from_millis(300)).await;
         assert!(msg.is_none(), "unexpected {msg:?}");
     }
+}
+
+/// Alpha's cursor at `seq`: `<its recovery generation>.<seq>`.
+fn cursor(w: &World, seq: i64) -> String {
+    let generation = w
+        .store
+        .org(&w.alpha.id)
+        .unwrap()
+        .read(|r| api::events::generation(r))
+        .unwrap();
+    format!("{generation}.{seq}")
+}
+
+/// Alpha's legacy id at `seq`, for a tab on the bundle from before
+/// generations: `tag << 32 | seq`, tag = the generation's first 20 bits + 1.
+fn legacy(w: &World, seq: i64) -> String {
+    let generation = cursor(w, 0);
+    let tag = i64::from_str_radix(&generation[..5], 16).unwrap() + 1;
+    ((tag << 32) | seq).to_string()
 }
 
 async fn create(w: &World, slug: &str, cookie: &str, last: &str) -> Value {
@@ -200,7 +220,7 @@ async fn a_reconnect_replays_what_it_missed() {
         .unwrap()
         .read(|r| r.query_row("SELECT min(id) FROM revisions", [], |row| row.get(0)))
         .unwrap();
-    let (_, s) = Stream::open(&w, "alpha", &ann, Some(&first_seq.to_string())).await;
+    let (_, s) = Stream::open(&w, "alpha", &ann, Some(&cursor(&w, first_seq))).await;
     let mut s = s.unwrap();
     assert_eq!(s.change().await.id, ids[1]);
     assert_eq!(s.change().await.id, ids[2]);
@@ -225,8 +245,8 @@ async fn too_far_behind_or_unreadable_resets() {
         Ok::<_, contracts::ContractError>(())
     })
     .unwrap();
-    for last in ["0", "not-a-number"] {
-        let (_, s) = Stream::open(&w, "alpha", &ann, Some(last)).await;
+    for last in [cursor(&w, 0), "not-a-number".into()] {
+        let (_, s) = Stream::open(&w, "alpha", &ann, Some(&last)).await;
         let mut s = s.unwrap();
         let msg = s.next(Duration::from_secs(2)).await.unwrap();
         assert_eq!(msg.event.as_deref(), Some("reset"), "{last}");
@@ -234,7 +254,7 @@ async fn too_far_behind_or_unreadable_resets() {
         let head: i64 = db
             .read(|r| r.query_row("SELECT max(id) FROM revisions", [], |row| row.get(0)))
             .unwrap();
-        assert_eq!(msg.id, Some(head.to_string()), "{last}");
+        assert_eq!(msg.id, Some(cursor(&w, head)), "{last}");
         // After a reset the stream is live from now on.
         s.nothing().await;
         let c = create(&w, "alpha", &ann, "After").await;
@@ -244,7 +264,7 @@ async fn too_far_behind_or_unreadable_resets() {
     let head: i64 = db
         .read(|r| r.query_row("SELECT max(id) FROM revisions", [], |row| row.get(0)))
         .unwrap();
-    let from = (head - api::events::REPLAY_MAX).to_string();
+    let from = cursor(&w, head - api::events::REPLAY_MAX);
     let (_, s) = Stream::open(&w, "alpha", &ann, Some(&from)).await;
     let msg = s.unwrap().next(Duration::from_secs(2)).await.unwrap();
     assert_eq!(msg.event, None);
@@ -298,11 +318,11 @@ async fn an_id_ahead_of_the_file_resets_to_its_head() {
     let ann = w.login("ann@alpha.org").await;
     create(&w, "alpha", &ann, "One").await;
     create(&w, "alpha", &ann, "Two").await;
-    let (_, s) = Stream::open(&w, "alpha", &ann, Some("5000")).await;
+    let (_, s) = Stream::open(&w, "alpha", &ann, Some(&cursor(&w, 5000))).await;
     let mut s = s.unwrap();
     let msg = s.next(Duration::from_secs(2)).await.unwrap();
     assert_eq!(msg.event.as_deref(), Some("reset"));
-    assert_eq!(msg.id.as_deref(), Some("2"));
+    assert_eq!(msg.id, Some(cursor(&w, 2)));
     // A new command reuses id 3 and is delivered.
     let three = create(&w, "alpha", &ann, "Three").await;
     let e = s.change().await;
@@ -315,8 +335,8 @@ async fn a_cold_load_resumes_after_its_boot_seq() {
     let ann = w.login("ann@alpha.org").await;
     create(&w, "alpha", &ann, "Before").await;
     let (_, boot) = w.call("GET", "/api/t/alpha/boot", &ann, None).await;
-    let seq = boot["seq"].as_i64().unwrap();
-    assert_eq!(seq, 1);
+    let seq = boot["seq"].as_str().unwrap().to_owned();
+    assert_eq!(seq, cursor(&w, 1));
     // Someone saves between /boot and /events …
     let between = create(&w, "alpha", &ann, "Between").await;
     // … and `?after=` the boot's seq still delivers it.
@@ -326,7 +346,165 @@ async fn a_cold_load_resumes_after_its_boot_seq() {
         between["id"].as_str().unwrap()
     );
     // A browser reconnect keeps the URL but sends its newer id: the header wins.
-    let (_, s) = Stream::open_at(&w, "/api/t/alpha/events?after=0", &ann, Some("2")).await;
+    let (_, s) = Stream::open_at(
+        &w,
+        &format!("/api/t/alpha/events?after={}", cursor(&w, 0)),
+        &ann,
+        Some(&cursor(&w, 2)),
+    )
+    .await;
     let mut s = s.unwrap();
     s.nothing().await;
+}
+
+/// codex C1 #5: a tab at 3, the file put back to 2 (its generation
+/// rotated, as restore.sh and rollback-migration.sh do) and written on to
+/// 4. The tab's seq is inside the new history, so the seq alone would
+/// replay only 4 and miss that 3 is now a different command. Its
+/// generation is not the file's: reset. A bare seq (a tab from before
+/// generations) resets too.
+#[tokio::test]
+async fn a_cursor_from_before_a_restore_resets_though_its_seq_is_in_range() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    for last in ["One", "Two", "Three"] {
+        create(&w, "alpha", &ann, last).await;
+    }
+    let before = cursor(&w, 3);
+    let db = w.store.org(&w.alpha.id).unwrap();
+    db.write_raw(|raw| {
+        raw.conn().execute_batch(
+            "DELETE FROM revisions WHERE id = 3;
+             UPDATE recovery SET generation = lower(hex(randomblob(16)));",
+        )
+    })
+    .unwrap();
+    create(&w, "alpha", &ann, "Replacement").await;
+    create(&w, "alpha", &ann, "Four").await;
+    let head: i64 = db
+        .read(|r| r.query_row("SELECT max(id) FROM revisions", [], |row| row.get(0)))
+        .unwrap();
+    assert!(head > 3);
+    for (last, id) in [
+        (before, cursor(&w, head)),
+        ("3".to_owned(), legacy(&w, head)),
+    ] {
+        let (_, s) = Stream::open(&w, "alpha", &ann, Some(&last)).await;
+        let msg = s.unwrap().next(Duration::from_secs(2)).await.unwrap();
+        assert_eq!(msg.event.as_deref(), Some("reset"), "{last}");
+        assert_eq!(msg.id, Some(id), "{last}");
+    }
+    // The same generation still replays.
+    let (_, s) = Stream::open(&w, "alpha", &ann, Some(&cursor(&w, head - 1))).await;
+    assert_eq!(s.unwrap().change().await.seq, head);
+}
+
+/// codex C1 #5: `rollback-migration.sh` gives each org file it puts back
+/// a new recovery generation (restore.sh runs the same statement).
+#[test]
+fn a_rollback_rotates_the_recovery_generation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let store = store::Store::open(store::StoreConfig {
+        dir: dir.to_path_buf(),
+        org_migrations: api::schema::org_migrations(),
+        readers: 1,
+        max_open: store::StoreConfig::DEFAULT_MAX_OPEN,
+    })
+    .unwrap();
+    let t = store.create_tenant("alpha", "Alpha").unwrap();
+    let generation = || store.read_org_file(&t.id, api::events::generation).unwrap();
+    let before = generation();
+    // The boot copy a migrating boot would have left: this very file.
+    let boot = dir.join("premigrate/boot-000000000000001");
+    std::fs::create_dir_all(&boot).unwrap();
+    let name = format!("{}.db", t.id.as_str());
+    std::fs::write(boot.join("manifest"), format!("{name}\n")).unwrap();
+    rusqlite::Connection::open(dir.join("orgs").join(&name))
+        .unwrap()
+        .execute(
+            "VACUUM INTO ?1",
+            [boot
+                .join(format!("{}.v13.db", t.id.as_str()))
+                .to_str()
+                .unwrap()],
+        )
+        .unwrap();
+    std::fs::copy(dir.join("platform.db"), boot.join("platform.v1.db")).unwrap();
+    drop(store);
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../scripts/ops/rollback-migration.sh");
+    let out = std::process::Command::new("bash")
+        .arg(&script)
+        .arg(dir)
+        .arg("--apply")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let store = store::Store::open(store::StoreConfig {
+        dir: dir.to_path_buf(),
+        org_migrations: api::schema::org_migrations(),
+        readers: 1,
+        max_open: store::StoreConfig::DEFAULT_MAX_OPEN,
+    })
+    .unwrap();
+    let after = store.read_org_file(&t.id, api::events::generation).unwrap();
+    assert_ne!(after, before);
+    assert_eq!(after.len(), 32);
+}
+
+/// Review L2 (C1 #5): a tab still running the bundle from before
+/// generations keeps only an id that is a safe integer, and reopens with
+/// it. Its old number resets once, with an id it can keep; reopened with
+/// that id it resumes (no second reset); after a restore it resets again.
+#[tokio::test]
+async fn an_old_bundle_tab_resets_once_then_resumes() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    create(&w, "alpha", &ann, "One").await;
+    create(&w, "alpha", &ann, "Two").await;
+    // Its number from before the deploy: one reset, to a legacy id.
+    let (_, s) = Stream::open(&w, "alpha", &ann, Some("1")).await;
+    let mut s = s.unwrap();
+    let msg = s.next(Duration::from_secs(2)).await.unwrap();
+    assert_eq!(msg.event.as_deref(), Some("reset"));
+    let id = msg.id.unwrap();
+    assert_eq!(id, legacy(&w, 2));
+    let n: i64 = id.parse().unwrap();
+    assert!(n < 1 << 53, "a JavaScript safe integer");
+    // Live events carry legacy ids too.
+    create(&w, "alpha", &ann, "Three").await;
+    let msg = s.next(Duration::from_secs(2)).await.unwrap();
+    assert_eq!(msg.id, Some(legacy(&w, 3)));
+    // Reopened (`?after=`) with the id it kept: a replay, not a reset.
+    create(&w, "alpha", &ann, "Four").await;
+    let (_, s) = Stream::open_at(
+        &w,
+        &format!("/api/t/alpha/events?after={}", legacy(&w, 3)),
+        &ann,
+        None,
+    )
+    .await;
+    let msg = s.unwrap().next(Duration::from_secs(2)).await.unwrap();
+    assert_eq!(msg.event, None);
+    assert_eq!(msg.id, Some(legacy(&w, 4)));
+    // A restore since (the generation rotated): reset.
+    let kept = legacy(&w, 4);
+    w.store
+        .org(&w.alpha.id)
+        .unwrap()
+        .write_raw(|raw| {
+            raw.conn().execute_batch(
+                "UPDATE recovery SET generation = CASE WHEN generation LIKE 'fffff%'
+                 THEN '00000' ELSE 'fffff' END || substr(generation, 6)",
+            )
+        })
+        .unwrap();
+    let (_, s) = Stream::open(&w, "alpha", &ann, Some(&kept)).await;
+    let msg = s.unwrap().next(Duration::from_secs(2)).await.unwrap();
+    assert_eq!(msg.event.as_deref(), Some("reset"));
 }

@@ -86,6 +86,38 @@ fn is_date(s: &str) -> bool {
         })
 }
 
+// The widest stored text may be (characters; ADR 0015's unstorable
+// tier). Row counts are bounded too, so a list or a contact read stays
+// small however its text was entered (codex C1 #8).
+
+/// A name or label: a contact's name parts, an identifier type, a
+/// relationship label, an identifier value, an address line or town.
+pub const NAME_MAX: usize = 200;
+/// An email address (RFC 5321's 254 octets, counted as characters).
+pub const EMAIL_MAX: usize = 254;
+/// A phone number as typed, with any extension text.
+pub const PHONE_MAX: usize = 50;
+/// A postcode or ZIP as typed (an odd one is warned, not refused).
+pub const POSTCODE_MAX: usize = 20;
+/// A relationship's description.
+pub const DESCRIPTION_MAX: usize = 1000;
+
+/// `value` is longer than `max` characters.
+pub fn too_long(value: &str, max: usize) -> bool {
+    value.len() > max && value.chars().count() > max
+}
+
+/// `Invalid` naming `field` when `value` is over `max`.
+pub(crate) fn width(field: &str, value: &str, max: usize) -> Result<(), ContractError> {
+    if too_long(value, max) {
+        return Err(ContractError::invalid(
+            field,
+            format!("At most {max} characters"),
+        ));
+    }
+    Ok(())
+}
+
 fn trim(s: &mut String) {
     let t = s.trim();
     if t.len() != s.len() {
@@ -113,6 +145,29 @@ pub fn prepare_details(mut p: Details) -> Result<Details, ContractError> {
     blank_to_none(&mut p.deceased_date);
     blank_to_none(&mut p.client_key);
     let mut problems = Vec::new();
+    if p.client_key
+        .as_deref()
+        .is_some_and(|k| too_long(k, NAME_MAX))
+    {
+        problems.push(Problem::new(
+            "clientKey",
+            format!("At most {NAME_MAX} characters"),
+        ));
+    }
+    for (field, value) in [
+        ("title", &p.title),
+        ("firstName", &p.first_name),
+        ("lastName", &p.last_name),
+        ("nickname", &p.nickname),
+        ("name", &p.name),
+    ] {
+        if too_long(value, NAME_MAX) {
+            problems.push(Problem::new(
+                field,
+                format!("At most {NAME_MAX} characters"),
+            ));
+        }
+    }
     if p.kind == Kind::Individual {
         if p.last_name.is_empty() {
             problems.push(Problem::new("lastName", "An individual needs a last name"));
@@ -231,6 +286,7 @@ fn prepare_rows<T: Primary>(rows: &mut [T], field: &str) -> Result<(), ContractE
 pub fn prepare_methods(mut p: Methods) -> Result<Methods, ContractError> {
     for e in &mut p.emails {
         trim(&mut e.address);
+        width("emails", &e.address, EMAIL_MAX)?;
     }
     prepare_rows(&mut p.emails, "emails")?;
     let mut seen = HashSet::new();
@@ -241,6 +297,7 @@ pub fn prepare_methods(mut p: Methods) -> Result<Methods, ContractError> {
     }
     for ph in &mut p.phones {
         trim(&mut ph.number);
+        width("phones", &ph.number, PHONE_MAX)?;
     }
     prepare_rows(&mut p.phones, "phones")?;
     Ok(p)
@@ -257,9 +314,11 @@ pub fn prepare_addresses(mut p: Addresses) -> Result<Addresses, ContractError> {
         }
         for s in [&mut a.line1, &mut a.line2, &mut a.line3, &mut a.town] {
             trim(s);
+            width("addresses", s, NAME_MAX)?;
         }
         // Normalised but never rejected: a typo is storable and warned.
         a.postcode = a.postcode.trim().to_uppercase();
+        width("addresses", &a.postcode, POSTCODE_MAX)?;
     }
     prepare_rows(&mut p.addresses, "addresses")?;
     Ok(p)

@@ -739,3 +739,46 @@ async fn a_stop_between_the_marker_and_the_start_is_cleared_once_stale_and_after
     );
     assert_eq!(fields(&w, "alpha", &ann).await, json!([]));
 }
+
+/// codex C1 #2: an option saved at the last position a `u32` holds, then
+/// another added after it, was an overflow panic in a debug build, leaving
+/// the cached org unwritable. It is a 422, and the org writes on.
+#[tokio::test]
+async fn adding_after_an_option_at_the_last_position_is_refused_not_a_panic() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    let f = volunteer(&w, &ann).await;
+    let (s, o) = w
+        .call(
+            "POST",
+            "/api/t/alpha/fields/options",
+            &ann,
+            Some(json!({ "id": f.options[1], "expected": 0, "fieldId": f.id, "label": "Lapsed", "position": u32::MAX, "isActive": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{o}");
+    let add = json!({ "fieldId": f.id, "label": "Gone", "position": 0, "isActive": true });
+    let (s, e) = w
+        .call(
+            "POST",
+            "/api/t/alpha/fields/options",
+            &ann,
+            Some(add.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    // The org still takes writes: a reorder makes room, then the add goes.
+    let (s, r) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/fields/{}/reorder", f.id),
+            &ann,
+            Some(json!({ "order": [f.options[0], f.options[1]] })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let (s, o) = w
+        .call("POST", "/api/t/alpha/fields/options", &ann, Some(add))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{o}");
+}

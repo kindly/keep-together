@@ -36,6 +36,8 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(giving::MIGRATION),
         // 12: Gift Aid declarations (B2)
         M::up(giftaid::MIGRATION),
+        // 13: the recovery generation in event cursors (C1 fix)
+        M::up(crate::events::MIGRATION),
     ])
 }
 

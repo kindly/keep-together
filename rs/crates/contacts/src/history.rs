@@ -9,8 +9,8 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::REGISTRY;
 use crate::queries::counters;
-use crate::slices::field_restore_notes;
 pub use crate::slices::{FieldRestoreNote, FieldRestoreReason};
+use crate::slices::{empty_field_restore_notes, field_restore_notes};
 use crate::types::{RestoreRequest, Restored};
 
 /// Revisions per history page (Convex's panel asks for 10).
@@ -120,6 +120,8 @@ pub fn restore_contact(
     id: &str,
     req: RestoreRequest,
 ) -> Result<Restored, ContractError> {
+    // The moment a whole-contact restore went back to.
+    let mut moment = None;
     let restored = match req {
         RestoreRequest::Revision { revision_id } => {
             let owner: Option<(String, String, String)> = ctx
@@ -146,7 +148,10 @@ pub fn restore_contact(
             restore(ctx, &REGISTRY, revision_id, None)?;
             vec![contract]
         }
-        RestoreRequest::At { at } => restore_upto(ctx, id, Upto::At(at), at)?,
+        RestoreRequest::At { at } => {
+            moment = Some(at);
+            restore_upto(ctx, id, Upto::At(at), at)?
+        }
         RestoreRequest::ToRevision { to_revision } => {
             // The moment's own revision, of this contact: its time names
             // the group.
@@ -161,6 +166,7 @@ pub fn restore_contact(
                 )
                 .optional()?;
             let at = at.ok_or(ContractError::NotFound)?;
+            moment = Some(at);
             restore_upto(ctx, id, Upto::Revision(to_revision), at)?
         }
     };
@@ -179,9 +185,11 @@ pub fn restore_contact(
             )
             .optional()?
             .flatten();
-        match from {
-            Some(from) => field_restore_notes(ctx.tx.read(), id, from)?,
-            None => vec![],
+        match (from, moment) {
+            (Some(from), _) => field_restore_notes(ctx.tx.read(), id, from)?,
+            // Restored to empty: no revision named, the moment instead.
+            (None, Some(at)) => empty_field_restore_notes(ctx.tx.read(), id, at)?,
+            (None, None) => vec![],
         }
     } else {
         vec![]

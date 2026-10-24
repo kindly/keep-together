@@ -750,11 +750,21 @@ pub fn add_option(
     is_active: bool,
     source: Source,
 ) -> Result<Executed, ContractError> {
-    let position = options_of(ctx.tx.read(), field_id)?
+    // Positions are saved as given, so the last may be `u32::MAX`: no
+    // room after it is a refusal, not an overflow.
+    let position = match options_of(ctx.tx.read(), field_id)?
         .iter()
-        .map(|o| o.payload.position + 1)
+        .map(|o| o.payload.position)
         .max()
-        .unwrap_or(0);
+    {
+        None => 0,
+        Some(last) => last.checked_add(1).ok_or_else(|| {
+            ContractError::invalid(
+                "position",
+                "No room after the last option: reorder them first",
+            )
+        })?,
+    };
     execute(
         ctx,
         &FIELD_OPTION,

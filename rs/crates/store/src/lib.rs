@@ -333,6 +333,23 @@ impl Store {
         Ok(self.platform.tenants()?.into_iter().map(|t| t.id).collect())
     }
 
+    /// Read one organisation's file on a connection of its own, outside
+    /// the handle cache (a boot-time scan leaves no handle open). Checks
+    /// the stamp; `MissingFile` if the file isn't there.
+    pub fn read_org_file<T>(
+        &self,
+        id: &TenantId,
+        f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>,
+    ) -> Result<T, StoreError> {
+        let path = self.org_path(id);
+        if !path.exists() {
+            return Err(StoreError::MissingFile(path));
+        }
+        let conn = conn::open(&path, false, true)?;
+        org::check_stamp(&conn, &path, id)?;
+        Ok(f(&conn)?)
+    }
+
     /// Bring every `orgs/*.db` to the head schema before serving: 4 files
     /// at a time, each copied first (`VACUUM INTO
     /// premigrate/boot-<ms>/<id>.v<from>.db`) if it has migrations pending.

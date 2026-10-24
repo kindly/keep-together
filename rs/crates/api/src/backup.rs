@@ -535,6 +535,8 @@ const FUTURE_SKEW: time::Duration = time::Duration::minutes(10);
 ///   (staging's reset leaves old ones behind) are not restored.
 /// - An org with no usable copy is listed in `missing`; the rest are
 ///   still restored.
+/// - Each restored org file gets a new recovery generation
+///   (`events::rotate_generation`), so event cursors from before reset.
 pub async fn restore_latest(
     bucket: &dyn ObjectStore,
     env: &str,
@@ -579,7 +581,17 @@ pub async fn restore_latest(
         let keys = candidates.get(id.as_str()).unwrap_or(&no_keys);
         let target = data_dir.join("orgs").join(format!("{id}.db"));
         match fetch_newest_good(bucket, keys, &target, &mut out).await {
-            Some((key, size)) => out.files.push((id, key, size)),
+            Some((key, size)) => {
+                // Its history may now reuse revision ids a tab's event
+                // cursor names: a new generation resets those cursors.
+                off(move || {
+                    let conn = Connection::open(&target).map_err(|e| e.to_string())?;
+                    crate::events::rotate_generation(&conn)
+                        .map_err(|e| format!("recovery generation: {e}"))
+                })
+                .await?;
+                out.files.push((id, key, size))
+            }
             None => out.missing.push(id),
         }
     }

@@ -1,8 +1,9 @@
 #!/bin/sh
 # restore.sh litestream|snapshot <data-dir>
 #
-# Put platform.db and every org it lists back into an empty data dir, then
-# check each file (PRAGMA integrity_check) and print its row counts.
+# Put platform.db and every org it lists back into an empty data dir,
+# rotate each org's recovery generation, then check each file (PRAGMA
+# integrity_check) and print its row counts.
 # Timings go to stdout as `restore: <what> <seconds>s`, which the drill
 # records.
 #
@@ -89,6 +90,17 @@ snapshot)
   ;;
 esac
 echo "restore: all files $(secs "$started")s"
+
+# A new recovery generation in every org file (rs/crates/api/src/events.rs):
+# a tab's event cursor from before names the old one, so the stream resets
+# it instead of replaying from a seq this history reuses. A file from
+# before the table existed gets a fresh one when it migrates.
+for db in "$DATA"/orgs/*.db; do
+  [ -e "$db" ] || continue
+  if [ "$(sqlite3 "$db" "SELECT count(*) FROM sqlite_master WHERE name = 'recovery'")" = 1 ]; then
+    sqlite3 "$db" "UPDATE recovery SET generation = lower(hex(randomblob(16)))"
+  fi
+done
 
 # Checks: every restored file is intact; row counts for the record.
 fail=0

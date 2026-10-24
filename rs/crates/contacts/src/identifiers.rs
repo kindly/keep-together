@@ -136,6 +136,7 @@ pub fn prepare_identifiers(mut p: Identifiers) -> Result<Identifiers, ContractEr
         if t.len() != r.value.len() {
             r.value = t.to_owned();
         }
+        crate::rules::width("identifiers", &r.value, crate::rules::NAME_MAX)?;
     }
     mint_ids(&mut p.identifiers, |r| &mut r.key);
     let mut keys = HashSet::new();
@@ -177,6 +178,7 @@ pub fn prepare_identifier_type(
             "An identifier type needs a name",
         )]));
     }
+    crate::rules::width("name", &p.name, crate::rules::NAME_MAX)?;
     Ok(p)
 }
 
@@ -418,6 +420,11 @@ impl Contract for ContactIdentifiers {
     const PROJECTIONS: &'static [&'static str] = &[SEARCH_TABLE];
     type Payload = Identifiers;
     type State = IdentifierState;
+
+    /// Restore to a moment before the first revision: none.
+    fn empty(&self) -> Option<Identifiers> {
+        Some(Identifiers::default())
+    }
 
     fn prepare(&self, payload: Identifiers) -> Result<Identifiers, ContractError> {
         prepare_identifiers(payload)

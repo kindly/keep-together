@@ -442,3 +442,140 @@ async fn an_org_without_a_snapshot_is_reported_and_the_rest_restored() {
             .exists()
     );
 }
+
+/// codex C1 #4: a retire that started between the platform copy and the
+/// org copy. The org's snapshot has the field `retiring`; platform's has
+/// no `pending_jobs` marker, so the job (visiting only marked orgs) never
+/// carried it on. The boot's reconcile marks it, and the job finishes it.
+#[tokio::test]
+async fn a_restore_from_a_snapshot_taken_mid_retire_finishes_the_retire() {
+    use api::jobs::Job;
+    let tmp = tempfile::tempdir().unwrap();
+    let with_jobs = |dir: &Path| {
+        Store::open_with(
+            StoreConfig {
+                dir: dir.into(),
+                org_migrations: api::schema::org_migrations(),
+                readers: 1,
+                max_open: StoreConfig::DEFAULT_MAX_OPEN,
+            },
+            api::schema::PLATFORM_SCHEMAS,
+        )
+        .unwrap()
+    };
+    let store = with_jobs(tmp.path());
+    let a = store.create_tenant("alpha", "Alpha").unwrap();
+    let b = store.create_tenant("bravo", "Bravo").unwrap();
+    let field_in = |t: &Tenant| {
+        let db = store.org(&t.id).unwrap();
+        transact(&db, Some(1), |ctx| {
+            let id = contracts::execute(
+                ctx,
+                &contacts::fields::FIELD,
+                contacts::types::FieldPayload {
+                    label: "Volunteer status".into(),
+                    applies_to: vec![Kind::Individual],
+                    is_active: true,
+                },
+                contracts::Exec::create(Source::Ui),
+            )?
+            .id;
+            Ok::<_, contracts::ContractError>(id)
+        })
+        .unwrap()
+    };
+    let (fa, fb) = (field_in(&a), field_in(&b));
+    // A's retire has started (its first commit) with no marker in
+    // platform.db: what the two copies hold when the retire starts
+    // between them. B's field is live.
+    transact(&store.org(&a.id).unwrap(), Some(1), |ctx| {
+        contacts::fields::retire_start(ctx, &fa, Source::Ui)
+    })
+    .unwrap();
+    let bucket = Arc::new(InMemory::new());
+    SnapshotJob::new(SnapshotConfig {
+        data_dir: tmp.path().into(),
+        env: "test".into(),
+        bucket: bucket.clone(),
+    })
+    .run_once(NOON)
+    .await
+    .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    api::backup::restore_latest(bucket.as_ref(), "test", target.path(), LATER)
+        .await
+        .unwrap();
+    let restored = Arc::new(with_jobs(target.path()));
+    restored.migrate_all().unwrap();
+    assert!(
+        api::jobs::pending(&restored, "field-retire")
+            .unwrap()
+            .is_empty()
+    );
+    // The boot's reconcile: one marker, A's field, and no handle left open.
+    let (added, failed) = api::jobs::reconcile_pending(&restored).unwrap();
+    assert_eq!((added, failed.len()), (1, 0));
+    assert_eq!(restored.open_count(), 0);
+    let pending = api::jobs::pending(&restored, "field-retire").unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].0, a.id);
+    assert_eq!(pending[0].1[0].key, fa);
+    // Idempotent: a second boot adds nothing.
+    assert_eq!(api::jobs::reconcile_pending(&restored).unwrap().0, 0);
+
+    api::routes::fields::FieldRetire(restored.clone())
+        .run()
+        .await
+        .unwrap();
+    assert!(
+        api::jobs::pending(&restored, "field-retire")
+            .unwrap()
+            .is_empty()
+    );
+    let state = |t: &Tenant, id: &str| -> (bool, bool) {
+        restored
+            .org(&t.id)
+            .unwrap()
+            .read(|r| {
+                r.query_row(
+                    "SELECT retiring, retired FROM contact_fields WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            })
+            .unwrap()
+    };
+    assert!(state(&a, &fa).1, "A's retire finished");
+    assert_eq!(state(&b, &fb), (false, false), "B's field untouched");
+}
+
+/// codex C1 #5 (delta a): `keep-snapshot restore` (restore_latest) gives
+/// every org it restores a new recovery generation, so a tab's event
+/// cursor from the history it replaces resets instead of replaying from
+/// reused revision ids.
+#[tokio::test]
+async fn a_snapshot_restore_rotates_each_orgs_recovery_generation() {
+    let w = world();
+    let generation =
+        |store: &Store, t: &Tenant| store.read_org_file(&t.id, api::events::generation).unwrap();
+    let (ga, gb) = (generation(&w.store, &w.a), generation(&w.store, &w.b));
+    assert_ne!(ga, gb);
+    w.job.run_once(NOON).await.unwrap();
+    let target = tempfile::tempdir().unwrap();
+    api::backup::restore_latest(w.bucket.as_ref(), "test", target.path(), LATER)
+        .await
+        .unwrap();
+    let restored = open(target.path());
+    for (t, before) in [(&w.a, ga), (&w.b, gb)] {
+        let after = generation(&restored, t);
+        assert_ne!(after, before);
+        assert_eq!(after.len(), 32);
+    }
+    // The rows came back all the same.
+    let a = restored.org(&w.a.id).unwrap();
+    let n: i64 = a
+        .read(|r| r.query_row("SELECT count(*) FROM contacts", [], |row| row.get(0)))
+        .unwrap();
+    assert_eq!(n, 3);
+}

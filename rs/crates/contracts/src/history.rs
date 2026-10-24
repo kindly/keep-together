@@ -91,7 +91,9 @@ pub fn page(
                     source: source_from_db(&r.get::<_, String>(3)?),
                     group: r.get(4)?,
                     group_name: r.get(5)?,
-                    restored: r.get::<_, Option<i64>>(6)?.is_some(),
+                    // A slice restored to empty names no revision.
+                    restored: r.get::<_, Option<i64>>(6)?.is_some()
+                        || r.get::<_, String>(3)? == Source::Restore.as_str(),
                     at: r.get(7)?,
                 })
             },

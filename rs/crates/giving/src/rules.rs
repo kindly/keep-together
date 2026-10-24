@@ -10,6 +10,13 @@ pub const ALLOCATION_LIMIT: usize = 20;
 
 /// Longest card reference kept (a receipt or transaction id).
 pub const REFERENCE_MAX: usize = 200;
+/// The most pence an amount may be: 2^53 − 1, the largest integer a
+/// JavaScript number holds exactly. Pence travel as JSON numbers, so a
+/// larger one would reach the SPA rounded (codex C1 #9).
+pub const PENCE_MAX: i64 = (1 << 53) - 1;
+/// The widest a client key may be (characters): the SPA mints 32 hex;
+/// imports and seeds use their own keys.
+pub const CLIENT_KEY_MAX: usize = 200;
 
 /// Whether `value` is a real calendar date written YYYY-MM-DD.
 pub fn is_iso_date(value: &str) -> bool {
@@ -39,7 +46,7 @@ pub fn is_iso_date(value: &str) -> bool {
 }
 
 /// Normalise a gift and refuse what can't be stored: an amount of 0 or
-/// less, a date that isn't one, allocations missing, not positive or not
+/// less or over [`PENCE_MAX`], a date that isn't one, allocations missing, not positive or not
 /// summing to the amount, or a reference on a cash gift. Mints missing
 /// allocation keys; an empty reference is none.
 pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
@@ -49,8 +56,19 @@ pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
         .map(|r| r.trim().to_owned())
         .filter(|r| !r.is_empty());
     p.received_on = p.received_on.trim().to_owned();
+    if p.client_key
+        .as_ref()
+        .is_some_and(|k| contacts::rules::too_long(k, CLIENT_KEY_MAX))
+    {
+        problems.push(Problem::new(
+            "clientKey",
+            format!("At most {CLIENT_KEY_MAX} characters"),
+        ));
+    }
     if p.amount <= 0 {
         problems.push(Problem::new("amount", "The amount must be over £0"));
+    } else if p.amount > PENCE_MAX {
+        problems.push(Problem::new("amount", "The amount is too large"));
     }
     if !is_iso_date(&p.received_on) {
         problems.push(Problem::new("receivedOn", "Dates are YYYY-MM-DD"));
@@ -83,15 +101,21 @@ pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
     if keys.len() != p.allocations.len() {
         problems.push(Problem::new("allocations", "Duplicate row key"));
     }
-    if p.allocations.iter().any(|a| a.amount <= 0) {
+    let shares_ok = if p.allocations.iter().any(|a| a.amount <= 0) {
         problems.push(Problem::new("allocations", "Each share must be over £0"));
-    }
+        false
+    } else if p.allocations.iter().any(|a| a.amount > PENCE_MAX) {
+        problems.push(Problem::new("allocations", "A share is too large"));
+        false
+    } else {
+        true
+    };
     // Checked so a sum past i64 is "doesn't add up", never a wrap.
     let total = p
         .allocations
         .iter()
         .try_fold(0i64, |sum, a| sum.checked_add(a.amount));
-    if !p.allocations.is_empty() && total != Some(p.amount) {
+    if shares_ok && !p.allocations.is_empty() && total != Some(p.amount) {
         problems.push(Problem::new(
             "allocations",
             "The shares must add up to the amount",

@@ -120,6 +120,8 @@ const FIXTURES: &[&str] = &[
          'futureAndPast4y', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', '2026-10-20',
          'staffTickedNoEvidence', 'hmrc-2016-04', 'Ann', 'Smith', '1 Road', 'LS1 1AA',
          NULL, 1, 1000);",
+    // 13: the recovery generation (its row is the migration's own)
+    "UPDATE recovery SET generation = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d1';",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";

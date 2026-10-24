@@ -122,6 +122,7 @@ pub fn restore(
             source: Source::Restore,
             group,
             restored_from: Some(revision.id),
+            restored_at: None,
         },
     )
 }
@@ -159,8 +160,10 @@ pub fn canonical(payload: &Value) -> String {
 
 /// Restore a whole aggregate to its state at `at` (ms). Contracts are
 /// full-state, so no replay: re-execute the latest revision of each
-/// contract at or before `at`, skipping slices already in that state and
-/// any `exclude`d contract, in one named command group. Returns the
+/// contract at or before `at` (a slice first written after it goes back
+/// to its contract's `empty` state, if it has one), skipping slices
+/// already in that state and any `exclude`d contract, in one named
+/// command group. Returns the
 /// contracts restored (in the order they ran).
 pub fn restore_entity_to(
     ctx: &Ctx,
@@ -223,6 +226,10 @@ pub fn restore_entity_upto(
     };
 
     let mut to_restore = Vec::new();
+    // Slices first written after the moment: back to empty, if the
+    // contract has an empty state and the entity existed then.
+    let mut to_empty = Vec::new();
+    let mut existed = false;
     for (contract, latest_id) in latest {
         if exclude.contains(contract.as_str()) {
             continue;
@@ -253,7 +260,17 @@ pub fn restore_entity_upto(
             )
             .optional()?
             .flatten();
-        let Some(target) = target else { continue };
+        let Some(target) = target else {
+            if let Some(c) = registry.get(&contract)
+                && let Some(empty) = c.empty_value()
+                && let Some(l) = revision(ctx.tx.read(), latest_id)?
+                && canonical(&empty) != state(&l.revision)
+            {
+                to_empty.push((latest_id, c, empty));
+            }
+            continue;
+        };
+        existed = true;
         if target == latest_id {
             continue;
         }
@@ -267,10 +284,14 @@ pub fn restore_entity_upto(
             to_restore.push(t.revision);
         }
     }
-    if to_restore.is_empty() {
+    if !existed {
+        to_empty.clear();
+    }
+    if to_restore.is_empty() && to_empty.is_empty() {
         return Ok(vec![]);
     }
     to_restore.sort_by_key(|r| r.id);
+    to_empty.sort_by_key(|(latest, ..)| *latest);
     let label = label.map(str::to_owned).unwrap_or_else(|| match upto {
         Upto::At(at) => format!("restore to {at}"),
         Upto::Revision(id) => format!("restore to revision {id}"),
@@ -280,6 +301,32 @@ pub fn restore_entity_upto(
     for r in to_restore {
         restore(ctx, registry, r.id, Some(&group))?;
         restored.push(r.contract);
+    }
+    // The moment, so a slice's `restore_payload` keeps what it would for
+    // a revision of that time (field values of fields created since).
+    let moment = match upto {
+        Upto::At(at) => at,
+        Upto::Revision(id) => ctx
+            .tx
+            .read()
+            .query_row("SELECT at FROM revisions WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?
+            .unwrap_or(ctx.at),
+    };
+    for (_, contract, empty) in to_empty {
+        contract.execute_value(
+            ctx,
+            empty,
+            Exec {
+                target: Target::Update(entity_id),
+                expected: None,
+                source: Source::Restore,
+                group: Some(&group),
+                restored_from: None,
+                restored_at: Some(moment),
+            },
+        )?;
+        restored.push(contract.name().to_owned());
     }
     Ok(restored)
 }
