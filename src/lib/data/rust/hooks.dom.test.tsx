@@ -158,9 +158,11 @@ const ada: ContactView = {
     addresses: 0,
     fields: 0,
     archive: 0,
+    identifiers: 0,
     acquisition: 0,
   },
   warnings: [],
+  identifiers: [],
 }
 
 const json = (status: number, body: unknown) => ({ status, json: body })

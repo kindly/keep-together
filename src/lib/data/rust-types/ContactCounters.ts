@@ -3,4 +3,4 @@
 /**
  * Every slice's counter, as the form tracks them.
  */
-export type ContactCounters = { details: number, methods: number, addresses: number, archive: number, fields: number, acquisition: number, };
+export type ContactCounters = { details: number, methods: number, addresses: number, archive: number, fields: number, identifiers: number, acquisition: number, };

@@ -337,7 +337,7 @@ async fn the_form_round_trip() {
     assert_eq!(
         view["counters"],
         json!({ "details": 1, "methods": 1, "addresses": 1, "archive": 0, "fields": 0,
-               "acquisition": 0 })
+               "identifiers": 0, "acquisition": 0 })
     );
 
     // Single-slice archive: 409 stale with the current slice.

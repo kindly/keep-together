@@ -75,6 +75,7 @@ name = "api"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "comms",
  "contacts",
  "contracts",
  "futures-util",
@@ -352,6 +353,17 @@ dependencies = [
 [[package]]
 name = "comms"
 version = "0.1.0"
+dependencies = [
+ "contacts",
+ "contracts",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sources",
+ "store",
+ "tempfile",
+ "ts-rs",
+]
 
 [[package]]
 name = "contacts"

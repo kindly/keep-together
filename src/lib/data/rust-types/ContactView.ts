@@ -6,6 +6,7 @@ import type { ContactFieldValues } from "./ContactFieldValues";
 import type { ContactKind } from "./ContactKind";
 import type { ContactMethods } from "./ContactMethods";
 import type { ContactWarning } from "./ContactWarning";
+import type { IdentifierView } from "./IdentifierView";
 import type { SourceCodeDescription } from "./SourceCodeDescription";
 
 /**
@@ -19,4 +20,8 @@ number: number, kind: ContactKind, displayName: string, sortName: string, archiv
 /**
  * The acquisition code described, read now (null: none).
  */
-acquisition: SourceCodeDescription | null, counters: ContactCounters, warnings: Array<ContactWarning>, };
+acquisition: SourceCodeDescription | null, counters: ContactCounters, warnings: Array<ContactWarning>, 
+/**
+ * In the order entered, named by their types.
+ */
+identifiers: Array<IdentifierView>, };

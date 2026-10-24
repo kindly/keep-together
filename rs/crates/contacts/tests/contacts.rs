@@ -25,6 +25,8 @@ fn world() -> World {
         org_migrations: Migrations::new(vec![
             M::up(contracts::MIGRATION),
             M::up(contacts::MIGRATION),
+            M::up(contacts::DROP_TRIGRAM),
+            M::up(contacts::MIGRATION_IDENTIFIERS_NOTES),
             // A2: `get` reads the contact's acquisition code.
             M::up(sources::MIGRATION),
             M::up(contacts::acquisition::MIGRATION),
@@ -311,7 +313,8 @@ fn each_slice_has_its_own_counter_and_never_falsely_conflicts() {
             addresses: 1,
             archive: 0,
             fields: 0,
-            acquisition: 0
+            identifiers: 0,
+            acquisition: 0,
         }
     );
     // One revision per command, with contract name, version and the

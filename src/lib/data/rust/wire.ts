@@ -10,24 +10,11 @@ import type { Id } from '../../../../convex/_generated/dataModel'
 import type { FieldDefinition } from '../../../../convex/contacts/fieldTypes'
 import type { FieldSlot } from '../../../../convex/lib/fieldSlots'
 import type { ListFilters, ListRow } from '../../paged-list'
-import type { SliceName } from '../../contact-form-state'
 import type { ContactView, SearchArgs, SearchResult } from '../types'
 import type { ContactRow } from '../rust-types/ContactRow'
 import type { ContactView as WireContact } from '../rust-types/ContactView'
 import type { FieldDefinition as WireField } from '../rust-types/FieldDefinition'
 import type { SearchResult as WireSearch } from '../rust-types/SearchResult'
-
-/**
- * The slices the form saves on the Rust backend (no identifiers yet;
- * the acquisition code saves on its own, `useSetAcquisition`).
- */
-export type RustSlice = Exclude<SliceName, 'identifiers'>
-export const RUST_SLICES: Array<RustSlice> = [
-  'details',
-  'methods',
-  'addresses',
-  'fields',
-]
 
 /**
  * The list's and search's filters as query parameters (`ListQuery`,
@@ -103,7 +90,7 @@ export function searchFromWire(s: WireSearch): SearchResult {
 
 /**
  * The contact in the Convex view's shape (what the form renders), with
- * what Rust doesn't have left empty (no identifiers yet). The
+ * what Rust doesn't have yet left empty. The
  * root carries the fields the pages read; the cast covers the rest of
  * `Doc<'contacts'>` (tenantId, field slots), which no page reads.
  */
@@ -126,7 +113,7 @@ export function contactFromWire(
     addressesVersion: c.counters.addresses,
     fieldsVersion: c.counters.fields,
     archiveVersion: c.counters.archive,
-    identifiersVersion: 0,
+    identifiersVersion: c.counters.identifiers,
     acquisitionVersion: c.counters.acquisition,
     acquisitionCodeId: c.acquisition?.versionId,
   }
@@ -135,7 +122,7 @@ export function contactFromWire(
     emails: c.methods.emails,
     phones: c.methods.phones,
     addresses: c.addresses.addresses,
-    identifiers: [],
+    identifiers: c.identifiers,
     acquisition: c.acquisition,
     fields: c.fields.values.flatMap((v) => {
       const f = field.get(v.fieldId)

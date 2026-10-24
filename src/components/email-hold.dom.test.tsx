@@ -2,19 +2,16 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
-import { ConvexError } from 'convex/values'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { RustApiError } from '../lib/data/rust/client'
 import type { Hold } from '../lib/email-hold'
 import { EmailHold } from './email-hold'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const release = vi.fn()
-vi.mock('convex/react', () => ({ useMutation: () => release }))
-vi.mock('../lib/tenant', () => ({
-  useTenant: () => ({ _id: 'tenantA' }),
-  useIsAdmin: () => true,
-}))
+vi.mock('../lib/data', () => ({ useRelease: () => release }))
+vi.mock('../lib/tenant', () => ({ useIsAdmin: () => true }))
 
 const ADDRESS = 'ada@example.com'
 const HOLD: Hold = { reason: 'bounce', since: 1, saveVersion: 2 }
@@ -70,7 +67,6 @@ test('a double click sends one release, with the hold’s counter', async () => 
   })
   expect(release).toHaveBeenCalledTimes(1)
   expect(release).toHaveBeenCalledWith({
-    tenantId: 'tenantA',
     address: ADDRESS,
     expected: 2,
     note: '',
@@ -80,7 +76,11 @@ test('a double click sends one release, with the hold’s counter', async () => 
 
 test('not_held after a release is success: no error', async () => {
   release.mockRejectedValue(
-    new ConvexError({ kind: 'rejected', reason: 'not_held', message: 'x' }),
+    new RustApiError(422, {
+      kind: 'rejected',
+      reason: 'not_held',
+      message: 'x',
+    }),
   )
   render(HOLD)
   await openDialog()
@@ -89,7 +89,14 @@ test('not_held after a release is success: no error', async () => {
 })
 
 test('an error clears on retry and when the hold changes', async () => {
-  release.mockRejectedValue(new ConvexError({ kind: 'stale', current: 3 }))
+  release.mockRejectedValue(
+    new RustApiError(409, {
+      kind: 'stale',
+      contract: 'comms.suppression',
+      counter: 3,
+      current: {},
+    }),
+  )
   render(HOLD)
   await openDialog()
   await act(async () => buttons('Release').at(-1)!.click())

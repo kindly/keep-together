@@ -29,6 +29,7 @@ fn world() -> World {
             M::up(contracts::MIGRATION),
             M::up(contacts::MIGRATION),
             M::up(contacts::DROP_TRIGRAM),
+            M::up(contacts::MIGRATION_IDENTIFIERS_NOTES),
             M::up(sources::MIGRATION),
             M::up(contacts::acquisition::MIGRATION),
         ]),

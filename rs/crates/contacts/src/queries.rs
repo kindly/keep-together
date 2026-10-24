@@ -3,16 +3,17 @@
 //! contact's whole view, and its history. Each takes a plain `Connection`
 //! on one org file: a reader's snapshot, or the writer inside a command.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use contracts::{ContractError, Revision, Source};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::acquisition::{SourceFilter, acquisition_of, parse_source_filter, source_clause};
 use crate::fields::{field_row, option_row};
+use crate::identifiers::{contacts_with_identifier, identifier_views};
 use crate::number::{ParsedNumber, parse_number};
 use crate::projection::SEARCH_TABLE;
 use crate::rules::{looks_like_email, looks_like_uk_postcode, normalise_email, parse_search};
@@ -359,11 +360,12 @@ fn fts_hits(
 
 /// The contacts list with search text: one window of at most LIST_LIMIT
 /// rows. Exact matches first: a written contact number (check digit
-/// holds), an email address, a bare five-digit sequence, then a phone
+/// holds), an email address, an identifier, a bare five-digit sequence,
+/// then a phone
 /// number (normalised), then full-text hits in rank order. Without text,
 /// the first page of the list. The same rules as Convex's
-/// `contacts/queries:search`, minus identifiers and source codes (not in
-/// the spike).
+/// `contacts/queries:search`: an identifier of any type matches exactly,
+/// after an email and before a bare five-digit sequence.
 pub fn search(conn: &Connection, q: &SearchQuery) -> Result<SearchResult, ContractError> {
     let term = q.q.trim();
     let include_archived = q.include_archived.unwrap_or(false);
@@ -421,12 +423,26 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<SearchResult, Contra
         None => vec![],
     };
 
-    // A written number (Luhn-checked) leads; a bare five digits is weaker.
+    let by_identifier = contacts_with_identifier(conn, term)?;
+
+    // A written number (Luhn-checked) leads. A bare five-digit sequence is
+    // weaker: an old system's member number, kept as an identifier, is
+    // often five digits in the same range, so identifiers go first.
     let written = matches!(number, Some(ParsedNumber::Sequence { written: true, .. }));
     let candidates: Vec<String> = if written {
-        by_number.iter().chain(&by_email).cloned().collect()
+        by_number
+            .iter()
+            .chain(&by_email)
+            .chain(&by_identifier)
+            .cloned()
+            .collect()
     } else {
-        by_email.iter().chain(&by_number).cloned().collect()
+        by_email
+            .iter()
+            .chain(&by_identifier)
+            .chain(&by_number)
+            .cloned()
+            .collect()
     };
     let mut seen = HashSet::new();
     let mut rows: Vec<ContactRow> = rows_by_ids(conn, &candidates, &f)?
@@ -472,7 +488,7 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<SearchResult, Contra
 pub(crate) fn counters(conn: &Connection, id: &str) -> rusqlite::Result<Option<Counters>> {
     conn.prepare_cached(
         "SELECT details_version, methods_version, addresses_version, archive_version,
-                fields_version, acquisition_version
+                fields_version, identifiers_version, acquisition_version
          FROM contacts WHERE id = ?1",
     )?
     .query_row([id], |r| {
@@ -482,28 +498,109 @@ pub(crate) fn counters(conn: &Connection, id: &str) -> rusqlite::Result<Option<C
             addresses: r.get(2)?,
             archive: r.get(3)?,
             fields: r.get(4)?,
-            acquisition: r.get(5)?,
+            identifiers: r.get(5)?,
+            acquisition: r.get(6)?,
         })
     })
     .optional()
 }
 
-/// Up to this many other contacts using an address are looked up.
+/// Up to this many other contacts' rows for an address are read.
 const SHARERS_READ: usize = 50;
 const NAMED_SHARERS: usize = 3;
 
-fn shared_email_message(names: &[String], truncated: bool) -> String {
+/// Another contact using one of this contact's addresses.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Sharer {
+    pub id: String,
+    pub display_name: String,
+    pub archived: bool,
+}
+
+/// The other contacts using one address, oldest row first; `truncated`:
+/// more exist than were read, so any count is a lower bound.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct Sharers {
+    pub contacts: Vec<Sharer>,
+    pub truncated: bool,
+}
+
+/// For each of the contact's saved email rows (by key), the other contacts
+/// using its address: the "also used by" warning's input. Approximate by
+/// design (ADR 0015, advisory): at most SHARERS_READ rows per address, on
+/// the normalised-address index. Rows nobody else uses are left out.
+pub fn also_used_by(
+    conn: &Connection,
+    id: &str,
+    methods: &Methods,
+) -> rusqlite::Result<BTreeMap<String, Sharers>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT c.id, c.display_name, c.archived FROM contact_emails e
+         JOIN contacts c ON c.id = e.contact_id
+         WHERE e.address_normalized = ?1 AND e.contact_id != ?2
+         ORDER BY e.rowid LIMIT {}",
+        SHARERS_READ + 1
+    ))?;
+    let mut out = BTreeMap::new();
+    for email in &methods.emails {
+        let rows: Vec<Sharer> = stmt
+            .query_map(
+                rusqlite::params![normalise_email(&email.address), id],
+                |r| {
+                    Ok(Sharer {
+                        id: r.get(0)?,
+                        display_name: r.get(1)?,
+                        archived: r.get(2)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        let truncated = rows.len() > SHARERS_READ;
+        let mut seen = HashSet::new();
+        let contacts: Vec<Sharer> = rows
+            .into_iter()
+            .take(SHARERS_READ)
+            .filter(|s| seen.insert(s.id.clone()))
+            .collect();
+        if !contacts.is_empty() || truncated {
+            out.insert(
+                email.key.clone().unwrap_or_default(),
+                Sharers {
+                    contacts,
+                    truncated,
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
+fn shared_email_message(s: &Sharers) -> String {
+    let names: Vec<String> = s
+        .contacts
+        .iter()
+        .map(|c| {
+            if c.archived {
+                format!("{} (archived)", c.display_name)
+            } else {
+                c.display_name.clone()
+            }
+        })
+        .collect();
     let shown = &names[..names.len().min(NAMED_SHARERS)];
     let rest = names.len() - shown.len();
-    if rest == 0 && !truncated {
+    if rest == 0 && !s.truncated {
         return format!("Also used by {}", shown.join(", "));
     }
-    let count = if truncated {
+    let count = if s.truncated {
         format!("at least {rest}")
     } else {
         rest.to_string()
     };
-    let others = if rest == 1 && !truncated {
+    let others = if rest == 1 && !s.truncated {
         "other"
     } else {
         "others"
@@ -527,13 +624,7 @@ fn warnings(
             message: "No email, phone or address yet".into(),
         });
     }
-    let mut sharers = conn.prepare_cached(&format!(
-        "SELECT DISTINCT c.display_name, c.archived FROM contact_emails e
-         JOIN contacts c ON c.id = e.contact_id
-         WHERE e.address_normalized = ?1 AND e.contact_id != ?2
-         LIMIT {}",
-        SHARERS_READ + 1
-    ))?;
+    let shared = also_used_by(conn, id, methods)?;
     for (i, email) in methods.emails.iter().enumerate() {
         let label = format!("email {}", i + 1);
         if !looks_like_email(&email.address) {
@@ -543,26 +634,14 @@ fn warnings(
                 message: format!("“{}” doesn’t look like an email address", email.address),
             });
         }
-        let mut names: Vec<String> = sharers
-            .query_map(
-                rusqlite::params![normalise_email(&email.address), id],
-                |r| {
-                    let name: String = r.get(0)?;
-                    Ok(if r.get::<_, bool>(1)? {
-                        format!("{name} (archived)")
-                    } else {
-                        name
-                    })
-                },
-            )?
-            .collect::<rusqlite::Result<_>>()?;
-        let truncated = names.len() > SHARERS_READ;
-        names.truncate(SHARERS_READ);
-        if !names.is_empty() {
+        let key = email.key.as_deref().unwrap_or("");
+        if let Some(s) = shared.get(key) {
+            // Anchored by key: the form's rows can be reordered or removed
+            // before a save, and this warning names a person.
             out.push(Warning {
-                anchor: format!("emails#{}", email.key.as_deref().unwrap_or("")),
+                anchor: format!("emails#{key}"),
                 label,
-                message: shared_email_message(&names, truncated),
+                message: shared_email_message(s),
             });
         }
     }
@@ -616,6 +695,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<ContactView>, ContractE
         acquisition: acquisition_of(conn, id)?,
         counters: counters(conn, id)?.unwrap_or_default(),
         warnings,
+        identifiers: identifier_views(conn, id)?,
     }))
 }
 
@@ -663,4 +743,87 @@ pub fn history(
         next_before: more.then(|| revisions.last().map(|r| r.id)).flatten(),
         revisions,
     })
+}
+
+/// The most email rows one address lookup reads.
+pub const EMAIL_LOOKUP_LIMIT: usize = 50;
+
+/// Contacts using an email address (case- and whitespace-insensitive).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EmailMatches {
+    /// Contact ids, oldest row first, archived contacts included.
+    pub ids: Vec<String>,
+    /// More rows exist than were read: a caller that needs "exactly one
+    /// match" must treat it as ambiguous.
+    pub truncated: bool,
+}
+
+/// For imports and webhooks: the contacts using this address, at most
+/// EMAIL_LOOKUP_LIMIT rows read. A blank address finds nothing.
+pub fn find_by_email(conn: &Connection, address: &str) -> rusqlite::Result<EmailMatches> {
+    let normalized = normalise_email(address);
+    if normalized.is_empty() {
+        return Ok(EmailMatches::default());
+    }
+    let rows: Vec<String> = conn
+        .prepare_cached(&format!(
+            "SELECT contact_id FROM contact_emails WHERE address_normalized = ?1
+             ORDER BY rowid LIMIT {}",
+            EMAIL_LOOKUP_LIMIT + 1
+        ))?
+        .query_map([normalized], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let truncated = rows.len() > EMAIL_LOOKUP_LIMIT;
+    let mut seen = HashSet::new();
+    let ids = rows
+        .into_iter()
+        .take(EMAIL_LOOKUP_LIMIT)
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
+    Ok(EmailMatches { ids, truncated })
+}
+
+/// The contact a new-contact form created, by the form's `clientKey`.
+pub fn by_client_key(conn: &Connection, client_key: &str) -> rusqlite::Result<Option<String>> {
+    conn.prepare_cached("SELECT id FROM contacts WHERE client_key = ?1")?
+        .query_row([client_key], |r| r.get(0))
+        .optional()
+}
+
+/// The contact's saved email addresses, as typed: what its holds are
+/// looked up by (comms).
+pub fn email_addresses(conn: &Connection, id: &str) -> rusqlite::Result<Vec<String>> {
+    conn.prepare_cached(
+        "SELECT address FROM contact_emails WHERE contact_id = ?1 ORDER BY position",
+    )?
+    .query_map([id], |r| r.get(0))?
+    .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sharers(n: usize, truncated: bool) -> Sharers {
+        Sharers {
+            contacts: (1..=n)
+                .map(|i| Sharer {
+                    id: i.to_string(),
+                    display_name: format!("P{i}"),
+                    archived: false,
+                })
+                .collect(),
+            truncated,
+        }
+    }
+
+    #[test]
+    fn names_the_first_three_then_counts_the_rest() {
+        let m = |n, t| shared_email_message(&sharers(n, t));
+        assert_eq!(m(1, false), "Also used by P1");
+        assert_eq!(m(3, false), "Also used by P1, P2, P3");
+        assert_eq!(m(4, false), "Also used by P1, P2, P3 and 1 other");
+        assert_eq!(m(6, false), "Also used by P1, P2, P3 and 3 others");
+        assert_eq!(m(6, true), "Also used by P1, P2, P3 and at least 3 others");
+    }
 }

@@ -9,9 +9,12 @@
 pub mod acquisition;
 pub mod fields;
 pub mod form;
+pub mod identifiers;
+pub mod notes;
 pub mod number;
 mod projection;
 pub mod queries;
+pub mod relationships;
 pub mod rules;
 pub mod slices;
 pub mod types;
@@ -139,6 +142,75 @@ CREATE VIRTUAL TABLE contact_search_trigram USING fts5 (
 /// Org schema step 3: the trigram FTS variant goes (L7).
 pub const DROP_TRIGRAM: &str = "DROP TABLE contact_search_trigram;";
 
+/// The org schema step after [`DROP_TRIGRAM`] (A1): external identifiers and their types, notes,
+/// relationships and their types.
+pub const MIGRATION_IDENTIFIERS_NOTES: &str = "
+ALTER TABLE contacts ADD COLUMN identifiers_version INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE identifier_types (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    name_normalized TEXT NOT NULL UNIQUE,
+    is_active INTEGER NOT NULL,
+    save_version INTEGER NOT NULL DEFAULT 0
+) STRICT;
+CREATE TABLE contact_identifiers (
+    id TEXT PRIMARY KEY,
+    contact_id TEXT NOT NULL REFERENCES contacts (id),
+    position INTEGER NOT NULL,
+    type_id TEXT NOT NULL REFERENCES identifier_types (id),
+    value TEXT NOT NULL,
+    value_normalized TEXT NOT NULL
+) STRICT;
+CREATE INDEX contact_identifiers_by_contact ON contact_identifiers (contact_id, position);
+-- A (type, value) pair belongs to at most one contact; prefix = this value, any type.
+CREATE UNIQUE INDEX contact_identifiers_by_value ON contact_identifiers (value_normalized, type_id);
+
+CREATE TABLE contact_notes (
+    seq INTEGER PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    contact_id TEXT NOT NULL REFERENCES contacts (id),
+    body TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER,
+    created_at INTEGER NOT NULL,
+    edited_by INTEGER,
+    edited_at INTEGER NOT NULL,
+    body_version INTEGER NOT NULL DEFAULT 0,
+    flags_version INTEGER NOT NULL DEFAULT 0
+) STRICT;
+CREATE INDEX contact_notes_live ON contact_notes (contact_id, archived, pinned, seq);
+CREATE INDEX contact_notes_archived ON contact_notes (contact_id, archived, seq);
+
+CREATE TABLE relationship_types (
+    id TEXT PRIMARY KEY,
+    label_ab TEXT NOT NULL,
+    label_ba TEXT NOT NULL,
+    kind_a TEXT CHECK (kind_a IN ('individual', 'organization', 'household')),
+    kind_b TEXT CHECK (kind_b IN ('individual', 'organization', 'household')),
+    is_active INTEGER NOT NULL,
+    save_version INTEGER NOT NULL DEFAULT 0
+) STRICT;
+CREATE TABLE relationships (
+    id TEXT PRIMARY KEY,
+    contact_a TEXT NOT NULL REFERENCES contacts (id),
+    contact_b TEXT NOT NULL REFERENCES contacts (id),
+    type_id TEXT NOT NULL REFERENCES relationship_types (id),
+    start_date TEXT,
+    end_date TEXT,
+    is_active INTEGER NOT NULL,
+    description TEXT NOT NULL,
+    save_version INTEGER NOT NULL DEFAULT 0
+) STRICT;
+CREATE INDEX relationships_by_a ON relationships (contact_a);
+CREATE INDEX relationships_by_b ON relationships (contact_b);
+";
+
+/// A new organisation's contacts reference data (the UK relationship
+/// types). Idempotent; identifier types are never seeded.
+pub use relationships::seed_new_org;
+
 /// Every contract restore may meet in an org file's contacts history.
 pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
     Registry::new(&[
@@ -150,5 +222,11 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &acquisition::ACQUISITION,
         &fields::FIELD,
         &fields::FIELD_OPTION,
+        &identifiers::IDENTIFIERS,
+        &identifiers::IDENTIFIER_TYPE,
+        &notes::NOTE,
+        &notes::NOTE_FLAGS,
+        &relationships::RELATIONSHIP_TYPE,
+        &relationships::RELATIONSHIP,
     ])
 });

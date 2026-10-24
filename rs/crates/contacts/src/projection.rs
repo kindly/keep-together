@@ -54,6 +54,8 @@ pub(crate) fn contact_text(conn: &Connection, id: &str) -> rusqlite::Result<Opti
         )?
         .query_map([id], |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?]))?
         .collect::<rusqlite::Result<_>>()?;
+    let identifiers =
+        column("SELECT value FROM contact_identifiers WHERE contact_id = ?1 ORDER BY position")?;
     let text = search_text(
         &SearchContact {
             first_name: &first,
@@ -72,6 +74,7 @@ pub(crate) fn contact_text(conn: &Connection, id: &str) -> rusqlite::Result<Opti
                 postcode,
             })
             .collect::<Vec<_>>(),
+        &identifiers.iter().map(String::as_str).collect::<Vec<_>>(),
     );
     Ok(Some((number, text)))
 }

@@ -51,16 +51,19 @@ export type CreateContact = (
   acquisitionCodeId?: Id<'sourceCodes'>,
 ) => Promise<CreateOutcome>
 
-/** The saved addresses' "also used by" and holds (not ported yet: A1). */
+/** The saved addresses' "also used by" and holds (`email-context`). */
 export type EmailContext = {
   alsoUsedBy: Parameters<typeof contactWarnings>[1]
   held: Held | undefined
 }
 
-/** An identifier type, archived ones included (not ported yet: A1). */
-export type IdentifierType = FunctionReturnType<
-  typeof api.contacts.queries.listIdentifierTypes
->[number]
+/** An identifier type, archived ones included. */
+export type IdentifierType = {
+  _id: Id<'identifierTypes'>
+  name: string
+  isActive: boolean
+  saveVersion: number
+}
 
 /** The router context route loaders get (`__root.tsx`). */
 export type Loaders = { queryClient: QueryClient }

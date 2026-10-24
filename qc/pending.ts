@@ -20,20 +20,11 @@ export interface Pending {
 }
 
 export const PENDING: ReadonlyArray<Pending> = [
-  // A1: identifiers, notes, email holds, "also used by".
-  { step: 'A1', file: 'contact-identifiers.spec.ts' },
-  { step: 'A1', file: 'contact-notes.spec.ts' },
-  { step: 'A1', file: 'contact-hold.spec.ts' },
-  { step: 'A1', title: /search by exact identifier/ },
-  { step: 'A1', title: /identifiers? (are|is) not found/ },
-  { step: 'A1', title: /a value B holds saves in A/ },
-  { step: 'A1', title: /shared email/ },
-  // Settings' list tabs (A3 ported the layout and Switch group): the
-  // Identifier types tab and its switch are A1's, the Fields tab (the
-  // first tab, which the tab-switching flows open) and the staff/viewer
-  // read-only pass over it are B1's.
-  { step: 'A1', title: /^identifier types ›/ },
-  { step: 'A1', title: /^staff can manage lists, per list ›/ },
+  // Settings' list tabs (A3 ported the layout and Switch group): the Fields
+  // tab (the first tab, which the tab-switching flows open), the
+  // staff/viewer read-only pass over it, and the per-list switch test
+  // (it checks Fields stays read-only) are B1's.
+  { step: 'B1', title: /^staff can manage lists, per list ›/ },
   { step: 'B1', title: /^settings tabs ›/ },
   { step: 'B1', title: /^old tags URLs ›/ },
   { step: 'B1', title: /^settings for staff and viewers ›/ },

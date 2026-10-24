@@ -21,6 +21,19 @@ export const keys = {
     ['t', slug, 'contacts', 'one', id] as const,
   history: (slug: string, id: string) =>
     ['t', slug, 'contacts', 'one', id, 'history'] as const,
+  // A1. Identifier types, archived ones included.
+  identifierTypes: (slug: string) => ['t', slug, 'identifierTypes'] as const,
+  // A contact's live and archived notes; without an id, every contact's.
+  notes: (slug: string, contactId?: string, archived?: boolean) =>
+    contactId === undefined
+      ? (['t', slug, 'notes'] as const)
+      : (['t', slug, 'notes', contactId, archived ? 'archived' : 'live'] as const),
+  // "Also used by" and holds for a contact's saved emails; without an id,
+  // every contact's (another contact's save or a release changes them).
+  emailContext: (slug: string, id?: string) =>
+    id === undefined
+      ? (['t', slug, 'emailContext'] as const)
+      : (['t', slug, 'emailContext', id] as const),
   /** Every source-code read: the tree, the filter options, the picker. */
   sources: (slug: string) => ['t', slug, 'sources'] as const,
   sourceTree: (slug: string) => ['t', slug, 'sources', 'tree'] as const,

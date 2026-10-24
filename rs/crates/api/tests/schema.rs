@@ -58,7 +58,30 @@ const FIXTURES: &[&str] = &[
     // 5: tenant settings
     "INSERT INTO tenant_settings (id, name, nonce, ciphertext, version)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f7', 'webhook', 'AAAAAAAAAAAAAAAA', 'AAAA', 0);",
-    // 6: source codes
+    // 6: identifiers and their types, notes, relationships and their types
+    "UPDATE contacts SET identifiers_version = 1;
+     INSERT INTO identifier_types (id, name, name_normalized, is_active)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6', 'Member no', 'member no', 1);
+     INSERT INTO contact_identifiers (id, contact_id, position, type_id, value, value_normalized)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f7', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6', 'M123', 'm123');
+     INSERT INTO contact_notes (id, contact_id, body, created_by, created_at, edited_by, edited_at)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f8', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         'Met at the fair', 1, 1000, 1, 1000);
+     INSERT INTO contacts (number, id, kind, title, first_name, last_name, nickname, name,
+         is_deceased, display_name, sort_name, sort_key)
+     VALUES (10002, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0fa', 'organization', '', '', '', '',
+         'Leeds Trust', 0, 'Leeds Trust', 'Leeds Trust', 'leeds trust');
+     INSERT INTO relationship_types (id, label_ab, label_ba, kind_a, kind_b, is_active)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f9', 'Employee of', 'Employer of', 'individual',
+         'organization', 1);
+     INSERT INTO relationships (id, contact_a, contact_b, type_id, is_active, description)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0fb', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0fa', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f9', 1, '');",
+    // 7: email suppressions
+    "INSERT INTO email_suppressions (id, address_normalized, suppressed, reason, since)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0fc', 'ann@x.org', 1, 'bounce', 1000);",
+    // 8: source codes
     "INSERT INTO source_codes (id, parent_id, level, name, name_normalized, is_active, used)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1', NULL, 'category', 'Street', 'street', 1, 1),
             ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1', 'detail',
@@ -66,7 +89,7 @@ const FIXTURES: &[&str] = &[
             ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a2', 'version',
              '001', '001', 1, 1);
      INSERT INTO source_code_deletions (id, deleted) VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a4', 1);",
-    // 7: a contact's acquisition code
+    // 9: a contact's acquisition code
     "UPDATE contacts SET acquisition_code_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3',
          acquisition_version = 1;",
 ];
@@ -245,6 +268,7 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
     let registries = [
         &*contacts::REGISTRY,
         &*platform::REGISTRY,
+        &*comms::REGISTRY,
         &*sources::REGISTRY,
     ];
     for c in registries.iter().flat_map(|r| r.contracts()) {

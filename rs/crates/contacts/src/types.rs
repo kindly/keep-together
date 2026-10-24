@@ -181,6 +181,8 @@ pub struct Counters {
     #[ts(type = "number")]
     pub fields: i64,
     #[ts(type = "number")]
+    pub identifiers: i64,
+    #[ts(type = "number")]
     pub acquisition: i64,
 }
 
@@ -216,6 +218,8 @@ pub struct ContactView {
     pub acquisition: Option<sources::CodeDescription>,
     pub counters: Counters,
     pub warnings: Vec<Warning>,
+    /// In the order entered, named by their types.
+    pub identifiers: Vec<crate::identifiers::IdentifierView>,
 }
 
 /// One row of the contacts list or a search.
@@ -306,6 +310,9 @@ pub struct SaveForm {
     #[serde(default)]
     #[ts(optional)]
     pub fields: Option<Expected<FieldValues>>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub identifiers: Option<Expected<crate::identifiers::Identifiers>>,
 }
 
 /// A form problem; `key` names the row or field it is about.
@@ -317,6 +324,10 @@ pub struct FormProblem {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub key: Option<String>,
+    /// The other contact a problem names (an identifier it holds).
+    #[serde(rename = "contactId", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub contact_id: Option<String>,
 }
 
 impl From<Problem> for FormProblem {
@@ -325,6 +336,7 @@ impl From<Problem> for FormProblem {
             field: p.field,
             message: p.message,
             key: None,
+            contact_id: None,
         }
     }
 }

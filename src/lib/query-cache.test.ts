@@ -6,10 +6,8 @@ import { tokenSubject } from './query-cache'
 // The keep-alive cache is for the contact page only (perf-storage step 2):
 // a held `list` would re-run on every contact save and join its wait. Only
 // the not-yet-ported Convex panels still use it; it goes at cutover.
-const ALLOWED = [
-  'components/contact-history.tsx',
-  'components/contact-notes.tsx',
-]
+// Notes moved to the Rust API (A1); the history panel is B1's.
+const ALLOWED = ['components/contact-history.tsx']
 
 function sources(dir: string): Array<string> {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>

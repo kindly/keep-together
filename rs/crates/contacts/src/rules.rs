@@ -336,13 +336,14 @@ pub struct SearchAddress<'a> {
 /// same text as Convex's `contactSearch.text`): names plus their joined
 /// forms, each email whole and split at `@` and `.`, each phone as digits
 /// and its last PHONE_TAIL digits, each postcode compact and spaced,
-/// address line 1 and town. Not dropdown values (the list filters by
-/// those).
+/// address line 1 and town, identifier values. Not dropdown values (the
+/// list filters by those), not notes, not relationships.
 pub fn search_text(
     c: &SearchContact,
     emails: &[&str],
     phones: &[&str],
     addresses: &[SearchAddress],
+    identifiers: &[&str],
 ) -> String {
     let mut parts: Vec<String> = [c.first_name, c.last_name, c.nickname, c.name, c.sort_name]
         .iter()
@@ -368,6 +369,7 @@ pub fn search_text(
         parts.push(a.town.to_owned());
         parts.extend(postcode_forms(a.postcode));
     }
+    parts.extend(identifiers.iter().map(|v| v.to_string()));
     let mut seen = HashSet::new();
     let mut words = Vec::new();
     for part in parts {
@@ -507,6 +509,7 @@ mod tests {
                 town: "Leeds",
                 postcode: "LS6 2AB",
             }],
+            &["M-123"],
         );
         for word in [
             "ann-marie",
@@ -521,6 +524,7 @@ mod tests {
             "ls6",
             "2ab",
             "leeds",
+            "m-123",
         ] {
             assert!(
                 text.split(' ').any(|w| w == word),
