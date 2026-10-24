@@ -371,6 +371,74 @@ opens `/api/qc/*` on staging for the nightly `pnpm qc --target staging`:
 it seeds and signs into `qc-` groups only, never riverside. The api
 refuses to boot with it under `KEEP_ENV=prod`.
 
+## Preview (tailnet)
+
+The house server runs `main` all the time with the riverside sample
+data, reachable from the human's tailnet (phone included). It replaces
+the old Convex `preview` deployment. Scripts in `scripts/preview/`:
+
+| script | |
+|---|---|
+| `install.sh [--origin URL] [--port N]` | once, re-runnable: makes `~/.local/share/keep-preview/` (`KEEP_PREVIEW_HOME`) with its own https clone of the repo in `src/` (never a working checkout or a factory worktree), `preview.env`, `secrets.env`, the `systemd --user` units, the first build; prints the human's steps |
+| `update.sh [--force]` | what `keep-preview-update.timer` runs every 5 min: deploy `origin/main` if it moved |
+| `status.sh` | running commit, last update and its result, URL, health, the riverside sign-in emails and where their secrets are |
+
+The installed copies live in `~/.local/share/keep-preview/bin/`; each
+deploy replaces them with the new release's.
+
+**What runs.** `keep-preview.service`: the release `api` of the commit in
+`current/` (a symlink into `releases/<sha>/`, the last 3 kept), serving
+the SPA from `current/dist` (`KEEP_STATIC_DIR`), bound to
+`127.0.0.1:8780`, data in `data/`. `KEEP_ENV=dev`, `KEEP_MAIL=log`
+(sign-in codes and reset links go to the journal), `KEEP_APP_ORIGIN` the
+tailnet URL (`https://<host>.<tailnet>.ts.net`). `tailscale serve`
+terminates TLS on the tailnet and proxies to the loopback port.
+
+**Auth is real.** `KEEP_DEV_AUTH` is not set, so there is no dev login at
+all; and even if it were, `/api/dev/*` is refused for any request whose
+`Host` isn't loopback, which through `tailscale serve` it never is (the
+ts.net name). Everyone signs in with a password and TOTP. `KEEP_ENV=dev`
+is allowed only because the bind is loopback; the api refuses it (and
+`KEEP_MAIL=log`) on any reachable bind. The auth keys and the three
+riverside sign-ins (`admin@`, `staff@`, `viewer@keep-together.example`,
+`KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`) are made once by `install.sh`
+into `secrets.env` (0600) and never printed or logged: add the TOTP
+secret (base32) to an authenticator app by hand. Rate limits see every
+tailnet client as `127.0.0.1` (no `KEEP_CLIENT_IP_HEADER`: `tailscale
+serve` passes the client address in `X-Forwarded-For`, which the api
+refuses as a client-address header); fine for a household.
+
+**Updates.** Every 5 min `update.sh` fetches `origin/main`; if it moved,
+it builds in `src/` (`cargo build --release -p api`, `pnpm install`,
+`pnpm build` with `VITE_BACKEND=rust`) at nice 19 / ionice idle with half
+the cores, then stops the api, moves `data/` to `data.prev/`, points
+`current` at the new release and starts it: the api seeds riverside at
+boot (`KEEP_RESET_SEED`) with the same sign-ins, so an authenticator
+keeps working. Changes made in the preview last until the next deploy.
+It skips a run while another update holds `update.lock`, or while a QC
+run holds `.qc.lock` in the main checkout (a build would skew QC's
+timings). A failed build leaves the running release alone and is logged;
+that commit isn't retried until `main` moves (or `update.sh --force`). A
+release that doesn't answer `/healthz` within 2 min is rolled back to the
+previous release and data.
+
+Logs: `journalctl --user -u keep-preview` (the api) and
+`journalctl --user -u keep-preview-update` (builds).
+
+**One-time human steps** (`install.sh` prints them; it doesn't run them):
+
+```bash
+sudo loginctl enable-linger $USER     # user services survive logout and reboot
+tailscale serve --bg --https=443 http://127.0.0.1:8780
+# needs operator rights on some setups: sudo tailscale set --operator=$USER, once
+```
+
+With another `--https=<n>`, install with `--origin https://<host>.<tailnet>.ts.net:<n>`.
+To remove it: `systemctl --user disable --now keep-preview.service
+keep-preview-update.timer`, `tailscale serve --https=443 off`, then delete
+`~/.local/share/keep-preview` and the three units in
+`~/.config/systemd/user/`.
+
 ## To verify on the first real run
 
 Checked locally (podman, 2026-10-24, file replicas instead of S3): the
