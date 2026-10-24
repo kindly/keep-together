@@ -39,12 +39,20 @@ const event = (entity: string, contract: string, id = 'x'): OrgEvent => ({
 })
 
 describe('A1 events', () => {
-  test('an email saved on any contact refreshes every email context, other slices none', () => {
+  test('an email, a name or an archive saved on any contact refreshes every email context; other slices none', async () => {
     const qc = cache()
-    applyEvent(qc, SLUG, event('contacts', 'contacts.details', 'c3'))
+    applyEvent(qc, SLUG, event('contacts', 'contacts.fields', 'c3'))
+    applyEvent(qc, SLUG, event('contacts', 'contacts.identifiers', 'c3'))
     expect(stale(qc).filter((k) => k.includes('emailContext'))).toEqual([])
-    applyEvent(qc, SLUG, event('contacts', 'contacts.methods', 'c3'))
-    expect(stale(qc).filter((k) => k.includes('emailContext'))).toHaveLength(2)
+    for (const contract of ['methods', 'details', 'archive']) {
+      const fresh = cache()
+      applyEvent(fresh, SLUG, event('contacts', `contacts.${contract}`, 'c3'))
+      expect(
+        stale(fresh).filter((k) => k.includes('emailContext')),
+      ).toHaveLength(2)
+      // Invalidations coalesce per key while one runs: let it finish.
+      await new Promise((done) => setTimeout(done))
+    }
   })
 
   test('a hold or release refreshes every email context, nothing else', () => {
@@ -73,7 +81,11 @@ describe('A1 events', () => {
   test('relationships invalidate nothing (no page shows them)', () => {
     const qc = cache()
     applyEvent(qc, SLUG, event('relationships', 'contacts.relationship'))
-    applyEvent(qc, SLUG, event('relationship_types', 'contacts.relationshipType'))
+    applyEvent(
+      qc,
+      SLUG,
+      event('relationship_types', 'contacts.relationshipType'),
+    )
     expect(stale(qc)).toEqual([])
   })
 })

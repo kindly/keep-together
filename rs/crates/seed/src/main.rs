@@ -162,12 +162,15 @@ fn main() {
     let jsonl = required("jsonl");
     let prefix = arg("prefix").unwrap_or_else(|| slug.clone());
 
-    let store = Store::open(StoreConfig {
-        dir,
-        org_migrations: schema::org_migrations(),
-        readers: 1,
-        max_open: StoreConfig::DEFAULT_MAX_OPEN,
-    })
+    let store = Store::open_with(
+        StoreConfig {
+            dir,
+            org_migrations: schema::org_migrations(),
+            readers: 1,
+            max_open: StoreConfig::DEFAULT_MAX_OPEN,
+        },
+        schema::PLATFORM_SCHEMAS,
+    )
     .expect("open data dir");
     let tenant = match store.platform().tenant_by_slug(&slug).expect("platform") {
         Some(t) => t,

@@ -790,3 +790,29 @@ async fn the_email_context_says_who_else_uses_an_address_and_what_is_held() {
         .await;
     assert_eq!(v["id"], a.contact.as_str());
 }
+
+#[tokio::test]
+async fn a_relationship_update_without_expected_is_invalid_not_stale() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    let a = alpha(&w, &ann).await;
+    for (path, body) in [
+        (
+            "/relationship-types",
+            json!({ "id": a.rel_type, "labelAB": "a", "labelBA": "b", "isActive": true }),
+        ),
+        (
+            "/relationships",
+            json!({ "id": a.relationship, "contactA": a.contact, "contactB": "f".repeat(32), "typeId": a.rel_type, "isActive": true, "description": "" }),
+        ),
+    ] {
+        let (s, b) = w
+            .call("POST", &format!("/api/t/alpha{path}"), &ann, Some(body))
+            .await;
+        assert_eq!(
+            (s, b["problems"][0]["field"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("expected")),
+            "{path}"
+        );
+    }
+}

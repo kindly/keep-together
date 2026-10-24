@@ -8,7 +8,7 @@ use contacts::relationships::{
     RELATIONSHIP, RELATIONSHIP_TYPE, RelationshipType, RelationshipView, SaveRelationship,
     SaveRelationshipType, relationship_types, relationships_for,
 };
-use contracts::{Exec, Executed, Source, execute};
+use contracts::{ContractError, Exec, Executed, Source, execute};
 
 use crate::{ApiError, Body, IdParam, Tenant};
 
@@ -19,10 +19,22 @@ pub fn router() -> Router {
         .route("/contacts/{id}/relationships", get(for_contact))
 }
 
-fn exec(id: &Option<String>, expected: Option<i64>) -> Exec<'_> {
+/// Create (no `id`), or update with the `expected` counter it was read at:
+/// an update without one is refused (422), as identifier types are, never
+/// read as stale (a client that merges and retries would loop).
+fn exec(id: &Option<String>, expected: Option<i64>) -> Result<Exec<'_>, ApiError> {
     match id {
-        Some(id) => Exec::update(id, Some(expected.unwrap_or(-1)), Source::Ui),
-        None => Exec::create(Source::Ui),
+        Some(id) => {
+            let Some(expected) = expected else {
+                return Err(ContractError::invalid(
+                    "expected",
+                    "An update needs the version it edits",
+                )
+                .into());
+            };
+            Ok(Exec::update(id, Some(expected), Source::Ui))
+        }
+        None => Ok(Exec::create(Source::Ui)),
     }
 }
 
@@ -41,7 +53,7 @@ async fn save_type(
             ctx,
             &RELATIONSHIP_TYPE,
             req.payload,
-            exec(&req.id, req.expected),
+            exec(&req.id, req.expected)?,
         )?)
     })
     .await
@@ -58,7 +70,7 @@ async fn save(
             ctx,
             &RELATIONSHIP,
             req.payload,
-            exec(&req.id, req.expected),
+            exec(&req.id, req.expected)?,
         )?)
     })
     .await

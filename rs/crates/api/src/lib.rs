@@ -104,6 +104,8 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .route("/api/dev/qc-crowd", post(routes::qc_seed::crowd))
         .route("/api/dev/qc-hold", post(routes::qc_seed::hold))
         .route("/api/me", get(auth::me))
+        .route("/api/groups", get(routes::groups::mine))
+        .route("/api/groups/{slug}/opened", post(routes::groups::opened))
         .route("/healthz", get(health::healthz))
         .nest("/api/t/{slug}", tenant_routes)
         .with_state(state)

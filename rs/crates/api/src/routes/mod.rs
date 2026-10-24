@@ -4,8 +4,10 @@
 mod comms;
 mod contacts;
 mod fields;
+pub mod groups;
 mod identifiers;
 mod notes;
+mod preferences;
 pub mod qc_seed;
 mod relationships;
 
@@ -22,6 +24,7 @@ pub fn router() -> Router {
     Router::new()
         .merge(contacts::router())
         .merge(fields::router())
+        .merge(preferences::router())
         .merge(identifiers::router())
         .merge(notes::router())
         .merge(relationships::router())

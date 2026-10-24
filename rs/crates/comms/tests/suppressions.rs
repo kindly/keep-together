@@ -285,12 +285,26 @@ fn a_hold_survives_restores_and_re_adds_of_the_address() {
     })
     .unwrap();
     assert_eq!(held_of(&world.a, &id), both);
-    // Removing the row and adding the same key back.
+    // The whole contact to a moment before the row was removed: the hold is
+    // the address's, so it shows again and no suppression row changes.
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let before_removal = contracts::now_ms();
+    std::thread::sleep(std::time::Duration::from_millis(3));
     save_methods(&world.a, &id, 3, vec![row("e1", "ada@example.com")]);
+    let rows = suppression_rows(&world.a);
+    let done = w(&world.a, |ctx| {
+        restore_contact(ctx, &id, RestoreRequest::At { at: before_removal })
+    })
+    .unwrap();
+    assert_eq!(done.restored, ["contacts.methods"]);
+    assert_eq!(held_of(&world.a, &id), both);
+    assert_eq!(suppression_rows(&world.a), rows);
+    // Removing the row and adding the same key back.
+    save_methods(&world.a, &id, 5, vec![row("e1", "ada@example.com")]);
     save_methods(
         &world.a,
         &id,
-        4,
+        6,
         vec![
             row("e1", "ada@example.com"),
             row("e2", "lovelace@example.com"),
@@ -301,7 +315,7 @@ fn a_hold_survives_restores_and_re_adds_of_the_address() {
     save_methods(
         &world.a,
         &id,
-        5,
+        7,
         vec![
             row("e1", "ada@example.com"),
             row("e9", "LOVELACE@example.com"),

@@ -186,6 +186,13 @@ pub(crate) fn copy_if_pending(
     Ok(true)
 }
 
+/// Copy `platform.db` before a crate's [`crate::PlatformSchema`] steps run
+/// (its base schema has none pending).
+pub(crate) fn copy_platform(boot: &BootCopies, conn: &Connection) -> Result<(), StoreError> {
+    let from: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    boot.copy(conn, "platform", from)
+}
+
 pub(crate) fn migrate_all(
     dir: &Path,
     boot: &BootCopies,

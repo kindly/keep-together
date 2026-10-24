@@ -4,7 +4,7 @@ import { useConvexAuth, useQuery } from 'convex/react'
 import type { ConvexReactClient } from 'convex/react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
-import type { ListKind } from '../../convex/lib/lists'
+import type { ListKind } from './data/rust-types/ListKind'
 
 export type Tenant = {
   _id: Id<'tenants'>

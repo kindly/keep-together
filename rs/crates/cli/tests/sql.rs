@@ -9,15 +9,9 @@ use cli::sql::{Format, SqlError, open, run, run_within};
 fn setup(dir: &Path) {
     let alpha = cli::tenant::create(dir, "alpha", "Alpha", "ann@alpha.org").unwrap();
     cli::tenant::create(dir, "beta", "Beta", "bob@beta.org").unwrap();
-    let store = store::Store::open(store::StoreConfig {
-        dir: dir.to_path_buf(),
-        org_migrations: api::schema::org_migrations(),
-        readers: 1,
-        max_open: 4,
-    })
-    .unwrap();
+    let store = cli::tenant::open(dir).unwrap();
     store
-        .org(&alpha.id)
+        .org(&alpha.tenant.id)
         .unwrap()
         .write_raw(|tx| {
             tx.conn().execute_batch(
@@ -48,7 +42,8 @@ fn selects_come_back_as_csv_or_json() {
     let tmp = tempfile::tempdir().unwrap();
     setup(tmp.path());
     let conn = open(tmp.path(), "alpha").unwrap();
-    let sql = "SELECT name, actor FROM command_groups ORDER BY at";
+    // The rows inserted above (at 10 and 20), not `tenant create`'s seeds.
+    let sql = "SELECT name, actor FROM command_groups WHERE at < 100 ORDER BY at";
     assert_eq!(
         run(&conn, sql, Format::Csv).unwrap(),
         "name,actor\n\"first, \"\"quoted\"\"\",1\nsecond,\n"
@@ -64,7 +59,7 @@ fn selects_come_back_as_csv_or_json() {
     assert_eq!(
         run(
             &beta,
-            "SELECT count(*) AS n FROM command_groups",
+            "SELECT count(*) AS n FROM command_groups WHERE at < 100",
             Format::Csv
         )
         .unwrap(),

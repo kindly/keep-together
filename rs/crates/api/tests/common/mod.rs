@@ -1,5 +1,5 @@
 //! A two-organisation world on the real org schema, for route tests.
-//! alpha: ann (admin), val (viewer); beta: bob (admin).
+//! alpha: ann (admin), sam (staff), val (viewer); beta: bob (admin).
 
 #![allow(dead_code)]
 
@@ -25,12 +25,15 @@ pub struct World {
 pub fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        Store::open(StoreConfig {
-            dir: tmp.path().to_path_buf(),
-            org_migrations: schema::org_migrations(),
-            readers: 2,
-            max_open: StoreConfig::DEFAULT_MAX_OPEN,
-        })
+        Store::open_with(
+            StoreConfig {
+                dir: tmp.path().to_path_buf(),
+                org_migrations: schema::org_migrations(),
+                readers: 2,
+                max_open: StoreConfig::DEFAULT_MAX_OPEN,
+            },
+            schema::PLATFORM_SCHEMAS,
+        )
         .unwrap(),
     );
     let p = store.platform();
@@ -38,6 +41,7 @@ pub fn world() -> World {
     let beta = store.create_tenant("beta", "Beta").unwrap();
     for (email, tenant, role) in [
         ("ann@alpha.org", &alpha, Role::Admin),
+        ("sam@alpha.org", &alpha, Role::Staff),
         ("val@alpha.org", &alpha, Role::Viewer),
         ("bob@beta.org", &beta, Role::Admin),
     ] {

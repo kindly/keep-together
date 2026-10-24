@@ -47,7 +47,18 @@ const FIXTURES: &[&str] = &[
      INSERT INTO contact_search_trigram (rowid, text) VALUES (10001, 'ann smith ann@x.org');",
     // 3: drop the trigram FTS variant (no new tables)
     "",
-    // 4: identifiers and their types, notes, relationships and their types
+    // 4: tenant preferences
+    "INSERT INTO tenant_preferences (id, staff_can_manage_identifier_types, identifier_types_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6', 1, 1);
+     INSERT INTO revisions (id, entity, entity_id, contract, version, counter, payload, actor,
+         source, at)
+     VALUES (2, 'tenant_preferences', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6',
+         'tenantPreferences.identifierTypes', 1, 1,
+         '{\"staffCanManageIdentifierTypes\":true}', 1, 'ui', 2000);",
+    // 5: tenant settings
+    "INSERT INTO tenant_settings (id, name, nonce, ciphertext, version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f7', 'webhook', 'AAAAAAAAAAAAAAAA', 'AAAA', 0);",
+    // 6: identifiers and their types, notes, relationships and their types
     "UPDATE contacts SET identifiers_version = 1;
      INSERT INTO identifier_types (id, name, name_normalized, is_active)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6', 'Member no', 'member no', 1);
@@ -67,7 +78,7 @@ const FIXTURES: &[&str] = &[
      INSERT INTO relationships (id, contact_a, contact_b, type_id, is_active, description)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0fb', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0fa', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f9', 1, '');",
-    // 5: email suppressions
+    // 7: email suppressions
     "INSERT INTO email_suppressions (id, address_normalized, suppressed, reason, since)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0fc', 'ann@x.org', 1, 'bounce', 1000);",
 ];
@@ -243,9 +254,13 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
     let mut conn = Connection::open_in_memory().unwrap();
     org_migrations().to_latest(&mut conn).unwrap();
     let mut owners = BTreeMap::new();
-    for c in contacts::REGISTRY
-        .contracts()
-        .chain(comms::REGISTRY.contracts())
+    for c in [
+        &*contacts::REGISTRY,
+        &*platform::REGISTRY,
+        &*comms::REGISTRY,
+    ]
+    .into_iter()
+    .flat_map(|r| r.contracts())
     {
         let (ty, notnull, default): (String, bool, Option<String>) = conn
             .query_row(
@@ -270,6 +285,7 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
         }
     }
     assert!(contacts::REGISTRY.missing_upcasters().is_empty());
+    assert!(platform::REGISTRY.missing_upcasters().is_empty());
     assert!(comms::REGISTRY.missing_upcasters().is_empty());
 }
 

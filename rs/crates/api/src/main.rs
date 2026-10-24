@@ -43,12 +43,15 @@ async fn main() {
         eprintln!("KEEP_DEV_AUTH ignored: the server binds {bind}, not a loopback address");
     }
 
-    let store = Store::open(StoreConfig {
-        dir: dir.clone().into(),
-        org_migrations: schema::org_migrations(),
-        readers: 4,
-        max_open,
-    })
+    let store = Store::open_with(
+        StoreConfig {
+            dir: dir.clone().into(),
+            org_migrations: schema::org_migrations(),
+            readers: 4,
+            max_open,
+        },
+        schema::PLATFORM_SCHEMAS,
+    )
     .unwrap_or_else(|e| {
         eprintln!("open data dir {dir}: {e}");
         std::process::exit(1)

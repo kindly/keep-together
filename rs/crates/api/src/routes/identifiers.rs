@@ -14,29 +14,7 @@ use serde::Deserialize;
 use super::Params;
 use crate::{ApiError, Body, Tenant};
 
-// TODO(A3): replace with `use platform::{ListKind, may_manage_list};`
-// once port/a3 merges (same signature; Role becomes `platform::Role`).
-use stub::{ListKind, may_manage_list};
-
-mod stub {
-    use rusqlite::Connection;
-    use store::Role;
-
-    pub enum ListKind {
-        IdentifierTypes,
-    }
-
-    /// lib/lists.ts `mayManageList`: admin → yes; staff → the list's
-    /// switch, which is off until A3 brings the preferences; viewer → no.
-    pub fn may_manage_list(
-        _conn: &Connection,
-        role: Role,
-        kind: ListKind,
-    ) -> rusqlite::Result<bool> {
-        let ListKind::IdentifierTypes = kind;
-        Ok(role == Role::Admin)
-    }
-}
+use platform::{ListKind, may_manage_list};
 
 pub fn router() -> Router {
     Router::new().route("/identifier-types", get(list).post(save))
@@ -62,6 +40,13 @@ async fn list(
 
 /// `POST identifier-types {id?, expected?, name, isActive}`: create, or
 /// rename / archive / reactivate. Never deleted.
+///
+/// The list-manager check is here, in the route, not in the contract (as
+/// Convex's `managesList` was, on every path, restore included). Nothing
+/// else runs `contacts.identifierType` for a user today: contact restore
+/// takes only `contacts` revisions. A route that restores or otherwise
+/// executes a list entry's contract (identifier types, source codes,
+/// fields) must make the same `may_manage_list` check.
 async fn save(
     Extension(t): Extension<Tenant>,
     Body(req): Body<SaveIdentifierType>,

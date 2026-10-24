@@ -20,9 +20,13 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/contacts/',
   '/t/$slug/contacts/new',
   '/t/$slug/contacts/$contactId',
-  // '/t/$slug/settings/identifiers': its page is on the Rust API (A1), but
-  // it renders inside Settings' layout; it joins this list with A3's
-  // layout, when settings.spec.ts (which times it) runs again.
+  // A3: Settings' layout (its list tabs come with their slices) and
+  // Switch group.
+  '/t/$slug/settings',
+  '/t/$slug/settings/',
+  '/t/$slug/settings/groups',
+  // A1: inside A3's Settings layout.
+  '/t/$slug/settings/identifiers',
 ]
 
 const ported = new Set<string>(PORTED)

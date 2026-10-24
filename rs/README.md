@@ -52,7 +52,8 @@ parameter is ignored and both columns measure the words index.)
 | `contracts` | the **only write path**: `transact`, `Contract`, `execute`, revisions, command groups, restore through upcasters, child-row reconcile, events |
 | `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history |
 | `sources`, `giving`, `giftaid`, `comms` | domain crates, empty until wave A/B |
-| `platform`, `auth` | control plane and staff auth, empty until A3/A4 |
+| `platform` | control plane: preferences (the three "staff can manage" contracts, `may_manage_list`), encrypted tenant settings, memberships and "last used" group as functions on a `platform.db` transaction, its own `platform.db` schema list |
+| `auth` | staff auth, empty until A4 |
 | `api` | axum app: dev session cookie, `/api/t/{slug}` → one `OrgDb`, SSE, `/boot`, jobs, `/healthz`, `Server-Timing`, JSON errors; `schema.rs` is the org migration list; `routes/` the domain routes and the QC seed. Commands spanning modules live here, in one transaction |
 | `cli` | bin `keep`: `keep sql`, `keep tenant create` |
 | `seed` | bin: the perf generator's JSONL into one organisation, through the same contract functions the API calls |
@@ -250,14 +251,45 @@ deploy.
 ```
 keep [--data <dir>] sql <slug> "<select…>" [--json]
 keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <email>
+keep [--data <dir>] dev seed-demo [--slug demo] [--admin-email <email>]
 ```
 
 `keep sql` opens the org file `SQLITE_OPEN_READ_ONLY` with `query_only`,
 `ATTACH` limited to 0, an authorizer that allows only `SELECT`, column
 reads, functions and recursive CTEs, one statement, and a 10 s timeout:
 SQL text from anywhere (an agent) can't change the file. Output is CSV, or
-JSON objects. `keep tenant create` makes the org and its admin membership;
-A3 adds the seeds and the emailed invite.
+JSON objects. `keep tenant create` makes the org row, its file with every crate's
+reference data (`api::schema::seed_new_org`) and the admin's membership in
+one go (all or nothing), then invites the admin (a printed stub until A4).
+`keep dev seed-demo` is the same plus three contacts.
+
+## Platform
+
+`platform.db` has a frozen base schema (store) and one migration list per
+control-plane crate (`store::PlatformSchema`, versions in
+`platform_schema` by name; composed in `api::schema::PLATFORM_SCHEMAS`).
+`Platform::with_write` / `with_read` hand a transaction to `platform` and
+`auth` functions so several compose into one.
+
+Preferences are org data: `tenant_preferences` (one row, created by the
+first save) in the org file, three contracts with a counter each. Routes
+check a list manager with `platform::may_manage_list(conn, role, kind)`.
+Tenant settings are AES-256-GCM under `KEEP_SETTINGS_KEY` (32 bytes,
+base64), the name as associated data; only ciphertext reaches the file
+and its revisions.
+
+| route | |
+|---|---|
+| `GET /api/groups` | `Group[]`: the caller's groups with role, `lastUsedAt`, the switches and `canManage*` |
+| `POST /api/groups/{slug}/opened` | `OpenedResult`; not a member: `404` |
+| `GET /api/t/{slug}/preferences` | `Preferences` |
+| `POST /api/t/{slug}/preferences/{identifierTypes\|sourceCodes\|fields}` | `{expected?, staffCanManage}` → `Executed`; admin only; `409 stale` |
+
+The tenant middleware refuses any non-`GET` from a viewer before the
+handler runs; `api/tests/roles.rs` reads the route table from
+`src/routes/` and proves it for every write route. **No writes on GET**:
+the guard lets a viewer's GET through, so a handler that writes must be
+a `POST`. The same test pins the route table, so a new route is looked at.
 
 ## Contracts
 

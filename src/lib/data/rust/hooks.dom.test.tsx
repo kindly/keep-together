@@ -588,7 +588,7 @@ describe('the contact page live, over the event stream', () => {
 })
 
 describe('cold load', () => {
-  test('one boot request answers the session, the fields and the first page', async () => {
+  test('one boot request answers the session, the fields and the first page; the groups go alongside', async () => {
     const { QueryClient: Client } = await import('@tanstack/react-query')
     const { TenantContext } = await import('../../tenant')
     const data = await import('../index')
@@ -597,30 +597,49 @@ describe('cold load', () => {
       email: 'a@example.com',
       memberships: [{ slug: 'a', name: 'A', role: 'staff' }],
     }
+    const groups = [
+      {
+        slug: 'a',
+        name: 'A',
+        role: 'staff',
+        lastUsedAt: null,
+        staffCanManageIdentifierTypes: false,
+        identifierTypesVersion: null,
+        staffCanManageSourceCodes: false,
+        sourceCodesVersion: null,
+        staffCanManageFields: true,
+        fieldsVersion: 0,
+        canManageIdentifierTypes: false,
+        canManageSourceCodes: false,
+        canManageFields: true,
+      },
+    ]
     answers.push((c) =>
-      c.url === '/api/t/a/boot'
-        ? json(200, {
-            me,
-            org: { slug: 'a', name: 'A', role: 'staff' },
-            fields: [],
-            firstPage: {
-              rows: [
-                {
-                  id: 'a1',
-                  number: 10001,
-                  kind: 'individual',
-                  displayName: 'Booted',
-                  sortName: 'booted',
-                  archived: false,
-                  email: null,
-                  fieldOptionIds: [],
-                },
-              ],
-              nextCursor: null,
-              isDone: true,
-            },
-          })
-        : undefined,
+      c.url === '/api/groups'
+        ? json(200, groups)
+        : c.url === '/api/t/a/boot'
+          ? json(200, {
+              me,
+              org: { slug: 'a', name: 'A', role: 'staff' },
+              fields: [],
+              firstPage: {
+                rows: [
+                  {
+                    id: 'a1',
+                    number: 10001,
+                    kind: 'individual',
+                    displayName: 'Booted',
+                    sortName: 'booted',
+                    archived: false,
+                    email: null,
+                    fieldOptionIds: [],
+                  },
+                ],
+                nextCursor: null,
+                isDone: true,
+              },
+            })
+          : undefined,
     )
     const qc = new Client({
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
@@ -655,8 +674,12 @@ describe('cold load', () => {
       expect(seen.list?.rows?.map((r) => r.displayName)).toEqual(['Booted']),
     )
     expect(seen.fields).toEqual([])
-    expect(seen.tenants?.map((t) => t.slug)).toEqual(['a'])
-    expect(calls.map((c) => c.url)).toEqual(['/api/t/a/boot'])
+    expect(seen.tenants?.map((t) => [t.slug, t.canManageFields])).toEqual([
+      ['a', true],
+    ])
+    // Both asked for before anything rendered: in parallel, not one after
+    // the other.
+    expect(calls.map((c) => c.url)).toEqual(['/api/t/a/boot', '/api/groups'])
   })
 
   test('a failed boot leaves each read to ask on its own', async () => {
@@ -668,7 +691,9 @@ describe('cold load', () => {
         ? json(403, { kind: 'forbidden' })
         : c.url === '/api/me'
           ? json(200, { email: 'a@example.com', memberships: [] })
-          : undefined,
+          : c.url === '/api/groups'
+            ? json(200, [])
+            : undefined,
     )
     const qc = new Client({ defaultOptions: { queries: { retry: false } } })
     boot(qc, 'a')
@@ -687,7 +712,12 @@ describe('cold load', () => {
       ),
     )
     await vi.waitFor(() => expect(seen.tenants).toEqual([]))
-    expect(calls.map((c) => c.url)).toEqual(['/api/t/a/boot', '/api/me'])
+    await vi.waitFor(() => expect(calls).toHaveLength(3))
+    expect(calls.map((c) => c.url).sort()).toEqual([
+      '/api/groups',
+      '/api/me',
+      '/api/t/a/boot',
+    ])
   })
 })
 

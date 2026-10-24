@@ -38,21 +38,33 @@ import { keys } from './rust/keys'
  * ported later that forgot to add itself) invalidates the whole tenant:
  * too much, never too little.
  */
+/** What an email context shows of a sharer: its emails, name, archived. */
+const SHARER_CONTRACTS = new Set([
+  'contacts.methods',
+  'contacts.details',
+  'contacts.archive',
+])
+
 const INVALIDATES: Partial<
   Record<string, (slug: string, e: OrgEvent) => Array<QueryKey>>
 > = {
   // The list and search show the contact's row; the contact's own view
   // (its history with it) is handled below. A list refetches every page
   // it has loaded, in order (TanStack's infinite query): ten pages are ten
-  // round trips per burst, in the background. An email saved anywhere can
-  // change other contacts' "also used by" (and which holds they show).
+  // round trips per burst, in the background. Other contacts' "also used
+  // by" names a sharer and says if it is archived, and follows its emails:
+  // a methods, details or archive save anywhere can change it.
   contacts: (slug, e) =>
-    e.contract === 'contacts.methods'
+    SHARER_CONTRACTS.has(e.contract)
       ? [keys.list(slug), keys.search(slug), keys.emailContext(slug)]
       : [keys.list(slug), keys.search(slug)],
   // Definitions: the filters, the form's dropdowns, every value's label.
   contact_fields: (slug) => [keys.fields(slug), keys.contacts(slug)],
   contact_field_options: (slug) => [keys.fields(slug), keys.contacts(slug)],
+  // A Settings switch: the groups carry it (and what it means for whom).
+  tenant_preferences: () => [keys.groups],
+  // Secrets: nothing on screen shows them.
+  tenant_settings: () => [],
   // A1. A type's name shows on every contact holding one.
   identifier_types: (slug) => [keys.identifierTypes(slug), keys.contacts(slug)],
   // The event names the note, not its contact: every notes list.
