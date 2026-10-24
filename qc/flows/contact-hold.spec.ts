@@ -1,4 +1,5 @@
-import { convexOn, expect, test } from '../fixtures'
+import { expect, test } from '../fixtures'
+import { convexOn } from '../convex-pending'
 import type { Instance } from '../fixtures'
 import {
   CONTACT_ROUTE,

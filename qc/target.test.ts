@@ -35,9 +35,11 @@ describe('budgets: lines and targets', () => {
       kind: 'oncePerSession',
       maxMs: 410,
     })
+    // Pending its port (B1): the mark, not the budget, changes.
     expect(budgets['contacts.bulkSetField']).toEqual({
       kind: 'bulk',
       maxMs: 500,
+      pendingPort: 'B1',
     })
   })
 
@@ -47,7 +49,10 @@ describe('budgets: lines and targets', () => {
       .map(([name]) => name)
     expect(marked).toEqual([])
     expect(budgets['contact.addEmail']).toEqual(budgets['contact.save'])
-    expect(budgets['gift.save']).toEqual(budgets['contact.save'])
+    expect(budgets['gift.save']).toEqual({
+      ...budgets['contact.save'],
+      pendingPort: 'B2',
+    })
   })
 })
 

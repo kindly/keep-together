@@ -429,6 +429,19 @@ describe('the contact page live, over the event stream', () => {
     await vi.waitFor(() => expect(gets()).toBe(2))
   })
 
+  test('a burst of events costs one refetch, then one more for the rest', async () => {
+    const events = await open()
+    expect(gets()).toBe(1)
+    act(() => {
+      events.emit(remote({ nickname: 'one' }))
+      events.emit(remote({ nickname: 'two' }))
+      events.emit(remote({ nickname: 'three' }))
+    })
+    await vi.waitFor(() => expect(field('Known as')).toBe('three'))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(gets()).toBe(3)
+  })
+
   test('the stream closes when the page goes', async () => {
     const events = await open()
     act(() => root.unmount())

@@ -55,26 +55,53 @@ export function ownWrite(
   setTimeout(() => own.delete(key), 60_000)
 }
 
+/**
+ * Invalidate `queryKey`, coalescing a burst: the first event refetches at
+ * once; events while that refetch runs mark it dirty, and one more
+ * refetch follows it. A bulk write (hundreds of contracts, one event
+ * each) costs two refetches, not hundreds cancelled one after another.
+ */
+const running = new Set<string>()
+const dirty = new Set<string>()
+function invalidate(
+  qc: QueryClient,
+  queryKey: QueryKey,
+  refetchType: 'active' | 'all' = 'active',
+) {
+  const k = JSON.stringify(queryKey)
+  if (running.has(k)) {
+    dirty.add(k)
+    return
+  }
+  running.add(k)
+  void qc.invalidateQueries({ queryKey, refetchType }).finally(() => {
+    running.delete(k)
+    if (dirty.delete(k)) invalidate(qc, queryKey, refetchType)
+  })
+}
+
 /** Apply one event to the cache. Exported for the tests. */
 export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
   const key = ownKey(slug, e.id, e.contract, e.counter)
   if (own.delete(key)) return
   const invalidates = INVALIDATES[e.entity]
   if (!invalidates) {
-    void qc.invalidateQueries({ queryKey: ['t', slug] })
+    invalidate(qc, ['t', slug])
     return
   }
-  for (const queryKey of invalidates(slug, e))
-    void qc.invalidateQueries({ queryKey })
+  for (const queryKey of invalidates(slug, e)) invalidate(qc, queryKey)
   if (e.entity === 'contacts') {
     // The view only if this is newer than the counter it holds (an echo
-    // of a refetch already made changes nothing); its history always.
+    // of a refetch already made changes nothing); its history always. A
+    // view kept for a contact not on screen is fetched too (until its
+    // gcTime lapses): coming back to it shows the change from the first
+    // frame, as Convex's keep-alive cache did.
     const view = qc.getQueryData<WireContact | null>(keys.contact(slug, e.id))
     const slice = e.contract.split('.')[1] as keyof WireContact['counters']
     const held = view?.counters[slice]
     if (held === undefined || held < e.counter)
-      void qc.invalidateQueries({ queryKey: keys.contact(slug, e.id) })
-    else void qc.invalidateQueries({ queryKey: keys.history(slug, e.id) })
+      invalidate(qc, keys.contact(slug, e.id), view ? 'all' : 'active')
+    else invalidate(qc, keys.history(slug, e.id))
   }
 }
 
@@ -95,9 +122,7 @@ export function useOrgEvents(slug: string) {
       }
       applyEvent(qc, slug, e)
     }
-    source.addEventListener('reset', () => {
-      void qc.invalidateQueries({ queryKey: ['t', slug] })
-    })
+    source.addEventListener('reset', () => invalidate(qc, ['t', slug]))
     return () => source.close()
   }, [qc, slug])
 }

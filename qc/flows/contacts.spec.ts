@@ -1,6 +1,5 @@
-import { convexOn, expect, test } from '../fixtures'
+import { expect, qcCrowd, test } from '../fixtures'
 import { runId } from '../timing'
-import { holdQuiet } from '../quiet'
 import { secondTab } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
@@ -16,7 +15,7 @@ const CONTACT = { type: 'route', description: '/t/$slug/contacts/$contactId' }
 
 const listPath = (slug: string) => `/t/${slug}/contacts`
 
-/** Rows per list page: LIST_PAGE_SIZE in src/lib/paged-list.ts. */
+/** Rows per list page: LIST_PAGE_SIZE in src/lib/paged-list.ts (the api's cap). */
 const LIST_PAGE_SIZE = 100
 
 /** A name token unique to this run and call, safe for the search index. */
@@ -262,26 +261,15 @@ test.describe('contacts list', () => {
   )
 
   test(
-    'Load more shows the next page, and a page that grows splits without loss',
+    'Load more shows the next page, and a list that grows refetches without loss',
     { annotation: [LIST] },
     async ({ browser, baseURL, flow, instance, session, users, world }) => {
       test.setTimeout(120_000)
       // In B, whose list no timed flow browses, so A's list stays the size
-      // the other flows were budgeted on. Held quiet (qc/quiet.ts): each
-      // batch is a 100-contact commit, and another worker's sample on this
-      // instance would otherwise commit behind it.
+      // the other flows were budgeted on. B's org file is B's alone, so
+      // the bulk write holds up no other worker's samples.
       const crowd = (lastName: string, count: number) =>
-        holdQuiet(instance.name, `contacts.loadMore crowd ${count}`, () =>
-          convexOn(instance, [
-            'run',
-            'platform/qcSeed:crowd',
-            JSON.stringify({
-              tenantId: world.tenants[1].tenantId,
-              lastName,
-              count,
-            }),
-          ]),
-        )
+        qcCrowd(instance, { slug: world.tenants[1].slug, lastName, count })
       // After B's seeded `Bravo-<run>` contacts: more than two pages.
       await crowd(uniq('Crowd'), 2 * LIST_PAGE_SIZE)
       const b = await secondTab(browser, baseURL!, await session(users.b))
@@ -304,31 +292,30 @@ test.describe('contacts list', () => {
       const before = await hrefs()
       expect(new Set(before).size).toBe(before.length)
 
-      // Page 0 is now pinned to end where page 1 starts. Contacts arriving
-      // in its range grow it past LIST_PAGE_MAX_ROWS
-      // (convex/contacts/queries.ts). The backend reads the grown range in
-      // full (whatever maximumRowsRead says), and `list` answers it with no
-      // rows, SplitRequired and a splitCursor: that call is the server
-      // exception in qc/budgets.ts. The list keeps its rows on screen while
-      // it loads the halves (paged-list.ts). Every row still shows, once.
+      // Contacts arriving ahead of the open pages: the change stream
+      // refetches the list (no growth in place, migration-rust r1q3). Its
+      // pages come back in order from the first, each from the cursor the
+      // new page before it gives, so the two pages on screen are the
+      // first 200 now: the arrivals on top, nothing twice.
       const early = uniq('Aardvark')
       const arriving = 250
-      // 100 a transaction, as every bulk write here commits.
       await crowd(early, arriving)
-      await expect(links).toHaveCount(before.length + arriving, {
-        timeout: 30_000,
-      })
-      const after = await hrefs()
-      expect(new Set(after).size).toBe(after.length)
-      expect(after.slice(arriving)).toEqual(before)
-      await expect(links.filter({ hasText: early })).toHaveCount(arriving)
-      // And the list carries on past page 1.
-      await more.click()
-      await expect
-        .poll(async () => (await hrefs()).length)
-        .toBeGreaterThan(after.length)
+      await expect(links.first()).toContainText(early, { timeout: 30_000 })
+      await expect(links).toHaveCount(2 * LIST_PAGE_SIZE)
+      await expect(links.filter({ hasText: early })).toHaveCount(
+        2 * LIST_PAGE_SIZE,
+      )
+      // Loading on to the end shows every row once: the arrivals, and every
+      // row shown before them.
+      while (await more.isVisible()) {
+        const n = await links.count()
+        await more.click()
+        await expect.poll(() => links.count()).toBeGreaterThan(n)
+      }
       const all = await hrefs()
       expect(new Set(all).size).toBe(all.length)
+      expect(all).toEqual(expect.arrayContaining(before))
+      await expect(links.filter({ hasText: early })).toHaveCount(arriving)
       await b.context().close()
     },
   )

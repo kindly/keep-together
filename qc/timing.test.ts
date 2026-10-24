@@ -1,54 +1,45 @@
 import { describe, expect, test } from 'vitest'
-import { answered } from './timing'
-import type { WireEntry } from './timing'
+import { judge, parseServerTiming } from './timing'
 
-// The held-result guard's rule (qc/timing.ts, `server: true`): did the
-// server send the watched page a query result in the sample?
+// The pure parts of qc/timing.ts: the pass rule and the server time each
+// sample's calls carry (the api's `Server-Timing`, rs/README.md "Timing").
 
-const transition = (
-  t: number,
-  querySet: number,
-  result: boolean,
-  ts: number | null = null,
-): WireEntry => [t, 'in', 'Transition', null, ts, undefined, querySet, result]
-
-describe('answered', () => {
-  test('nothing from the server: held', () => {
-    expect(answered([], null, 7)).toBe(false)
-    expect(answered([], null, null)).toBe(false)
-  })
-
-  test('a Transition with the added query’s result answers it', () => {
-    expect(answered([transition(30, 7, true)], null, 7)).toBe(true)
-  })
-
-  test('a Transition that only acknowledges a removal is no answer', () => {
-    // Leaving a page removes its queries; the server's ack carries no
-    // result, and the screen drew from what the client held.
-    expect(answered([transition(30, 7, false)], null, 7)).toBe(false)
-    expect(answered([transition(30, 7, false)], null, null)).toBe(false)
-  })
-
-  test('a result from before the server saw our change is no answer', () => {
-    // Another query's update, at query-set version 6, while ours is 7.
-    expect(answered([transition(20, 6, true)], null, 7)).toBe(false)
+describe('parseServerTiming', () => {
+  test('total and db from the api’s header', () => {
     expect(
-      answered([transition(20, 6, true), transition(31, 7, true)], null, 7),
-    ).toBe(true)
+      parseServerTiming('platform;dur=0.4, db;dur=3.2, total;dur=4.1'),
+    ).toEqual({ serverMs: 4.1, dbMs: 3.2 })
   })
 
-  test('no add in the sample (a route preload sent it on hover): any result', () => {
-    expect(answered([transition(25, 3, true)], null, null)).toBe(true)
+  test('order and spacing don’t matter; a description is skipped', () => {
+    expect(
+      parseServerTiming('total;desc="all";dur=12,db;dur=7.5,platform;dur=1'),
+    ).toEqual({ serverMs: 12, dbMs: 7.5 })
   })
 
-  test('after a mutation: the Transition that reaches its commit', () => {
-    const commit = 1_000
-    expect(answered([transition(40, 2, true, 999)], commit, null)).toBe(false)
-    expect(answered([transition(41, 2, false, 1_000)], commit, null)).toBe(true)
+  test('no header, or no such metric: null, never zero', () => {
+    expect(parseServerTiming(null)).toEqual({ serverMs: null, dbMs: null })
+    expect(parseServerTiming('platform;dur=1')).toEqual({
+      serverMs: null,
+      dbMs: null,
+    })
   })
 
-  test('frames other than Transitions never count', () => {
-    const response: WireEntry = [12, 'in', 'MutationResponse', 4, 1_000]
-    expect(answered([response], 1_000, null)).toBe(false)
+  test('a metric whose name only ends in "total" is not total', () => {
+    expect(parseServerTiming('subtotal;dur=9, total;dur=10')).toEqual({
+      serverMs: 10,
+      dbMs: null,
+    })
+  })
+})
+
+describe('judge', () => {
+  test('every sample under the line passes; one at it fails', () => {
+    expect(judge([10, 20, 149.9], 150)).toEqual({
+      medianMs: 20,
+      maxMs: 149.9,
+      pass: true,
+    })
+    expect(judge([10, 150, 20], 150).pass).toBe(false)
   })
 })

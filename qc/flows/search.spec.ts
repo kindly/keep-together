@@ -1,10 +1,7 @@
-import { ConvexHttpClient } from 'convex/browser'
-import { expect, test } from '../fixtures'
-import type { Instance, QcUser } from '../fixtures'
+import { apiGet, expect, test } from '../fixtures'
 import type { Page } from '@playwright/test'
 import type { FlowName } from '../budgets'
-import { api } from '../../convex/_generated/api'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { SearchResult } from '../../src/lib/data/rust-types/SearchResult'
 import {
   LIST_ROUTE,
   createContact,
@@ -42,21 +39,6 @@ const searchBox = (page: Page) =>
 function onlyRow(name: string) {
   const links = [...document.querySelectorAll('main ul li a')]
   return links.length === 1 && links[0].textContent.includes(name)
-}
-
-/** A client signed in as `user`, to read what the pages don't show. */
-async function signedIn(
-  inst: Instance,
-  user: QcUser,
-): Promise<ConvexHttpClient> {
-  const client = new ConvexHttpClient(inst.url)
-  const { tokens } = await client.action(api.auth.signIn, {
-    provider: 'password',
-    params: { email: user.email, password: user.password, flow: 'signIn' },
-  })
-  if (!tokens) throw new Error(`no session for ${user.email}`)
-  client.setAuth(tokens.token)
-  return client
 }
 
 /** The contact number in a contact page's header, as staff copy it. */
@@ -258,15 +240,15 @@ test.describe('search by contact number', () => {
       // have its own contact with the same number). The page must show
       // what B's own search returns, so a stale or unsettled list can't
       // pass for an empty one.
-      const asB = await signedIn(instance, users.b)
       const b = await secondTab(browser, baseURL!, await session(users.b))
       await b.goto(`/t/${users.b.slug}/contacts`)
       await expect(b.getByRole('heading', { name: 'Contacts' })).toBeVisible()
       for (const term of [written, written.slice(0, 5)]) {
-        const inB = await asB.query(api.contacts.queries.search, {
-          tenantId: world.tenants[1].tenantId as Id<'tenants'>,
-          search: term,
-        })
+        const inB = await apiGet<SearchResult>(
+          instance,
+          users.b,
+          `/api/t/${world.tenants[1].slug}/contacts/search?q=${encodeURIComponent(term)}`,
+        )
         expect(inB.rows.some((r) => r.displayName.includes(last))).toBe(false)
         await searchBox(b).fill('')
         await expect(b.getByText('No contacts match.')).toBeHidden()

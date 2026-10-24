@@ -23,25 +23,16 @@ import {
   runId,
 } from './timing'
 import type { FlowRecord, SampleDetail } from './timing'
-import { SERVER_EXCEPTIONS, budgets } from './budgets'
+import { budgets } from './budgets'
 import { DRIFT_MS, DRIFT_RUNS, checkTarget, targetReason } from './target'
 import type { TargetCheck } from './target'
 import { parseHistory } from './trend'
 import { coverageGaps, readRoutes } from './coverage'
-import { BUDGET_MS, RESULTS_FILE, budgetMiss } from './server-timings'
 import { LINK_FILE, STALL_MS, linkDuring } from './link.setup'
 import type { LinkFile } from './link.setup'
-import type { ServerTimingsFile } from './server-timings'
-import {
-  blame,
-  commitLatency,
-  countVerdicts,
-  formatBlame,
-  formatCounts,
-  readBlameContext,
-} from './blame'
-import type { Blame, BlameContext } from './blame'
-import type { Rule } from './judge'
+import { formatServer, serverSummary } from './server'
+import type { ServerSummary as RouteSummary } from './server'
+import { isPorted } from '../src/lib/data/ported'
 import type { Budget, FlowKind, FlowName } from './budgets'
 
 // QC reporter: gathers every flow record the workers wrote for this run
@@ -58,20 +49,20 @@ import type { Budget, FlowKind, FlowName } from './budgets'
 //   that no test which ran was annotated with, or a route annotation
 //   naming no route (qc/coverage.ts). A filtered run only warns.
 //
-// Each sample's legs (qc/timing.ts) go on its history line, with the worst
-// first-hop round trip during it (qc/link.setup.ts); a LINK banner lists
-// the over-budget samples that overlapped a first-hop stall. Context only:
-// they're judged like any other.
+//   Routes the Rust backend doesn't serve yet (src/lib/data/ported.ts)
+//   are exempt, and listed with the pendingPort flows and tests instead;
+// - a route over the server rule (qc/server.ts): every call under 100 ms
+//   by its Server-Timing, bar one spike per route.
 //
-// Every sample at or over budget also gets a breakdown and a verdict
-// (qc/blame.ts: ours, link, convex/network, unclear) on its history line
-// as `blame`, a BLAME list, and a count by verdict next to the failures.
-// They explain; they never change a pass or a fail.
+// Each sample's calls (qc/timing.ts) go on its history line, with the
+// worst first-hop round trip during it (qc/link.setup.ts); a LINK banner
+// lists the over-budget samples that overlapped a first-hop stall. Context
+// only: they're judged like any other.
 //
 // A `knownOver` flow (an approved exception) never fails the run, but
 // every run lists all of them in a banner with their samples. So does
 // every spike: a flow that passed only on its re-measure (qc/timing.ts),
-// or a server function that passed with one slow call.
+// or a route that passed with one slow call.
 //
 // A flow with a target (qc/budgets.ts) is checked against it and against
 // its own history (qc/target.ts): over target or drifting up, it's listed
@@ -86,6 +77,8 @@ export interface HistoryLine {
   sha: string
   dirty: boolean
   mode: 'assert' | 'record'
+  /** Where it ran: the local pool, or staging (the nightly). Absent before it. */
+  env?: 'local' | 'staging'
   flow: FlowName
   kind: FlowKind
   n: number
@@ -118,21 +111,18 @@ export interface HistoryLine {
   pass: boolean | null
   /** Approved exception: `pass` is still the real judgement. */
   knownOver?: string
-  /** How the judged set's slow samples were judged (qc/judge.ts), by rule. */
-  judged?: Partial<Record<Rule, number>>
-  /**
-   * Hidden-ours signals over every sample (human, 2026-10-21): tracked,
-   * not judged. Medians of bytes the page received, requests it made, and
-   * commit latency (send → commit less the probe).
-   */
+  /** Convex-era lines only: how slow samples were judged, by rule. */
+  judged?: Partial<Record<string, number>>
+  /** Convex-era lines only: bytes in, requests and commit latency. */
   signals?: {
     bytesInP50: number | null
     requestsP50: number | null
     commitLatencyP50: number | null
   }
   /**
-   * The run's Convex server execution times (qc/server-timings.ts), the
-   * same on every line of a run; null when the collector wrote nothing.
+   * The run's server times by route (qc/server.ts), the same on every line
+   * of a run; null when no sample made a call. Convex-era lines carry
+   * their functions under the same names.
    */
   server: ServerSummary | null
 }
@@ -142,8 +132,6 @@ export type SampleWhere = SampleDetail & {
   instance?: string
   /** Worst first-hop round trip during the sample; absent without a monitor. */
   linkMs?: number | null
-  /** At or over budget: whose time it was (qc/blame.ts). */
-  blame?: Blame
 }
 
 function readLink(dir: string): LinkFile | null {
@@ -153,17 +141,14 @@ function readLink(dir: string): LinkFile | null {
     : null
 }
 
+/** The shape history keeps (and qc/trend.ts charts): one row per route. */
 export interface ServerSummary {
-  /** No stream was lost and no asserted function broke the budget rule. */
+  /** No route broke the server rule. */
   pass: boolean
-  /** Asserted functions that passed with one call over budget. */
+  /** Routes that passed with one call over budget. */
   spikes?: Array<string>
-  /** Every approved server exception, with this run's excepted calls. */
-  exceptions?: Array<string>
-  /** How many calls the exceptions excepted this run. */
-  exceptedCalls?: number
-  /** Uncached executions only; `asserted` ones are judged. */
   functions: Array<{
+    /** `METHOD /path` (Convex-era lines: the function). */
     fn: string
     type: string
     asserted: boolean
@@ -176,35 +161,22 @@ export interface ServerSummary {
   }>
 }
 
-function readServer(dir: string): ServerSummary | null {
-  const file = path.join(dir, RESULTS_FILE)
-  if (!existsSync(file)) return null
-  const t = JSON.parse(readFileSync(file, 'utf8')) as ServerTimingsFile
+/** Exported for qc/reporter.test.ts. */
+export function historyServer(s: RouteSummary): ServerSummary | null {
+  if (!s.routes.length && !s.untimed.length) return null
   return {
-    pass: t.errors.length === 0 && t.failures.length === 0,
-    spikes: t.spikes,
-    exceptions: t.exceptions,
-    exceptedCalls: t.functions
-      .filter((f) => f.exception !== undefined)
-      .reduce((n, f) => n + f.n, 0),
-    functions: t.functions
-      .filter((f) => !f.cached)
-      .map((f) => {
-        const budget =
-          f.budgetMs ?? BUDGET_MS[f.udfType as keyof typeof BUDGET_MS]
-        const spike =
-          f.asserted && f.max >= budget && budgetMiss(f, budget) === null
-        return {
-          fn: f.identifier,
-          type: f.udfType,
-          asserted: f.asserted,
-          n: f.n,
-          p50Ms: f.p50,
-          p95Ms: f.p95,
-          maxMs: f.max,
-          ...(spike && { spike: true as const }),
-        }
-      }),
+    pass: s.pass,
+    spikes: s.spikes,
+    functions: s.routes.map((r) => ({
+      fn: r.route,
+      type: 'route',
+      asserted: r.asserted,
+      n: r.n,
+      p50Ms: r.p50Ms,
+      p95Ms: r.p95Ms,
+      maxMs: r.maxMs,
+      ...(r.spike && { spike: true as const }),
+    })),
   }
 }
 
@@ -231,9 +203,11 @@ function readRecords(dir: string): Array<FlowRecord> {
 /** Exported for qc/reporter.test.ts. */
 export function summarise(
   records: Array<FlowRecord>,
-  base: Pick<HistoryLine, 'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'server'>,
+  base: Pick<
+    HistoryLine,
+    'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'env' | 'server'
+  >,
   link: LinkFile | null,
-  ctx: BlameContext,
   /** history.jsonl before this run, oldest first: the drift baseline. */
   past: Array<HistoryLine> = [],
 ): Array<HistoryLine> {
@@ -248,34 +222,16 @@ export function summarise(
       const judged = rs.filter((r) => r.pass !== null)
       const firstSamplesMs = rs.flatMap((r) => r.firstSamplesMs ?? [])
       const where = (r: FlowRecord, d: Array<SampleDetail> | undefined) =>
-        (d ?? []).map((x): SampleWhere => {
-          const s: SampleWhere = {
-            worker: r.worker,
-            instance: r.instance,
-            ...x,
-            ...(link?.watched && {
-              linkMs: linkDuring(link, x.at, x.at + x.endMs),
-            }),
-          }
-          return x.endMs >= r.budgetMs ? { ...s, blame: blame(s, ctx) } : s
-        })
+        (d ?? []).map((x): SampleWhere => ({
+          worker: r.worker,
+          instance: r.instance,
+          ...x,
+          ...(link?.watched && {
+            linkMs: linkDuring(link, x.at, x.at + x.endMs),
+          }),
+        }))
       const detail = rs.flatMap((r) => where(r, r.detail))
       const firstDetail = rs.flatMap((r) => where(r, r.firstDetail))
-      const rules: Partial<Record<Rule, number>> = {}
-      for (const d of detail)
-        if (d.judge) rules[d.judge.rule] = (rules[d.judge.rule] ?? 0) + 1
-      const all = [...firstDetail, ...detail]
-      const p50 = (xs: Array<number | null | undefined>) => {
-        const ns = xs.filter((x): x is number => typeof x === 'number')
-        return ns.length ? median(ns) : null
-      }
-      const signals = all.some((d) => d.bytesIn !== undefined)
-        ? {
-            bytesInP50: p50(all.map((d) => d.bytesIn)),
-            requestsP50: p50(all.map((d) => d.requests)),
-            commitLatencyP50: p50(all.map((d) => commitLatency(d, ctx.probes))),
-          }
-        : undefined
       const targetMs = rs[0].targetMs
       const p50Ms = median(samplesMs)
       const rttOver = rs.some((r) => r.rttOver)
@@ -306,8 +262,6 @@ export function summarise(
         ...(target && { target }),
         pass: judged.length ? judged.every((r) => r.pass) : null,
         ...(rs[0].knownOver && { knownOver: rs[0].knownOver }),
-        ...(Object.keys(rules).length && { judged: rules }),
-        ...(signals && { signals }),
       }
     })
 }
@@ -359,11 +313,6 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
       (l.target?.flagged ? ' · TARGET' : '') +
       (l.firstSamplesMs
         ? ` (re-measured: 1st max ${Math.round(Math.max(...l.firstSamplesMs))})`
-        : '') +
-      (l.judged
-        ? ` (${Object.entries(l.judged)
-            .map(([rule, n]) => `${n} ${rule}`)
-            .join(', ')})`
         : ''),
   ])
   const widths = head.map((h, i) =>
@@ -441,29 +390,7 @@ export function targetBanner(lines: Array<HistoryLine>): Array<string> {
   ])
 }
 
-/**
- * Every approved server exception (SERVER_EXCEPTIONS), on every run, with
- * the calls it excepted: like knownOver flows, so none is forgotten.
- */
-export function serverExceptionBanner(
-  server: Pick<ServerSummary, 'exceptions' | 'exceptedCalls'> | null,
-): Array<string> {
-  if (!SERVER_EXCEPTIONS.length) return []
-  const lines =
-    server?.exceptions ??
-    SERVER_EXCEPTIONS.map(
-      (x) =>
-        `${x.fn}: EXCEPTED from the 100 ms rule: ${x.reason} · ceiling < ${x.ceilingMs} ms · no server data`,
-    )
-  const n = SERVER_EXCEPTIONS.length
-  const calls = server?.exceptedCalls
-  return banner([
-    `${n} server exception${n === 1 ? '' : 's'} (approved, qc/budgets.ts SERVER_EXCEPTIONS)${calls === undefined ? '' : `, ${calls} call${calls === 1 ? '' : 's'} EXCEPTED this run`}: timed, held only to their ceilings.`,
-    ...lines,
-  ])
-}
-
-/** Flows that spiked and were re-measured, and server functions with one slow call. */
+/** Flows that spiked and were re-measured, and routes with one slow call. */
 function spikeBanner(
   lines: Array<HistoryLine>,
   selfTest: Set<FlowName>,
@@ -512,108 +439,33 @@ function linkBanner(
   ])
 }
 
-/** Every slow sample the judged sets judged on whose time it was (qc/judge.ts). */
-function judgeList(
-  lines: Array<HistoryLine>,
-  selfTest: Set<FlowName>,
+/**
+ * What the Rust backend doesn't serve yet (migration-rust.sv), on every
+ * run: the pendingPort flows (qc/budgets.ts), the tests skipped for them
+ * (qc/pending.ts) and the unported routes, by the step that ports them.
+ * Exported for qc/reporter.test.ts.
+ */
+export function pendingBanner(
+  skipped: Map<string, number>,
+  routes: Array<string>,
 ): Array<string> {
-  const rows = lines
-    .filter((l) => !selfTest.has(l.flow))
-    .flatMap((l) =>
-      (l.detail ?? []).flatMap((d) =>
-        d.judge
-          ? [
-              `  ${l.flow} w${d.worker} ${d.instance ?? '?'}: ${d.judge.rule} · ` +
-                d.judge.attempts
-                  .map(
-                    (a) =>
-                      `${Math.round(a.ms)} ms ${a.verdict ?? 'under'}` +
-                      (a.ourShareMs != null
-                        ? ` (our share ${Math.round(a.ourShareMs)})`
-                        : '') +
-                      (a.caughtUp === false ? ' [logs behind]' : ''),
-                  )
-                  .join(' → ') +
-                (d.judge.shareBudgetMs !== undefined
-                  ? ` · our share must be < ${d.judge.shareBudgetMs}`
-                  : ''),
-            ]
-          : [],
-      ),
-    )
-  if (!rows.length) return []
-  return [
-    'JUDGED: slow samples in the judged sets, ours or not (qc/README.md "Ours"; unclear counts as ours):',
-    ...rows,
-  ]
-}
-
-/** Counts for the run: retried, passed on retry or our share, failed and why. */
-function judgeSummary(
-  lines: Array<HistoryLine>,
-  selfTest: Set<FlowName>,
-): Array<string> {
-  const js = lines
-    .filter((l) => !selfTest.has(l.flow))
-    .flatMap((l) => (l.detail ?? []).flatMap((d) => (d.judge ? [d.judge] : [])))
-  if (!js.length) return []
-  const by: Partial<Record<Rule, number>> = {}
-  for (const j of js) by[j.rule] = (by[j.rule] ?? 0) + 1
-  const retried = js.filter((j) => j.attempts.length > 1).length
-  const extra = js.reduce((n, j) => n + j.attempts.length - 1, 0)
-  return [
-    `ours: ${js.length} slow samples judged, ${retried} retried (${extra} extra attempts): ` +
-      Object.entries(by)
-        .map(([rule, n]) => `${rule} ${n}`)
-        .join(', '),
-  ]
-}
-
-/** Every slow sample's breakdown, by flow. */
-function blameList(
-  lines: Array<HistoryLine>,
-  selfTest: Set<FlowName>,
-): Array<string> {
-  const rows = lines
-    .filter((l) => !selfTest.has(l.flow))
-    .flatMap((l) => {
-      const slow = (set: string, d: Array<SampleWhere> | undefined) =>
-        (d ?? [])
-          .filter((x) => x.blame)
-          .map(
-            (x) =>
-              `  ${set} w${x.worker} ${x.instance ?? '?'} ${new Date(x.at).toISOString().slice(11, 23)}: ${formatBlame(x.endMs, x.blame!)}`,
-          )
-      const all = [...slow('1st', l.firstDetail), ...slow('   ', l.detail)]
-      return all.length ? [`${l.flow} (budget < ${l.budgetMs}):`, ...all] : []
-    })
-  if (!rows.length) return []
-  return [
-    'BLAME: samples at or over budget, split into legs (qc/README.md "Blame"; ≈ = server clock; context only, judged as usual):',
-    ...rows,
-  ]
-}
-
-/** Slow samples by verdict, and the verdicts of each failed flow's samples. */
-function blameSummary(
-  lines: Array<HistoryLine>,
-  selfTest: Set<FlowName>,
-): Array<string> {
-  const real = lines.filter((l) => !selfTest.has(l.flow))
-  const blames = (l: HistoryLine) =>
-    [...(l.firstDetail ?? []), ...(l.detail ?? [])].flatMap((d) =>
-      d.blame ? [d.blame] : [],
-    )
-  const all = real.flatMap(blames)
-  if (!all.length) return []
-  const failed = real.filter((l) => l.pass === false)
-  return [
-    `blame: ${all.length} samples at or over budget: ${formatCounts(countVerdicts(all))}`,
-    ...failed.map(
-      (l) =>
-        `blame: ${l.flow} ${l.knownOver ? 'KNOWN OVER' : 'OVER'}: ${formatCounts(countVerdicts(blames(l)))}`,
+  const flows = new Map<string, Array<string>>()
+  for (const [name, b] of Object.entries(budgets) as Array<[string, Budget]>)
+    if (b.pendingPort)
+      flows.set(b.pendingPort, [...(flows.get(b.pendingPort) ?? []), name])
+  const steps = [...new Set([...flows.keys(), ...skipped.keys()])].sort()
+  const unported = routes.filter((r) => !isPorted(r))
+  if (!steps.length && !unported.length) return []
+  return banner([
+    'pendingPort: not on the Rust backend yet, so not run and not failing (qc/pending.ts, src/lib/data/ported.ts):',
+    ...steps.map(
+      (step) =>
+        `${step}: ${skipped.get(step) ?? 0} tests skipped · flows ${(flows.get(step) ?? []).join(', ') || 'none'}`,
     ),
-  ]
+    ...(unported.length
+      ? [`routes being ported (exempt from coverage): ${unported.join(', ')}`]
+      : []),
+  ])
 }
 
 const banner = (lines: Array<string>) => {
@@ -624,12 +476,19 @@ const banner = (lines: Array<string>) => {
 export default class QcReporter implements Reporter {
   private filtered = false
   private routes = new Set<string>()
+  /** pendingPort tests skipped, by step. */
+  private pending = new Map<string, number>()
 
   onBegin(config: FullConfig) {
     this.filtered = isFiltered(config.argv)
   }
 
   onTestEnd(test: TestCase, result: TestResult) {
+    const step = [...test.annotations, ...result.annotations].find(
+      (a) => a.type === 'pendingPort',
+    )?.description
+    if (step && result.status === 'skipped')
+      this.pending.set(step, (this.pending.get(step) ?? 0) + 1)
     // A skipped test proves nothing about its route.
     if (result.status === 'skipped') return
     for (const a of [...test.annotations, ...result.annotations]) {
@@ -645,14 +504,13 @@ export default class QcReporter implements Reporter {
     const out = ['']
     const failures: Array<string> = []
     let summary: Array<HistoryLine> = []
-    let blameLines: Array<string> = []
 
     if (records.length) {
       const selfTest = new Set(
         records.filter((r) => r.selfTest).map((r) => r.flow),
       )
       const link = readLink(runDir(id))
-      const blameCtx = readBlameContext(runDir(id))
+      const server = serverSummary(records)
       const past = existsSync(HISTORY)
         ? parseHistory(readFileSync(HISTORY, 'utf8')).lines
         : []
@@ -664,10 +522,10 @@ export default class QcReporter implements Reporter {
           sha: git(['rev-parse', 'HEAD']),
           dirty: git(['status', '--porcelain']) !== '',
           mode: RECORD ? 'record' : 'assert',
-          server: readServer(runDir(id)),
+          env: process.env.QC_TARGET === 'staging' ? 'staging' : 'local',
+          server: historyServer(server),
         },
         link,
-        blameCtx,
         past,
       )
       const rtts = [...new Set(records.map((r) => `w${r.worker} ${r.rttMs}`))]
@@ -690,17 +548,11 @@ export default class QcReporter implements Reporter {
       out.push(...targetBanner(lines))
       out.push(...spikeBanner(lines, selfTest, lines[0]?.server ?? null))
       out.push(...linkBanner(lines, selfTest, link))
-      out.push(...blameList(lines, selfTest))
-      out.push(...judgeList(lines, selfTest))
-      if (blameCtx.skipped) {
-        out.push(
-          `blame: ${blameCtx.skipped} unreadable lines or files in server-calls.jsonl / rtt-*.jsonl skipped`,
-        )
-      }
-      blameLines = [
-        ...blameSummary(lines, selfTest),
-        ...judgeSummary(lines, selfTest),
-      ]
+      if (server.routes.length) out.push(formatServer(server))
+      // Judged like the flows: record mode and a slow link assert nothing.
+      if (RECORD || records.some((r) => r.rttOver))
+        out.push(...server.failures.map((f) => `not judged: ${f}`))
+      else failures.push(...server.failures)
       const real = lines.filter((l) => !selfTest.has(l.flow))
       mkdirSync(path.dirname(HISTORY), { recursive: true })
       appendFileSync(
@@ -722,11 +574,12 @@ export default class QcReporter implements Reporter {
     }
 
     out.push(...knownOverBanner(summary))
-    out.push(...serverExceptionBanner(readServer(runDir(id))))
+    const routes = readRoutes()
+    out.push(...pendingBanner(this.pending, routes))
 
     const timed = new Set(records.map((r) => r.flow))
     const untimed = (Object.entries(budgets) as Array<[FlowName, Budget]>)
-      .filter(([name, b]) => !b.selfTest && !timed.has(name))
+      .filter(([name, b]) => !b.selfTest && !b.pendingPort && !timed.has(name))
       .map(([name, b]) => ({ name, pending: b.pending === true }))
     const pending = untimed.filter((u) => u.pending).map((u) => u.name)
     const missing = untimed.filter((u) => !u.pending).map((u) => u.name)
@@ -739,7 +592,9 @@ export default class QcReporter implements Reporter {
       else failures.push(msg)
     }
 
-    const gaps = coverageGaps(readRoutes(), this.routes)
+    // Routes being ported are listed in the pendingPort banner instead.
+    const all = coverageGaps(routes, this.routes)
+    const gaps = { ...all, uncovered: all.uncovered.filter(isPorted) }
     const gapMsgs = [
       ...(gaps.uncovered.length
         ? [
@@ -755,8 +610,6 @@ export default class QcReporter implements Reporter {
     if (this.filtered) out.push(...gapMsgs.map((m) => `warning: ${m}`))
     else failures.push(...gapMsgs)
 
-    // Next to the failures, so a failed run says whose time it was.
-    out.push(...blameLines)
     if (failures.length) {
       out.push(
         ...banner([

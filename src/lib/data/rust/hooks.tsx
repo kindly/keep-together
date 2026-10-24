@@ -22,14 +22,15 @@ import { useTenant } from '../../tenant'
 import { ownWrite } from '../events'
 import type { ContactPage } from '../rust-types/ContactPage'
 import type { ContactView as WireContact } from '../rust-types/ContactView'
-import type { Created } from '../rust-types/Created'
-import type { Executed } from '../rust-types/Executed'
+import type { ArchivedContact } from '../rust-types/ArchivedContact'
+import type { Boot } from '../rust-types/Boot'
+import type { CreatedContact } from '../rust-types/CreatedContact'
 import type { FieldDefinition as WireField } from '../rust-types/FieldDefinition'
 import type { HistoryPage } from '../rust-types/HistoryPage'
+import type { RestoredContact } from '../rust-types/RestoredContact'
 import type { Me } from '../rust-types/Me'
 import type { SaveFormResult } from '../rust-types/SaveFormResult'
 import type { SearchResult as WireSearch } from '../rust-types/SearchResult'
-import type { TenantInfo } from '../rust-types/TenantInfo'
 import type {
   ContactView,
   CreateContact,
@@ -154,14 +155,6 @@ export function useSignOut() {
 }
 
 // ── cold load ──────────────────────────────────────────────────────────────
-
-/** `GET /api/t/{slug}/boot` (F1): what a tenant page needs first. */
-export type Boot = {
-  me: Me
-  org: TenantInfo
-  fields: Array<WireField>
-  firstPage: ContactPage
-}
 
 /** The list's key with no filters: the page the boot carries. */
 const unfiltered = (slug: string) => keys.list(slug, { q: '' })
@@ -359,10 +352,12 @@ export function useCreateContact(): CreateContact {
   const clientKey = useMemo(() => crypto.randomUUID(), [])
   return async (details) => {
     try {
-      const created = await post<Created>(tenantPath(slug, 'contacts'), {
+      const created = await post<CreatedContact>(tenantPath(slug, 'contacts'), {
         clientKey,
         ...details,
       })
+      // The page it opens on draws from this: no read of its own.
+      qc.setQueryData(keys.contact(slug, created.id), created.view)
       return { type: 'created', id: created.id as Id<'contacts'> }
     } catch (e) {
       if (!(e instanceof RustApiError))
@@ -377,9 +372,17 @@ export function useCreateContact(): CreateContact {
         }
       return { type: 'failed', message: e.message }
     } finally {
-      void qc.invalidateQueries({ queryKey: keys.contacts(slug) })
+      void listsChanged(qc, slug)
     }
   }
+}
+
+/** The list and search show every contact's row: refetch what's shown. */
+function listsChanged(qc: QueryClient, slug: string) {
+  return Promise.all([
+    qc.invalidateQueries({ queryKey: keys.list(slug) }),
+    qc.invalidateQueries({ queryKey: keys.search(slug) }),
+  ])
 }
 
 // ── history ────────────────────────────────────────────────────────────────
@@ -394,28 +397,48 @@ export function useContactHistory(id: Id<'contacts'>) {
       (await get<HistoryPage>(tenantPath(slug, 'contacts', id, 'history')))
         .revisions,
   }).data
-  const after = () => qc.invalidateQueries({ queryKey: keys.contacts(slug) })
+  // Each write answers the contact's view: it lands at once, and only the
+  // lists and the history are fetched again. A refused one (a 409:
+  // changed elsewhere meanwhile) refetches the view too, so the switch and
+  // the form catch up.
+  const landed = (view: WireContact) => {
+    qc.setQueryData(keys.contact(slug, id), view)
+    void qc.invalidateQueries({ queryKey: keys.history(slug, id) })
+    return listsChanged(qc, slug)
+  }
+  const refused = () => qc.invalidateQueries({ queryKey: keys.contacts(slug) })
   return {
     revisions,
     restore: async (revisionId: number) => {
+      let done: RestoredContact
       try {
-        await post(tenantPath(slug, 'contacts', id, 'restore'), { revisionId })
-      } finally {
-        await after()
+        done = await post<RestoredContact>(
+          tenantPath(slug, 'contacts', id, 'restore'),
+          { revisionId },
+        )
+      } catch (e) {
+        await refused()
+        throw e
       }
+      for (const contract of done.restored) {
+        const slice = contract.split('.')[1] as keyof WireContact['counters']
+        ownWrite(slug, id, contract, done.view.counters[slice])
+      }
+      await landed(done.view)
     },
-    // A 409 here (archived elsewhere meanwhile) shows as an error; the
-    // refetch after it brings the new state, and the switch with it.
     setArchived: async (archived: boolean, expected: number) => {
+      let done: ArchivedContact
       try {
-        const done = await post<Executed>(
+        done = await post<ArchivedContact>(
           tenantPath(slug, 'contacts', id, 'archive'),
           { expected, archived },
         )
-        ownWrite(slug, id, 'contacts.archive', done.counter)
-      } finally {
-        await after()
+      } catch (e) {
+        await refused()
+        throw e
       }
+      ownWrite(slug, id, 'contacts.archive', done.counter)
+      await landed(done.view)
     },
   }
 }

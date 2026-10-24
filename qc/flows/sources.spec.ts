@@ -1,5 +1,6 @@
 import { expect, test } from '../fixtures'
-import { released, runId } from '../timing'
+import { runId } from '../timing'
+import { released } from '../convex-pending'
 import { secondTab, want } from './contact.helpers'
 import type { Page } from '@playwright/test'
 

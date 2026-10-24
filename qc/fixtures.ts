@@ -1,112 +1,135 @@
-import { execFile } from 'node:child_process'
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
-import { ConvexHttpClient } from 'convex/browser'
 import type { BrowserContext, Page } from '@playwright/test'
-import { api } from '../convex/_generated/api'
-import {
-  assertFlow,
-  probeRtt,
-  runDir,
-  runFlow,
-  runId,
-  startRttMonitor,
-  tapContext,
-} from './timing'
+import { assertFlow, probeRtt, runFlow, runId, tapContext } from './timing'
 import type { FlowName } from './budgets'
 import type { FlowRecord, FlowStep } from './timing'
+import { pendingStep } from './pending'
+import type { QcWorld } from '../src/lib/data/rust-types/QcWorld'
 
-// QC fixtures (factory/plans/qc-suite.sv, step 4). Specs import `test` and
-// `expect` from here, not from @playwright/test.
+// QC fixtures (factory/plans/qc-suite.sv step 4; migration-rust F3). Specs
+// import `test` and `expect` from here, not from @playwright/test.
 //
-// Per worker: an instance from the pool, its RTT, a freshly seeded world
-// (two tenants, `r<run>w<n>-a|b`; admins A and B, plus a staff and a
-// viewer member of tenant A), and a storageState per admin from one UI
-// sign-in each, which is also the timed `auth.signIn` flow. Staff and
-// viewer reuse A's storageState as their template (the keys name the
-// deployment, not the user). Tests start signed in as user A on the
-// worker's own instance.
-//
-// That storageState is a template, never loaded as is: every test context
-// gets its own Convex Auth session (`session`). Convex Auth rotates the
-// refresh token on each refresh and treats a used token presented again
-// more than 10 s later as replay, invalidating the whole session
-// (node_modules/@convex-dev/auth/dist/server/implementation/mutations/
-// refreshSession.js, REFRESH_TOKEN_REUSE_WINDOW_MS). The SPA refreshes on
-// page load, so contexts sharing one token sign each other out at random.
+// Per worker: an instance from the pool (a local release api with its own
+// data dir, or staging; qc/.instances.json, written by scripts/qc.mjs),
+// its RTT, a freshly seeded world (`POST /api/dev/qc-seed`: two tenants,
+// `r<run>w<n>-a|b`; admins A and B, plus a staff and a viewer member of
+// tenant A), and one timed UI sign-in per admin (`auth.signIn`; the dev
+// stub until A4: an email, no password). Tests start signed in as user A
+// on the worker's own instance, each browser context with a session of
+// its own (`session`).
 //
 // The world is shared by every test in a worker, and by the replacement
 // worker Playwright starts after a failure (same parallelIndex, and the
 // seed returns the existing tenants). So a spec never relies on the state
 // another test leaves: it creates the entities it changes, or puts back
 // what it changed.
+//
+// A test of a module not ported yet (qc/pending.ts) is skipped with a
+// `pendingPort` annotation before any fixture runs.
 
 export interface Instance {
+  /** qc-1 …, or staging. */
   name: string
-  deployment: string
-  url: string
-  envFile: string
-  port: number
-  outDir: string
+  /** The api's origin, for Node (seed, sign-in, RTT). */
+  api: string
+  /** The SPA's origin, for the browser (it proxies /api to the api). */
+  baseURL: string
 }
 
-export interface World {
-  /** a, b, then tenant A's staff and viewer. */
-  users: Array<{ email: string; role: 'admin' | 'staff' | 'viewer' }>
-  tenants: Array<{ slug: string; tenantId: string; contactIds: Array<string> }>
-  /** The type A's Ada holds `shared` under (archived in B). */
+export type World = Omit<QcWorld, 'tenants'> & {
+  /** tenantId is the slug: the Rust API is addressed by slug. */
+  tenants: Array<QcWorld['tenants'][number] & { tenantId: string }>
+  /** Not seeded until A1 ports identifiers: placeholders, never matched. */
   identifierType: string
-  /** Seeded values: A's and B's Ada `shared`; B only `bOnly`, `bReuse`. */
   identifiers: { shared: string; bOnly: string; bReuse: string }
-  /** A's one seeded dropdown field (B has none), carried by no contact. */
-  field: { label: string; options: ReadonlyArray<string> }
 }
 
 export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>
 
 export interface QcUser {
   email: string
+  /** Empty: the dev stub signs in by email alone (A4 brings passwords). */
   password: string
   /** The user's tenant (A, staff, viewer: tenants[0]; B: tenants[1]). */
   slug: string
-  /** A signed-in storageState: a template for `session`, never loaded. */
-  storageState: string
 }
 
 export function readInstances(): Array<Instance> {
   return JSON.parse(readFileSync('qc/.instances.json', 'utf8'))
 }
 
-/** Every seeded user's password in this run. */
-export function qcPassword(): string {
-  return `qc-${runId()}-password`
-}
-
-function deployKey(envFile: string): string {
-  const key = readFileSync(envFile, 'utf8').match(
-    /^CONVEX_DEPLOY_KEY=(dev:.+)$/m,
-  )?.[1]
-  if (!key) throw new Error(`${envFile}: no dev CONVEX_DEPLOY_KEY`)
-  return key
-}
-
-/** `npx convex …` against one pool instance, by its deploy key only. */
-export async function convexOn(
+async function post<T>(
   inst: Instance,
-  args: Array<string>,
-): Promise<string> {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    CONVEX_DEPLOY_KEY: deployKey(inst.envFile),
-  }
-  delete env.CONVEX_DEPLOYMENT
-  const { stdout } = await promisify(execFile)('npx', ['convex', ...args], {
-    env,
-    maxBuffer: 16 * 1024 * 1024,
+  route: string,
+  body: unknown,
+): Promise<{ data: T; res: Response }> {
+  const res = await fetch(`${inst.api}${route}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
   })
-  return stdout
+  if (!res.ok) throw new Error(`${route}: ${res.status} ${await res.text()}`)
+  return { data: (await res.json()) as T, res }
+}
+
+/** A dev session for `email` on `inst`: the `kt_session` cookie's value. */
+export async function devLogin(inst: Instance, email: string): Promise<string> {
+  const { res } = await post(inst, '/api/dev/login', { email })
+  const value = res.headers.get('set-cookie')?.match(/kt_session=([^;]+)/)?.[1]
+  if (!value) throw new Error(`no session cookie for ${email}`)
+  return value
+}
+
+/** A browser storageState carrying one session, for `inst`'s SPA origin. */
+export function sessionState(inst: Instance, token: string): StorageState {
+  const url = new URL(inst.baseURL)
+  const secure = url.protocol === 'https:'
+  return {
+    cookies: [
+      {
+        name: 'kt_session',
+        value: token,
+        domain: url.hostname,
+        path: '/',
+        expires: -1,
+        httpOnly: true,
+        secure,
+        sameSite: 'Lax',
+      },
+    ],
+    origins: [],
+  }
+}
+
+/**
+ * `GET` an api path as `user` (a fresh dev session), for what the pages
+ * don't show: the JSON body, or throws on a refusal.
+ */
+export async function apiGet<T>(
+  inst: Instance,
+  user: QcUser,
+  route: string,
+): Promise<T> {
+  const token = await devLogin(inst, user.email)
+  const res = await fetch(`${inst.api}${route}`, {
+    headers: { cookie: `kt_session=${token}` },
+  })
+  if (!res.ok) throw new Error(`${route}: ${res.status} ${await res.text()}`)
+  return (await res.json()) as T
+}
+
+/**
+ * `count` individuals with one last name in `slug`, written in bulk by the
+ * api (`POST /api/dev/qc-crowd`): the paged list's crowd. Each tenant is
+ * its own file, so the write holds up no other worker's samples.
+ */
+export async function qcCrowd(
+  inst: Instance,
+  args: { slug: string; lastName: string; count: number },
+): Promise<unknown> {
+  return (await post(inst, '/api/dev/qc-crowd', args)).data
 }
 
 type Flow = <TArg = undefined>(
@@ -118,23 +141,37 @@ type Flow = <TArg = undefined>(
 interface WorkerFixtures {
   instance: Instance
   rttMs: number
-  /** Probes the RTT every 2 s for the life of the worker (context only). */
-  rttMonitor: void
   world: World
   users: { a: QcUser; b: QcUser; staff: QcUser; viewer: QcUser }
 }
 
 interface TestFixtures {
+  /** Skips a test whose module isn't ported yet (qc/pending.ts). */
+  pendingPort: void
   /** Time a flow K times and fail the test if it's over budget. */
   flow: Flow
   /**
    * A new signed-in session for a user (default A), as a storageState for
-   * one browser context. Never share one between contexts (see the top).
+   * one browser context.
    */
   session: (user?: QcUser) => Promise<StorageState>
 }
 
 export const test = base.extend<TestFixtures, WorkerFixtures>({
+  // First, and needing no worker fixture: a pending test never seeds.
+  pendingPort: [
+    // eslint-disable-next-line no-empty-pattern -- Playwright needs the pattern
+    async ({}, use, testInfo) => {
+      const step = pendingStep(testInfo.file, testInfo.titlePath.slice(1))
+      if (step) {
+        testInfo.annotations.push({ type: 'pendingPort', description: step })
+        testInfo.skip(true, `pendingPort ${step}: not on the Rust backend yet`)
+      }
+      await use()
+    },
+    { auto: true },
+  ],
+
   // parallelIndex, not workerIndex: it stays in 0..workers-1 when a worker
   // restarts after a failure, so the pool stays evenly loaded.
   instance: [
@@ -148,64 +185,34 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 
   rttMs: [
     async ({ instance }, use) => {
-      await use(await probeRtt(instance.url))
+      await use(await probeRtt(instance.api))
     },
     { scope: 'worker' },
   ],
 
-  // Written to the run directory as rtt-<pid>.jsonl, next to the flow
-  // records, so a stall can be set against the link at that moment.
-  // After rttMs (it depends on it), so its probes never overlap the
-  // worker's RTT measurement, which decides whether flows are judged.
-  rttMonitor: [
-    async ({ instance, rttMs: _ }, use, workerInfo) => {
-      const dir = runDir()
-      mkdirSync(dir, { recursive: true })
-      const file = path.join(dir, `rtt-${process.pid}.jsonl`)
-      const stop = startRttMonitor(instance.url, 2_000, (at, ms, lagMs) =>
-        appendFileSync(
-          file,
-          JSON.stringify({
-            at,
-            ms,
-            lagMs,
-            worker: workerInfo.parallelIndex,
-            instance: instance.name,
-          }) + '\n',
-        ),
-      )
-      await use()
-      await stop()
-    },
-    { scope: 'worker', auto: true },
-  ],
-
   world: [
     async ({ instance }, use, workerInfo) => {
-      const out = await convexOn(instance, [
-        'run',
-        'platform/qcSeed:fixture',
-        JSON.stringify({
-          runId: runId(),
-          worker: workerInfo.parallelIndex,
-          password: qcPassword(),
-        }),
-      ])
-      await use(JSON.parse(out) as World)
+      const { data } = await post<QcWorld>(instance, '/api/dev/qc-seed', {
+        runId: runId(),
+        worker: workerInfo.parallelIndex,
+      })
+      await use({
+        ...data,
+        tenants: data.tenants.map((t) => ({ ...t, tenantId: t.slug })),
+        identifierType: '(none until A1)',
+        identifiers: { shared: '-', bOnly: '-', bReuse: '-' },
+      })
     },
     { scope: 'worker' },
   ],
 
   users: [
     async ({ browser, instance, rttMs, world }, use, workerInfo) => {
-      const dir = path.join('test-results', '.auth', runId())
-      mkdirSync(dir, { recursive: true })
-      const password = qcPassword()
       const signIn = async (i: 0 | 1): Promise<QcUser> => {
         const { email } = world.users[i]
         const { slug } = world.tenants[i]
         const context = await browser.newContext({
-          baseURL: `http://localhost:${instance.port}`,
+          baseURL: instance.baseURL,
           viewport: { width: 1280, height: 800 },
         })
         await tapContext(context)
@@ -234,21 +241,10 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           'auth.signIn',
           {
             before: async () => {
+              // A re-measure starts signed in: drop the session.
+              await context.clearCookies()
               await page.goto('/')
-              // A re-measure starts signed in: drop the session (the saved
-              // storageState is the one taken after the last sign-in).
-              if (
-                await page.evaluate(() =>
-                  Object.keys(localStorage).some((k) =>
-                    k.startsWith('__convexAuth'),
-                  ),
-                )
-              ) {
-                await page.evaluate(() => localStorage.clear())
-                await page.goto('/')
-              }
               await page.getByPlaceholder('Email').fill(email)
-              await page.getByPlaceholder('Password').fill(password)
             },
             action: () => page.getByRole('button', { name: 'Sign in' }).click(),
             // Signing in lands on the group's home: its header drawn.
@@ -258,13 +254,8 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
             arg: slug,
           },
         )
-        const storageState = path.join(
-          dir,
-          `w${workerInfo.parallelIndex}-${'ab'[i]}.json`,
-        )
-        await context.storageState({ path: storageState })
         await context.close()
-        return { email, password, slug, storageState }
+        return { email, password: '', slug }
       }
       const a = await signIn(0)
       const member = (role: 'staff' | 'viewer'): QcUser => {
@@ -282,47 +273,18 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   ],
 
   baseURL: async ({ instance }, use) => {
-    await use(`http://localhost:${instance.port}`)
+    await use(instance.baseURL)
   },
 
   session: async ({ instance, users }, use) => {
-    const client = new ConvexHttpClient(instance.url)
-    await use(async (user = users.a) => {
-      const template = JSON.parse(
-        readFileSync(user.storageState, 'utf8'),
-      ) as StorageState
-      const { tokens } = await client.action(api.auth.signIn, {
-        provider: 'password',
-        params: { email: user.email, password: user.password, flow: 'signIn' },
-      })
-      if (!tokens) throw new Error(`no session for ${user.email}`)
-      const value = (name: string, old: string) =>
-        name.startsWith('__convexAuthJWT_')
-          ? tokens.token
-          : name.startsWith('__convexAuthRefreshToken_')
-            ? tokens.refreshToken
-            : old
-      const keys = template.origins.flatMap((o) =>
-        o.localStorage.map((e) => e.name),
-      )
-      if (!keys.some((k) => k.startsWith('__convexAuthRefreshToken_')))
-        throw new Error(`${user.storageState}: no Convex Auth tokens`)
-      return {
-        ...template,
-        origins: template.origins.map((o) => ({
-          ...o,
-          localStorage: o.localStorage.map((e) => ({
-            ...e,
-            value: value(e.name, e.value),
-          })),
-        })),
-      }
-    })
+    await use(async (user = users.a) =>
+      sessionState(instance, await devLogin(instance, user.email)),
+    )
   },
 
-  // The default page's context: the WebSocket tap from its first script.
-  // Its console and uncaught page errors are kept and attached to a test
-  // that fails: with tracing off (playwright.config.ts) a flaky failure
+  // The default page's context: the fetch tap from its first script. Its
+  // console and uncaught page errors are kept and attached to a test that
+  // fails: with tracing off (playwright.config.ts) a flaky failure
   // otherwise leaves only a screenshot and the call log.
   context: async ({ context }, use, testInfo) => {
     await tapContext(context)
@@ -363,7 +325,18 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           tracePath: testInfo.outputPath(`trace-${name}.zip`),
         },
         name,
-        step,
+        step.server
+          ? {
+              ...step,
+              // A result meant to come from the server: drop what no
+              // component shows, as Convex dropped an unsubscribed query,
+              // so the sample asks rather than drawing TanStack's cache.
+              before: async () => {
+                await step.before?.()
+                await page.evaluate(dropInactiveQueries)
+              },
+            }
+          : step,
       )
       await testInfo.attach(`flow ${name}`, {
         body: JSON.stringify(record, null, 2),
@@ -380,5 +353,41 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     })
   },
 })
+
+/**
+ * In the page: remove every cached query no component observes, from the
+ * app's TanStack QueryClient, found through React's fiber tree (the app
+ * doesn't expose it, and QC mustn't need it to). Serialised: no closures.
+ */
+function dropInactiveQueries() {
+  interface Client {
+    removeQueries: (f: {
+      predicate: (q: { getObserversCount: () => number }) => boolean
+    }) => void
+    getQueryCache: () => unknown
+  }
+  interface Fiber {
+    memoizedProps?: { client?: Client } | null
+    child: Fiber | null
+    sibling: Fiber | null
+  }
+  const root = document.getElementById('app')
+  const key =
+    root && Object.keys(root).find((k) => k.startsWith('__reactContainer$'))
+  // No app on the page (a cold load's about:blank): nothing cached.
+  if (!root || !key) return
+  const stack: Array<Fiber> = [(root as unknown as Record<string, Fiber>)[key]]
+  while (stack.length) {
+    const f = stack.pop()!
+    const client = f.memoizedProps?.client
+    if (client && typeof client.getQueryCache === 'function') {
+      client.removeQueries({ predicate: (q) => q.getObserversCount() === 0 })
+      return
+    }
+    if (f.child) stack.push(f.child)
+    if (f.sibling) stack.push(f.sibling)
+  }
+  throw new Error('dropInactiveQueries: no QueryClientProvider')
+}
 
 export { expect }
