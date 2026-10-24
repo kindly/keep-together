@@ -1,7 +1,7 @@
 //! The contacts domain on real org files: every slice's contract
 //! semantics (counters, stale per slice, revisions, child ids), the form
 //! save, dropdown fields, restore, list paging and filters, search rules
-//! on both FTS variants, and two organisations kept apart.
+//! and two organisations kept apart.
 
 use std::sync::Arc;
 
@@ -149,27 +149,11 @@ fn find(db: &OrgDb, q: &str) -> Vec<String> {
 }
 
 fn find_with(db: &OrgDb, q: SearchQuery) -> Vec<String> {
-    let words = r(db, |c| search(c, &q));
-    let trigram = r(db, |c| {
-        search(
-            c,
-            &SearchQuery {
-                fts: Some("trigram".into()),
-                ..q.clone()
-            },
-        )
-    });
-    let names = |res: SearchResult| -> Vec<String> {
-        res.rows.into_iter().map(|r| r.display_name).collect()
-    };
-    let (words, trigram) = (names(words), names(trigram));
-    // Same matching rules either way; only the order of equal-rank hits
-    // may differ.
-    let (mut a, mut b) = (words.clone(), trigram.clone());
-    a.sort();
-    b.sort();
-    assert_eq!(a, b, "{:?}: words vs trigram", q.q);
-    words
+    r(db, |c| search(c, &q))
+        .rows
+        .into_iter()
+        .map(|r| r.display_name)
+        .collect()
 }
 
 // ── create, numbers, details ───────────────────────────────────────────────
@@ -1072,32 +1056,28 @@ fn search_windows_are_capped_and_say_so() {
         Ok::<_, ContractError>(())
     })
     .unwrap();
-    for fts in ["words", "trigram"] {
-        let res = r(&world.a, |c| {
-            search(
-                c,
-                &SearchQuery {
-                    q: "smi".into(),
-                    fts: Some(fts.into()),
-                    ..Default::default()
-                },
-            )
-        });
-        assert_eq!(res.rows.len(), 100, "{fts}");
-        assert!(res.truncated && !res.too_broad, "{fts}");
-        // One-letter entries work on trigram too (by scan).
-        let res = r(&world.a, |c| {
-            search(
-                c,
-                &SearchQuery {
-                    q: "s".into(),
-                    fts: Some(fts.into()),
-                    ..Default::default()
-                },
-            )
-        });
-        assert_eq!(res.rows.len(), 100, "{fts}");
-    }
+    let res = r(&world.a, |c| {
+        search(
+            c,
+            &SearchQuery {
+                q: "smi".into(),
+                ..Default::default()
+            },
+        )
+    });
+    assert_eq!(res.rows.len(), 100);
+    assert!(res.truncated && !res.too_broad);
+    // One-letter entries (a prefix index of their own).
+    let res = r(&world.a, |c| {
+        search(
+            c,
+            &SearchQuery {
+                q: "s".into(),
+                ..Default::default()
+            },
+        )
+    });
+    assert_eq!(res.rows.len(), 100);
 }
 
 // ── isolation ──────────────────────────────────────────────────────────────
@@ -1148,4 +1128,99 @@ fn money_rule_no_real_columns() {
         })
         .unwrap();
     assert_eq!(reals, 0);
+}
+
+// ── caps (L6) and keys (L5) ────────────────────────────────────────────────
+
+#[test]
+fn a_contact_holds_at_most_fifty_rows_of_each_kind() {
+    let world = world();
+    let ann = add(&world.a, person("Ann", "Smith"));
+    let emails =
+        |n: usize| -> Vec<EmailRow> { (0..n).map(|i| email(&format!("ann{i}@x.org"))).collect() };
+    let too_many = save_methods(
+        &world.a,
+        &ann.id,
+        0,
+        Methods {
+            emails: emails(51),
+            phones: vec![],
+        },
+    );
+    assert!(
+        matches!(too_many, Err(ContractError::Invalid(_))),
+        "{too_many:?}"
+    );
+    save_methods(
+        &world.a,
+        &ann.id,
+        0,
+        Methods {
+            emails: emails(50),
+            phones: (0..50)
+                .map(|i| phone(&format!("0113 496 {i:04}")))
+                .collect(),
+        },
+    )
+    .unwrap();
+    let addresses = Addresses {
+        addresses: (0..51)
+            .map(|i| address(&format!("{i} Road"), "Leeds", "LS1 1AA"))
+            .collect(),
+    };
+    let err = w(&world.a, |ctx| {
+        execute(
+            ctx,
+            &ADDRESSES,
+            addresses,
+            Exec::update(&ann.id, Some(0), Source::Test),
+        )
+    });
+    assert!(matches!(err, Err(ContractError::Invalid(_))), "{err:?}");
+}
+
+#[test]
+fn row_keys_from_a_client_are_32_hex_characters() {
+    let world = world();
+    let ann = add(&world.a, person("Ann", "Smith"));
+    let err = save_methods(
+        &world.a,
+        &ann.id,
+        0,
+        Methods {
+            emails: vec![EmailRow {
+                key: Some("e1".into()),
+                ..email("ann@x.org")
+            }],
+            phones: vec![],
+        },
+    );
+    assert!(matches!(err, Err(ContractError::Invalid(_))), "{err:?}");
+}
+
+#[test]
+fn an_organisation_defines_at_most_two_hundred_fields() {
+    let world = world();
+    for i in 0..contacts::fields::MAX_FIELDS {
+        field(&world.a, &format!("Field {i}"), &[Kind::Individual], &[]);
+    }
+    let err = w(&world.a, |ctx| {
+        execute(
+            ctx,
+            &contacts::fields::FIELD,
+            FieldPayload {
+                label: "One too many".into(),
+                applies_to: vec![Kind::Individual],
+                is_active: true,
+            },
+            Exec::create(Source::Test),
+        )
+    })
+    .unwrap_err();
+    assert!(
+        matches!(&err, ContractError::Rejected { reason, .. } if reason == "field_limit"),
+        "{err:?}"
+    );
+    // The other organisation is unaffected.
+    field(&world.b, "Volunteer status", &[Kind::Individual], &["Yes"]);
 }

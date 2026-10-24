@@ -74,6 +74,23 @@ impl Tenant {
     }
 }
 
+impl Tenant {
+    /// This organisation's committed changes as SSE, resuming after
+    /// `Last-Event-ID` if given (see [`crate::events`]).
+    pub async fn events(
+        &self,
+        last_event_id: Option<&str>,
+    ) -> Result<
+        impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>
+        + Send
+        + 'static
+        + use<>,
+        ApiError,
+    > {
+        crate::events::stream(self.db.clone(), last_event_id).await
+    }
+}
+
 /// The `{slug}` in `/api/t/{slug}/…`.
 fn slug(uri: &OriginalUri) -> Option<&str> {
     let rest = uri.path().strip_prefix("/api/t/")?;
@@ -90,6 +107,7 @@ pub(crate) async fn middleware(
 ) -> Response {
     let headers = req.headers().clone();
     let resolved = async {
+        let req = &mut req;
         let session = auth::session(&state, &headers, &timing).await?;
         let slug = slug(&uri).ok_or(ApiError::NotFound)?.to_owned();
         let store = state.store.clone();
@@ -105,6 +123,8 @@ pub(crate) async fn middleware(
         .await;
         timing.add_platform(start.elapsed());
         let (member, db) = found?;
+        req.extensions_mut()
+            .insert(auth::Account::new(&state, &session));
         Ok::<_, ApiError>(Tenant {
             db,
             slug: member.tenant.slug,

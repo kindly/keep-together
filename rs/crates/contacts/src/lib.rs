@@ -19,15 +19,15 @@ use std::sync::LazyLock;
 
 use contracts::Registry;
 
-pub use projection::{FtsVariant, rebuild_search};
+pub use projection::{SEARCH_TABLE, rebuild_search};
 pub use slices::{ADDRESSES, ARCHIVE, DETAILS, FIELD_VALUES, METHODS};
 
 /// The org-schema migration this crate owns, after `contracts::MIGRATION`.
 ///
 /// `number` is the contact's rowid, so the FTS rows (keyed by rowid) stay
 /// attached through a VACUUM; the string `id` is what the API uses.
-/// Both FTS variants are maintained side by side for the spike's
-/// measurement (`FtsVariant`); a real build keeps one.
+/// As shipped by the spike, with both FTS variants; [`DROP_TRIGRAM`] drops
+/// the trigram one.
 pub const MIGRATION: &str = "
 CREATE TABLE contact_number_sequence (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -134,6 +134,9 @@ CREATE VIRTUAL TABLE contact_search_trigram USING fts5 (
     text, tokenize = 'trigram remove_diacritics 1'
 );
 ";
+
+/// Org schema step 3: the trigram FTS variant goes (L7).
+pub const DROP_TRIGRAM: &str = "DROP TABLE contact_search_trigram;";
 
 /// Every contract restore may meet in an org file's contacts history.
 pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {

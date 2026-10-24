@@ -334,18 +334,6 @@ async fn the_form_round_trip() {
         (s, err["kind"].as_str()),
         (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid"))
     );
-    let (s, err) = w
-        .call(
-            "GET",
-            "/api/t/alpha/contacts/search?q=smith&fts=nope",
-            &ann,
-            None,
-        )
-        .await;
-    assert_eq!(
-        (s, err["kind"].as_str()),
-        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid"))
-    );
     // FTS syntax in the entry is just text.
     let (s, out) = w
         .call(

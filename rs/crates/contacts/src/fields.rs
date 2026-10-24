@@ -178,6 +178,14 @@ impl Contract for ContactField {
                 params![id, next.label, normalized, kinds, next.is_active],
             )?;
         } else {
+            let count: i64 =
+                tx.query_row("SELECT count(*) FROM contact_fields", [], |r| r.get(0))?;
+            if count >= MAX_FIELDS {
+                return Err(ContractError::rejected(
+                    "field_limit",
+                    format!("An organisation has at most {MAX_FIELDS} fields"),
+                ));
+            }
             tx.execute(
                 "INSERT INTO contact_fields (id, label, label_normalized, applies_to, is_active)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -187,6 +195,9 @@ impl Contract for ContactField {
         Ok(())
     }
 }
+
+/// The most dropdown fields one organisation defines (L6).
+pub const MAX_FIELDS: i64 = 200;
 
 impl Contract for ContactFieldOption {
     const NAME: &'static str = "contacts.fieldOption";

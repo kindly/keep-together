@@ -8,36 +8,11 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::rules::{SearchAddress, SearchContact, search_text};
 
-/// The two FTS5 tables, maintained side by side so one seed measures both.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FtsVariant {
-    /// `unicode61` words with prefix indexes: Convex's matching rules
-    /// (every term a whole word, the last a prefix) are a plain MATCH.
-    #[default]
-    Words,
-    /// `trigram`: substring matches of 3+ characters; the word rules are
-    /// then checked per row, and shorter entries scan.
-    Trigram,
-}
-
-impl FtsVariant {
-    pub fn table(self) -> &'static str {
-        match self {
-            FtsVariant::Words => "contact_search_words",
-            FtsVariant::Trigram => "contact_search_trigram",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "words" | "unicode61" => Some(FtsVariant::Words),
-            "trigram" => Some(FtsVariant::Trigram),
-            _ => None,
-        }
-    }
-}
-
-const VARIANTS: [FtsVariant; 2] = [FtsVariant::Words, FtsVariant::Trigram];
+/// The FTS5 table: `unicode61` words with prefix indexes, so Convex's
+/// matching rules (every term a whole word, the last a prefix) are a plain
+/// MATCH. (The spike's trigram variant was dropped: slower on every case
+/// and twice the index.)
+pub const SEARCH_TABLE: &str = "contact_search_words";
 
 /// The search text of one contact, from its rows now.
 pub(crate) fn contact_text(conn: &Connection, id: &str) -> rusqlite::Result<Option<(i64, String)>> {
@@ -101,19 +76,19 @@ pub(crate) fn contact_text(conn: &Connection, id: &str) -> rusqlite::Result<Opti
     Ok(Some((number, text)))
 }
 
-/// Rebuild one contact's FTS rows; writes only when the text changed.
+/// Rebuild one contact's FTS row; writes only when the text changed.
 pub fn rebuild_search(conn: &Connection, id: &str) -> rusqlite::Result<()> {
     let Some((rowid, text)) = contact_text(conn, id)? else {
         return Ok(());
     };
-    for v in VARIANTS {
-        let table = v.table();
+    {
+        let table = SEARCH_TABLE;
         let existing: Option<String> = conn
             .prepare_cached(&format!("SELECT text FROM {table} WHERE rowid = ?1"))?
             .query_row([rowid], |r| r.get(0))
             .optional()?;
         if existing.as_deref() == Some(text.as_str()) {
-            continue;
+            return Ok(());
         }
         if existing.is_some() {
             conn.prepare_cached(&format!("DELETE FROM {table} WHERE rowid = ?1"))?
