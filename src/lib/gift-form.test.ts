@@ -103,10 +103,11 @@ describe('Gift Aid offer', () => {
         existing,
         info({
           covering: {
-            id: 'd' as Id<'giftAidDeclarations'>,
+            id: 'd',
             scope: 'future',
             method: 'paperForm',
             madeOn: '2026-03-03',
+            cancelledFrom: null,
           },
         }),
       ),
@@ -326,8 +327,11 @@ describe('amounts', () => {
     expect(amountPence('£ 12.50')).toBe(1250n)
   })
 
-  test('past int64 pence is too large', () => {
-    expect(amountPence('92233720368547758.07')).toBe(2n ** 63n - 1n)
-    expect(amountPence('92233720368547758.08')).toBe('tooLarge')
+  // Pence travel as JSON integers: past 2^53 a number isn't exact.
+  test('past what a JSON integer carries exactly is too large', () => {
+    expect(amountPence('90071992547409.91')).toBe(
+      BigInt(Number.MAX_SAFE_INTEGER),
+    )
+    expect(amountPence('90071992547409.92')).toBe('tooLarge')
   })
 })

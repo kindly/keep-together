@@ -58,3 +58,27 @@ export {
   useFollowRetires,
 } from './rust/fields'
 export type { BulkFieldState, FieldPayload, OptionPayload } from './rust/fields'
+export {
+  GIFTS_PAGE_SIZE,
+  fetchGift,
+  useContactGifts,
+  useDeclarations,
+  useDonor,
+  useGift,
+  useGiftAidWrites,
+  useGiftWrites,
+  useMyRecentGifts,
+  useRecordGift,
+} from './rust/gifts'
+export type {
+  ContactDeclarations,
+  Declaration,
+  DonorInfo,
+  Gift,
+  GiftFields,
+  GiftMethod,
+  GiftStatus,
+  GiftView,
+  RecentGift,
+  RecordGiftArgs,
+} from './rust/gifts'

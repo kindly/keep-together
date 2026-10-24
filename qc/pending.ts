@@ -19,14 +19,7 @@ export interface Pending {
   title?: RegExp
 }
 
-export const PENDING: ReadonlyArray<Pending> = [
-  // B2: gifts and Gift Aid.
-  { step: 'B2', file: 'gift-record.spec.ts' },
-  { step: 'B2', file: 'gifts.spec.ts' },
-  { step: 'B2', title: /B's gift is not A's to open/ },
-  { step: 'B2', title: /A's record-gift search finds none of B's/ },
-  { step: 'B2', title: /the Donations menu offers Record a gift/ },
-]
+export const PENDING: ReadonlyArray<Pending> = []
 
 /** The step a test waits for, or null when it runs now. */
 export function pendingStep(

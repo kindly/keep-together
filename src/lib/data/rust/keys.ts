@@ -27,7 +27,13 @@ export const keys = {
   notes: (slug: string, contactId?: string, archived?: boolean) =>
     contactId === undefined
       ? (['t', slug, 'notes'] as const)
-      : (['t', slug, 'notes', contactId, archived ? 'archived' : 'live'] as const),
+      : ([
+          't',
+          slug,
+          'notes',
+          contactId,
+          archived ? 'archived' : 'live',
+        ] as const),
   // "Also used by" and holds for a contact's saved emails; without an id,
   // every contact's (another contact's save or a release changes them).
   emailContext: (slug: string, id?: string) =>
@@ -42,4 +48,20 @@ export const keys = {
     args
       ? (['t', slug, 'sources', 'picker', args] as const)
       : (['t', slug, 'sources', 'picker'] as const),
+  // B2. Everything a gift shows is under `gifts`: a gift, its history,
+  // a contact's gifts, my recent gifts, the record page's donor.
+  gifts: (slug: string) => ['t', slug, 'gifts'] as const,
+  recentGifts: (slug: string) => ['t', slug, 'gifts', 'recent'] as const,
+  gift: (slug: string, id: string) => ['t', slug, 'gifts', 'one', id] as const,
+  giftHistory: (slug: string, id: string) =>
+    ['t', slug, 'gifts', 'one', id, 'history'] as const,
+  contactGifts: (slug: string, contactId: string) =>
+    ['t', slug, 'gifts', 'contact', contactId] as const,
+  donor: (slug: string, contactId: string, date: string) =>
+    ['t', slug, 'gifts', 'donor', contactId, date] as const,
+  /** A contact's Gift Aid panel; without a contact, every contact's. */
+  declarations: (slug: string, contactId?: string, today?: string) =>
+    contactId === undefined
+      ? (['t', slug, 'declarations'] as const)
+      : (['t', slug, 'declarations', contactId, today ?? ''] as const),
 }

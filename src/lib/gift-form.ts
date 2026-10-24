@@ -3,23 +3,16 @@
  * becomes (cash gifts plan, step 3). Pure: the page component holds a
  * draft and renders what these functions say.
  */
-import type { FunctionArgs, FunctionReturnType } from 'convex/server'
-import type { Doc, Id } from '../../convex/_generated/dataModel'
-import type { api } from '../../convex/_generated/api'
+import type { Id } from '../../convex/_generated/dataModel'
 import type { ShownCode } from '../components/source-code-picker'
+import type { DonorInfo, GiftMethod, RecordGiftArgs } from './data'
+import type { ContactKind } from './data/rust-types/ContactKind'
+import type { DeclarationMethod } from './data/rust-types/DeclarationMethod'
+import type { DeclarationScope } from './data/rust-types/DeclarationScope'
 import { parsePounds } from './gifts'
 
-/** `giving/queries:donor`: what the page knows about a picked contact. */
-export type DonorInfo = NonNullable<
-  FunctionReturnType<typeof api.giving.queries.donor>
->
-
-export type RecordGiftArgs = Omit<
-  FunctionArgs<typeof api.giving.mutations.recordGift>,
-  'tenantId'
->
-
-type ContactKind = Doc<'contacts'>['kind']
+/** `GET contacts/{id}/donor`: what the page knows about a picked contact. */
+export type { DonorInfo, RecordGiftArgs }
 
 /** Who gave: a contact picked from the search, or one typed in (g1q3). */
 export type DonorChoice =
@@ -37,20 +30,17 @@ export type DonorChoice =
 export type PickedCode = { id: Id<'sourceCodes'>; shown: ShownCode }
 
 /** The declaration methods staff can pick (`onScreenByDonor` needs a donor screen). */
-export type TickMethod = Exclude<
-  Doc<'giftAidDeclarations'>['method'],
-  'onScreenByDonor'
->
+export type TickMethod = Exclude<DeclarationMethod, 'onScreenByDonor'>
 
 export type GiftDraft = {
   donor: DonorChoice | null
   code: PickedCode | null
   amountText: string
-  method: Doc<'contributions'>['method']
+  method: GiftMethod
   reference: string
   receivedOn: string
   giftAid: boolean
-  scope: Doc<'giftAidDeclarations'>['scope']
+  scope: DeclarationScope
   declarationMethod: TickMethod
   /** The home address typed under the tick (g3q3). */
   line1: string
@@ -274,13 +264,16 @@ export const AMOUNT_MESSAGES = {
   tooLarge: 'That amount is too large',
 }
 
-/** The largest amount storable (`v.int64()` pence). */
-const MAX_PENCE = 2n ** 63n - 1n
+/**
+ * The largest amount storable: INTEGER pence, sent as a JSON integer, so
+ * no more than a float holds exactly (£90 trillion).
+ */
+const MAX_PENCE = BigInt(Number.MAX_SAFE_INTEGER)
 
 /**
  * The typed amount as pence. A space inside the number ("12 50") is
- * `ambiguous`, never guessed: £12.50 or £1,250? One past int64 is
- * `tooLarge`. Otherwise `parsePounds`.
+ * `ambiguous`, never guessed: £12.50 or £1,250? One past what the wire
+ * carries exactly is `tooLarge`. Otherwise `parsePounds`.
  */
 export function amountPence(
   text: string,

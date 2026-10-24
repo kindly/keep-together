@@ -87,6 +87,8 @@ dependencies = [
  "contacts",
  "contracts",
  "futures-util",
+ "giftaid",
+ "giving",
  "http-body-util",
  "object_store",
  "platform",
@@ -851,6 +853,20 @@ dependencies = [
 [[package]]
 name = "giftaid"
 version = "0.1.0"
+dependencies = [
+ "contacts",
+ "contracts",
+ "giving",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sources",
+ "store",
+ "tempfile",
+ "thiserror",
+ "ts-rs",
+]
 
 [[package]]
 name = "gimli"
@@ -861,6 +877,17 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 [[package]]
 name = "giving"
 version = "0.1.0"
+dependencies = [
+ "contacts",
+ "contracts",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sources",
+ "store",
+ "tempfile",
+ "ts-rs",
+]
 
 [[package]]
 name = "governor"

@@ -111,8 +111,7 @@ vi.mock('../lib/tenant', async (original) => ({
 let gifts: Array<RecentGift> = []
 vi.mock('../lib/gifts', async (original) => ({
   ...(await original<typeof GiftsLib>()),
-  useMyRecentGifts: (_: string, enabled = true) =>
-    enabled ? gifts : undefined,
+  useMyRecentGifts: (enabled = true) => (enabled ? gifts : undefined),
 }))
 
 const group = (slug: string, over: Partial<Tenant> = {}) =>
@@ -407,7 +406,7 @@ test('Switch group lists every group by name, each opening at its home', async (
   ])
 })
 
-test('being ported: the header has Contacts and Settings, nothing unported', async () => {
+test('being ported: the header has Contacts, Donations and Settings, nothing unported', async () => {
   port.all = false
   tenants = [group('alpha'), group('beta', { lastUsedAt: 5 })]
   await page(import('./t.$slug'))
@@ -418,7 +417,8 @@ test('being ported: the header has Contacts and Settings, nothing unported', asy
     // A3: Settings (it holds Sign out) and "last used".
     ['Settings', '/t/alpha/settings'],
   ])
-  expect(nav.textContent).not.toContain('Donations')
+  // B2: Donations ▾ (a menu, not a link).
+  expect(nav.textContent).toContain('Donations')
   expect(opened).toHaveBeenCalledExactlyOnceWith('alpha')
   expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
 })
@@ -461,7 +461,8 @@ test('settings: the first tab is Fields once every list is ported', async () => 
 
 test('being ported: an unported route shows the placeholder, not the page', async () => {
   port.all = false
-  port.leaf = '/t/$slug/gifts/new'
+  // Every route is ported (B1, B2): a made-up one stands in.
+  port.leaf = '/t/$slug/not-yet'
   await page(import('./t.$slug'))
   expect(text()).toContain('This page is being ported')
   expect(el.querySelector('[data-testid="outlet"]')).toBeNull()
@@ -471,12 +472,13 @@ test('being ported: an unported route shows the placeholder, not the page', asyn
   expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
 })
 
-test('being ported: home has no gift actions', async () => {
+test('being ported: home has the gift actions (B2)', async () => {
   port.all = false
   await home(group('alpha', { role: 'staff' }))
   expect(links()).toEqual([
+    ['Record a gift', '/t/alpha/gifts/new'],
     ['Find a contact', '/t/alpha/contacts'],
     ['New contact', '/t/alpha/contacts/new'],
   ])
-  expect(text()).not.toContain('My recent gifts')
+  expect(text()).toContain('My recent gifts')
 })

@@ -1,9 +1,8 @@
-import { useMutation, useQuery } from 'convex/react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
 import { openAt } from '../../convex/giftaid/rules'
+import { useGiftAidWrites, useMembers } from '../lib/data'
 import { formatDay, refusal } from '../lib/gifts'
 import {
   METHOD_LABELS,
@@ -12,7 +11,7 @@ import {
   useDeclarations,
 } from '../lib/giftaid'
 import type { Declaration } from '../lib/giftaid'
-import { useCanWrite, useTenant } from '../lib/tenant'
+import { useCanWrite } from '../lib/tenant'
 import { ConfirmDialog } from './confirm-dialog'
 import { localToday } from './source-code-picker'
 
@@ -35,17 +34,15 @@ const small =
  * themselves are never edited.
  */
 export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
-  const tenant = useTenant()
   const canWrite = useCanWrite()
-  const data = useDeclarations(tenant._id, contactId)
-  const members = useQuery(api.platform.tenants.members, {
-    tenantId: tenant._id,
-  })
+  const data = useDeclarations(contactId)
+  const members = useMembers()
   // "system" means an import or a webhook: never say it while loading.
-  const name = (userId: Id<'users'> | undefined) =>
+  const name = (userId: number | undefined) =>
     members === undefined
       ? '…'
-      : (members.find((m) => m.userId === userId)?.name ?? 'system')
+      : (members.find((m) => String(m.userId) === String(userId))?.name ??
+        'system')
   const [cancelling, setCancelling] = useState(false)
   if (data === undefined)
     return (
@@ -135,7 +132,7 @@ function DeclarationCard({
   current: boolean
   /** Which declaration this is, for its button's accessible name. */
   label: string
-  name: (userId: Id<'users'> | undefined) => string
+  name: (userId: number | undefined) => string
 }) {
   const canWrite = useCanWrite()
   const voided = d.voidedAt !== undefined
@@ -214,7 +211,11 @@ function DeclarationCard({
       {canWrite &&
         !voided &&
         (voiding ? (
-          <VoidForm id={d._id} onDone={() => setVoiding(false)} />
+          <VoidForm
+            id={d._id}
+            contactId={d.contactId}
+            onDone={() => setVoiding(false)}
+          />
         ) : (
           <button
             type="button"
@@ -244,8 +245,7 @@ function CancellationForm({
   declarations: Array<Declaration>
   onDone: () => void
 }) {
-  const tenant = useTenant()
-  const record = useMutation(api.giftaid.mutations.recordCancellation)
+  const writes = useGiftAidWrites(contactId)
   const [cancelledFrom, setCancelledFrom] = useState(localToday())
   const [note, setNote] = useState('')
   const [confirming, setConfirming] = useState(false)
@@ -266,12 +266,7 @@ function CancellationForm({
     setError(null)
     setSaving(true)
     try {
-      await record({
-        tenantId: tenant._id,
-        contactId,
-        cancelledFrom,
-        note: note.trim() || undefined,
-      })
+      await writes.cancel(cancelledFrom, note.trim() || undefined)
       onDone()
     } catch (err) {
       setError(
@@ -366,13 +361,14 @@ function CancellationForm({
  */
 function VoidForm({
   id,
+  contactId,
   onDone,
 }: {
   id: Id<'giftAidDeclarations'>
+  contactId: Id<'contacts'>
   onDone: () => void
 }) {
-  const tenant = useTenant()
-  const voidDeclaration = useMutation(api.giftaid.mutations.voidDeclaration)
+  const writes = useGiftAidWrites(contactId)
   const [reason, setReason] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -383,7 +379,7 @@ function VoidForm({
     setError(null)
     setSaving(true)
     try {
-      await voidDeclaration({ tenantId: tenant._id, id, reason })
+      await writes.voidDeclaration(id, reason)
       onDone()
     } catch (err) {
       setError(

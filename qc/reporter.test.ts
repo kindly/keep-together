@@ -121,15 +121,18 @@ describe('summarise', () => {
 
 describe('pendingBanner', () => {
   test('lists each step with its skipped tests, flows and the unported routes', () => {
-    const out = pendingBanner(new Map([['B2', 3]]), [
+    // Every wave step is ported (B1, B2): a made-up step and route stand in.
+    const out = pendingBanner(new Map([['B3', 2]]), [
       '/t/$slug/contacts/',
-      '/t/$slug/gifts/new',
+      '/t/$slug/not-yet',
     ]).join('\n')
-    expect(out).toMatch(/B2: 3 tests skipped · flows .*gift\.record/)
+    expect(out).toMatch(/B3: 2 tests skipped · flows none/)
     expect(out).toContain(
-      'routes being ported (exempt from coverage): /t/$slug/gifts/new',
+      'routes being ported (exempt from coverage): /t/$slug/not-yet',
     )
     expect(out).not.toContain('/t/$slug/contacts/,')
+    // Nothing left to port: no banner at all.
+    expect(pendingBanner(new Map(), ['/t/$slug/contacts/'])).toEqual([])
   })
 })
 
@@ -298,8 +301,9 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     expect(gap.gates.join('\n')).toMatch(
       /coverage: no test that ran covers \/t\/\$slug\/contacts\/new/,
     )
-    // pendingPort flows aren't "not timed" failures; others are.
-    expect(gap.out).not.toMatch(/not timed: [^\n]*gift\.record/)
+    // No flow is pendingPort any more (B1, B2 ported): an untimed flow of
+    // either is "not timed", like any other.
+    expect(gap.out).toMatch(/not timed: [^\n]*gift\.record/)
     expect(gap.out).toMatch(/not timed: [^\n]*contacts\.search\.phone/)
   })
 })

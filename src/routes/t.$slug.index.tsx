@@ -40,7 +40,7 @@ function GroupHome() {
       {FEATURES.gifts && (
         <section className="flex flex-col gap-2">
           <h2 className="text-lg font-medium">My recent gifts</h2>
-          <RecentGifts tenantId={tenant._id} />
+          <RecentGifts />
         </section>
       )}
     </main>

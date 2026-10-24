@@ -15,13 +15,6 @@ import type { MomentPage } from '../lib/data/rust-types/MomentPage'
 import type { RestoredContact } from '../lib/data/rust-types/RestoredContact'
 import { useCanWrite, useTenant } from '../lib/tenant'
 
-// The gift page's Convex feed, until B2 ports it (convex-history-feed.ts).
-export {
-  HistoryFeed,
-  fetchHistoryPage,
-  useHistoryPages,
-} from './convex-history-feed'
-
 export type { Moment }
 
 /** Revisions per history page ("Load older" asks for the next 10). */
@@ -74,7 +67,8 @@ export function useHistoryMoments(queryKey: QueryKey, path: string) {
     getNextPageParam: (page) => page.nextBefore,
   })
   const moments = useMemo(
-    () => history.data && joinMoments(history.data.pages.flatMap((p) => p.moments)),
+    () =>
+      history.data && joinMoments(history.data.pages.flatMap((p) => p.moments)),
     [history.data],
   )
   const olderFailed = history.isFetchNextPageError
@@ -149,8 +143,8 @@ export function MomentList({
             )}
           </div>
           <div className="text-neutral-700">
-            {m.groupName ?? m.slices.join(', ')} ·{' '}
-            {actorName(members, m.actor)} · {m.source}
+            {m.groupName ?? m.slices.join(', ')} · {actorName(members, m.actor)}{' '}
+            · {m.source}
           </div>
           {m.groupName && (
             <div className="text-xs text-neutral-500">

@@ -3,10 +3,9 @@ import { act } from 'react'
 import type { ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
-import { getFunctionName } from 'convex/server'
-import { ConvexError } from 'convex/values'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { formatNumber } from '../../convex/contacts/number'
+import { RustApiError } from '../lib/data/rust/client'
 import type { DonorInfo } from '../lib/gift-form'
 import { GiftForm } from './gift-form'
 
@@ -19,35 +18,25 @@ let search: unknown
 let searchFor: Map<string, unknown> | null = null
 let donor: DonorInfo | null | undefined
 const asked: Array<[string, unknown]> = []
-vi.mock('convex/react', () => ({
-  useConvex: () => ({ query: readBack }),
-  useMutation: () => record,
-  useQuery: (ref: unknown, args: unknown) => {
-    const name = getFunctionName(ref as never)
-    asked.push([name, args])
-    if (args === 'skip') return undefined
-    if (name === 'contacts/queries:search')
-      return searchFor
-        ? searchFor.get((args as { search: string }).search)
-        : search
-    if (name === 'giving/queries:donor') return donor
-    if (name === 'sources/queries:picker')
-      return {
-        codes: [
-          {
-            versionId: 'online',
-            code: 'Online-Spring-001',
-            status: 'current',
-          },
-        ],
-        truncated: false,
-      }
-    return undefined
-  },
-}))
-// The source code picker is on the Rust data layer (A2).
+// The page's reads and its one save, on the Rust data layer. `asked`
+// records each read's arguments under the name the Convex query had.
 vi.mock('../lib/data', async (original) => ({
   ...(await original<object>()),
+  useContactSearch: (args: 'skip' | { search: string }) => {
+    asked.push(['contacts/queries:search', args])
+    if (args === 'skip') return undefined
+    return searchFor ? searchFor.get(args.search) : search
+  },
+  useDonor: (contactId: string | null, date: string) => {
+    asked.push([
+      'giving/queries:donor',
+      contactId === null ? 'skip' : { contactId, date },
+    ])
+    return contactId === null ? undefined : donor
+  },
+  useRecordGift: () => record,
+  fetchGift: (...args: Array<unknown>) => readBack(...args),
+  // The source code picker is on the Rust data layer (A2).
   useSourcePicker: (args: unknown) =>
     args === 'skip'
       ? undefined
@@ -61,6 +50,10 @@ vi.mock('../lib/data', async (original) => ({
           ],
           truncated: false,
         },
+}))
+vi.mock('@tanstack/react-query', async (original) => ({
+  ...(await original<object>()),
+  useQueryClient: () => ({}),
 }))
 vi.mock('../lib/tenant', () => ({
   useTenant: () => ({ _id: 'tenantA', slug: 'alpha' }),
@@ -359,7 +352,6 @@ test('a save: one call however many clicks, then cleared for the next, date and 
   expect(record).toHaveBeenCalledTimes(1)
   const sent = record.mock.calls[0][0]
   expect(sent).toMatchObject({
-    tenantId: 'tenantA',
     contact: 'jo',
     amount: 1250n,
     receivedOn: '2026-10-20',
@@ -413,7 +405,7 @@ test('a failed save keeps the key: the retry that finds it saved says so', async
     'Could not save the gift: try again',
   )
   record.mockRejectedValueOnce(
-    new ConvexError({ kind: 'rejected', reason: 'duplicate', message: 'g1' }),
+    new RustApiError(409, { kind: 'duplicate', id: 'g1' }),
   )
   await click(submit())
   expect(record.mock.calls[1][0].clientKey).toBe(
@@ -534,13 +526,10 @@ test('"Already saved" says what the server holds, not what the form holds now', 
     contact: { displayName: 'Jo Bloggs' },
   })
   record.mockRejectedValueOnce(
-    new ConvexError({ kind: 'rejected', reason: 'duplicate', message: 'g1' }),
+    new RustApiError(409, { kind: 'duplicate', id: 'g1' }),
   )
   await click(submit())
-  expect(readBack).toHaveBeenCalledWith(expect.anything(), {
-    tenantId: 'tenantA',
-    id: 'g1',
-  })
+  expect(readBack).toHaveBeenCalledWith(expect.anything(), 'alpha', 'g1')
   expect(el.querySelector('[role="status"]')!.textContent).toBe(
     'Already saved: £20.00 from Jo Bloggs (open)',
   )

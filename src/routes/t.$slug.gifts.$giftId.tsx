@@ -1,18 +1,9 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { useConvex, useMutation, useQuery } from 'convex/react'
-import type { FunctionReturnType } from 'convex/server'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import type { Doc, Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
+import type { Id } from '../../convex/_generated/dataModel'
 import { giftWarnings } from '../../convex/giving/warnings'
-import type { Moment } from '../../convex/contacts/history'
 import { ConfirmDialog } from '../components/confirm-dialog'
-import {
-  HistoryFeed,
-  fetchHistoryPage,
-  useHistoryPages,
-} from '../components/contact-history'
 import { SourceCodePicker, localToday } from '../components/source-code-picker'
 import type { ShownCode } from '../components/source-code-picker'
 import {
@@ -27,24 +18,17 @@ import {
   giftCoverage,
   useDeclarations,
 } from '../lib/giftaid'
+import { MomentList, useHistoryMoments } from '../components/contact-history'
+import { useGift, useGiftWrites, useMembers } from '../lib/data'
+import type { GiftStatus, GiftView as Gift, Member } from '../lib/data'
+import { tenantPath } from '../lib/data/rust/client'
+import { keys } from '../lib/data/rust/keys'
 import { threeWayMerge } from '../lib/merge'
 import { AMOUNT_MESSAGES, amountPence } from '../lib/gift-form'
 import { useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/gifts/$giftId')({
   component: GiftPage,
-  // Not ported yet: renders "being ported" (lib/data/ported.ts). Its
-  // loader prewarmed Convex queries; the porting step writes a new one.
-})
-
-type Gift = NonNullable<FunctionReturnType<typeof api.giving.queries.get>>
-
-/** The gift page's history is never re-anchored mid-read: it is short. */
-const atRest = () => true
-
-const AT = new Intl.DateTimeFormat([], {
-  dateStyle: 'short',
-  timeStyle: 'short',
 })
 
 const field = 'rounded border border-neutral-300 px-2 py-1 text-sm'
@@ -63,7 +47,7 @@ function GiftPage() {
   const tenant = useTenant()
   const { giftId } = Route.useParams()
   const id = giftId as Id<'contributions'>
-  const gift = useQuery(api.giving.queries.get, { tenantId: tenant._id, id })
+  const gift = useGift(id)
   if (gift === undefined)
     return <main className="p-6 text-sm text-neutral-500">Loading…</main>
   if (gift === null) return <main className="p-6">No such gift.</main>
@@ -74,53 +58,34 @@ function GiftPage() {
 function GiftView({ gift }: { gift: Gift }) {
   const tenant = useTenant()
   const canWrite = useCanWrite()
-  const convex = useConvex()
-  const members = useQuery(api.platform.tenants.members, {
-    tenantId: tenant._id,
-  })
-  const declarations = useDeclarations(tenant._id, gift.contactId)
-  // Fetched, not subscribed, as the contact's is: a subscribed history
-  // would re-run on every save and hold up "saved" (ContactHistory).
-  const feed = useMemo(
-    () =>
-      new HistoryFeed((paginationOpts) =>
-        fetchHistoryPage(convex, api.giving.queries.history, {
-          tenantId: tenant._id,
-          id: gift._id,
-          paginationOpts,
-        }),
-      ),
-    [convex, tenant._id, gift._id],
-  )
+  const members = useMembers()
+  const declarations = useDeclarations(gift.contactId)
   // Never optimistic (gifts are financial records): the page shows the
-  // new status once the server confirms it.
-  const setStatus = useMutation(api.giving.mutations.setStatus)
+  // new status once the server confirms it, from its answer.
+  const writes = useGiftWrites(gift._id)
   const [editing, setEditing] = useState(false)
   // The status change being confirmed, with the counter seen when asked.
   const [confirming, setConfirming] = useState<{
-    status: Doc<'contributions'>['status']
+    status: GiftStatus
     expected: number
   } | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const isVoid = gift.status === 'void'
   // "system" means an import or a webhook: never say it while loading.
-  const name = (userId: Id<'users'> | null | undefined) =>
+  const name = (userId: number | null | undefined) =>
     members === undefined
       ? '…'
-      : (members.find((m) => m.userId === userId)?.name ?? 'system')
+      : (members.find((m) => String(m.userId) === String(userId))?.name ??
+        'system')
   const warnings = giftWarnings(gift, localToday())
   const coverage = giftCoverage(declarations, gift)
 
-  async function changeStatus(
-    status: Doc<'contributions'>['status'],
-    expected: number,
-  ) {
+  async function changeStatus(status: GiftStatus, expected: number) {
     setStatusError(null)
     setBusy(true)
-    feed.hold()
     try {
-      await setStatus({ tenantId: tenant._id, id: gift._id, expected, status })
+      await writes.setStatus(expected, status)
     } catch (err) {
       setStatusError(
         refusal(
@@ -130,7 +95,6 @@ function GiftView({ gift }: { gift: Gift }) {
         ),
       )
     } finally {
-      feed.release()
       setBusy(false)
     }
   }
@@ -173,7 +137,7 @@ function GiftView({ gift }: { gift: Gift }) {
         </header>
 
         {editing ? (
-          <GiftEdit gift={gift} feed={feed} onDone={() => setEditing(false)} />
+          <GiftEdit gift={gift} onDone={() => setEditing(false)} />
         ) : (
           <dl className="grid grid-cols-[9rem_1fr] gap-x-4 gap-y-2 text-sm">
             <dt className="text-neutral-500">Received</dt>
@@ -307,11 +271,7 @@ function GiftView({ gift }: { gift: Gift }) {
           onCancel={() => setConfirming(null)}
         />
       </div>
-      <GiftHistory
-        feed={feed}
-        version={`${gift.giftVersion}:${gift.statusVersion}`}
-        name={name}
-      />
+      <GiftHistory id={gift._id} members={members} />
     </main>
   )
 }
@@ -372,17 +332,8 @@ function fieldsOf(gift: Gift): EditFields {
  * and retries the same way once it arrives. A gift split across several
  * codes keeps its amount and split (there is no split entry).
  */
-function GiftEdit({
-  gift,
-  feed,
-  onDone,
-}: {
-  gift: Gift
-  feed: HistoryFeed
-  onDone: () => void
-}) {
-  const tenant = useTenant()
-  const save = useMutation(api.giving.mutations.save)
+function GiftEdit({ gift, onDone }: { gift: Gift; onDone: () => void }) {
+  const writes = useGiftWrites(gift._id)
   const single = gift.allocations.length === 1 ? gift.allocations[0] : null
   const [expected, setExpected] = useState(gift.giftVersion)
   // The server state the form was last reconciled against.
@@ -464,12 +415,8 @@ function GiftEdit({
     }
     setError(null)
     setSaving(true)
-    feed.hold()
     try {
-      await save({
-        tenantId: tenant._id,
-        id: gift._id,
-        expected,
+      await writes.save(expected, {
         contactId: gift.contactId,
         receivedOn,
         amount,
@@ -493,7 +440,6 @@ function GiftEdit({
         ),
       )
     } finally {
-      feed.release()
       setSaving(false)
     }
   }
@@ -642,19 +588,25 @@ function GiftEdit({
   )
 }
 
-/** The gift's history, newest first: who changed what, when. */
+/**
+ * The gift's history, newest first: who changed what, when (B1's shared
+ * moments). Refetched when the gift changes: its write, or the event
+ * stream. No "Restore to here": a gift is corrected, voided or recorded
+ * again.
+ */
 function GiftHistory({
-  feed,
-  version,
-  name,
+  id,
+  members,
 }: {
-  feed: HistoryFeed
-  /** Changes with either counter: fetch the history again. */
-  version: string
-  name: (userId: Id<'users'> | null) => string
+  id: Id<'contributions'>
+  members: Array<Member> | undefined
 }) {
+  const { slug } = useTenant()
   const { moments, loading, loadOlder, error, retry, olderError, retryOlder } =
-    useHistoryPages(feed, version, atRest)
+    useHistoryMoments(
+      keys.giftHistory(slug, id),
+      tenantPath(slug, 'gifts', id, 'history'),
+    )
   return (
     <aside className="flex flex-col gap-4 text-sm">
       <h2 className="text-lg font-medium">History</h2>
@@ -669,32 +621,7 @@ function GiftHistory({
       {moments === undefined ? (
         !error && <p className="text-neutral-500">Loading…</p>
       ) : (
-        <ol className="flex flex-col gap-2">
-          {moments.map((m: Moment, i) => (
-            <li
-              key={m.key}
-              data-revision={m.revisionId}
-              className="rounded border border-neutral-200 bg-white p-2"
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <time className="text-neutral-600">{AT.format(m.at)}</time>
-                {i === 0 && (
-                  <span className="rounded bg-neutral-200 px-1 text-xs">
-                    current
-                  </span>
-                )}
-              </div>
-              <div className="text-neutral-700">
-                {m.groupName ?? m.slices.join(', ')} · {name(m.actor)}
-              </div>
-              {m.groupName && (
-                <div className="text-xs text-neutral-500">
-                  {m.slices.join(', ')}
-                </div>
-              )}
-            </li>
-          ))}
-        </ol>
+        <MomentList moments={moments} members={members} />
       )}
       {loading && <p className="text-neutral-500">Loading…</p>}
       {olderError && (

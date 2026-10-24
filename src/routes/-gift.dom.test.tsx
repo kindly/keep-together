@@ -3,20 +3,16 @@ import { act } from 'react'
 import type { ComponentType, ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
-import { getFunctionName } from 'convex/server'
-import type { FunctionReference, FunctionReturnType } from 'convex/server'
-import { ConvexError } from 'convex/values'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import type { api } from '../../convex/_generated/api'
 import type { Id } from '../../convex/_generated/dataModel'
+import type { GiftView as Gift } from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
 
 // The gift page (cash gifts step 5): someone else's edit while the form is
 // open merges in field by field and moves `expected`, so typed changes
 // survive and Save goes through; Void and Unvoid each confirm first.
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
-
-type Gift = NonNullable<FunctionReturnType<typeof api.giving.queries.get>>
 
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (options: object) => ({
@@ -27,29 +23,20 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 const mutations: Record<string, ReturnType<typeof vi.fn>> = {
-  'giving/mutations:save': vi.fn(),
-  'giving/mutations:setStatus': vi.fn(),
+  save: vi.fn(),
+  setStatus: vi.fn(),
 }
 let gift: Gift
 let members: Array<{ userId: string; name: string }> | undefined
-vi.mock('convex/react', () => ({
-  useQuery: (q: FunctionReference<'query'>) => {
-    const name = getFunctionName(q)
-    if (name === 'giving/queries:get') return gift
-    if (name === 'platform/tenants:members') return members
-    return { declarations: [], currentId: null }
-  },
-  useMutation: (m: FunctionReference<'mutation'>) =>
-    mutations[getFunctionName(m)],
-  useConvex: () => ({}),
+vi.mock('../lib/data', () => ({
+  useGift: () => gift,
+  useMembers: () => members,
+  useDeclarations: () => ({ declarations: [], currentId: null }),
+  useGiftWrites: () => mutations,
 }))
 vi.mock('../components/contact-history', () => ({
-  HistoryFeed: class {
-    hold() {}
-    release() {}
-  },
-  fetchHistoryPage: () => undefined,
-  useHistoryPages: () => ({ moments: [], loading: false }),
+  useHistoryMoments: () => ({ moments: [], loading: false, error: null }),
+  MomentList: () => null,
 }))
 vi.mock('../components/source-code-picker', () => ({
   SourceCodePicker: ({ value }: { value: { code: string } | null }) => (
@@ -71,7 +58,6 @@ function makeGift(over: Partial<Gift> = {}): Gift {
   return {
     _id: 'g1' as Id<'contributions'>,
     _creationTime: 0,
-    tenantId: 'tenantA' as Id<'tenants'>,
     contactId: 'c1' as Id<'contacts'>,
     contact: { kind: 'individual', displayName: 'Jo Bloggs' },
     receivedOn: '2026-10-01',
@@ -80,7 +66,7 @@ function makeGift(over: Partial<Gift> = {}): Gift {
     status: 'completed',
     giftVersion: 1,
     statusVersion: 0,
-    enteredBy: 'u1',
+    enteredBy: 1,
     allocations: [
       {
         key: 'k1',
@@ -101,7 +87,7 @@ let el: HTMLDivElement
 beforeEach(() => {
   for (const m of Object.values(mutations)) m.mockReset().mockResolvedValue({})
   gift = makeGift()
-  members = [{ userId: 'u1', name: 'Jo Staff' }]
+  members = [{ userId: '1', name: 'Jo Staff' }]
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -168,12 +154,9 @@ test("someone else's edit merges in, keeps typed changes, and Save sends their v
   )
   expect(notice.textContent).toContain('Changed by both of you: amount.')
   await act(async () => form().requestSubmit())
-  expect(mutations['giving/mutations:save']).toHaveBeenCalledWith(
-    expect.objectContaining({
-      expected: 2,
-      receivedOn: '2026-10-05',
-      amount: 2500n,
-    }),
+  expect(mutations.save).toHaveBeenCalledWith(
+    2,
+    expect.objectContaining({ receivedOn: '2026-10-05', amount: 2500n }),
   )
 })
 
@@ -181,8 +164,15 @@ test('a save refused as stale keeps the typed changes and retries once their ver
   render()
   await click(button(el, 'Edit'))
   await type(input('Amount'), '25')
-  const save = mutations['giving/mutations:save']
-  save.mockRejectedValueOnce(new ConvexError({ kind: 'stale', current: 2 }))
+  const save = mutations.save
+  save.mockRejectedValueOnce(
+    new RustApiError(409, {
+      kind: 'stale',
+      contract: 'giving.gift',
+      counter: 2,
+      current: {},
+    }),
+  )
   await act(async () => form().requestSubmit())
   expect(form().querySelector('[role="alert"]')?.textContent).toContain(
     'Someone else changed this gift just now',
@@ -194,7 +184,8 @@ test('a save refused as stale keeps the typed changes and retries once their ver
   expect(form().querySelector('[role="alert"]')).toBeNull()
   await act(async () => form().requestSubmit())
   expect(save).toHaveBeenLastCalledWith(
-    expect.objectContaining({ expected: 2, method: 'card', amount: 2500n }),
+    2,
+    expect.objectContaining({ method: 'card', amount: 2500n }),
   )
 })
 
@@ -206,7 +197,7 @@ test('a £0 amount is one message, sent nowhere', async () => {
   expect(form().querySelector('[role="alert"]')?.textContent).toBe(
     'The amount must be over £0',
   )
-  expect(mutations['giving/mutations:save']).not.toHaveBeenCalled()
+  expect(mutations.save).not.toHaveBeenCalled()
 })
 
 test('"12 50" is asked about, never saved as £1,250 (as on the record page)', async () => {
@@ -217,27 +208,22 @@ test('"12 50" is asked about, never saved as £1,250 (as on the record page)', a
   expect(form().querySelector('[role="alert"]')?.textContent).toBe(
     'Is that pounds and pence? Write it like 12.50, with no spaces',
   )
-  await type(input('Amount'), '92233720368547758.08')
+  await type(input('Amount'), '90071992547409.92')
   await act(async () => form().requestSubmit())
   expect(form().querySelector('[role="alert"]')?.textContent).toBe(
     'That amount is too large',
   )
-  expect(mutations['giving/mutations:save']).not.toHaveBeenCalled()
+  expect(mutations.save).not.toHaveBeenCalled()
 })
 
 test('Unvoid confirms first, as Void does', async () => {
   gift = makeGift({ status: 'void', statusVersion: 3 })
   render()
   await click(button(el, 'Unvoid'))
-  const setStatus = mutations['giving/mutations:setStatus']
+  const setStatus = mutations.setStatus
   expect(setStatus).not.toHaveBeenCalled()
   const dialog = document.querySelector('[role="alertdialog"]')!
   expect(dialog.textContent).toContain('Unvoid this gift?')
   await click(button(dialog, 'Unvoid'))
-  expect(setStatus).toHaveBeenCalledWith({
-    tenantId: 'tenantA',
-    id: 'g1',
-    expected: 3,
-    status: 'completed',
-  })
+  expect(setStatus).toHaveBeenCalledWith(3, 'completed')
 })
