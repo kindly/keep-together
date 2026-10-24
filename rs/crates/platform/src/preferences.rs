@@ -117,6 +117,15 @@ pub struct Preferences {
 }
 
 impl Preferences {
+    /// [`may_manage_list`] on preferences already read.
+    pub fn may_manage(&self, role: Role, kind: ListKind) -> bool {
+        match role {
+            Role::Admin => true,
+            Role::Staff => self.get(kind).staff_can_manage,
+            Role::Viewer => false,
+        }
+    }
+
     pub fn get(&self, kind: ListKind) -> &Switch {
         match kind {
             ListKind::IdentifierTypes => &self.identifier_types,

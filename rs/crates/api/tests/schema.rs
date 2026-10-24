@@ -55,6 +55,9 @@ const FIXTURES: &[&str] = &[
      VALUES (2, 'tenant_preferences', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6',
          'tenantPreferences.identifierTypes', 1, 1,
          '{\"staffCanManageIdentifierTypes\":true}', 1, 'ui', 2000);",
+    // 5: tenant settings
+    "INSERT INTO tenant_settings (id, name, nonce, ciphertext, version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f7', 'webhook', 'AAAAAAAAAAAAAAAA', 'AAAA', 0);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";

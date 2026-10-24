@@ -45,6 +45,8 @@ pub enum StoreError {
         expected: String,
         found: String,
     },
+    #[error("the new organisation's setup failed")]
+    InitFailed,
     #[error("organisation file {0} is missing")]
     MissingFile(PathBuf),
     #[error("platform schema {name}: stored version {stored} is newer than code version {code}")]
@@ -181,18 +183,41 @@ impl Store {
     /// the handle is cached only once the row has committed, and the file
     /// is removed if it didn't.
     pub fn create_tenant(&self, slug: &str, name: &str) -> Result<Tenant, StoreError> {
+        self.create_tenant_with(slug, name, |_, _, _| Ok::<_, StoreError>(()))
+    }
+
+    /// [`Store::create_tenant`], then `init` before the tenant row commits:
+    /// with the platform transaction (its admin membership), the tenant,
+    /// and its new file (seeds). If `init` fails, nothing remains: no row,
+    /// no file.
+    pub fn create_tenant_with<E: From<StoreError>>(
+        &self,
+        slug: &str,
+        name: &str,
+        init: impl FnOnce(&rusqlite::Connection, &Tenant, &OrgDb) -> Result<(), E>,
+    ) -> Result<Tenant, E> {
         let id = TenantId::new();
         let path = self.org_path(&id);
         let mut made = None;
-        let tenant = self.platform.insert_tenant(&id, slug, name, || {
-            made = Some(OrgDb::create(
-                &path,
-                &id,
-                &self.org_migrations,
-                self.readers,
-            )?);
-            Ok(())
+        let mut failed = None;
+        let tenant = self.platform.insert_tenant(&id, slug, name, |tx| {
+            let db = OrgDb::create(&path, &id, &self.org_migrations, self.readers)?;
+            let tenant = Tenant {
+                id: id.clone(),
+                slug: slug.into(),
+                name: name.into(),
+            };
+            let out = init(tx, &tenant, &db);
+            made = Some(db);
+            out.map_err(|e| {
+                failed = Some(e);
+                StoreError::InitFailed
+            })
         });
+        let tenant = match (tenant, failed) {
+            (Err(_), Some(e)) => Err(e),
+            (other, _) => other.map_err(E::from),
+        };
         match tenant {
             Ok(tenant) => {
                 if let Some(db) = made {

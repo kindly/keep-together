@@ -243,13 +243,14 @@ impl Platform {
         self.readers.with(|conn| f(conn))
     }
 
-    /// Insert the tenant row, run `make_file`, commit only if it succeeded.
+    /// Insert the tenant row, run `make_file` (in the same transaction),
+    /// commit only if it succeeded.
     pub(crate) fn insert_tenant(
         &self,
         id: &TenantId,
         slug: &str,
         name: &str,
-        make_file: impl FnOnce() -> Result<(), StoreError>,
+        make_file: impl FnOnce(&Connection) -> Result<(), StoreError>,
     ) -> Result<Tenant, StoreError> {
         if !valid_slug(slug) {
             return Err(StoreError::InvalidSlug(slug.into()));
@@ -267,7 +268,7 @@ impl Platform {
                 "INSERT INTO tenants (id, slug, name) VALUES (?1, ?2, ?3)",
                 params![id.as_str(), slug, name],
             )?;
-            make_file()?;
+            make_file(tx)?;
             Ok(Tenant {
                 id: id.clone(),
                 slug: slug.into(),
@@ -300,18 +301,21 @@ impl Platform {
     /// The user with this email, created if new. Emails are compared
     /// case-insensitively (stored lower-cased).
     pub fn upsert_user(&self, email: &str) -> Result<UserId, StoreError> {
+        self.write(|tx| Ok(Self::upsert_user_in(tx, email)?))
+    }
+
+    /// [`Platform::upsert_user`] inside a transaction the caller holds.
+    pub fn upsert_user_in(conn: &Connection, email: &str) -> rusqlite::Result<UserId> {
         let email = email.trim().to_lowercase();
-        self.write(|tx| {
-            tx.execute(
-                "INSERT INTO users (email) VALUES (?1) ON CONFLICT (email) DO NOTHING",
-                [&email],
-            )?;
-            Ok(UserId(tx.query_row(
-                "SELECT id FROM users WHERE email = ?1",
-                [&email],
-                |r| r.get(0),
-            )?))
-        })
+        conn.execute(
+            "INSERT INTO users (email) VALUES (?1) ON CONFLICT (email) DO NOTHING",
+            [&email],
+        )?;
+        Ok(UserId(conn.query_row(
+            "SELECT id FROM users WHERE email = ?1",
+            [&email],
+            |r| r.get(0),
+        )?))
     }
 
     pub fn set_membership(

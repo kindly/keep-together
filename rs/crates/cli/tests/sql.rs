@@ -17,7 +17,7 @@ fn setup(dir: &Path) {
     })
     .unwrap();
     store
-        .org(&alpha.id)
+        .org(&alpha.tenant.id)
         .unwrap()
         .write_raw(|tx| {
             tx.conn().execute_batch(
