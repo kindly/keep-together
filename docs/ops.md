@@ -257,4 +257,4 @@ sandbox):
 
 | date | env | source | restore (all files) | boot to healthy | counts | marks lost |
 |---|---|---|---|---|---|---|
-| 2026-10-24 | local podman, file replica (not the drill) | litestream | 0.3 s (10k org + riverside) | api up in < 2 s | equal | 0 rows (SIGKILL mid-write) |
+| 2026-10-24 | local podman, file replica (not the drill) | litestream | 0.3 s (10k org + riverside) | not timed | equal | 0 rows (SIGKILL mid-write) |
