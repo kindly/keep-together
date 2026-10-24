@@ -264,6 +264,8 @@ type RawCall = [
 interface QcWindow {
   __qcListening?: boolean
   __qcArmed?: boolean
+  /** performance.now() when this sample was armed, just before its action. */
+  __qcArmedAt?: number
   __qcT0?: number
   /** Every `/api` request since the tap went in (capped). */
   __qcCalls?: Array<RawCall>
@@ -376,6 +378,7 @@ function arm(now: boolean) {
   }
   if (!now) return
   w.__qcT0 = undefined
+  w.__qcArmedAt = performance.now()
   w.__qcArmed = true
 }
 
@@ -397,10 +400,14 @@ function readSample([t0, t1, watched]: [number, number, boolean]) {
   const w = window as unknown as QcWindow
   const rel = (t: number | null) =>
     t === null ? null : Math.round((t - t0) * 10) / 10
-  // A checkbox click's trusted `input` event fires inside the click, as
-  // the request is sent: allow a millisecond before t0.
+  // Every request since the sample was armed (after the settle, just
+  // before the action) is the action's. Not only those after t0: on a
+  // checkbox, React's onChange runs on `click`, before the trusted
+  // `input` event t0 is taken from, and its request can start first
+  // (a negative startMs).
+  const from = Math.min(t0 - 1, w.__qcArmedAt ?? t0 - 1)
   const calls = (w.__qcCalls ?? [])
-    .filter(([start]) => start >= t0 - 1 && start <= t1)
+    .filter(([start]) => start >= from && start <= t1)
     .map(([start, end, method, url, status, timing]) => ({
       method,
       url,

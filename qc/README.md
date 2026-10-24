@@ -161,7 +161,11 @@ How the calls are taken: a tap installed from each page's first script
 wraps `fetch` (the SPA looks it up on every call) and `EventSource`, and
 inside the timed window only notes times and strings; they're read after
 the result is on screen. A call's end is when its response headers
-arrived.
+arrived. A sample's calls are every request started after it was armed
+(after the settle, just before the action): on a checkbox, React's
+onChange runs on `click`, before the trusted `input` event t0 is taken
+from, so its request can start a moment before t0 (a negative
+`startMs`).
 
 `pnpm qc:report` renders that history to `qc-report/trend.html`: per-flow
 p50/p95 over the last 30 runs against the budget line, and per-route
