@@ -53,12 +53,14 @@ impl Contract for Details {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<DetailsSlice, ContractError> {
-        Ok(tx.query_row("SELECT name, colour FROM toys WHERE id = ?1", [id], |r| {
-            Ok(DetailsSlice {
-                name: r.get(0)?,
-                colour: r.get(1)?,
-            })
-        })?)
+        Ok(
+            tx.query_row("SELECT name, colour FROM toys WHERE id = ?1", [id], |r| {
+                Ok(DetailsSlice {
+                    name: r.get(0)?,
+                    colour: r.get(1)?,
+                })
+            })?,
+        )
     }
 
     fn apply(
@@ -241,18 +243,27 @@ fn email(id: Option<&str>, address: &str, label: &str) -> EmailIn {
 }
 
 /// Run `f` in one write transaction as user 7.
-fn write<T>(db: &OrgDb, f: impl FnOnce(&Ctx) -> Result<T, ContractError>) -> Result<T, ContractError> {
+fn write<T>(
+    db: &OrgDb,
+    f: impl FnOnce(&Ctx) -> Result<T, ContractError>,
+) -> Result<T, ContractError> {
     db.write(|tx| f(&Ctx::new(tx, Some(7))))
 }
 
 fn create(db: &OrgDb, name: &str) -> String {
-    write(db, |ctx| execute(ctx, &Details, details(name), Exec::create(Source::Ui)))
-        .unwrap()
-        .id
+    write(db, |ctx| {
+        execute(ctx, &Details, details(name), Exec::create(Source::Ui))
+    })
+    .unwrap()
+    .id
 }
 
 fn at<'t, 'c>(tx: &'t OrgTx<'c>, ms: i64) -> Ctx<'t, 'c> {
-    Ctx { tx, actor: Some(7), at: ms }
+    Ctx {
+        tx,
+        actor: Some(7),
+        at: ms,
+    }
 }
 
 fn revision_count(db: &OrgDb) -> i64 {
@@ -265,17 +276,32 @@ fn create_then_update_with_the_expected_counter() {
     let (_tmp, db) = org();
     let id = create(&db, "  Bear ");
     let out = write(&db, |ctx| {
-        execute(ctx, &Details, details("Big bear"), Exec::update(&id, Some(0), Source::Ui))
+        execute(
+            ctx,
+            &Details,
+            details("Big bear"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
     })
     .unwrap();
     assert_eq!(out.counter, 1);
     let name: String = db
-        .read(|r| r.query_row("SELECT name FROM toys WHERE id = ?1", [&id], |row| row.get(0)))
+        .read(|r| {
+            r.query_row("SELECT name FROM toys WHERE id = ?1", [&id], |row| {
+                row.get(0)
+            })
+        })
         .unwrap();
     assert_eq!(name, "Big bear");
     // The projection ran in the same transaction.
     let text: String = db
-        .read(|r| r.query_row("SELECT text FROM toy_search WHERE toy_id = ?1", [&id], |row| row.get(0)))
+        .read(|r| {
+            r.query_row(
+                "SELECT text FROM toy_search WHERE toy_id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+        })
         .unwrap();
     assert_eq!(text, "big bear");
 }
@@ -284,16 +310,32 @@ fn create_then_update_with_the_expected_counter() {
 fn stale_counter_is_refused_with_the_current_state_and_writes_nothing() {
     let (_tmp, db) = org();
     let id = create(&db, "Bear");
-    write(&db, |ctx| execute(ctx, &Details, details("Second"), Exec::update(&id, Some(0), Source::Ui)))
-        .unwrap();
+    write(&db, |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("Second"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
     let before = revision_count(&db);
 
     let err = write(&db, |ctx| {
-        execute(ctx, &Details, details("Lost update"), Exec::update(&id, Some(0), Source::Ui))
+        execute(
+            ctx,
+            &Details,
+            details("Lost update"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
     })
     .unwrap_err();
     match err {
-        ContractError::Stale { contract, counter, current } => {
+        ContractError::Stale {
+            contract,
+            counter,
+            current,
+        } => {
             assert_eq!(contract, "toys.details");
             assert_eq!(counter, 1);
             assert_eq!(current, json!({ "name": "Second", "colour": null }));
@@ -308,13 +350,22 @@ fn slices_never_falsely_conflict() {
     let (_tmp, db) = org();
     let id = create(&db, "Bear");
     // Both forms loaded at details 0 / emails 0.
-    write(&db, |ctx| execute(ctx, &Details, details("Renamed"), Exec::update(&id, Some(0), Source::Ui)))
-        .unwrap();
+    write(&db, |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("Renamed"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
     let out = write(&db, |ctx| {
         execute(
             ctx,
             &Emails,
-            EmailsSlice { emails: vec![email(None, "a@x.org", "home")] },
+            EmailsSlice {
+                emails: vec![email(None, "a@x.org", "home")],
+            },
             Exec::update(&id, Some(0), Source::Ui),
         )
     })
@@ -330,7 +381,9 @@ fn revisions_record_the_prepared_payload_name_version_and_actor() {
         execute(
             ctx,
             &Emails,
-            EmailsSlice { emails: vec![email(None, "a@x.org", "home")] },
+            EmailsSlice {
+                emails: vec![email(None, "a@x.org", "home")],
+            },
             Exec::update(&id, Some(0), Source::Autosave),
         )
     })
@@ -356,8 +409,10 @@ fn revisions_record_the_prepared_payload_name_version_and_actor() {
 #[test]
 fn invalid_payloads_and_failed_commands_leave_nothing_behind() {
     let (_tmp, db) = org();
-    let err = write(&db, |ctx| execute(ctx, &Details, details("   "), Exec::create(Source::Ui)))
-        .unwrap_err();
+    let err = write(&db, |ctx| {
+        execute(ctx, &Details, details("   "), Exec::create(Source::Ui))
+    })
+    .unwrap_err();
     assert!(matches!(err, ContractError::Invalid(ref p) if p[0].field == "name"));
 
     // A group whose second command fails rolls the first back too.
@@ -365,8 +420,18 @@ fn invalid_payloads_and_failed_commands_leave_nothing_behind() {
     let before = revision_count(&db);
     let err = write(&db, |ctx| {
         let group = command_group(ctx, "form save")?;
-        execute(ctx, &Details, details("Changed"), Exec::update(&id, Some(0), Source::Ui).in_group(&group))?;
-        execute(ctx, &Details, details("Again"), Exec::update(&id, Some(0), Source::Ui).in_group(&group))
+        execute(
+            ctx,
+            &Details,
+            details("Changed"),
+            Exec::update(&id, Some(0), Source::Ui).in_group(&group),
+        )?;
+        execute(
+            ctx,
+            &Details,
+            details("Again"),
+            Exec::update(&id, Some(0), Source::Ui).in_group(&group),
+        )
     })
     .unwrap_err();
     assert!(matches!(err, ContractError::Stale { .. }));
@@ -381,17 +446,34 @@ fn invalid_payloads_and_failed_commands_leave_nothing_behind() {
 fn not_found_and_duplicate_ids() {
     let (_tmp, db) = org();
     let err = write(&db, |ctx| {
-        execute(ctx, &Details, details("x"), Exec::update("nope", Some(0), Source::Ui))
+        execute(
+            ctx,
+            &Details,
+            details("x"),
+            Exec::update("nope", Some(0), Source::Ui),
+        )
     })
     .unwrap_err();
     assert!(matches!(err, ContractError::NotFound));
 
     let id = contracts::new_id();
-    write(&db, |ctx| execute(ctx, &Details, details("x"), Exec::create_with_id(&id, Source::Import)))
-        .unwrap();
+    write(&db, |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("x"),
+            Exec::create_with_id(&id, Source::Import),
+        )
+    })
+    .unwrap();
     // A retried import can't duplicate the entity.
     let err = write(&db, |ctx| {
-        execute(ctx, &Details, details("x"), Exec::create_with_id(&id, Source::Import))
+        execute(
+            ctx,
+            &Details,
+            details("x"),
+            Exec::create_with_id(&id, Source::Import),
+        )
     })
     .unwrap_err();
     assert!(matches!(err, ContractError::Duplicate { .. }));
@@ -403,11 +485,18 @@ fn command_groups_label_every_revision_they_contain() {
     let id = create(&db, "Bear");
     write(&db, |ctx| {
         let group = command_group(ctx, "contact form save")?;
-        execute(ctx, &Details, details("Renamed"), Exec::update(&id, Some(0), Source::Ui).in_group(&group))?;
+        execute(
+            ctx,
+            &Details,
+            details("Renamed"),
+            Exec::update(&id, Some(0), Source::Ui).in_group(&group),
+        )?;
         execute(
             ctx,
             &Emails,
-            EmailsSlice { emails: vec![email(None, "a@x.org", "home")] },
+            EmailsSlice {
+                emails: vec![email(None, "a@x.org", "home")],
+            },
             Exec::update(&id, Some(0), Source::Ui).in_group(&group),
         )
     })
@@ -425,7 +514,12 @@ fn child_rows_reconcile_by_id_and_identity_is_immutable() {
     let id = create(&db, "Bear");
     let save = |emails: Vec<EmailIn>, expected: i64| {
         write(&db, |ctx| {
-            execute(ctx, &Emails, EmailsSlice { emails }, Exec::update(&id, Some(expected), Source::Ui))
+            execute(
+                ctx,
+                &Emails,
+                EmailsSlice { emails },
+                Exec::update(&id, Some(expected), Source::Ui),
+            )
         })
     };
     let rows = |db: &OrgDb| -> Vec<(String, String, String)> {
@@ -437,27 +531,58 @@ fn child_rows_reconcile_by_id_and_identity_is_immutable() {
         .unwrap()
     };
 
-    save(vec![email(None, "a@x.org", "home"), email(None, "b@x.org", "work")], 0).unwrap();
+    save(
+        vec![
+            email(None, "a@x.org", "home"),
+            email(None, "b@x.org", "work"),
+        ],
+        0,
+    )
+    .unwrap();
     let first = rows(&db);
     let (a_id, b_id) = (first[0].0.clone(), first[1].0.clone());
 
     // Kept id, non-identity field changed: updated in place, same id.
-    save(vec![email(Some(&a_id), "a@x.org", "personal"), email(Some(&b_id), "b@x.org", "work")], 1)
-        .unwrap();
-    assert_eq!(rows(&db)[0], (a_id.clone(), "a@x.org".into(), "personal".into()));
+    save(
+        vec![
+            email(Some(&a_id), "a@x.org", "personal"),
+            email(Some(&b_id), "b@x.org", "work"),
+        ],
+        1,
+    )
+    .unwrap();
+    assert_eq!(
+        rows(&db)[0],
+        (a_id.clone(), "a@x.org".into(), "personal".into())
+    );
 
     // Kept id, identity changed: rejected, nothing written.
     let err = save(vec![email(Some(&a_id), "changed@x.org", "personal")], 2).unwrap_err();
-    assert!(matches!(err, ContractError::Rejected { ref reason, .. } if reason == "identity_immutable"));
+    assert!(
+        matches!(err, ContractError::Rejected { ref reason, .. } if reason == "identity_immutable")
+    );
     assert_eq!(rows(&db).len(), 2);
 
     // Duplicate ids in one payload: invalid.
-    let err = save(vec![email(Some(&a_id), "a@x.org", "x"), email(Some(&a_id), "a@x.org", "y")], 2)
-        .unwrap_err();
+    let err = save(
+        vec![
+            email(Some(&a_id), "a@x.org", "x"),
+            email(Some(&a_id), "a@x.org", "y"),
+        ],
+        2,
+    )
+    .unwrap_err();
     assert!(matches!(err, ContractError::Invalid(_)));
 
     // Remove b, add c (identity change done properly: remove + add).
-    save(vec![email(Some(&a_id), "a@x.org", "personal"), email(None, "c@x.org", "work")], 2).unwrap();
+    save(
+        vec![
+            email(Some(&a_id), "a@x.org", "personal"),
+            email(None, "c@x.org", "work"),
+        ],
+        2,
+    )
+    .unwrap();
     let now = rows(&db);
     assert_eq!(now.len(), 2);
     assert_eq!(now[0].0, a_id);
@@ -514,7 +639,11 @@ fn restore_refuses_what_it_cannot_upcast() {
     let reg = registry();
     assert!(matches!(
         write(&db, |ctx| restore(ctx, &reg, newer, None)),
-        Err(ContractError::NewerThanCode { stored: 3, code: 2, .. })
+        Err(ContractError::NewerThanCode {
+            stored: 3,
+            code: 2,
+            ..
+        })
     ));
     assert!(matches!(
         write(&db, |ctx| restore(ctx, &reg, unknown, None)),
@@ -536,21 +665,38 @@ fn restore_brings_back_a_removed_child_with_its_id() {
         execute(
             ctx,
             &Emails,
-            EmailsSlice { emails: vec![email(None, "a@x.org", "home")] },
+            EmailsSlice {
+                emails: vec![email(None, "a@x.org", "home")],
+            },
             Exec::update(&id, Some(0), Source::Ui),
         )
     })
     .unwrap();
     let with_email = db.read(|r| history(r, "toys", &id, 1)).unwrap()[0].clone();
-    let a_id = with_email.payload["emails"][0]["id"].as_str().unwrap().to_owned();
+    let a_id = with_email.payload["emails"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     write(&db, |ctx| {
-        execute(ctx, &Emails, EmailsSlice { emails: vec![] }, Exec::update(&id, Some(1), Source::Ui))
+        execute(
+            ctx,
+            &Emails,
+            EmailsSlice { emails: vec![] },
+            Exec::update(&id, Some(1), Source::Ui),
+        )
     })
     .unwrap();
 
     write(&db, |ctx| restore(ctx, &registry(), with_email.id, None)).unwrap();
     let back: Option<String> = db
-        .read(|r| r.query_row("SELECT id FROM toy_emails WHERE address = 'a@x.org'", [], |row| row.get(0)).optional())
+        .read(|r| {
+            r.query_row(
+                "SELECT id FROM toy_emails WHERE address = 'a@x.org'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+        })
         .unwrap();
     assert_eq!(back, Some(a_id));
 }
@@ -559,31 +705,59 @@ fn restore_brings_back_a_removed_child_with_its_id() {
 fn restore_entity_to_a_time_restores_only_slices_that_differ() {
     let (_tmp, db) = org();
     let id = db
-        .write(|tx| execute(&at(tx, 1_000), &Details, details("Original"), Exec::create(Source::Ui)))
+        .write(|tx| {
+            execute(
+                &at(tx, 1_000),
+                &Details,
+                details("Original"),
+                Exec::create(Source::Ui),
+            )
+        })
         .unwrap()
         .id;
     db.write(|tx| {
         execute(
             &at(tx, 1_000),
             &Emails,
-            EmailsSlice { emails: vec![email(None, "a@x.org", "home")] },
+            EmailsSlice {
+                emails: vec![email(None, "a@x.org", "home")],
+            },
             Exec::update(&id, Some(0), Source::Ui),
         )
     })
     .unwrap();
     // Later: details changed, emails changed then changed back to the same state.
-    db.write(|tx| execute(&at(tx, 2_000), &Details, details("Vandalised"), Exec::update(&id, Some(0), Source::Ui)))
-        .unwrap();
+    db.write(|tx| {
+        execute(
+            &at(tx, 2_000),
+            &Details,
+            details("Vandalised"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
     let a = db.write(|tx| Emails.load(tx, &id)).unwrap()[0].clone();
-    let same = || EmailsSlice { emails: vec![email(Some(&a.id), &a.address, &a.label)] };
-    db.write(|tx| execute(&at(tx, 2_000), &Emails, same(), Exec::update(&id, Some(1), Source::Ui)))
-        .unwrap();
+    let same = || EmailsSlice {
+        emails: vec![email(Some(&a.id), &a.address, &a.label)],
+    };
+    db.write(|tx| {
+        execute(
+            &at(tx, 2_000),
+            &Emails,
+            same(),
+            Exec::update(&id, Some(1), Source::Ui),
+        )
+    })
+    .unwrap();
 
     let restored = db
         .write(|tx| restore_entity_to(&at(tx, 3_000), &registry(), "toys", &id, 1_500, &[], None))
         .unwrap();
     assert_eq!(restored, vec!["toys.details".to_owned()]);
-    assert_eq!(db.write(|tx| Details.load(tx, &id)).unwrap(), details("Original"));
+    assert_eq!(
+        db.write(|tx| Details.load(tx, &id)).unwrap(),
+        details("Original")
+    );
     let latest = &db.read(|r| history(r, "toys", &id, 1)).unwrap()[0];
     assert_eq!(latest.group_name.as_deref(), Some("restore to 1500"));
 

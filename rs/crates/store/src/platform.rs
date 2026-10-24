@@ -92,7 +92,8 @@ fn valid_slug(slug: &str) -> bool {
     let b = slug.as_bytes();
     (1..=63).contains(&b.len())
         && b[0].is_ascii_alphanumeric()
-        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
 fn tenant_row(id: String, slug: String, name: String) -> rusqlite::Result<Tenant> {
@@ -198,7 +199,12 @@ impl Platform {
         })
     }
 
-    pub fn set_membership(&self, user: UserId, tenant: &TenantId, role: Role) -> Result<(), StoreError> {
+    pub fn set_membership(
+        &self,
+        user: UserId,
+        tenant: &TenantId,
+        role: Role,
+    ) -> Result<(), StoreError> {
         self.write(|tx| {
             tx.execute(
                 "INSERT INTO memberships (user_id, tenant_id, role) VALUES (?1, ?2, ?3)

@@ -180,8 +180,12 @@ mod tests {
         a_db.write(|tx| tx.execute("INSERT INTO things (name) VALUES ('a-thing')", []))
             .unwrap();
         let count = |db: &OrgDb| {
-            db.read(|r| r.query_row("SELECT count(*) FROM things", [], |row| row.get::<_, i64>(0)))
-                .unwrap()
+            db.read(|r| {
+                r.query_row("SELECT count(*) FROM things", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+            })
+            .unwrap()
         };
         assert_eq!(count(&a_db), 1);
         assert_eq!(count(&store.org(&b.id).unwrap()), 0);
@@ -207,7 +211,10 @@ mod tests {
         )
         .unwrap();
         let store = self::store(tmp.path());
-        assert!(matches!(store.org(&b.id), Err(StoreError::WrongFile { .. })));
+        assert!(matches!(
+            store.org(&b.id),
+            Err(StoreError::WrongFile { .. })
+        ));
     }
 
     #[test]
@@ -229,19 +236,38 @@ mod tests {
         let store = store(tmp.path());
         let a = store.create_tenant("alpha", "Alpha").unwrap();
         let db = store.org(&a.id).unwrap();
-        assert!(db.read(|r| r.execute("INSERT INTO things (name) VALUES ('x')", [])).is_err());
+        assert!(
+            db.read(|r| r.execute("INSERT INTO things (name) VALUES ('x')", []))
+                .is_err()
+        );
     }
 
     #[test]
     fn slugs_are_validated_and_unique() {
         let tmp = tempfile::tempdir().unwrap();
         let store = store(tmp.path());
-        assert!(matches!(store.create_tenant("../x", "X"), Err(StoreError::InvalidSlug(_))));
+        assert!(matches!(
+            store.create_tenant("../x", "X"),
+            Err(StoreError::InvalidSlug(_))
+        ));
         store.create_tenant("alpha", "Alpha").unwrap();
-        assert!(matches!(store.create_tenant("alpha", "Again"), Err(StoreError::SlugTaken(_))));
+        assert!(matches!(
+            store.create_tenant("alpha", "Again"),
+            Err(StoreError::SlugTaken(_))
+        ));
         // The refused tenant left no file behind.
-        assert_eq!(std::fs::read_dir(tmp.path().join("orgs")).unwrap().filter(|e| {
-            e.as_ref().unwrap().path().extension().is_some_and(|x| x == "db")
-        }).count(), 1);
+        assert_eq!(
+            std::fs::read_dir(tmp.path().join("orgs"))
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|x| x == "db")
+                })
+                .count(),
+            1
+        );
     }
 }

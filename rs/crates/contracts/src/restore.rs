@@ -9,8 +9,8 @@ use serde_json::{Map, Value};
 use ts_rs::TS;
 
 use crate::{
-    CommandGroup, ContractError, Ctx, Exec, Executed, Registry, Source, Target,
-    command_group, source_from_db, upcast,
+    CommandGroup, ContractError, Ctx, Exec, Executed, Registry, Source, Target, command_group,
+    source_from_db, upcast,
 };
 
 /// One executed command, as history shows it.
@@ -105,8 +105,10 @@ pub fn restore(
     revision_id: i64,
     group: Option<&CommandGroup>,
 ) -> Result<Executed, ContractError> {
-    let Row { entity_id, revision } =
-        self::revision(ctx.tx, revision_id)?.ok_or(ContractError::NotFound)?;
+    let Row {
+        entity_id,
+        revision,
+    } = self::revision(ctx.tx, revision_id)?.ok_or(ContractError::NotFound)?;
     let contract = registry
         .get(&revision.contract)
         .ok_or_else(|| ContractError::UnknownContract(revision.contract.clone()))?;
@@ -219,7 +221,9 @@ pub fn restore_entity_to(
         return Ok(vec![]);
     }
     to_restore.sort_by_key(|r| r.id);
-    let label = label.map(str::to_owned).unwrap_or_else(|| format!("restore to {at}"));
+    let label = label
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("restore to {at}"));
     let group = command_group(ctx, &label)?;
     let mut restored = Vec::new();
     for r in to_restore {

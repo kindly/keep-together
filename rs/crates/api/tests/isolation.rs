@@ -40,9 +40,11 @@ impl Contract for Details {
     type State = Name;
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Name, ContractError> {
-        Ok(tx.query_row("SELECT name FROM toys WHERE id = ?1", [id], |r| {
-            Ok(Name { name: r.get(0)? })
-        })?)
+        Ok(
+            tx.query_row("SELECT name FROM toys WHERE id = ?1", [id], |r| {
+                Ok(Name { name: r.get(0)? })
+            })?,
+        )
     }
 
     fn apply(&self, _: Option<&Name>, p: &Name, _: &Command) -> Result<Name, ContractError> {
@@ -52,7 +54,13 @@ impl Contract for Details {
         Ok(p.clone())
     }
 
-    fn write(&self, tx: &OrgTx, id: &str, before: Option<&Name>, next: &Name) -> Result<(), ContractError> {
+    fn write(
+        &self,
+        tx: &OrgTx,
+        id: &str,
+        before: Option<&Name>,
+        next: &Name,
+    ) -> Result<(), ContractError> {
         let sql = if before.is_none() {
             "INSERT INTO toys (id, name) VALUES (?1, ?2)"
         } else {
@@ -86,34 +94,40 @@ fn toy_routes() -> Router {
                     .await?;
                 Ok::<_, ApiError>(Json(names))
             })
-            .post(|Extension(t): Extension<Tenant>, Body(p): Body<Name>| async move {
-                let out = t
-                    .write(move |ctx| Ok(execute(ctx, &Details, p, Exec::create(Source::Ui))?))
-                    .await?;
-                Ok::<_, ApiError>(Json(out))
-            }),
+            .post(
+                |Extension(t): Extension<Tenant>, Body(p): Body<Name>| async move {
+                    let out = t
+                        .write(move |ctx| Ok(execute(ctx, &Details, p, Exec::create(Source::Ui))?))
+                        .await?;
+                    Ok::<_, ApiError>(Json(out))
+                },
+            ),
         )
         .route(
             "/toys/{id}",
-            get(|Extension(t): Extension<Tenant>, Path(IdParam { id }): Path<IdParam>| async move {
-                let name = t
-                    .read(move |r| {
-                        r.query_row("SELECT name FROM toys WHERE id = ?1", [&id], |row| {
-                            row.get::<_, String>(0)
+            get(
+                |Extension(t): Extension<Tenant>, Path(IdParam { id }): Path<IdParam>| async move {
+                    let name = t
+                        .read(move |r| {
+                            r.query_row("SELECT name FROM toys WHERE id = ?1", [&id], |row| {
+                                row.get::<_, String>(0)
+                            })
+                            .map_err(|e| match e {
+                                rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound,
+                                e => e.into(),
+                            })
                         })
-                        .map_err(|e| match e {
-                            rusqlite::Error::QueryReturnedNoRows => ApiError::NotFound,
-                            e => e.into(),
-                        })
-                    })
-                    .await?;
-                Ok::<_, ApiError>(Json(name))
-            }),
+                        .await?;
+                    Ok::<_, ApiError>(Json(name))
+                },
+            ),
         )
         .route(
             "/toys/{id}/save",
             post(
-                |Extension(t): Extension<Tenant>, Path(IdParam { id }): Path<IdParam>, Body(s): Body<Save>| async move {
+                |Extension(t): Extension<Tenant>,
+                 Path(IdParam { id }): Path<IdParam>,
+                 Body(s): Body<Save>| async move {
                     let out = t
                         .write(move |ctx| {
                             Ok(execute(
@@ -154,11 +168,36 @@ fn world(dev_auth: bool) -> World {
     let p = store.platform();
     let alpha = store.create_tenant("alpha", "Alpha").unwrap();
     let beta = store.create_tenant("beta", "Beta").unwrap();
-    p.set_membership(p.upsert_user("ann@alpha.org").unwrap(), &alpha.id, Role::Admin).unwrap();
-    p.set_membership(p.upsert_user("bob@beta.org").unwrap(), &beta.id, Role::Admin).unwrap();
-    p.set_membership(p.upsert_user("val@alpha.org").unwrap(), &alpha.id, Role::Viewer).unwrap();
-    let app = app(AppState { store: store.clone(), dev_auth }, toy_routes());
-    World { _tmp: tmp, store, app }
+    p.set_membership(
+        p.upsert_user("ann@alpha.org").unwrap(),
+        &alpha.id,
+        Role::Admin,
+    )
+    .unwrap();
+    p.set_membership(
+        p.upsert_user("bob@beta.org").unwrap(),
+        &beta.id,
+        Role::Admin,
+    )
+    .unwrap();
+    p.set_membership(
+        p.upsert_user("val@alpha.org").unwrap(),
+        &alpha.id,
+        Role::Viewer,
+    )
+    .unwrap();
+    let app = app(
+        AppState {
+            store: store.clone(),
+            dev_auth,
+        },
+        toy_routes(),
+    );
+    World {
+        _tmp: tmp,
+        store,
+        app,
+    }
 }
 
 struct Res {
@@ -169,7 +208,13 @@ struct Res {
 }
 
 impl World {
-    async fn call(&self, method: &str, path: &str, cookie: Option<&str>, body: Option<Value>) -> Res {
+    async fn call(
+        &self,
+        method: &str,
+        path: &str,
+        cookie: Option<&str>,
+        body: Option<Value>,
+    ) -> Res {
         let mut req = Request::builder().method(method).uri(path);
         if let Some(c) = cookie {
             req = req.header(header::COOKIE, c);
@@ -182,8 +227,13 @@ impl World {
         }
         .unwrap();
         let res = self.app.clone().oneshot(req).await.unwrap();
-        let header = |name| res.headers().get(name).map(|v: &header::HeaderValue| v.to_str().unwrap().to_owned());
-        let (status, timing, cookie) = (res.status(), header("server-timing"), header("set-cookie"));
+        let header = |name| {
+            res.headers()
+                .get(name)
+                .map(|v: &header::HeaderValue| v.to_str().unwrap().to_owned())
+        };
+        let (status, timing, cookie) =
+            (res.status(), header("server-timing"), header("set-cookie"));
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         Res {
             status,
@@ -194,14 +244,26 @@ impl World {
     }
 
     async fn login(&self, email: &str) -> String {
-        let res = self.call("POST", "/api/dev/login", None, Some(json!({ "email": email }))).await;
+        let res = self
+            .call(
+                "POST",
+                "/api/dev/login",
+                None,
+                Some(json!({ "email": email })),
+            )
+            .await;
         assert_eq!(res.status, StatusCode::OK);
         res.cookie.unwrap().split(';').next().unwrap().to_owned()
     }
 
     async fn create_toy(&self, cookie: &str, slug: &str, name: &str) -> Executed {
         let res = self
-            .call("POST", &format!("/api/t/{slug}/toys"), Some(cookie), Some(json!({ "name": name })))
+            .call(
+                "POST",
+                &format!("/api/t/{slug}/toys"),
+                Some(cookie),
+                Some(json!({ "name": name })),
+            )
             .await;
         assert_eq!(res.status, StatusCode::OK, "{:?}", res.body);
         serde_json::from_value(res.body).unwrap()
@@ -218,7 +280,11 @@ async fn a_member_of_one_org_gets_403_on_every_route_of_another() {
     let routes = [
         ("GET", "/api/t/beta".to_owned(), None),
         ("GET", "/api/t/beta/toys".to_owned(), None),
-        ("POST", "/api/t/beta/toys".to_owned(), Some(json!({ "name": "x" }))),
+        (
+            "POST",
+            "/api/t/beta/toys".to_owned(),
+            Some(json!({ "name": "x" })),
+        ),
         ("GET", format!("/api/t/beta/toys/{}", beta_toy.id), None),
         (
             "POST",
@@ -236,10 +302,20 @@ async fn a_member_of_one_org_gets_403_on_every_route_of_another() {
     }
     // An unknown slug looks exactly like someone else's.
     let res = w.call("GET", "/api/t/gamma/toys", Some(&ann), None).await;
-    assert_eq!((res.status, res.body), (StatusCode::FORBIDDEN, json!({ "kind": "forbidden" })));
+    assert_eq!(
+        (res.status, res.body),
+        (StatusCode::FORBIDDEN, json!({ "kind": "forbidden" }))
+    );
 
     // beta's toy is untouched.
-    let res = w.call("GET", &format!("/api/t/beta/toys/{}", beta_toy.id), Some(&bob), None).await;
+    let res = w
+        .call(
+            "GET",
+            &format!("/api/t/beta/toys/{}", beta_toy.id),
+            Some(&bob),
+            None,
+        )
+        .await;
     assert_eq!(res.body, json!("beta's toy"));
 }
 
@@ -256,7 +332,14 @@ async fn each_org_sees_only_its_own_file() {
     let res = w.call("GET", "/api/t/beta/toys", Some(&bob), None).await;
     assert_eq!(res.body, json!(["jones"]));
     // alpha's id asked of beta's file: not there.
-    let res = w.call("GET", &format!("/api/t/beta/toys/{}", alpha_toy.id), Some(&bob), None).await;
+    let res = w
+        .call(
+            "GET",
+            &format!("/api/t/beta/toys/{}", alpha_toy.id),
+            Some(&bob),
+            None,
+        )
+        .await;
     assert_eq!(res.status, StatusCode::NOT_FOUND);
 
     // And on disk: each file holds exactly its own rows.
@@ -268,7 +351,8 @@ async fn each_org_sees_only_its_own_file() {
             .unwrap()
             .read(|r| {
                 let mut s = r.prepare("SELECT name FROM toys")?;
-                s.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()
+                s.query_map([], |row| row.get(0))?
+                    .collect::<rusqlite::Result<_>>()
             })
             .unwrap();
         assert_eq!(names, vec![name.to_owned()]);
@@ -290,7 +374,10 @@ async fn stale_saves_get_409_with_the_current_slice() {
         )
     };
     let res = save(0, "second").await;
-    assert_eq!((res.status, res.body), (StatusCode::OK, json!({ "id": toy.id, "counter": 1 })));
+    assert_eq!(
+        (res.status, res.body),
+        (StatusCode::OK, json!({ "id": toy.id, "counter": 1 }))
+    );
 
     let res = save(0, "lost").await;
     assert_eq!(res.status, StatusCode::CONFLICT);
@@ -301,11 +388,19 @@ async fn stale_saves_get_409_with_the_current_slice() {
 
     let res = save(1, "").await;
     assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(res.body, json!({ "kind": "invalid", "problems": [{ "field": "name", "message": "required" }] }));
+    assert_eq!(
+        res.body,
+        json!({ "kind": "invalid", "problems": [{ "field": "name", "message": "required" }] })
+    );
 
     // A malformed body is the same error shape, not axum's plain text.
     let res = w
-        .call("POST", &format!("/api/t/alpha/toys/{}/save", toy.id), Some(&ann), Some(json!({ "name": 3 })))
+        .call(
+            "POST",
+            &format!("/api/t/alpha/toys/{}/save", toy.id),
+            Some(&ann),
+            Some(json!({ "name": 3 })),
+        )
         .await;
     assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(res.body["kind"], "invalid");
@@ -317,7 +412,14 @@ async fn viewers_cannot_write() {
     let val = w.login("val@alpha.org").await;
     let res = w.call("GET", "/api/t/alpha/toys", Some(&val), None).await;
     assert_eq!(res.status, StatusCode::OK);
-    let res = w.call("POST", "/api/t/alpha/toys", Some(&val), Some(json!({ "name": "x" }))).await;
+    let res = w
+        .call(
+            "POST",
+            "/api/t/alpha/toys",
+            Some(&val),
+            Some(json!({ "name": "x" })),
+        )
+        .await;
     assert_eq!(res.status, StatusCode::FORBIDDEN);
 }
 
@@ -328,11 +430,27 @@ async fn dev_auth_off_refuses_login_and_every_session() {
     let ann = on.login("ann@alpha.org").await;
     // …is worthless once the flag is off (same data, new server).
     let off = World {
-        app: app(AppState { store: on.store.clone(), dev_auth: false }, toy_routes()),
+        app: app(
+            AppState {
+                store: on.store.clone(),
+                dev_auth: false,
+            },
+            toy_routes(),
+        ),
         ..on
     };
-    let res = off.call("POST", "/api/dev/login", None, Some(json!({ "email": "ann@alpha.org" }))).await;
-    assert_eq!((res.status, res.body), (StatusCode::FORBIDDEN, json!({ "kind": "forbidden" })));
+    let res = off
+        .call(
+            "POST",
+            "/api/dev/login",
+            None,
+            Some(json!({ "email": "ann@alpha.org" })),
+        )
+        .await;
+    assert_eq!(
+        (res.status, res.body),
+        (StatusCode::FORBIDDEN, json!({ "kind": "forbidden" }))
+    );
     assert!(res.cookie.is_none());
     let res = off.call("GET", "/api/t/alpha/toys", Some(&ann), None).await;
     assert_eq!(res.status, StatusCode::UNAUTHORIZED);
@@ -350,13 +468,26 @@ async fn me_lists_memberships_and_dev_tenants_make_the_caller_admin() {
         json!({ "email": "ann@alpha.org", "memberships": [{ "slug": "alpha", "name": "Alpha", "role": "admin" }] })
     );
     let res = w
-        .call("POST", "/api/dev/tenants", Some(&ann), Some(json!({ "slug": "gamma", "name": "Gamma" })))
+        .call(
+            "POST",
+            "/api/dev/tenants",
+            Some(&ann),
+            Some(json!({ "slug": "gamma", "name": "Gamma" })),
+        )
         .await;
     assert_eq!(res.status, StatusCode::OK);
     let res = w.call("GET", "/api/t/gamma", Some(&ann), None).await;
-    assert_eq!(res.body, json!({ "slug": "gamma", "name": "Gamma", "role": "admin" }));
+    assert_eq!(
+        res.body,
+        json!({ "slug": "gamma", "name": "Gamma", "role": "admin" })
+    );
     let res = w
-        .call("POST", "/api/dev/tenants", Some(&ann), Some(json!({ "slug": "../x", "name": "X" })))
+        .call(
+            "POST",
+            "/api/dev/tenants",
+            Some(&ann),
+            Some(json!({ "slug": "../x", "name": "X" })),
+        )
         .await;
     assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
