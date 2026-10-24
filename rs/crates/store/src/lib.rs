@@ -7,6 +7,7 @@
 //! choose a file by spelling its name.
 
 mod conn;
+mod events;
 mod org;
 mod platform;
 
@@ -15,6 +16,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub use events::OrgEvent;
 pub use org::{OrgDb, OrgRead, OrgTx};
 pub use platform::{Member, Platform, Role, Session, Tenant, UserId};
 pub use rusqlite_migration::{M, Migrations};
