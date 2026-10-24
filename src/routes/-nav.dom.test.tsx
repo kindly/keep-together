@@ -427,14 +427,17 @@ test('being ported: Settings shows only the list tabs this build serves', async 
   port.all = false
   tenants = [group('alpha'), group('beta')]
   await page(import('./t.$slug.settings'))
-  // Identifier types (A1) is served; Fields (B1) and Source codes (A2) not.
+  // Identifier types (A1) and Source codes (A2) are served; Fields (B1)
+  // not yet.
   expect(links()).toEqual([
     ['Identifier types', '/t/alpha/settings/identifiers'],
+    ['Source codes', '/t/alpha/settings/sources'],
     ['Members', '/t/alpha/settings/members'],
     ['Switch group', '/t/alpha/settings/groups'],
     ['Your account', '/account'],
   ])
-  // The first tab served opens, in one group as in several.
+  // The first list tab served, in nav order, opens: in one group as in
+  // several.
   await page(import('./t.$slug.settings.index'))
   expect(navigated).toEqual(['/t/alpha/settings/identifiers'])
   tenants = [group('alpha')]

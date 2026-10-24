@@ -47,7 +47,7 @@ export type CreateOutcome =
 
 export type CreateContact = (
   details: Payloads['details'],
-  /** A source code version (not ported yet: A2). */
+  /** A source code version, set in the same command group. */
   acquisitionCodeId?: Id<'sourceCodes'>,
 ) => Promise<CreateOutcome>
 

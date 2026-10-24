@@ -31,6 +31,9 @@ fn world() -> World {
             M::up(contacts::MIGRATION),
             M::up(contacts::DROP_TRIGRAM),
             M::up(contacts::MIGRATION_IDENTIFIERS_NOTES),
+            // A2: `get` reads the contact's acquisition code.
+            M::up(sources::MIGRATION),
+            M::up(contacts::acquisition::MIGRATION),
             M::up(comms::MIGRATION),
         ]),
         readers: 2,

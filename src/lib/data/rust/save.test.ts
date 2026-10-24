@@ -63,6 +63,7 @@ const answer = (a: Partial<SaveFormResult>): SaveFormResult => ({
     archive: 0,
     fields: 0,
     identifiers: 0,
+    acquisition: 0,
   },
   ...a,
 })
@@ -97,6 +98,7 @@ describe('rust save', () => {
             archive: 0,
             fields: 0,
             identifiers: 0,
+            acquisition: 0,
           },
         }),
         1,
@@ -158,6 +160,7 @@ describe('rust save', () => {
             archive: 0,
             fields: 0,
             identifiers: 0,
+            acquisition: 0,
           },
         }),
         1,

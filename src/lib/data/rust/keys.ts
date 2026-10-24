@@ -34,4 +34,12 @@ export const keys = {
     id === undefined
       ? (['t', slug, 'emailContext'] as const)
       : (['t', slug, 'emailContext', id] as const),
+  /** Every source-code read: the tree, the filter options, the picker. */
+  sources: (slug: string) => ['t', slug, 'sources'] as const,
+  sourceTree: (slug: string) => ['t', slug, 'sources', 'tree'] as const,
+  sourceOptions: (slug: string) => ['t', slug, 'sources', 'options'] as const,
+  sourcePicker: (slug: string, args?: { today: string; search: string }) =>
+    args
+      ? (['t', slug, 'sources', 'picker', args] as const)
+      : (['t', slug, 'sources', 'picker'] as const),
 }

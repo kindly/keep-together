@@ -23,10 +23,23 @@ use crate::types::{
 /// Create a contact from its details. A `clientKey` or pre-generated `id`
 /// seen before is `Duplicate { id }` (the command already ran).
 pub fn create(ctx: &Ctx, req: CreateContact, source: Source) -> Result<Created, ContractError> {
-    let opts = match &req.id {
+    create_in(ctx, req, source, None)
+}
+
+/// [`create`], in `group` when given (a create with an acquisition code).
+pub(crate) fn create_in(
+    ctx: &Ctx,
+    req: CreateContact,
+    source: Source,
+    group: Option<&contracts::CommandGroup>,
+) -> Result<Created, ContractError> {
+    let mut opts = match &req.id {
         Some(id) => Exec::create_with_id(id, source),
         None => Exec::create(source),
     };
+    if let Some(g) = group {
+        opts = opts.in_group(g);
+    }
     let Executed { id, .. } = execute(ctx, &DETAILS, req.details, opts)?;
     let number =
         ctx.tx
@@ -222,6 +235,7 @@ fn set_counter(c: &mut Counters, name: &str, value: i64) {
         "archive" => c.archive = value,
         "fields" => c.fields = value,
         "identifiers" => c.identifiers = value,
+        "acquisition" => c.acquisition = value,
         _ => {}
     }
 }

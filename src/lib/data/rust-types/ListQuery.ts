@@ -11,6 +11,10 @@ export type ListQuery = { includeArchived?: boolean, kind?: ContactKind,
  */
 fields?: string, 
 /**
+ * One part of a source code: `category|detail|version:<id>`.
+ */
+source?: string, 
+/**
  * A page's `nextCursor`.
  */
 cursor?: string, 

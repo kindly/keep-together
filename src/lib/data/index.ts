@@ -35,3 +35,18 @@ export {
   useSaveIdentifierType,
 } from './rust/contact-extras'
 export type { Note } from './rust/contact-extras'
+export {
+  preloadSourceTree,
+  useSetAcquisition,
+  useSourceFilterOptions,
+  useSourcePicker,
+  useSourceTree,
+  useSourceWrites,
+} from './rust/sources'
+export type {
+  FilterOption,
+  Part,
+  PickerEntry,
+  SourceCodeDescription,
+  SourceCodePayload,
+} from './rust/sources'

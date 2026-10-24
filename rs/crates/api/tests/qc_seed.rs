@@ -43,7 +43,7 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
         )
         .unwrap(),
     );
-    let app = app(AppState::new(store, true), routes::router());
+    let app = app(AppState::new(store.clone(), true), routes::router());
     let req = json!({ "runId": "7", "worker": 0 });
 
     let (s, _) = post(&app, "/api/dev/qc-seed", req.clone()).await;
@@ -62,6 +62,51 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
     );
     let (_, again) = post(&app, "/api/dev/qc-seed", req).await;
     assert_eq!(again["tenants"], world["tenants"]);
+
+    // qcSeed.test.ts › each side's Street category holds its own detail;
+    // Event holds Gala; nothing else. And: Charles and the Trust coded
+    // under Street; Event-Gala free.
+    for (i, side) in ["Alpha", "Bravo"].into_iter().enumerate() {
+        let slug = world["tenants"][i]["slug"].as_str().unwrap();
+        let tenant = store.platform().tenant_by_slug(slug).unwrap().unwrap();
+        let db = store.org(&tenant.id).unwrap();
+        let codes: Vec<String> = db
+            .read(|c| sources::tree(c))
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.level != sources::Level::Category)
+            .map(|p| p.code)
+            .collect();
+        let street = format!("Street-{side}7");
+        assert_eq!(
+            codes,
+            [
+                "Event-Gala".to_owned(),
+                "Event-Gala-001".into(),
+                "Event-Gala-002".into(),
+                street.clone(),
+                format!("{street}-001"),
+                format!("{street}-002"),
+            ]
+        );
+        let ids = world["tenants"][i]["contactIds"].as_array().unwrap();
+        let coded: Vec<Option<String>> = ids
+            .iter()
+            .map(|id| {
+                db.read(|c| contacts::acquisition::acquisition_of(c, id.as_str().unwrap()))
+                    .unwrap()
+                    .map(|d| d.code)
+            })
+            .collect();
+        assert_eq!(
+            coded,
+            [
+                None,
+                Some(format!("{street}-001")),
+                Some(format!("{street}-002"))
+            ]
+        );
+    }
 
     let (s, n) = post(
         &app,

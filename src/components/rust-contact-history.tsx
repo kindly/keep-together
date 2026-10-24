@@ -77,6 +77,10 @@ export function RustContactHistory({
                 {r.contract.replace(/^contacts\./, '')}{' '}
                 <span className="text-neutral-500">({r.source})</span>
               </p>
+              {/* A named action (an acquisition code as it read then). */}
+              {r.groupName && (
+                <p className="text-xs text-neutral-600">{r.groupName}</p>
+              )}
               {canWrite && i > 0 && (
                 <button
                   type="button"

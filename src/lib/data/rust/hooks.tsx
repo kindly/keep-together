@@ -338,11 +338,12 @@ export function useCreateContact(): CreateContact {
   const qc = useQueryClient()
   // Minted once per form: a double submit lands on the existing contact.
   const clientKey = useMemo(newKey, [])
-  return async (details) => {
+  return async (details, acquisitionCodeId) => {
     try {
       const created = await post<CreatedContact>(tenantPath(slug, 'contacts'), {
         clientKey,
         ...details,
+        ...(acquisitionCodeId && { acquisitionCodeId }),
       })
       // The page it opens on draws from this: no read of its own.
       qc.setQueryData(keys.contact(slug, created.id), created.view)

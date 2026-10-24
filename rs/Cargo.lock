@@ -95,6 +95,7 @@ dependencies = [
  "sentry",
  "serde",
  "serde_json",
+ "sources",
  "store",
  "tempfile",
  "thiserror",
@@ -427,6 +428,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sources",
  "store",
  "tempfile",
  "thiserror",
@@ -448,6 +450,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sources",
  "store",
  "tempfile",
  "ts-rs",
@@ -2613,6 +2616,15 @@ dependencies = [
 [[package]]
 name = "sources"
 version = "0.1.0"
+dependencies = [
+ "contracts",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "store",
+ "tempfile",
+ "ts-rs",
+]
 
 [[package]]
 name = "spin"

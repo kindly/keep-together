@@ -151,6 +151,7 @@ const ada: ContactView = {
   methods: { emails: [], phones: [] },
   addresses: { addresses: [] },
   fields: { values: [] },
+  acquisition: null,
   counters: {
     details: 3,
     methods: 0,
@@ -158,6 +159,7 @@ const ada: ContactView = {
     fields: 0,
     archive: 0,
     identifiers: 0,
+    acquisition: 0,
   },
   warnings: [],
   identifiers: [],

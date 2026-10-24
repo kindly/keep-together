@@ -18,15 +18,16 @@ import type { SearchResult as WireSearch } from '../rust-types/SearchResult'
 
 /**
  * The list's and search's filters as query parameters (`ListQuery`,
- * `SearchQuery`): every filter `list` takes but `source` (no source codes
- * on Rust). `fields` is `fieldId:optionId|none`, comma-separated.
+ * `SearchQuery`). `fields` is `fieldId:optionId|none`, comma-separated;
+ * `source` is `level:id`.
  */
 export function filterParams(
-  f: Pick<ListFilters, 'includeArchived' | 'kind' | 'fields'>,
+  f: Pick<ListFilters, 'includeArchived' | 'kind' | 'fields' | 'source'>,
 ): URLSearchParams {
   const q = new URLSearchParams()
   if (f.includeArchived) q.set('includeArchived', 'true')
   if (f.kind) q.set('kind', f.kind)
+  if (f.source) q.set('source', `${f.source.level}:${f.source.id}`)
   if (f.fields?.length)
     q.set(
       'fields',
@@ -89,7 +90,7 @@ export function searchFromWire(s: WireSearch): SearchResult {
 
 /**
  * The contact in the Convex view's shape (what the form renders), with
- * what Rust doesn't have left empty: no acquisition. The
+ * what Rust doesn't have yet left empty. The
  * root carries the fields the pages read; the cast covers the rest of
  * `Doc<'contacts'>` (tenantId, field slots), which no page reads.
  */
@@ -113,7 +114,8 @@ export function contactFromWire(
     fieldsVersion: c.counters.fields,
     archiveVersion: c.counters.archive,
     identifiersVersion: c.counters.identifiers,
-    acquisitionVersion: 0,
+    acquisitionVersion: c.counters.acquisition,
+    acquisitionCodeId: c.acquisition?.versionId,
   }
   return {
     contact,
@@ -121,7 +123,7 @@ export function contactFromWire(
     phones: c.methods.phones,
     addresses: c.addresses.addresses,
     identifiers: c.identifiers,
-    acquisition: null,
+    acquisition: c.acquisition,
     fields: c.fields.values.flatMap((v) => {
       const f = field.get(v.fieldId)
       if (!f) return []

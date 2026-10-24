@@ -26,6 +26,10 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(contacts::MIGRATION_IDENTIFIERS_NOTES),
         // 7: email suppressions
         M::up(comms::MIGRATION),
+        // 8: source codes (A2)
+        M::up(sources::MIGRATION),
+        // 9: a contact's acquisition code (A2)
+        M::up(contacts::acquisition::MIGRATION),
     ])
 }
 
