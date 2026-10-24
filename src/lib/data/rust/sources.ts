@@ -20,6 +20,7 @@ import { useTenant } from '../../tenant'
 import type { Loaders } from '../types'
 import { ownWrite } from '../events'
 import type { AcquisitionSet } from '../rust-types/AcquisitionSet'
+import type { ContactView as WireContact } from '../rust-types/ContactView'
 import type { CreatedSourceCode } from '../rust-types/CreatedSourceCode'
 import type { DeletedSourceCode } from '../rust-types/DeletedSourceCode'
 import type { Executed } from '../rust-types/Executed'
@@ -86,8 +87,7 @@ function treeQuery(slug: string) {
 
 /** Every part in tree order, archived included, and whether I may manage them. */
 export function useSourceTree():
-  | { parts: Array<Part>; canManage: boolean }
-  | undefined {
+  { parts: Array<Part>; canManage: boolean } | undefined {
   return useQuery(treeQuery(useTenant().slug)).data
 }
 
@@ -195,8 +195,9 @@ export function useSourceWrites() {
 
 /**
  * Set or clear a contact's acquisition code. The answer carries the
- * contact's view, which lands in its query at once (no read of its own);
- * the lists, which filter by it, refetch.
+ * contact's view, which lands in its query at once (no read of its own)
+ * unless the cache already holds a newer one; the lists, which filter by
+ * it, refetch.
  */
 export function useSetAcquisition(id: Id<'contacts'>) {
   const { slug } = useTenant()
@@ -207,7 +208,28 @@ export function useSetAcquisition(id: Id<'contacts'>) {
       { expected, codeId },
     )
     ownWrite(slug, id, 'contacts.acquisition', done.counter)
-    qc.setQueryData(keys.contact(slug, id), done.view)
+    const view = keys.contact(slug, id)
+    // A refetch begun before our commit would land the older view on top.
+    // One begun after it (an event's, reading a later commit) is lost
+    // when cancelled: it is run again once the answer is in.
+    const inFlight = qc.isFetching({ queryKey: view, exact: true }) > 0
+    await qc.cancelQueries({ queryKey: view, exact: true })
+    // So would this answer, if it was delayed past a later save of the
+    // contact that a refetch has already shown: install it only if no
+    // slice is behind what is cached, else read the contact again.
+    const cached = qc.getQueryData<WireContact | null>(view)
+    const counters = done.view.counters
+    if (
+      cached &&
+      (Object.keys(counters) as Array<keyof typeof counters>).some(
+        (s) => cached.counters[s] > counters[s],
+      )
+    )
+      void qc.invalidateQueries({ queryKey: view, exact: true })
+    else {
+      qc.setQueryData(view, done.view)
+      if (inFlight) void qc.invalidateQueries({ queryKey: view, exact: true })
+    }
     void qc.invalidateQueries({ queryKey: keys.list(slug) })
     void qc.invalidateQueries({ queryKey: keys.search(slug) })
     void qc.invalidateQueries({ queryKey: keys.history(slug, id) })

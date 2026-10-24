@@ -471,6 +471,9 @@ export function useGiftWrites(id: string) {
     }
     ownWrite(slug, done.id, contract, done.counter)
     // A refetch begun before our commit would land the older view on top.
+    // One begun after it (an event's, reading a later commit) is lost
+    // when cancelled: it is run again once the answer is in.
+    const inFlight = qc.isFetching({ queryKey: view, exact: true }) > 0
     await qc.cancelQueries({ queryKey: view, exact: true })
     // So would this answer, if it was delayed past a later commit that a
     // refetch has already shown: install it only if neither slice is
@@ -483,7 +486,10 @@ export function useGiftWrites(id: string) {
         cached.statusVersion > done.view.statusVersion)
     )
       void qc.invalidateQueries({ queryKey: view, exact: true })
-    else qc.setQueryData(view, giftViewFromWire(done.view))
+    else {
+      qc.setQueryData(view, giftViewFromWire(done.view))
+      if (inFlight) void qc.invalidateQueries({ queryKey: view, exact: true })
+    }
     // The panels, the recent list, the history, the donor's coverage.
     void qc.invalidateQueries({
       queryKey: keys.gifts(slug),
