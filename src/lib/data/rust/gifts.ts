@@ -42,7 +42,7 @@ import type { RecentGift as WireRecent } from '../rust-types/RecentGift'
 import type { RecordGift } from '../rust-types/RecordGift'
 import type { RecordedGift } from '../rust-types/RecordedGift'
 import type { SourceCodeDescription } from './sources'
-import { get, post, tenantPath } from './client'
+import { RustApiError, get, post, tenantPath } from './client'
 import { keys } from './keys'
 
 type GiftId = Id<'contributions'>
@@ -520,9 +520,23 @@ export function useRecordGift() {
 export function useGiftWrites(id: string) {
   const { slug } = useTenant()
   const qc = useQueryClient()
-  const landed = (contract: string, done: GiftSaved) => {
+  const view = keys.gift(slug, id)
+  const write = async (contract: string, path: string, body: unknown) => {
+    let done: GiftSaved
+    try {
+      done = await post<GiftSaved>(tenantPath(slug, 'gifts', id, path), body)
+    } catch (err) {
+      // Someone else's change won: read the gift as the server has it now,
+      // so the form merges it and retries from its counter, whether or not
+      // their event reaches this tab.
+      if (err instanceof RustApiError && err.error.kind === 'stale')
+        void qc.invalidateQueries({ queryKey: view, exact: true })
+      throw err
+    }
     ownWrite(slug, done.id, contract, done.counter)
-    qc.setQueryData(keys.gift(slug, id), giftViewFromWire(done.view))
+    // A refetch begun before our commit would land the older view on top.
+    await qc.cancelQueries({ queryKey: view, exact: true })
+    qc.setQueryData(view, giftViewFromWire(done.view))
     // The panels, the recent list, the history, the donor's coverage.
     void qc.invalidateQueries({
       queryKey: keys.gifts(slug),
@@ -531,22 +545,10 @@ export function useGiftWrites(id: string) {
     return { id: done.id as GiftId, counter: done.counter }
   }
   return {
-    save: async (expected: number, fields: GiftFields) =>
-      landed(
-        'giving.gift',
-        await post<GiftSaved>(tenantPath(slug, 'gifts', id, 'save'), {
-          ...fieldsToWire(fields),
-          expected,
-        }),
-      ),
-    setStatus: async (expected: number, status: GiftStatus) =>
-      landed(
-        'giving.status',
-        await post<GiftSaved>(tenantPath(slug, 'gifts', id, 'status'), {
-          expected,
-          status,
-        }),
-      ),
+    save: (expected: number, fields: GiftFields) =>
+      write('giving.gift', 'save', { ...fieldsToWire(fields), expected }),
+    setStatus: (expected: number, status: GiftStatus) =>
+      write('giving.status', 'status', { expected, status }),
   }
 }
 

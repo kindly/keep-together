@@ -14,6 +14,7 @@ import {
   declarationFromWire,
   giftViewFromWire,
   joinMoments,
+  useGift,
   useGiftWrites,
   useRecordGift,
 } from './gifts'
@@ -223,6 +224,37 @@ test('a refused save leaves the gift as the server last said', async () => {
     amount: 123456705n,
     receivedOn: '2026-10-20',
   })
+  // Stale: the gift is read again from the server, never from the form,
+  // so the merge doesn't wait on the other writer's event.
+  expect(qc.getQueryState(view)?.isInvalidated).toBe(true)
+})
+
+test("a refetch in flight when the answer lands can't put the older view back", async () => {
+  const view = keys.gift(SLUG, GIFT)
+  // The gift's page is open: a refetch of it starts (an event) and hangs.
+  let older!: (r: Response) => void
+  answers.push(() => new Promise((r) => (older = r)))
+  const writes = mount(() => {
+    useGift(GIFT)
+    return useGiftWrites(GIFT)
+  })
+  await act(async () => {})
+  answers.push(
+    json(200, {
+      id: GIFT,
+      counter: 2,
+      view: wireGift({ status: 'void', statusVersion: 2 }),
+    }),
+  )
+  await act(async () => {
+    await writes().setStatus(1, 'void')
+  })
+  // The view read before the commit arrives late: it is dropped.
+  await act(async () => {
+    older(new Response(JSON.stringify(wireGift()), { status: 200 }))
+    await Promise.resolve()
+  })
+  expect(qc.getQueryData<GiftView>(view)).toMatchObject({ status: 'void' })
 })
 
 test('the record save sends JSON integer pence and refuses what JSON would round', async () => {

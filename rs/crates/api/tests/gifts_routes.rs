@@ -1243,6 +1243,24 @@ async fn a_declaration_on_its_own() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
+/// `?today` and `?date` are compared as ISO dates: anything else is
+/// refused, never answered wrongly.
+#[tokio::test]
+async fn query_dates_must_be_iso_dates() {
+    let g = setup().await;
+    let out = g.record(json!({ "giftAid": {} })).await;
+    let contact = str_of(&out["contactId"]);
+    for bad in ["x", "2026-1-5", "2026-02-30", ""] {
+        for path in [
+            format!("/api/t/alpha/contacts/{contact}/giftaid?today={bad}"),
+            format!("/api/t/alpha/contacts/{contact}/donor?date={bad}"),
+        ] {
+            let (s, e) = g.w.call("GET", &path, &g.ann, None).await;
+            assert_eq!((s, &e["kind"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid")), "{path}");
+        }
+    }
+}
+
 /// Every route: B never sees A's gifts or declarations, and A's ids under
 /// B's slug answer 404 (reads and writes alike); a viewer reads but never
 /// writes.

@@ -195,6 +195,7 @@ async fn donor(
     Path(IdParam { id }): Path<IdParam>,
     Params(q): Params<DonorQuery>,
 ) -> Result<Json<DonorView>, ApiError> {
+    super::giftaid::iso_date("date", &q.date)?;
     t.read(move |r| {
         let Donor {
             id,

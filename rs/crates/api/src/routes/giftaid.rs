@@ -34,6 +34,7 @@ async fn by_contact(
     Path(IdParam { id }): Path<IdParam>,
     Params(q): Params<TodayQuery>,
 ) -> Result<Json<Declarations>, ApiError> {
+    iso_date("today", &q.today)?;
     t.read(move |r| {
         if contacts::donors::kind_of(r, &id)?.is_none() {
             return Err(ApiError::NotFound);
@@ -42,6 +43,18 @@ async fn by_contact(
     })
     .await
     .map(Json)
+}
+
+/// A query's date: coverage compares ISO dates as strings, so anything
+/// else would answer wrongly rather than fail. `422 invalid` instead.
+pub(super) fn iso_date(field: &str, value: &str) -> Result<(), ApiError> {
+    if giftaid::is_iso_date(value) {
+        Ok(())
+    } else {
+        Err(ApiError::Invalid {
+            problems: vec![contracts::Problem::new(field, "A date, YYYY-MM-DD")],
+        })
+    }
 }
 
 /// `POST contacts/{id}/giftaid {…declaration}`: a declaration as made
