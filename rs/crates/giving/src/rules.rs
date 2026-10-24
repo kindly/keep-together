@@ -89,17 +89,21 @@ pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
     if keys.len() != p.allocations.len() {
         problems.push(Problem::new("allocations", "Duplicate row key"));
     }
-    if p.allocations.iter().any(|a| a.amount <= 0) {
+    let shares_ok = if p.allocations.iter().any(|a| a.amount <= 0) {
         problems.push(Problem::new("allocations", "Each share must be over £0"));
+        false
     } else if p.allocations.iter().any(|a| a.amount > PENCE_MAX) {
         problems.push(Problem::new("allocations", "A share is too large"));
-    }
+        false
+    } else {
+        true
+    };
     // Checked so a sum past i64 is "doesn't add up", never a wrap.
     let total = p
         .allocations
         .iter()
         .try_fold(0i64, |sum, a| sum.checked_add(a.amount));
-    if !p.allocations.is_empty() && total != Some(p.amount) {
+    if shares_ok && !p.allocations.is_empty() && total != Some(p.amount) {
         problems.push(Problem::new(
             "allocations",
             "The shares must add up to the amount",

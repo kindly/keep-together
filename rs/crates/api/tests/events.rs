@@ -402,11 +402,7 @@ fn a_rollback_rotates_the_recovery_generation() {
     })
     .unwrap();
     let t = store.create_tenant("alpha", "Alpha").unwrap();
-    let generation = || {
-        store
-            .read_org_file(&t.id, |c| api::events::generation(c))
-            .unwrap()
-    };
+    let generation = || store.read_org_file(&t.id, api::events::generation).unwrap();
     let before = generation();
     // The boot copy a migrating boot would have left: this very file.
     let boot = dir.join("premigrate/boot-000000000000001");
@@ -445,9 +441,7 @@ fn a_rollback_rotates_the_recovery_generation() {
         max_open: store::StoreConfig::DEFAULT_MAX_OPEN,
     })
     .unwrap();
-    let after = store
-        .read_org_file(&t.id, |c| api::events::generation(c))
-        .unwrap();
+    let after = store.read_org_file(&t.id, api::events::generation).unwrap();
     assert_ne!(after, before);
     assert_eq!(after.len(), 32);
 }
