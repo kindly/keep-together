@@ -194,6 +194,53 @@ rely on.
 `keep-snapshot run --data /data` runs one pass by hand, beside the
 running api.
 
+### WAL checkpoints and Litestream
+
+The api never checkpoints inside a commit. Org writers run with
+`wal_autocheckpoint=0`: SQLite's default ran the checkpoint (copy the WAL
+back, two fsyncs) inside whichever request's COMMIT crossed 1000 pages,
+under the org's writer mutex, and that stalled writes by 100–500 ms under
+disk load. Instead each open org file has a checkpointer thread with its
+own connection (`rs/crates/store/src/checkpoint.rs`):
+
+- a `PASSIVE` checkpoint about every second while anything has committed
+  since the last one, and at once when a commit leaves 1000 or more pages
+  (~4 MB) un-checkpointed;
+- a `TRUNCATE` with no busy timeout when the file is idle and its `-wal`
+  is over 4 MB: it shrinks the file, or gives up at once if anything holds
+  a lock;
+- closing a handle (LRU, idle-close) still checkpoints: SQLite does that
+  on the last close whatever `wal_autocheckpoint` says.
+
+`platform.db` keeps SQLite's auto-checkpoint: it takes a handful of small
+writes (sign-ins, memberships), not a request stream.
+
+Under Litestream, Litestream does the checkpointing. It checkpoints
+from its own process and holds a read lock on each database between
+syncs, which stops any other process copying the WAL back. Measured
+locally (2026-10-24, Litestream 0.5.17 from the image, file replica, two
+writers at ~80 writes/s): every one of the api's `PASSIVE` checkpoints
+copied 0 pages, and its idle `TRUNCATE` gives up, as designed. So under
+Litestream the checkpointer is inert and harmless, and Litestream's
+docs' advice (`wal_autocheckpoint=0`, leave checkpoints to Litestream)
+holds. Replication is unaffected: restores matched the live file row for
+row in every run.
+
+What stalls writes under Litestream is Litestream's own checkpoint: it
+holds the write lock while it copies the WAL back, so a write's `BEGIN
+IMMEDIATE` waits 50–330 ms, sometimes over 1 s. That happens with or
+without the api's checkpointer, and on the old code too. At that write
+rate 0.8–1.0% of writes took over 150 ms on the old code (three runs) and
+1.1–1.6% on this one (three runs, one with the checkpointer off), with a
+shorter far tail here (p99.9 233–333 ms against 528–632 ms). Tuning
+Litestream's checkpoints is a separate job.
+
+`/healthz` reports `walBacklogBytes`, the WAL not yet checkpointed in the
+worst open org file. Without Litestream it stays under a few MB; with it,
+it is whatever Litestream has left since its last checkpoint. The `wal-watch` job
+warns (log and Sentry) once when it passes 64 MB: the checkpointer is
+stuck, or a long read (a snapshot's `VACUUM INTO`) has pinned the WAL.
+
 ## Restoring
 
 **A lost machine or volume** restores itself. When a machine boots on a
@@ -328,6 +375,9 @@ needs the aws CLI, litestream 0.5.x and sqlite3, and builds
   - `litestreamDatabases`;
   - `restore`: present after an empty-volume restore, as `{source,
     fallback, missingOrgs, at}`.
+
+  And `walBacklogBytes` at the top level: the worst open org file's WAL
+  not yet checkpointed ("WAL checkpoints and Litestream" above).
 
   It is public, so it has counts and status words only. Error text
   (bucket names, account ids, tenant ids) goes to the log and Sentry, and

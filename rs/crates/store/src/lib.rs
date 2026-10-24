@@ -6,6 +6,7 @@
 //! from a `platform.db` row (or from creating a tenant), so a request can't
 //! choose a file by spelling its name.
 
+mod checkpoint;
 mod conn;
 mod events;
 mod migrate;
@@ -327,6 +328,28 @@ impl Store {
             .count()
     }
 
+    /// The largest un-checkpointed WAL among the open org files, in bytes
+    /// (`/healthz`). Skips a handle being opened or closed; opens nothing.
+    pub fn wal_backlog_worst(&self) -> i64 {
+        let slots: Vec<Slot> = self
+            .orgs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .map(|e| e.slot.clone())
+            .collect();
+        slots
+            .iter()
+            .filter_map(|slot| {
+                slot.try_lock()
+                    .ok()?
+                    .as_ref()
+                    .map(|db| db.wal_backlog_bytes())
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Every organisation's id, from `platform.db`. Jobs loop over these
     /// one file at a time; nothing spans two files in one transaction.
     pub fn each_org(&self) -> Result<Vec<TenantId>, StoreError> {
@@ -485,6 +508,146 @@ mod tests {
             db.read(|r| r.execute("INSERT INTO things (name) VALUES ('x')", []))
                 .is_err()
         );
+    }
+
+    fn wal_len(path: &Path) -> u64 {
+        let mut p = path.as_os_str().to_owned();
+        p.push("-wal");
+        std::fs::metadata(PathBuf::from(p)).map_or(0, |m| m.len())
+    }
+
+    #[test]
+    fn commits_never_checkpoint_the_checkpointer_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let a = store.create_tenant("alpha", "Alpha").unwrap();
+        let b = store.create_tenant("beta", "Beta").unwrap();
+        let db = store.org(&a.id).unwrap();
+        let page = 4096;
+        db.pause_checkpoints(true);
+        // Each commit writes a page or two, well past SQLite's default
+        // auto-checkpoint at 1000. Only a checkpoint writes the main file:
+        // its size must not change.
+        let file_len = || std::fs::metadata(db.path()).unwrap().len();
+        let before = file_len();
+        for i in 0..1500 {
+            db.write_raw(|tx| {
+                tx.conn().execute(
+                    "INSERT INTO things (name) VALUES (?1)",
+                    [format!("{i:04}{}", "x".repeat(3000))],
+                )
+            })
+            .unwrap();
+            assert_eq!(file_len(), before, "commit {i} checkpointed");
+        }
+        assert!(db.wal_backlog_bytes() > 1000 * page);
+        assert!(wal_len(db.path()) as i64 > 1000 * page);
+        assert_eq!(store.wal_backlog_worst(), db.wal_backlog_bytes());
+        // Another org's file is untouched by it.
+        assert_eq!(store.org(&b.id).unwrap().wal_backlog_bytes(), 0);
+
+        // Let the checkpointer go: it copies the WAL back, off the writer.
+        db.pause_checkpoints(false);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while db.wal_backlog_bytes() > 0 {
+            assert!(Instant::now() < deadline, "the checkpointer never ran");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(file_len() > before + 1000 * page as u64);
+        // Idle, and the file is past 4 MB: it is truncated next.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while wal_len(db.path()) > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the idle WAL was never truncated"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let rows = db
+            .read(|r| r.query_row("SELECT count(*) FROM things", [], |r| r.get::<_, i64>(0)))
+            .unwrap();
+        assert_eq!(rows, 1500);
+    }
+
+    #[test]
+    fn closing_an_org_still_checkpoints_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let a = store.create_tenant("alpha", "Alpha").unwrap();
+        let db = store.org(&a.id).unwrap();
+        db.pause_checkpoints(true);
+        for _ in 0..50 {
+            db.write_raw(|tx| {
+                tx.conn()
+                    .execute("INSERT INTO things (name) VALUES ('x')", [])
+            })
+            .unwrap();
+        }
+        let path = db.path().to_path_buf();
+        assert!(wal_len(&path) > 0);
+        drop(db);
+        drop(store);
+        // The last connection to close checkpointed and removed the WAL.
+        assert_eq!(wal_len(&path), 0);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM things", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 50);
+    }
+
+    #[test]
+    fn a_queued_write_runs_between_two_steps_of_a_loop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let a = store.create_tenant("alpha", "Alpha").unwrap();
+        let db = store.org(&a.id).unwrap();
+        let (started, step_one) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        // A job: steps back to back, each its own transaction, as
+        // `Tenant::run_job` runs them. Each step takes 20 ms.
+        let job = {
+            let (db, stop) = (db.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut step = 0;
+                while !stop.load(Ordering::SeqCst) && step < 100 {
+                    step += 1;
+                    db.write_raw(|tx| {
+                        tx.conn().execute(
+                            "INSERT INTO things (name) VALUES (?1)",
+                            [format!("step {step}")],
+                        )?;
+                        if step == 1 {
+                            started.send(()).unwrap();
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                        Ok::<_, rusqlite::Error>(())
+                    })
+                    .unwrap();
+                }
+            })
+        };
+        // A request's write arrives during step 1 and waits for the writer.
+        step_one.recv().unwrap();
+        db.write_raw(|tx| {
+            tx.conn()
+                .execute("INSERT INTO things (name) VALUES ('request')", [])
+        })
+        .unwrap();
+        stop.store(true, Ordering::SeqCst);
+        job.join().unwrap();
+        let order: Vec<String> = db
+            .read(|r| {
+                r.prepare("SELECT name FROM things ORDER BY id")?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()
+            })
+            .unwrap();
+        // It ran right after step 1, not after the job's other steps.
+        assert_eq!(order[..2], ["step 1".to_string(), "request".to_string()]);
     }
 
     #[test]

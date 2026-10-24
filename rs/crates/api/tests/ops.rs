@@ -98,6 +98,19 @@ async fn healthz_answers_without_a_session() {
         serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(body["ok"], true);
     assert_eq!(body["db"], "ok");
+    assert!(body["walBacklogBytes"].is_i64(), "{body}");
+}
+
+#[test]
+fn wal_watch_warns_once_per_crossing() {
+    let w = world();
+    let watch = api::jobs::WalWatch::new(w.store.clone());
+    let over = api::jobs::WAL_WARN_BYTES + 1;
+    assert!(!watch.crossed(0));
+    assert!(watch.crossed(over));
+    assert!(!watch.crossed(over), "not again while it stays over");
+    assert!(!watch.crossed(0));
+    assert!(watch.crossed(over), "again after it went back under");
 }
 
 #[test]
