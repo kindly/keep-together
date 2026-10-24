@@ -1,5 +1,4 @@
-import { expect, test } from '../fixtures'
-import { convexOn } from '../convex-pending'
+import { expect, qcHold, test } from '../fixtures'
 import type { Instance } from '../fixtures'
 import {
   CONTACT_ROUTE,
@@ -16,18 +15,12 @@ import type { Page } from '@playwright/test'
 // Email holds on the contact page (E2a, ADR 0021): a bounced address shows
 // "On hold" on every contact using it, an admin can release it, staff and
 // viewers only see it, and another group's hold of the same address never
-// shows. Holds are seeded through platform/qcSeed:hold, as a bounce would
-// make them; each takes a `convex run`, so these tests get more time.
+// shows. Holds are seeded through the api's dev `qc-hold`, as a bounce
+// would make them.
 
-const HOLD_TIMEOUT_MS = 180_000
-
-/** Hold `address` in a tenant, as a hard bounce does. */
-async function hold(inst: Instance, tenantId: string, address: string) {
-  await convexOn(inst, [
-    'run',
-    'platform/qcSeed:hold',
-    JSON.stringify({ tenantId, address }),
-  ])
+/** Hold `address` in a tenant (its slug), as a hard bounce does. */
+async function hold(inst: Instance, slug: string, address: string) {
+  await qcHold(inst, { slug, address })
 }
 
 /** Add an email row to the open contact and wait until it is saved. */
@@ -59,8 +52,6 @@ function noHoldBadge() {
 // ── specs ──────────────────────────────────────────────────────────────────
 
 test.describe('email holds on a contact', { annotation: CONTACT_ROUTE }, () => {
-  test.setTimeout(HOLD_TIMEOUT_MS)
-
   test('a held address shows on hold, on every contact using it', async ({
     page,
     instance,

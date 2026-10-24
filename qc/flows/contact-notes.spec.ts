@@ -163,10 +163,6 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
     page,
     users,
   }) => {
-    test.info().annotations.push({
-      type: 'route',
-      description: '/t/$slug/settings/fields',
-    })
     const url = await createContact(page, users.a.slug, uniqueName('leave'))
     await addNote(page, 'before')
     const top = items(page).nth(0)
@@ -175,8 +171,8 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
     // Clicking a link blurs the editor: it saves on the way, no question.
     await top.getByRole('button', { name: 'edit' }).click()
     await top.getByRole('textbox').fill('saved on the way out')
-    await page.getByRole('link', { name: 'Settings', exact: true }).click()
-    await page.waitForURL(/\/settings\/fields$/)
+    await page.getByRole('link', { name: 'Contacts', exact: true }).click()
+    await page.waitForURL(/\/contacts\/?$/)
     await expect(leave).toBeHidden()
     // Back inside the app (same document, so the router sees it).
     await page.goBack()
@@ -197,10 +193,10 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
     expect(page.url()).toBe(url)
     await expect(top.getByRole('textbox')).toHaveValue(over)
 
-    await page.getByRole('link', { name: 'Settings', exact: true }).click()
+    await page.getByRole('link', { name: 'Contacts', exact: true }).click()
     await expect(leave).toBeVisible()
     await leave.getByRole('button', { name: 'Leave anyway' }).click()
-    await page.waitForURL(/\/settings\/fields$/)
+    await page.waitForURL(/\/contacts\/?$/)
     await page.goBack()
     await page.waitForURL(url)
     await expect(items(page).nth(0).locator('p')).toHaveText(
@@ -225,24 +221,15 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
     users,
     session,
   }) => {
-    test.info().annotations.push({
-      type: 'route',
-      description: '/t/$slug/settings/fields',
-    })
     const url = await createContact(page, users.a.slug, uniqueName('slow'))
     await addNote(page, 'before')
-    // The other tab's mutations are held 1.5 s on the way out while
+    // The other tab's note saves are held 1.5 s on the way out while
     // `slow` is set: a slow link, as far as the page can tell.
     const other = await secondTab(browser, baseURL!, await session())
     let slow = false
-    await other.context().routeWebSocket(/.*/, (ws) => {
-      const server = ws.connectToServer()
-      ws.onMessage((m) => {
-        if (slow && typeof m === 'string' && m.includes('"Mutation"'))
-          setTimeout(() => server.send(m), 1500)
-        else server.send(m)
-      })
-      server.onMessage((m) => ws.send(m))
+    await other.context().route(/\/api\/t\/[^/]+\/notes\/[^/]+\/save$/, async (r) => {
+      if (slow) await new Promise((done) => setTimeout(done, 1500))
+      await r.continue()
     })
     try {
       await other.goto(url)
@@ -250,14 +237,14 @@ test.describe('contact notes', { annotation: CONTACT_ROUTE }, () => {
       await top.getByRole('button', { name: 'edit' }).click()
       await top.getByRole('textbox').fill('saved before leaving')
       slow = true
-      await other.getByRole('link', { name: 'Settings', exact: true }).click()
+      await other.getByRole('link', { name: 'Contacts', exact: true }).click()
       const status = other.getByRole('status').filter({
         hasText: 'Saving before you leave…',
       })
       await expect(status).toBeVisible()
       expect(other.url()).toBe(url)
       // The save lands: the page leaves with no question.
-      await other.waitForURL(/\/settings\/fields$/)
+      await other.waitForURL(/\/contacts\/?$/)
       await expect(status).toBeHidden()
       await expect(
         other.getByRole('alertdialog', { name: /You have unsaved changes/ }),

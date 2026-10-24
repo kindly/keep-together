@@ -20,6 +20,9 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/contacts/',
   '/t/$slug/contacts/new',
   '/t/$slug/contacts/$contactId',
+  // '/t/$slug/settings/identifiers': its page is on the Rust API (A1), but
+  // it renders inside Settings' layout; it joins this list with A3's
+  // layout, when settings.spec.ts (which times it) runs again.
 ]
 
 const ported = new Set<string>(PORTED)
@@ -33,11 +36,11 @@ export const FEATURES = {
   /** A2: the acquisition picker, the list's source filter. */
   sourceCodes: false,
   /** A1: the form's identifiers. */
-  identifiers: false,
+  identifiers: true,
   /** A1: the contact page's notes. */
-  notes: false,
+  notes: true,
   /** A1: the email hold notice and Release. */
-  emailHolds: false,
+  emailHolds: true,
   /** B1: the list's bulk set. */
   bulkSetField: false,
   /** B2: the contact's gifts and Gift Aid, home's recent gifts. */

@@ -44,12 +44,24 @@ const INVALIDATES: Partial<
   // The list and search show the contact's row; the contact's own view
   // (its history with it) is handled below. A list refetches every page
   // it has loaded, in order (TanStack's infinite query): ten pages are ten
-  // round trips per burst, in the background. A1: an email shared with
-  // other contacts makes their "also used by" warnings stale too.
-  contacts: (slug) => [keys.list(slug), keys.search(slug)],
+  // round trips per burst, in the background. An email saved anywhere can
+  // change other contacts' "also used by" (and which holds they show).
+  contacts: (slug, e) =>
+    e.contract === 'contacts.methods'
+      ? [keys.list(slug), keys.search(slug), keys.emailContext(slug)]
+      : [keys.list(slug), keys.search(slug)],
   // Definitions: the filters, the form's dropdowns, every value's label.
   contact_fields: (slug) => [keys.fields(slug), keys.contacts(slug)],
   contact_field_options: (slug) => [keys.fields(slug), keys.contacts(slug)],
+  // A1. A type's name shows on every contact holding one.
+  identifier_types: (slug) => [keys.identifierTypes(slug), keys.contacts(slug)],
+  // The event names the note, not its contact: every notes list.
+  contact_notes: (slug) => [keys.notes(slug)],
+  // A hold belongs to the address: every contact's email context.
+  email_suppressions: (slug) => [keys.emailContext(slug)],
+  // No page shows relationships yet.
+  relationship_types: () => [],
+  relationships: () => [],
 }
 
 /**

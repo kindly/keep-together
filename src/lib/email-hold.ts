@@ -1,9 +1,9 @@
 import type { FunctionReturnType } from 'convex/server'
-import { ConvexError } from 'convex/values'
 import type { api } from '../../convex/_generated/api'
 import { normaliseEmail } from '../../convex/contacts/rules'
+import { RustApiError } from './data/rust/client'
 
-/** comms:held's answer: the held addresses, keyed by normalised address. */
+/** The held addresses, keyed by normalised address (`email-context`). */
 export type Held = FunctionReturnType<typeof api.comms.suppressions.held>
 export type Hold = Held[string]
 
@@ -44,17 +44,22 @@ export function holdKey(address: string, hold: Hold | undefined): string {
 
 export const NO_LONGER_HELD = 'This address is no longer on hold'
 
+/** A refusal's data, from the Rust API. */
+function refusal(err: unknown): unknown {
+  return err instanceof RustApiError ? err.error : null
+}
+
 /** The release found the address already released (by anyone). */
 export function isNotHeld(err: unknown): boolean {
-  if (!(err instanceof ConvexError)) return false
-  const d = err.data as { kind?: string; reason?: string }
-  return d.kind === 'rejected' && d.reason === 'not_held'
+  const d = refusal(err) as { kind?: string; reason?: string } | null
+  return d?.kind === 'rejected' && d.reason === 'not_held'
 }
 
 /** A user-facing line for a failed release. */
 export function releaseFailure(err: unknown): string {
-  if (!(err instanceof ConvexError)) return 'Could not release the address'
-  const d = err.data as {
+  const data = refusal(err)
+  if (!data) return 'Could not release the address'
+  const d = data as {
     kind?: string
     reason?: string
     message?: string

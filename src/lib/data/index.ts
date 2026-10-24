@@ -18,12 +18,19 @@ export {
   useContactList,
   useContactSearch,
   useCreateContact,
-  useEmailContext,
   useFields,
-  useIdentifierTypes,
   useMembers,
   useMyTenants,
   useSaveContactForm,
   useSignOut,
 } from './rust/hooks'
 export { useOrgEvents } from './events'
+export {
+  useEmailContext,
+  useIdentifierTypes,
+  useNoteActions,
+  useNotes,
+  useRelease,
+  useSaveIdentifierType,
+} from './rust/contact-extras'
+export type { Note } from './rust/contact-extras'

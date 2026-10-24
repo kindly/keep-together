@@ -282,3 +282,96 @@ fn a_relationship_checks_both_contacts_the_type_and_each_sides_kind() {
     );
     assert!(r(&world.b, |c| Ok(relationships_for(c, &ann)?)).is_empty());
 }
+
+// ── email lookup edges ─────────────────────────────────────────────────────
+
+fn methods_of(db: &OrgDb, id: &str) -> Methods {
+    view(db, id).methods
+}
+
+fn save(db: &OrgDb, id: &str, expected: i64, m: Methods) -> Result<i64, ContractError> {
+    w(db, |ctx| {
+        Ok(execute(
+            ctx,
+            &contacts::METHODS,
+            m,
+            Exec::update(id, Some(expected), Source::Test),
+        )?
+        .counter)
+    })
+}
+
+#[test]
+fn a_kept_key_never_changes_its_address_but_surrounding_space_is_no_change() {
+    let world = world();
+    let ann = add(&world.a, person("Ann", "Smith"));
+    set_emails(&world.a, &ann, &["Ann@Example.com"]);
+    // A case-only change on a kept key is a change of identity: refused,
+    // never quietly re-normalised.
+    let mut m = methods_of(&world.a, &ann);
+    m.emails[0].address = "ann@example.com".into();
+    assert!(matches!(
+        save(&world.a, &ann, 1, m),
+        Err(ContractError::Rejected { reason, .. }) if reason == "identity_immutable"
+    ));
+    // Whitespace around it is trimmed away: no change at all.
+    let mut m = methods_of(&world.a, &ann);
+    m.emails[0].address = "  Ann@Example.com ".into();
+    let out = w(&world.a, |ctx| {
+        contacts::form::save_form(
+            ctx,
+            &ann,
+            SaveForm {
+                methods: exp(1, m),
+                ..Default::default()
+            },
+        )
+    })
+    .unwrap();
+    assert!(out.saved.is_empty());
+    // Remove + add of the re-cased address in one save swaps the row.
+    let mut m = methods_of(&world.a, &ann);
+    m.emails = vec![email("ann@example.com")];
+    save(&world.a, &ann, 1, m).unwrap();
+    assert_eq!(
+        methods_of(&world.a, &ann).emails[0].address,
+        "ann@example.com"
+    );
+    assert_eq!(
+        found(&world.a, "ANN@EXAMPLE.COM"),
+        std::slice::from_ref(&ann)
+    );
+}
+
+#[test]
+fn a_stale_methods_save_leaves_the_lookup_and_a_restore_sets_it() {
+    let world = world();
+    let ann = add(&world.a, person("Ann", "Smith"));
+    set_emails(&world.a, &ann, &["old@x.org"]);
+    let mut m = methods_of(&world.a, &ann);
+    m.emails = vec![email("new@x.org")];
+    assert!(matches!(
+        save(&world.a, &ann, 0, m),
+        Err(ContractError::Stale { .. })
+    ));
+    assert_eq!(found(&world.a, "old@x.org"), std::slice::from_ref(&ann));
+    assert!(found(&world.a, "new@x.org").is_empty());
+    // Restore of the revision that held old@ after a change brings its lookup back.
+    let held = revisions(&world.a, &ann)
+        .into_iter()
+        .find(|r| r.contract == "contacts.methods")
+        .unwrap();
+    set_emails(&world.a, &ann, &["new@x.org"]);
+    w(&world.a, |ctx| {
+        contacts::form::restore_contact(
+            ctx,
+            &ann,
+            RestoreRequest::Revision {
+                revision_id: held.id,
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(found(&world.a, "old@x.org"), std::slice::from_ref(&ann));
+    assert!(found(&world.a, "new@x.org").is_empty());
+}

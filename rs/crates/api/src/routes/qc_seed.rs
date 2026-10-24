@@ -12,6 +12,9 @@ use axum::Json;
 use axum::extract::State;
 use contacts::fields::{FIELD, FIELD_OPTION};
 use contacts::form::{create, save_form};
+use contacts::identifiers::{
+    IDENTIFIER_TYPE, IDENTIFIERS, IdentifierRow, IdentifierTypePayload, Identifiers,
+};
 use contacts::queries::{ListQuery, list};
 use contacts::types::{
     ChannelLabel, CreateContact, Details, EmailRow, Expected, FieldOptionPayload, FieldPayload,
@@ -25,6 +28,30 @@ use ts_rs::TS;
 use crate::{ApiError, AppState, Body, RoleName, blocking};
 
 pub const QC_FIELD: &str = "Volunteer status";
+/// A's Ada holds `shared` under it; in B the same name holds `shared`,
+/// `bOnly` and `bReuse` on Ada, Charles and the Trust, then is archived:
+/// B has no active type, A's search proves B's values don't leak, and A
+/// can add `bReuse` without a clash.
+pub const QC_IDENTIFIER_TYPE: &str = "Membership number";
+
+/// The seeded identifier values: one token each with no name in it (the
+/// name search never matches them), none a prefix of another.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct QcIdentifiers {
+    pub shared: String,
+    pub b_only: String,
+    pub b_reuse: String,
+}
+
+fn qc_identifiers(base: &str) -> QcIdentifiers {
+    QcIdentifiers {
+        shared: format!("ID{base}"),
+        b_only: format!("IDB{base}"),
+        b_reuse: format!("IDR{base}"),
+    }
+}
 pub const QC_OPTIONS: [&str; 3] = ["Active", "Lapsed", "Prospect"];
 
 fn enabled(state: &AppState) -> Result<(), ApiError> {
@@ -68,12 +95,15 @@ pub struct QcField {
 }
 
 #[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct QcWorld {
     /// a, b, then A's staff and viewer.
     pub users: Vec<QcUser>,
     pub tenants: Vec<QcTenant>,
     pub field: QcField,
+    pub identifier_type: String,
+    pub identifiers: QcIdentifiers,
 }
 
 fn person(kind: Kind, first: &str, last: &str, name: &str) -> Details {
@@ -111,6 +141,7 @@ fn side(
     db: &OrgDb,
     label: &str,
     run_id: &str,
+    base: &str,
     slug: &str,
     with_field: bool,
 ) -> Result<Vec<String>, ContractError> {
@@ -161,6 +192,51 @@ fn side(
                 },
             )?;
             ids.push(id);
+        }
+        let ids_held = qc_identifiers(base);
+        let type_id = execute(
+            ctx,
+            &IDENTIFIER_TYPE,
+            IdentifierTypePayload {
+                name: QC_IDENTIFIER_TYPE.into(),
+                is_active: true,
+            },
+            Exec::create(Source::Seed).in_group(&group),
+        )?
+        .id;
+        let held = if with_field {
+            vec![(&ids[0], &ids_held.shared)]
+        } else {
+            vec![
+                (&ids[0], &ids_held.shared),
+                (&ids[1], &ids_held.b_only),
+                (&ids[2], &ids_held.b_reuse),
+            ]
+        };
+        for (contact, value) in held {
+            execute(
+                ctx,
+                &IDENTIFIERS,
+                Identifiers {
+                    identifiers: vec![IdentifierRow {
+                        key: None,
+                        type_id: type_id.clone(),
+                        value: value.clone(),
+                    }],
+                },
+                Exec::update(contact, Some(0), Source::Seed).in_group(&group),
+            )?;
+        }
+        if !with_field {
+            execute(
+                ctx,
+                &IDENTIFIER_TYPE,
+                IdentifierTypePayload {
+                    name: QC_IDENTIFIER_TYPE.into(),
+                    is_active: false,
+                },
+                Exec::update(&type_id, Some(0), Source::Seed).in_group(&group),
+            )?;
         }
         if with_field {
             let field = execute(
@@ -230,7 +306,7 @@ pub async fn fixture(
             }
             let db = store.org(&tenant.id)?;
             let contact_ids = if fresh {
-                side(&db, label, &req.run_id, &slug, suffix == "a")?
+                side(&db, label, &req.run_id, &base, &slug, suffix == "a")?
             } else {
                 contact_ids(&db)?
             };
@@ -249,6 +325,8 @@ pub async fn fixture(
                 label: QC_FIELD.into(),
                 options: QC_OPTIONS.iter().map(|s| (*s).into()).collect(),
             },
+            identifier_type: QC_IDENTIFIER_TYPE.into(),
+            identifiers: qc_identifiers(&base),
         })
     })
     .await

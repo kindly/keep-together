@@ -35,9 +35,7 @@ import type { SearchResult as WireSearch } from '../rust-types/SearchResult'
 import type {
   ContactView,
   CreateContact,
-  EmailContext,
   FieldDefinition,
-  IdentifierType,
   Loaders,
   Member,
   SaveContactForm,
@@ -303,20 +301,9 @@ export function useBulkSetField(): ReturnType<typeof convexBulkSetField> {
 }
 const IDLE = { state: 'idle' } as const
 
-// Not ported yet (A1, A3): nobody to name, no holds or shared-address
-// lookups, no identifier types.
+// Not ported yet (A3): nobody to name.
 const NO_MEMBERS: Array<Member> = []
 export const useMembers = (): Array<Member> | undefined => NO_MEMBERS
-export const useEmailContext = (
-  _id: Id<'contacts'>,
-  _emails: ContactView['emails'],
-): EmailContext => ({
-  alsoUsedBy: undefined,
-  held: undefined,
-})
-const NO_TYPES: Array<IdentifierType> = []
-export const useIdentifierTypes = (): Array<IdentifierType> | undefined =>
-  NO_TYPES
 
 // ── writes ─────────────────────────────────────────────────────────────────
 
@@ -347,6 +334,8 @@ export function useSaveContactForm(id: Id<'contacts'>): SaveContactForm {
     } finally {
       // The list, search and this contact (its history too) are out of date.
       void qc.invalidateQueries({ queryKey: keys.contacts(slug) })
+      // So are "also used by" of this contact and any sharing an address.
+      void qc.invalidateQueries({ queryKey: keys.emailContext(slug) })
     }
   }
 }

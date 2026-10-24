@@ -20,14 +20,6 @@ export interface Pending {
 }
 
 export const PENDING: ReadonlyArray<Pending> = [
-  // A1: identifiers, notes, email holds, "also used by".
-  { step: 'A1', file: 'contact-identifiers.spec.ts' },
-  { step: 'A1', file: 'contact-notes.spec.ts' },
-  { step: 'A1', file: 'contact-hold.spec.ts' },
-  { step: 'A1', title: /search by exact identifier/ },
-  { step: 'A1', title: /identifiers? (are|is) not found/ },
-  { step: 'A1', title: /a value B holds saves in A/ },
-  { step: 'A1', title: /shared email/ },
   // A2: source codes and acquisition.
   { step: 'A2', file: 'contact-acquisition.spec.ts' },
   { step: 'A2', file: 'sources.spec.ts' },
