@@ -178,6 +178,9 @@ export function useSourceWrites() {
           expected,
         }).then((done) => {
           ownWrite(slug, id, 'sources.code', done.counter)
+          // The event this skips would refetch the contacts too: a name or
+          // an archive shows on every contact carrying a code under it.
+          void qc.invalidateQueries({ queryKey: keys.contacts(slug) })
           return done
         }),
       ),

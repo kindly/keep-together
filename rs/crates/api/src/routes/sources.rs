@@ -44,6 +44,10 @@ enum ListKind {
 
 /// Stub of `platform::may_manage_list`: admins only until the staff switch
 /// (`tenantPreferences.sourceCodes`, A3) exists.
+///
+/// Checked by these routes, not by the contract (Convex's `managesList`
+/// covered restore too): a route that restores `sources.*` revisions must
+/// call it as well.
 fn may_manage_list(_conn: &Connection, role: Role, kind: ListKind) -> rusqlite::Result<bool> {
     let ListKind::SourceCodes = kind;
     Ok(role == Role::Admin)

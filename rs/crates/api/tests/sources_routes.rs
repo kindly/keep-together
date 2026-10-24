@@ -427,6 +427,30 @@ async fn every_sources_route_keeps_two_orgs_apart() {
             &json!("unknown_source_code")
         )
     );
+    let mut body = person("Cy", "Lovelace");
+    body["acquisitionCodeId"] = json!(c.version);
+    let (s, e) = w
+        .call("POST", "/api/t/beta/contacts", &bob, Some(body))
+        .await;
+    assert_eq!(
+        (s, &e["reason"]),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!("unknown_source_code")
+        )
+    );
+    let (s, found) = w
+        .call(
+            "GET",
+            &format!(
+                "/api/t/beta/contacts/search?q=lovelace&source=category:{}",
+                c.category
+            ),
+            &bob,
+            None,
+        )
+        .await;
+    assert_eq!((s, &found["rows"]), (StatusCode::OK, &json!([])));
     let (s, e) = w
         .call(
             "POST",
