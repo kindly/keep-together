@@ -1300,6 +1300,72 @@ fn a_panicking_projection_leaves_the_org_writable() {
     create(&db, "Another");
 }
 
+/// A contract whose `apply` panics: the transaction is `query_only` then.
+struct PanickyApply;
+
+impl Contract for PanickyApply {
+    const NAME: &'static str = "toys.panicky_apply";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = "toys";
+    const COUNTER: &'static str = "details_version";
+    type Payload = DetailsSlice;
+    type State = DetailsSlice;
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<DetailsSlice, ContractError> {
+        Details.load(tx, id)
+    }
+    fn apply(
+        &self,
+        _: Option<&DetailsSlice>,
+        _: &DetailsSlice,
+        _: &Command,
+    ) -> Result<DetailsSlice, ContractError> {
+        panic!("odd data")
+    }
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        before: Option<&DetailsSlice>,
+        next: &DetailsSlice,
+    ) -> Result<(), ContractError> {
+        Details.write(tx, id, before, next)
+    }
+}
+
+/// codex C1 #2: a panic while the writer is `query_only` (a handler's
+/// `apply`, an overflow in a debug build) must not leave the cached
+/// handle unable to begin its next write.
+#[test]
+fn a_panic_while_query_only_leaves_the_org_writable() {
+    let (_tmp, db) = org();
+    let id = create(&db, "Bear");
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        write(&db, |ctx| {
+            execute(
+                ctx,
+                &PanickyApply,
+                details("Boom"),
+                Exec::update(&id, Some(0), Source::Ui),
+            )
+        })
+    }));
+    assert!(panicked.is_err());
+    write(&db, |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("Renamed"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        in_tx(&db, |tx| Details.load(tx, &id)).unwrap(),
+        details("Renamed")
+    );
+}
+
 /// A projection hook writing a table that merely shares its projection's
 /// name prefix: refused (only the five FTS5 shadow suffixes count).
 struct PrefixProjection;
