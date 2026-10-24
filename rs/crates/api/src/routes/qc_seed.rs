@@ -315,3 +315,34 @@ pub async fn crowd(
     .await
     .map(Json)
 }
+
+#[derive(Deserialize, TS)]
+#[ts(export)]
+pub struct QcHoldRequest {
+    pub slug: String,
+    pub address: String,
+}
+
+/// `POST /api/dev/qc-hold {slug, address}`: hold an address as a hard
+/// bounce would (Convex `qcSeed:hold`), for the email-hold flows. Runs as
+/// the system, like the provider's webhook. Returns whether it changed.
+pub async fn hold(
+    State(state): State<AppState>,
+    Body(req): Body<QcHoldRequest>,
+) -> Result<Json<bool>, ApiError> {
+    enabled(&state)?;
+    let store = state.store.clone();
+    blocking(move || {
+        let tenant = store
+            .platform()
+            .tenant_by_slug(&req.slug)?
+            .ok_or(ApiError::NotFound)?;
+        let db = store.org(&tenant.id)?;
+        let (changed, _) = transact(&db, None, |ctx| {
+            comms::suppress_address(ctx, &req.address, Some("qc".into()), None)
+        })?;
+        Ok::<_, ApiError>(changed)
+    })
+    .await
+    .map(Json)
+}

@@ -84,6 +84,8 @@ pub enum Source {
     Seed,
     System,
     Test,
+    /// Provider events (a hard bounce).
+    Comms,
 }
 
 impl Source {
@@ -96,6 +98,7 @@ impl Source {
             Source::Seed => "seed",
             Source::System => "system",
             Source::Test => "test",
+            Source::Comms => "comms",
         }
     }
 

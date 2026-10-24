@@ -1,9 +1,13 @@
 //! The domain routes under `/api/t/{slug}`: a stateless `Router` whose
 //! handlers get a [`Tenant`](crate::Tenant) and nothing else.
 
+mod comms;
 mod contacts;
 mod fields;
+mod identifiers;
+mod notes;
 pub mod qc_seed;
+mod relationships;
 
 use axum::Router;
 use axum::extract::rejection::QueryRejection;
@@ -18,6 +22,10 @@ pub fn router() -> Router {
     Router::new()
         .merge(contacts::router())
         .merge(fields::router())
+        .merge(identifiers::router())
+        .merge(notes::router())
+        .merge(relationships::router())
+        .merge(comms::router())
 }
 
 /// A query string whose rejection is an [`ApiError::Invalid`], like

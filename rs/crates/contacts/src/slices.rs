@@ -36,7 +36,7 @@ pub static ADDRESSES: ContactAddresses = ContactAddresses;
 pub static ARCHIVE: ContactArchive = ContactArchive;
 pub static FIELD_VALUES: ContactFieldValues = ContactFieldValues;
 
-fn no_root(contract: &str) -> ContractError {
+pub(crate) fn no_root(contract: &str) -> ContractError {
     ContractError::rejected("no_root", format!("{contract} targets an existing contact"))
 }
 
@@ -217,7 +217,7 @@ impl ChildRow for AddressRow {
 
 /// A key new to this contact that another contact's row holds is refused
 /// (the insert would otherwise hit the primary key).
-fn check_ownership<T: ChildRow>(
+pub(crate) fn check_ownership<T: ChildRow>(
     tx: &Connection,
     table: &str,
     contact_id: &str,
@@ -237,7 +237,11 @@ fn check_ownership<T: ChildRow>(
 }
 
 /// Delete removed rows, then set every kept or new row's position.
-fn remove_rows<T: ChildRow>(tx: &Connection, table: &str, removed: &[&T]) -> rusqlite::Result<()> {
+pub(crate) fn remove_rows<T: ChildRow>(
+    tx: &Connection,
+    table: &str,
+    removed: &[&T],
+) -> rusqlite::Result<()> {
     let mut stmt = tx.prepare_cached(&format!("DELETE FROM {table} WHERE id = ?1"))?;
     for row in removed {
         stmt.execute([row.id()])?;
@@ -245,11 +249,15 @@ fn remove_rows<T: ChildRow>(tx: &Connection, table: &str, removed: &[&T]) -> rus
     Ok(())
 }
 
-fn position_of<T: ChildRow>(rows: &[T], id: &str) -> i64 {
+pub(crate) fn position_of<T: ChildRow>(rows: &[T], id: &str) -> i64 {
     rows.iter().position(|r| r.id() == id).unwrap_or(0) as i64
 }
 
-fn set_positions<T: ChildRow>(tx: &Connection, table: &str, rows: &[T]) -> rusqlite::Result<()> {
+pub(crate) fn set_positions<T: ChildRow>(
+    tx: &Connection,
+    table: &str,
+    rows: &[T],
+) -> rusqlite::Result<()> {
     let mut stmt = tx.prepare_cached(&format!(
         "UPDATE {table} SET position = ?2 WHERE id = ?1 AND position != ?2"
     ))?;
@@ -259,7 +267,7 @@ fn set_positions<T: ChildRow>(tx: &Connection, table: &str, rows: &[T]) -> rusql
     Ok(())
 }
 
-pub(crate) fn load_methods(conn: &Connection, id: &str) -> rusqlite::Result<Methods> {
+pub fn load_methods(conn: &Connection, id: &str) -> rusqlite::Result<Methods> {
     let emails = conn
         .prepare_cached(
             "SELECT id, label, address, is_primary FROM contact_emails

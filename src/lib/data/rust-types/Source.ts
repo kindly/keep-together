@@ -3,4 +3,4 @@
 /**
  * Where a command came from (the same values as Convex's `revisionSource`).
  */
-export type Source = "ui" | "autosave" | "import" | "restore" | "seed" | "system" | "test";
+export type Source = "ui" | "autosave" | "import" | "restore" | "seed" | "system" | "test" | "comms";

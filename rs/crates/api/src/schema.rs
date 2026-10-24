@@ -17,5 +17,9 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(contacts::MIGRATION),
         // 3: drop the trigram FTS variant
         M::up(contacts::DROP_TRIGRAM),
+        // 4: identifiers and their types, notes, relationships and their types
+        M::up(contacts::MIGRATION_IDENTIFIERS_NOTES),
+        // 5: email suppressions
+        M::up(comms::MIGRATION),
     ])
 }

@@ -9,6 +9,7 @@ use contracts::{
 use rusqlite::OptionalExtension;
 
 use crate::REGISTRY;
+use crate::identifiers::{IDENTIFIERS, identifier_problems, load_identifiers};
 use crate::queries::counters;
 use crate::slices::{
     ADDRESSES, ARCHIVE, DETAILS, FIELD_VALUES, METHODS, field_refusals, load_addresses,
@@ -160,6 +161,22 @@ pub fn save_form(ctx: &Ctx, id: &str, form: SaveForm) -> Result<SaveFormResult, 
         serde_json::json!({ "values": load_field_values(tx, id)? }),
         now.fields,
     )?;
+    let identifiers = f.consider(
+        &IDENTIFIERS,
+        "identifiers",
+        form.identifiers,
+        serde_json::to_value(load_identifiers(tx, id)?)?,
+        now.identifiers,
+    )?;
+    // A clash or a type archived mid-edit is the contract's refusal too,
+    // but caught here it stays on its row: the other slices still save.
+    if let Some(identifiers) = identifiers {
+        let refused = identifier_problems(tx, id, &identifiers.identifiers)?;
+        if !refused.is_empty() {
+            f.out.problems.insert("identifiers".into(), refused);
+            f.changes.retain(|c| c.name != "identifiers");
+        }
+    }
     if let Some(fields) = fields {
         let refused = field_refusals(tx, id, &fields.values)?;
         if !refused.is_empty() {
@@ -171,6 +188,7 @@ pub fn save_form(ctx: &Ctx, id: &str, form: SaveForm) -> Result<SaveFormResult, 
                         field: "fields".into(),
                         message: r.message,
                         key: Some(r.field_id),
+                        contact_id: None,
                     })
                     .collect(),
             );
@@ -203,6 +221,7 @@ fn set_counter(c: &mut Counters, name: &str, value: i64) {
         "addresses" => c.addresses = value,
         "archive" => c.archive = value,
         "fields" => c.fields = value,
+        "identifiers" => c.identifiers = value,
         _ => {}
     }
 }
