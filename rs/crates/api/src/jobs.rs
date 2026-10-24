@@ -153,17 +153,39 @@ pub fn clear_pending(
     Ok(())
 }
 
+/// One piece of pending work: its key, and since when (ms).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingKey {
+    pub key: String,
+    pub since: i64,
+}
+
+/// How old a marker must be before a job may clear it for work it finds
+/// not started: the marker is written before the work's first commit
+/// (write-ahead), so a fresh one may belong to work about to start.
+pub const PENDING_GRACE_MS: i64 = 60_000;
+
 /// The orgs with `job` work pending, each with its keys. Reads only
 /// `platform.db`.
-pub fn pending(store: &Store, job: &str) -> Result<Vec<(TenantId, Vec<String>)>, StoreError> {
-    let rows: Vec<(String, String)> = store.platform().with_read(|conn| {
-        conn.prepare("SELECT tenant_id, key FROM pending_jobs WHERE job = ?1 ORDER BY tenant_id")?
-            .query_map([job], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()
+pub fn pending(store: &Store, job: &str) -> Result<Vec<(TenantId, Vec<PendingKey>)>, StoreError> {
+    let rows: Vec<(String, PendingKey)> = store.platform().with_read(|conn| {
+        conn.prepare(
+            "SELECT tenant_id, key, since FROM pending_jobs WHERE job = ?1 ORDER BY tenant_id, key",
+        )?
+        .query_map([job], |r| {
+            Ok((
+                r.get(0)?,
+                PendingKey {
+                    key: r.get(1)?,
+                    since: r.get(2)?,
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
     })?;
-    let mut out: Vec<(TenantId, Vec<String>)> = Vec::new();
+    let mut out: Vec<(TenantId, Vec<PendingKey>)> = Vec::new();
     for id in store.each_org()? {
-        let keys: Vec<String> = rows
+        let keys: Vec<PendingKey> = rows
             .iter()
             .filter(|(t, _)| t == id.as_str())
             .map(|(_, k)| k.clone())
@@ -179,7 +201,7 @@ pub fn pending(store: &Store, job: &str) -> Result<Vec<(TenantId, Vec<String>)>,
 /// keys: an org with none is never opened.
 pub async fn each_pending_org<F>(store: &Arc<Store>, job: &'static str, f: F) -> Result<(), String>
 where
-    F: Fn(&TenantId, &OrgDb, &[String]) -> Result<(), String> + Send + Sync + 'static,
+    F: Fn(&TenantId, &OrgDb, &[PendingKey]) -> Result<(), String> + Send + Sync + 'static,
 {
     let store = store.clone();
     tokio::task::spawn_blocking(move || {

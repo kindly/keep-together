@@ -4,6 +4,7 @@ import type { ComponentType } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { RustApiError } from '../lib/data/rust/client'
 import type { Field } from '../lib/field-settings'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -50,8 +51,20 @@ vi.mock('../lib/data', () => ({
   useFields: () => fields,
   useFieldWrites: () => writes,
   useFollowRetires: () => {},
+  useAuthState: () => ({ method: 'totp' }),
   preloadFields: () => {},
   useSetStaffCanManage: () => async () => {},
+}))
+// The step-up form itself is A4's (auth-steps.dom tests): a stand-in
+// that confirms at once.
+vi.mock('../components/auth-steps', () => ({
+  StepUpForm: ({ onDone }: { onDone: () => Promise<void> }) => (
+    <section role="dialog" aria-label="Confirm it's you">
+      <button type="button" onClick={() => void onDone()}>
+        Confirm
+      </button>
+    </section>
+  ),
 }))
 let canManage = true
 vi.mock('../lib/tenant', () => ({
@@ -202,7 +215,6 @@ test('every place taken: the add form gives way to a note', () => {
     options: [],
     _id: `f${n}`,
     label: `F${n}`,
-
   })) as unknown as Array<Field>
   render()
   expect(el.querySelector('input[aria-label="New field"]')).toBeNull()
@@ -297,4 +309,55 @@ test('a field retired elsewhere leaves a notice', () => {
   expect(el.textContent).toContain(
     'Region has been retired: its values are cleared',
   )
+})
+
+const stepUpRequired = () => new RustApiError(403, { kind: 'step_up_required' })
+
+test('a retire past the hour asks to confirm it is you, then retries', async () => {
+  writes.retire
+    .mockRejectedValueOnce(stepUpRequired())
+    .mockResolvedValueOnce({ phase: 'retiring' })
+  render()
+  await click(button('retire'))
+  await click(
+    button('Retire field', document.querySelector('[role="alertdialog"]')!),
+  )
+  const dialog = el.querySelector(
+    '[role="dialog"][aria-label="Confirm it\'s you"]',
+  )!
+  expect(dialog).toBeTruthy()
+  expect(el.querySelector('[role=alert]')).toBeNull()
+  expect(writes.retire).toHaveBeenCalledTimes(1)
+  await click(button('Confirm', dialog))
+  expect(writes.retire).toHaveBeenCalledTimes(2)
+  expect(el.querySelector('[role="dialog"]')).toBeNull()
+  expect(el.textContent).toContain('Retiring Region')
+})
+
+test('an option delete past the hour asks too, then retries', async () => {
+  writes.deleteOption
+    .mockRejectedValueOnce(stepUpRequired())
+    .mockResolvedValueOnce({ deleted: 1 })
+  render()
+  const south = [...el.querySelectorAll('[data-testid="field-option"]')][1]
+  await click(button('delete', south))
+  await click(button('Delete', document.querySelector('[role="alertdialog"]')!))
+  await click(button('Confirm', el.querySelector('[role="dialog"]')!))
+  expect(writes.deleteOption).toHaveBeenNthCalledWith(2, 'South', 0)
+})
+
+test('a delete refused for another reason says why, with no dialog', async () => {
+  writes.deleteOption.mockRejectedValueOnce(
+    new RustApiError(422, {
+      kind: 'rejected',
+      reason: 'used',
+      message: 'South has been used',
+    }),
+  )
+  render()
+  const south = [...el.querySelectorAll('[data-testid="field-option"]')][1]
+  await click(button('delete', south))
+  await click(button('Delete', document.querySelector('[role="alertdialog"]')!))
+  expect(el.querySelector('[role="dialog"]')).toBeNull()
+  expect(el.textContent).toContain('South has been used')
 })

@@ -24,7 +24,7 @@ use platform::{ListKind, Role, may_manage_list};
 use rusqlite::Connection;
 use store::{OrgDb, Store, TenantId};
 
-use crate::jobs::{Job, clear_pending, each_pending_org};
+use crate::jobs::{Job, PENDING_GRACE_MS, PendingKey, clear_pending, each_pending_org};
 use crate::{ApiError, Body, IdParam, Tenant};
 
 pub fn router() -> Router {
@@ -191,6 +191,9 @@ async fn retire(
 ) -> Result<Json<FieldRetirePayload>, ApiError> {
     t.require_step_up()?;
     let role = t.role;
+    // Write-ahead: the marker before the retire's first commit, so a stop
+    // anywhere after leaves it to the job.
+    t.mark_job(RETIRE_JOB, id.clone()).await?;
     let start = id.clone();
     t.write(move |ctx| {
         require_manager(ctx.tx.read(), role)?;
@@ -224,14 +227,23 @@ fn retire_step(ctx: &Ctx, id: &str) -> Result<bool, ApiError> {
 pub struct FieldRetire(pub Arc<Store>);
 
 impl FieldRetire {
-    fn resume(store: &Store, tenant: &TenantId, db: &OrgDb, keys: &[String]) -> Result<(), String> {
+    fn resume(
+        store: &Store,
+        tenant: &TenantId,
+        db: &OrgDb,
+        keys: &[PendingKey],
+    ) -> Result<(), String> {
         let retiring: Vec<(String, Option<i64>)> =
             db.read(|r| retiring_fields(r)).map_err(|e| e.to_string())?;
         let mut failed = Vec::new();
-        for key in keys {
+        for PendingKey { key, since } in keys {
             let Some((_, actor)) = retiring.iter().find(|(id, _)| id == key) else {
-                // Ended (or never started): nothing left to carry on.
-                clear_pending(store, tenant, RETIRE_JOB, key).map_err(|e| e.to_string())?;
+                // Ended, or never started: nothing to carry on. A fresh
+                // marker may be a retire about to start (the marker is
+                // written first): left for its own end, or a later run.
+                if contracts::now_ms() - since >= PENDING_GRACE_MS {
+                    clear_pending(store, tenant, RETIRE_JOB, key).map_err(|e| e.to_string())?;
+                }
                 continue;
             };
             let done = loop {

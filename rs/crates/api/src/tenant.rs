@@ -101,10 +101,18 @@ impl Tenant {
         Ok(())
     }
 
+    /// Mark `job`'s work on `key` pending in `platform.db`, before the
+    /// work's first commit (write-ahead), so a server stopping anywhere
+    /// after it leaves the work to the job. Idempotent.
+    pub async fn mark_job(&self, job: &'static str, key: String) -> Result<(), ApiError> {
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        blocking(move || crate::jobs::mark_pending(&store, &id, job, &key)).await
+    }
+
     /// Run `step` again and again, each run its own transaction as this
     /// user, until it answers `true`: in the background, after this
-    /// returns. `job`/`key` are marked pending in `platform.db` first and
-    /// cleared at the end, so a server stopping part way leaves the work
+    /// returns. `job`/`key` are marked pending in `platform.db` first (a
+    /// no-op after [`Tenant::mark_job`]) and cleared at the end, so a server stopping part way leaves the work
     /// to the job of that name ([`crate::jobs::each_pending_org`]). A
     /// failure is logged and sent to Sentry, and leaves the marker.
     pub async fn run_job<F>(&self, job: &'static str, key: String, step: F) -> Result<(), ApiError>

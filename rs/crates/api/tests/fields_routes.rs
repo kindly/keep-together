@@ -632,8 +632,7 @@ async fn a_failing_retire_is_reported_and_the_others_carry_on() {
     let w = world();
     let ann = w.login("ann@alpha.org").await;
     let f = volunteer(&w, &ann).await;
-    // A marker for a field that isn't retiring (never was): cleared, and
-    // the real one beside it still runs.
+    // Two retiring fields, F and G.
     let (s, g) = w
         .call(
             "POST",
@@ -668,7 +667,10 @@ async fn a_failing_retire_is_reported_and_the_others_carry_on() {
     assert!(err.contains(&f.id), "{err}");
     let left = api::jobs::pending(&w.store, "field-retire").unwrap();
     assert_eq!(left.len(), 1);
-    assert_eq!(left[0].1, vec![f.id.clone()]);
+    assert_eq!(
+        left[0].1.iter().map(|k| k.key.clone()).collect::<Vec<_>>(),
+        vec![f.id.clone()]
+    );
     let defs = fields(&w, "alpha", &ann).await;
     assert_eq!(
         defs.as_array().unwrap().len(),
@@ -676,4 +678,64 @@ async fn a_failing_retire_is_reported_and_the_others_carry_on() {
         "G retired, F still retiring"
     );
     assert_eq!(defs[0]["id"], f.id.as_str());
+}
+
+/// Every pending marker `ms` older.
+fn age_markers(w: &World, ms: i64) {
+    w.store
+        .platform()
+        .with_write(|tx| tx.execute("UPDATE pending_jobs SET since = since - ?1", [ms]))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_stop_between_the_marker_and_the_start_is_cleared_once_stale_and_after_it_finished() {
+    use api::jobs::Job;
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    let f = volunteer(&w, &ann).await;
+    let job = api::routes::fields::FieldRetire(w.store.clone());
+
+    // Stopped after the marker, before the start committed: the field is
+    // live. A fresh marker may be a retire about to start: kept.
+    api::jobs::mark_pending(&w.store, &w.alpha.id, "field-retire", &f.id).unwrap();
+    job.run().await.unwrap();
+    assert_eq!(
+        api::jobs::pending(&w.store, "field-retire").unwrap().len(),
+        1
+    );
+    // A minute on, nothing started: cleared, the field untouched.
+    age_markers(&w, 61_000);
+    job.run().await.unwrap();
+    assert!(
+        api::jobs::pending(&w.store, "field-retire")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fields(&w, "alpha", &ann).await[0]["retiring"], false);
+
+    // Stopped after the start committed (marker first, then the start):
+    // the job finishes the retire, whatever the marker's age.
+    let c = contact(&w, "alpha", &ann, "Ann").await;
+    w.call(
+        "POST",
+        "/api/t/alpha/contacts/bulk-set-field",
+        &ann,
+        Some(json!({ "contactIds": [c], "fieldId": f.id, "optionId": f.options[0] })),
+    )
+    .await;
+    api::jobs::mark_pending(&w.store, &w.alpha.id, "field-retire", &f.id).unwrap();
+    let db = w.store.org(&w.alpha.id).unwrap();
+    contracts::transact(&db, Some(1), |ctx| {
+        contacts::fields::retire_start(ctx, &f.id, contracts::Source::Ui)
+    })
+    .unwrap();
+    drop(db);
+    job.run().await.unwrap();
+    assert!(
+        api::jobs::pending(&w.store, "field-retire")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fields(&w, "alpha", &ann).await, json!([]));
 }

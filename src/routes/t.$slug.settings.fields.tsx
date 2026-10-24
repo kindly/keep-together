@@ -1,14 +1,24 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import type { FormEvent } from 'react'
 import {
   preloadFields,
+  useAuthState,
   useFieldWrites,
   useFields,
   useFollowRetires,
 } from '../lib/data'
 import type { ContactKind } from '../lib/data/rust-types/ContactKind'
+import { StepUpForm } from '../components/auth-steps'
 import { ConfirmDialog } from '../components/confirm-dialog'
+import { needsStepUp } from '../lib/auth-errors'
 import { StaffListSwitch } from '../components/staff-list-switch'
 import {
   CONTACT_KINDS,
@@ -44,6 +54,14 @@ export const Route = createFileRoute('/t/$slug/settings/fields')({
 })
 
 type MarkOpen = (id: string, isOpen: boolean) => void
+
+/**
+ * Ask the page to confirm it's you (password and a code), then run
+ * `retry`: retire and delete are irreversible, so they need a sign-in
+ * within the hour (`step_up_required` otherwise), for staff list
+ * managers as for admins.
+ */
+const AskStepUp = createContext<(retry: () => Promise<void>) => void>(() => {})
 
 /** Rows with an editor open, which stay shown when archived meanwhile. */
 function useOpenRows(): [ReadonlySet<string>, MarkOpen] {
@@ -103,8 +121,7 @@ function FieldsPage() {
     if (!before) return
     const now = new Set<string>(fields.map((f) => f._id))
     const gone = before.filter(
-      (f) =>
-        (f.retiring || retiringHere.current.has(f._id)) && !now.has(f._id),
+      (f) => (f.retiring || retiringHere.current.has(f._id)) && !now.has(f._id),
     )
     if (gone.length) {
       setRetired(
@@ -127,81 +144,101 @@ function FieldsPage() {
     shown.length +
     shown.reduce((n, f) => n + f.options.filter((o) => !o.isActive).length, 0)
   const full = (fields?.length ?? 0) >= FIELD_LIMIT
+  const auth = useAuthState()
+  // The irreversible action waiting for a step-up, retried once it's done.
+  const [stepUp, setStepUp] = useState<(() => Promise<void>) | null>(null)
+  const askStepUp = useCallback(
+    (retry: () => Promise<void>) => setStepUp(() => retry),
+    [],
+  )
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h2 className="text-lg font-semibold">Fields</h2>
-        <p className="mt-1 text-sm text-neutral-600">
-          Dropdowns your group defines for its contacts, such as “Volunteer
-          status: Active / Lapsed”. Each contact holds one option per field, or
-          none, and the contacts list can be filtered by any field. A group can
-          have up to {FIELD_LIMIT}.
-        </p>
-        <p className="mt-1 text-sm text-neutral-600">
-          A field is not consent: whether someone wants the newsletter belongs
-          in their communication preferences, not here.
-        </p>
-      </div>
-      <StaffListSwitch kind="fields" />
-      {retired && (
-        <p
-          role="status"
-          className="flex items-baseline gap-3 rounded border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-900"
-        >
-          <span className="flex-1">{retired}</span>
-          <button
-            type="button"
-            onClick={() => setRetired(null)}
-            className="text-xs underline"
+    <AskStepUp.Provider value={askStepUp}>
+      <div className="flex flex-col gap-6">
+        {stepUp && (
+          <StepUpForm
+            method={auth?.method ?? null}
+            onCancel={() => setStepUp(null)}
+            onDone={async () => {
+              const retry = stepUp
+              setStepUp(null)
+              await retry()
+            }}
+          />
+        )}
+        <div>
+          <h2 className="text-lg font-semibold">Fields</h2>
+          <p className="mt-1 text-sm text-neutral-600">
+            Dropdowns your group defines for its contacts, such as “Volunteer
+            status: Active / Lapsed”. Each contact holds one option per field,
+            or none, and the contacts list can be filtered by any field. A group
+            can have up to {FIELD_LIMIT}.
+          </p>
+          <p className="mt-1 text-sm text-neutral-600">
+            A field is not consent: whether someone wants the newsletter belongs
+            in their communication preferences, not here.
+          </p>
+        </div>
+        <StaffListSwitch kind="fields" />
+        {retired && (
+          <p
+            role="status"
+            className="flex items-baseline gap-3 rounded border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-900"
           >
-            dismiss
-          </button>
-        </p>
-      )}
-      {canManage && fields !== undefined && <AddField full={full} />}
-      {fields === undefined ? (
-        <p className="text-sm text-neutral-500">Loading…</p>
-      ) : (
-        <section className="flex flex-col gap-3">
-          <div className="flex items-center gap-3">
-            <h3 className="flex-1 font-medium">
-              Fields{' '}
-              <span className="text-sm font-normal text-neutral-500">
-                ({fields.length} of {FIELD_LIMIT} in use)
-              </span>
-            </h3>
-            <label className="flex items-center gap-2 text-sm text-neutral-600">
-              <input
-                type="checkbox"
-                checked={showArchived}
-                onChange={(e) => setShowArchived(e.target.checked)}
-              />
-              Show archived
-              {!showArchived && hidden > 0 && ` (${hidden})`}
-            </label>
-          </div>
-          {shown.length === 0 ? (
-            <p className="text-sm text-neutral-500">
-              {fields.length === 0 ? 'No fields yet.' : 'No active fields.'}
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-3">
-              {shown.map((f) => (
-                <FieldCard
-                  key={f._id}
-                  field={f}
-                  showArchived={showArchived}
-                  kept={!showArchived && !f.isActive && !f.retiring}
-                  markOpen={markOpen}
-                  onRetireStart={onRetireStart}
+            <span className="flex-1">{retired}</span>
+            <button
+              type="button"
+              onClick={() => setRetired(null)}
+              className="text-xs underline"
+            >
+              dismiss
+            </button>
+          </p>
+        )}
+        {canManage && fields !== undefined && <AddField full={full} />}
+        {fields === undefined ? (
+          <p className="text-sm text-neutral-500">Loading…</p>
+        ) : (
+          <section className="flex flex-col gap-3">
+            <div className="flex items-center gap-3">
+              <h3 className="flex-1 font-medium">
+                Fields{' '}
+                <span className="text-sm font-normal text-neutral-500">
+                  ({fields.length} of {FIELD_LIMIT} in use)
+                </span>
+              </h3>
+              <label className="flex items-center gap-2 text-sm text-neutral-600">
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
                 />
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
-    </div>
+                Show archived
+                {!showArchived && hidden > 0 && ` (${hidden})`}
+              </label>
+            </div>
+            {shown.length === 0 ? (
+              <p className="text-sm text-neutral-500">
+                {fields.length === 0 ? 'No fields yet.' : 'No active fields.'}
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {shown.map((f) => (
+                  <FieldCard
+                    key={f._id}
+                    field={f}
+                    showArchived={showArchived}
+                    kept={!showArchived && !f.isActive && !f.retiring}
+                    markOpen={markOpen}
+                    onRetireStart={onRetireStart}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+      </div>
+    </AskStepUp.Provider>
   )
 }
 
@@ -329,6 +366,7 @@ function FieldCard({
     reorder,
     retire,
   } = useFieldWrites()
+  const askStepUp = useContext(AskStepUp)
   const [editing, setEditing] = useState(false)
   // The counter each confirm opened on; null while it is closed. Confirming
   // acts against it, so a change made meanwhile refuses as stale.
@@ -394,8 +432,9 @@ function FieldCard({
     try {
       await remove(field._id, expected)
     } catch (err) {
-      setError(failureMessage(err, 'row'))
       setBusy(false)
+      if (needsStepUp(err)) askStepUp(() => confirmDelete(expected))
+      else setError(failureMessage(err, 'row'))
     }
   }
 
@@ -410,8 +449,9 @@ function FieldCard({
       // says it has been retired.
       await retire(field._id)
     } catch (err) {
-      setError(failureMessage(err, 'row'))
       setRunning(false)
+      if (needsStepUp(err)) askStepUp(runRetire)
+      else setError(failureMessage(err, 'row'))
     }
   }
 
@@ -805,6 +845,7 @@ function OptionRow({
   onRefocused: () => void
 }) {
   const { saveOption: save, deleteOption: remove } = useFieldWrites()
+  const askStepUp = useContext(AskStepUp)
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState<number | null>(null)
   // The counter the archive confirm opened on; null while it is closed.
@@ -857,8 +898,9 @@ function OptionRow({
     try {
       await remove(option._id, expected)
     } catch (err) {
-      setError(failureMessage(err, 'row'))
       setBusy(false)
+      if (needsStepUp(err)) askStepUp(() => confirmDelete(expected))
+      else setError(failureMessage(err, 'row'))
     }
   }
 
