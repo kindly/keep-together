@@ -83,6 +83,8 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .route("/api/dev/login", post(auth::login))
         .route("/api/dev/logout", post(auth::logout))
         .route("/api/dev/tenants", post(auth::create_tenant))
+        .route("/api/dev/qc-seed", post(routes::qc_seed::fixture))
+        .route("/api/dev/qc-crowd", post(routes::qc_seed::crowd))
         .route("/api/me", get(auth::me))
         .nest("/api/t/{slug}", tenant_routes)
         .with_state(state)

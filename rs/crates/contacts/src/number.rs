@@ -45,7 +45,10 @@ pub enum ParsedNumber {
 /// What a search entry says about contact numbers, spaces and hyphens
 /// ignored. Exact only, never a prefix.
 pub fn parse_number(term: &str) -> Option<ParsedNumber> {
-    let digits: String = term.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+    let digits: String = term
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect();
     if !(5..=6).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -75,9 +78,11 @@ pub fn parse_number(term: &str) -> Option<ParsedNumber> {
 /// contact).
 pub(crate) fn take_number(conn: &Connection) -> rusqlite::Result<i64> {
     let next: Option<i64> = conn
-        .query_row("SELECT next FROM contact_number_sequence WHERE id = 1", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT next FROM contact_number_sequence WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
         .optional()?;
     let number = next.unwrap_or(FIRST_NUMBER);
     conn.execute(

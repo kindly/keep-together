@@ -198,7 +198,10 @@ fn prepare_rows<T: Primary>(rows: &mut [T], field: &str) -> Result<(), ContractE
     }
     let primaries = rows.iter_mut().map(|r| *r.primary()).filter(|p| *p).count();
     if primaries > 1 {
-        return Err(ContractError::invalid(field, "Only one entry can be primary"));
+        return Err(ContractError::invalid(
+            field,
+            "Only one entry can be primary",
+        ));
     }
     if primaries == 0
         && let Some(first) = rows.first_mut()
@@ -275,7 +278,11 @@ fn postcode_forms(postcode: &str) -> Vec<String> {
     let chars: Vec<char> = compact.chars().collect();
     let spaced = if chars.len() >= 5 {
         let (out, inw) = chars.split_at(chars.len() - 3);
-        format!("{} {}", out.iter().collect::<String>(), inw.iter().collect::<String>())
+        format!(
+            "{} {}",
+            out.iter().collect::<String>(),
+            inw.iter().collect::<String>()
+        )
     } else {
         String::new()
     };
@@ -334,7 +341,8 @@ pub fn search_text(
     }
     for number in phones {
         let digits = normalise_phone(number);
-        let tail = (digits.len() > PHONE_TAIL).then(|| digits[digits.len() - PHONE_TAIL..].to_owned());
+        let tail =
+            (digits.len() > PHONE_TAIL).then(|| digits[digits.len() - PHONE_TAIL..].to_owned());
         parts.push(digits);
         parts.extend(tail);
     }

@@ -29,71 +29,87 @@ pub fn create(ctx: &Ctx, req: CreateContact, source: Source) -> Result<Created, 
     let Executed { id, .. } = execute(ctx, &DETAILS, req.details, opts)?;
     let number = ctx
         .tx
-        .query_row("SELECT number FROM contacts WHERE id = ?1", [&id], |r| r.get(0))?;
+        .query_row("SELECT number FROM contacts WHERE id = ?1", [&id], |r| {
+            r.get(0)
+        })?;
     Ok(Created { id, number })
 }
+
+/// Runs one queued slice, in the save's group if it has one; returns the
+/// slice's new counter.
+type Run<'a> =
+    Box<dyn FnOnce(&Ctx, Option<&contracts::CommandGroup>) -> Result<i64, ContractError> + 'a>;
 
 /// One slice the form submitted, after prepare and the diff.
 struct Change<'a> {
     name: &'static str,
-    run: Box<dyn FnOnce(&Ctx, Option<&contracts::CommandGroup>) -> Result<i64, ContractError> + 'a>,
+    run: Run<'a>,
 }
 
-/// Prepare `submitted`, diff it against the slice's state now, and queue
-/// it if it changed and isn't stale. Invalid → `problems`, stale →
-/// `stale` + `current`; neither stops the other slices.
-fn consider<'a, C>(
-    contract: &'static C,
-    name: &'static str,
-    submitted: Option<Expected<C::Payload>>,
-    current: serde_json::Value,
-    counter: i64,
+/// A form save in progress: what it reports and what it will run.
+struct Form<'a> {
     id: &'a str,
     source: Source,
-    out: &mut SaveFormResult,
-    changes: &mut Vec<Change<'a>>,
-) -> Result<Option<C::Payload>, ContractError>
-where
-    C: Contract,
-    C::Payload: Clone + 'a,
-{
-    let Some(Expected { expected, slice }) = submitted else {
-        return Ok(None);
-    };
-    let prepared = match contract.prepare(slice) {
-        Ok(p) => p,
-        Err(ContractError::Invalid(problems)) => {
-            out.problems
-                .insert(name.into(), problems.into_iter().map(Into::into).collect());
+    out: SaveFormResult,
+    changes: Vec<Change<'a>>,
+}
+
+impl<'a> Form<'a> {
+    /// Prepare `submitted`, diff it against the slice's state now
+    /// (`current`, at `counter`), and queue it if it changed and isn't
+    /// stale. Invalid → `problems`, stale → `stale` + `current`; neither
+    /// stops the other slices.
+    fn consider<C>(
+        &mut self,
+        contract: &'static C,
+        name: &'static str,
+        submitted: Option<Expected<C::Payload>>,
+        current: serde_json::Value,
+        counter: i64,
+    ) -> Result<Option<C::Payload>, ContractError>
+    where
+        C: Contract,
+        C::Payload: Clone + 'a,
+    {
+        let Some(Expected { expected, slice }) = submitted else {
+            return Ok(None);
+        };
+        let prepared = match contract.prepare(slice) {
+            Ok(p) => p,
+            Err(ContractError::Invalid(problems)) => {
+                self.out
+                    .problems
+                    .insert(name.into(), problems.into_iter().map(Into::into).collect());
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        };
+        let mut value = serde_json::to_value(&prepared)?;
+        if let Some(map) = value.as_object_mut() {
+            // Create-only; never part of a save's diff.
+            map.remove("clientKey");
+        }
+        if canonical(&value) == canonical(&current) {
             return Ok(None);
         }
-        Err(e) => return Err(e),
-    };
-    let mut value = serde_json::to_value(&prepared)?;
-    if let Some(map) = value.as_object_mut() {
-        // Create-only; never part of a save's diff.
-        map.remove("clientKey");
+        if expected != counter {
+            self.out.stale.insert(name.into(), counter);
+            self.out.current.insert(name.into(), current);
+            return Ok(None);
+        }
+        let (id, source, payload) = (self.id, self.source, prepared.clone());
+        self.changes.push(Change {
+            name,
+            run: Box::new(move |ctx, group| {
+                let mut opts = Exec::update(id, Some(expected), source);
+                if let Some(g) = group {
+                    opts = opts.in_group(g);
+                }
+                Ok(execute(ctx, contract, payload, opts)?.counter)
+            }),
+        });
+        Ok(Some(prepared))
     }
-    if canonical(&value) == canonical(&current) {
-        return Ok(None);
-    }
-    if expected != counter {
-        out.stale.insert(name.into(), counter);
-        out.current.insert(name.into(), current);
-        return Ok(None);
-    }
-    let payload = prepared.clone();
-    changes.push(Change {
-        name,
-        run: Box::new(move |ctx, group| {
-            let mut opts = Exec::update(id, Some(expected), source);
-            if let Some(g) = group {
-                opts = opts.in_group(g);
-            }
-            Ok(execute(ctx, contract, payload, opts)?.counter)
-        }),
-    });
-    Ok(Some(prepared))
 }
 
 /// The contact form's save: every slice provided is diffed against the
@@ -106,60 +122,47 @@ pub fn save_form(ctx: &Ctx, id: &str, form: SaveForm) -> Result<SaveFormResult, 
     let Some(now) = counters(tx, id)? else {
         return Err(ContractError::NotFound);
     };
-    let source = match form.source.unwrap_or_default() {
-        SaveSource::Ui => Source::Ui,
-        SaveSource::Autosave => Source::Autosave,
+    let mut f = Form {
+        id,
+        source: match form.source.unwrap_or_default() {
+            SaveSource::Ui => Source::Ui,
+            SaveSource::Autosave => Source::Autosave,
+        },
+        out: SaveFormResult::default(),
+        changes: Vec::new(),
     };
-    let mut out = SaveFormResult::default();
-    let mut changes = Vec::new();
-    consider(
+    f.consider(
         &DETAILS,
         "details",
         form.details,
         serde_json::to_value(load_details(tx, id)?)?,
         now.details,
-        id,
-        source,
-        &mut out,
-        &mut changes,
     )?;
-    consider(
+    f.consider(
         &METHODS,
         "methods",
         form.methods,
         serde_json::to_value(load_methods(tx, id)?)?,
         now.methods,
-        id,
-        source,
-        &mut out,
-        &mut changes,
     )?;
-    consider(
+    f.consider(
         &ADDRESSES,
         "addresses",
         form.addresses,
         serde_json::to_value(load_addresses(tx, id)?)?,
         now.addresses,
-        id,
-        source,
-        &mut out,
-        &mut changes,
     )?;
-    let fields = consider(
+    let fields = f.consider(
         &FIELD_VALUES,
         "fields",
         form.fields,
         serde_json::json!({ "values": load_field_values(tx, id)? }),
         now.fields,
-        id,
-        source,
-        &mut out,
-        &mut changes,
     )?;
     if let Some(fields) = fields {
         let refused = field_refusals(tx, id, &fields.values)?;
         if !refused.is_empty() {
-            out.problems.insert(
+            f.out.problems.insert(
                 "fields".into(),
                 refused
                     .into_iter()
@@ -170,10 +173,13 @@ pub fn save_form(ctx: &Ctx, id: &str, form: SaveForm) -> Result<SaveFormResult, 
                     })
                     .collect(),
             );
-            changes.retain(|c| c.name != "fields");
+            f.changes.retain(|c| c.name != "fields");
         }
     }
 
+    let Form {
+        mut out, changes, ..
+    } = f;
     let group = if changes.len() > 1 {
         Some(command_group(ctx, "contact form save")?)
     } else {
@@ -249,15 +255,8 @@ pub fn restore_contact(
             if counters(ctx.tx, id)?.is_none() {
                 return Err(ContractError::NotFound);
             }
-            let restored = restore_entity_to(
-                ctx,
-                &REGISTRY,
-                "contacts",
-                id,
-                at,
-                &[ARCHIVE_NAME],
-                None,
-            )?;
+            let restored =
+                restore_entity_to(ctx, &REGISTRY, "contacts", id, at, &[ARCHIVE_NAME], None)?;
             Ok(Restored { restored })
         }
     }

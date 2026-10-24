@@ -143,9 +143,11 @@ impl Contract for ContactDetails {
         }
         if let Some(key) = &n.client_key {
             let existing: Option<String> = tx
-                .query_row("SELECT id FROM contacts WHERE client_key = ?1", [key], |r| {
-                    r.get(0)
-                })
+                .query_row(
+                    "SELECT id FROM contacts WHERE client_key = ?1",
+                    [key],
+                    |r| r.get(0),
+                )
                 .optional()?;
             if let Some(existing) = existing {
                 // The command already ran (double submit, retried import).
@@ -303,7 +305,12 @@ impl Contract for ContactMethods {
         Ok(load_methods(tx, id)?)
     }
 
-    fn apply(&self, current: Option<&Methods>, p: &Methods, _: &Command) -> Result<Methods, ContractError> {
+    fn apply(
+        &self,
+        current: Option<&Methods>,
+        p: &Methods,
+        _: &Command,
+    ) -> Result<Methods, ContractError> {
         current.ok_or_else(|| no_root(Self::NAME))?;
         Ok(p.clone())
     }
@@ -498,12 +505,21 @@ impl Contract for ContactArchive {
     type State = Archive;
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Archive, ContractError> {
-        Ok(tx.query_row("SELECT archived FROM contacts WHERE id = ?1", [id], |r| {
-            Ok(Archive { archived: r.get(0)? })
-        })?)
+        Ok(
+            tx.query_row("SELECT archived FROM contacts WHERE id = ?1", [id], |r| {
+                Ok(Archive {
+                    archived: r.get(0)?,
+                })
+            })?,
+        )
     }
 
-    fn apply(&self, current: Option<&Archive>, p: &Archive, _: &Command) -> Result<Archive, ContractError> {
+    fn apply(
+        &self,
+        current: Option<&Archive>,
+        p: &Archive,
+        _: &Command,
+    ) -> Result<Archive, ContractError> {
         current.ok_or_else(|| no_root(Self::NAME))?;
         Ok(p.clone())
     }
@@ -593,7 +609,10 @@ fn check_values(
             message,
         };
         let (Some(field), Some(option)) = (field, option) else {
-            refused.push(no("unknown_field", "That field or option does not exist".into()));
+            refused.push(no(
+                "unknown_field",
+                "That field or option does not exist".into(),
+            ));
             continue;
         };
         if option.field_id != field.id {
@@ -631,7 +650,10 @@ fn new_value_refusal(
     }
     if matches!(mode, Mode::Save) {
         if !field.is_active {
-            return Some(("archived_field", format!("{} has been archived", field.label)));
+            return Some((
+                "archived_field",
+                format!("{} has been archived", field.label),
+            ));
         }
         if !option.is_active {
             return Some((
@@ -700,12 +722,19 @@ impl Contract for ContactFieldValues {
     ) -> Result<(), ContractError> {
         let before = before.ok_or_else(|| no_root(Self::NAME))?;
         let kind = before.kind.ok_or(ContractError::NotFound)?;
-        let mode = if next.restoring { Mode::Restore } else { Mode::Save };
+        let mode = if next.restoring {
+            Mode::Restore
+        } else {
+            Mode::Save
+        };
         let (refused, newly) = check_values(tx, kind, &before.values, &next.values, mode)?;
         if let Some(r) = refused.into_iter().next() {
             return Err(ContractError::rejected(r.reason, r.message));
         }
-        tx.execute("DELETE FROM contact_field_values WHERE contact_id = ?1", [id])?;
+        tx.execute(
+            "DELETE FROM contact_field_values WHERE contact_id = ?1",
+            [id],
+        )?;
         let mut insert = tx.prepare_cached(
             "INSERT INTO contact_field_values (contact_id, field_id, option_id) VALUES (?1, ?2, ?3)",
         )?;
@@ -745,7 +774,9 @@ impl Contract for ContactFieldValues {
             let fits = match field_row(tx, &v.field_id)? {
                 Some(f) => {
                     f.applies_to.contains(&kind)
-                        || held.get(v.field_id.as_str()).is_some_and(|h| h.option_id == v.option_id)
+                        || held
+                            .get(v.field_id.as_str())
+                            .is_some_and(|h| h.option_id == v.option_id)
                 }
                 None => false,
             };

@@ -68,8 +68,10 @@ pub(crate) fn contact_text(conn: &Connection, id: &str) -> rusqlite::Result<Opti
             .query_map([id], |r| r.get(0))?
             .collect()
     };
-    let emails = column("SELECT address FROM contact_emails WHERE contact_id = ?1 ORDER BY position")?;
-    let phones = column("SELECT number FROM contact_phones WHERE contact_id = ?1 ORDER BY position")?;
+    let emails =
+        column("SELECT address FROM contact_emails WHERE contact_id = ?1 ORDER BY position")?;
+    let phones =
+        column("SELECT number FROM contact_phones WHERE contact_id = ?1 ORDER BY position")?;
     let addresses: Vec<[String; 3]> = conn
         .prepare_cached(
             "SELECT line1, town, postcode FROM contact_addresses
@@ -117,8 +119,10 @@ pub fn rebuild_search(conn: &Connection, id: &str) -> rusqlite::Result<()> {
             conn.prepare_cached(&format!("DELETE FROM {table} WHERE rowid = ?1"))?
                 .execute([rowid])?;
         }
-        conn.prepare_cached(&format!("INSERT INTO {table} (rowid, text) VALUES (?1, ?2)"))?
-            .execute(rusqlite::params![rowid, text])?;
+        conn.prepare_cached(&format!(
+            "INSERT INTO {table} (rowid, text) VALUES (?1, ?2)"
+        ))?
+        .execute(rusqlite::params![rowid, text])?;
     }
     Ok(())
 }

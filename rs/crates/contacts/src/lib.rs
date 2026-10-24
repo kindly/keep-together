@@ -20,7 +20,7 @@ use std::sync::LazyLock;
 use contracts::Registry;
 
 pub use projection::{FtsVariant, rebuild_search};
-pub use slices::{ARCHIVE, ADDRESSES, DETAILS, FIELD_VALUES, METHODS};
+pub use slices::{ADDRESSES, ARCHIVE, DETAILS, FIELD_VALUES, METHODS};
 
 /// The org-schema migration this crate owns, after `contracts::MIGRATION`.
 ///

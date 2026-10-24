@@ -11,7 +11,20 @@ KEEP_DEV_AUTH=1 cargo run -p api # http://127.0.0.1:8787, data in rs/data/
 ```
 
 Env: `KEEP_DATA_DIR` (default `data`), `KEEP_PORT` (default 8787),
-`KEEP_DEV_AUTH=1` (dev login; without it no session is honoured).
+`KEEP_DEV_AUTH=1` (dev login; without it no session is honoured),
+`KEEP_QC_SEED=1` (with dev auth: `POST /api/dev/qc-seed` and `qc-crowd`).
+
+The 10k measurement (`scripts/perf-search10k-rs/`):
+
+```
+node scripts/perf-search10k-rs/export-jsonl.mjs $TMPDIR/rs10k      # from the repo root
+cargo build --release -p seed -p api                               # from rs/
+./target/release/seed --data data --slug perf-a --admin perf-a@example.com --jsonl $TMPDIR/rs10k/a.jsonl --prefix perfa
+./target/release/seed --data data --slug perf-b --admin perf-b@example.com --jsonl $TMPDIR/rs10k/b.jsonl --prefix perfb
+KEEP_DATA_DIR=data KEEP_DEV_AUTH=1 ./target/release/api &
+node ../scripts/perf-search10k-rs/measure.mjs --out $TMPDIR/rs-measure
+node ../scripts/perf-search10k-rs/analyze.mjs $TMPDIR/rs-measure/raw.json --rtt 30
+```
 
 ## Crates
 
@@ -19,7 +32,9 @@ Env: `KEEP_DATA_DIR` (default `data`), `KEEP_PORT` (default 8787),
 |---|---|
 | `store` | `platform.db` (tenants, users, memberships, sessions) and `orgs/<tenant-id>.db`; pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`); one writer per file behind a mutex + a read-only reader pool; migrations on open |
 | `contracts` | `Contract` trait, `execute`, revisions, command groups, restore through upcasters, child-row reconcile |
-| `api` | axum app: dev session cookie, `/api/t/{slug}` → one `OrgDb`, `Server-Timing`, JSON errors; `schema.rs` is the org migration list |
+| `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history (no `store::Platform`, no tenant) |
+| `api` | axum app: dev session cookie, `/api/t/{slug}` → one `OrgDb`, `Server-Timing`, JSON errors; `schema.rs` is the org migration list; `routes/` the domain routes and the QC seed |
+| `seed` | bin: the perf generator's JSONL into one organisation, through the same contract functions the API calls |
 
 ## Tenancy
 
@@ -124,3 +139,45 @@ in one transaction. `restore` re-executes a revision as a new command
 through the upcaster chain; `restore_entity_to(at)` restores every slice
 that differs from its state at `at`. Child rows: `mint_ids` in `prepare`,
 `reconcile` in `write` (by id; identity fields immutable per id).
+
+## Contacts (step 2a)
+
+Slices, each a contract with its own counter column on `contacts`:
+`contacts.details` (v1), `contacts.methods` (emails + phones; the
+address / number is the identity per key), `contacts.addresses` (no
+identity: editable in place), `contacts.archive`, `contacts.fields`
+(dropdown values: rows of `contact_field_values`, not Convex's slots).
+Field definitions are `contacts.field` and `contacts.fieldOption`. The
+contact number is the rowid (`number INTEGER PRIMARY KEY`), handed out from
+`contact_number_sequence` on create; `id` is the API's UUIDv7.
+
+Routes under `/api/t/{slug}` (types in `src/lib/data/rust-types/`):
+
+| route | |
+|---|---|
+| `GET contacts?includeArchived&kind&fields&cursor&limit` | `ContactPage`: keyset pages on `(sort_key, id)`, ≤100 rows |
+| `GET contacts/search?q&includeArchived&kind&fields&fts` | `SearchResult`: exact matches first, then FTS |
+| `GET contacts/{id}` | `ContactView`: every slice, counters, warnings |
+| `GET contacts/{id}/history?before&limit` | `HistoryPage`, newest first |
+| `POST contacts` | `CreateContact` → `Created {id, number}`; a seen `clientKey`/`id` is `409 duplicate` |
+| `POST contacts/{id}/save` | `SaveForm` → `SaveFormResult` (below) |
+| `POST contacts/{id}/archive` | `{expected, archived}` → `Executed`, or `409 stale` |
+| `POST contacts/{id}/restore` | `{revisionId}` or `{at}` → `Restored` |
+| `GET fields` · `POST fields` · `POST fields/options` | definitions; saving them needs admin |
+
+`fields` filters are `fieldId:optionId` or `fieldId:none`, comma-separated.
+
+**The form save answers 200, not 409, on a stale slice**, the way Convex's
+`saveForm` does: stale and invalid slices are reported (`stale: {slice:
+counter}`, `current: {slice: state}`, `problems`) and the other slices
+save in one command group. `current` is what a 409 would have carried, so
+the form merges and retries without another read.
+
+**Search** keeps Convex's matching rules (every term a whole word, the
+last a prefix; names with their joined forms, emails whole and split,
+phones as digits and tail, postcodes compact and spaced). Two FTS5 tables
+are kept side by side for the measurement; `fts=words` (unicode61 with
+prefix indexes, the default) or `fts=trigram`. Words is the choice: the
+rules are a plain `MATCH`, it was faster on every case, and its index is
+half the size. Trigram matches substrings, so it needs the word rules
+checked per row, and entries under three characters fall back to a scan.

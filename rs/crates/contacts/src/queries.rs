@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use contracts::{ContractError, Problem, Revision, Source};
+use contracts::{ContractError, Revision, Source};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 use serde::Deserialize;
@@ -100,13 +100,22 @@ pub fn field_filters(
     let mut seen = HashSet::new();
     for part in raw.split(',') {
         let Some((field_id, option)) = part.split_once(':') else {
-            return Err(ContractError::invalid("fields", "fieldId:optionId or fieldId:none"));
+            return Err(ContractError::invalid(
+                "fields",
+                "fieldId:optionId or fieldId:none",
+            ));
         };
         if !seen.insert(field_id.to_owned()) {
-            return Err(ContractError::invalid("fields", "Filter each field at most once"));
+            return Err(ContractError::invalid(
+                "fields",
+                "Filter each field at most once",
+            ));
         }
         let Some(field) = field_row(conn, field_id)? else {
-            return Err(ContractError::rejected("unknown_field", "That field does not exist"));
+            return Err(ContractError::rejected(
+                "unknown_field",
+                "That field does not exist",
+            ));
         };
         let option_id = (option != "none").then(|| option.to_owned());
         if let Some(o) = &option_id
@@ -192,7 +201,7 @@ fn hex(s: &str) -> String {
 }
 
 fn unhex(s: &str) -> Option<String> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let bytes = (0..s.len())
@@ -219,9 +228,13 @@ fn decode_cursor(cursor: &str) -> Result<(String, String), ContractError> {
 /// filter is in the one query, so a page is always full while more match.
 pub fn list(conn: &Connection, q: &ListQuery) -> Result<ContactPage, ContractError> {
     let fields = field_filters(conn, q.fields.as_deref())?;
-    let limit = q.limit.map_or(LIST_LIMIT, |l| (l as usize).clamp(1, LIST_LIMIT));
-    let Filters { mut sql, mut params } =
-        filters(q.include_archived.unwrap_or(false), q.kind, &fields);
+    let limit = q
+        .limit
+        .map_or(LIST_LIMIT, |l| (l as usize).clamp(1, LIST_LIMIT));
+    let Filters {
+        mut sql,
+        mut params,
+    } = filters(q.include_archived.unwrap_or(false), q.kind, &fields);
     if let Some(cursor) = &q.cursor {
         let (key, id) = decode_cursor(cursor)?;
         sql.push_str(" AND (c.sort_key, c.id) > (?, ?)");
@@ -254,7 +267,11 @@ pub fn list(conn: &Connection, q: &ListQuery) -> Result<ContactPage, ContractErr
 }
 
 /// Rows for `ids`, in that order, keeping only those that pass `f`.
-fn rows_by_ids(conn: &Connection, ids: &[String], f: &Filters) -> rusqlite::Result<Vec<ContactRow>> {
+fn rows_by_ids(
+    conn: &Connection,
+    ids: &[String],
+    f: &Filters,
+) -> rusqlite::Result<Vec<ContactRow>> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {ROW_COLUMNS} FROM contacts c WHERE c.id = ?{}",
         f.sql
@@ -400,8 +417,9 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<SearchResult, Contra
     }
     let variant = match q.fts.as_deref() {
         None | Some("") => FtsVariant::default(),
-        Some(v) => FtsVariant::parse(v)
-            .ok_or_else(|| ContractError::invalid("fts", "words or trigram"))?,
+        Some(v) => {
+            FtsVariant::parse(v).ok_or_else(|| ContractError::invalid("fts", "words or trigram"))?
+        }
     };
     let fields = field_filters(conn, q.fields.as_deref())?;
     let f = filters(include_archived, q.kind, &fields);
@@ -516,7 +534,11 @@ fn shared_email_message(names: &[String], truncated: bool) -> String {
     } else {
         rest.to_string()
     };
-    let others = if rest == 1 && !truncated { "other" } else { "others" };
+    let others = if rest == 1 && !truncated {
+        "other"
+    } else {
+        "others"
+    };
     format!("Also used by {} and {count} {others}", shown.join(", "))
 }
 
@@ -671,9 +693,4 @@ pub fn history(
         next_before: more.then(|| revisions.last().map(|r| r.id)).flatten(),
         revisions,
     })
-}
-
-/// A problem on the request itself, for callers building one.
-pub fn bad(field: &str, message: &str) -> ContractError {
-    ContractError::Invalid(vec![Problem::new(field, message)])
 }

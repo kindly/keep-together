@@ -3,6 +3,7 @@
 
 mod contacts;
 mod fields;
+pub mod qc_seed;
 
 use axum::Router;
 use axum::extract::rejection::QueryRejection;
@@ -14,7 +15,9 @@ use serde::de::DeserializeOwned;
 use crate::ApiError;
 
 pub fn router() -> Router {
-    Router::new().merge(contacts::router()).merge(fields::router())
+    Router::new()
+        .merge(contacts::router())
+        .merge(fields::router())
 }
 
 /// A query string whose rejection is an [`ApiError::Invalid`], like

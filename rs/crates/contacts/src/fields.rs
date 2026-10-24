@@ -66,16 +66,18 @@ fn applies_to(json: &str) -> Vec<Kind> {
 }
 
 pub(crate) fn field_row(conn: &Connection, id: &str) -> rusqlite::Result<Option<FieldRow>> {
-    conn.prepare_cached("SELECT id, label, applies_to, is_active FROM contact_fields WHERE id = ?1")?
-        .query_row([id], |r| {
-            Ok(FieldRow {
-                id: r.get(0)?,
-                label: r.get(1)?,
-                applies_to: applies_to(&r.get::<_, String>(2)?),
-                is_active: r.get(3)?,
-            })
+    conn.prepare_cached(
+        "SELECT id, label, applies_to, is_active FROM contact_fields WHERE id = ?1",
+    )?
+    .query_row([id], |r| {
+        Ok(FieldRow {
+            id: r.get(0)?,
+            label: r.get(1)?,
+            applies_to: applies_to(&r.get::<_, String>(2)?),
+            is_active: r.get(3)?,
         })
-        .optional()
+    })
+    .optional()
 }
 
 pub(crate) fn option_row(conn: &Connection, id: &str) -> rusqlite::Result<Option<OptionRow>> {
@@ -241,7 +243,10 @@ impl Contract for ContactFieldOption {
         next: &FieldOptionPayload,
     ) -> Result<(), ContractError> {
         let Some(field) = field_row(tx, &next.field_id)? else {
-            return Err(ContractError::rejected("unknown_field", "The field must exist"));
+            return Err(ContractError::rejected(
+                "unknown_field",
+                "The field must exist",
+            ));
         };
         let normalized = normalise_label(&next.label);
         let clash: bool = tx.query_row(
@@ -281,7 +286,14 @@ impl Contract for ContactFieldOption {
             "INSERT INTO contact_field_options
                  (id, field_id, label, label_normalized, position, is_active)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, next.field_id, next.label, normalized, next.position, next.is_active],
+            params![
+                id,
+                next.field_id,
+                next.label,
+                normalized,
+                next.position,
+                next.is_active
+            ],
         )?;
         Ok(())
     }

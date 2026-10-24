@@ -36,9 +36,16 @@ async fn save_field(
     if t.role < Role::Admin {
         return Err(ApiError::Forbidden);
     }
-    t.write(move |ctx| Ok(execute(ctx, &FIELD, req.payload, exec(&req.id, req.expected))?))
-        .await
-        .map(Json)
+    t.write(move |ctx| {
+        Ok(execute(
+            ctx,
+            &FIELD,
+            req.payload,
+            exec(&req.id, req.expected),
+        )?)
+    })
+    .await
+    .map(Json)
 }
 
 /// `POST fields/options {id?, expected?, fieldId, label, position, isActive}`
@@ -50,7 +57,12 @@ async fn save_option(
         return Err(ApiError::Forbidden);
     }
     t.write(move |ctx| {
-        Ok(execute(ctx, &FIELD_OPTION, req.payload, exec(&req.id, req.expected))?)
+        Ok(execute(
+            ctx,
+            &FIELD_OPTION,
+            req.payload,
+            exec(&req.id, req.expected),
+        )?)
     })
     .await
     .map(Json)
