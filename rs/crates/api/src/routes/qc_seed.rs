@@ -11,9 +11,41 @@
 //!
 //! Refused (403) unless both `KEEP_DEV_AUTH=1` and `KEEP_QC_SEED=1`.
 //! Re-running with the same run and worker returns the same world.
+//!
+//! Every QC organisation's slug starts `qc-` and every QC user's email is
+//! on [`QC_DOMAIN`] (`.invalid`, so no real person has one). The users get
+//! a password and a TOTP secret, new on every seed, in the response body
+//! only.
+//!
+//! **The token surface, `/api/qc/*`** (the nightly QC run on staging,
+//! where dev auth is refused): `seed`, `crowd`, `hold` (as the dev routes)
+//! and `session` (a full session for a QC user, so each test needn't
+//! spend a TOTP code: a code is good once per 30 s step). Rules
+//! ([`QcAccess`], [`QcCaller`]):
+//! - only when `KEEP_QC_TOKEN` is set *and* `KEEP_ENV=staging`; a token
+//!   with `KEEP_ENV=prod` stops the boot, and anywhere else it is ignored.
+//!   Off, every `/api/qc/*` answers 404, as does a wrong or missing token;
+//! - the token (≥ 64 characters) comes in the `x-keep-qc-token` header,
+//!   never the URL; it is compared as SHA-256 digests in constant time
+//!   (so its length doesn't time either), and never logged or echoed;
+//! - per client address: at most [`QC_CALLS`] calls a minute, and after
+//!   [`QC_FAILURES`] wrong tokens in 10 minutes every call is 429 before
+//!   the token is looked at;
+//! - it reaches only `qc-` organisations and users whose every membership
+//!   is in one: `crowd`/`hold` 404 on any other slug, `seed` refuses (403)
+//!   a QC address that someone made a member of a real group, `session`
+//!   404s for any other user; at most [`QC_TENANT_CAP`] `qc-` groups;
+//! - the CSRF guard and the timing layer apply as to every `/api` route.
 
 use axum::Json;
-use axum::extract::State;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use axum::extract::{FromRequestParts, State};
+use axum::http::HeaderMap;
+use axum::http::request::Parts;
+use axum::response::{IntoResponse, Response};
 use contacts::acquisition::{ACQUISITION, Acquisition};
 use contacts::fields::{FIELD, FIELD_OPTION};
 use contacts::form::{create, save_form};
@@ -26,11 +58,13 @@ use contacts::types::{
     Kind, Methods, SaveForm,
 };
 use contracts::{ContractError, Exec, Source, command_group, execute, transact};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sources::{SeedDetail, SeedVersion, seed_details};
-use store::{OrgDb, Role};
+use store::{OrgDb, Role, Store, UserId};
 use ts_rs::TS;
 
+use crate::auth::ClientIp;
 use crate::{ApiError, AppState, Body, RoleName, blocking};
 
 pub const QC_FIELD: &str = "Volunteer status";
@@ -327,6 +361,152 @@ fn side(
     })
 }
 
+/// QC users' addresses: reserved (RFC 2606), so no real one matches.
+pub const QC_DOMAIN: &str = "qc.keep-together.invalid";
+/// Every QC organisation's slug starts with this.
+pub const QC_SLUG_PREFIX: &str = "qc-";
+/// The most `qc-` organisations a store holds (staging wipes on deploy).
+pub const QC_TENANT_CAP: i64 = 1000;
+/// The token's header.
+pub const QC_TOKEN_HEADER: &str = "x-keep-qc-token";
+/// Calls a minute per client address on `/api/qc/*`.
+pub const QC_CALLS: u32 = 600;
+/// Wrong tokens per client address in 10 minutes before every call is 429.
+pub const QC_FAILURES: u32 = 10;
+/// The shortest token accepted (256 bits as hex).
+pub const QC_TOKEN_MIN: usize = 64;
+
+/// `r<run>w<worker>`: the run id is the harness's base-36 stamp; anything
+/// else is refused, so it can't shape a slug or an address.
+fn base(req: &QcSeedRequest) -> Result<String, ApiError> {
+    let ok = (1..=16).contains(&req.run_id.len())
+        && req
+            .run_id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && req.worker < 1000;
+    if !ok {
+        return Err(ApiError::Invalid {
+            problems: vec![contracts::Problem::new(
+                "runId",
+                "1–16 lower-case letters or digits, worker under 1000",
+            )],
+        });
+    }
+    Ok(format!("r{}w{}", req.run_id, req.worker))
+}
+
+fn is_qc_slug(slug: &str) -> bool {
+    slug.starts_with(QC_SLUG_PREFIX)
+}
+
+/// Whether every membership `user` holds is in a `qc-` organisation.
+fn only_qc_memberships(conn: &Connection, user: UserId) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM memberships m JOIN tenants t ON t.id = m.tenant_id
+                            WHERE m.user_id = ?1 AND t.slug NOT LIKE 'qc-%')",
+        [user.0],
+        |r| r.get(0),
+    )
+}
+
+/// The QC world for one run and worker (both surfaces).
+fn seed_world(store: &Store, req: QcSeedRequest) -> Result<QcWorld, ApiError> {
+    let p = store.platform();
+    let base = base(&req)?;
+    let accounts = [
+        ("a", Role::Admin),
+        ("b", Role::Admin),
+        ("a-staff", Role::Staff),
+        ("a-viewer", Role::Viewer),
+    ];
+    let mut users = vec![];
+    let mut credentials = vec![];
+    for (suffix, role) in accounts {
+        let email = format!("qc-{base}-{suffix}@{QC_DOMAIN}");
+        let password = ::auth::secret::token();
+        let secret = ::auth::totp::new_secret();
+        let now = contracts::now_ms();
+        let user = p.with_write(|tx| {
+            let user = store::Platform::upsert_user_in(tx, &email)?;
+            // A QC address someone added to a real group: leave it be.
+            if !only_qc_memberships(tx, user)? {
+                return Err(ApiError::Forbidden);
+            }
+            ::auth::accounts::set_password(tx, user.0, &password, now)
+                .map_err(ApiError::internal)?;
+            ::auth::accounts::set_second_factor(
+                tx,
+                user.0,
+                ::auth::SecondFactor::Totp,
+                Some((&secret, 0)),
+                now,
+            )?;
+            Ok::<_, ApiError>(user)
+        })?;
+        credentials.push((password, secret));
+        users.push((user, email, role));
+    }
+    let mut tenants = vec![];
+    for (i, (suffix, label)) in [("a", "Alpha"), ("b", "Bravo")].into_iter().enumerate() {
+        let slug = format!("{QC_SLUG_PREFIX}{base}-{suffix}");
+        let (tenant, fresh) = match p.tenant_by_slug(&slug)? {
+            Some(t) => (t, false),
+            None => {
+                let qc_groups: i64 = p.with_read(|c| {
+                    c.query_row(
+                        "SELECT count(*) FROM tenants WHERE slug LIKE 'qc-%'",
+                        [],
+                        |r| r.get(0),
+                    )
+                })?;
+                if qc_groups >= QC_TENANT_CAP {
+                    return Err(ApiError::Rejected {
+                        reason: "qc_tenant_cap".into(),
+                        message: format!("at most {QC_TENANT_CAP} qc- groups"),
+                    });
+                }
+                (
+                    store.create_tenant(&slug, &format!("{label} {base} qc group"))?,
+                    true,
+                )
+            }
+        };
+        p.set_membership(users[i].0, &tenant.id, Role::Admin)?;
+        if suffix == "a" {
+            for (user, _, role) in &users[2..] {
+                p.set_membership(*user, &tenant.id, *role)?;
+            }
+        }
+        let db = store.org(&tenant.id)?;
+        let contact_ids = if fresh {
+            side(&db, label, &req.run_id, &base, &slug, suffix == "a")?
+        } else {
+            contact_ids(&db)?
+        };
+        tenants.push(QcTenant { slug, contact_ids });
+    }
+    Ok(QcWorld {
+        users: users
+            .into_iter()
+            .zip(credentials)
+            .map(|((_, email, role), (password, totp_secret))| QcUser {
+                email,
+                role: role.into(),
+                password,
+                totp_secret,
+            })
+            .collect(),
+        tenants,
+        field: QcField {
+            label: QC_FIELD.into(),
+            options: QC_OPTIONS.iter().map(|s| (*s).into()).collect(),
+        },
+        identifier_type: QC_IDENTIFIER_TYPE.into(),
+        identifiers: qc_identifiers(&base),
+    })
+}
+
 /// `POST /api/dev/qc-seed {runId, worker}`
 pub async fn fixture(
     State(state): State<AppState>,
@@ -334,84 +514,7 @@ pub async fn fixture(
 ) -> Result<Json<QcWorld>, ApiError> {
     enabled(&state)?;
     let store = state.store.clone();
-    blocking(move || {
-        let p = store.platform();
-        let base = format!("r{}w{}", req.run_id, req.worker);
-        let accounts = [
-            ("a", Role::Admin),
-            ("b", Role::Admin),
-            ("a-staff", Role::Staff),
-            ("a-viewer", Role::Viewer),
-        ];
-        let mut users = vec![];
-        let mut credentials = vec![];
-        for (suffix, role) in accounts {
-            let email = format!("qc-{base}-{suffix}@example.com");
-            let user = p.upsert_user(&email)?;
-            let password = format!("qc-{base}-{suffix}-password");
-            let secret = ::auth::totp::new_secret();
-            let now = contracts::now_ms();
-            p.with_write(|tx| {
-                ::auth::accounts::set_password(tx, user.0, &password, now)
-                    .map_err(ApiError::internal)?;
-                ::auth::accounts::set_second_factor(
-                    tx,
-                    user.0,
-                    ::auth::SecondFactor::Totp,
-                    Some((&secret, 0)),
-                    now,
-                )?;
-                Ok::<_, ApiError>(())
-            })?;
-            credentials.push((password, secret));
-            users.push((user, email, role));
-        }
-        let mut tenants = vec![];
-        for (i, (suffix, label)) in [("a", "Alpha"), ("b", "Bravo")].into_iter().enumerate() {
-            let slug = format!("{base}-{suffix}");
-            let (tenant, fresh) = match p.tenant_by_slug(&slug)? {
-                Some(t) => (t, false),
-                None => (
-                    store.create_tenant(&slug, &format!("{label} {base} qc group"))?,
-                    true,
-                ),
-            };
-            p.set_membership(users[i].0, &tenant.id, Role::Admin)?;
-            if suffix == "a" {
-                for (user, _, role) in &users[2..] {
-                    p.set_membership(*user, &tenant.id, *role)?;
-                }
-            }
-            let db = store.org(&tenant.id)?;
-            let contact_ids = if fresh {
-                side(&db, label, &req.run_id, &base, &slug, suffix == "a")?
-            } else {
-                contact_ids(&db)?
-            };
-            tenants.push(QcTenant { slug, contact_ids });
-        }
-        Ok::<_, ApiError>(QcWorld {
-            users: users
-                .into_iter()
-                .zip(credentials)
-                .map(|((_, email, role), (password, totp_secret))| QcUser {
-                    email,
-                    role: role.into(),
-                    password,
-                    totp_secret,
-                })
-                .collect(),
-            tenants,
-            field: QcField {
-                label: QC_FIELD.into(),
-                options: QC_OPTIONS.iter().map(|s| (*s).into()).collect(),
-            },
-            identifier_type: QC_IDENTIFIER_TYPE.into(),
-            identifiers: qc_identifiers(&base),
-        })
-    })
-    .await
-    .map(Json)
+    blocking(move || seed_world(&store, req)).await.map(Json)
 }
 
 #[derive(Deserialize, TS)]
@@ -426,14 +529,9 @@ pub struct QcCrowdRequest {
 /// The most contacts one `qc-crowd` call makes (L1).
 pub const CROWD_MAX: u32 = 10_000;
 
-/// `POST /api/dev/qc-crowd {slug, lastName, count}`: `count` individuals
-/// named `n0001 <lastName>` … through the details contract, 100 to a
-/// transaction (as Convex's `crowd`). Returns the count.
-pub async fn crowd(
-    State(state): State<AppState>,
-    Body(req): Body<QcCrowdRequest>,
-) -> Result<Json<u32>, ApiError> {
-    enabled(&state)?;
+/// `count` individuals named `n0001 <lastName>` … through the details
+/// contract, 100 to a transaction (as Convex's `crowd`).
+fn crowd_in(store: &Store, req: QcCrowdRequest) -> Result<u32, ApiError> {
     if req.count > CROWD_MAX {
         return Err(ApiError::Invalid {
             problems: vec![contracts::Problem::new(
@@ -442,37 +540,43 @@ pub async fn crowd(
             )],
         });
     }
+    let tenant = store
+        .platform()
+        .tenant_by_slug(&req.slug)?
+        .ok_or(ApiError::NotFound)?;
+    let db = store.org(&tenant.id)?;
+    for from in (0..req.count).step_by(100) {
+        transact(&db, None, |ctx| {
+            let group = command_group(ctx, "qc crowd")?;
+            for i in from..(from + 100).min(req.count) {
+                let d = person(
+                    Kind::Individual,
+                    &format!("n{:04}", i + 1),
+                    &req.last_name,
+                    "",
+                );
+                execute(
+                    ctx,
+                    &contacts::DETAILS,
+                    d,
+                    Exec::create(Source::Seed).in_group(&group),
+                )?;
+            }
+            Ok::<_, ContractError>(())
+        })?;
+    }
+    Ok(req.count)
+}
+
+/// `POST /api/dev/qc-crowd {slug, lastName, count}`: the paged list's
+/// crowd. Returns the count.
+pub async fn crowd(
+    State(state): State<AppState>,
+    Body(req): Body<QcCrowdRequest>,
+) -> Result<Json<u32>, ApiError> {
+    enabled(&state)?;
     let store = state.store.clone();
-    blocking(move || {
-        let tenant = store
-            .platform()
-            .tenant_by_slug(&req.slug)?
-            .ok_or(ApiError::NotFound)?;
-        let db = store.org(&tenant.id)?;
-        for from in (0..req.count).step_by(100) {
-            transact(&db, None, |ctx| {
-                let group = command_group(ctx, "qc crowd")?;
-                for i in from..(from + 100).min(req.count) {
-                    let d = person(
-                        Kind::Individual,
-                        &format!("n{:04}", i + 1),
-                        &req.last_name,
-                        "",
-                    );
-                    execute(
-                        ctx,
-                        &contacts::DETAILS,
-                        d,
-                        Exec::create(Source::Seed).in_group(&group),
-                    )?;
-                }
-                Ok::<_, ContractError>(())
-            })?;
-        }
-        Ok::<_, ApiError>(req.count)
-    })
-    .await
-    .map(Json)
+    blocking(move || crowd_in(&store, req)).await.map(Json)
 }
 
 #[derive(Deserialize, TS)]
@@ -482,26 +586,249 @@ pub struct QcHoldRequest {
     pub address: String,
 }
 
-/// `POST /api/dev/qc-hold {slug, address}`: hold an address as a hard
-/// bounce would (Convex `qcSeed:hold`), for the email-hold flows. Runs as
-/// the system, like the provider's webhook. Returns whether it changed.
+/// Hold an address as a hard bounce would (Convex `qcSeed:hold`), as the
+/// system, like the provider's webhook. Whether it changed.
+fn hold_in(store: &Store, req: QcHoldRequest) -> Result<bool, ApiError> {
+    let tenant = store
+        .platform()
+        .tenant_by_slug(&req.slug)?
+        .ok_or(ApiError::NotFound)?;
+    let db = store.org(&tenant.id)?;
+    let (changed, _) = transact(&db, None, |ctx| {
+        comms::suppress_address(ctx, &req.address, Some("qc".into()), None)
+    })?;
+    Ok(changed)
+}
+
+/// `POST /api/dev/qc-hold {slug, address}`, for the email-hold flows.
 pub async fn hold(
     State(state): State<AppState>,
     Body(req): Body<QcHoldRequest>,
 ) -> Result<Json<bool>, ApiError> {
     enabled(&state)?;
     let store = state.store.clone();
-    blocking(move || {
-        let tenant = store
-            .platform()
-            .tenant_by_slug(&req.slug)?
-            .ok_or(ApiError::NotFound)?;
-        let db = store.org(&tenant.id)?;
-        let (changed, _) = transact(&db, None, |ctx| {
-            comms::suppress_address(ctx, &req.address, Some("qc".into()), None)
-        })?;
-        Ok::<_, ApiError>(changed)
+    blocking(move || hold_in(&store, req)).await.map(Json)
+}
+
+// ── the token surface ──────────────────────────────────────────────────────
+
+/// Calls in the current window per client address.
+struct Window {
+    started: Instant,
+    count: u32,
+}
+
+/// Fixed windows per key: `allow` counts a call, `over` only looks.
+struct Windows {
+    span: Duration,
+    max: u32,
+    map: Mutex<HashMap<String, Window>>,
+}
+
+impl Windows {
+    fn new(span: Duration, max: u32) -> Self {
+        Self {
+            span,
+            max,
+            map: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn with<T>(&self, key: &str, f: impl FnOnce(&mut Window, u32) -> T) -> T {
+        let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        if map.len() > 10_000 {
+            map.retain(|_, w| now.duration_since(w.started) < self.span);
+        }
+        let w = map.entry(key.to_owned()).or_insert(Window {
+            started: now,
+            count: 0,
+        });
+        if now.duration_since(w.started) >= self.span {
+            *w = Window {
+                started: now,
+                count: 0,
+            };
+        }
+        f(w, self.max)
+    }
+
+    /// Count one; false if that went over the limit.
+    fn allow(&self, key: &str) -> bool {
+        self.with(key, |w, max| {
+            w.count = w.count.saturating_add(1);
+            w.count <= max
+        })
+    }
+
+    fn over(&self, key: &str) -> bool {
+        self.with(key, |w, max| w.count >= max)
+    }
+}
+
+/// `KEEP_QC_TOKEN`, as its SHA-256 (hex), and its rate limits. Never
+/// printed: `Debug` shows nothing of it.
+pub struct QcAccess {
+    digest: String,
+    calls: Windows,
+    failures: Windows,
+}
+
+impl std::fmt::Debug for QcAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QcAccess(..)")
+    }
+}
+
+impl QcAccess {
+    /// A token of at least [`QC_TOKEN_MIN`] printable ASCII characters.
+    /// The error never quotes it.
+    pub fn new(token: &str) -> Result<Self, String> {
+        if token.len() < QC_TOKEN_MIN || !token.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(format!(
+                "KEEP_QC_TOKEN must be at least {QC_TOKEN_MIN} printable characters (e.g. 32 random bytes as hex)"
+            ));
+        }
+        Ok(Self {
+            digest: ::auth::secret::hash(token),
+            calls: Windows::new(Duration::from_secs(60), QC_CALLS),
+            failures: Windows::new(Duration::from_secs(600), QC_FAILURES),
+        })
+    }
+
+    /// From `KEEP_ENV` and `KEEP_QC_TOKEN`: on only with `staging` and a
+    /// token; a token with `prod` is an error (the boot stops); with any
+    /// other `KEEP_ENV` it stays off (the caller warns).
+    pub fn from_env(keep_env: Option<&str>, token: Option<&str>) -> Result<Option<Self>, String> {
+        let Some(token) = token.filter(|t| !t.is_empty()) else {
+            return Ok(None);
+        };
+        match keep_env {
+            Some("prod") => Err("KEEP_QC_TOKEN is refused with KEEP_ENV=prod".into()),
+            Some("staging") => Self::new(token).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    /// The header's token is this one: SHA-256 digests compared in
+    /// constant time, so neither content nor length times.
+    fn matches(&self, given: &str) -> bool {
+        !given.is_empty() && ::auth::secret::same(&::auth::secret::hash(given), &self.digest)
+    }
+}
+
+/// A caller of `/api/qc/*` that passed the gate (module docs). Rejects
+/// with 404 when the surface is off or the token is wrong or missing,
+/// 429 over a limit.
+pub struct QcCaller;
+
+impl FromRequestParts<AppState> for QcCaller {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        let Some(qc) = state.qc.clone() else {
+            return Err(ApiError::NotFound);
+        };
+        let ClientIp(ip) = ClientIp::from_request_parts(parts, state).await?;
+        if qc.failures.over(&ip) || !qc.calls.allow(&ip) {
+            return Err(ApiError::RateLimited);
+        }
+        let given = parts
+            .headers
+            .get(QC_TOKEN_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if qc.matches(given) {
+            Ok(QcCaller)
+        } else {
+            qc.failures.allow(&ip);
+            Err(ApiError::NotFound)
+        }
+    }
+}
+
+/// `POST /api/qc/seed {runId, worker}`: [`fixture`]'s world.
+pub async fn qc_fixture(
+    _: QcCaller,
+    State(state): State<AppState>,
+    Body(req): Body<QcSeedRequest>,
+) -> Result<Json<QcWorld>, ApiError> {
+    let store = state.store.clone();
+    blocking(move || seed_world(&store, req)).await.map(Json)
+}
+
+/// `POST /api/qc/crowd`: [`crowd`], in a `qc-` group only.
+pub async fn qc_crowd(
+    _: QcCaller,
+    State(state): State<AppState>,
+    Body(req): Body<QcCrowdRequest>,
+) -> Result<Json<u32>, ApiError> {
+    if !is_qc_slug(&req.slug) {
+        return Err(ApiError::NotFound);
+    }
+    let store = state.store.clone();
+    blocking(move || crowd_in(&store, req)).await.map(Json)
+}
+
+/// `POST /api/qc/hold`: [`hold`], in a `qc-` group only.
+pub async fn qc_hold(
+    _: QcCaller,
+    State(state): State<AppState>,
+    Body(req): Body<QcHoldRequest>,
+) -> Result<Json<bool>, ApiError> {
+    if !is_qc_slug(&req.slug) {
+        return Err(ApiError::NotFound);
+    }
+    let store = state.store.clone();
+    blocking(move || hold_in(&store, req)).await.map(Json)
+}
+
+#[derive(Deserialize, TS)]
+#[ts(export)]
+pub struct QcSessionRequest {
+    pub email: String,
+}
+
+/// `POST /api/qc/session {email}`: a full session cookie for a QC user
+/// (an address on [`QC_DOMAIN`], a member of `qc-` groups only and of at
+/// least one); anyone else is 404. An ordinary session, not a dev one.
+pub async fn qc_session(
+    _: QcCaller,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Body(req): Body<QcSessionRequest>,
+) -> Result<Response, ApiError> {
+    let email = crate::auth::users::normalise_email(&req.email).ok_or(ApiError::NotFound)?;
+    if !email.ends_with(&format!("@{QC_DOMAIN}")) {
+        return Err(ApiError::NotFound);
+    }
+    let store = state.store.clone();
+    let token = blocking(move || {
+        store.platform().with_write(|tx| {
+            let Some(user) = crate::auth::users::by_email(tx, &email)? else {
+                return Err(ApiError::NotFound);
+            };
+            let groups: i64 = tx.query_row(
+                "SELECT count(*) FROM memberships WHERE user_id = ?1",
+                [user],
+                |r| r.get(0),
+            )?;
+            if groups == 0 || !only_qc_memberships(tx, UserId(user))? {
+                return Err(ApiError::NotFound);
+            }
+            Ok(::auth::sessions::create(
+                tx,
+                user,
+                ::auth::Stage::Full,
+                contracts::now_ms(),
+            )?)
+        })
     })
-    .await
-    .map(Json)
+    .await?;
+    crate::auth::with_session(
+        Json(serde_json::json!({ "ok": true })).into_response(),
+        &headers,
+        &token,
+        ::auth::Stage::Full,
+    )
 }

@@ -34,6 +34,8 @@ pub struct AppState {
     pub dev_auth: bool,
     /// Auth's config, mailer, rate limits and revocations.
     pub auth: Arc<auth::Runtime>,
+    /// `/api/qc/*` (`KEEP_QC_TOKEN` on staging); off when `None`.
+    pub qc: Option<Arc<routes::qc_seed::QcAccess>>,
 }
 
 impl AppState {
@@ -44,7 +46,13 @@ impl AppState {
             store,
             dev_auth,
             auth: Arc::new(auth::Runtime::default()),
+            qc: None,
         }
+    }
+
+    pub fn with_qc(mut self, qc: Option<routes::qc_seed::QcAccess>) -> Self {
+        self.qc = qc.map(Arc::new);
+        self
     }
 
     pub fn with_auth(mut self, runtime: auth::Runtime) -> Self {
@@ -138,6 +146,10 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .route("/api/dev/qc-seed", post(routes::qc_seed::fixture))
         .route("/api/dev/qc-crowd", post(routes::qc_seed::crowd))
         .route("/api/dev/qc-hold", post(routes::qc_seed::hold))
+        .route("/api/qc/seed", post(routes::qc_seed::qc_fixture))
+        .route("/api/qc/crowd", post(routes::qc_seed::qc_crowd))
+        .route("/api/qc/hold", post(routes::qc_seed::qc_hold))
+        .route("/api/qc/session", post(routes::qc_seed::qc_session))
         .route("/api/me", get(auth::me))
         .route("/api/groups", get(routes::groups::mine))
         .route("/api/groups/{slug}/opened", post(routes::groups::opened))

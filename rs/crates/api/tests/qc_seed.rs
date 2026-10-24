@@ -53,9 +53,12 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
     unsafe { std::env::set_var("KEEP_QC_SEED", "1") };
     let (s, world) = post(&app, "/api/dev/qc-seed", req.clone()).await;
     assert_eq!(s, StatusCode::OK, "{world}");
-    assert_eq!(world["users"][0]["email"], "qc-r7w0-a@example.com");
+    assert_eq!(
+        world["users"][0]["email"],
+        "qc-r7w0-a@qc.keep-together.invalid"
+    );
     assert_eq!(world["users"][3]["role"], "viewer");
-    assert_eq!(world["tenants"][1]["slug"], "r7w0-b");
+    assert_eq!(world["tenants"][1]["slug"], "qc-r7w0-b");
     assert_eq!(
         world["tenants"][0]["contactIds"].as_array().unwrap().len(),
         3
@@ -111,7 +114,7 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
     let (s, n) = post(
         &app,
         "/api/dev/qc-crowd",
-        json!({ "slug": "r7w0-a", "lastName": "Crowd", "count": 150 }),
+        json!({ "slug": "qc-r7w0-a", "lastName": "Crowd", "count": 150 }),
     )
     .await;
     assert_eq!((s, n), (StatusCode::OK, json!(150)));
