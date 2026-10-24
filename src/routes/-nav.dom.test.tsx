@@ -427,14 +427,20 @@ test('being ported: Settings shows only the list tabs this build serves', async 
   port.all = false
   tenants = [group('alpha'), group('beta')]
   await page(import('./t.$slug.settings'))
+  // Identifier types (A1) is served; Fields (B1) and Source codes (A2) not.
   expect(links()).toEqual([
+    ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Members', '/t/alpha/settings/members'],
     ['Switch group', '/t/alpha/settings/groups'],
     ['Your account', '/account'],
   ])
-  // No list tab yet: Members, which every member sees, comes first.
+  // The first tab served opens, in one group as in several.
   await page(import('./t.$slug.settings.index'))
-  expect(navigated).toEqual(['/t/alpha/settings/members'])
+  expect(navigated).toEqual(['/t/alpha/settings/identifiers'])
+  tenants = [group('alpha')]
+  navigated.length = 0
+  await page(import('./t.$slug.settings.index'))
+  expect(navigated).toEqual(['/t/alpha/settings/identifiers'])
 })
 
 test('settings: the first tab is Fields once every list is ported', async () => {

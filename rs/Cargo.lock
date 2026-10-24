@@ -421,9 +421,17 @@ dependencies = [
 name = "comms"
 version = "0.1.0"
 dependencies = [
+ "contacts",
+ "contracts",
  "lettre",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "store",
+ "tempfile",
  "thiserror",
  "tokio",
+ "ts-rs",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 //! keep sql <slug> "<select…>" [--json]
 //! keep tenant create --slug <slug> --name <name> --admin-email <email>
 //! keep auth reset-2fa <email> [--reason <text>]
+//! keep auth invite <slug> <email> [--role admin|staff|viewer]
 //! keep dev seed-demo [--slug <slug>] [--admin-email <email>]
 //! ```
 
@@ -17,6 +18,7 @@ const USAGE: &str = "usage:
   keep [--data <dir>] sql <slug> \"<select…>\" [--json]
   keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <email>
   keep [--data <dir>] auth reset-2fa <email> [--reason <text>]
+  keep [--data <dir>] auth invite <slug> <email> [--role admin|staff|viewer]
   keep [--data <dir>] dev seed-demo [--slug <slug>] [--admin-email <email>]";
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
@@ -95,7 +97,9 @@ fn main() -> ExitCode {
                     println!("created {} ({}), admin {email}", c.tenant.slug, c.tenant.id);
                     match send_invite(c.invite) {
                         Ok(()) => ExitCode::SUCCESS,
-                        // The organisation exists; the operator re-invites.
+                        // The organisation and the admin's membership exist;
+                        // `keep auth invite <slug> <email> --role admin`
+                        // sends a new link.
                         Err(e) => fail(format!("the invite wasn't sent: {e}")),
                     }
                 }
@@ -141,6 +145,20 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Ok(false) => fail(format!("no user {email}")),
+                Err(e) => fail(e),
+            }
+        }
+        ["auth", "invite", ..] => {
+            let mut rest = args[2..].to_vec();
+            let role = take(&mut rest, "--role").unwrap_or_else(|| "staff".into());
+            let [slug, email] = rest.as_slice() else {
+                return fail(USAGE);
+            };
+            match cli::auth::invite(&data, slug, email, &role) {
+                Ok(mail) => match send_invite(mail) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => fail(format!("the invite wasn't sent: {e}")),
+                },
                 Err(e) => fail(e),
             }
         }

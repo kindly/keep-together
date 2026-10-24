@@ -1,6 +1,4 @@
-import { useMutation } from 'convex/react'
 import { useRef, useState } from 'react'
-import { api } from '../../convex/_generated/api'
 import { SUPPRESSION_NOTE_MAX } from '../../convex/comms/rules'
 import type { Hold } from '../lib/email-hold'
 import {
@@ -10,7 +8,8 @@ import {
   isNotHeld,
   releaseFailure,
 } from '../lib/email-hold'
-import { useIsAdmin, useTenant } from '../lib/tenant'
+import { useRelease } from '../lib/data'
+import { useIsAdmin } from '../lib/tenant'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,9 +37,8 @@ export function EmailHold({
   address: string
   hold: Hold | undefined
 }) {
-  const tenant = useTenant()
   const isAdmin = useIsAdmin()
-  const release = useMutation(api.comms.suppressions.release)
+  const release = useRelease()
   const [open, setOpen] = useState(false)
   const [note, setNote] = useState('')
   const [error, setError] = useState<{ text: string; key: string } | null>(null)
@@ -71,7 +69,6 @@ export function EmailHold({
     setPending(true)
     try {
       await release({
-        tenantId: tenant._id,
         address,
         expected: hold.saveVersion,
         note,

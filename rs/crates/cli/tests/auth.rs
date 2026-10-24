@@ -115,3 +115,41 @@ fn operator_invite_writes_a_live_invite_and_the_mail_carries_its_link() {
     });
     assert!(matches!(bad, Err(auth::AuthError::InvalidEmail(_))));
 }
+
+/// N1: the admin `keep tenant create` made is a member without credentials;
+/// `keep auth invite` gives them a new link they can accept.
+#[test]
+fn keep_auth_invite_works_for_a_member_without_credentials() {
+    let tmp = tempfile::tempdir().unwrap();
+    let made = cli::tenant::create(tmp.path(), "alpha", "Alpha", "ann@alpha.org").unwrap();
+    let mail = cli::auth::invite(tmp.path(), "alpha", "Ann@Alpha.org", "admin").unwrap();
+    assert_eq!(mail.to, "ann@alpha.org");
+    let at = mail.text.find("/invite#").unwrap() + "/invite#".len();
+    let token = mail.text[at..at + 64].to_owned();
+    let store = cli::tenant::open(tmp.path()).unwrap();
+    let now = contracts::now_ms();
+    let (invite, live, by): (_, i64, String) = store
+        .platform()
+        .with_read(|c| {
+            Ok::<_, rusqlite::Error>((
+                auth::accounts::invite_by_token(c, &token, now)?.unwrap(),
+                c.query_row(
+                    "SELECT count(*) FROM auth_invites WHERE accepted_at IS NULL AND revoked_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?,
+                c.query_row(
+                    "SELECT actor FROM auth_log WHERE event = 'invited' ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(invite.tenant_id, made.tenant.id.as_str());
+    assert_eq!(invite.role, "admin");
+    assert_eq!(live, 1, "the create's link is replaced");
+    assert_eq!(by, "operator");
+    assert!(cli::auth::invite(tmp.path(), "nowhere", "a@b.org", "staff").is_err());
+    assert!(cli::auth::invite(tmp.path(), "alpha", "a@b.org", "owner").is_err());
+}

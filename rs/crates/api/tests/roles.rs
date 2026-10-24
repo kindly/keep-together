@@ -149,24 +149,40 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
         all,
         [
             "GET /contacts",
+            "GET /contacts/by-client-key/{key}",
             "GET /contacts/search",
             "GET /contacts/{id}",
+            "GET /contacts/{id}/email-context",
             "GET /contacts/{id}/history",
+            "GET /contacts/{id}/notes",
+            "GET /contacts/{id}/notes/archived",
+            "GET /contacts/{id}/relationships",
             "GET /fields",
+            "GET /identifier-types",
             "GET /members",
             "GET /preferences",
+            "GET /relationship-types",
+            "POST /comms/release",
             "POST /contacts",
             "POST /contacts/{id}/archive",
             "POST /contacts/{id}/restore",
             "POST /contacts/{id}/save",
             "POST /fields",
             "POST /fields/options",
+            "POST /identifier-types",
             "POST /members/invite",
             "POST /members/invites/{id}/revoke",
             "POST /members/{id}/remove",
             "POST /members/{id}/reset-2fa",
             "POST /members/{id}/role",
+            "POST /notes",
+            "POST /notes/{id}/archive",
+            "POST /notes/{id}/pin",
+            "POST /notes/{id}/restore",
+            "POST /notes/{id}/save",
             "POST /preferences/{kind}",
+            "POST /relationship-types",
+            "POST /relationships",
         ],
         "the route table changed: check any new GET only reads, then update this list"
     );
@@ -213,9 +229,10 @@ async fn every_write_route_refuses_a_viewer_and_the_role_is_the_reason() {
         // answers the handler's JSON `not_found`, never axum's bodiless
         // no-such-route 404.
         let (s, out) = w.call(method, &url, &ann, None).await;
+        let looks_up_an_id = path.contains('{');
         assert!(
             s != StatusCode::FORBIDDEN
-                && (s != StatusCode::NOT_FOUND || out["kind"] == "not_found"),
+                && (s != StatusCode::NOT_FOUND || (looks_up_an_id && out["kind"] == "not_found")),
             "admin {method} {url}: {s} {out}"
         );
     }

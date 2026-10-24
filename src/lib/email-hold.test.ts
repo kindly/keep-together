@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { ConvexError } from 'convex/values'
+import { RustApiError } from './data/rust/client'
+import type { ApiError } from './data/rust-types/ApiError'
 import {
   holdKey,
   holdLine,
@@ -8,6 +9,9 @@ import {
   releaseFailure,
 } from './email-hold'
 import type { Held } from './email-hold'
+
+/** A refusal as the Rust API's client throws it. */
+const refused = (e: object) => new RustApiError(422, e as ApiError)
 
 const hold = {
   reason: 'bounce' as const,
@@ -38,7 +42,7 @@ test('holdLine says when it bounced and what that means', () => {
 
 describe('releaseFailure', () => {
   test('stale asks to check and retry', () => {
-    expect(releaseFailure(new ConvexError({ kind: 'stale', current: 3 }))).toBe(
+    expect(releaseFailure(refused({ kind: 'stale', current: 3 }))).toBe(
       'This hold changed just now. Check it, then release again.',
     )
   })
@@ -46,15 +50,15 @@ describe('releaseFailure', () => {
   test('not held, forbidden and invalid are named', () => {
     expect(
       releaseFailure(
-        new ConvexError({ kind: 'rejected', reason: 'not_held', message: 'x' }),
+        refused({ kind: 'rejected', reason: 'not_held', message: 'x' }),
       ),
     ).toBe('This address is no longer on hold')
-    expect(releaseFailure(new ConvexError({ kind: 'forbidden' }))).toBe(
+    expect(releaseFailure(refused({ kind: 'forbidden' }))).toBe(
       'Only admins can release an address',
     )
     expect(
       releaseFailure(
-        new ConvexError({
+        refused({
           kind: 'invalid',
           problems: [{ field: 'note', message: 'At most 500 characters' }],
         }),
@@ -65,7 +69,7 @@ describe('releaseFailure', () => {
   test('anything else: its message, or a generic line', () => {
     expect(
       releaseFailure(
-        new ConvexError({ kind: 'rejected', reason: 'r', message: 'Nope' }),
+        refused({ kind: 'rejected', reason: 'r', message: 'Nope' }),
       ),
     ).toBe('Nope')
     expect(releaseFailure(new Error('network'))).toBe(
@@ -91,8 +95,8 @@ describe('holdKey', () => {
 
 test('isNotHeld: only the not_held rejection', () => {
   expect(
-    isNotHeld(new ConvexError({ kind: 'rejected', reason: 'not_held' })),
+    isNotHeld(refused({ kind: 'rejected', reason: 'not_held' })),
   ).toBe(true)
-  expect(isNotHeld(new ConvexError({ kind: 'stale', current: 1 }))).toBe(false)
+  expect(isNotHeld(refused({ kind: 'stale', current: 1 }))).toBe(false)
   expect(isNotHeld(new Error('not_held'))).toBe(false)
 })

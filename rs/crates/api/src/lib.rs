@@ -137,6 +137,7 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .route("/api/dev/tenants", post(auth::create_tenant))
         .route("/api/dev/qc-seed", post(routes::qc_seed::fixture))
         .route("/api/dev/qc-crowd", post(routes::qc_seed::crowd))
+        .route("/api/dev/qc-hold", post(routes::qc_seed::hold))
         .route("/api/me", get(auth::me))
         .route("/api/groups", get(routes::groups::mine))
         .route("/api/groups/{slug}/opened", post(routes::groups::opened))

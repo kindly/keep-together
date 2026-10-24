@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
-import { ConvexError } from 'convex/values'
+import { RustApiError } from './data/rust/client'
+import type { ApiError } from './data/rust-types/ApiError'
 import { NOTE_MAX_BYTES } from '../../convex/contacts/rules'
 import {
   budget,
@@ -13,6 +14,9 @@ import {
   rebase,
   withOpenEdits,
 } from './notes'
+
+/** A refusal as the Rust API's client throws it. */
+const refused = (e: object) => new RustApiError(422, e as ApiError)
 
 describe('budget', () => {
   test('counts UTF-8 bytes of the trimmed body, as the server does', () => {
@@ -93,11 +97,11 @@ describe('rebase', () => {
 describe('failureMessage', () => {
   test('names each server error kind', () => {
     expect(
-      failureMessage(new ConvexError({ kind: 'stale', current: 3 })),
+      failureMessage(refused({ kind: 'stale', current: 3 })),
     ).toMatch(/changed this note/)
     expect(
       failureMessage(
-        new ConvexError({
+        refused({
           kind: 'invalid',
           problems: [{ field: 'body', message: 'A note needs some text' }],
         }),
@@ -105,7 +109,7 @@ describe('failureMessage', () => {
     ).toBe('A note needs some text')
     expect(
       failureMessage(
-        new ConvexError({
+        refused({
           kind: 'rejected',
           reason: 'archived',
           message: 'Restore the note before editing it',

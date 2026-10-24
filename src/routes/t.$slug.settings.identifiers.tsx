@@ -1,40 +1,43 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery } from 'convex/react'
-import { ConvexError } from 'convex/values'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import type { Doc } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
 import { IDENTIFIER_TYPE_LIMIT } from '../../convex/contacts/rules'
 import { StaffListSwitch } from '../components/staff-list-switch'
-import { useCanManageList, useTenant } from '../lib/tenant'
+import {
+  FEATURES,
+  useIdentifierTypes,
+  useSaveIdentifierType,
+} from '../lib/data'
+import type { IdentifierType } from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
+import { useCanManageList, useIsAdmin } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/identifiers')({
   component: IdentifierTypesPage,
-  // Not ported yet: renders "being ported" (lib/data/ported.ts). Its
-  // loader prewarmed Convex queries; the porting step writes a new one.
 })
 
 /** From how many types the page says how close the group is to the cap. */
 const NEAR_LIMIT = IDENTIFIER_TYPE_LIMIT - 20
 
-/** A failed `saveIdentifierType` as one line for the user. */
+/** A failed save as one line for the user. */
 function message(err: unknown): string {
-  const data =
-    err instanceof ConvexError
-      ? (err.data as {
-          kind?: string
-          message?: string
-          problems?: Array<{ message: string }>
-        })
-      : null
-  if (data?.kind === 'invalid' && data.problems?.length)
-    return data.problems.map((p) => p.message).join('; ')
-  if (data?.kind === 'stale')
+  if (!(err instanceof RustApiError)) return 'Could not save'
+  const e = err.error
+  if (e.kind === 'invalid' && e.problems.length)
+    return e.problems.map((p) => p.message).join('; ')
+  if (e.kind === 'stale')
     return 'Someone else changed this type just now; check it and try again'
-  if (data?.kind === 'forbidden')
+  if (e.kind === 'forbidden')
     return 'You can no longer manage identifier types in this group'
-  return data?.message ?? data?.kind ?? 'Could not save'
+  return err.message
+}
+
+/**
+ * Admins always; staff when the group lets them (lib/lists
+ * `mayManageList`). The backend enforces it.
+ */
+function useCanManage(): boolean {
+  return useCanManageList('identifierTypes') || useIsAdmin()
 }
 
 /**
@@ -46,13 +49,9 @@ function message(err: unknown): string {
  * never deleted.
  */
 function IdentifierTypesPage() {
-  const tenant = useTenant()
-  const canManage = useCanManageList('identifierTypes')
-  const types = useQuery(api.contacts.queries.listIdentifierTypes, {
-    tenantId: tenant._id,
-    includeInactive: true,
-  })
-  const save = useMutation(api.contacts.mutations.saveIdentifierType)
+  const canManage = useCanManage()
+  const types = useIdentifierTypes()
+  const save = useSaveIdentifierType()
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -62,7 +61,7 @@ function IdentifierTypesPage() {
     setError(null)
     setBusy(true)
     try {
-      await save({ tenantId: tenant._id, name, isActive: true })
+      await save({ name, isActive: true })
       setName('')
     } catch (err) {
       setError(message(err))
@@ -84,7 +83,8 @@ function IdentifierTypesPage() {
           Identifiers section.
         </p>
       </div>
-      <StaffListSwitch kind="identifierTypes" />
+      {/* The switch is A3's (preferences); until then admins manage. */}
+      {FEATURES.settings && <StaffListSwitch kind="identifierTypes" />}
       {canManage && (
         <form onSubmit={create} className="flex flex-col gap-1">
           <div className="flex gap-2">
@@ -147,7 +147,7 @@ function TypeList({
   note,
 }: {
   title: string
-  types: Array<Doc<'identifierTypes'>>
+  types: Array<IdentifierType>
   empty: string
   note?: string
 }) {
@@ -168,10 +168,9 @@ function TypeList({
   )
 }
 
-function TypeRow({ type }: { type: Doc<'identifierTypes'> }) {
-  const tenant = useTenant()
-  const canManage = useCanManageList('identifierTypes')
-  const saveType = useMutation(api.contacts.mutations.saveIdentifierType)
+function TypeRow({ type }: { type: IdentifierType }) {
+  const canManage = useCanManage()
+  const saveType = useSaveIdentifierType()
   const [editing, setEditing] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -181,7 +180,6 @@ function TypeRow({ type }: { type: Doc<'identifierTypes'> }) {
     setBusy(true)
     try {
       await saveType({
-        tenantId: tenant._id,
         id: type._id,
         expected: type.saveVersion,
         ...fields,

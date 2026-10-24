@@ -194,9 +194,11 @@ come from the app's origin (`Sec-Fetch-Site`, else `Origin` against
 isn't a browser and passes. Mail is plain text through `comms::mail`
 (transactional: never suppressed).
 
-Operator: `keep auth reset-2fa <email> [--reason …]` (logged in
-`auth_log`), `auth::operator_invite` for `keep tenant create`'s first
-admin.
+Operator (logged in `auth_log` as `operator`): `keep auth reset-2fa
+<email> [--reason …]`; `keep tenant create` invites its first admin
+(`auth::operator_invite`, sent with `KEEP_MAIL=smtp`, else printed); `keep
+auth invite <slug> <email> [--role …]` sends a new link, also to an
+existing member without credentials (that admin, if theirs expired).
 
 ## Writing a domain route
 
@@ -303,6 +305,7 @@ deploy.
 keep [--data <dir>] sql <slug> "<select…>" [--json]
 keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <email>
 keep [--data <dir>] auth reset-2fa <email> [--reason <text>]
+keep [--data <dir>] auth invite <slug> <email> [--role admin|staff|viewer]
 keep [--data <dir>] dev seed-demo [--slug demo] [--admin-email <email>]
 ```
 

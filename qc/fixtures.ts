@@ -42,9 +42,6 @@ export interface Instance {
 export type World = Omit<QcWorld, 'tenants'> & {
   /** tenantId is the slug: the Rust API is addressed by slug. */
   tenants: Array<QcWorld['tenants'][number] & { tenantId: string }>
-  /** Not seeded until A1 ports identifiers: placeholders, never matched. */
-  identifierType: string
-  identifiers: { shared: string; bOnly: string; bReuse: string }
 }
 
 export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>
@@ -127,6 +124,40 @@ export async function apiGet<T>(
  * api (`POST /api/dev/qc-crowd`): the paged list's crowd. Each tenant is
  * its own file, so the write holds up no other worker's samples.
  */
+/**
+ * `POST` an api path as `user` (a fresh dev session), for setup a spec
+ * doesn't time through a page: the JSON body, or throws on a refusal.
+ */
+export async function apiPost<T>(
+  inst: Instance,
+  user: QcUser,
+  route: string,
+  body: unknown,
+): Promise<T> {
+  const token = await devLogin(inst, user.email)
+  const res = await fetch(`${inst.api}${route}`, {
+    method: 'POST',
+    headers: {
+      cookie: `kt_session=${token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${route}: ${res.status} ${await res.text()}`)
+  return (await res.json()) as T
+}
+
+/**
+ * Hold `address` in `slug`, as a hard bounce does (`POST
+ * /api/dev/qc-hold`). An admin's release lifts it again.
+ */
+export async function qcHold(
+  inst: Instance,
+  args: { slug: string; address: string },
+): Promise<unknown> {
+  return (await post(inst, '/api/dev/qc-hold', args)).data
+}
+
 export async function qcCrowd(
   inst: Instance,
   args: { slug: string; lastName: string; count: number },
@@ -201,8 +232,6 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       await use({
         ...data,
         tenants: data.tenants.map((t) => ({ ...t, tenantId: t.slug })),
-        identifierType: '(none until A1)',
-        identifiers: { shared: '-', bOnly: '-', bReuse: '-' },
       })
     },
     { scope: 'worker' },

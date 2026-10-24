@@ -56,6 +56,14 @@ fn create_makes_the_admin_and_a_migrated_file_and_invites() {
         .read(|r| r.query_row("SELECT count(*) FROM tenant_preferences", [], |r| r.get(0)))
         .unwrap();
     assert_eq!(rows, 0);
+    // Contacts' reference data: the UK relationship types (A1).
+    let types = db
+        .read(|r| contacts::relationships::relationship_types(r))
+        .unwrap();
+    assert_eq!(
+        types.len(),
+        contacts::relationships::UK_RELATIONSHIP_TYPES.len()
+    );
 }
 
 #[test]
