@@ -40,6 +40,32 @@ async fn names_labels_and_child_values_are_bounded() {
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
 
+    // A client key (review L1): 200, on a contact and on a gift.
+    let mut keyed = person("Ann", "Keyed");
+    keyed["clientKey"] = json!(chars(201));
+    let (s, e) = w
+        .call("POST", "/api/t/alpha/contacts", &ann, Some(keyed.clone()))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    keyed["clientKey"] = json!(chars(200));
+    let (s, e) = w
+        .call("POST", "/api/t/alpha/contacts", &ann, Some(keyed))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+    let (s, e) = w
+        .call(
+            "POST",
+            "/api/t/alpha/gifts/record",
+            &ann,
+            Some(json!({
+                "clientKey": chars(201), "contact": id, "receivedOn": "2026-10-20",
+                "amount": 100, "method": "cash", "allocations": [],
+            })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    assert_eq!(e["problems"][0]["field"], "clientKey", "{e}");
+
     // An identifier type's name: 200.
     let (s, e) = w
         .call(

@@ -482,6 +482,9 @@ pub struct Exec<'a> {
     source: Source,
     group: Option<&'a CommandGroup>,
     restored_from: Option<i64>,
+    /// A restore naming no revision (a slice back to empty): the moment
+    /// it restores to, for `restore_payload`.
+    restored_at: Option<i64>,
 }
 
 impl<'a> Exec<'a> {
@@ -493,6 +496,7 @@ impl<'a> Exec<'a> {
             source,
             group: None,
             restored_from: None,
+            restored_at: None,
         }
     }
 
@@ -593,7 +597,7 @@ pub fn execute<C: Contract>(
                         })
                         .optional()?
                         .unwrap_or(command.at),
-                    None => command.at,
+                    None => opts.restored_at.unwrap_or(command.at),
                 };
                 payload = contract.restore_payload(tx, payload, &state, restored_at)?;
             }

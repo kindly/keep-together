@@ -345,6 +345,13 @@ pub fn record_gift(
             "A client key is required",
         ));
     }
+    // Stored on the gift: as wide as a name at most.
+    if contacts::rules::too_long(&req.client_key, giving::CLIENT_KEY_MAX) {
+        return Err(ContractError::invalid(
+            "clientKey",
+            format!("At most {} characters", giving::CLIENT_KEY_MAX),
+        ));
+    }
     // Checked first so a repeat names the gift, not the new contact.
     if let Some(id) = giving::by_client_key(ctx.tx.read(), &req.client_key)? {
         return Err(ContractError::Duplicate { id });

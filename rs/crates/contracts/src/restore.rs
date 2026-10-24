@@ -122,6 +122,7 @@ pub fn restore(
             source: Source::Restore,
             group,
             restored_from: Some(revision.id),
+            restored_at: None,
         },
     )
 }
@@ -301,6 +302,17 @@ pub fn restore_entity_upto(
         restore(ctx, registry, r.id, Some(&group))?;
         restored.push(r.contract);
     }
+    // The moment, so a slice's `restore_payload` keeps what it would for
+    // a revision of that time (field values of fields created since).
+    let moment = match upto {
+        Upto::At(at) => at,
+        Upto::Revision(id) => ctx
+            .tx
+            .read()
+            .query_row("SELECT at FROM revisions WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?
+            .unwrap_or(ctx.at),
+    };
     for (_, contract, empty) in to_empty {
         contract.execute_value(
             ctx,
@@ -311,6 +323,7 @@ pub fn restore_entity_upto(
                 source: Source::Restore,
                 group: Some(&group),
                 restored_from: None,
+                restored_at: Some(moment),
             },
         )?;
         restored.push(contract.name().to_owned());

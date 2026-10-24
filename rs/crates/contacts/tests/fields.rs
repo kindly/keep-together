@@ -1274,3 +1274,35 @@ fn restore_to_here_is_bounded_by_the_moments_revision_not_its_millisecond() {
         Err(ContractError::NotFound)
     ));
 }
+
+/// Review M2 (C1 #3): a restore to before the contact's first field value
+/// empties the slice as a revision of that moment would: a field created
+/// after the moment keeps its value and is reported, an older one's value
+/// is cleared.
+#[test]
+fn a_restore_to_empty_keeps_values_of_fields_created_after_the_moment() {
+    let world = world();
+    let (old, oo) = field_at(&world.a, 1_000, "Region", &Kind::ALL, &["North"]);
+    let ann = add_at(&world.a, 2_000, person("Ann", "Smith"));
+    let (late, lo) = field_at(&world.a, 3_000, "Volunteer", &Kind::ALL, &["Yes"]);
+    set_values_at(
+        &world.a,
+        4_000,
+        &ann,
+        vec![value(&old, &oo[0]), value(&late, &lo[0])],
+    );
+    let done = at(&world.a, 5_000, |ctx| {
+        restore_contact(ctx, &ann, RestoreRequest::At { at: 2_500 })
+    })
+    .unwrap();
+    assert!(done.restored.iter().any(|c| c == "contacts.fields"));
+    assert_eq!(values_of(&world.a, &ann), [value(&late, &lo[0])]);
+    assert_eq!(done.skipped_fields.len(), 1);
+    assert_eq!(
+        (
+            done.skipped_fields[0].label.as_str(),
+            done.skipped_fields[0].reason
+        ),
+        ("Volunteer", FieldRestoreReason::AddedAfter)
+    );
+}

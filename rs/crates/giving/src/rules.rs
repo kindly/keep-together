@@ -14,6 +14,9 @@ pub const REFERENCE_MAX: usize = 200;
 /// JavaScript number holds exactly. Pence travel as JSON numbers, so a
 /// larger one would reach the SPA rounded (codex C1 #9).
 pub const PENCE_MAX: i64 = (1 << 53) - 1;
+/// The widest a client key may be (characters): the SPA mints 32 hex;
+/// imports and seeds use their own keys.
+pub const CLIENT_KEY_MAX: usize = 200;
 
 /// Whether `value` is a real calendar date written YYYY-MM-DD.
 pub fn is_iso_date(value: &str) -> bool {
@@ -53,6 +56,15 @@ pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
         .map(|r| r.trim().to_owned())
         .filter(|r| !r.is_empty());
     p.received_on = p.received_on.trim().to_owned();
+    if p.client_key
+        .as_ref()
+        .is_some_and(|k| contacts::rules::too_long(k, CLIENT_KEY_MAX))
+    {
+        problems.push(Problem::new(
+            "clientKey",
+            format!("At most {CLIENT_KEY_MAX} characters"),
+        ));
+    }
     if p.amount <= 0 {
         problems.push(Problem::new("amount", "The amount must be over £0"));
     } else if p.amount > PENCE_MAX {

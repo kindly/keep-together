@@ -938,3 +938,17 @@ pub fn field_restore_notes(
     let held = load_field_values(conn, contact_id)?;
     Ok(field_restore(conn, kind, &held, &p.values, at)?.notes)
 }
+
+/// [`field_restore_notes`] for a restore to empty (the contact had no
+/// field values at `at`): the values it kept, fields created since.
+pub fn empty_field_restore_notes(
+    conn: &Connection,
+    contact_id: &str,
+    at: i64,
+) -> Result<Vec<FieldRestoreNote>, ContractError> {
+    let Some(kind) = contact_kind(conn, contact_id)? else {
+        return Ok(vec![]);
+    };
+    let held = load_field_values(conn, contact_id)?;
+    Ok(field_restore(conn, kind, &held, &[], at)?.notes)
+}

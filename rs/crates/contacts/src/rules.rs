@@ -145,6 +145,15 @@ pub fn prepare_details(mut p: Details) -> Result<Details, ContractError> {
     blank_to_none(&mut p.deceased_date);
     blank_to_none(&mut p.client_key);
     let mut problems = Vec::new();
+    if p.client_key
+        .as_deref()
+        .is_some_and(|k| too_long(k, NAME_MAX))
+    {
+        problems.push(Problem::new(
+            "clientKey",
+            format!("At most {NAME_MAX} characters"),
+        ));
+    }
     for (field, value) in [
         ("title", &p.title),
         ("firstName", &p.first_name),
