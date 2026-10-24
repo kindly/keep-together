@@ -20,7 +20,7 @@ import { LIST_PAGE_SIZE } from '../../paged-list'
 import type { ListFilters, PagedList } from '../../paged-list'
 import type { Tenant } from '../../tenant'
 import { useTenant } from '../../tenant'
-import { ownWrite } from '../events'
+import { ownWrite, setCursor } from '../events'
 import type { ContactPage } from '../rust-types/ContactPage'
 import type { ContactView as WireContact } from '../rust-types/ContactView'
 import type { ArchivedContact } from '../rust-types/ArchivedContact'
@@ -169,6 +169,11 @@ const unfiltered = (slug: string) => keys.list(slug, { q: '' })
  */
 export function boot(qc: QueryClient, slug: string) {
   const answer = get<Boot>(tenantPath(slug, 'boot'))
+  // Before anything it answers can render: the stream opens after it.
+  void answer.then(
+    (b) => setCursor(slug, b.seq),
+    () => {},
+  )
   void qc.prefetchQuery({
     queryKey: keys.me,
     queryFn: () => answer.then((b) => b.me, fetchMe),

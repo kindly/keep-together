@@ -95,6 +95,10 @@ test.describe('tenancy against id and slug manipulation', () => {
     // A's cookie on B's slug: every route, 403, the same body.
     const onB: Array<['GET' | 'POST', string, unknown?]> = [
       ['GET', ''],
+      ['GET', '/boot'],
+      // Refused before any stream starts: a 403 with the usual body.
+      ['GET', '/events'],
+      ['GET', '/events?after=0'],
       ['GET', '/contacts'],
       ['GET', '/contacts/search?q=ada'],
       ['GET', `/contacts/${bId}`],

@@ -14,14 +14,26 @@ cd "$(dirname "$0")/.."
 
 cmd=${1:-show}
 n=${2:-3}
-rtt=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("qc/rtt.json","utf8")).rttMs)')
+[[ $n =~ ^[1-9][0-9]?$ ]] || { echo "N must be 1-99, not '$n'" >&2; exit 2; }
+# Runs as root: nothing read from the worktree is ever run as code. Node
+# only reads the file (a fixed program), and what it prints must be a plain
+# number before anything uses it.
+rtt=$(node -e 'const r = JSON.parse(require("fs").readFileSync("qc/rtt.json", "utf8")).rttMs; if (typeof r !== "number" || !(r > 0 && r < 1000)) process.exit(1); console.log(r)') ||
+  { echo "qc/rtt.json: rttMs must be a number of ms (0-1000)" >&2; exit 2; }
+[[ $rtt =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "bad rttMs: '$rtt'" >&2; exit 2; }
 # Each direction crosses lo once: half the round trip each way.
-half=$(node -e "console.log($rtt / 2)")
+half=$(awk -v r="$rtt" 'BEGIN { print r / 2 }')
 
 run() { echo "+ $*"; "$@"; }
 
 case $cmd in
   on)
+    # Replacing a root qdisc on lo that isn't the default (ours from
+    # before, or someone else's): say so rather than drop it silently.
+    if tc qdisc show dev lo | grep -q 'qdisc .* root' &&
+      ! tc qdisc show dev lo | grep -q 'qdisc noqueue 0: root'; then
+      echo "warning: replacing lo's root qdisc: $(tc qdisc show dev lo | head -1)" >&2
+    fi
     run tc qdisc del dev lo root 2>/dev/null || true
     run tc qdisc add dev lo root handle 1: prio
     run tc qdisc add dev lo parent 1:3 handle 30: netem delay "${half}ms"

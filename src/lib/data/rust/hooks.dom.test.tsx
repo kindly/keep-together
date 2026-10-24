@@ -30,9 +30,17 @@ function respond(c: Call) {
 
 /** The tenant's event stream, driven by the test. */
 class FakeSource {
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSED = 2
   static all: Array<FakeSource> = []
-  onmessage: ((m: { data: string }) => void) | null = null
-  listeners: Partial<Record<string, Array<() => void>>> = {}
+  onopen: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onmessage: ((m: { data: string; lastEventId: string }) => void) | null = null
+  listeners: Partial<
+    Record<string, Array<(m: { data: string; lastEventId: string }) => void>>
+  > = {}
+  readyState = FakeSource.CONNECTING
   closed = false
   constructor(
     readonly url: string,
@@ -40,17 +48,31 @@ class FakeSource {
   ) {
     FakeSource.all.push(this)
   }
-  addEventListener(kind: string, f: () => void) {
+  addEventListener(
+    kind: string,
+    f: (m: { data: string; lastEventId: string }) => void,
+  ) {
     ;(this.listeners[kind] ??= []).push(f)
   }
   close() {
     this.closed = true
+    this.readyState = FakeSource.CLOSED
+  }
+  open() {
+    this.readyState = FakeSource.OPEN
+    this.onopen?.()
   }
   emit(e: OrgEvent) {
-    this.onmessage?.({ data: JSON.stringify(e) })
+    this.onmessage?.({ data: JSON.stringify(e), lastEventId: String(e.seq) })
   }
-  reset() {
-    for (const f of this.listeners.reset ?? []) f()
+  reset(head = 0) {
+    for (const f of this.listeners.reset ?? [])
+      f({ data: '', lastEventId: String(head) })
+  }
+  /** The server refused a reconnect: the browser gives up for good. */
+  refused() {
+    this.readyState = FakeSource.CLOSED
+    this.onerror?.()
   }
 }
 
@@ -283,8 +305,11 @@ describe('the contact page live, over the event stream', () => {
     })
   })
 
-  /** The contact page's data path: the view, the form, the stream. */
-  async function open() {
+  /**
+   * The contact page's data path: the view, the form, the stream, which
+   * opens on `url`, showing `known` as the nickname.
+   */
+  async function open(url = '/api/t/a/events', known = '') {
     const { ContactForm } = await import('../../../components/contact-form')
     const { useContact, useOrgEvents } = await import('../index')
     const Wrap = await providers('a')
@@ -302,11 +327,18 @@ describe('the contact page live, over the event stream', () => {
         </Wrap>,
       ),
     )
-    await vi.waitFor(() => expect(field('Known as')).toBe(''))
-    expect(FakeSource.all.map((f) => [f.url, f.init])).toEqual([
-      ['/api/t/a/events', { withCredentials: true }],
-    ])
-    return FakeSource.all[0]
+    await vi.waitFor(() => expect(field('Known as')).toBe(known))
+    const events = FakeSource.all.at(-1)!
+    expect([events.url, events.init]).toEqual([url, { withCredentials: true }])
+    return events
+  }
+
+  /** As `open`, then the stream connects and its open refetch lands. */
+  async function connected() {
+    const events = await open()
+    act(() => events.open())
+    await vi.waitFor(() => expect(gets()).toBe(2))
+    return events
   }
 
   /** Another tab saved the contact's details: the server moves on. */
@@ -440,6 +472,88 @@ describe('the contact page live, over the event stream', () => {
     await vi.waitFor(() => expect(field('Known as')).toBe('three'))
     await new Promise((r) => setTimeout(r, 50))
     expect(gets()).toBe(3)
+  })
+
+  test('opened with no cursor, it refetches what was read before it', async () => {
+    const events = await open()
+    expect(gets()).toBe(1)
+    act(() => events.open())
+    // Live from now: the view read before the stream could be behind.
+    await vi.waitFor(() => expect(gets()).toBe(2))
+  })
+
+  test('a cold load’s boot cursor: the stream opens after it, and refetches nothing', async () => {
+    const { setCursor } = await import('../events')
+    setCursor('a', 41)
+    const { ContactForm } = await import('../../../components/contact-form')
+    const { useContact, useOrgEvents } = await import('../index')
+    const Wrap = await providers('a')
+    function Page() {
+      useOrgEvents('a')
+      const { view, fields } = useContact(ID as never)
+      return view ? (
+        <ContactForm id={ID as never} data={view} fields={fields ?? []} />
+      ) : null
+    }
+    act(() =>
+      root.render(
+        <Wrap>
+          <Page />
+        </Wrap>,
+      ),
+    )
+    await vi.waitFor(() => expect(field('Known as')).toBe(''))
+    const [events] = FakeSource.all
+    expect(events.url).toBe('/api/t/a/events?after=41')
+    act(() => events.open())
+    await new Promise((r) => setTimeout(r, 50))
+    expect(gets()).toBe(1)
+  })
+
+  test('a refused reconnect reopens, after a pause, from the last event', async () => {
+    const events = await connected()
+    act(() => events.emit(remote({ nickname: 'before the drop' })))
+    await vi.waitFor(() => expect(field('Known as')).toBe('before the drop'))
+    // A 502 while the api restarts: the browser gives up for good.
+    act(() => events.refused())
+    expect(events.closed).toBe(true)
+    await vi.waitFor(() => expect(FakeSource.all).toHaveLength(2), {
+      timeout: 2_000,
+    })
+    expect(FakeSource.all[1].url).toBe(
+      `/api/t/a/events?after=${server.counters.details}`,
+    )
+    // Its replay lands as usual, and nothing is refetched just for opening.
+    const before = gets()
+    act(() => FakeSource.all[1].open())
+    act(() => FakeSource.all[1].emit(remote({ nickname: 'replayed' })))
+    await vi.waitFor(() => expect(field('Known as')).toBe('replayed'))
+    expect(gets()).toBe(before + 1)
+  })
+
+  test('a reset moves the cursor to the head it names', async () => {
+    const events = await connected()
+    act(() => events.reset(77))
+    act(() => events.refused())
+    await vi.waitFor(() => expect(FakeSource.all).toHaveLength(2), {
+      timeout: 2_000,
+    })
+    expect(FakeSource.all[1].url).toBe('/api/t/a/events?after=77')
+  })
+
+  test('leaving the tenant and coming back replays from where it stopped', async () => {
+    const events = await connected()
+    act(() => events.emit(remote({ nickname: 'seen' })))
+    await vi.waitFor(() => expect(field('Known as')).toBe('seen'))
+    act(() => root.unmount())
+    expect(events.closed).toBe(true)
+    root = createRoot(el)
+    const again = await open(
+      `/api/t/a/events?after=${server.counters.details}`,
+      'seen',
+    )
+    expect(FakeSource.all).toHaveLength(2)
+    expect(again.closed).toBe(false)
   })
 
   test('the stream closes when the page goes', async () => {

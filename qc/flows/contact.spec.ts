@@ -593,11 +593,13 @@ test.describe(
         await flow(other, 'contact.staleMerge', {
           before: async () => {
             n += 1
-            await other.getByLabel('Title', { exact: true }).fill(`from b ${n}`)
             await page.getByLabel('Known as').fill(`from a ${n}`)
             await saveButton(page).click()
             await expect(saved(page)).toBeVisible()
             await want(other, `from a ${n}`)
+            // Last, and saved by the action: typed any earlier, B's 700 ms
+            // autosave could send it (and merge) inside `before` under load.
+            await other.getByLabel('Title', { exact: true }).fill(`from b ${n}`)
           },
           action: () => saveButton(other).click(),
           // Saved, with A's change merged in under B's own.

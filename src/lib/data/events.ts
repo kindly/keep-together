@@ -6,9 +6,23 @@
  * contact's form gets the refetched view as a `server` update and merges
  * it under any typing (contact-form.tsx), as Convex's live query did.
  *
- * The browser reconnects by itself and sends `Last-Event-ID`, so the
- * server replays what was missed; a client too far behind gets one
- * `reset` event and refetches everything.
+ * Nothing committed while the stream wasn't open is lost:
+ * - Each tenant has a cursor (`cursors`): the last event id this tab has,
+ *   seeded by a cold load's `/boot` (`Boot.seq`, from the same snapshot as
+ *   what it answered) and moved by every event and every `reset`. A stream
+ *   opens with `?after=<cursor>`, so the server replays what came since
+ *   (or, too far behind, sends one `reset`: refetch everything).
+ * - An open with no cursor (a tenant entered without a cold load) starts
+ *   live from now, so it invalidates the whole tenant: what is shown
+ *   refetches, and everything cached is marked so its next use does. The
+ *   server subscribes before it answers, so a refetch begun on `open`
+ *   can't miss a commit.
+ * - The browser reconnects by itself after a network error, sending
+ *   `Last-Event-ID`. After a refused reconnect (a 502 while the api
+ *   restarts, a 401) it gives up for good, so this reopens the stream
+ *   itself, with backoff, from the cursor.
+ * - Leaving a tenant closes its stream and keeps the cursor: coming back
+ *   within the cache's lifetime replays the changes made meanwhile.
  */
 import { useQueryClient } from '@tanstack/react-query'
 import type { QueryClient, QueryKey } from '@tanstack/react-query'
@@ -27,7 +41,10 @@ const INVALIDATES: Partial<
   Record<string, (slug: string, e: OrgEvent) => Array<QueryKey>>
 > = {
   // The list and search show the contact's row; the contact's own view
-  // (its history with it) is handled below.
+  // (its history with it) is handled below. A list refetches every page
+  // it has loaded, in order (TanStack's infinite query): ten pages are ten
+  // round trips per burst, in the background. A1: an email shared with
+  // other contacts makes their "also used by" warnings stale too.
   contacts: (slug) => [keys.list(slug), keys.search(slug)],
   // Definitions: the filters, the form's dropdowns, every value's label.
   contact_fields: (slug) => [keys.fields(slug), keys.contacts(slug)],
@@ -37,6 +54,13 @@ const INVALIDATES: Partial<
 /**
  * Writes this tab made and has already refetched after (the save hooks
  * call `ownWrite` with each answer): their events change nothing here.
+ * Only when the answer arrives first: the api publishes after commit,
+ * before it writes the response, so the event can win the race. Then the
+ * event refetches what the save's own invalidation refetches too, and
+ * its key lapses unused. Extra requests, never a missed change.
+ * (Registering the counters before the POST would be exact for the
+ * slices that save, but wrong for a stale one: its next counter is the
+ * other writer's.)
  */
 const own = new Set<string>()
 const ownKey = (slug: string, id: string, contract: string, counter: number) =>
@@ -105,24 +129,70 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
   }
 }
 
+/** The last event id each tenant's stream got (see the top). */
+const cursors = new Map<string, number>()
+
+/** A cold load's `/boot`: the stream opens after its snapshot. */
+export function setCursor(slug: string, seq: number) {
+  cursors.set(slug, seq)
+}
+
+/** Waits before reopening a refused stream: 1 s, 2 s, 5 s, then 10 s. */
+const BACKOFF_MS = [1_000, 2_000, 5_000, 10_000]
+
 /** Follow the tenant's events while mounted (the tenant layout). */
 export function useOrgEvents(slug: string) {
   const qc = useQueryClient()
   useEffect(() => {
     if (typeof EventSource === 'undefined') return
-    const source = new EventSource(apiUrl(tenantPath(slug, 'events')), {
-      withCredentials: true,
-    })
-    source.onmessage = (m: MessageEvent<string>) => {
-      let e: OrgEvent
-      try {
-        e = JSON.parse(m.data) as OrgEvent
-      } catch {
-        return
-      }
-      applyEvent(qc, slug, e)
+    let source: EventSource | undefined
+    let retry: ReturnType<typeof setTimeout> | undefined
+    let failures = 0
+    // Every event and reset carries an id: the cursor follows it.
+    const seen = (m: MessageEvent) => {
+      const id = Number(m.lastEventId)
+      if (m.lastEventId !== '' && Number.isSafeInteger(id))
+        cursors.set(slug, id)
     }
-    source.addEventListener('reset', () => invalidate(qc, ['t', slug]))
-    return () => source.close()
+    const open = () => {
+      const after = cursors.get(slug)
+      const path = tenantPath(slug, 'events')
+      const s = (source = new EventSource(
+        apiUrl(after === undefined ? path : `${path}?after=${after}`),
+        { withCredentials: true },
+      ))
+      s.onopen = () => {
+        failures = 0
+        // Live from now: whatever was read before may be behind.
+        if (after === undefined) invalidate(qc, ['t', slug])
+      }
+      s.onmessage = (m: MessageEvent<string>) => {
+        seen(m)
+        let e: OrgEvent
+        try {
+          e = JSON.parse(m.data) as OrgEvent
+        } catch {
+          return
+        }
+        applyEvent(qc, slug, e)
+      }
+      s.addEventListener('reset', (m) => {
+        seen(m)
+        invalidate(qc, ['t', slug])
+      })
+      s.onerror = () => {
+        // CONNECTING: the browser is retrying with Last-Event-ID itself.
+        if (s.readyState !== EventSource.CLOSED) return
+        s.close()
+        const wait = BACKOFF_MS[Math.min(failures, BACKOFF_MS.length - 1)]
+        failures += 1
+        retry = setTimeout(open, wait)
+      }
+    }
+    open()
+    return () => {
+      clearTimeout(retry)
+      source?.close()
+    }
   }, [qc, slug])
 }

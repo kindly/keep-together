@@ -50,7 +50,9 @@ export const PENDING: ReadonlyArray<Pending> = [
   // B2: gifts and Gift Aid.
   { step: 'B2', file: 'gift-record.spec.ts' },
   { step: 'B2', file: 'gifts.spec.ts' },
-  { step: 'B2', title: /gift/i },
+  { step: 'B2', title: /B's gift is not A's to open/ },
+  { step: 'B2', title: /A's record-gift search finds none of B's/ },
+  { step: 'B2', title: /the Donations menu offers Record a gift/ },
   // Its header check includes the Donations menu.
   { step: 'B2', title: /goes straight to your group’s home/ },
 ]
