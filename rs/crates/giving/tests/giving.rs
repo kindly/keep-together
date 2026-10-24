@@ -12,7 +12,7 @@ use contracts::{
     ContractError, Ctx, Exec, Executed, Source, canonical, execute, restore, restore_entity_to,
 };
 use giving::types::{AllocationRow, GiftPayload, Method, Status, StatusPayload};
-use giving::{GIFT, REGISTRY, RECENT_LIMIT, STATUS};
+use giving::{GIFT, RECENT_LIMIT, REGISTRY, STATUS};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 use sources::{CODE, SourceCodePayload};
@@ -58,8 +58,12 @@ fn world() -> World {
         max_open: StoreConfig::DEFAULT_MAX_OPEN,
     })
     .unwrap();
-    let a = store.org(&store.create_tenant("alpha", "Alpha").unwrap().id).unwrap();
-    let b = store.org(&store.create_tenant("beta", "Beta").unwrap().id).unwrap();
+    let a = store
+        .org(&store.create_tenant("alpha", "Alpha").unwrap().id)
+        .unwrap();
+    let b = store
+        .org(&store.create_tenant("beta", "Beta").unwrap().id)
+        .unwrap();
     for db in [&a, &b] {
         tx(db, sources::seed_new_org).unwrap();
     }
@@ -180,7 +184,12 @@ fn change_part(db: &OrgDb, id: &str, f: impl FnOnce(&mut SourceCodePayload)) {
     };
     f(&mut next);
     tx(db, |ctx| {
-        execute(ctx, &CODE, next, Exec::update(id, Some(p.save_version), Source::Ui))
+        execute(
+            ctx,
+            &CODE,
+            next,
+            Exec::update(id, Some(p.save_version), Source::Ui),
+        )
     })
     .unwrap();
 }
@@ -223,14 +232,27 @@ impl World {
         self.save_as(ANN, id, expected, p)
     }
 
-    fn save_as(&self, who: i64, id: &str, expected: i64, p: GiftPayload) -> Result<Executed, ContractError> {
+    fn save_as(
+        &self,
+        who: i64,
+        id: &str,
+        expected: i64,
+        p: GiftPayload,
+    ) -> Result<Executed, ContractError> {
         tx_as(&self.a, who, None, |ctx| {
             execute(ctx, &GIFT, p, Exec::update(id, Some(expected), Source::Ui))
         })
     }
 
-    fn set_status(&self, id: &str, expected: i64, status: Status) -> Result<Executed, ContractError> {
-        tx(&self.a, |ctx| giving::set_status(ctx, id, expected, status, Source::Ui))
+    fn set_status(
+        &self,
+        id: &str,
+        expected: i64,
+        status: Status,
+    ) -> Result<Executed, ContractError> {
+        tx(&self.a, |ctx| {
+            giving::set_status(ctx, id, expected, status, Source::Ui)
+        })
     }
 
     /// The gift row's columns that matter here.
@@ -299,7 +321,9 @@ impl World {
                 "SELECT id, contract, counter, group_id, group_name FROM revisions
                  WHERE entity = 'gifts' AND entity_id = ?1 ORDER BY id",
             )?
-            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+            .query_map([id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
             .collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -364,7 +388,10 @@ fn a_client_key_already_on_a_gift_is_refused_as_duplicate() {
             ..w.gift(500)
         })
         .unwrap_err();
-    assert!(matches!(&err, ContractError::Duplicate { id: dup } if *dup == id), "{err:?}");
+    assert!(
+        matches!(&err, ContractError::Duplicate { id: dup } if *dup == id),
+        "{err:?}"
+    );
     assert_eq!(w.revisions(&id).len(), 2, "the refusal wrote nothing");
     // An edit keeps the key (system-owned).
     w.save(&id, 0, w.gift(2500)).unwrap();
@@ -416,7 +443,10 @@ fn runs_both_contracts_in_one_group_named_after_the_gift() {
     );
     assert_eq!(revs[0].3, revs[1].3);
     assert!(revs[0].3.is_some());
-    assert_eq!(revs[0].4.as_deref(), Some("gift £20 cash, Street-Wesser-001"));
+    assert_eq!(
+        revs[0].4.as_deref(),
+        Some("gift £20 cash, Street-Wesser-001")
+    );
 }
 
 /// "marks the code used, with its detail and category"
@@ -501,7 +531,9 @@ fn refuses_unstorable_gifts_and_writes_nothing() {
         let fields = problem_fields(w.create(p).unwrap_err());
         assert!(fields.contains(&field.to_owned()), "{field}: {fields:?}");
     }
-    let n: i64 = read(&w.a, |c| Ok(c.query_row("SELECT count(*) FROM gifts", [], |r| r.get(0))?));
+    let n: i64 = read(&w.a, |c| {
+        Ok(c.query_row("SELECT count(*) FROM gifts", [], |r| r.get(0))?)
+    });
     assert_eq!(n, 0);
 }
 
@@ -511,10 +543,15 @@ fn refuses_an_archived_code_and_writes_nothing() {
     let w = world();
     archive(&w.a, &w.street.detail);
     let groups = |w: &World| -> i64 {
-        read(&w.a, |c| Ok(c.query_row("SELECT count(*) FROM command_groups", [], |r| r.get(0))?))
+        read(&w.a, |c| {
+            Ok(c.query_row("SELECT count(*) FROM command_groups", [], |r| r.get(0))?)
+        })
     };
     let before = groups(&w);
-    assert_eq!(reason(w.create(w.gift(2000)).unwrap_err()), "archived_source_code");
+    assert_eq!(
+        reason(w.create(w.gift(2000)).unwrap_err()),
+        "archived_source_code"
+    );
     assert_eq!(groups(&w), before);
     assert!(!w.used(&w.street.version));
 }
@@ -587,7 +624,10 @@ fn organisation_b_can_neither_read_nor_change_as_gift() {
     })
     .unwrap_err();
     assert!(matches!(err, ContractError::NotFound), "{err:?}");
-    let err = tx(&w.b, |ctx| giving::set_status(ctx, &id, 1, Status::Void, Source::Ui)).unwrap_err();
+    let err = tx(&w.b, |ctx| {
+        giving::set_status(ctx, &id, 1, Status::Void, Source::Ui)
+    })
+    .unwrap_err();
     assert!(matches!(err, ContractError::NotFound), "{err:?}");
     assert_eq!(
         read(&w.a, |c| Ok(giving::describe_gift(c, &id)?)),
@@ -633,8 +673,18 @@ fn the_projection_follows_edits_by_allocation_key() {
         .collect();
     rows.sort();
     let mut want = vec![
-        (w.street.version.clone(), w.street.detail.clone(), 3000, "2026-10-01".to_owned()),
-        (w.online.version.clone(), w.online.detail.clone(), 2000, "2026-10-01".to_owned()),
+        (
+            w.street.version.clone(),
+            w.street.detail.clone(),
+            3000,
+            "2026-10-01".to_owned(),
+        ),
+        (
+            w.online.version.clone(),
+            w.online.detail.clone(),
+            2000,
+            "2026-10-01".to_owned(),
+        ),
     ];
     want.sort();
     assert_eq!(rows, want);
@@ -655,7 +705,13 @@ fn the_projection_follows_edits_by_allocation_key() {
     assert_eq!(rows.len(), 1);
     assert_eq!(
         (&rows[0].0, &rows[0].1, &rows[0].2, &rows[0].3, rows[0].5),
-        (&first, &w.online.version, &w.online.detail, &w.online.category, 5000)
+        (
+            &first,
+            &w.online.version,
+            &w.online.detail,
+            &w.online.category,
+            5000
+        )
     );
     assert_eq!(w.keys(&id), [first]);
     w.b_untouched();
@@ -710,7 +766,12 @@ fn status_and_gift_edits_never_conflict() {
     w.save(&id, 0, w.gift(2500)).unwrap();
     let g = w.stored(&id);
     assert_eq!(
-        (&g["status"], &g["amount"], &g["giftVersion"], &g["statusVersion"]),
+        (
+            &g["status"],
+            &g["amount"],
+            &g["giftVersion"],
+            &g["statusVersion"]
+        ),
         (&json!("void"), &json!(2500), &json!(1), &json!(2))
     );
 }
@@ -733,7 +794,10 @@ fn an_unchanged_archived_code_is_kept_and_a_new_archived_one_refused() {
     assert_eq!(w.stored(&id)["receivedOn"], "2026-10-19");
     // The gift page's picker shows it marked archived.
     let view = read(&w.a, |c| Ok(giving::get(c, &id)?.unwrap()));
-    assert_eq!(view.gift.allocations[0].code.as_deref(), Some("Street-Wesser-001"));
+    assert_eq!(
+        view.gift.allocations[0].code.as_deref(),
+        Some("Street-Wesser-001")
+    );
     assert!(!view.gift.allocations[0].is_active);
     archive(&w.a, &w.online.category);
     let err = w
@@ -756,7 +820,10 @@ fn entered_by_survives_another_members_save_and_a_restore() {
     let id = w.create(w.gift(2000)).unwrap();
     w.save_as(SAM, &id, 0, w.gift(2500)).unwrap();
     let created = w.revision(&id, "giving.gift", 0);
-    tx_as(&w.a, SAM, None, |ctx| restore(ctx, &REGISTRY, created, None)).unwrap();
+    tx_as(&w.a, SAM, None, |ctx| {
+        restore(ctx, &REGISTRY, created, None)
+    })
+    .unwrap();
     let g = w.stored(&id);
     assert_eq!((&g["amount"], &g["enteredBy"]), (&json!(2000), &json!(ANN)));
 }
@@ -783,7 +850,10 @@ fn void_marks_the_projection_and_unvoid_restores_it() {
     assert_eq!(w.index(&id)[0].6, "completed");
     // A stale void is refused.
     let err = w.set_status(&id, 2, Status::Void).unwrap_err();
-    assert!(matches!(err, ContractError::Stale { counter: 3, .. }), "{err:?}");
+    assert!(
+        matches!(err, ContractError::Stale { counter: 3, .. }),
+        "{err:?}"
+    );
     w.b_untouched();
 }
 
@@ -837,7 +907,10 @@ fn restore_brings_back_a_code_archived_since() {
 // ── restoring a gift to a moment ───────────────────────────────────────────
 
 fn restore_to(w: &World, id: &str, at: i64) -> Vec<String> {
-    tx(&w.a, |ctx| restore_entity_to(ctx, &REGISTRY, "gifts", id, at, &[], None)).unwrap()
+    tx(&w.a, |ctx| {
+        restore_entity_to(ctx, &REGISTRY, "gifts", id, at, &[], None)
+    })
+    .unwrap()
 }
 
 /// "brings back the amounts, and only the slice that changed"
@@ -930,15 +1003,33 @@ fn my_recent_is_only_my_gifts_newest_entered_first_void_marked() {
     for i in 0..RECENT_LIMIT as i64 + 2 {
         ids.push(w.create(w.gift(100 + i)).unwrap());
     }
-    tx_as(&w.a, SAM, None, |ctx| giving::create_gift(ctx, w.gift(999), Source::Ui, None)).unwrap();
+    tx_as(&w.a, SAM, None, |ctx| {
+        giving::create_gift(ctx, w.gift(999), Source::Ui, None)
+    })
+    .unwrap();
     w.set_status(ids.last().unwrap(), 1, Status::Void).unwrap();
     let recent = read(&w.a, |c| Ok(giving::my_recent(c, ANN)?));
     let want: Vec<String> = ids.iter().rev().take(RECENT_LIMIT).cloned().collect();
-    assert_eq!(recent.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), want);
+    assert_eq!(
+        recent.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        want
+    );
     let top = &recent[0];
     assert_eq!(
-        (top.contact_id.as_str(), top.contact_name.as_str(), top.amount, top.status, top.method),
-        (w.jo.as_str(), "Jo Bloggs", 100 + RECENT_LIMIT as i64 + 1, Status::Void, Method::Cash)
+        (
+            top.contact_id.as_str(),
+            top.contact_name.as_str(),
+            top.amount,
+            top.status,
+            top.method
+        ),
+        (
+            w.jo.as_str(),
+            "Jo Bloggs",
+            100 + RECENT_LIMIT as i64 + 1,
+            Status::Void,
+            Method::Cash
+        )
     );
     assert!(recent[1..].iter().all(|r| r.status == Status::Completed));
     let theirs = read(&w.a, |c| Ok(giving::my_recent(c, SAM)?));
@@ -964,14 +1055,27 @@ fn by_contact_is_newest_date_first_a_page_at_a_time_codes_named() {
     .unwrap();
     let first = read(&w.a, |c| giving::by_contact(c, &w.jo, None, 2));
     assert_eq!(
-        first.rows.iter().map(|g| g.received_on.as_str()).collect::<Vec<_>>(),
+        first
+            .rows
+            .iter()
+            .map(|g| g.received_on.as_str())
+            .collect::<Vec<_>>(),
         ["2026-10-20", "2026-10-12"]
     );
-    assert_eq!(first.rows[0].allocations[0].code.as_deref(), Some("Street-Wesser-001"));
-    assert!(!first.is_done);
-    let second = read(&w.a, |c| giving::by_contact(c, &w.jo, first.next_cursor.as_deref(), 2));
     assert_eq!(
-        second.rows.iter().map(|g| g.received_on.as_str()).collect::<Vec<_>>(),
+        first.rows[0].allocations[0].code.as_deref(),
+        Some("Street-Wesser-001")
+    );
+    assert!(!first.is_done);
+    let second = read(&w.a, |c| {
+        giving::by_contact(c, &w.jo, first.next_cursor.as_deref(), 2)
+    });
+    assert_eq!(
+        second
+            .rows
+            .iter()
+            .map(|g| g.received_on.as_str())
+            .collect::<Vec<_>>(),
         ["2026-10-05"]
     );
     assert!(second.is_done);
@@ -979,7 +1083,9 @@ fn by_contact_is_newest_date_first_a_page_at_a_time_codes_named() {
     let later = w.create(w.gift(2000)).unwrap();
     let one = read(&w.a, |c| giving::by_contact(c, &w.jo, None, 1));
     assert_eq!(one.rows[0].id, later);
-    let next = read(&w.a, |c| giving::by_contact(c, &w.jo, one.next_cursor.as_deref(), 1));
+    let next = read(&w.a, |c| {
+        giving::by_contact(c, &w.jo, one.next_cursor.as_deref(), 1)
+    });
     assert_eq!(next.rows[0].received_on, "2026-10-20");
     assert_ne!(next.rows[0].id, later);
     // A cursor this list never gave is refused.
@@ -1009,7 +1115,10 @@ fn get_has_the_donor_and_codes_and_history_is_moments() {
         (w.jo.as_str(), "Jo Bloggs", Kind::Individual)
     );
     let a = &view.gift.allocations[0];
-    assert_eq!((a.code.as_deref(), a.is_active, a.amount), (Some("Street-Wessex-001"), true, 2000));
+    assert_eq!(
+        (a.code.as_deref(), a.is_active, a.amount),
+        (Some("Street-Wessex-001"), true, 2000)
+    );
 
     let history = read(&w.a, |c| giving::history(c, &id, None, 10));
     let moments: Vec<(Option<String>, Vec<String>)> = history

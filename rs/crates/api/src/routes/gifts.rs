@@ -11,13 +11,15 @@ use contacts::donors::{
     set_home_address,
 };
 use contacts::types::{Details, Kind};
-use contracts::{ContractError, Ctx, Exec, Source, command_group, execute};
-use giftaid::{DeclarationPayload, DeclarationSummary, HMRC_MODEL_WORDING_VERSION, make_declaration, uk_date};
-use giving::types::{
-    AllocationRow, GiftPage, GiftPayload, GiftSaved, GiftView, Method, RecentGift,
-    SaveGift, SetGiftStatus,
-};
 use contracts::history::MomentPage;
+use contracts::{ContractError, Ctx, Exec, Source, command_group, execute};
+use giftaid::{
+    DeclarationPayload, DeclarationSummary, HMRC_MODEL_WORDING_VERSION, make_declaration, uk_date,
+};
+use giving::types::{
+    AllocationRow, GiftPage, GiftPayload, GiftSaved, GiftView, Method, RecentGift, SaveGift,
+    SetGiftStatus,
+};
 use serde::{Deserialize, Serialize};
 use sources::CodeDescription;
 use ts_rs::TS;
@@ -332,9 +334,16 @@ pub struct RecordedGift {
 /// allocation's (the page sends one). Any refusal fails the transaction,
 /// so nothing of the save is left behind: no contact, no contact number,
 /// no gift, no group.
-pub fn record_gift(ctx: &Ctx, req: RecordGift, source: Source) -> Result<RecordedGift, ContractError> {
+pub fn record_gift(
+    ctx: &Ctx,
+    req: RecordGift,
+    source: Source,
+) -> Result<RecordedGift, ContractError> {
     if req.client_key.trim().is_empty() {
-        return Err(ContractError::invalid("clientKey", "A client key is required"));
+        return Err(ContractError::invalid(
+            "clientKey",
+            "A client key is required",
+        ));
     }
     // Checked first so a repeat names the gift, not the new contact.
     if let Some(id) = giving::by_client_key(ctx.tx.read(), &req.client_key)? {
@@ -358,7 +367,10 @@ pub fn record_gift(ctx: &Ctx, req: RecordGift, source: Source) -> Result<Recorde
     gift.contact_id = match req.contact {
         DonorRef::Existing(id) => {
             if contacts::donors::kind_of(ctx.tx.read(), &id)?.is_none() {
-                return Err(ContractError::rejected("unknown_contact", "Contact must exist"));
+                return Err(ContractError::rejected(
+                    "unknown_contact",
+                    "Contact must exist",
+                ));
             }
             id
         }
@@ -381,7 +393,12 @@ pub fn record_gift(ctx: &Ctx, req: RecordGift, source: Source) -> Result<Recorde
                 source,
                 &group,
             )?;
-            if let Some(email) = new.email.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            if let Some(email) = new
+                .email
+                .as_deref()
+                .map(str::trim)
+                .filter(|e| !e.is_empty())
+            {
                 add_first_email(ctx, &created.id, email, source, &group)?;
             }
             created.id
@@ -403,7 +420,8 @@ pub fn record_gift(ctx: &Ctx, req: RecordGift, source: Source) -> Result<Recorde
     let declaration_id = match req.gift_aid {
         None => None,
         Some(tick) => {
-            let donor = describe_donor(ctx.tx.read(), &contact_id)?.ok_or(ContractError::NotFound)?;
+            let donor =
+                describe_donor(ctx.tx.read(), &contact_id)?.ok_or(ContractError::NotFound)?;
             let (line1, postcode) = match typed {
                 Some(t) => (t.line1, t.postcode),
                 None => (donor.home.line1, donor.home.postcode),
@@ -415,7 +433,9 @@ pub fn record_gift(ctx: &Ctx, req: RecordGift, source: Source) -> Result<Recorde
                     scope: tick.scope.unwrap_or(giftaid::Scope::FutureAndPast4y),
                     gift_id: Some(gift_id.clone()),
                     made_on: tick.made_on.unwrap_or_else(|| uk_date(ctx.at)),
-                    method: tick.method.unwrap_or(giftaid::Method::StaffTickedNoEvidence),
+                    method: tick
+                        .method
+                        .unwrap_or(giftaid::Method::StaffTickedNoEvidence),
                     wording_version: HMRC_MODEL_WORDING_VERSION.into(),
                     first_name: donor.first_name,
                     last_name: donor.last_name,

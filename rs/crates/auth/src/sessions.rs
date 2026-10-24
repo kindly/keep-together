@@ -10,7 +10,9 @@
 //!    SHA-256 is stored, and a request is looked up by that hash.
 //! 2. A session is `second_factor` or `enrol` (password checked, nothing
 //!    else reachable, [`crate::PARTIAL_TTL_MS`]) or `full` (expires
-//!    [`crate::SESSION_TTL_MS`] after sign-in; not sliding).
+//!    [`crate::SESSION_TTL_MS`] after sign-in, not sliding, and sooner
+//!    after [`crate::IDLE_MS`] without a request: `last_seen`, written by
+//!    [`touch`] at most every [`crate::TOUCH_MS`]).
 //! 3. The token rotates (new token, old row gone, one transaction) when a
 //!    sign-in completes, on step-up, and when the user's own role changes.
 //! 4. Revoke-all deletes every row of a user: on password reset, 2FA
@@ -23,7 +25,9 @@
 //!    for [`crate::PARTIAL_TTL_MS`] at most: cleared when enrolment
 //!    completes (the row is replaced or the column nulled), unusable once
 //!    expired, and nulled by the sweep. It is never logged or returned
-//!    after the enrol response.
+//!    after the enrol response, and stored sealed ([`crate::keys`]), like
+//!    an enrolled secret. Emailed codes are stored as HMAC under the
+//!    pepper.
 //! 8. Handlers that act on a session re-read it inside their write
 //!    transaction ([`by_id`]) and act on that row, never on the read
 //!    that found it: a session revoked, or a code spent, in between is
@@ -33,7 +37,8 @@
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::{PARTIAL_TTL_MS, SESSION_TTL_MS, secret};
+use crate::keys::{Keys, totp_aad};
+use crate::{EMAIL_CODE_TTL_MS, IDLE_MS, PARTIAL_TTL_MS, SESSION_TTL_MS, TOUCH_MS, secret};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -73,13 +78,18 @@ pub struct Session {
     pub expires_at: i64,
     /// The last password + second factor proof (`full` only).
     pub authenticated_at: Option<i64>,
-    /// A TOTP secret being enrolled, while unexpired.
-    pub pending_secret: Option<String>,
+    /// A TOTP secret being enrolled, while unexpired; sealed
+    /// ([`pending_secret`] opens it).
+    pub pending_sealed: Option<String>,
     pub email_code_hash: Option<String>,
     pub email_code_expires: Option<i64>,
     pub email_code_attempts: i64,
     /// Made by the dev login (`KEEP_DEV_AUTH`).
     pub dev: bool,
+    pub created_at: i64,
+    pub last_seen: i64,
+    /// The browser it was made from, for the sessions list.
+    pub user_agent: Option<String>,
 }
 
 /// A new session for `user`: the cookie token (only its hash is kept).
@@ -90,11 +100,28 @@ pub fn create(conn: &Connection, user: i64, stage: Stage, now: i64) -> rusqlite:
         _ => (now + PARTIAL_TTL_MS, None),
     };
     conn.execute(
-        "INSERT INTO auth_sessions (token_hash, user_id, stage, created_at, expires_at, authenticated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO auth_sessions (token_hash, user_id, stage, created_at, expires_at, authenticated_at, last_seen)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?4)",
         params![secret::hash(&token), user, stage.as_str(), now, expires, authenticated],
     )?;
     Ok(token)
+}
+
+/// Longest user agent kept.
+const USER_AGENT_MAX: usize = 200;
+
+/// Note the browser a session was made from (shown in the sessions list).
+pub fn set_user_agent(conn: &Connection, id: &str, user_agent: &str) -> rusqlite::Result<()> {
+    let ua: String = user_agent
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(USER_AGENT_MAX)
+        .collect();
+    conn.execute(
+        "UPDATE auth_sessions SET user_agent = ?2 WHERE token_hash = ?1",
+        params![id, ua],
+    )?;
+    Ok(())
 }
 
 /// A full session from the dev login (no password, no second factor).
@@ -116,15 +143,17 @@ pub fn get(conn: &Connection, token: &str, now: i64) -> rusqlite::Result<Option<
     by_id(conn, &secret::hash(token), now)
 }
 
-/// The live session with stored hash `id`.
+/// The live session with stored hash `id`: unexpired, and a full one
+/// used within [`IDLE_MS`].
 pub fn by_id(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Option<Session>> {
     conn.query_row(
         "SELECT s.token_hash, s.user_id, u.email, s.stage, s.expires_at, s.authenticated_at,
                 CASE WHEN s.pending_secret_expires > ?2 THEN s.pending_secret END, s.email_code_hash, s.email_code_expires, s.email_code_attempts,
-                s.dev
+                s.dev, s.created_at, s.last_seen, s.user_agent
          FROM auth_sessions s JOIN users u ON u.id = s.user_id
-         WHERE s.token_hash = ?1 AND s.expires_at > ?2",
-        params![id, now],
+         WHERE s.token_hash = ?1 AND s.expires_at > ?2
+           AND (s.stage <> 'full' OR s.last_seen > ?2 - ?3)",
+        params![id, now, IDLE_MS],
         |r| {
             Ok(Session {
                 id: r.get(0)?,
@@ -133,15 +162,68 @@ pub fn by_id(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Option<S
                 stage: Stage::parse(&r.get::<_, String>(3)?),
                 expires_at: r.get(4)?,
                 authenticated_at: r.get(5)?,
-                pending_secret: r.get(6)?,
+                pending_sealed: r.get(6)?,
                 email_code_hash: r.get(7)?,
                 email_code_expires: r.get(8)?,
                 email_code_attempts: r.get(9)?,
                 dev: r.get(10)?,
+                created_at: r.get(11)?,
+                last_seen: r.get(12)?,
+                user_agent: r.get(13)?,
             })
         },
     )
     .optional()
+}
+
+/// Whether `s` is due a [`touch`].
+pub fn needs_touch(s: &Session, now: i64) -> bool {
+    now - s.last_seen >= TOUCH_MS
+}
+
+/// The session was used now (the idle timeout restarts).
+pub fn touch(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE auth_sessions SET last_seen = ?2 WHERE token_hash = ?1 AND last_seen < ?2",
+        params![id, now],
+    )?;
+    Ok(())
+}
+
+/// One of a user's signed-in sessions, for "Your sessions".
+#[derive(Clone, Debug)]
+pub struct Listed {
+    pub created_at: i64,
+    pub last_seen: i64,
+    pub user_agent: Option<String>,
+    /// The one asking.
+    pub current: bool,
+}
+
+/// `user`'s live signed-in sessions (dev-login ones only if `dev`),
+/// most recently used first.
+pub fn list(
+    conn: &Connection,
+    user: i64,
+    current: &str,
+    dev: bool,
+    now: i64,
+) -> rusqlite::Result<Vec<Listed>> {
+    let mut stmt = conn.prepare(
+        "SELECT created_at, last_seen, user_agent, token_hash = ?2 FROM auth_sessions
+         WHERE user_id = ?1 AND stage = 'full' AND expires_at > ?3 AND last_seen > ?3 - ?4
+           AND (dev = 0 OR ?5)
+         ORDER BY last_seen DESC",
+    )?;
+    stmt.query_map(params![user, current, now, IDLE_MS, dev], |r| {
+        Ok(Listed {
+            created_at: r.get(0)?,
+            last_seen: r.get(1)?,
+            user_agent: r.get(2)?,
+            current: r.get(3)?,
+        })
+    })?
+    .collect()
 }
 
 /// The sign-in is complete: replace the partial session with a full one.
@@ -153,7 +235,11 @@ pub fn complete(conn: &Connection, s: &Session, now: i64) -> rusqlite::Result<St
     if n == 0 {
         return Err(rusqlite::Error::QueryReturnedNoRows);
     }
-    create(conn, s.user, Stage::Full, now)
+    let token = create(conn, s.user, Stage::Full, now)?;
+    if let Some(ua) = &s.user_agent {
+        set_user_agent(conn, &secret::hash(&token), ua)?;
+    }
+    Ok(token)
 }
 
 /// Step-up: a new token, signed in now, same expiry.
@@ -194,25 +280,47 @@ pub fn set_stage(conn: &Connection, id: &str, stage: Stage) -> rusqlite::Result<
     Ok(())
 }
 
+/// A TOTP secret (base32) for `s` to confirm, stored sealed.
 pub fn set_pending_secret(
     conn: &Connection,
-    id: &str,
+    keys: &Keys,
+    s: &Session,
     secret_b32: &str,
     now: i64,
 ) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE auth_sessions SET pending_secret = ?2, pending_secret_expires = ?3 WHERE token_hash = ?1",
-        params![id, secret_b32, now + PARTIAL_TTL_MS],
+        params![
+            s.id,
+            keys.seal(&totp_aad(s.user), secret_b32),
+            now + PARTIAL_TTL_MS
+        ],
     )?;
     Ok(())
 }
 
-/// A new emailed code for this session (replacing any earlier one).
-pub fn set_email_code(conn: &Connection, id: &str, code: &str, now: i64) -> rusqlite::Result<()> {
+/// The TOTP secret `s` is enrolling, if unexpired (and it opens).
+pub fn pending_secret(keys: &Keys, s: &Session) -> Option<String> {
+    keys.open(&totp_aad(s.user), s.pending_sealed.as_deref()?)
+}
+
+fn email_mac(keys: &Keys, id: &str, code: &str) -> String {
+    keys.mac(&format!("email:{id}"), code)
+}
+
+/// A new emailed code for this session (replacing any earlier one),
+/// [`EMAIL_CODE_TTL_MS`] long.
+pub fn set_email_code(
+    conn: &Connection,
+    keys: &Keys,
+    id: &str,
+    code: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE auth_sessions SET email_code_hash = ?2, email_code_expires = ?3, email_code_attempts = 0
          WHERE token_hash = ?1",
-        params![id, secret::hash(code), now + PARTIAL_TTL_MS],
+        params![id, email_mac(keys, id, code), now + EMAIL_CODE_TTL_MS],
     )?;
     Ok(())
 }
@@ -222,6 +330,7 @@ pub fn set_email_code(conn: &Connection, id: &str, code: &str, now: i64) -> rusq
 /// gone.
 pub fn check_email_code(
     conn: &Connection,
+    keys: &Keys,
     s: &Session,
     code: &str,
     now: i64,
@@ -231,7 +340,7 @@ pub fn check_email_code(
     let ok = live
         && s.email_code_hash
             .as_deref()
-            .is_some_and(|h| secret::same(h, &secret::hash(code.trim())));
+            .is_some_and(|h| secret::same(h, &email_mac(keys, &s.id, code.trim())));
     if ok || s.email_code_attempts + 1 >= crate::EMAIL_CODE_ATTEMPTS {
         conn.execute(
             "UPDATE auth_sessions SET email_code_hash = NULL, email_code_expires = NULL,
@@ -257,8 +366,16 @@ pub fn revoke_user(conn: &Connection, user: i64) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM auth_sessions WHERE user_id = ?1", [user])
 }
 
+/// Every partial session of `user` (the second factor is locked: S1 M1).
+pub fn revoke_partial(conn: &Connection, user: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM auth_sessions WHERE user_id = ?1 AND stage <> 'full'",
+        [user],
+    )
+}
+
 /// Every session of `user` except `keep` (a password change keeps the
-/// session it was made from).
+/// session it was made from; "sign out other sessions").
 pub fn revoke_others(conn: &Connection, user: i64, keep: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM auth_sessions WHERE user_id = ?1 AND token_hash <> ?2",
@@ -274,7 +391,11 @@ pub fn sweep(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
          WHERE pending_secret_expires <= ?1",
         [now],
     )?;
-    conn.execute("DELETE FROM auth_sessions WHERE expires_at <= ?1", [now])
+    conn.execute(
+        "DELETE FROM auth_sessions WHERE expires_at <= ?1
+            OR (stage = 'full' AND last_seen <= ?1 - ?2)",
+        params![now, IDLE_MS],
+    )
 }
 
 #[cfg(test)]
@@ -289,8 +410,77 @@ mod tests {
              INSERT INTO users (id, email) VALUES (1, 'ann@alpha.org');",
         )
         .unwrap();
-        c.execute_batch(crate::SCHEMA.steps[0]).unwrap();
+        for step in crate::SCHEMA.steps {
+            c.execute_batch(step).unwrap();
+        }
         c
+    }
+
+    /// M6: a full session ends after 12 idle hours, however much of its 7
+    /// days is left; a touch restarts the clock, at most every 5 minutes.
+    #[test]
+    fn a_full_session_ends_after_twelve_idle_hours() {
+        let c = db();
+        let token = create(&c, 1, Stage::Full, 0).unwrap();
+        let id = secret::hash(&token);
+        assert!(get(&c, &token, IDLE_MS - 1).unwrap().is_some());
+        assert!(get(&c, &token, IDLE_MS).unwrap().is_none(), "idle");
+        let s = get(&c, &token, 1000).unwrap().unwrap();
+        assert!(!needs_touch(&s, TOUCH_MS - 1));
+        assert!(needs_touch(&s, TOUCH_MS));
+        touch(&c, &id, 11 * 60 * 60 * 1000).unwrap();
+        let later = 20 * 60 * 60 * 1000;
+        assert!(get(&c, &token, later).unwrap().is_some(), "used at 11 h");
+        assert!(
+            get(&c, &token, SESSION_TTL_MS).unwrap().is_none(),
+            "absolute"
+        );
+        // The sweep deletes an idle one.
+        assert_eq!(sweep(&c, 11 * 60 * 60 * 1000 + IDLE_MS).unwrap(), 1);
+    }
+
+    /// M2: the stored forms of a pending TOTP secret and of an emailed
+    /// code don't hold the secret, and only these keys open or match them.
+    #[test]
+    fn pending_secrets_and_emailed_codes_are_not_stored_in_the_clear() {
+        let c = db();
+        let keys = Keys::dev();
+        let token = create(&c, 1, Stage::Enrol, 0).unwrap();
+        let s = get(&c, &token, 1).unwrap().unwrap();
+        set_pending_secret(&c, &keys, &s, "JBSWY3DPEHPK3PXP", 1).unwrap();
+        set_email_code(&c, &keys, &s.id, "123456", 1).unwrap();
+        let (pending, code): (String, String) = c
+            .query_row(
+                "SELECT pending_secret, email_code_hash FROM auth_sessions",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(!pending.contains("JBSWY3DPEHPK3PXP"));
+        assert_ne!(code, secret::hash("123456"), "not a bare SHA-256");
+        let s = get(&c, &token, 2).unwrap().unwrap();
+        assert_eq!(
+            pending_secret(&keys, &s).as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+        let other = Keys::parse(&Keys::generate(), &Keys::generate()).unwrap();
+        assert_eq!(pending_secret(&other, &s), None);
+        assert!(!check_email_code(&c, &other, &s, "123456", 2).unwrap());
+        let s = get(&c, &token, 3).unwrap().unwrap();
+        assert!(check_email_code(&c, &keys, &s, "123456", 3).unwrap());
+    }
+
+    /// L5: an emailed code lasts 10 minutes.
+    #[test]
+    fn an_emailed_code_lasts_ten_minutes() {
+        let c = db();
+        let keys = Keys::dev();
+        let token = create(&c, 1, Stage::SecondFactor, 0).unwrap();
+        let s = get(&c, &token, 0).unwrap().unwrap();
+        set_email_code(&c, &keys, &s.id, "123456", 0).unwrap();
+        let s = get(&c, &token, EMAIL_CODE_TTL_MS).unwrap().unwrap();
+        assert!(!check_email_code(&c, &keys, &s, "123456", EMAIL_CODE_TTL_MS).unwrap());
+        assert_eq!(EMAIL_CODE_TTL_MS, 10 * 60 * 1000);
     }
 
     /// Invariant 8: a partial session read before a revoke-all (or before

@@ -1,7 +1,7 @@
 //! A two-organisation world with real credentials, for the auth tests.
 //! alpha: ann (admin, TOTP), val (viewer, emailed code), cat (staff, TOTP,
 //! also staff in beta); beta: bob (admin, TOTP). Every password is
-//! `password-<name>`. Mail goes to an in-memory outbox.
+//! `keep-<name>-password`. Mail goes to an in-memory outbox.
 
 #![allow(dead_code)]
 
@@ -41,11 +41,12 @@ pub struct Res {
 }
 
 impl Res {
-    /// The `kt_session=…` pair the response set, if any.
+    /// The session cookie's `name=value` pair the response set, if any
+    /// (`__Host-kt_session`: test requests carry no loopback `Host`).
     pub fn cookie(&self) -> Option<String> {
         self.set_cookies
             .iter()
-            .find(|c| c.starts_with("kt_session="))
+            .find(|c| c.starts_with("__Host-kt_session=") || c.starts_with("kt_session="))
             .map(|c| c.split(';').next().unwrap().to_owned())
     }
 
@@ -67,7 +68,7 @@ pub fn secret_of(name: &str) -> String {
 }
 
 pub fn password_of(email: &str) -> String {
-    format!("password-{}", email.split('@').next().unwrap())
+    format!("keep-{}-password", email.split('@').next().unwrap())
 }
 
 pub fn now_secs() -> u64 {
@@ -75,15 +76,33 @@ pub fn now_secs() -> u64 {
 }
 
 pub fn world() -> World {
-    build(false)
+    build(false, config(), false)
 }
 
 /// As [`world`], with `KEEP_DEV_AUTH` on.
 pub fn world_dev() -> World {
-    build(true)
+    build(true, config(), false)
 }
 
-fn build(dev_auth: bool) -> World {
+/// As [`world`], with `config` (e.g. a client-IP header).
+pub fn world_with(config: Config) -> World {
+    build(false, config, false)
+}
+
+/// As [`world`], with `KEEP_MAIL=off` (staging until SES).
+pub fn world_mail_off() -> World {
+    build(false, config(), true)
+}
+
+/// The test worlds' auth config: links start at [`ORIGIN`].
+pub fn config() -> Config {
+    Config {
+        app_origin: ORIGIN.into(),
+        ..Config::default()
+    }
+}
+
+fn build(dev_auth: bool, config: Config, mail_off: bool) -> World {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(
         Store::open_with(
@@ -131,17 +150,17 @@ fn build(dev_auth: bool) -> World {
         p.with_write(|tx| {
             accounts::set_password(tx, user.0, &password_of(email), now).unwrap();
             let totp = (factor == SecondFactor::Totp).then_some((secret.as_str(), 0));
-            accounts::set_second_factor(tx, user.0, factor, totp, now)?;
-            accounts::new_recovery_codes(tx, user.0)?;
+            let keys = auth::Keys::dev();
+            accounts::set_second_factor(tx, &keys, user.0, factor, totp, now)?;
+            accounts::new_recovery_codes(tx, &keys, user.0)?;
             Ok::<_, rusqlite::Error>(())
         })
         .unwrap();
     }
-    let (mailer, outbox) = Mailer::memory();
-    let config = Config {
-        app_origin: ORIGIN.into(),
-        ..Config::default()
-    };
+    let (mut mailer, outbox) = Mailer::memory();
+    if mail_off {
+        mailer = Mailer::from_vars(|k| (k == "KEEP_MAIL").then(|| "off".to_owned())).unwrap();
+    }
     let state = AppState::new(store.clone(), dev_auth).with_auth(Runtime::new(config, mailer));
     World {
         _tmp: tmp,
@@ -283,18 +302,53 @@ impl World {
         panic!("no new mail to {to}");
     }
 
-    /// The 6-digit code in the next mail to `to`.
+    /// The next mail to `to` not handed out before that `wanted` accepts,
+    /// skipping (and handing out) others: security notices (S1 M3) arrive
+    /// between codes and links.
+    pub async fn next_mail_where(&self, to: &str, wanted: impl Fn(&Mail) -> bool) -> Mail {
+        loop {
+            let m = self.next_mail(to).await;
+            if wanted(&m) {
+                return m;
+            }
+        }
+    }
+
+    /// The 6-digit code in the next code mail to `to`.
     pub async fn emailed_code(&self, to: &str) -> String {
-        let m = self.next_mail(to).await;
-        assert!(m.subject.contains("code"), "{}", m.subject);
+        let m = self
+            .next_mail_where(to, |m| m.subject.starts_with("Your keep-together code: "))
+            .await;
         m.subject.rsplit(' ').next().unwrap().to_owned()
     }
 
     /// The token in the next link mailed to `to` (`…#<token>`).
     pub async fn emailed_token(&self, to: &str) -> String {
-        let m = self.next_mail(to).await;
+        let m = self.next_mail_where(to, |m| m.text.contains('#')).await;
         let at = m.text.find('#').expect("a link");
         m.text[at + 1..at + 65].to_owned()
+    }
+
+    /// The subjects of every mail to `to` so far.
+    pub fn subjects_to(&self, to: &str) -> Vec<String> {
+        self.outbox
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.to == to)
+            .map(|m| m.subject.clone())
+            .collect()
+    }
+
+    /// Wait until a mail to `to` with `subject` has been sent.
+    pub async fn wait_for_subject(&self, to: &str, subject: &str) {
+        for _ in 0..200 {
+            if self.subjects_to(to).iter().any(|s| s == subject) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("no mail {subject:?} to {to}: {:?}", self.subjects_to(to));
     }
 
     /// Password then second factor: a signed-in cookie.
@@ -327,7 +381,7 @@ impl World {
 
     /// Move this session's last sign-in `ms` into the past.
     pub fn age_sign_in(&self, cookie: &str, ms: i64) {
-        let hash = auth::secret::hash(cookie.trim_start_matches("kt_session="));
+        let hash = auth::secret::hash(cookie.split_once('=').unwrap().1);
         self.store
             .platform()
             .with_write(|tx| {

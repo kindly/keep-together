@@ -1,4 +1,4 @@
-import { sessionToken, expect, test } from '../fixtures'
+import { sessionCookie, sessionToken, expect, test } from '../fixtures'
 import { runId } from '../timing'
 import {
   contactForm,
@@ -64,7 +64,7 @@ test.describe('isolation', () => {
       const res = await fetch(`${instance.api}${path}`, {
         method,
         headers: {
-          cookie: `kt_session=${token}`,
+          cookie: sessionCookie(instance, token),
           ...(body !== undefined && { 'content-type': 'application/json' }),
         },
         ...(body !== undefined && { body: JSON.stringify(body) }),

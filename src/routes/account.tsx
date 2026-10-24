@@ -17,12 +17,16 @@ import {
   SignedOut,
   useAccount,
   useAccountActions,
+  useSessions,
   useSignOut,
 } from '../lib/data'
 
 export const Route = createFileRoute('/account')({ component: Account })
 
-/** Your account: password, second step, recovery codes, sign out. */
+/**
+ * Your account: password, second step, recovery codes, your sessions,
+ * sign out.
+ */
 function Account() {
   return (
     <main className="mx-auto flex max-w-lg flex-col gap-8 p-6">
@@ -88,6 +92,7 @@ function Signed() {
   if (enrolling)
     return (
       <EnrolForm
+        changing={{ current: account.method }}
         onEnrolled={(c, done) => {
           setEnrolling(false)
           setCodes(c)
@@ -136,7 +141,7 @@ function Signed() {
             type="password"
             required
             autoComplete="new-password"
-            placeholder="New password (at least 8 characters)"
+            placeholder="New password (at least 12 characters)"
             className={input}
           />
         </AuthForm>
@@ -158,15 +163,20 @@ function Signed() {
         <button
           type="button"
           className={primary}
-          onClick={() =>
-            // Changing method needs a recent sign-in: the server says so
-            // on the first enrol call; ask first instead.
-            setStepUp(() => async () => setEnrolling(true))
-          }
+          // Confirming the change asks for the password and the current
+          // factor (not a step-up: changing it doesn't renew one).
+          onClick={() => setEnrolling(true)}
         >
           Change how you sign in
         </button>
       </section>
+
+      <Sessions
+        onSignedOutOthers={() =>
+          setNotice('Your other sessions are signed out.')
+        }
+        onError={(err) => setNotice(authErrorMessage(err))}
+      />
 
       {notice && (
         <p role="status" className="text-sm text-neutral-700">
@@ -187,5 +197,60 @@ function Signed() {
         </button>
       </section>
     </>
+  )
+}
+
+const when = (ms: number) =>
+  new Date(ms).toLocaleString('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  })
+
+/**
+ * Where you're signed in (a session ends after 7 days, or 12 hours
+ * unused), and "sign out other sessions".
+ */
+function Sessions({
+  onSignedOutOthers,
+  onError,
+}: {
+  onSignedOutOthers: () => void
+  onError: (err: unknown) => void
+}) {
+  const sessions = useSessions()
+  const actions = useAccountActions()
+  if (!sessions) return null
+  const others = sessions.filter((s) => !s.current).length
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="font-medium">Your sessions</h2>
+      <ul aria-label="Your sessions" className="flex flex-col gap-2 text-sm">
+        {sessions.map((s) => (
+          <li
+            key={`${s.signedInAt}-${s.lastSeen}-${s.userAgent ?? ''}`}
+            className="rounded border border-neutral-200 p-2"
+          >
+            <p>
+              {s.userAgent ?? 'Unknown browser'}
+              {s.current && <strong> · this browser</strong>}
+            </p>
+            <p className="text-neutral-500">
+              Signed in {when(s.signedInAt)} · last used {when(s.lastSeen)}
+            </p>
+          </li>
+        ))}
+      </ul>
+      {others > 0 && (
+        <button
+          type="button"
+          className={primary}
+          onClick={() =>
+            void actions.signOutOthers().then(onSignedOutOthers, onError)
+          }
+        >
+          Sign out other sessions ({others})
+        </button>
+      )}
+    </section>
   )
 }

@@ -18,7 +18,11 @@ pub fn declaration_warnings(d: &DeclarationPayload) -> Vec<Warning> {
     // 3.6.2: the donor's name (full name recommended).
     if d.first_name.is_empty() || d.last_name.is_empty() {
         out.push(warning(
-            if d.first_name.is_empty() { "firstName" } else { "lastName" },
+            if d.first_name.is_empty() {
+                "firstName"
+            } else {
+                "lastName"
+            },
             "Name",
             "HMRC needs the donor’s first and last name",
         ));
@@ -82,7 +86,10 @@ mod tests {
     }
 
     fn anchors(d: DeclarationPayload) -> Vec<String> {
-        declaration_warnings(&d).into_iter().map(|w| w.anchor).collect()
+        declaration_warnings(&d)
+            .into_iter()
+            .map(|w| w.anchor)
+            .collect()
     }
 
     #[test]

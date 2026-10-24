@@ -492,20 +492,23 @@ async fn f_the_csrf_guard_and_rate_limits_still_apply() {
 async fn the_binary_refuses_prod_and_never_logs_secrets() {
     let tmp = tempfile::tempdir().unwrap();
     let bin = env!("CARGO_BIN_EXE_api");
+    let (settings_key, pepper) = (::auth::Keys::generate(), ::auth::Keys::generate());
     let base = |env: &str| {
         let mut cmd = std::process::Command::new(bin);
+        // A deployed environment's full config (api::auth::boot).
         cmd.env_clear()
             .env("KEEP_DATA_DIR", tmp.path())
             .env("KEEP_ENV", env)
             .env("KEEP_APP_ORIGIN", "https://staging.example")
+            .env("KEEP_CLIENT_IP_HEADER", "Fly-Client-IP")
+            .env("KEEP_SETTINGS_KEY", &settings_key)
+            .env("KEEP_AUTH_PEPPER", &pepper)
+            .env("KEEP_MAIL", "smtp")
+            .env("KEEP_SMTP_URL", "smtp://localhost:1025")
             .env("KEEP_QC_TOKEN", TOKEN);
         cmd
     };
-    let out = base("prod")
-        .env("KEEP_MAIL", "smtp")
-        .env("KEEP_SMTP_URL", "smtp://localhost:1025")
-        .output()
-        .unwrap();
+    let out = base("prod").output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -526,15 +529,19 @@ async fn the_binary_refuses_prod_and_never_logs_secrets() {
         .spawn()
         .unwrap();
     let url = format!("http://127.0.0.1:{port}");
-    let post = |path: &str, body: Value, token: &str| {
-        let (path, body, token, url) = (path.to_owned(), body, token.to_owned(), url.clone());
+    let post_as = |path: &str, body: Value, token: &str, cookie: &str| {
+        let (path, body, url) = (path.to_owned(), body, url.clone());
+        let mut extra = format!("{QC_TOKEN_HEADER}: {token}\r\n");
+        if !cookie.is_empty() {
+            extra = format!("Cookie: {cookie}\r\n");
+        }
         tokio::task::spawn_blocking(move || {
             let mut stream = std::net::TcpStream::connect(url.trim_start_matches("http://"))?;
             let body = body.to_string();
             use std::io::{Read, Write};
             write!(
                 stream,
-                "POST {path} HTTP/1.1\r\nHost: staging.example\r\n{QC_TOKEN_HEADER}: {token}\r\n\
+                "POST {path} HTTP/1.1\r\nHost: staging.example\r\n{extra}\
                  Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             )?;
@@ -543,6 +550,7 @@ async fn the_binary_refuses_prod_and_never_logs_secrets() {
             Ok::<_, std::io::Error>(out)
         })
     };
+    let post = |path: &str, body: Value, token: &str| post_as(path, body, token, "");
     // Wait for it to listen.
     let mut ready = false;
     for _ in 0..100 {
@@ -569,6 +577,47 @@ async fn the_binary_refuses_prod_and_never_logs_secrets() {
         .unwrap()
         .unwrap();
     assert!(session.starts_with("HTTP/1.1 200"), "{session}");
+    // Q3: a real sign-in with the seeded password and a code from the
+    // seeded TOTP secret, sealed under this boot's keys.
+    let cookie_of = |res: &str| {
+        res.lines()
+            .find_map(|l| {
+                l.strip_prefix("set-cookie: ")
+                    .or_else(|| l.strip_prefix("Set-Cookie: "))
+            })
+            .and_then(|c| c.split(';').next())
+            .map(str::to_owned)
+            .unwrap_or_else(|| panic!("no cookie in {res}"))
+    };
+    let password = body["users"][0]["password"].as_str().unwrap();
+    let signed = post_as(
+        "/api/auth/sign-in",
+        json!({ "email": email, "password": password }),
+        "",
+        "none=1",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(signed.starts_with("HTTP/1.1 200"), "{signed}");
+    let partial = cookie_of(&signed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let code =
+        ::auth::totp::code_at(body["users"][0]["totpSecret"].as_str().unwrap(), now).unwrap();
+    let full = post_as(
+        "/api/auth/second-factor",
+        json!({ "code": code }),
+        "",
+        &partial,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(full.starts_with("HTTP/1.1 200"), "{full}");
+    assert!(full.contains("\"stage\":\"signed_in\""), "{full}");
     let wrong = post(
         "/api/qc/seed",
         json!({ "runId": "log", "worker": 0 }),

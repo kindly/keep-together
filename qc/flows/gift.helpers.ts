@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { sessionToken } from '../fixtures'
+import { sessionCookie, sessionToken } from '../fixtures'
 import type { Instance, QcUser } from '../fixtures'
 import type { Created } from '../../src/lib/data/rust-types/Created'
 import type { Executed } from '../../src/lib/data/rust-types/Executed'
@@ -18,7 +18,7 @@ export const GIFT_ROUTE = {
 /** Who records: a session on one tenant. */
 export type Recorder = {
   inst: Instance
-  /** The `kt_session` cookie's value. */
+  /** The session cookie's value. */
   token: string
   slug: string
   /** A source code of the tenant, for every gift. */
@@ -34,7 +34,7 @@ async function call<T>(
   const res = await fetch(`${r.inst.api}/api/t/${r.slug}/${path}`, {
     method,
     headers: {
-      cookie: `kt_session=${r.token}`,
+      cookie: sessionCookie(r.inst, r.token),
       ...(body !== undefined && { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),

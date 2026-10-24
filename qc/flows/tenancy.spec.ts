@@ -1,4 +1,4 @@
-import { sessionToken, expect, test } from '../fixtures'
+import { sessionCookie, sessionToken, expect, test } from '../fixtures'
 import type { Instance } from '../fixtures'
 
 // Tenancy against id and slug manipulation (rust spike step 3, folded in
@@ -27,7 +27,7 @@ function api(inst: Instance) {
     const res = await fetch(`${inst.api}${path}`, {
       method,
       headers: {
-        cookie: `kt_session=${token}`,
+        cookie: sessionCookie(inst, token),
         ...(body !== undefined && { 'content-type': 'application/json' }),
       },
       ...(body !== undefined && { body: JSON.stringify(body) }),

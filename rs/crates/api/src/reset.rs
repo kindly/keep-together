@@ -8,22 +8,27 @@
 //! Only with `KEEP_ENV=dev` or `staging`. On staging the six
 //! `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}` must be set (Fly secrets: the
 //! boot stops naming any that is missing); on dev a missing one is made
-//! and printed. Every boot runs the seed, which writes the donors once and
-//! applies a changed password or secret.
+//! and printed, unless the user already has one (kept: a dev
+//! authenticator survives restarts). Every boot runs the seed, which
+//! writes the donors once and applies a changed password or secret from
+//! the env. TOTP secrets are sealed with auth's keys, the api's own.
 
-use seed::riverside::{self, Credential, SeedError, Seeded};
+use auth::Keys;
+use seed::riverside::{self, Credential, Origin, SeedError, Seeded};
 use store::Store;
 
 pub const SLUG: &str = riverside::SLUG;
 
 /// Seed when `KEEP_RESET_SEED` asks for it. `true` when it made the org.
-pub fn seed_from_env(store: &Store) -> Result<bool, String> {
+pub fn seed_from_env(store: &Store, keys: &Keys) -> Result<bool, String> {
     match std::env::var("KEEP_RESET_SEED").ok().as_deref() {
         None | Some("") => Ok(false),
         Some(SLUG) => {
             let keep_env = std::env::var("KEEP_ENV").ok();
-            seed(store, keep_env.as_deref(), |name| std::env::var(name).ok())
-                .map_err(|e| e.to_string())
+            seed(store, keys, keep_env.as_deref(), |name| {
+                std::env::var(name).ok()
+            })
+            .map_err(|e| e.to_string())
         }
         Some(other) => Err(format!("unknown KEEP_RESET_SEED {other:?}")),
     }
@@ -34,30 +39,59 @@ pub fn seed_from_env(store: &Store) -> Result<bool, String> {
 /// never makes one up). Also `keep dev seed-riverside`.
 pub fn riverside_with(
     store: &Store,
+    keys: &Keys,
     keep_env: Option<&str>,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<(Seeded, Vec<Credential>), SeedError> {
     riverside::allowed(keep_env)?;
-    let credentials = riverside::credentials_from_env(env, keep_env == Some("dev"))?;
-    let seeded = riverside::seed(store, &credentials, crate::schema::seed_new_org)?;
+    let mut credentials = riverside::credentials_from_env(env, keep_env == Some("dev"))?;
+    let seeded = riverside::seed(store, keys, &mut credentials, crate::schema::seed_new_org)?;
     Ok((seeded, credentials))
+}
+
+/// The auth keys for `keep dev seed-riverside`, as the api reads them:
+/// `KEEP_SETTINGS_KEY` and `KEEP_AUTH_PEPPER`, or with neither on dev the
+/// published dev keys (the local api's). Staging needs both.
+pub fn keys_from_env(
+    keep_env: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Keys, String> {
+    match (env("KEEP_SETTINGS_KEY"), env("KEEP_AUTH_PEPPER")) {
+        (Some(key), Some(pepper)) => Keys::parse(&key, &pepper).map_err(|e| e.to_string()),
+        (None, None) if keep_env == Some("dev") => Ok(Keys::dev()),
+        _ => Err("KEEP_SETTINGS_KEY and KEEP_AUTH_PEPPER are both needed (the api's own)".into()),
+    }
+}
+
+/// One credential part for a log line: the value only when this run
+/// generated it.
+pub fn shown(value: &str, origin: Origin) -> &str {
+    match origin {
+        Origin::Generated => value,
+        Origin::Kept => "(unchanged)",
+        Origin::Env => "(from env)",
+    }
 }
 
 /// [`seed_from_env`] with `KEEP_ENV` and the env passed in. Prints only
 /// generated credentials (dev): a hosted one never reaches the log.
 pub fn seed(
     store: &Store,
+    keys: &Keys,
     keep_env: Option<&str>,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<bool, SeedError> {
-    let (seeded, credentials) = riverside_with(store, keep_env, env)?;
-    for c in credentials.iter().filter(|c| c.generated) {
+    let (seeded, credentials) = riverside_with(store, keys, keep_env, env)?;
+    for c in credentials
+        .iter()
+        .filter(|c| c.password_origin == Origin::Generated || c.totp_origin == Origin::Generated)
+    {
         eprintln!(
             "riverside {} {}: password {} totp {} (KEEP_ENV=dev, generated)",
             c.role.as_str(),
             c.email,
-            c.password,
-            c.totp_secret
+            shown(&c.password, c.password_origin),
+            shown(&c.totp_secret, c.totp_origin)
         );
     }
     Ok(seeded.created)
@@ -103,8 +137,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = open(tmp.path());
         let other = store.create_tenant("other", "Other").unwrap();
-        assert!(seed(&store, Some("staging"), staging_env).unwrap());
-        assert!(!seed(&open(tmp.path()), Some("staging"), staging_env).unwrap());
+        assert!(seed(&store, &Keys::dev(), Some("staging"), staging_env).unwrap());
+        assert!(
+            !seed(
+                &open(tmp.path()),
+                &Keys::dev(),
+                Some("staging"),
+                staging_env
+            )
+            .unwrap()
+        );
         let riverside = store.platform().tenant_by_slug(SLUG).unwrap().unwrap();
         assert_eq!(contacts(&store, &riverside.id), 100);
         assert_eq!(contacts(&store, &other.id), 0);
@@ -116,7 +158,7 @@ mod tests {
         let store = open(tmp.path());
         for env in [None, Some("prod")] {
             assert!(matches!(
-                seed(&store, env, staging_env),
+                seed(&store, &Keys::dev(), env, staging_env),
                 Err(SeedError::Disabled(_))
             ));
         }
@@ -126,7 +168,7 @@ mod tests {
                 .then(|| staging_env(n))
                 .flatten()
         };
-        match seed(&store, Some("staging"), partial) {
+        match seed(&store, &Keys::dev(), Some("staging"), partial) {
             Err(SeedError::MissingCredentials(m)) => assert_eq!(
                 m,
                 [
@@ -138,6 +180,6 @@ mod tests {
         }
         assert!(store.platform().tenant_by_slug(SLUG).unwrap().is_none());
         // Dev makes the missing ones.
-        assert!(seed(&store, Some("dev"), |_| None).unwrap());
+        assert!(seed(&store, &Keys::dev(), Some("dev"), |_| None).unwrap());
     }
 }

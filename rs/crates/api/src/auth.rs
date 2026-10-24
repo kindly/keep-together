@@ -8,11 +8,14 @@
 //! - `/api/dev/*`: the dev login, honoured only with `KEEP_DEV_AUTH=1` on a
 //!   loopback bind and a loopback `Host` ([`guard`]).
 //!
-//! The cookie `kt_session` is `HttpOnly; SameSite=Lax; Path=/`, and
-//! `Secure` unless the request's `Host` is loopback. Every state-changing
+//! The cookie is `__Host-kt_session` (`Secure`, no `Domain`, so a sibling
+//! subdomain can't set or shadow it; S1 L1), or `kt_session` without
+//! `Secure` when the request's `Host` is loopback (local dev over plain
+//! http). Both are `HttpOnly; SameSite=Lax; Path=/`. Every state-changing
 //! `/api` request passes the origin check in [`guard::csrf`].
 
 mod account;
+pub mod boot;
 mod flows;
 pub mod guard;
 mod links;
@@ -20,12 +23,13 @@ mod members;
 
 pub(crate) use ::auth::users;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use auth::limits::Limits;
-use auth::{Session, Stage};
+use auth::notices::{self, Notice};
+use auth::{Keys, Session, Stage};
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{FromRequestParts, State};
 use axum::http::header::{COOKIE, HOST, SET_COOKIE};
@@ -44,7 +48,11 @@ use crate::error::{ApiError, Body};
 use crate::timing::Timing;
 use crate::{AppState, RoleName, blocking};
 
-pub const COOKIE_NAME: &str = "kt_session";
+/// The session cookie's name on a deployed (non-loopback) host.
+pub const COOKIE_NAME: &str = "__Host-kt_session";
+/// ...and on a loopback host (local dev over http: `__Host-` needs
+/// `Secure`).
+pub const DEV_COOKIE_NAME: &str = "kt_session";
 
 /// How often a live stream re-checks that its session and membership
 /// still exist (a revocation from another process, e.g. `keep auth`,
@@ -82,21 +90,50 @@ pub(crate) enum Revoked {
     User(i64),
 }
 
-/// Auth's process state: config, mail, rate limits, revocations.
+/// Auth's process state: config, mail, keys, rate limits, revocations.
 pub struct Runtime {
     pub config: Config,
     pub mailer: Mailer,
+    /// TOTP sealing key and code pepper ([`auth::keys`]).
+    pub keys: Keys,
     pub limits: Limits,
     revoked: broadcast::Sender<Revoked>,
 }
 
 impl Runtime {
+    /// With the published dev keys ([`Keys::dev`]); [`boot::runtime`] sets
+    /// real ones.
     pub fn new(config: Config, mailer: Mailer) -> Self {
         Self {
             config,
             mailer,
+            keys: Keys::dev(),
             limits: Limits::default(),
             revoked: broadcast::channel(256).0,
+        }
+    }
+
+    pub fn with_keys(mut self, keys: Keys) -> Self {
+        self.keys = keys;
+        self
+    }
+
+    /// Mail `to` a security notice (S1 M3), in the background. Dropped
+    /// when mail is off.
+    pub(crate) fn notify(&self, to: &str, notice: Notice) {
+        self.send(notices::mail(to, notice, &self.config.app_origin));
+    }
+
+    /// `Ok` if mail can be sent; with `KEEP_MAIL=off` (staging until SES
+    /// is set up), what needs it is refused: `422 rejected mail_off`.
+    pub(crate) fn require_mail(&self) -> Result<(), ApiError> {
+        if self.mailer.is_off() {
+            Err(ApiError::Rejected {
+                reason: "mail_off".into(),
+                message: "Email isn't set up here, so this can't be done. Use an authenticator app, or ask the operator.".into(),
+            })
+        } else {
+            Ok(())
         }
     }
 
@@ -108,6 +145,9 @@ impl Runtime {
     /// mail server, so a reset for an unknown address answers as fast as
     /// one for a known address.
     pub(crate) fn send(&self, mail: Mail) {
+        if self.mailer.is_off() {
+            return;
+        }
         let mailer = self.mailer.clone();
         tokio::spawn(async move {
             let to = mail.to.clone();
@@ -147,13 +187,25 @@ impl crate::jobs::Job for LimitSweep {
 
 // ── cookies ────────────────────────────────────────────────────────────────
 
+/// The cookie name for this request's host: [`COOKIE_NAME`], or
+/// [`DEV_COOKIE_NAME`] on a loopback host. Only that one is read, so a
+/// plain `kt_session` set by a sibling subdomain is ignored when deployed.
+pub fn cookie_name(headers: &HeaderMap) -> &'static str {
+    if secure(headers) {
+        COOKIE_NAME
+    } else {
+        DEV_COOKIE_NAME
+    }
+}
+
 pub(crate) fn session_token(headers: &HeaderMap) -> Option<&str> {
+    let name = cookie_name(headers);
     headers
         .get_all(COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
-        .find_map(|c| c.trim().strip_prefix(COOKIE_NAME)?.strip_prefix('='))
+        .find_map(|c| c.trim().strip_prefix(name)?.strip_prefix('='))
 }
 
 /// The host part of `Host` (no port), lower-cased.
@@ -180,7 +232,8 @@ fn secure(headers: &HeaderMap) -> bool {
 fn cookie(headers: &HeaderMap, value: &str, max_age_ms: i64) -> Result<HeaderValue, ApiError> {
     let secure = if secure(headers) { "; Secure" } else { "" };
     HeaderValue::from_str(&format!(
-        "{COOKIE_NAME}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{secure}",
+        "{}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{secure}",
+        cookie_name(headers),
         max_age_ms / 1000
     ))
     .map_err(ApiError::internal)
@@ -226,9 +279,19 @@ pub(crate) async fn current(
     let store = state.store.clone();
     let start = Instant::now();
     let session = blocking(move || {
-        store
+        let now = contracts::now_ms();
+        let s = store
             .platform()
-            .with_read(|c| auth::sessions::get(c, &token, contracts::now_ms()))
+            .with_read(|c| auth::sessions::get(c, &token, now))?;
+        // The idle timeout restarts (a write at most every TOUCH_MS).
+        if let Some(s) = &s
+            && auth::sessions::needs_touch(s, now)
+        {
+            store
+                .platform()
+                .with_write(|tx| auth::sessions::touch(tx, &s.id, now))?;
+        }
+        Ok::<_, ApiError>(s)
     })
     .await?;
     timing.add_platform(start.elapsed());
@@ -255,24 +318,45 @@ pub(crate) fn fresh(s: &Session, now: i64) -> bool {
         .is_some_and(|at| now - at < auth::STEP_UP_MS)
 }
 
-/// The client's address, for rate limits: the configured proxy header,
-/// else the peer.
+/// The client's address as a rate-limit key: the configured proxy
+/// header's value when it is exactly one IP address (S1 L4: never a list
+/// like `X-Forwarded-For`, which a client can prepend to), else the peer.
+/// An IPv6 address counts as its /64, the block one host is given (S1
+/// M5).
 pub(crate) struct ClientIp(pub String);
+
+/// The rate-limit key for `ip`: itself, or its /64 for IPv6.
+pub fn ip_key(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+    }
+}
 
 impl FromRequestParts<AppState> for ClientIp {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         if let Some(name) = &state.auth.config.client_ip_header
-            && let Some(v) = parts.headers.get(name).and_then(|v| v.to_str().ok())
+            && let Some(ip) = parts
+                .headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<IpAddr>().ok())
         {
-            return Ok(ClientIp(v.trim().to_owned()));
+            return Ok(ClientIp(ip_key(ip)));
         }
         Ok(ClientIp(
             parts
                 .extensions
                 .get::<ConnectInfo<SocketAddr>>()
-                .map_or_else(|| "unknown".into(), |c| c.0.ip().to_string()),
+                .map_or_else(|| "unknown".into(), |c| ip_key(c.0.ip())),
         ))
     }
 }
@@ -417,6 +501,11 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/api/auth/account/recovery-codes",
             post(account::recovery_codes),
+        )
+        .route("/api/auth/account/sessions", get(account::sessions))
+        .route(
+            "/api/auth/account/sessions/sign-out-others",
+            post(account::sign_out_others),
         )
 }
 

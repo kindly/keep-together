@@ -3,6 +3,7 @@
 
 pub mod auth;
 pub mod backup;
+pub mod body;
 pub mod boot;
 pub mod error;
 pub mod events;
@@ -156,6 +157,7 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .route("/healthz", get(health::healthz))
         .merge(auth::routes())
         .nest("/api/t/{slug}", tenant_routes)
+        .layer(middleware::from_fn_with_state(state.clone(), body::buffer))
         .layer(middleware::from_fn(auth::guard::dev_host))
         .layer(middleware::from_fn_with_state(
             state.clone(),

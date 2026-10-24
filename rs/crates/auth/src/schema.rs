@@ -81,4 +81,38 @@ const STEPS: &[&str] = &[
     // 2: the dev stub's session table (F1, base schema): auth_sessions
     // replaced it; nothing reads it.
     "DROP TABLE IF EXISTS sessions;",
+    // 3: the S1 security review.
+    // - M1: second-factor failures, per session and per user (the hourly
+    //   lock), persisted so a deploy doesn't reset them.
+    // - M5: the emailed code a sign-in needs once the per-email password
+    //   limit is spent.
+    // - M6: idle timeout (`last_seen`) and the sessions list (`user_agent`).
+    // - M7: after a 2FA reset, enrolling needs an emailed code too.
+    // - M2: codes are now HMAC under KEEP_AUTH_PEPPER and recovery codes
+    //   longer. The old unpeppered SHA-256 rows can't be converted (no
+    //   plaintext), so they go: dev data only, and an account keeps its
+    //   factor (new recovery codes from Your account). Live emailed codes
+    //   and pending enrolment secrets are voided the same way. Enrolled
+    //   TOTP secrets are sealed by `auth::keys::seal_plaintext_secrets` at
+    //   boot (it needs the key, which a SQL step can't have).
+    "ALTER TABLE auth_credentials ADD COLUMN must_prove_email INTEGER NOT NULL DEFAULT 0
+        CHECK (must_prove_email IN (0, 1));
+    ALTER TABLE auth_sessions ADD COLUMN factor_failures INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE auth_sessions ADD COLUMN last_seen INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE auth_sessions ADD COLUMN user_agent TEXT;
+    UPDATE auth_sessions SET last_seen = created_at;
+    CREATE TABLE auth_factor_failures (
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        at INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX auth_factor_failures_user ON auth_factor_failures (user_id, at);
+    CREATE TABLE auth_email_gates (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id),
+        code_hash TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    DELETE FROM auth_recovery_codes;
+    UPDATE auth_sessions SET email_code_hash = NULL, email_code_expires = NULL,
+        email_code_attempts = 0, pending_secret = NULL, pending_secret_expires = NULL;",
 ];

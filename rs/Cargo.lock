@@ -146,9 +146,12 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "base32",
+ "base64",
  "comms",
  "getrandom 0.3.4",
  "governor",
+ "hmac",
+ "platform",
  "qrcodegen",
  "rusqlite",
  "serde",

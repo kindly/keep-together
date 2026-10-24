@@ -10,7 +10,10 @@
 //! it makes admins with passwords. Credentials come from env
 //! ([`credentials_from_env`]): on staging all six must be set (Fly
 //! secrets, so an authenticator survives the reset on every deploy);
-//! elsewhere a missing one is generated, and the caller prints it.
+//! elsewhere a missing one is generated, and the caller prints it, unless
+//! the user already holds one: a generated password or TOTP secret never
+//! replaces a stored one ([`Origin::Kept`]), so a dev riverside's
+//! authenticator survives a re-run.
 //!
 //! Re-runnable: the users, organisation and memberships are ensured, a
 //! changed password or TOTP secret is applied, and the donors are written
@@ -82,16 +85,28 @@ pub fn allowed(keep_env: Option<&str>) -> Result<(), SeedError> {
     }
 }
 
+/// Where a credential came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Its `KEEP_RIVERSIDE_*` var: applied, never printed.
+    Env,
+    /// Made by this run and applied: the caller prints it.
+    Generated,
+    /// Made by this run but the user already had one, which stays; the
+    /// generated value is dropped (empty).
+    Kept,
+}
+
 /// A seeded user's sign-in.
 #[derive(Clone, Debug)]
 pub struct Credential {
     pub role: Role,
     pub email: &'static str,
     pub password: String,
+    pub password_origin: Origin,
     /// Base32, as authenticator apps take it.
     pub totp_secret: String,
-    /// Made here, not read from env: the caller prints it.
-    pub generated: bool,
+    pub totp_origin: Origin,
 }
 
 /// The env var holding a role's password (`what` = `PASSWORD`) or TOTP
@@ -118,7 +133,14 @@ pub fn credentials_from_env(
             missing.extend(password.is_none().then(|| pw_var.clone()));
             missing.extend(totp.is_none().then(|| totp_var.clone()));
         }
-        let generated = password.is_none() || totp.is_none();
+        let origin = |v: &Option<String>| {
+            if v.is_some() {
+                Origin::Env
+            } else {
+                Origin::Generated
+            }
+        };
+        let (password_origin, totp_origin) = (origin(&password), origin(&totp));
         let password = password.unwrap_or_else(auth::secret::token);
         let totp_secret = totp
             .map(|s| s.trim().to_uppercase())
@@ -135,8 +157,9 @@ pub fn credentials_from_env(
             role,
             email,
             password,
+            password_origin,
             totp_secret,
-            generated,
+            totp_origin,
         });
     }
     if !missing.is_empty() {
@@ -155,11 +178,14 @@ pub struct Seeded {
 
 /// Seed riverside into `store` (opened with the api's schemas), running
 /// `init` (each crate's `seed_new_org`, `api::schema::seed_new_org`) in
-/// the org's transaction first. `credentials` must hold every role.
-/// Doesn't check `KEEP_ENV`: callers do ([`allowed`]).
+/// the org's transaction first. `credentials` must hold every role; a
+/// generated one a user already has turns [`Origin::Kept`]. `keys` seal
+/// the TOTP secrets (auth's, from the env). Doesn't check `KEEP_ENV`:
+/// callers do ([`allowed`]).
 pub fn seed(
     store: &Store,
-    credentials: &[Credential],
+    keys: &auth::Keys,
+    credentials: &mut [Credential],
     init: impl Fn(&Ctx) -> Result<(), ContractError>,
 ) -> Result<Seeded, SeedError> {
     let missing: Vec<String> = USERS
@@ -177,11 +203,11 @@ pub fn seed(
     let mut donors_created = 0;
     let tenant = match existing {
         Some(tenant) => {
-            admin = p.with_write(|tx| members(tx, &tenant, credentials))?;
+            admin = p.with_write(|tx| members(tx, keys, &tenant, credentials))?;
             tenant
         }
         None => store.create_tenant_with(SLUG, NAME, |tx, tenant, db| {
-            let a = members(tx, tenant, credentials)?;
+            let a = members(tx, keys, tenant, credentials)?;
             admin = a;
             donors_created = transact(db, a, |ctx| {
                 init(ctx)?;
@@ -205,36 +231,56 @@ pub fn seed(
 }
 
 /// Users, their credentials and memberships, in one platform transaction.
-/// A password or TOTP secret already stored is left as it is (an argon2
-/// hash is salted, so re-hashing would change it). Returns the admin.
+/// A password or TOTP secret already stored is left as it is when it's
+/// the same (an argon2 hash is salted, so re-hashing would change it), or
+/// when this run only generated one ([`Origin::Kept`]). Returns the admin.
 fn members(
     tx: &Connection,
+    keys: &auth::Keys,
     tenant: &Tenant,
-    credentials: &[Credential],
+    credentials: &mut [Credential],
 ) -> Result<Option<i64>, SeedError> {
     let now = contracts::now_ms();
     let mut admin = None;
-    for c in credentials {
+    for c in credentials.iter_mut() {
         let user = Platform::upsert_user_in(tx, c.email)?;
         let stored = auth::accounts::credentials(tx, user.0)?;
-        let same_password = stored
+        let has_totp = stored
             .as_ref()
-            .is_some_and(|s| auth::password::verify(&c.password, &s.password_hash));
-        if !same_password {
-            auth::accounts::set_password(tx, user.0, &c.password, now)?;
+            .is_some_and(|s| s.second_factor == Some(auth::SecondFactor::Totp));
+        if stored.is_some() && c.password_origin == Origin::Generated {
+            c.password_origin = Origin::Kept;
+            c.password.clear();
         }
-        let same_totp = stored.as_ref().is_some_and(|s| {
-            s.second_factor == Some(auth::SecondFactor::Totp)
-                && s.totp_secret.as_deref() == Some(c.totp_secret.as_str())
-        });
-        if !same_totp {
-            auth::accounts::set_second_factor(
-                tx,
-                user.0,
-                auth::SecondFactor::Totp,
-                Some((&c.totp_secret, 0)),
-                now,
-            )?;
+        if has_totp && c.totp_origin == Origin::Generated {
+            c.totp_origin = Origin::Kept;
+            c.totp_secret.clear();
+        }
+        if c.password_origin != Origin::Kept {
+            let same = stored
+                .as_ref()
+                .is_some_and(|s| auth::password::verify(&c.password, &s.password_hash));
+            if !same {
+                auth::accounts::set_password(tx, user.0, &c.password, now)?;
+            }
+        }
+        if c.totp_origin != Origin::Kept {
+            let same = has_totp
+                && stored
+                    .as_ref()
+                    .and_then(|s| s.totp_secret(keys, user.0))
+                    .as_deref()
+                    == Some(c.totp_secret.as_str());
+            if !same {
+                auth::accounts::set_second_factor(
+                    tx,
+                    keys,
+                    user.0,
+                    auth::SecondFactor::Totp,
+                    Some((c.totp_secret.as_str(), 0)),
+                    now,
+                )?;
+            }
         }
         platform::members::add_membership(tx, user, &tenant.id, c.role)?;
         if c.role == Role::Admin {

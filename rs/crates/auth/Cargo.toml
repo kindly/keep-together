@@ -7,11 +7,14 @@ publish.workspace = true
 
 [dependencies]
 comms.workspace = true
+platform.workspace = true
 store.workspace = true
 argon2 = "0.5.3"
 base32 = "0.5"
+base64 = "0.23"
 getrandom = "0.3"
 governor = "0.10"
+hmac = "0.12"
 qrcodegen = "1.8"
 sha2 = "0.10"
 subtle = "2"

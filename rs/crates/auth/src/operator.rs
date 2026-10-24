@@ -3,24 +3,28 @@
 use comms::mail::Mail;
 use rusqlite::Connection;
 
+use crate::notices::{self, Notice};
 use crate::{AuthError, accounts, sessions, users};
 
 /// `keep auth reset-2fa <email>`: clear the second factor and recovery
 /// codes and end every session, logged as the operator's with `reason`.
 /// For a sole admin who lost theirs, after confirming who they are out of
-/// band (ADR 0020). False if there is no such user. A running server's
-/// live streams notice within `api::auth::STREAM_RECHECK`.
+/// band (ADR 0020). The next enrolment needs an emailed code too (S1 M7).
+/// Returns the notice to mail the user (S1 M3), or `None` if there is no
+/// such user. A running server's live streams notice within
+/// `api::auth::STREAM_RECHECK`.
 pub fn operator_reset_2fa(
     tx: &Connection,
     email: &str,
     reason: &str,
+    app_origin: &str,
     now: i64,
-) -> Result<bool, AuthError> {
+) -> Result<Option<Mail>, AuthError> {
     let Some(email) = users::normalise_email(email) else {
-        return Ok(false);
+        return Ok(None);
     };
     let Some(user) = users::by_email(tx, &email)? else {
-        return Ok(false);
+        return Ok(None);
     };
     accounts::clear_second_factor(tx, user, now)?;
     sessions::revoke_user(tx, user)?;
@@ -33,7 +37,7 @@ pub fn operator_reset_2fa(
         None,
         reason,
     )?;
-    Ok(true)
+    Ok(Some(notices::mail(&email, Notice::FactorReset, app_origin)))
 }
 
 /// An invite from the operator (`keep tenant create`'s first admin):

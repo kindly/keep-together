@@ -46,7 +46,8 @@ function Invite() {
         >
           {!info.hasAccount && (
             <p className="text-sm text-neutral-500">
-              Choose a password: at least 8 characters.
+              Choose a password: 12 to 128 characters, not one leaked in a
+              breach.
             </p>
           )}
           <input

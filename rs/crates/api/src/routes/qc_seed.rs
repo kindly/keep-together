@@ -8,11 +8,14 @@
 //! versions 001 and 002; Charles carries Street-<side>-001 and the Trust
 //! -002, and the Gala codes are free for the flows to set. Gifts and Gift
 //! Aid (B2): the Trust gave once under its code (A £12.34, B £56.78), and
-//! Ada holds one paper declaration (future gifts, made 2025-01-01). Users
-//! sign in with the dev login, so there are no passwords.
+//! Ada holds one paper declaration (future gifts, made 2025-01-01). Every
+//! crate's reference data is there too (`schema::seed_new_org`: the UK
+//! relationship types, the starter categories). An organisation and its
+//! world are made in one go: a failure leaves no half-made group.
 //!
 //! Refused (403) unless both `KEEP_DEV_AUTH=1` and `KEEP_QC_SEED=1`.
-//! Re-running with the same run and worker returns the same world.
+//! Re-running with the same run and worker returns the same world (new
+//! passwords and TOTP secrets each time).
 //!
 //! Every QC organisation's slug starts `qc-` and every QC user's email is
 //! on [`QC_DOMAIN`] (`.invalid`, so no real person has one). The users get
@@ -199,6 +202,9 @@ fn seeded_giving(
     db: &OrgDb,
     contacts: &[String],
 ) -> Result<(Vec<String>, Vec<String>), ContractError> {
+    let (Some(ada), Some(trust)) = (contacts.first(), contacts.get(2)) else {
+        return Ok((vec![], vec![]));
+    };
     Ok(db.read(|r| {
         let ids = |sql: &str, contact: &str| {
             r.prepare(sql)?
@@ -208,11 +214,11 @@ fn seeded_giving(
         Ok::<_, rusqlite::Error>((
             ids(
                 "SELECT id FROM gifts WHERE contact_id = ?1 ORDER BY rowid",
-                &contacts[2],
+                trust,
             )?,
             ids(
                 "SELECT id FROM gift_aid_declarations WHERE contact_id = ?1 ORDER BY rowid",
-                &contacts[0],
+                ada,
             )?,
         ))
     })?)
@@ -319,7 +325,7 @@ fn side(
                 Exec::update(&type_id, Some(0), Source::Seed).in_group(&group),
             )?;
         }
-        sources::seed_new_org(ctx)?;
+        crate::schema::seed_new_org(ctx)?;
         let versions = || {
             ["001", "002"]
                 .map(|name| SeedVersion {
@@ -493,7 +499,7 @@ fn only_qc_memberships(conn: &Connection, user: UserId) -> rusqlite::Result<bool
 }
 
 /// The QC world for one run and worker (both surfaces).
-fn seed_world(store: &Store, req: QcSeedRequest) -> Result<QcWorld, ApiError> {
+fn seed_world(store: &Store, keys: &::auth::Keys, req: QcSeedRequest) -> Result<QcWorld, ApiError> {
     let p = store.platform();
     let base = base(&req)?;
     let accounts = [
@@ -519,9 +525,10 @@ fn seed_world(store: &Store, req: QcSeedRequest) -> Result<QcWorld, ApiError> {
                 .map_err(ApiError::internal)?;
             ::auth::accounts::set_second_factor(
                 tx,
+                keys,
                 user.0,
                 ::auth::SecondFactor::Totp,
-                Some((&secret, 0)),
+                Some((secret.as_str(), 0)),
                 now,
             )?;
             Ok::<_, ApiError>(user)
@@ -532,8 +539,8 @@ fn seed_world(store: &Store, req: QcSeedRequest) -> Result<QcWorld, ApiError> {
     let mut tenants = vec![];
     for (i, (suffix, label)) in [("a", "Alpha"), ("b", "Bravo")].into_iter().enumerate() {
         let slug = format!("{QC_SLUG_PREFIX}{base}-{suffix}");
-        let (tenant, fresh) = match p.tenant_by_slug(&slug)? {
-            Some(t) => (t, false),
+        let (tenant, made) = match p.tenant_by_slug(&slug)? {
+            Some(t) => (t, None),
             None => {
                 let qc_groups: i64 = p.with_read(|c| {
                     c.query_row(
@@ -548,10 +555,17 @@ fn seed_world(store: &Store, req: QcSeedRequest) -> Result<QcWorld, ApiError> {
                         message: format!("at most {QC_TENANT_CAP} qc- groups"),
                     });
                 }
-                (
-                    store.create_tenant(&slug, &format!("{label} {base} qc group"))?,
-                    true,
-                )
+                // The org and its world commit together, or neither does.
+                let mut made = None;
+                let tenant = store.create_tenant_with(
+                    &slug,
+                    &format!("{label} {base} qc group"),
+                    |_, _, db| {
+                        made = Some(side(db, label, &req.run_id, &base, &slug, suffix == "a")?);
+                        Ok::<_, ApiError>(())
+                    },
+                )?;
+                (tenant, made)
             }
         };
         p.set_membership(users[i].0, &tenant.id, Role::Admin)?;
@@ -561,10 +575,9 @@ fn seed_world(store: &Store, req: QcSeedRequest) -> Result<QcWorld, ApiError> {
             }
         }
         let db = store.org(&tenant.id)?;
-        let contact_ids = if fresh {
-            side(&db, label, &req.run_id, &base, &slug, suffix == "a")?
-        } else {
-            contact_ids(&db)?
+        let contact_ids = match made {
+            Some(ids) => ids,
+            None => contact_ids(&db)?,
         };
         let (gift_ids, declaration_ids) = seeded_giving(&db, &contact_ids)?;
         tenants.push(QcTenant {
@@ -602,7 +615,10 @@ pub async fn fixture(
 ) -> Result<Json<QcWorld>, ApiError> {
     enabled(&state)?;
     let store = state.store.clone();
-    blocking(move || seed_world(&store, req)).await.map(Json)
+    let keys = state.auth.keys.clone();
+    blocking(move || seed_world(&store, &keys, req))
+        .await
+        .map(Json)
 }
 
 #[derive(Deserialize, TS)]
@@ -842,7 +858,10 @@ pub async fn qc_fixture(
     Body(req): Body<QcSeedRequest>,
 ) -> Result<Json<QcWorld>, ApiError> {
     let store = state.store.clone();
-    blocking(move || seed_world(&store, req)).await.map(Json)
+    let keys = state.auth.keys.clone();
+    blocking(move || seed_world(&store, &keys, req))
+        .await
+        .map(Json)
 }
 
 /// `POST /api/qc/crowd`: [`crowd`], in a `qc-` group only.

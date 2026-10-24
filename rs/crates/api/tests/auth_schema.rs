@@ -68,6 +68,8 @@ fn a_release_adding_auth_is_copied_first_and_rolls_back() {
         tables(&platform),
         [
             "auth_credentials",
+            "auth_email_gates",
+            "auth_factor_failures",
             "auth_invites",
             "auth_log",
             "auth_recovery_codes",
@@ -140,4 +142,80 @@ fn a_release_adding_auth_is_copied_first_and_rolls_back() {
     assert_eq!(auth_version, 0);
     // And the previous release opens it.
     drop(open(dir, &before));
+}
+
+/// S1 M2: a `platform.db` from before auth step 3 (plaintext TOTP secrets,
+/// unpeppered SHA-256 codes) migrates: the old code hashes go (they can't
+/// be converted), and the boot's sealing pass seals each TOTP secret,
+/// which still verifies afterwards. Running the pass again changes nothing.
+#[test]
+fn step_3_seals_totp_secrets_and_drops_unpeppered_codes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let v2 = store::PlatformSchema {
+        name: "auth",
+        steps: &auth::SCHEMA.steps[..2],
+    };
+    let mut before: Vec<_> = schema::PLATFORM_SCHEMAS
+        .iter()
+        .copied()
+        .filter(|s| s.name != "auth")
+        .collect();
+    before.push(v2);
+    let s = open(dir, &before);
+    let user = s.platform().upsert_user("ann@alpha.org").unwrap().0;
+    let plain = auth::totp::new_secret();
+    s.platform()
+        .with_write(|tx| {
+            tx.execute(
+                "INSERT INTO auth_credentials (user_id, password_hash, second_factor, totp_secret, updated_at)
+                 VALUES (?1, 'x', 'totp', ?2, 0)",
+                rusqlite::params![user, plain],
+            )?;
+            tx.execute(
+                "INSERT INTO auth_recovery_codes (user_id, code_hash) VALUES (?1, ?2)",
+                rusqlite::params![user, auth::secret::hash("abcdefghjk")],
+            )
+        })
+        .unwrap();
+    drop(s);
+
+    let s = open(dir, schema::PLATFORM_SCHEMAS);
+    let keys = auth::Keys::parse(&auth::Keys::generate(), &auth::Keys::generate()).unwrap();
+    let sealed = s
+        .platform()
+        .with_write(|tx| auth::keys::seal_plaintext_secrets(tx, &keys))
+        .unwrap();
+    assert_eq!(sealed, 1);
+    let again = s
+        .platform()
+        .with_write(|tx| auth::keys::seal_plaintext_secrets(tx, &keys))
+        .unwrap();
+    assert_eq!(again, 0, "idempotent");
+    let (creds, codes) = s
+        .platform()
+        .with_read(|c| {
+            Ok::<_, rusqlite::Error>((
+                auth::accounts::credentials(c, user)?.unwrap(),
+                c.query_row("SELECT count(*) FROM auth_recovery_codes", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+            ))
+        })
+        .unwrap();
+    let stored = creds.totp_sealed.clone().unwrap();
+    assert!(stored.starts_with("v1:") && !stored.contains(&plain));
+    assert_eq!(
+        creds.totp_secret(&keys, user).as_deref(),
+        Some(plain.as_str())
+    );
+    assert_eq!(
+        creds.totp_secret(&auth::Keys::dev(), user),
+        None,
+        "another key"
+    );
+    assert_eq!(codes, 0);
+    let now = 1_800_000_000;
+    let code = auth::totp::code_at(&plain, now).unwrap();
+    assert!(auth::totp::verify(&creds.totp_secret(&keys, user).unwrap(), &code, now, 0).is_some());
 }

@@ -72,15 +72,37 @@ async fn a_reset_request_answers_the_same_for_any_address() {
 // ── passwords ──────────────────────────────────────────────────────────────
 
 /// convex auth.test.ts: short / missing / exactly-minimum passwords, on
-/// the one place a password is now chosen (an invite or a reset).
+/// the one place a password is now chosen (an invite or a reset). S1 M4:
+/// 12 to 128 characters, and not on the bundled breached list.
 #[tokio::test]
-async fn new_passwords_need_eight_characters() {
+async fn new_passwords_need_twelve_characters_and_not_a_breached_one() {
     let w = world();
     let ann = w.sign_in("ann@alpha.org").await;
-    for (email, password, ok) in [
-        ("short@x.org", "1234567", false),
-        ("missing@x.org", "", false),
-        ("exact@x.org", "12345678", true),
+    let too_long = "x".repeat(129);
+    for (email, password, problem) in [
+        (
+            "short@x.org",
+            "12345678901",
+            Some("Password must be at least 12 characters."),
+        ),
+        (
+            "missing@x.org",
+            "",
+            Some("Password must be at least 12 characters."),
+        ),
+        (
+            "long@x.org",
+            too_long.as_str(),
+            Some("Password must be at most 128 characters."),
+        ),
+        (
+            "breached@x.org",
+            "Password1234",
+            Some(
+                "That password is on a list of passwords leaked in data breaches. Choose another.",
+            ),
+        ),
+        ("exact@x.org", "kettle-orch7", None),
     ] {
         w.post(
             "/api/t/alpha/members/invite",
@@ -96,13 +118,13 @@ async fn new_passwords_need_eight_characters() {
                 json!({ "token": token, "password": password }),
             )
             .await;
-        if ok {
-            assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-        } else {
-            assert_eq!(
+        match problem {
+            None => assert_eq!(r.status, StatusCode::OK, "{}", r.body),
+            Some(message) => assert_eq!(
                 r.body,
-                json!({ "kind": "invalid", "problems": [{ "field": "password", "message": "Password must be at least 8 characters." }] })
-            );
+                json!({ "kind": "invalid", "problems": [{ "field": "password", "message": message }] }),
+                "{email}"
+            ),
         }
     }
     let r = w
@@ -114,14 +136,24 @@ async fn new_passwords_need_eight_characters() {
         .await;
     assert_eq!(r.status, StatusCode::OK);
     let token = w.emailed_token("ann@alpha.org").await;
+    for bad in ["short", "passwordpassword"] {
+        let r = w
+            .post(
+                "/api/auth/reset/complete",
+                None,
+                json!({ "token": token, "password": bad }),
+            )
+            .await;
+        assert_eq!(r.kind(), "invalid", "{bad}");
+    }
     let r = w
         .post(
-            "/api/auth/reset/complete",
-            None,
-            json!({ "token": token, "password": "short" }),
+            "/api/auth/account/password",
+            Some(&ann),
+            json!({ "current": password_of("ann@alpha.org"), "new": "1Q2W3E4R5T6Y" }),
         )
         .await;
-    assert_eq!(r.kind(), "invalid");
+    assert_eq!(r.kind(), "invalid", "breached, on a password change too");
 }
 
 #[tokio::test]
@@ -188,6 +220,8 @@ async fn a_totp_code_works_once() {
     assert_eq!(again.reason(), "wrong_code");
 }
 
+/// The emailed code burns at the 5th miss, and (S1 M1) the partial
+/// sign-in ends with it: the password must be given again.
 #[tokio::test]
 async fn the_emailed_code_is_sent_at_sign_in_and_burns_after_five_misses() {
     let w = world();
@@ -196,30 +230,43 @@ async fn the_emailed_code_is_sent_at_sign_in_and_burns_after_five_misses() {
     let partial = r.cookie().unwrap();
     let code = w.emailed_code("val@alpha.org").await;
     assert_eq!(code.len(), 6);
-    // The rate limit is 5 per minute too; the code burns at the 5th miss.
-    for _ in 0..5 {
+    let wrong = if code == "999999" { "999998" } else { "999999" };
+    for i in 0..5 {
         let r = w
             .post(
                 "/api/auth/second-factor",
                 Some(&partial),
-                json!({ "code": if code == "999999" { "999998" } else { "999999" } }),
+                json!({ "code": wrong }),
             )
             .await;
-        assert_eq!(r.reason(), "wrong_code");
+        if i < 4 {
+            assert_eq!(r.reason(), "wrong_code");
+        } else {
+            assert_eq!(r.reason(), "sign_in_again", "{}", r.body);
+            assert!(r.cookie().unwrap().ends_with('='), "the cookie is cleared");
+        }
     }
     let user = w.user_id("val@alpha.org");
-    let left: Option<String> = w
+    let left: i64 = w
         .store
         .platform()
         .with_read(|c| {
             c.query_row(
-                "SELECT email_code_hash FROM auth_sessions WHERE user_id = ?1",
+                "SELECT count(*) FROM auth_sessions WHERE user_id = ?1",
                 [user],
                 |r| r.get(0),
             )
         })
         .unwrap();
-    assert_eq!(left, None, "burned");
+    assert_eq!(left, 0, "the partial sign-in, and its code, are gone");
+    let r = w
+        .post(
+            "/api/auth/second-factor",
+            Some(&partial),
+            json!({ "code": code }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -239,7 +286,7 @@ async fn a_recovery_code_works_once() {
     let codes = w
         .store
         .platform()
-        .with_write(|tx| auth::accounts::new_recovery_codes(tx, user))
+        .with_write(|tx| auth::accounts::new_recovery_codes(tx, &auth::Keys::dev(), user))
         .unwrap();
     assert_eq!(codes.len(), 10);
     let r = sign_in_password(&w, "bob@beta.org", &password_of("bob@beta.org")).await;
@@ -264,6 +311,10 @@ async fn a_recovery_code_works_once() {
 
 // ── rate limits ────────────────────────────────────────────────────────────
 
+/// S1 M5: the per-email limit slows guessing without locking the owner
+/// out. Past it, a sign-in answers `check_email` whatever the password
+/// (known address or not); only a right password mails a code, and the
+/// password with that code carries on.
 #[tokio::test]
 async fn password_attempts_are_limited_per_email_known_or_not() {
     let w = world();
@@ -278,28 +329,123 @@ async fn password_attempts_are_limited_per_email_known_or_not() {
                 r.body
             );
         }
-        let r = sign_in_password(&w, email, &password_of(email)).await;
+        let right = sign_in_password(&w, email, &password_of(email)).await;
+        let wrong = sign_in_password(&w, email, "wrong").await;
+        assert_eq!(right.status, StatusCode::OK, "{email}: {}", right.body);
+        assert_eq!(right.body["stage"], "check_email");
         assert_eq!(
-            (r.status, r.kind()),
-            (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            (right.status, &right.body),
+            (wrong.status, &wrong.body),
             "{email}"
         );
+        assert!(
+            right.cookie().is_none() && wrong.cookie().is_none(),
+            "no session"
+        );
     }
+    // Only the right password mailed a code, to the known address.
+    let code = w.emailed_code("ann@alpha.org").await;
+    assert_eq!(w.mails_to("nobody@alpha.org"), 0);
+    // A wrong password with the right code, and the right password with a
+    // wrong code, answer the same.
+    let other = if code == "000000" { "000001" } else { "000000" };
+    let r1 = w
+        .post(
+            "/api/auth/sign-in",
+            None,
+            json!({ "email": "ann@alpha.org", "password": "wrong", "emailCode": code }),
+        )
+        .await;
+    let r2 = w
+        .post(
+            "/api/auth/sign-in",
+            None,
+            json!({ "email": "ann@alpha.org", "password": password_of("ann@alpha.org"), "emailCode": other }),
+        )
+        .await;
+    assert_eq!((r1.status, &r1.body), (r2.status, &r2.body));
+    assert_eq!(r1.reason(), "invalid_credentials");
+    // Both together: the usual second factor next.
+    let r = w
+        .post(
+            "/api/auth/sign-in",
+            None,
+            json!({ "email": "ann@alpha.org", "password": password_of("ann@alpha.org"), "emailCode": code }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["stage"], "second_factor");
+    let r = w
+        .post(
+            "/api/auth/second-factor",
+            Some(&r.cookie().unwrap()),
+            json!({ "code": w.totp("ann@alpha.org") }),
+        )
+        .await;
+    assert_eq!(r.body["stage"], "signed_in");
+}
+
+/// S1 M5: an emailed-method user past the limit is signed in by the
+/// emailed code alone (it is their second factor), and the code works
+/// once.
+#[tokio::test]
+async fn past_the_email_limit_the_emailed_method_signs_in_with_one_code() {
+    let w = world();
+    for _ in 0..5 {
+        sign_in_password(&w, "val@alpha.org", "wrong").await;
+    }
+    let r = sign_in_password(&w, "val@alpha.org", &password_of("val@alpha.org")).await;
+    assert_eq!(r.body["stage"], "check_email");
+    let code = w.emailed_code("val@alpha.org").await;
+    let body = json!({ "email": "val@alpha.org", "password": password_of("val@alpha.org"), "emailCode": code });
+    let r = w.post("/api/auth/sign-in", None, body.clone()).await;
+    assert_eq!(r.body["stage"], "signed_in", "{}", r.body);
+    let cookie = r.cookie().unwrap();
+    assert_eq!(
+        w.call("GET", "/api/me", Some(&cookie), None).await.status,
+        StatusCode::OK
+    );
+    let again = w.post("/api/auth/sign-in", None, body).await;
+    assert_eq!(again.reason(), "invalid_credentials", "the code is spent");
+}
+
+/// The per-IP limit still refuses outright: it can't be spent by anyone
+/// but that client (H1 makes it per client on Fly).
+#[tokio::test]
+async fn password_attempts_are_limited_per_client_address() {
+    let w = world();
+    let mut last = None;
+    for i in 0..21 {
+        let r = sign_in_password(&w, &format!("n{i}@alpha.org"), "wrong").await;
+        last = Some(r.status);
+    }
+    assert_eq!(last, Some(StatusCode::TOO_MANY_REQUESTS));
 }
 
 #[tokio::test]
 async fn second_factor_attempts_are_limited_per_user() {
     let w = world();
+    // Four misses on one sign-in, one on the next: five a minute.
     let r = sign_in_password(&w, "ann@alpha.org", &password_of("ann@alpha.org")).await;
     let partial = r.cookie().unwrap();
-    for _ in 0..5 {
-        w.post(
-            "/api/auth/second-factor",
-            Some(&partial),
-            json!({ "code": "000000" }),
-        )
-        .await;
+    for _ in 0..4 {
+        let r = w
+            .post(
+                "/api/auth/second-factor",
+                Some(&partial),
+                json!({ "code": "000000" }),
+            )
+            .await;
+        assert_eq!(r.reason(), "wrong_code");
     }
+    let r = sign_in_password(&w, "ann@alpha.org", &password_of("ann@alpha.org")).await;
+    let partial = r.cookie().unwrap();
+    w.post(
+        "/api/auth/second-factor",
+        Some(&partial),
+        json!({ "code": "000000" }),
+    )
+    .await;
     let r = w
         .post(
             "/api/auth/second-factor",
@@ -397,6 +543,8 @@ async fn a_new_reset_link_is_15_minutes_long() {
         json!({ "email": "ann@alpha.org" }),
     )
     .await;
+    // Written after the response (S1 codex C7): the mail says it's done.
+    w.mail_to("ann@alpha.org").await;
     let ttl: i64 = w
         .store
         .platform()
@@ -949,7 +1097,10 @@ async fn sign_out_clears_the_cookie_and_the_state_says_so() {
     assert_eq!(r.body["stage"], "signed_in");
     assert!(r.body["stepUpUntil"].as_i64().unwrap() > contracts::now_ms());
     let r = w.post("/api/auth/sign-out", Some(&ann), json!({})).await;
-    assert!(r.set_cookies[0].starts_with("kt_session=;") && r.set_cookies[0].contains("Max-Age=0"));
+    assert!(
+        r.set_cookies[0].starts_with("__Host-kt_session=;")
+            && r.set_cookies[0].contains("Max-Age=0")
+    );
     assert_eq!(r.body["stage"], "signed_out");
     assert_eq!(
         w.call("GET", "/api/me", Some(&ann), None).await.status,

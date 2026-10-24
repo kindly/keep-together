@@ -150,6 +150,41 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
         assert_eq!(holder, t["contactIds"][0].as_str().unwrap());
     }
 
+    // L3: every crate's reference data, relationship types included.
+    for t in world["tenants"].as_array().unwrap() {
+        let tenant = store
+            .platform()
+            .tenant_by_slug(t["slug"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let types = store
+            .org(&tenant.id)
+            .unwrap()
+            .read(|c| contacts::relationships::relationship_types(c))
+            .unwrap();
+        assert_eq!(
+            types.len(),
+            contacts::relationships::UK_RELATIONSHIP_TYPES.len()
+        );
+    }
+
+    // L1: an org left half-made (an older build, a crash) re-seeds without
+    // a panic: the world comes back with what is there.
+    store.create_tenant("qc-r8w0-a", "half made").unwrap();
+    let (s, half) = post(
+        &app,
+        "/api/dev/qc-seed",
+        json!({ "runId": "8", "worker": 0 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{half}");
+    assert_eq!(half["tenants"][0]["contactIds"], json!([]));
+    assert_eq!(half["tenants"][0]["giftIds"], json!([]));
+    assert_eq!(
+        half["tenants"][1]["contactIds"].as_array().unwrap().len(),
+        3
+    );
+
     let (s, n) = post(
         &app,
         "/api/dev/qc-crowd",

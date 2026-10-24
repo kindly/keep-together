@@ -46,13 +46,22 @@ fn world() -> World {
         max_open: StoreConfig::DEFAULT_MAX_OPEN,
     })
     .unwrap();
-    let a = store.org(&store.create_tenant("alpha", "Alpha").unwrap().id).unwrap();
-    let b = store.org(&store.create_tenant("beta", "Beta").unwrap().id).unwrap();
+    let a = store
+        .org(&store.create_tenant("alpha", "Alpha").unwrap().id)
+        .unwrap();
+    let b = store
+        .org(&store.create_tenant("beta", "Beta").unwrap().id)
+        .unwrap();
     for db in [&a, &b] {
         tx(db, sources::seed_new_org).unwrap();
     }
     let jo = contact(&a, person("Jo", "Bloggs"));
-    World { _tmp: tmp, a, b, jo }
+    World {
+        _tmp: tmp,
+        a,
+        b,
+        jo,
+    }
 }
 
 fn tx<T>(db: &OrgDb, f: impl FnOnce(&Ctx) -> Result<T, ContractError>) -> Result<T, ContractError> {
@@ -60,7 +69,11 @@ fn tx<T>(db: &OrgDb, f: impl FnOnce(&Ctx) -> Result<T, ContractError>) -> Result
 }
 
 /// A transaction whose commands run at `at` ms.
-fn tx_at<T>(db: &OrgDb, at: i64, f: impl FnOnce(&Ctx) -> Result<T, ContractError>) -> Result<T, ContractError> {
+fn tx_at<T>(
+    db: &OrgDb,
+    at: i64,
+    f: impl FnOnce(&Ctx) -> Result<T, ContractError>,
+) -> Result<T, ContractError> {
     contracts::transact(db, Some(ANN), |ctx| {
         f(&Ctx {
             tx: ctx.tx,
@@ -179,11 +192,15 @@ impl World {
     }
 
     fn declare(&self, p: DeclarationPayload) -> Result<Executed, ContractError> {
-        tx(&self.a, |ctx| giftaid::make_declaration(ctx, p, Source::Ui, None))
+        tx(&self.a, |ctx| {
+            giftaid::make_declaration(ctx, p, Source::Ui, None)
+        })
     }
 
     fn void(&self, id: &str, reason: &str) -> Result<Executed, ContractError> {
-        tx(&self.a, |ctx| giftaid::void_declaration(ctx, id, reason.into(), Source::Ui))
+        tx(&self.a, |ctx| {
+            giftaid::void_declaration(ctx, id, reason.into(), Source::Ui)
+        })
     }
 
     fn cancel(&self, from: &str, note: Option<&str>) -> Result<Vec<String>, ContractError> {
@@ -269,7 +286,12 @@ fn records_method_scope_date_snapshot_and_who_entered_it() {
         }
     );
     assert_eq!(
-        (d.entered_by, d.declaration_version, d.cancellation_version, d.void_version),
+        (
+            d.entered_by,
+            d.declaration_version,
+            d.cancellation_version,
+            d.void_version
+        ),
         (Some(ANN), 0, 0, 0)
     );
     let anchors: Vec<_> = panel.declarations[0]
@@ -303,7 +325,10 @@ fn the_snapshot_is_not_the_contact() {
     })
     .unwrap();
     let d = w.declaration(&made.id);
-    assert_eq!((d.payload.first_name.as_str(), d.payload.last_name.as_str()), ("Jo", "Bloggs"));
+    assert_eq!(
+        (d.payload.first_name.as_str(), d.payload.last_name.as_str()),
+        ("Jo", "Bloggs")
+    );
 }
 
 /// "refused for an organisation or a household"
@@ -342,7 +367,10 @@ fn missing_snapshot_fields_store_with_warnings() {
         .find(|d| d.declaration.id == made.id)
         .unwrap();
     assert_eq!(
-        row.warnings.iter().map(|w| w.anchor.as_str()).collect::<Vec<_>>(),
+        row.warnings
+            .iter()
+            .map(|w| w.anchor.as_str())
+            .collect::<Vec<_>>(),
         ["addressLine1"]
     );
 }
@@ -449,9 +477,15 @@ fn on_screen_is_refused_and_staff_ticked_stores() {
         .into_iter()
         .find(|d| d.declaration.id == made.id)
         .unwrap();
-    assert_eq!(row.declaration.payload.method, Method::StaffTickedNoEvidence);
     assert_eq!(
-        row.warnings.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+        row.declaration.payload.method,
+        Method::StaffTickedNoEvidence
+    );
+    assert_eq!(
+        row.warnings
+            .iter()
+            .map(|w| w.label.as_str())
+            .collect::<Vec<_>>(),
         ["No evidence yet"]
     );
 }
@@ -501,7 +535,10 @@ fn this_gift_names_one_of_the_contacts_own_gifts() {
         })
         .unwrap();
     let panel = w.panel("2026-10-23");
-    assert_eq!(panel.declarations[0].declaration.payload.gift_id.as_deref(), Some(gift.as_str()));
+    assert_eq!(
+        panel.declarations[0].declaration.payload.gift_id.as_deref(),
+        Some(gift.as_str())
+    );
     assert_eq!(panel.declarations[0].declaration.id, made.id);
     // Not current: it covers one gift, so the form offers the tick again.
     assert!(panel.current_id.is_none());
@@ -562,7 +599,10 @@ fn this_gift_a_void_gift_or_one_already_declared_is_refused() {
         gift_id: Some(gift.into()),
         ..w.payload()
     };
-    assert_eq!(reason(w.declare(this(&void_gift)).unwrap_err()), "void_gift");
+    assert_eq!(
+        reason(w.declare(this(&void_gift)).unwrap_err()),
+        "void_gift"
+    );
     let gift = gift_for(&w.a, &w.jo, "2026-03-03", false);
     let first = w.declare(this(&gift)).unwrap();
     assert_eq!(
@@ -587,12 +627,27 @@ fn a_voided_enduring_declaration_covers_no_gift_past_or_future() {
         })
         .unwrap();
     assert!(w.covering(&today, None).is_some());
-    assert_eq!(w.void(&made.id, "entered against the wrong Jo").unwrap().counter, 1);
+    assert_eq!(
+        w.void(&made.id, "entered against the wrong Jo")
+            .unwrap()
+            .counter,
+        1
+    );
     let four_back = giftaid::rules::years_before(&today, 4);
-    for date in [four_back.as_str(), "2024-06-01", today.as_str(), "2099-01-01"] {
+    for date in [
+        four_back.as_str(),
+        "2024-06-01",
+        today.as_str(),
+        "2099-01-01",
+    ] {
         assert!(w.covering(date, None).is_none(), "{date}");
     }
-    assert!(read(&w.a, |c| Ok(giftaid::current_declaration(c, &w.jo, &today)?)).is_none());
+    assert!(
+        read(&w.a, |c| Ok(giftaid::current_declaration(
+            c, &w.jo, &today
+        )?))
+        .is_none()
+    );
     let panel = w.panel(&today);
     assert!(panel.current_id.is_none());
     let d = &panel.declarations[0].declaration;
@@ -671,7 +726,15 @@ fn create_only_a_second_void_a_restore_and_a_restore_to_before_leave_it_voided()
     assert_eq!(reason(err), "immutable");
     // No void revision before the void: restoring to then changes nothing.
     tx(&w.a, |ctx| {
-        restore_entity_to(ctx, &REGISTRY, "gift_aid_declarations", &made.id, 0, &[], None)
+        restore_entity_to(
+            ctx,
+            &REGISTRY,
+            "gift_aid_declarations",
+            &made.id,
+            0,
+            &[],
+            None,
+        )
     })
     .unwrap();
     assert!(w.declaration(&made.id).voided_at.is_some());
@@ -682,8 +745,10 @@ fn create_only_a_second_void_a_restore_and_a_restore_to_before_leave_it_voided()
 fn another_organisation_cant_void_it() {
     let w = world();
     let made = w.declare(w.payload()).unwrap();
-    let err = tx(&w.b, |ctx| giftaid::void_declaration(ctx, &made.id, "nope".into(), Source::Ui))
-        .unwrap_err();
+    let err = tx(&w.b, |ctx| {
+        giftaid::void_declaration(ctx, &made.id, "nope".into(), Source::Ui)
+    })
+    .unwrap_err();
     assert_eq!(reason(err), "not_found");
     assert!(w.declaration(&made.id).voided_at.is_none());
     w.b_untouched();
@@ -727,11 +792,21 @@ fn cancels_every_declaration_open_at_the_date_in_one_named_group() {
 
     let d = w.declaration(&first.id);
     assert_eq!(
-        (d.cancelled_from.as_deref(), d.cancellation_note.as_deref(), d.cancellation_version),
+        (
+            d.cancelled_from.as_deref(),
+            d.cancellation_note.as_deref(),
+            d.cancellation_version
+        ),
         (Some("2026-06-01"), Some("phoned to cancel"), 1)
     );
-    assert_eq!(w.declaration(&second.id).cancelled_from.as_deref(), Some("2026-06-01"));
-    assert_eq!(w.declaration(&old.id).cancelled_from.as_deref(), Some("2021-01-01"));
+    assert_eq!(
+        w.declaration(&second.id).cancelled_from.as_deref(),
+        Some("2026-06-01")
+    );
+    assert_eq!(
+        w.declaration(&old.id).cancelled_from.as_deref(),
+        Some("2021-01-01")
+    );
     assert_eq!(w.declaration(&later.id).cancelled_from, None);
     assert_eq!(
         group_names(&w, "2026-06-01"),
@@ -752,8 +827,14 @@ fn an_earlier_date_moves_an_existing_cancellation_back() {
         })
         .unwrap();
     w.cancel("2026-06-01", None).unwrap();
-    assert_eq!(w.cancel("2025-06-01", None).unwrap(), std::slice::from_ref(&made.id));
-    assert_eq!(w.declaration(&made.id).cancelled_from.as_deref(), Some("2025-06-01"));
+    assert_eq!(
+        w.cancel("2025-06-01", None).unwrap(),
+        std::slice::from_ref(&made.id)
+    );
+    assert_eq!(
+        w.declaration(&made.id).cancelled_from.as_deref(),
+        Some("2025-06-01")
+    );
 }
 
 /// "nothing open, or a bad date, is refused"
@@ -785,7 +866,10 @@ fn the_cancellation_contract_is_stale_checked_and_can_be_cleared() {
     assert_eq!(reason(run(0).unwrap_err()), "stale");
     run(1).unwrap();
     assert_eq!(w.declaration(&made.id).cancelled_from, None);
-    assert_eq!(w.panel("2026-10-23").current_id.as_deref(), Some(made.id.as_str()));
+    assert_eq!(
+        w.panel("2026-10-23").current_id.as_deref(),
+        Some(made.id.as_str())
+    );
 }
 
 // ── coverage and currentDeclaration ────────────────────────────────────────
@@ -797,8 +881,18 @@ fn coverage_is_derived_from_the_chain_from_a_gift_date() {
     let enduring = w.declare(w.payload()).unwrap();
     let found = w.covering("2022-03-03", None).unwrap();
     assert_eq!(
-        (found.id.as_str(), found.scope, found.method, found.made_on.as_str()),
-        (enduring.id.as_str(), Scope::FutureAndPast4y, Method::PaperForm, "2026-03-03")
+        (
+            found.id.as_str(),
+            found.scope,
+            found.method,
+            found.made_on.as_str()
+        ),
+        (
+            enduring.id.as_str(),
+            Scope::FutureAndPast4y,
+            Method::PaperForm,
+            "2026-03-03"
+        )
     );
     assert!(w.covering("2022-03-02", None).is_none());
     w.cancel("2026-06-01", None).unwrap();
@@ -816,7 +910,14 @@ fn coverage_is_derived_from_the_chain_from_a_gift_date() {
         .unwrap();
     assert_eq!(w.covering("2026-07-01", Some(&gift)).unwrap().id, one.id);
     assert!(w.covering("2026-07-01", None).is_none());
-    assert!(read(&w.a, |c| Ok(giftaid::current_declaration(c, &w.jo, "2026-10-23")?)).is_none());
+    assert!(
+        read(&w.a, |c| Ok(giftaid::current_declaration(
+            c,
+            &w.jo,
+            "2026-10-23"
+        )?))
+        .is_none()
+    );
 }
 
 // ── tenancy ────────────────────────────────────────────────────────────────
@@ -845,9 +946,15 @@ fn another_organisations_contact_gift_or_declaration_is_refused_or_invisible() {
     assert_eq!(reason(err), "unknown_gift");
 
     // B can't see or cancel A's declarations.
-    assert!(read(&w.b, |c| Ok(giftaid::by_contact(c, &w.jo, "2026-10-23")?)).declarations.is_empty());
-    let err = tx(&w.b, |ctx| giftaid::cancel_declarations(ctx, &w.jo, "2026-06-01", None, Source::Ui))
-        .unwrap_err();
+    assert!(
+        read(&w.b, |c| Ok(giftaid::by_contact(c, &w.jo, "2026-10-23")?))
+            .declarations
+            .is_empty()
+    );
+    let err = tx(&w.b, |ctx| {
+        giftaid::cancel_declarations(ctx, &w.jo, "2026-06-01", None, Source::Ui)
+    })
+    .unwrap_err();
     assert_eq!(reason(err), "invalid");
     let err = tx(&w.b, |ctx| {
         execute(
@@ -862,7 +969,15 @@ fn another_organisations_contact_gift_or_declaration_is_refused_or_invisible() {
     })
     .unwrap_err();
     assert_eq!(reason(err), "not_found");
-    assert!(read(&w.b, |c| Ok(giftaid::coverage(c, &w.jo, "2026-06-01", None)?)).is_none());
+    assert!(
+        read(&w.b, |c| Ok(giftaid::coverage(
+            c,
+            &w.jo,
+            "2026-06-01",
+            None
+        )?))
+        .is_none()
+    );
     w.b_untouched();
     assert_eq!(w.declaration(&made.id).cancelled_from, None);
 }
@@ -878,5 +993,8 @@ fn a_contact_has_at_most_the_declaration_limit() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(reason(w.declare(w.payload()).unwrap_err()), "declaration_limit");
+    assert_eq!(
+        reason(w.declare(w.payload()).unwrap_err()),
+        "declaration_limit"
+    );
 }

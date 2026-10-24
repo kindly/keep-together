@@ -31,10 +31,16 @@ fn fail(msg: impl std::fmt::Display) -> ExitCode {
 /// Send the admin's invite as the api would (`KEEP_MAIL`), or, with the
 /// log mailer, print it for the operator to pass on.
 fn send_invite(mail: comms::mail::Mail) -> Result<(), String> {
+    send(mail, "invite")
+}
+
+/// Send `mail` (`KEEP_MAIL`), or print it with the log mailer.
+fn send(mail: comms::mail::Mail, what: &str) -> Result<(), String> {
     let mailer = comms::mail::Mailer::from_env().map_err(|e| e.to_string())?;
-    if mailer.is_log() {
+    // KEEP_MAIL=off (staging until SES): the operator's own terminal.
+    if mailer.is_log() || mailer.is_off() {
         println!(
-            "invite for {} (KEEP_MAIL=log, not sent):\n{}",
+            "{what} for {} (KEEP_MAIL=log/off, not sent):\n{}",
             mail.to, mail.text
         );
         return Ok(());
@@ -46,7 +52,7 @@ fn send_invite(mail: comms::mail::Mail) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .block_on(mailer.send(mail))
         .map_err(|e| e.to_string())?;
-    println!("invite emailed to {to}");
+    println!("{what} emailed to {to}");
     Ok(())
 }
 
@@ -148,22 +154,13 @@ fn main() -> ExitCode {
                         s.donors_created
                     );
                     for c in credentials {
-                        if c.generated {
-                            println!(
-                                "  {:<6} {}  password {}  totp {}",
-                                c.role.as_str(),
-                                c.email,
-                                c.password,
-                                c.totp_secret
-                            );
-                        } else {
-                            println!(
-                                "  {:<6} {}  (credentials from KEEP_RIVERSIDE_{}_*)",
-                                c.role.as_str(),
-                                c.email,
-                                c.role.as_str().to_uppercase()
-                            );
-                        }
+                        println!(
+                            "  {:<6} {}  password {}  totp {}",
+                            c.role.as_str(),
+                            c.email,
+                            api::reset::shown(&c.password, c.password_origin),
+                            api::reset::shown(&c.totp_secret, c.totp_origin)
+                        );
                     }
                     ExitCode::SUCCESS
                 }
@@ -177,13 +174,23 @@ fn main() -> ExitCode {
                 return fail(USAGE);
             };
             match cli::auth::reset_2fa(&data, email, &reason) {
-                Ok(true) => {
+                Ok(Some(notice)) => {
                     eprintln!(
-                        "2FA reset for {email} (logged); their sessions ended, next sign-in enrols again"
+                        "2FA reset for {email} (logged); their sessions ended, next sign-in enrols again (with an emailed code)"
                     );
-                    ExitCode::SUCCESS
+                    if comms::mail::Mailer::from_env().is_ok_and(|m| m.is_off()) {
+                        eprintln!(
+                            "warning: KEEP_MAIL=off: re-enrolling needs an emailed code, so {email} can't sign in again until mail is on (docs/ops.md)"
+                        );
+                    }
+                    match send(notice, "notice") {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(e) => fail(format!(
+                            "the reset is done, but the notice wasn't sent: {e}"
+                        )),
+                    }
                 }
-                Ok(false) => fail(format!("no user {email}")),
+                Ok(None) => fail(format!("no user {email}")),
                 Err(e) => fail(e),
             }
         }

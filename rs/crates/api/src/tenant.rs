@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use contracts::Ctx;
 use serde::Serialize;
-use store::{OrgDb, OrgRead, Role, Store, TenantId};
+use store::{OrgDb, OrgRead, Role, Store, TenantId, UserId};
 use ts_rs::TS;
 
 use crate::error::ApiError;
@@ -37,7 +37,11 @@ pub struct Tenant {
     /// For [`Tenant::run_job`]'s `platform.db` marker only: handlers never
     /// see the store.
     tenant_id: TenantId,
+    /// For [`Tenant::write`]'s re-check and `run_job`'s marker (handlers
+    /// never see it).
     store: Arc<Store>,
+    /// The session's stored hash, for [`Tenant::write`]'s re-check.
+    session_id: String,
 }
 
 impl Tenant {
@@ -60,6 +64,12 @@ impl Tenant {
 
     /// Run commands in one `BEGIN IMMEDIATE` transaction on this
     /// organisation's file, as this user. Needs `staff` or above.
+    ///
+    /// The session and the role are checked again first, on `platform.db`:
+    /// the middleware's check ran before the body arrived, which a client
+    /// can delay at will, and a sign-out, removal or demotion in between
+    /// must stop the write (S1 codex C5). What remains is the moment
+    /// between this check and the org file's transaction (two files).
     pub async fn write<T, F>(&self, f: F) -> Result<T, ApiError>
     where
         T: Send + 'static,
@@ -71,7 +81,11 @@ impl Tenant {
         let db = self.db.clone();
         let timing = self.timing.clone();
         let user = self.user;
+        let check = self.recheck();
         blocking(move || {
+            let start = Instant::now();
+            check()?;
+            timing.add_platform(start.elapsed());
             let start = Instant::now();
             let out = contracts::transact(&db, Some(user), f);
             timing.add_db(start.elapsed());
@@ -82,6 +96,28 @@ impl Tenant {
 }
 
 impl Tenant {
+    /// A check, run on a blocking thread, that this session is still live
+    /// and its user still staff or above here, on `platform.db` (S1 codex
+    /// C5): the middleware's check can be stale by the time a write runs.
+    fn recheck(&self) -> impl FnOnce() -> Result<(), ApiError> + Send + 'static + use<> {
+        let (store, session) = (self.store.clone(), self.session_id.clone());
+        let (user, slug) = (self.user, self.slug.clone());
+        move || {
+            let now = contracts::now_ms();
+            let live = store
+                .platform()
+                .with_read(|c| ::auth::sessions::by_id(c, &session, now))?
+                .is_some_and(|s| s.user == user && s.stage == ::auth::Stage::Full);
+            if !live {
+                return Err(ApiError::Unauthenticated);
+            }
+            match store.platform().member(UserId(user), &slug)? {
+                Some(m) if m.role >= Role::Staff => Ok(()),
+                _ => Err(ApiError::Forbidden),
+            }
+        }
+    }
+
     /// Admin-only routes: role `admin`, and a sign-in (or step-up) within
     /// the last hour (ADR 0020), else `403 step_up_required`.
     pub fn require_admin(&self) -> Result<(), ApiError> {
@@ -119,6 +155,8 @@ impl Tenant {
     where
         F: Fn(&Ctx) -> Result<bool, ApiError> + Send + 'static,
     {
+        // As in `write`: the session and role still hold when it starts.
+        blocking(self.recheck()).await?;
         let (store, id) = (self.store.clone(), self.tenant_id.clone());
         {
             let (store, id, key) = (store.clone(), id.clone(), key.clone());
@@ -214,6 +252,7 @@ pub(crate) async fn middleware(
             timing: timing.clone(),
             tenant_id: member.tenant.id.clone(),
             store: state.store.clone(),
+            session_id: session.id.clone(),
         })
     }
     .await;
@@ -241,4 +280,59 @@ pub async fn info(Extension(tenant): Extension<Tenant>) -> Json<TenantInfo> {
         name: tenant.name,
         role: tenant.role.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use store::StoreConfig;
+
+    use super::*;
+
+    /// S1 codex C5: `write` checks the session and the role on
+    /// `platform.db` itself, so a sign-out or a demotion after the
+    /// middleware's check (e.g. while the handler ran) stops the write.
+    #[tokio::test]
+    async fn a_write_rechecks_the_session_and_role() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            Store::open_with(
+                StoreConfig {
+                    dir: tmp.path().to_path_buf(),
+                    org_migrations: crate::schema::org_migrations(),
+                    readers: 1,
+                    max_open: 4,
+                },
+                crate::schema::PLATFORM_SCHEMAS,
+            )
+            .unwrap(),
+        );
+        let t = store.create_tenant("alpha", "Alpha").unwrap();
+        let p = store.platform();
+        let cat = p.upsert_user("cat@alpha.org").unwrap();
+        p.set_membership(cat, &t.id, Role::Staff).unwrap();
+        let now = contracts::now_ms();
+        let token = p
+            .with_write(|tx| ::auth::sessions::create(tx, cat.0, ::auth::Stage::Full, now))
+            .unwrap();
+        let tenant = Tenant {
+            tenant_id: t.id.clone(),
+            db: store.org(&t.id).unwrap(),
+            slug: "alpha".into(),
+            name: "Alpha".into(),
+            role: Role::Staff,
+            user: cat.0,
+            authenticated_at: now,
+            timing: Timing::default(),
+            store: store.clone(),
+            session_id: ::auth::secret::hash(&token),
+        };
+        let write = || tenant.write(|_ctx| Ok(()));
+        assert!(write().await.is_ok());
+        p.set_membership(cat, &t.id, Role::Viewer).unwrap();
+        assert!(matches!(write().await, Err(ApiError::Forbidden)));
+        p.set_membership(cat, &t.id, Role::Staff).unwrap();
+        p.with_write(|tx| ::auth::sessions::revoke_user(tx, cat.0))
+            .unwrap();
+        assert!(matches!(write().await, Err(ApiError::Unauthenticated)));
+    }
 }

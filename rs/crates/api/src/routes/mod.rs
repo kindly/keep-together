@@ -4,8 +4,8 @@
 mod comms;
 mod contacts;
 pub mod fields;
-pub mod gifts;
 mod giftaid;
+pub mod gifts;
 pub mod groups;
 mod identifiers;
 mod notes;

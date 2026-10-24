@@ -218,7 +218,12 @@ impl Contract for DeclarationContract {
     ) -> Result<(), ContractError> {
         let p = &next.payload;
         match contacts::donors::kind_of(tx, &p.contact_id)? {
-            None => return Err(ContractError::rejected("unknown_contact", "Contact must exist")),
+            None => {
+                return Err(ContractError::rejected(
+                    "unknown_contact",
+                    "Contact must exist",
+                ));
+            }
             Some(contacts::types::Kind::Individual) => {}
             Some(_) => {
                 return Err(ContractError::rejected(

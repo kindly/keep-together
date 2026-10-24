@@ -129,14 +129,23 @@ pub fn void_declaration(
     reason: String,
     source: Source,
 ) -> Result<Executed, ContractError> {
-    execute(ctx, &VOID, VoidPayload { reason }, Exec::update(id, None, source))
+    execute(
+        ctx,
+        &VOID,
+        VoidPayload { reason },
+        Exec::update(id, None, source),
+    )
 }
 
 /// The contact page's Gift Aid panel: a contact's declarations, newest
 /// made first, each with its warnings (none on a voided one), and which
 /// is current on `today` (the caller's date), if any. At most
 /// DECLARATION_LIMIT, which the contract enforces, so nothing is cut off.
-pub fn by_contact(conn: &Connection, contact_id: &str, today: &str) -> rusqlite::Result<Declarations> {
+pub fn by_contact(
+    conn: &Connection,
+    contact_id: &str,
+    today: &str,
+) -> rusqlite::Result<Declarations> {
     let chain = chain(conn, contact_id)?;
     let current_id = rules::current_of(&chain, today).map(|d| d.id.clone());
     let declarations = chain

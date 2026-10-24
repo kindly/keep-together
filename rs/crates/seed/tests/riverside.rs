@@ -3,11 +3,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use auth::Keys;
 use contacts::queries::{SearchQuery, search};
 use contracts::{Exec, Source, execute, transact};
 use rusqlite::Connection;
 use seed::riverside::data::{self, DONOR_COUNT, IDENTIFIER_TYPES, SOURCE_DETAILS};
-use seed::riverside::{self, Credential, SLUG, SeedError, USERS};
+use seed::riverside::{self, Credential, Origin, SLUG, SeedError, USERS};
 use store::{Role, Store, StoreConfig, Tenant};
 
 fn open(dir: &std::path::Path) -> Store {
@@ -35,7 +36,8 @@ fn passwords(staff: &str) -> Vec<Credential> {
 }
 
 fn seed(store: &Store, creds: &[Credential]) -> riverside::Seeded {
-    riverside::seed(store, creds, api::schema::seed_new_org).unwrap()
+    let mut creds = creds.to_vec();
+    riverside::seed(store, &Keys::dev(), &mut creds, api::schema::seed_new_org).unwrap()
 }
 
 /// Two unrelated organisations with a contact each, so every test can
@@ -204,18 +206,25 @@ fn one_user_per_role_each_a_member_at_that_role_with_a_hashed_password_and_totp(
     let world = seed(&store, &creds);
     assert_eq!(world.tenant.slug, SLUG);
     assert!(world.created);
-    type Row = (String, String, String, Option<String>, Option<String>);
+    type Row = (String, String, String, Option<String>, Option<String>, i64);
     let rows: Vec<Row> = store
         .platform()
         .with_read(|c: &Connection| {
             c.prepare(
-                "SELECT u.email, m.role, a.password_hash, a.second_factor, a.totp_secret
+                "SELECT u.email, m.role, a.password_hash, a.second_factor, a.totp_secret, u.id
                  FROM memberships m JOIN users u ON u.id = m.user_id
                  JOIN auth_credentials a ON a.user_id = u.id
                  WHERE m.tenant_id = ?1 ORDER BY u.email",
             )?
             .query_map([world.tenant.id.as_str()], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
         })
@@ -231,13 +240,17 @@ fn one_user_per_role_each_a_member_at_that_role_with_a_hashed_password_and_totp(
             .collect::<Vec<_>>(),
         expected
     );
-    for (email, _, hash, factor, secret) in &rows {
+    for (email, _, hash, factor, sealed, id) in &rows {
         let c = creds.iter().find(|c| c.email == email).unwrap();
         // Stored as a hash, never the password itself.
         assert_ne!(hash, &c.password);
         assert!(auth::password::verify(&c.password, hash));
         assert_eq!(factor.as_deref(), Some("totp"));
-        assert_eq!(secret.as_deref(), Some(c.totp_secret.as_str()));
+        // Sealed with the keys (S1), and opens to the seeded secret.
+        let sealed = sealed.as_deref().unwrap();
+        assert!(!sealed.contains(&c.totp_secret));
+        let opened = Keys::dev().open(&auth::keys::totp_aad(*id), sealed);
+        assert_eq!(opened.as_deref(), Some(c.totp_secret.as_str()));
     }
 }
 
@@ -477,8 +490,19 @@ fn missing_credentials_are_refused_before_anything_is_written() {
     }
     // Locally, the missing ones are generated (and marked so).
     let made = riverside::credentials_from_env(env, true).unwrap();
-    assert!(!made[0].generated || made[0].password == "admin-password-123");
-    assert!(made[1].generated && made[2].generated);
+    assert_eq!(
+        (
+            made[0].password.as_str(),
+            made[0].password_origin,
+            made[0].totp_origin
+        ),
+        ("admin-password-123", Origin::Env, Origin::Generated)
+    );
+    assert!(
+        made[1..]
+            .iter()
+            .all(|c| c.password_origin == Origin::Generated)
+    );
     // A bad one is refused, naming the var.
     let short = |n: &str| (n == "KEEP_RIVERSIDE_STAFF_PASSWORD").then(|| "short".into());
     let err = riverside::credentials_from_env(short, true).unwrap_err();
@@ -500,7 +524,7 @@ fn missing_credentials_are_refused_before_anything_is_written() {
     let mut creds = passwords("staff-password-123");
     creds.retain(|c| c.role == Role::Admin);
     assert!(matches!(
-        riverside::seed(&store, &creds, api::schema::seed_new_org),
+        riverside::seed(&store, &Keys::dev(), &mut creds, api::schema::seed_new_org),
         Err(SeedError::MissingCredentials(_))
     ));
     assert_eq!(platform_counts(&store), before);
@@ -661,4 +685,57 @@ fn gifts_and_declarations_land_through_the_contracts() {
         Ok::<_, rusqlite::Error>(())
     })
     .unwrap();
+}
+
+/// Review L2: on dev, generated credentials never replace stored ones, so
+/// an authenticator enrolled from the first run keeps working; one from
+/// the env still applies.
+#[test]
+fn generated_credentials_are_kept_on_a_rerun_env_ones_still_apply() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(tmp.path());
+    let keys = Keys::dev();
+    let run = |env: &dyn Fn(&str) -> Option<String>| {
+        let mut creds = riverside::credentials_from_env(env, true).unwrap();
+        riverside::seed(&store, &keys, &mut creds, api::schema::seed_new_org).unwrap();
+        creds
+    };
+    let stored = || {
+        store
+            .platform()
+            .with_read(|c: &Connection| {
+                c.prepare(
+                    "SELECT a.password_hash, a.totp_secret FROM auth_credentials a
+                     JOIN users u ON u.id = a.user_id ORDER BY u.email",
+                )?
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+    };
+    let first = run(&|_| None);
+    assert!(
+        first
+            .iter()
+            .all(|c| c.password_origin == Origin::Generated && c.totp_origin == Origin::Generated)
+    );
+    let before = stored();
+    let second = run(&|_| None);
+    assert!(second.iter().all(|c| c.password_origin == Origin::Kept
+        && c.totp_origin == Origin::Kept
+        && c.password.is_empty()
+        && c.totp_secret.is_empty()));
+    assert_eq!(stored(), before);
+    // The first run's sign-in still works.
+    let admin = first.iter().find(|c| c.role == Role::Admin).unwrap();
+    assert!(auth::password::verify(&admin.password, &before[0].0));
+    // A password from the env replaces the stored one.
+    let third = run(&|n: &str| {
+        (n == "KEEP_RIVERSIDE_ADMIN_PASSWORD").then(|| "a-new-admin-password".into())
+    });
+    assert_eq!(third[0].password_origin, Origin::Env);
+    let after = stored();
+    assert!(auth::password::verify("a-new-admin-password", &after[0].0));
+    assert_eq!(after[0].1, before[0].1, "the TOTP secret stays");
+    assert_eq!(after[1..], before[1..]);
 }

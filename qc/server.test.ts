@@ -111,4 +111,12 @@ describe('serverSummary', () => {
     const inFlight = { ...call(contact, null), endMs: null }
     expect(serverSummary([record([[inFlight]])]).pass).toBe(true)
   })
+
+  test('auth calls answer untimed on purpose (S1 review C7)', () => {
+    const s = serverSummary([
+      record([[call('/api/auth/second-factor', null, 'POST')]]),
+    ])
+    expect(s.pass).toBe(true)
+    expect(s.untimed).toEqual([])
+  })
 })

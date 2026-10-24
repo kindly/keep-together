@@ -13,4 +13,9 @@ method: Method | null,
 /**
  * Admin-only actions work until then (ms since the epoch).
  */
-stepUpUntil: number | null, };
+stepUpUntil: number | null, 
+/**
+ * `enrol` after a 2FA reset: a code has been emailed, and confirming
+ * an authenticator app needs it too (S1 M7).
+ */
+needsEmailCode: boolean, };

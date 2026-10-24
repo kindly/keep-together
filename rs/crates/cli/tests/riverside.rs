@@ -4,9 +4,22 @@
 use std::process::Command;
 
 fn keep(data: &std::path::Path, keep_env: Option<&str>) -> std::process::Output {
+    keep_with(data, keep_env, &[])
+}
+
+fn keep_with(
+    data: &std::path::Path,
+    keep_env: Option<&str>,
+    vars: &[(&str, String)],
+) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_keep"));
     cmd.arg("--data").arg(data).args(["dev", "seed-riverside"]);
-    cmd.env_remove("KEEP_ENV");
+    cmd.env_remove("KEEP_ENV")
+        .env_remove("KEEP_SETTINGS_KEY")
+        .env_remove("KEEP_AUTH_PEPPER");
+    for (k, v) in vars {
+        cmd.env(k, v);
+    }
     for role in ["ADMIN", "STAFF", "VIEWER"] {
         for what in ["PASSWORD", "TOTP"] {
             cmd.env_remove(format!("KEEP_RIVERSIDE_{role}_{what}"));
@@ -26,8 +39,16 @@ fn refused_unless_keep_env_is_dev_or_staging_then_prints_the_sign_ins() {
         assert!(!out.status.success());
         assert!(String::from_utf8_lossy(&out.stderr).contains("KEEP_ENV"));
     }
-    // Staging needs every credential from env.
+    // Staging needs the api's keys (no dev keys there)...
     let out = keep(tmp.path(), Some("staging"));
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("KEEP_SETTINGS_KEY"));
+    // ...and every credential from env.
+    let keys = [
+        ("KEEP_SETTINGS_KEY", auth::Keys::generate()),
+        ("KEEP_AUTH_PEPPER", auth::Keys::generate()),
+    ];
+    let out = keep_with(tmp.path(), Some("staging"), &keys);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("KEEP_RIVERSIDE_ADMIN_PASSWORD"));
 
@@ -48,6 +69,14 @@ fn refused_unless_keep_env_is_dev_or_staging_then_prints_the_sign_ins() {
         );
     }
     let again = keep(tmp.path(), Some("dev"));
-    assert!(String::from_utf8_lossy(&again.stdout).starts_with("updated riverside"));
-    assert!(String::from_utf8_lossy(&again.stdout).contains(": 0 donors created"));
+    let text = String::from_utf8_lossy(&again.stdout);
+    assert!(text.starts_with("updated riverside"), "{text}");
+    assert!(text.contains(": 0 donors created"));
+    // Review L2: a re-run keeps the sign-ins it printed the first time.
+    assert_eq!(
+        text.matches("password (unchanged)  totp (unchanged)")
+            .count(),
+        3,
+        "{text}"
+    );
 }

@@ -95,9 +95,26 @@ async function post<T>(
 }
 
 /**
+ * The session cookie's name for `url`'s host, as the api reads it:
+ * `kt_session` on a loopback host (local http), else `__Host-kt_session`
+ * (Secure, host-only; `api::auth::COOKIE_NAME`).
+ */
+export function cookieName(url: string): string {
+  const host = new URL(url).hostname
+  return ['127.0.0.1', 'localhost', '[::1]'].includes(host)
+    ? 'kt_session'
+    : '__Host-kt_session'
+}
+
+/** A `Cookie` header carrying `token` to `inst`'s api. */
+export function sessionCookie(inst: Instance, token: string): string {
+  return `${cookieName(inst.api)}=${token}`
+}
+
+/**
  * A session for `email` on `inst`, without a sign-in (a TOTP code is good
  * once per 30 s step, and each test wants its own session): the dev login
- * locally, `/api/qc/session` (QC users only) on staging. The `kt_session`
+ * locally, `/api/qc/session` (QC users only) on staging. The session
  * cookie's value.
  */
 export async function sessionToken(
@@ -107,7 +124,9 @@ export async function sessionToken(
   const { res } = await post(inst, setupRoute(inst, 'login', 'session'), {
     email,
   })
-  const value = res.headers.get('set-cookie')?.match(/kt_session=([^;]+)/)?.[1]
+  const value = res.headers
+    .get('set-cookie')
+    ?.match(/(?:^|[ ,;])(?:__Host-)?kt_session=([^;]+)/)?.[1]
   if (!value) throw new Error(`no session cookie for ${email}`)
   return value
 }
@@ -119,7 +138,7 @@ export function sessionState(inst: Instance, token: string): StorageState {
   return {
     cookies: [
       {
-        name: 'kt_session',
+        name: cookieName(inst.baseURL),
         value: token,
         domain: url.hostname,
         path: '/',
@@ -144,7 +163,7 @@ export async function apiGet<T>(
 ): Promise<T> {
   const token = await sessionToken(inst, user.email)
   const res = await fetch(`${inst.api}${route}`, {
-    headers: { cookie: `kt_session=${token}` },
+    headers: { cookie: sessionCookie(inst, token) },
   })
   if (!res.ok) throw new Error(`${route}: ${res.status} ${await res.text()}`)
   return (await res.json()) as T
@@ -164,7 +183,7 @@ export async function apiPost<T>(
   const res = await fetch(`${inst.api}${route}`, {
     method: 'POST',
     headers: {
-      cookie: `kt_session=${token}`,
+      cookie: sessionCookie(inst, token),
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
