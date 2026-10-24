@@ -1,7 +1,7 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query'
 import type { QueryKey } from '@tanstack/react-query'
 import { describe, expect, test } from 'vitest'
-import { applyEvent } from './events'
+import { applyEvent, ownWrite } from './events'
 import type { OrgEvent } from './rust-types/OrgEvent'
 import { keys } from './rust/keys'
 
@@ -122,4 +122,60 @@ test('an event refetches a query whose first fetch began before the change', asy
   await new Promise((done) => setTimeout(done))
   expect(qc.getQueryData(key)).toEqual({ held: true })
   unsubscribe()
+})
+
+// codex C1 #7: the echo of this tab's own save skips only what its hook
+// already refetched; what shows the entity elsewhere still refetches.
+describe('own writes', () => {
+  const shown = (slug: string) => {
+    const qc = new QueryClient()
+    const held: Array<QueryKey> = [
+      keys.gift(slug, 'g1'),
+      keys.recentGifts(slug),
+      [...keys.gifts(slug), 'donor', 'c1', '2026-10-24'],
+      keys.list(slug),
+      keys.sources(slug),
+    ]
+    for (const k of held) qc.setQueryData(k, {})
+    return qc
+  }
+  const ours = (slug: string, e: OrgEvent) => {
+    ownWrite(slug, e.id, e.contract, e.counter)
+    return e
+  }
+
+  test('a donor renamed here: its gifts, recent gifts and donor info refetch, not the list', () => {
+    const qc = shown('o1')
+    applyEvent(
+      qc,
+      'o1',
+      ours('o1', event('contacts', 'contacts.details', 'c1')),
+    )
+    expect(stale(qc)).toEqual(
+      [
+        JSON.stringify(keys.gift('o1', 'g1')),
+        JSON.stringify(keys.recentGifts('o1')),
+        JSON.stringify([...keys.gifts('o1'), 'donor', 'c1', '2026-10-24']),
+      ].sort(),
+    )
+  })
+
+  test('a source code saved here: gifts naming it refetch, the tree does not', () => {
+    const qc = shown('o2')
+    applyEvent(qc, 'o2', ours('o2', event('source_codes', 'sources.code')))
+    const refetched = stale(qc)
+    expect(refetched).toContain(JSON.stringify(keys.gift('o2', 'g1')))
+    expect(refetched).not.toContain(JSON.stringify(keys.sources('o2')))
+  })
+
+  test('an acquisition set here: the code tree learns the code is used', () => {
+    const qc = shown('o3')
+    applyEvent(
+      qc,
+      'o3',
+      ours('o3', event('contacts', 'contacts.acquisition', 'c1')),
+    )
+    expect(stale(qc)).toContain(JSON.stringify(keys.sources('o3')))
+    expect(stale(qc)).not.toContain(JSON.stringify(keys.list('o3')))
+  })
 })

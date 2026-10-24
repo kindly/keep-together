@@ -92,7 +92,9 @@ const INVALIDATES: Partial<
 
 /**
  * Writes this tab made and has already refetched after (the save hooks
- * call `ownWrite` with each answer): their events change nothing here.
+ * call `ownWrite` with each answer): their events refetch only what
+ * shows the entity elsewhere (gifts showing a donor or code; see
+ * `applyEvent`), not the entity's own reads.
  * Only when the answer arrives first: the api publishes after commit,
  * before it writes the response, so the event can win the race. Then the
  * event refetches what the save's own invalidation refetches too, and
@@ -156,7 +158,16 @@ function invalidate(
 
 /** Apply one event to the cache. Exported for the tests. */
 export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
+  // Other entities' reads that show this one. Run for our own writes
+  // too: a save hook refreshes its own entity's reads, not these (a
+  // donor renamed here still shows its old name on gifts otherwise).
+  // A code's first use marks it used: the tree offers archive, not delete.
+  if (e.contract === 'contacts.acquisition') invalidate(qc, keys.sources(slug))
+  // B2: gifts show their donor's name and address and their codes' names.
+  if (e.entity === 'contacts' || e.entity === 'source_codes')
+    invalidate(qc, keys.gifts(slug))
   const key = ownKey(slug, e.id, e.contract, e.counter)
+  // Our own write's echo: its hook has refetched the entity's reads.
   if (own.delete(key)) return
   const invalidates = INVALIDATES[e.entity]
   if (!invalidates) {
@@ -164,11 +175,6 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
     return
   }
   for (const queryKey of invalidates(slug, e)) invalidate(qc, queryKey)
-  // A code's first use marks it used: the tree offers archive, not delete.
-  if (e.contract === 'contacts.acquisition') invalidate(qc, keys.sources(slug))
-  // B2: gifts show their donor's name and address and their codes' names.
-  if (e.entity === 'contacts' || e.entity === 'source_codes')
-    invalidate(qc, keys.gifts(slug))
   if (e.entity === 'contacts') {
     // The view only if this is newer than the counter it holds (an echo
     // of a refetch already made changes nothing); its history always. A
