@@ -634,11 +634,17 @@ async fn admin_only_domain_routes_need_step_up_too() {
     // codes), so the admin-only route here is a Settings switch.
     let switch = json!({ "staffCanManage": true });
     let r = w
-        .post("/api/t/alpha/preferences/fields", Some(&ann), switch.clone())
+        .post(
+            "/api/t/alpha/preferences/fields",
+            Some(&ann),
+            switch.clone(),
+        )
         .await;
     assert_eq!(r.kind(), "step_up_required");
     let ann = w.sign_in("ann@alpha.org").await;
-    let r = w.post("/api/t/alpha/preferences/fields", Some(&ann), switch).await;
+    let r = w
+        .post("/api/t/alpha/preferences/fields", Some(&ann), switch)
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
 }
 

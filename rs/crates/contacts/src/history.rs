@@ -9,8 +9,8 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::REGISTRY;
 use crate::queries::counters;
-pub use crate::slices::{FieldRestoreNote, FieldRestoreReason};
 use crate::slices::field_restore_notes;
+pub use crate::slices::{FieldRestoreNote, FieldRestoreReason};
 use crate::types::{RestoreRequest, Restored};
 
 /// Revisions per history page (Convex's panel asks for 10).
@@ -185,7 +185,10 @@ mod tests {
     #[test]
     fn slices_read_as_staff_read_them() {
         assert_eq!(ContactSlices.label("contacts.details"), "details");
-        assert_eq!(ContactSlices.label("contacts.acquisition"), "acquisition code");
+        assert_eq!(
+            ContactSlices.label("contacts.acquisition"),
+            "acquisition code"
+        );
         assert_eq!(ContactSlices.label("contacts.tags"), "tags (retired)");
         assert!(ContactSlices.retired("contacts.tag"));
         assert!(!ContactSlices.retired("contacts.fields"));

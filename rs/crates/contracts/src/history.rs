@@ -77,7 +77,12 @@ pub fn page(
     )?;
     let rows = stmt
         .query_map(
-            params![entity, entity_id, before.unwrap_or(i64::MAX), limit as i64 + 1],
+            params![
+                entity,
+                entity_id,
+                before.unwrap_or(i64::MAX),
+                limit as i64 + 1
+            ],
             |r| {
                 Ok(Row {
                     id: r.get(0)?,

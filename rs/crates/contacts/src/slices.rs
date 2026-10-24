@@ -872,7 +872,9 @@ pub fn field_restore(
     for h in held {
         if keep.contains(&h.field_id) {
             out.push(h.clone());
-        } else if !named.contains(h.field_id.as_str()) && field_created_after(conn, &h.field_id, restored_at)? {
+        } else if !named.contains(h.field_id.as_str())
+            && field_created_after(conn, &h.field_id, restored_at)?
+        {
             out.push(h.clone());
             if let Some(f) = field_row(conn, &h.field_id)? {
                 notes.push(FieldRestoreNote {

@@ -11,7 +11,7 @@ use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contacts::fields::{
-    FIELD, FIELD_DELETE, FIELD_OPTION, FIELD_OPTION_DELETE, RETIRE_BATCH, DeletionPayload,
+    DeletionPayload, FIELD, FIELD_DELETE, FIELD_OPTION, FIELD_OPTION_DELETE, RETIRE_BATCH,
     add_option, definitions, deleted_count, reorder_options, retire_batch, retire_finish,
     retire_start, retiring_fields,
 };

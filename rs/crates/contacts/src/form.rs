@@ -13,7 +13,8 @@ use crate::slices::{
     load_details, load_field_values, load_methods,
 };
 use crate::types::{
-    Archive, Counters, CreateContact, Created, Expected, FormProblem, SaveForm, SaveFormResult, SaveSource,
+    Archive, Counters, CreateContact, Created, Expected, FormProblem, SaveForm, SaveFormResult,
+    SaveSource,
 };
 
 /// Create a contact from its details. A `clientKey` or pre-generated `id`
@@ -252,4 +253,3 @@ pub fn set_archived(
 }
 
 pub use crate::history::restore_contact;
-

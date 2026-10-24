@@ -1040,10 +1040,11 @@ pub fn bulk_set_field(
             values.push(value);
         }
         values.sort_by(|a, b| a.field_id.cmp(&b.field_id));
-        let counter: i64 =
-            conn.query_row("SELECT fields_version FROM contacts WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })?;
+        let counter: i64 = conn.query_row(
+            "SELECT fields_version FROM contacts WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
         plans.push((id, counter, values));
     }
     if plans.is_empty() {
