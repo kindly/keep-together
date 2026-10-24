@@ -112,7 +112,7 @@ test('moments newest first; Load older joins a group cut by the page', async () 
   expect(button('Load older')).toBeUndefined()
 })
 
-test('Restore to here sends the moment’s time and says what it left', async () => {
+test('Restore to here sends the moment’s revision and says what it left', async () => {
   pages = { '': { moments: [moment(2), moment(1)], nextBefore: null } }
   restoreAnswer = {
     restored: ['contacts.details', 'contacts.fields'],
@@ -128,7 +128,7 @@ test('Restore to here sends the moment’s time and says what it left', async ()
   expect(posts).toEqual([
     {
       url: `/api/t/alpha/contacts/${ID}/restore`,
-      body: { at: 1_000 },
+      body: { toRevision: 1 },
     },
   ])
   expect(el.querySelector('[role=status]')!.textContent).toContain(

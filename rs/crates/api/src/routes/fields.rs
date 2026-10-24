@@ -16,15 +16,15 @@ use contacts::fields::{
     retire_start, retiring_fields,
 };
 use contacts::types::{
-    DeleteFieldPart, DeletedFieldPart, FieldDefinition, ReorderOptions, ReorderedOptions,
-    RetiredField, SaveField, SaveFieldOption,
+    DeleteFieldPart, DeletedFieldPart, FieldDefinition, FieldRetirePayload, ReorderOptions,
+    ReorderedOptions, RetirePhase, SaveField, SaveFieldOption,
 };
 use contracts::{ContractError, Ctx, Exec, Executed, Source, execute};
 use platform::{ListKind, Role, may_manage_list};
 use rusqlite::Connection;
-use store::{OrgDb, Store};
+use store::{OrgDb, Store, TenantId};
 
-use crate::jobs::{Job, each_org};
+use crate::jobs::{Job, clear_pending, each_pending_org};
 use crate::{ApiError, Body, IdParam, Tenant};
 
 pub fn router() -> Router {
@@ -104,6 +104,8 @@ async fn delete_field(
     Path(IdParam { id }): Path<IdParam>,
     Body(req): Body<DeleteFieldPart>,
 ) -> Result<Json<DeletedFieldPart>, ApiError> {
+    // Irreversible: a recent sign-in, whoever may manage the list.
+    t.require_step_up()?;
     let role = t.role;
     t.write(move |ctx| {
         require_manager(ctx.tx.read(), role)?;
@@ -130,6 +132,8 @@ async fn delete_option(
     Path(IdParam { id }): Path<IdParam>,
     Body(req): Body<DeleteFieldPart>,
 ) -> Result<Json<DeletedFieldPart>, ApiError> {
+    // Irreversible: a recent sign-in, whoever may manage the list.
+    t.require_step_up()?;
     let role = t.role;
     t.write(move |ctx| {
         require_manager(ctx.tx.read(), role)?;
@@ -174,15 +178,18 @@ async fn reorder(
     .map(Json)
 }
 
-/// `POST fields/{id}/retire`: archive and mark the field retiring, clear
-/// it from every contact a batch (one transaction, one command group) at
-/// a time, then mark it retired. Answers when it has ended. A retire cut
-/// short (the server stopping) leaves the field retiring: running this
-/// again carries on, and so does the `field-retire` job.
+/// `POST fields/{id}/retire`: archive the field and mark it retiring (one
+/// transaction), then answer, phase `retiring`. The values are cleared in
+/// the background, a batch (one transaction, one command group) at a
+/// time, and the field marked retired; the Settings tab follows through
+/// the events. Irreversible: needs a recent sign-in. A retire the server
+/// stopped part way is carried on by the `field-retire` job, and running
+/// this again carries it on too.
 async fn retire(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
-) -> Result<Json<RetiredField>, ApiError> {
+) -> Result<Json<FieldRetirePayload>, ApiError> {
+    t.require_step_up()?;
     let role = t.role;
     let start = id.clone();
     t.write(move |ctx| {
@@ -190,59 +197,82 @@ async fn retire(
         Ok(retire_start(ctx, &start, Source::Ui)?)
     })
     .await?;
-    let mut cleared = 0;
-    loop {
-        let id = id.clone();
-        let (n, done) = t
-            .write(move |ctx| {
-                require_manager(ctx.tx.read(), role)?;
-                retire_step(ctx, &id)
-            })
-            .await?;
-        cleared += n;
-        if done {
-            return Ok(Json(RetiredField { cleared }));
-        }
-    }
+    let field = id.clone();
+    t.run_job(RETIRE_JOB, id, move |ctx| retire_step(ctx, &field))
+        .await?;
+    Ok(Json(FieldRetirePayload {
+        phase: RetirePhase::Retiring,
+    }))
 }
 
-/// One batch, or the finish once no value is left: `(cleared, ended)`.
-fn retire_step(ctx: &Ctx, id: &str) -> Result<(i64, bool), ApiError> {
-    let n = retire_batch(ctx, id, RETIRE_BATCH, Source::Ui)?;
-    if n > 0 {
-        return Ok((n, false));
+/// The job (and `platform.db` marker) name for retires.
+pub const RETIRE_JOB: &str = "field-retire";
+
+/// One batch, or the finish once no value is left: true once ended.
+fn retire_step(ctx: &Ctx, id: &str) -> Result<bool, ApiError> {
+    if retire_batch(ctx, id, RETIRE_BATCH, Source::Ui)? > 0 {
+        return Ok(false);
     }
-    Ok((0, retire_finish(ctx, id, Source::Ui)?))
+    Ok(retire_finish(ctx, id, Source::Ui)?)
 }
 
 /// Carries on any retire left part way (the server stopped mid-retire),
-/// as whoever started it, one org file at a time.
+/// as whoever started it. Visits only the orgs `platform.db` marks as
+/// having one, so an idle org is never opened. One field failing is
+/// logged (and sent to Sentry) and the others carry on; its marker stays,
+/// so the next run tries again.
 pub struct FieldRetire(pub Arc<Store>);
 
 impl FieldRetire {
-    fn resume(db: &OrgDb) -> Result<(), String> {
-        let pending = db.read(|r| retiring_fields(r)).map_err(|e| e.to_string())?;
-        for (id, actor) in pending {
-            loop {
-                let done = contracts::transact(db, actor, |ctx| retire_step(ctx, &id))
-                    .map_err(|e| format!("{id}: {e:?}"))?;
-                if done.1 {
-                    break;
+    fn resume(store: &Store, tenant: &TenantId, db: &OrgDb, keys: &[String]) -> Result<(), String> {
+        let retiring: Vec<(String, Option<i64>)> =
+            db.read(|r| retiring_fields(r)).map_err(|e| e.to_string())?;
+        let mut failed = Vec::new();
+        for key in keys {
+            let Some((_, actor)) = retiring.iter().find(|(id, _)| id == key) else {
+                // Ended (or never started): nothing left to carry on.
+                clear_pending(store, tenant, RETIRE_JOB, key).map_err(|e| e.to_string())?;
+                continue;
+            };
+            let done = loop {
+                match contracts::transact(db, *actor, |ctx| retire_step(ctx, key)) {
+                    Ok(true) => break Ok(()),
+                    Ok(false) => continue,
+                    Err(e) => break Err(e),
+                }
+            };
+            match done {
+                Ok(()) => {
+                    clear_pending(store, tenant, RETIRE_JOB, key).map_err(|e| e.to_string())?
+                }
+                Err(e) => {
+                    let message = format!("{RETIRE_JOB} {tenant} {key}: {e:?}");
+                    crate::observe::error(&message);
+                    failed.push(message);
                 }
             }
         }
-        Ok(())
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(failed.join("; "))
+        }
     }
 }
 
 impl Job for FieldRetire {
     fn name(&self) -> &'static str {
-        "field-retire"
+        RETIRE_JOB
     }
     fn every(&self) -> Duration {
         Duration::from_secs(60)
     }
     fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
-        Box::pin(each_org(&self.0, |_, db| Self::resume(db)))
+        let store = self.0.clone();
+        Box::pin(each_pending_org(
+            &self.0,
+            RETIRE_JOB,
+            move |id, db, keys| Self::resume(&store, id, db, keys),
+        ))
     }
 }

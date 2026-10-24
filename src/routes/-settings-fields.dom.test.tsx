@@ -49,6 +49,7 @@ const writes = {
 vi.mock('../lib/data', () => ({
   useFields: () => fields,
   useFieldWrites: () => writes,
+  useFollowRetires: () => {},
   preloadFields: () => {},
   useSetStaffCanManage: () => async () => {},
 }))
@@ -130,7 +131,7 @@ test('moving an option sends the whole order, archived ones included', async () 
 })
 
 test('retire asks first, then shows progress until it ends', async () => {
-  let finish: (v: { cleared: number }) => void = () => {}
+  let finish: (v: { phase: string }) => void = () => {}
   writes.retire.mockReturnValue(new Promise((r) => (finish = r)))
   render()
   await click(button('retire'))
@@ -140,11 +141,14 @@ test('retire asks first, then shows progress until it ends', async () => {
   await click(button('Retire field', dialog))
   expect(writes.retire).toHaveBeenCalledWith('f1')
   expect(el.textContent).toContain('Retiring Region')
-  // The field leaves the list once it is retired.
+  // Started: the card shows it running, not an error, until the field
+  // leaves the list (an event or the poll), which says it is done.
+  await act(async () => finish({ phase: 'retiring' }))
+  expect(el.textContent).toContain('Retiring Region')
+  expect(el.querySelector('[role=alert]')).toBeNull()
   fields = []
-  await act(async () => finish({ cleared: 3 }))
   rerender()
-  expect(el.textContent).toContain('Retired Region: cleared from 3 contacts.')
+  expect(el.textContent).toContain('Region has been retired')
 })
 
 test('a field retiring elsewhere offers to carry on', () => {

@@ -55,5 +55,6 @@ export {
   bulkFailure,
   useBulkSetField,
   useFieldWrites,
+  useFollowRetires,
 } from './rust/fields'
 export type { BulkFieldState, FieldPayload, OptionPayload } from './rust/fields'

@@ -147,7 +147,7 @@ async fn the_fields_admin_answers_its_shapes() {
 }
 
 #[tokio::test]
-async fn retire_clears_the_values_and_answers_how_many() {
+async fn retire_answers_at_once_and_clears_the_values_in_the_background() {
     let w = world();
     let ann = w.login("ann@alpha.org").await;
     let f = volunteer(&w, &ann).await;
@@ -194,8 +194,14 @@ async fn retire_clears_the_values_and_answers_how_many() {
             None,
         )
         .await;
-    assert_eq!((s, out), (StatusCode::OK, json!({ "cleared": 3 })));
-    assert_eq!(fields(&w, "alpha", &ann).await, json!([]));
+    // Answers once started; the values clear in the background.
+    assert_eq!((s, out), (StatusCode::OK, json!({ "phase": "retiring" })));
+    retired(&w, &ann).await;
+    assert!(
+        api::jobs::pending(&w.store, "field-retire")
+            .unwrap()
+            .is_empty()
+    );
     let (_, view) = w
         .call(
             "GET",
@@ -461,8 +467,105 @@ async fn restore_to_here_answers_what_ran_and_what_it_left() {
     assert_eq!(out["view"]["fields"]["values"][0]["optionId"], f.options[0]);
 }
 
+/// Wait for alpha's fields to be empty (a retire ends in the background).
+async fn retired(w: &World, cookie: &str) {
+    for _ in 0..500 {
+        if fields(w, "alpha", cookie).await == json!([]) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the retire never ended");
+}
+
+/// Every session's sign-in `ms` further back.
+fn age_sign_ins(w: &World, ms: i64) {
+    w.store
+        .platform()
+        .with_write(|tx| {
+            tx.execute(
+                "UPDATE auth_sessions SET authenticated_at = authenticated_at - ?1",
+                [ms],
+            )
+        })
+        .unwrap();
+}
+
+// Retire and delete are irreversible: a recent sign-in, whoever manages
+// the list (admin or staff with the switch); other field edits need none.
 #[tokio::test]
-async fn the_field_retire_job_finishes_a_retire_left_part_way() {
+async fn retire_and_delete_need_a_recent_sign_in_other_edits_dont() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    let sam = w.login("sam@alpha.org").await;
+    let f = volunteer(&w, &ann).await;
+    let (s, _) = w
+        .call(
+            "POST",
+            "/api/t/alpha/preferences/fields",
+            &ann,
+            Some(json!({ "staffCanManage": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    age_sign_ins(&w, 61 * 60 * 1000);
+    for (n, who) in [&ann, &sam].into_iter().enumerate() {
+        for (path, body) in [
+            (format!("/api/t/alpha/fields/{}/retire", f.id), None),
+            (
+                format!("/api/t/alpha/fields/{}/delete", f.id),
+                Some(json!({ "expected": 0 })),
+            ),
+            (
+                format!("/api/t/alpha/fields/options/{}/delete", f.options[0]),
+                Some(json!({ "expected": 0 })),
+            ),
+        ] {
+            let (s, out) = w.call("POST", &path, who, body).await;
+            assert_eq!(
+                (s, out["kind"].as_str()),
+                (StatusCode::FORBIDDEN, Some("step_up_required")),
+                "{path}"
+            );
+        }
+        // Everything else a list manager does, as before.
+        let (s, out) = w
+            .call(
+                "POST",
+                "/api/t/alpha/fields/options",
+                who,
+                Some(json!({ "fieldId": f.id, "label": format!("Away {n}"), "position": 0, "isActive": true })),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{out}");
+    }
+    let (s, out) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/fields/{}/reorder", f.id),
+            &sam,
+            Some(json!({ "order": fields(&w, "alpha", &sam).await[0]["options"].as_array().unwrap().iter().rev().map(|o| o["id"].clone()).collect::<Vec<_>>() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // Nothing irreversible happened.
+    assert_eq!(fields(&w, "alpha", &ann).await[0]["retiring"], false);
+    // A fresh sign-in may.
+    let ann = w.login("ann@alpha.org").await;
+    let (s, out) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/fields/{}/retire", f.id),
+            &ann,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    retired(&w, &ann).await;
+}
+
+#[tokio::test]
+async fn the_field_retire_job_finishes_a_retire_left_part_way_and_opens_no_idle_org() {
     use api::jobs::Job;
     let w = world();
     let ann = w.login("ann@alpha.org").await;
@@ -475,17 +578,34 @@ async fn the_field_retire_job_finishes_a_retire_left_part_way() {
         Some(json!({ "contactIds": [c], "fieldId": f.id, "optionId": f.options[0] })),
     )
     .await;
-    // The server stopped right after the retire started (as user 1).
+    let job = api::routes::fields::FieldRetire(w.store.clone());
+    assert_eq!(job.name(), "field-retire");
+
+    // Nothing pending: every handle closed, and the job opens none.
+    assert!(w.store.close_idle(std::time::Duration::ZERO) > 0);
+    assert_eq!(w.store.open_count(), 0);
+    job.run().await.unwrap();
+    assert_eq!(w.store.open_count(), 0, "an idle org is never opened");
+
+    // The server stopped right after the retire started (as user 1), its
+    // marker set.
     let db = w.store.org(&w.alpha.id).unwrap();
     contracts::transact(&db, Some(1), |ctx| {
         contacts::fields::retire_start(ctx, &f.id, contracts::Source::Ui)
     })
     .unwrap();
-    assert_eq!(fields(&w, "alpha", &ann).await[0]["retiring"], true);
+    drop(db);
+    api::jobs::mark_pending(&w.store, &w.alpha.id, "field-retire", &f.id).unwrap();
+    w.store.close_idle(std::time::Duration::ZERO);
 
-    let job = api::routes::fields::FieldRetire(w.store.clone());
-    assert_eq!(job.name(), "field-retire");
     job.run().await.unwrap();
+    // Only the marked org was opened.
+    assert_eq!(w.store.open_count(), 1);
+    assert!(
+        api::jobs::pending(&w.store, "field-retire")
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(fields(&w, "alpha", &ann).await, json!([]));
     let (_, h) = w
         .call(
@@ -500,6 +620,60 @@ async fn the_field_retire_job_finishes_a_retire_left_part_way() {
         "Retire field Volunteer status"
     );
     assert_eq!(h["moments"][0]["actor"], 1, "as whoever started it");
-    // Nothing left: a second run changes nothing.
+    // Nothing left: a second run opens nothing.
+    w.store.close_idle(std::time::Duration::ZERO);
     job.run().await.unwrap();
+    assert_eq!(w.store.open_count(), 0);
+}
+
+#[tokio::test]
+async fn a_failing_retire_is_reported_and_the_others_carry_on() {
+    use api::jobs::Job;
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    let f = volunteer(&w, &ann).await;
+    // A marker for a field that isn't retiring (never was): cleared, and
+    // the real one beside it still runs.
+    let (s, g) = w
+        .call(
+            "POST",
+            "/api/t/alpha/fields",
+            &ann,
+            Some(json!({ "label": "Newsletter", "appliesTo": ["individual"], "isActive": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let g = g["id"].as_str().unwrap().to_owned();
+    let db = w.store.org(&w.alpha.id).unwrap();
+    for id in [&f.id, &g] {
+        contracts::transact(&db, Some(1), |ctx| {
+            contacts::fields::retire_start(ctx, id, contracts::Source::Ui)
+        })
+        .unwrap();
+        api::jobs::mark_pending(&w.store, &w.alpha.id, "field-retire", id).unwrap();
+    }
+    // F's retire fails on every step: its marker stays and the job errs,
+    // naming it; G's still ends.
+    db.write_raw(|raw| {
+        raw.conn().execute_batch(&format!(
+            "CREATE TRIGGER no_finish BEFORE UPDATE OF retired ON contact_fields
+             WHEN NEW.id = '{}' BEGIN SELECT RAISE(ABORT, 'stuck'); END;",
+            f.id
+        ))
+    })
+    .unwrap();
+    drop(db);
+    let job = api::routes::fields::FieldRetire(w.store.clone());
+    let err = job.run().await.unwrap_err();
+    assert!(err.contains(&f.id), "{err}");
+    let left = api::jobs::pending(&w.store, "field-retire").unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].1, vec![f.id.clone()]);
+    let defs = fields(&w, "alpha", &ann).await;
+    assert_eq!(
+        defs.as_array().unwrap().len(),
+        1,
+        "G retired, F still retiring"
+    );
+    assert_eq!(defs[0]["id"], f.id.as_str());
 }

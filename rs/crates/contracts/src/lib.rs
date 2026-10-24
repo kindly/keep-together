@@ -43,7 +43,9 @@ use store::{OrgDb, OrgEvent, RawTx};
 use ts_rs::TS;
 
 pub use children::{ChildRow, Reconciled, is_client_id, mint_ids, reconcile};
-pub use restore::{Revision, canonical, history, restore, restore_entity_to};
+pub use restore::{
+    Revision, Upto, canonical, history, restore, restore_entity_to, restore_entity_upto,
+};
 
 /// The org-schema migration this crate owns. Composed into the org
 /// migration list (`api::schema`) before any domain table.

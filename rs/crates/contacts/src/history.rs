@@ -4,7 +4,7 @@
 //! "Restore to here".
 
 use contracts::history::{MomentPage, SliceLabel};
-use contracts::{ContractError, Ctx, restore, restore_entity_to};
+use contracts::{ContractError, Ctx, Upto, restore, restore_entity_upto};
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::REGISTRY;
@@ -93,6 +93,24 @@ fn restore_to_excludes() -> Vec<&'static str> {
     out
 }
 
+/// Restore every slice of the contact that differs from its state at
+/// `upto`, archive and retired contracts excepted, in one group named for
+/// `at`.
+fn restore_upto(ctx: &Ctx, id: &str, upto: Upto, at: i64) -> Result<Vec<String>, ContractError> {
+    if counters(ctx.tx.read(), id)?.is_none() {
+        return Err(ContractError::NotFound);
+    }
+    restore_entity_upto(
+        ctx,
+        &REGISTRY,
+        "contacts",
+        id,
+        upto,
+        &restore_to_excludes(),
+        Some(&format!("restore to {}", iso(at))),
+    )
+}
+
 /// Restore one of this contact's revisions, or the whole contact (archive
 /// and retired contracts excluded) to its state at `at` ("Restore to
 /// here"), as new commands. Only the slices that differ run. The answer
@@ -128,19 +146,22 @@ pub fn restore_contact(
             restore(ctx, &REGISTRY, revision_id, None)?;
             vec![contract]
         }
-        RestoreRequest::At { at } => {
-            if counters(ctx.tx.read(), id)?.is_none() {
-                return Err(ContractError::NotFound);
-            }
-            restore_entity_to(
-                ctx,
-                &REGISTRY,
-                "contacts",
-                id,
-                at,
-                &restore_to_excludes(),
-                Some(&format!("restore to {}", iso(at))),
-            )?
+        RestoreRequest::At { at } => restore_upto(ctx, id, Upto::At(at), at)?,
+        RestoreRequest::ToRevision { to_revision } => {
+            // The moment's own revision, of this contact: its time names
+            // the group.
+            let at: Option<i64> = ctx
+                .tx
+                .read()
+                .query_row(
+                    "SELECT at FROM revisions WHERE id = ?1 AND entity = 'contacts'
+                         AND entity_id = ?2",
+                    rusqlite::params![to_revision, id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let at = at.ok_or(ContractError::NotFound)?;
+            restore_upto(ctx, id, Upto::Revision(to_revision), at)?
         }
     };
     // The fields revision this restore just wrote names the one it

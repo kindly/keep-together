@@ -295,7 +295,9 @@ own `INTEGER NOT NULL DEFAULT 0` counter and has its upcasters.
 transaction; one org's failure doesn't stop the others. Running now:
 `idle-close` (1 min), `session-purge` (1 h: expired sessions, spent
 reset links, old invites) and `field-retire` (1 min: retires left part
-way, as whoever started them); F2's hourly snapshot
+way, as whoever started them, in only the orgs `platform.db`'s
+`pending_jobs` names; one field failing is reported and the rest carry
+on); F2's hourly snapshot
 registers the same way. A job's first run is `first_after()` after boot
 (default: one period), so the snapshot needn't wait an hour after every
 deploy.
@@ -379,8 +381,11 @@ owned columns, only forward, never restored), and `contacts.fieldDelete` /
 `contacts.fieldOptionDelete` remove what was never used (each a row of its
 own delete log). A retire archives the field, marks it retiring (no new
 values, no edits), clears it from every holder in batches of 500 (one
-transaction and one "Retire field *Label*" group each), then marks it
-retired; the `field-retire` job finishes any retire a stopped server left.
+transaction and one "Retire field *Label*" group each, in the
+background after the route has answered), then marks it retired. A
+retire is marked pending in `platform.db` (`pending_jobs`) while it runs;
+the `field-retire` job carries on any a stopped server left, opening only
+the orgs so marked.
 The
 contact number is the rowid (`number INTEGER PRIMARY KEY`), handed out from
 `contact_number_sequence` on create; `id` is the API's UUIDv7.
@@ -396,16 +401,18 @@ Routes under `/api/t/{slug}` (types in `src/lib/data/rust-types/`):
 | `POST contacts` | `CreateContact` → `CreatedContact {id, number, view}`; a seen `clientKey`/`id` is `409 duplicate` |
 | `POST contacts/{id}/save` | `SaveForm` → `SaveFormResult` (below) |
 | `POST contacts/{id}/archive` | `{expected, archived}` → `ArchivedContact {id, counter, view}`, or `409 stale` |
-| `POST contacts/{id}/restore` | `{revisionId}` or `{at}` ("Restore to here": every slice that differs, archive and retired contracts excepted, in one "restore to *ISO time*" group) → `RestoredContact {restored, skippedFields, view}`; a retired contract's revision is `422 rejected {reason: retired_contract}` |
+| `POST contacts/{id}/restore` | `{revisionId}`, or `{toRevision}` ("Restore to here": every slice that differs from its state up to that revision, archive and retired contracts excepted, in one "restore to *ISO time*" group; `{at}` (ms) bounds by time instead) → `RestoredContact {restored, skippedFields, view}`; a retired contract's revision is `422 rejected {reason: retired_contract}` |
 | `POST contacts/bulk-set-field` | `{contactIds, fieldId, optionId}` (`null` clears) → `BulkSetResult {changed, skipped, group}`: ≤1000 contacts, one command group, all or nothing; staff |
 | `GET fields` | live definitions with `retiring` and `deletable` |
 | `POST fields` · `POST fields/options` | save (`id` + `expected`) or create; a new option goes last |
-| `POST fields/{id}/delete` · `POST fields/options/{id}/delete` | `{expected}` → `{deleted}`; `422 rejected {reason: used}` once used |
+| `POST fields/{id}/delete` · `POST fields/options/{id}/delete` | `{expected}` → `{deleted}`; `422 rejected {reason: used}` once used; needs a recent sign-in |
 | `POST fields/{id}/reorder` | `{order}` naming every option → `{moved}`; anything else `409 stale` |
-| `POST fields/{id}/retire` | → `{cleared}` when it has ended |
+| `POST fields/{id}/retire` | → `{phase: "retiring"}` once started; the field leaves `GET fields` when it ends; needs a recent sign-in |
 
 The field routes need a list manager (admin, or staff while "staff can
-manage fields" is on: `platform::may_manage_list`); bulk set is ordinary
+manage fields" is on: `platform::may_manage_list`); retire and delete are
+irreversible, so they also need a sign-in (or step-up) within the last
+hour, whatever the role (`Tenant::require_step_up`). Bulk set is ordinary
 staff editing.
 
 `fields` filters are `fieldId:optionId` or `fieldId:none`, comma-separated.

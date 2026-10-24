@@ -1,7 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { preloadFields, useFieldWrites, useFields } from '../lib/data'
+import {
+  preloadFields,
+  useFieldWrites,
+  useFields,
+  useFollowRetires,
+} from '../lib/data'
 import type { ContactKind } from '../lib/data/rust-types/ContactKind'
 import { ConfirmDialog } from '../components/confirm-dialog'
 import { StaffListSwitch } from '../components/staff-list-switch'
@@ -81,11 +86,15 @@ function FieldsPage() {
   const fields = useFields()
   const [showArchived, setShowArchived] = useState(false)
   const [open, markOpen] = useOpenRows()
-  // What a finished retire did: one this tab ran, or one that ended
-  // elsewhere while this tab showed the field.
+  // A retire that ended while this tab showed the field: one this tab
+  // started or one started elsewhere. The server answers a retire once it
+  // has started; the field leaving the list (an event, or the poll while
+  // one is retiring) is its end.
   const [retired, setRetired] = useState<string | null>(null)
-  // Fields this tab is retiring: their own message says how it went.
+  // Fields this tab started retiring: announced even if they leave the
+  // list before a refetch ever showed them retiring (a small retire).
   const retiringHere = useRef(new Set<string>())
+  useFollowRetires(fields)
   const seen = useRef<ReadonlyArray<Field> | undefined>(undefined)
   useEffect(() => {
     if (!fields) return
@@ -94,7 +103,8 @@ function FieldsPage() {
     if (!before) return
     const now = new Set<string>(fields.map((f) => f._id))
     const gone = before.filter(
-      (f) => f.retiring && !now.has(f._id) && !retiringHere.current.has(f._id),
+      (f) =>
+        (f.retiring || retiringHere.current.has(f._id)) && !now.has(f._id),
     )
     if (gone.length) {
       setRetired(
@@ -185,7 +195,6 @@ function FieldsPage() {
                   kept={!showArchived && !f.isActive && !f.retiring}
                   markOpen={markOpen}
                   onRetireStart={onRetireStart}
-                  onRetired={setRetired}
                 />
               ))}
             </ul>
@@ -305,7 +314,6 @@ function FieldCard({
   kept,
   markOpen,
   onRetireStart,
-  onRetired,
 }: {
   field: Field
   showArchived: boolean
@@ -313,7 +321,6 @@ function FieldCard({
   kept: boolean
   markOpen: MarkOpen
   onRetireStart: (id: string) => void
-  onRetired: (message: string) => void
 }) {
   const canManage = useCanManageList('fields')
   const {
@@ -398,12 +405,10 @@ function FieldCard({
     setRunning(true)
     onRetireStart(field._id)
     try {
-      const { cleared } = await retire(field._id)
-      // The field has left the list (its place is free), so this card is
-      // about to go: the page says what happened.
-      onRetired(
-        `Retired ${field.label}: cleared from ${plural(cleared, 'contact')}. Its place is free for a new field.`,
-      )
+      // Started: the values clear in the background. The card shows the
+      // retire running until the field leaves the list, and the page then
+      // says it has been retired.
+      await retire(field._id)
     } catch (err) {
       setError(failureMessage(err, 'row'))
       setRunning(false)

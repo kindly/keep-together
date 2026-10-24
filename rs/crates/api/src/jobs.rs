@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use store::{OrgDb, Store, TenantId};
+use store::{OrgDb, PlatformSchema, Store, StoreError, TenantId};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
@@ -85,6 +85,110 @@ where
                 .org(&id)
                 .map_err(|e| e.to_string())
                 .and_then(|db| f(&id, &db));
+            if let Err(err) = done {
+                errors.push(format!("{id}: {err}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// `platform.db`'s record of work an organisation has left part way
+/// (`pending_jobs`), so a job visits only the orgs that need it and never
+/// opens an idle one. A row per job and key (e.g. `field-retire`, the
+/// field id): set before the work starts, cleared when it ends; a server
+/// stopping in between leaves it for the job.
+pub const SCHEMA: PlatformSchema = PlatformSchema {
+    name: "jobs",
+    steps: &[
+        // 1: pending work, per organisation, job and key
+        "CREATE TABLE pending_jobs (
+             tenant_id TEXT NOT NULL REFERENCES tenants (id),
+             job TEXT NOT NULL,
+             key TEXT NOT NULL,
+             since INTEGER NOT NULL,
+             PRIMARY KEY (job, tenant_id, key)
+         ) STRICT;",
+    ],
+};
+
+/// Record `job`'s work on `key` in `tenant` as pending.
+pub fn mark_pending(
+    store: &Store,
+    tenant: &TenantId,
+    job: &str,
+    key: &str,
+) -> Result<(), StoreError> {
+    store.platform().with_write(|tx| {
+        tx.execute(
+            "INSERT OR IGNORE INTO pending_jobs (tenant_id, job, key, since)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![tenant.as_str(), job, key, contracts::now_ms()],
+        )
+        .map(|_| ())
+    })?;
+    Ok(())
+}
+
+/// `job`'s work on `key` in `tenant` has ended.
+pub fn clear_pending(
+    store: &Store,
+    tenant: &TenantId,
+    job: &str,
+    key: &str,
+) -> Result<(), StoreError> {
+    store.platform().with_write(|tx| {
+        tx.execute(
+            "DELETE FROM pending_jobs WHERE tenant_id = ?1 AND job = ?2 AND key = ?3",
+            rusqlite::params![tenant.as_str(), job, key],
+        )
+        .map(|_| ())
+    })?;
+    Ok(())
+}
+
+/// The orgs with `job` work pending, each with its keys. Reads only
+/// `platform.db`.
+pub fn pending(store: &Store, job: &str) -> Result<Vec<(TenantId, Vec<String>)>, StoreError> {
+    let rows: Vec<(String, String)> = store.platform().with_read(|conn| {
+        conn.prepare("SELECT tenant_id, key FROM pending_jobs WHERE job = ?1 ORDER BY tenant_id")?
+            .query_map([job], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })?;
+    let mut out: Vec<(TenantId, Vec<String>)> = Vec::new();
+    for id in store.each_org()? {
+        let keys: Vec<String> = rows
+            .iter()
+            .filter(|(t, _)| t == id.as_str())
+            .map(|(_, k)| k.clone())
+            .collect();
+        if !keys.is_empty() {
+            out.push((id, keys));
+        }
+    }
+    Ok(out)
+}
+
+/// [`each_org`] over only the orgs with `job` work pending, each with its
+/// keys: an org with none is never opened.
+pub async fn each_pending_org<F>(store: &Arc<Store>, job: &'static str, f: F) -> Result<(), String>
+where
+    F: Fn(&TenantId, &OrgDb, &[String]) -> Result<(), String> + Send + Sync + 'static,
+{
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut errors = Vec::new();
+        for (id, keys) in pending(&store, job).map_err(|e| e.to_string())? {
+            let done = store
+                .org(&id)
+                .map_err(|e| e.to_string())
+                .and_then(|db| f(&id, &db, &keys));
             if let Err(err) = done {
                 errors.push(format!("{id}: {err}"));
             }

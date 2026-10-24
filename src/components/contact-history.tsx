@@ -241,7 +241,9 @@ export function ContactHistory({
       setRestoreNote(null)
       const done = await post<RestoredContact>(
         tenantPath(slug, 'contacts', id, 'restore'),
-        { at: m.at },
+        // Exact: up to the moment's newest revision, whatever shares
+        // its millisecond.
+        { toRevision: m.revisionId },
       )
       for (const contract of done.restored) {
         const slice = contract.split('.')[1] as keyof WireContact['counters']

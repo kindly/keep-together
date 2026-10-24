@@ -389,8 +389,9 @@ pub struct SetArchived {
     pub archived: bool,
 }
 
-/// `POST contacts/{id}/restore`: one revision, or the whole contact as it
-/// was at `at` (ms; archive excluded, it has its own toggle).
+/// `POST contacts/{id}/restore`: one revision; or the whole contact as it
+/// was just after revision `toRevision` ("Restore to here": exact), or at
+/// `at` (ms). Archive is excluded from both, it has its own toggle.
 #[derive(Clone, Debug, Deserialize, TS)]
 #[serde(untagged)]
 #[ts(export)]
@@ -399,6 +400,11 @@ pub enum RestoreRequest {
         #[serde(rename = "revisionId")]
         #[ts(type = "number")]
         revision_id: i64,
+    },
+    ToRevision {
+        #[serde(rename = "toRevision")]
+        #[ts(type = "number")]
+        to_revision: i64,
     },
     At {
         #[ts(type = "number")]
@@ -564,14 +570,6 @@ pub struct ReorderedOptions {
     /// Options whose position changed (each its own contract).
     #[ts(type = "number")]
     pub moved: i64,
-}
-
-/// `POST fields/{id}/retire`: how many contacts it cleared.
-#[derive(Clone, Debug, Serialize, TS)]
-#[ts(export)]
-pub struct RetiredField {
-    #[ts(type = "number")]
-    pub cleared: i64,
 }
 
 /// `POST contacts/bulk-set-field`: set (or clear, `optionId: null`) one

@@ -8,7 +8,7 @@
  */
 import { useQueryClient } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Id } from '../../../../convex/_generated/dataModel'
 import type { FieldDefinition } from '../types'
 import { useTenant } from '../../tenant'
@@ -17,7 +17,7 @@ import type { ContactKind } from '../rust-types/ContactKind'
 import type { DeletedFieldPart } from '../rust-types/DeletedFieldPart'
 import type { Executed } from '../rust-types/Executed'
 import type { ReorderedOptions } from '../rust-types/ReorderedOptions'
-import type { RetiredField } from '../rust-types/RetiredField'
+import type { FieldRetirePayload } from '../rust-types/FieldRetirePayload'
 import { RustApiError, post, tenantPath } from './client'
 import { keys } from './keys'
 
@@ -89,9 +89,36 @@ export function useFieldWrites() {
     /** Every option of the field, archived ones included, in order. */
     reorder: (fieldId: FieldId, order: Array<OptionId>) =>
       after(post<ReorderedOptions>(path(fieldId, 'reorder'), { order })),
-    /** Answers when the retire has ended: how many contacts it cleared. */
-    retire: (id: FieldId) => after(post<RetiredField>(path(id, 'retire'))),
+    /**
+     * Answers once the retire has started (`retiring`); the values clear
+     * in the background, and the field leaves the definitions when it
+     * ends (`useFollowRetires`).
+     */
+    retire: (id: FieldId) =>
+      after(post<FieldRetirePayload>(path(id, 'retire'))),
   }
+}
+
+/** How often the definitions are fetched again while a field retires. */
+export const RETIRE_POLL_MS = 2_000
+
+/**
+ * While any field is retiring, fetch the definitions again every
+ * RETIRE_POLL_MS: the retire's end is an event too, and this is the
+ * backstop if the stream missed it (reconnecting, a proxy).
+ */
+export function useFollowRetires(fields: Array<FieldDefinition> | undefined) {
+  const { slug } = useTenant()
+  const qc = useQueryClient()
+  const retiring = fields?.some((f) => f.retiring) ?? false
+  useEffect(() => {
+    if (!retiring) return
+    const poll = setInterval(
+      () => void qc.invalidateQueries({ queryKey: keys.fields(slug) }),
+      RETIRE_POLL_MS,
+    )
+    return () => clearInterval(poll)
+  }, [retiring, qc, slug])
 }
 
 // ── bulk set ───────────────────────────────────────────────────────────────

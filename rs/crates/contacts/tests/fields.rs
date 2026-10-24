@@ -1223,3 +1223,54 @@ fn add_at(db: &OrgDb, ms: i64, d: Details) -> String {
     .unwrap()
     .id
 }
+
+#[test]
+fn restore_to_here_is_bounded_by_the_moments_revision_not_its_millisecond() {
+    let world = world();
+    let ann = add_at(&world.a, 1_000, person("Ann", "Smith"));
+    // Two saves in the same millisecond (two tabs, a script).
+    at(&world.a, 2_000, |ctx| {
+        save_form(
+            ctx,
+            &ann,
+            SaveForm {
+                details: exp(0, person("Ann", "Jones")),
+                ..Default::default()
+            },
+        )
+    })
+    .unwrap();
+    let first = revisions(&world.a, &ann)[0].id;
+    at(&world.a, 2_000, |ctx| {
+        save_form(
+            ctx,
+            &ann,
+            SaveForm {
+                details: exp(1, person("Ann", "Brown")),
+                ..Default::default()
+            },
+        )
+    })
+    .unwrap();
+    let done = at(&world.a, 3_000, |ctx| {
+        restore_contact(ctx, &ann, RestoreRequest::ToRevision { to_revision: first })
+    })
+    .unwrap();
+    assert_eq!(done.restored, ["contacts.details"]);
+    assert_eq!(view(&world.a, &ann).details.last_name, "Jones", "not Brown");
+    let h = r(&world.a, |c| page(c, &ann, None, 10));
+    assert_eq!(
+        h.moments[0].group_name,
+        Some(format!("restore to {}", iso(2_000)))
+    );
+    // Another contact's revision is not this one's moment.
+    let bob = add(&world.a, person("Bob", "Jones"));
+    assert!(matches!(
+        w(&world.a, |ctx| restore_contact(
+            ctx,
+            &bob,
+            RestoreRequest::ToRevision { to_revision: first }
+        )),
+        Err(ContractError::NotFound)
+    ));
+}
