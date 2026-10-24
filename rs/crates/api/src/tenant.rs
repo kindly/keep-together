@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use contracts::Ctx;
 use serde::Serialize;
-use store::{OrgDb, OrgRead, Role};
+use store::{OrgDb, OrgRead, Role, Store, UserId};
 use ts_rs::TS;
 
 use crate::error::ApiError;
@@ -34,6 +34,10 @@ pub struct Tenant {
     /// When this session last proved password + second factor.
     authenticated_at: i64,
     timing: Timing,
+    /// For [`Tenant::write`]'s re-check only (handlers never see it).
+    store: Arc<Store>,
+    /// The session's stored hash.
+    session_id: String,
 }
 
 impl Tenant {
@@ -56,6 +60,12 @@ impl Tenant {
 
     /// Run commands in one `BEGIN IMMEDIATE` transaction on this
     /// organisation's file, as this user. Needs `staff` or above.
+    ///
+    /// The session and the role are checked again first, on `platform.db`:
+    /// the middleware's check ran before the body arrived, which a client
+    /// can delay at will, and a sign-out, removal or demotion in between
+    /// must stop the write (S1 codex C5). What remains is the moment
+    /// between this check and the org file's transaction (two files).
     pub async fn write<T, F>(&self, f: F) -> Result<T, ApiError>
     where
         T: Send + 'static,
@@ -67,7 +77,24 @@ impl Tenant {
         let db = self.db.clone();
         let timing = self.timing.clone();
         let user = self.user;
+        let store = self.store.clone();
+        let session = self.session_id.clone();
+        let slug = self.slug.clone();
         blocking(move || {
+            let start = Instant::now();
+            let now = contracts::now_ms();
+            let live = store
+                .platform()
+                .with_read(|c| ::auth::sessions::by_id(c, &session, now))?
+                .is_some_and(|s| s.user == user && s.stage == ::auth::Stage::Full);
+            if !live {
+                return Err(ApiError::Unauthenticated);
+            }
+            match store.platform().member(UserId(user), &slug)? {
+                Some(m) if m.role >= Role::Staff => {}
+                _ => return Err(ApiError::Forbidden),
+            }
+            timing.add_platform(start.elapsed());
             let start = Instant::now();
             let out = contracts::transact(&db, Some(user), f);
             timing.add_db(start.elapsed());
@@ -158,6 +185,8 @@ pub(crate) async fn middleware(
             user: session.user,
             authenticated_at: session.authenticated_at.unwrap_or(0),
             timing: timing.clone(),
+            store: state.store.clone(),
+            session_id: session.id.clone(),
         })
     }
     .await;
@@ -185,4 +214,58 @@ pub async fn info(Extension(tenant): Extension<Tenant>) -> Json<TenantInfo> {
         name: tenant.name,
         role: tenant.role.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use store::StoreConfig;
+
+    use super::*;
+
+    /// S1 codex C5: `write` checks the session and the role on
+    /// `platform.db` itself, so a sign-out or a demotion after the
+    /// middleware's check (e.g. while the handler ran) stops the write.
+    #[tokio::test]
+    async fn a_write_rechecks_the_session_and_role() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            Store::open_with(
+                StoreConfig {
+                    dir: tmp.path().to_path_buf(),
+                    org_migrations: crate::schema::org_migrations(),
+                    readers: 1,
+                    max_open: 4,
+                },
+                crate::schema::PLATFORM_SCHEMAS,
+            )
+            .unwrap(),
+        );
+        let t = store.create_tenant("alpha", "Alpha").unwrap();
+        let p = store.platform();
+        let cat = p.upsert_user("cat@alpha.org").unwrap();
+        p.set_membership(cat, &t.id, Role::Staff).unwrap();
+        let now = contracts::now_ms();
+        let token = p
+            .with_write(|tx| ::auth::sessions::create(tx, cat.0, ::auth::Stage::Full, now))
+            .unwrap();
+        let tenant = Tenant {
+            db: store.org(&t.id).unwrap(),
+            slug: "alpha".into(),
+            name: "Alpha".into(),
+            role: Role::Staff,
+            user: cat.0,
+            authenticated_at: now,
+            timing: Timing::default(),
+            store: store.clone(),
+            session_id: ::auth::secret::hash(&token),
+        };
+        let write = || tenant.write(|_ctx| Ok(()));
+        assert!(write().await.is_ok());
+        p.set_membership(cat, &t.id, Role::Viewer).unwrap();
+        assert!(matches!(write().await, Err(ApiError::Forbidden)));
+        p.set_membership(cat, &t.id, Role::Staff).unwrap();
+        p.with_write(|tx| ::auth::sessions::revoke_user(tx, cat.0))
+            .unwrap();
+        assert!(matches!(write().await, Err(ApiError::Unauthenticated)));
+    }
 }

@@ -67,16 +67,15 @@ if ((${#generated[@]})); then
 fi
 missing=()
 for s in LITESTREAM_BUCKET LITESTREAM_ACCESS_KEY_ID LITESTREAM_SECRET_ACCESS_KEY \
-  KEEP_SNAPSHOT_BUCKET KEEP_SNAPSHOT_ACCESS_KEY_ID KEEP_SNAPSHOT_SECRET_ACCESS_KEY SENTRY_DSN \
-  KEEP_SMTP_URL; do
+  KEEP_SNAPSHOT_BUCKET KEEP_SNAPSHOT_ACCESS_KEY_ID KEEP_SNAPSHOT_SECRET_ACCESS_KEY SENTRY_DSN; do
   grep -qx "$s" <<<"$have" || missing+=("$s")
 done
 if ((${#missing[@]})); then
   echo "missing: ${missing[*]}"
   echo "(the bucket and key values come from scripts/aws/backup.sh staging; SENTRY_DSN"
-  echo " from the Sentry project's Client Keys page, EU region; empty skips it;"
-  echo " KEEP_SMTP_URL is SES's: smtp://USER:PASS@email-smtp.eu-west-2.amazonaws.com:587?tls=required."
-  echo " KEEP_APP_ORIGIN, KEEP_CLIENT_IP_HEADER and KEEP_MAIL=smtp are in fly.staging.toml)"
+  echo " from the Sentry project's Client Keys page, EU region; empty skips it."
+  echo " KEEP_APP_ORIGIN, KEEP_CLIENT_IP_HEADER and KEEP_MAIL=off are in fly.staging.toml;"
+  echo " mail stays off until SES is set up: docs/ops.md)"
   pairs=()
   for s in "${missing[@]}"; do
     read -r -s -p "$s: " v

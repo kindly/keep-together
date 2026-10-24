@@ -139,6 +139,9 @@ async fn invite(
     Body(req): Body<InviteRequest>,
 ) -> Result<Json<InviteInfoRow>, ApiError> {
     require_admin(&t, &account)?;
+    // The link goes only by email (mail off: `keep auth invite` prints it
+    // to the operator).
+    account.runtime.require_mail()?;
     let email = users::normalise_email(&req.email).ok_or_else(|| ApiError::Invalid {
         problems: vec![contracts::Problem::new("email", "an email address")],
     })?;
@@ -365,6 +368,8 @@ async fn reset_2fa(
     Path(IdParam { id }): Path<IdParam>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_admin(&t, &account)?;
+    // Re-enrolling needs an emailed code (M7), and the member is told (M3).
+    account.runtime.require_mail()?;
     let target = user_param(&id)?;
     let a = account.clone();
     let email = blocking(move || {

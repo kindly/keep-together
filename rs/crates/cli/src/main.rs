@@ -35,9 +35,10 @@ fn send_invite(mail: comms::mail::Mail) -> Result<(), String> {
 /// Send `mail` (`KEEP_MAIL`), or print it with the log mailer.
 fn send(mail: comms::mail::Mail, what: &str) -> Result<(), String> {
     let mailer = comms::mail::Mailer::from_env().map_err(|e| e.to_string())?;
-    if mailer.is_log() {
+    // KEEP_MAIL=off (staging until SES): the operator's own terminal.
+    if mailer.is_log() || mailer.is_off() {
         println!(
-            "{what} for {} (KEEP_MAIL=log, not sent):\n{}",
+            "{what} for {} (KEEP_MAIL=log/off, not sent):\n{}",
             mail.to, mail.text
         );
         return Ok(());

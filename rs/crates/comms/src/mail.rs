@@ -7,7 +7,7 @@
 //!
 //! | var | |
 //! |---|---|
-//! | `KEEP_MAIL` | `log` (default: print each message to stderr), `smtp` |
+//! | `KEEP_MAIL` | `log` (default: print each message to stderr), `smtp`, `off` (no mail at all: the api refuses what needs it) |
 //! | `KEEP_SMTP_URL` | `smtp://localhost:1025` (Mailpit, default), `smtp://USER:PASS@email-smtp.eu-west-2.amazonaws.com:587?tls=required` (SES) |
 //! | `KEEP_MAIL_FROM` | `keep-together <no-reply@auth.keep-together.org.uk>` |
 
@@ -33,6 +33,7 @@ pub type Outbox = Arc<Mutex<Vec<Mail>>>;
 
 #[derive(Clone)]
 enum Transport {
+    Off,
     Log,
     Memory(Outbox),
     Smtp(AsyncSmtpTransport<Tokio1Executor>),
@@ -52,6 +53,8 @@ pub enum MailError {
     Message(String),
     #[error("smtp: {0}")]
     Smtp(String),
+    #[error("mail is off (KEEP_MAIL=off)")]
+    Off,
 }
 
 impl Mailer {
@@ -101,6 +104,10 @@ impl Mailer {
                 let url = var("KEEP_SMTP_URL").unwrap_or_else(|| DEFAULT_SMTP_URL.into());
                 Self::smtp(&url, &from)
             }
+            Some("off") => Ok(Self {
+                from: DEFAULT_FROM.parse().expect("default from"),
+                transport: Transport::Off,
+            }),
             Some("log") | None => Ok(Self {
                 from: from.parse().map_err(|e: lettre::address::AddressError| {
                     MailError::Address(from.clone(), e.to_string())
@@ -108,7 +115,7 @@ impl Mailer {
                 transport: Transport::Log,
             }),
             Some(other) => Err(MailError::Smtp(format!(
-                "KEEP_MAIL={other:?}: expected log or smtp"
+                "KEEP_MAIL={other:?}: expected log, smtp or off"
             ))),
         }
     }
@@ -118,8 +125,14 @@ impl Mailer {
         matches!(self.transport, Transport::Log)
     }
 
+    /// Whether there is no mail at all (`KEEP_MAIL=off`).
+    pub fn is_off(&self) -> bool {
+        matches!(self.transport, Transport::Off)
+    }
+
     pub async fn send(&self, mail: Mail) -> Result<(), MailError> {
         match &self.transport {
+            Transport::Off => Err(MailError::Off),
             Transport::Log => {
                 eprintln!(
                     "mail (KEEP_MAIL=log) to {}: {}\n{}\n",

@@ -25,9 +25,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{
-    ClientIp, Revoked, current, fresh, session_token, users, with_session, without_session,
-};
+use super::{ClientIp, Revoked, current, session_token, users, with_session, without_session};
 use crate::error::{ApiError, Body};
 use crate::timing::Timing;
 use crate::{AppState, blocking};
@@ -190,14 +188,29 @@ pub(crate) fn second_factor_limit(state: &AppState, user: i64) -> Result<(), Api
     }
 }
 
-/// The user and whether `password` is theirs. An unknown email (or a user
-/// without a password, e.g. one made by the dev login) is verified
-/// against the dummy hash: the same work as a wrong password.
-pub(crate) fn check_password(
+/// A password just verified: whose, and the stored hash it matched.
+pub(crate) struct Verified {
+    pub user: i64,
+    hash: String,
+}
+
+impl Verified {
+    /// Whether the password is still the one verified, inside the write
+    /// transaction: argon2 runs before it, and a reset or change that
+    /// committed in between must win (S1 codex C3).
+    pub(crate) fn still(&self, tx: &Connection) -> Result<bool, ApiError> {
+        Ok(accounts::credentials(tx, self.user)?.is_some_and(|c| c.password_hash == self.hash))
+    }
+}
+
+/// Whether `password` is `email`'s, and the hash it matched. An unknown
+/// email (or a user without a password, e.g. one made by the dev login)
+/// is verified against the dummy hash: the same work as a wrong password.
+pub(crate) fn verify_password(
     state: &AppState,
     email: &str,
     password: &str,
-) -> Result<Option<i64>, ApiError> {
+) -> Result<Option<Verified>, ApiError> {
     let found = state.store.platform().with_read(|c| {
         let Some(user) = users::by_email(c, email)? else {
             return Ok::<_, ApiError>(None);
@@ -205,12 +218,21 @@ pub(crate) fn check_password(
         Ok(accounts::credentials(c, user)?.map(|cr| (user, cr.password_hash)))
     })?;
     Ok(match found {
-        Some((user, hash)) => password::verify(password, &hash).then_some(user),
+        Some((user, hash)) => password::verify(password, &hash).then_some(Verified { user, hash }),
         None => {
             password::verify(password, password::dummy_hash());
             None
         }
     })
+}
+
+/// The user whose password `password` is, if any ([`verify_password`]).
+pub(crate) fn check_password(
+    state: &AppState,
+    email: &str,
+    password: &str,
+) -> Result<Option<i64>, ApiError> {
+    Ok(verify_password(state, email, password)?.map(|v| v.user))
 }
 
 /// A partial sign-in just made.
@@ -343,6 +365,9 @@ enum SignedIn {
     Wrong {
         notify: bool,
     },
+    /// Under the limit: a wrong email or password (committed, so the
+    /// failure stays logged).
+    WrongPassword,
 }
 
 /// `POST /api/auth/sign-in {email, password, emailCode?}` → `AuthState`
@@ -360,13 +385,20 @@ pub async fn sign_in(
     headers: HeaderMap,
     Body(req): Body<SignIn>,
 ) -> Result<Response, ApiError> {
-    let email =
-        users::normalise_email(&req.email).unwrap_or_else(|| req.email.trim().to_lowercase());
+    // C6: an address that can't be one is refused before it becomes a
+    // limiter key (at most 254 characters).
+    let email = users::normalise_email(&req.email).ok_or_else(|| ApiError::Invalid {
+        problems: vec![contracts::Problem::new("email", "an email address")],
+    })?;
     let l = &state.auth.limits;
     if !allow(&l.password_ip, &ip) {
         return Err(ApiError::RateLimited);
     }
     let gated = !allow(&l.password_email, &email);
+    // Without mail the gate can't send its code: refuse, as before M5.
+    if gated && state.auth.mailer.is_off() {
+        return Err(ApiError::RateLimited);
+    }
     let old = session_token(&headers).map(secret::hash);
     let ua = user_agent(&headers);
     let st = state.clone();
@@ -374,20 +406,18 @@ pub async fn sign_in(
     let (done, ended) = blocking(move || {
         let now = contracts::now_ms();
         let keys = &st.auth.keys;
-        let user = check_password(&st, &email, &req.password)?;
+        let verified = verify_password(&st, &email, &req.password)?;
         st.store.platform().with_write(|tx| {
+            // C3: a password reset or change since argon2 ran: wrong now.
+            let user = match &verified {
+                Some(v) if v.still(tx)? => Some(v.user),
+                _ => None,
+            };
+            // Logged for unknown addresses too (no user, no address), so
+            // both do the same write (C7).
             let failed = |tx: &Connection| -> Result<(), ApiError> {
-                if let Some(known) = users::by_email(tx, &email)? {
-                    accounts::log(
-                        tx,
-                        now,
-                        "sign_in_failed",
-                        Some(known),
-                        "self",
-                        None,
-                        "password",
-                    )?;
-                }
+                let known = users::by_email(tx, &email)?;
+                accounts::log(tx, now, "sign_in_failed", known, "self", None, "password")?;
                 Ok(())
             };
             if gated {
@@ -427,7 +457,7 @@ pub async fn sign_in(
             }
             let Some(user) = user else {
                 failed(tx)?;
-                return Err(wrong_credentials());
+                return Ok((SignedIn::WrongPassword, None));
             };
             if let Some(old) = &old {
                 sessions::revoke(tx, old)?;
@@ -466,6 +496,7 @@ pub async fn sign_in(
             })
             .into_response())
         }
+        SignedIn::WrongPassword => Err(wrong_credentials()),
         SignedIn::Wrong { notify } => {
             if notify {
                 state.auth.notify(&to, Notice::Locked);
@@ -594,6 +625,7 @@ pub async fn send_code(
         Some(s) if matches!(s.stage, Stage::SecondFactor | Stage::Full) => s,
         _ => return Err(ApiError::Unauthenticated),
     };
+    state.auth.require_mail()?;
     if !allow(&state.auth.limits.email, &s.email) {
         return Err(ApiError::RateLimited);
     }
@@ -623,9 +655,10 @@ pub async fn send_code(
 }
 
 /// Whether `s` may (re-)enrol a second factor: an `enrol` session, or a
-/// signed-in one within the step-up window (changing method).
-fn may_enrol(s: &Session, now: i64) -> bool {
-    s.stage == Stage::Enrol || (s.stage == Stage::Full && fresh(s, now))
+/// signed-in one (changing method; confirming that needs the password
+/// and the current factor, S1 codex C2).
+fn may_enrol(s: &Session) -> bool {
+    matches!(s.stage, Stage::Enrol | Stage::Full)
 }
 
 /// A session that may (re-)enrol a second factor ([`may_enrol`]).
@@ -635,14 +668,7 @@ async fn enrolling(
     timing: &Timing,
 ) -> Result<Session, ApiError> {
     match current(state, headers, timing).await? {
-        Some(s) if s.stage == Stage::Enrol => Ok(s),
-        Some(s) if s.stage == Stage::Full => {
-            if fresh(&s, contracts::now_ms()) {
-                Ok(s)
-            } else {
-                Err(ApiError::StepUpRequired)
-            }
-        }
+        Some(s) if may_enrol(&s) => Ok(s),
         _ => Err(ApiError::Unauthenticated),
     }
 }
@@ -675,7 +701,7 @@ pub async fn enrol_totp(
     blocking(move || {
         let now = contracts::now_ms();
         st.store.platform().with_write(|tx| {
-            let s = reread(tx, &s, now, |s| may_enrol(s, now))?;
+            let s = reread(tx, &s, now, may_enrol)?;
             sessions::set_pending_secret(tx, &st.auth.keys, &s, &pending, now)?;
             Ok::<_, ApiError>(())
         })
@@ -697,6 +723,7 @@ pub async fn enrol_email(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let s = enrolling(&state, &headers, &timing).await?;
+    state.auth.require_mail()?;
     if !allow(&state.auth.limits.email, &s.email) {
         return Err(ApiError::RateLimited);
     }
@@ -706,7 +733,7 @@ pub async fn enrol_email(
     blocking(move || {
         let now = contracts::now_ms();
         st.store.platform().with_write(|tx| {
-            let s = reread(tx, &s, now, |s| may_enrol(s, now))?;
+            let s = reread(tx, &s, now, may_enrol)?;
             sessions::set_email_code(tx, &st.auth.keys, &s.id, &c, now)?;
             Ok::<_, ApiError>(())
         })
@@ -727,6 +754,14 @@ pub struct ConfirmEnrolment {
     #[serde(default)]
     #[ts(optional)]
     pub email_code: Option<String>,
+    /// Changing method while signed in: your password...
+    #[serde(default)]
+    #[ts(optional)]
+    pub password: Option<String>,
+    /// ...and a code from your current second factor (or a recovery code).
+    #[serde(default)]
+    #[ts(optional)]
+    pub current_code: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -738,79 +773,138 @@ pub struct Enrolled {
     pub state: AuthState,
 }
 
-/// `POST /api/auth/enrol/confirm {method, code, emailCode?}` → the method
-/// is the user's second factor, with 10 new recovery codes; an `enrol`
-/// session is now signed in (new token), a signed-in one gets a new
-/// token. After a 2FA reset an authenticator app also needs the emailed
-/// code (S1 M7; the emailed method's code is that proof). Wrong codes
-/// count as in [`second_factor`]. The user is emailed a notice.
+/// The new factor's code checks out (inside the transaction): an
+/// authenticator app's against the secret this session is enrolling, and
+/// after a 2FA reset the emailed code too (S1 M7: the emailed method's own
+/// code is that proof). Stores the factor if so.
+fn confirm_new_factor(
+    tx: &Connection,
+    keys: &Keys,
+    s: &Session,
+    req: &ConfirmEnrolment,
+    must_prove: bool,
+    now: i64,
+) -> Result<bool, ApiError> {
+    Ok(match req.method {
+        Method::Totp => {
+            let step = sessions::pending_secret(keys, s).and_then(|pending| {
+                totp::verify(&pending, &req.code, (now / 1000) as u64, 0)
+                    .map(|step| (pending, step))
+            });
+            // The app's code first (no side effect), then the emailed one,
+            // which a check spends.
+            let proven = step.is_some()
+                && (!must_prove
+                    || sessions::check_email_code(
+                        tx,
+                        keys,
+                        s,
+                        req.email_code.as_deref().unwrap_or(""),
+                        now,
+                    )?);
+            match step.filter(|_| proven) {
+                Some((pending, step)) => {
+                    accounts::set_second_factor(
+                        tx,
+                        keys,
+                        s.user,
+                        SecondFactor::Totp,
+                        Some((&pending, step)),
+                        now,
+                    )?;
+                    true
+                }
+                None => false,
+            }
+        }
+        Method::Email => {
+            sessions::check_email_code(tx, keys, s, &req.code, now)? && {
+                accounts::set_second_factor(tx, keys, s.user, SecondFactor::Email, None, now)?;
+                true
+            }
+        }
+    })
+}
+
+/// `POST /api/auth/enrol/confirm {method, code, emailCode?, password?,
+/// currentCode?}` → the method is the user's second factor, with 10 new
+/// recovery codes, and every other session of the user ends.
+///
+/// - An `enrol` session (no factor yet) is signed in with a new token. If
+///   the user has a factor by now (another session enrolled first), it is
+///   refused and ended: it can't replace that factor (S1 codex C1). After
+///   a 2FA reset an authenticator app also needs the emailed code (M7).
+/// - A signed-in session changes method only with the password and a code
+///   from the current factor (or a recovery code), and gets a new token
+///   whose sign-in time is unchanged: changing a factor isn't a step-up
+///   (codex C2).
+///
+/// Wrong codes count as in [`second_factor`]. The user is emailed a notice.
 pub async fn enrol_confirm(
     State(state): State<AppState>,
     Extension(timing): Extension<Timing>,
+    ClientIp(ip): ClientIp,
     headers: HeaderMap,
     Body(req): Body<ConfirmEnrolment>,
 ) -> Result<Response, ApiError> {
     let s = enrolling(&state, &headers, &timing).await?;
     second_factor_limit(&state, s.user)?;
+    if s.stage == Stage::Full {
+        user_password_limits(&state, &ip, s.user)?;
+    }
     let st = state.clone();
     let email = s.email.clone();
+    let user = s.user;
     let done = blocking(move || {
         let now = contracts::now_ms();
         let keys = &st.auth.keys;
+        let verified = match s.stage {
+            Stage::Full => {
+                let password = req.password.as_deref().unwrap_or("");
+                match verify_password(&st, &s.email, password)? {
+                    Some(v) if v.user == s.user => Some(v),
+                    _ => return Err(wrong_credentials()),
+                }
+            }
+            _ => None,
+        };
         st.store.platform().with_write(|tx| {
-            let s = reread(tx, &s, now, |s| may_enrol(s, now))?;
-            let must_prove = s.stage == Stage::Enrol
-                && accounts::credentials(tx, s.user)?.is_some_and(|c| c.must_prove_email);
+            let s = reread(tx, &s, now, may_enrol)?;
+            let creds = accounts::credentials(tx, s.user)?.ok_or(ApiError::Unauthenticated)?;
+            if s.stage == Stage::Enrol && creds.second_factor.is_some() {
+                // C1: a factor was set up since this sign-in began.
+                sessions::revoke(tx, &s.id)?;
+                return Ok(Err(None));
+            }
+            if s.stage == Stage::Full {
+                match &verified {
+                    Some(v) if v.still(tx)? => {}
+                    _ => return Err(wrong_credentials()),
+                }
+                if req.method == Method::Email && creds.second_factor == Some(SecondFactor::Email) {
+                    return Err(ApiError::Rejected {
+                        reason: "same_method".into(),
+                        message: "Your second factor is already a code emailed to you.".into(),
+                    });
+                }
+            }
+            let must_prove = s.stage == Stage::Enrol && creds.must_prove_email;
             let verdict = verify_code(tx, &s, now, || {
-                Ok(match req.method {
-                    Method::Totp => {
-                        let step = sessions::pending_secret(keys, &s).and_then(|pending| {
-                            totp::verify(&pending, &req.code, (now / 1000) as u64, 0)
-                                .map(|step| (pending, step))
-                        });
-                        // The TOTP code first (no side effect), then the
-                        // emailed one, which a check spends.
-                        let proven = step.is_some()
-                            && (!must_prove
-                                || sessions::check_email_code(
-                                    tx,
-                                    keys,
-                                    &s,
-                                    req.email_code.as_deref().unwrap_or(""),
-                                    now,
-                                )?);
-                        match step.filter(|_| proven) {
-                            Some((pending, step)) => {
-                                accounts::set_second_factor(
-                                    tx,
-                                    keys,
-                                    s.user,
-                                    SecondFactor::Totp,
-                                    Some((&pending, step)),
-                                    now,
-                                )?;
-                                true
-                            }
-                            None => false,
-                        }
-                    }
-                    Method::Email => {
-                        sessions::check_email_code(tx, keys, &s, &req.code, now)? && {
-                            accounts::set_second_factor(
-                                tx,
-                                keys,
-                                s.user,
-                                SecondFactor::Email,
-                                None,
-                                now,
-                            )?;
-                            true
-                        }
-                    }
-                })
+                if s.stage == Stage::Full
+                    && !check_second_factor(
+                        tx,
+                        keys,
+                        &s,
+                        req.current_code.as_deref().unwrap_or(""),
+                        now,
+                    )?
+                {
+                    return Ok(false);
+                }
+                confirm_new_factor(tx, keys, &s, &req, must_prove, now)
             })?;
             if let Err(failure) = verdict {
-                return Ok::<_, ApiError>(Err(failure));
+                return Ok::<_, ApiError>(Err(Some(failure)));
             }
             let recovery = accounts::new_recovery_codes(tx, keys, s.user)?;
             let method = match req.method {
@@ -829,9 +923,10 @@ pub async fn enrol_confirm(
             let token = if s.stage == Stage::Enrol {
                 sessions::complete(tx, &s, now)?
             } else {
-                sessions::set_stage(tx, &s.id, Stage::Full)?;
-                sessions::step_up(tx, &s, now)?
+                sessions::rotate(tx, &s)?
             };
+            // C1: whoever else was signed in, or half signed in, is out.
+            sessions::revoke_others(tx, s.user, &secret::hash(&token))?;
             let full = sessions::get(tx, &token, now)?.ok_or(ApiError::Internal)?;
             Ok(Ok((
                 token,
@@ -845,15 +940,22 @@ pub async fn enrol_confirm(
     .await?;
     match done {
         Ok((token, out)) => {
-            let factor = match req.method {
+            state.auth.revoked(Revoked::User(user));
+            let factor = match req_method(&out) {
                 Method::Totp => SecondFactor::Totp,
                 Method::Email => SecondFactor::Email,
             };
             state.auth.notify(&email, Notice::FactorSet(factor));
             with_session(Json(out).into_response(), &headers, &token, Stage::Full)
         }
-        Err(failure) => refused(&state, &headers, &email, failure),
+        Err(None) => without_session(ApiError::Unauthenticated.into_response(), &headers),
+        Err(Some(failure)) => refused(&state, &headers, &email, failure),
     }
+}
+
+/// The method an enrolment set (its state's method).
+fn req_method(out: &Enrolled) -> Method {
+    out.state.method.unwrap_or(Method::Totp)
 }
 
 #[derive(Deserialize, TS)]

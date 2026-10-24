@@ -6,7 +6,7 @@ mod authworld;
 use std::time::Duration;
 
 use api::auth::{Config, ip_key};
-use authworld::{ORIGIN, World, config, password_of, world, world_with};
+use authworld::{ORIGIN, World, config, password_of, world, world_mail_off, world_with};
 use axum::body::Body as HttpBody;
 use axum::http::{StatusCode, header};
 use http_body_util::BodyExt;
@@ -386,7 +386,12 @@ async fn credential_changes_are_mailed_to_the_owner() {
         .post(
             "/api/auth/enrol/confirm",
             Some(&ann),
-            json!({ "method": "email", "code": code }),
+            json!({
+                "method": "email",
+                "code": code,
+                "password": password_of("ann@alpha.org"),
+                "currentCode": w.totp("ann@alpha.org"),
+            }),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
@@ -914,4 +919,377 @@ async fn an_invite_cant_demote_a_groups_last_admin() {
         .post("/api/auth/invite/check", None, json!({ "token": token }))
         .await;
     assert_eq!(r.status, StatusCode::OK);
+}
+
+// ── Codex second opinion (C1–C9) ───────────────────────────────────────────
+
+/// A new member with two `enrol` sessions (the invite's, and a sign-in),
+/// each holding a TOTP secret it could confirm: (session, secret) × 2.
+async fn two_enrolments(w: &World, email: &str) -> [(String, String); 2] {
+    let ann = w.sign_in("ann@alpha.org").await;
+    w.post(
+        "/api/t/alpha/members/invite",
+        Some(&ann),
+        json!({ "email": email, "role": "staff" }),
+    )
+    .await;
+    let token = w.emailed_token(email).await;
+    let r = w
+        .post(
+            "/api/auth/invite/accept",
+            None,
+            json!({ "token": token, "password": password_of(email) }),
+        )
+        .await;
+    let a = r.cookie().unwrap();
+    let r = w
+        .post(
+            "/api/auth/sign-in",
+            None,
+            json!({ "email": email, "password": password_of(email) }),
+        )
+        .await;
+    assert_eq!(r.body["stage"], "enrol");
+    let b = r.cookie().unwrap();
+    let mut out = vec![];
+    for c in [a, b] {
+        let r = w.post("/api/auth/enrol/totp", Some(&c), json!({})).await;
+        out.push((c, r.body["secret"].as_str().unwrap().to_owned()));
+    }
+    out.try_into().unwrap()
+}
+
+fn totp_now(secret: &str) -> String {
+    auth::totp::code_at(secret, (contracts::now_ms() / 1000) as u64).unwrap()
+}
+
+/// The TOTP secret `email` is enrolled with now.
+fn enrolled_secret(w: &World, email: &str) -> Option<String> {
+    let user = w.user_id(email);
+    w.store
+        .platform()
+        .with_read(|c| auth::accounts::credentials(c, user))
+        .unwrap()
+        .and_then(|c| c.totp_secret(&auth::Keys::dev(), user))
+}
+
+/// C1: once one enrolment completes, another `enrol` session can't
+/// replace that factor (it was signed out with the rest), and the factor
+/// is the first one's.
+#[tokio::test]
+async fn a_second_enrolment_cant_replace_the_first() {
+    let w = world();
+    let [(a, sa), (b, sb)] = two_enrolments(&w, "one@alpha.org").await;
+    let r = w
+        .post(
+            "/api/auth/enrol/confirm",
+            Some(&a),
+            json!({ "method": "totp", "code": totp_now(&sa) }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = w
+        .post(
+            "/api/auth/enrol/confirm",
+            Some(&b),
+            json!({ "method": "totp", "code": totp_now(&sb) }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{}", r.body);
+    assert_eq!(
+        enrolled_secret(&w, "one@alpha.org").as_deref(),
+        Some(sa.as_str())
+    );
+}
+
+/// C1 as a race: two enrolments confirmed at once. One wins; the other is
+/// refused; the factor and the recovery codes are the winner's.
+#[tokio::test]
+async fn concurrent_enrolments_set_one_factor() {
+    let w = world();
+    let [(a, sa), (b, sb)] = two_enrolments(&w, "race@alpha.org").await;
+    let (ra, rb) = tokio::join!(
+        w.post(
+            "/api/auth/enrol/confirm",
+            Some(&a),
+            json!({ "method": "totp", "code": totp_now(&sa) })
+        ),
+        w.post(
+            "/api/auth/enrol/confirm",
+            Some(&b),
+            json!({ "method": "totp", "code": totp_now(&sb) })
+        ),
+    );
+    let winners: Vec<_> = [(&ra, &sa), (&rb, &sb)]
+        .into_iter()
+        .filter(|(r, _)| r.status == StatusCode::OK)
+        .collect();
+    assert_eq!(winners.len(), 1, "{} / {}", ra.body, rb.body);
+    assert_eq!(
+        enrolled_secret(&w, "race@alpha.org").as_deref(),
+        Some(winners[0].1.as_str())
+    );
+    // The winner's recovery codes are the live ones.
+    let code = winners[0].0.body["recoveryCodes"][0].as_str().unwrap();
+    let r = w
+        .post(
+            "/api/auth/sign-in",
+            None,
+            json!({ "email": "race@alpha.org", "password": password_of("race@alpha.org") }),
+        )
+        .await;
+    let r = w
+        .post(
+            "/api/auth/second-factor",
+            Some(&r.cookie().unwrap()),
+            json!({ "code": code }),
+        )
+        .await;
+    assert_eq!(r.body["stage"], "signed_in", "{}", r.body);
+}
+
+/// C2: a signed-in session changes its factor only with the password and
+/// the current factor, and doing so doesn't renew the step-up hour.
+#[tokio::test]
+async fn changing_the_factor_needs_the_password_and_the_current_one_and_isnt_a_step_up() {
+    let w = world();
+    let ann = w.sign_in("ann@alpha.org").await;
+    // Signed in two hours ago: no step-up left.
+    w.age_sign_in(&ann, 2 * 60 * 60 * 1000);
+    let r = w.post("/api/auth/enrol/totp", Some(&ann), json!({})).await;
+    let secret = r.body["secret"].as_str().unwrap().to_owned();
+    let before = enrolled_secret(&w, "ann@alpha.org");
+    let attempt = |body: Value| w.post("/api/auth/enrol/confirm", Some(&ann), body);
+
+    let r = attempt(json!({ "method": "totp", "code": totp_now(&secret) })).await;
+    assert_eq!(r.reason(), "invalid_credentials", "no password: {}", r.body);
+    let r = attempt(json!({
+        "method": "totp", "code": totp_now(&secret),
+        "password": password_of("ann@alpha.org"), "currentCode": "000000",
+    }))
+    .await;
+    assert_eq!(r.reason(), "wrong_code", "a wrong current code: {}", r.body);
+    assert_eq!(enrolled_secret(&w, "ann@alpha.org"), before, "unchanged");
+
+    let r = attempt(json!({
+        "method": "totp", "code": totp_now(&secret),
+        "password": password_of("ann@alpha.org"), "currentCode": w.totp("ann@alpha.org"),
+    }))
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(enrolled_secret(&w, "ann@alpha.org"), Some(secret));
+    let ann = r.cookie().unwrap();
+    // Still no step-up: an admin action asks for one.
+    let r = w
+        .post(
+            "/api/t/alpha/members/invite",
+            Some(&ann),
+            json!({ "email": "x@alpha.org", "role": "staff" }),
+        )
+        .await;
+    assert_eq!(r.kind(), "step_up_required", "{}", r.body);
+}
+
+/// C3 as a race: a sign-in with the old password while a reset link sets
+/// a new one. Whichever commits first, no session survives the reset.
+#[tokio::test]
+async fn a_sign_in_racing_a_password_reset_never_survives_it() {
+    let w = world();
+    let ann = w.user_id("ann@alpha.org");
+    for i in 0..4 {
+        let token = w
+            .store
+            .platform()
+            .with_write(|tx| auth::accounts::create_reset(tx, ann, contracts::now_ms()))
+            .unwrap();
+        let old = if i == 0 {
+            password_of("ann@alpha.org")
+        } else {
+            format!("reset-password-{}", i - 1)
+        };
+        let (_signed, reset) = tokio::join!(
+            w.post(
+                "/api/auth/sign-in",
+                None,
+                json!({ "email": "ann@alpha.org", "password": old }),
+            ),
+            w.post(
+                "/api/auth/reset/complete",
+                None,
+                json!({ "token": token, "password": format!("reset-password-{i}") }),
+            ),
+        );
+        assert_eq!(reset.status, StatusCode::OK, "{}", reset.body);
+        assert_eq!(
+            count(
+                &w,
+                "SELECT count(*) FROM auth_sessions WHERE user_id = ?1",
+                ann
+            ),
+            0,
+            "round {i}"
+        );
+    }
+}
+
+/// C5: the session is checked after the body has arrived: a write whose
+/// body is held back until after a sign-out is refused.
+#[tokio::test]
+async fn a_held_back_body_doesnt_write_after_sign_out() {
+    let w = world();
+    let cat = w.sign_in("cat@alpha.org").await;
+    let (send, held) = tokio::sync::oneshot::channel::<()>();
+    let body = HttpBody::from_stream(futures_util::stream::once(async move {
+        let _ = held.await;
+        Ok::<_, std::convert::Infallible>(
+            json!({ "kind": "person", "details": { "firstName": "Late" } }).to_string(),
+        )
+    }));
+    let req = World::request("POST", "/api/t/alpha/contacts", Some(&cat), None)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .unwrap();
+    let app = w.app.clone();
+    let pending = tokio::spawn(async move { tower::ServiceExt::oneshot(app, req).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    w.post("/api/auth/sign-out", Some(&cat), json!({})).await;
+    send.send(()).unwrap();
+    let res = pending.await.unwrap().unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    let contacts: i64 = w
+        .store
+        .org(&w.alpha.id)
+        .unwrap()
+        .read(|r| r.query_row("SELECT count(*) FROM contacts", [], |r| r.get(0)))
+        .unwrap();
+    assert_eq!(contacts, 0);
+}
+
+/// C6: an address that can't be one never becomes a limiter key, and an
+/// auth body is at most 16 KiB.
+#[tokio::test]
+async fn junk_addresses_and_big_bodies_are_refused_before_any_limit() {
+    let w = world();
+    let huge = format!("{}@x.org", "a".repeat(10_000));
+    for i in 0..30 {
+        let r = w
+            .post(
+                "/api/auth/sign-in",
+                None,
+                json!({ "email": huge, "password": "whatever-it-is" }),
+            )
+            .await;
+        assert_eq!(r.kind(), "invalid", "{}", r.body);
+        // (Within the per-IP link limit: that key is the client's.)
+        if i < 10 {
+            let r = w
+                .post(
+                    "/api/auth/reset/request",
+                    None,
+                    json!({ "email": "not an address" }),
+                )
+                .await;
+            assert_eq!(r.body, json!({ "ok": true }));
+        }
+    }
+    // Nothing above was counted against this client.
+    let r = w
+        .post(
+            "/api/auth/sign-in",
+            None,
+            json!({ "email": "ann@alpha.org", "password": password_of("ann@alpha.org") }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = w
+        .post(
+            "/api/auth/sign-in",
+            None,
+            json!({ "email": "ann@alpha.org", "password": "x".repeat(17 * 1024) }),
+        )
+        .await;
+    assert_eq!(r.kind(), "invalid");
+    assert_eq!(r.body["problems"][0]["field"], "body");
+}
+
+/// C7: auth responses carry no Server-Timing, and a failed sign-in is
+/// logged whether the address is known or not.
+#[tokio::test]
+async fn auth_answers_dont_time_themselves_and_failures_log_alike() {
+    let w = world();
+    for email in ["ann@alpha.org", "nobody@alpha.org"] {
+        let res = w
+            .send(
+                post_json("/api/auth/sign-in", json!({}))
+                    .body(HttpBody::from(
+                        json!({ "email": email, "password": "wrong-password" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.reason(), "invalid_credentials");
+    }
+    let res = w.app.clone().oneshot_get("/api/auth/state").await;
+    assert!(res.headers().get("server-timing").is_none());
+    let failed: i64 = w
+        .store
+        .platform()
+        .with_read(|c| {
+            c.query_row(
+                "SELECT count(*) FROM auth_log WHERE event = 'sign_in_failed'",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(failed, 2);
+}
+
+trait GetOnce {
+    async fn oneshot_get(self, path: &str) -> axum::response::Response;
+}
+
+impl GetOnce for axum::Router {
+    async fn oneshot_get(self, path: &str) -> axum::response::Response {
+        let req = World::request("GET", path, None, None)
+            .body(HttpBody::empty())
+            .unwrap();
+        tower::ServiceExt::oneshot(self, req).await.unwrap()
+    }
+}
+
+/// C8: with `KEEP_MAIL=off`, what needs email is refused up front; an
+/// authenticator app still signs in.
+#[tokio::test]
+async fn with_mail_off_what_needs_email_is_refused() {
+    let w = world_mail_off();
+    let ann = w.sign_in("ann@alpha.org").await;
+    let r = w
+        .post(
+            "/api/auth/reset/request",
+            None,
+            json!({ "email": "ann@alpha.org" }),
+        )
+        .await;
+    assert_eq!(r.reason(), "mail_off");
+    let r = w
+        .post(
+            "/api/t/alpha/members/invite",
+            Some(&ann),
+            json!({ "email": "x@alpha.org", "role": "staff" }),
+        )
+        .await;
+    assert_eq!(r.reason(), "mail_off");
+    let val = w.user_id("val@alpha.org");
+    let r = w
+        .post(
+            &format!("/api/t/alpha/members/{val}/reset-2fa"),
+            Some(&ann),
+            json!({}),
+        )
+        .await;
+    assert_eq!(r.reason(), "mail_off");
+    let r = w.post("/api/auth/enrol/email", Some(&ann), json!({})).await;
+    assert_eq!(r.reason(), "mail_off");
+    assert!(w.outbox.lock().unwrap().is_empty());
 }

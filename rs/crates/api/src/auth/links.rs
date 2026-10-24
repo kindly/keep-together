@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use store::{Role, UserId};
 use ts_rs::TS;
 
-use super::flows::{check_password, code_mail, start_partial, user_agent, user_password_limits};
+use super::flows::{code_mail, start_partial, user_agent, user_password_limits, verify_password};
 use super::{ClientIp, Revoked, session_token, users, with_session};
 use crate::error::{ApiError, Body};
 use crate::{AppState, RoleName, blocking};
@@ -54,45 +54,56 @@ pub struct ResetRequest {
 /// `POST /api/auth/reset/request {email}` → `{ok: true}` whatever the
 /// address: a known one with a password gets a link (15 minutes, single
 /// use), an unknown one gets nothing, and the answer can't tell them
-/// apart (the mail goes out in the background).
+/// apart: the lookup, the link and the mail all happen after the response
+/// (S1 codex C7), and an address that can't be one is answered without
+/// becoming a limiter key (C6). With mail off: `mail_off`, for any address.
 pub async fn reset_request(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     Body(req): Body<ResetRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     link_limit(&state, &ip)?;
-    let email =
-        users::normalise_email(&req.email).unwrap_or_else(|| req.email.trim().to_lowercase());
+    state.auth.require_mail()?;
+    let ok = Json(serde_json::json!({ "ok": true }));
+    let Some(email) = users::normalise_email(&req.email) else {
+        return Ok(ok);
+    };
     if !allow(&state.auth.limits.email, &email) {
         return Err(ApiError::RateLimited);
     }
-    let st = state.clone();
-    let to = email.clone();
-    let token = blocking(move || {
-        let now = contracts::now_ms();
-        st.store.platform().with_write(|tx| {
-            let Some(user) = users::by_email(tx, &to)? else {
-                return Ok::<_, ApiError>(None);
-            };
-            if accounts::credentials(tx, user)?.is_none() {
-                return Ok(None);
-            }
-            accounts::log(tx, now, "reset_requested", Some(user), "self", None, "")?;
-            Ok(Some(accounts::create_reset(tx, user, now)?))
+    tokio::spawn(async move {
+        let st = state.clone();
+        let to = email.clone();
+        let token = blocking(move || {
+            let now = contracts::now_ms();
+            st.store.platform().with_write(|tx| {
+                let Some(user) = users::by_email(tx, &to)? else {
+                    return Ok::<_, ApiError>(None);
+                };
+                if accounts::credentials(tx, user)?.is_none() {
+                    return Ok(None);
+                }
+                accounts::log(tx, now, "reset_requested", Some(user), "self", None, "")?;
+                Ok(Some(accounts::create_reset(tx, user, now)?))
+            })
         })
-    })
-    .await?;
-    if let Some(token) = token {
-        let origin = &state.auth.config.app_origin;
-        state.auth.send(Mail {
-            to: email,
-            subject: "Reset your keep-together password".into(),
-            text: format!(
-                "Someone asked to reset the password for this address.\n\nSet a new one here (the link works once, for 15 minutes):\n{origin}/reset#{token}\n\nIf it wasn't you, ignore this email: your password hasn't changed.\n"
-            ),
-        });
-    }
-    Ok(Json(serde_json::json!({ "ok": true })))
+        .await;
+        match token {
+            Ok(Some(token)) => {
+                let origin = &state.auth.config.app_origin;
+                state.auth.send(Mail {
+                    to: email,
+                    subject: "Reset your keep-together password".into(),
+                    text: format!(
+                        "Someone asked to reset the password for this address.\n\nSet a new one here (the link works once, for 15 minutes):\n{origin}/reset#{token}\n\nIf it wasn't you, ignore this email: your password hasn't changed.\n"
+                    ),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("reset request: {e:?}"),
+        }
+    });
+    Ok(ok)
 }
 
 #[derive(Deserialize, TS)]
@@ -262,19 +273,22 @@ pub async fn invite_accept(
         let now = contracts::now_ms();
         let open = open_invite(&st, &req.token)?;
         let email = open.invite.email.clone();
-        if open.has_account {
+        let wrong_password = || ApiError::Rejected {
+            reason: "invalid_credentials".into(),
+            message: "Wrong password for this address.".into(),
+        };
+        let verified = if open.has_account {
             if let Some(user) = open.user {
                 user_password_limits(&st, &ip, user)?;
             }
-            if check_password(&st, &email, &req.password)? != open.user {
-                return Err(ApiError::Rejected {
-                    reason: "invalid_credentials".into(),
-                    message: "Wrong password for this address.".into(),
-                });
+            match verify_password(&st, &email, &req.password)? {
+                Some(v) if Some(v.user) == open.user => Some(v),
+                _ => return Err(wrong_password()),
             }
         } else {
             password_problem(&req.password)?;
-        }
+            None
+        };
         let tenant = st
             .store
             .platform()
@@ -296,8 +310,12 @@ pub async fn invite_accept(
                     message: "This address's account changed while you were accepting. Open the link again.".into(),
                 });
             }
-            if !has_account {
-                accounts::set_password(tx, user, &req.password, now).map_err(ApiError::internal)?;
+            match &verified {
+                // C3: the password checked is still the account's.
+                Some(v) if !v.still(tx)? => return Err(wrong_password()),
+                Some(_) => {}
+                None => accounts::set_password(tx, user, &req.password, now)
+                    .map_err(ApiError::internal)?,
             }
             // L8: re-inviting a member (the operator's `keep auth invite`)
             // changes their role; the group keeps an admin.

@@ -158,11 +158,7 @@ test('enrolling shows the QR code, then the recovery codes until acknowledged', 
   expect(el.textContent).toContain('ABCDEF')
   fill('Code', '123456')
   await submit()
-  expect(steps.confirmEnrolment).toHaveBeenCalledWith(
-    'totp',
-    '123456',
-    undefined,
-  )
+  expect(steps.confirmEnrolment).toHaveBeenCalledWith('totp', '123456', {})
   expect(el.textContent).toContain('aaaaa-bbbbb')
   expect(done).not.toHaveBeenCalled()
   expect(navigated).toEqual([])
@@ -223,12 +219,10 @@ test('enrolling after a reset asks for the emailed code too', async () => {
   render()
   expect(el.textContent).toContain('emailed you a code')
   await click('Use an authenticator app')
-  fill("The app's code", '111111')
+  fill('The new code', '111111')
   fill('The emailed code', '222222')
   await submit()
-  expect(steps.confirmEnrolment).toHaveBeenCalledWith(
-    'totp',
-    '111111',
-    '222222',
-  )
+  expect(steps.confirmEnrolment).toHaveBeenCalledWith('totp', '111111', {
+    emailCode: '222222',
+  })
 })

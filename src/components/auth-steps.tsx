@@ -127,13 +127,17 @@ export function SecondFactorForm({
  * session on (signed in): call it once they've been seen.
  * `needsEmailCode`: after a 2FA reset, the code we emailed at sign-in goes
  * with the app's code (the emailed method's own code is that proof).
+ * `changing`: signed in and replacing the current factor (whose method is
+ * given), which needs the password and a code from that factor.
  */
 export function EnrolForm({
   onEnrolled,
   needsEmailCode = false,
+  changing,
 }: {
   onEnrolled: (codes: Array<string>, done: () => Promise<void>) => void
   needsEmailCode?: boolean
+  changing?: { current: Method | null }
 }) {
   const steps = useSignInSteps()
   const [method, setMethod] = useState<Method | null>(null)
@@ -216,14 +220,47 @@ export function EnrolForm({
           const out = await steps.confirmEnrolment(
             method,
             field(d, 'code'),
-            proof ? field(d, 'emailCode') : undefined,
+            changing
+              ? {
+                  password: field(d, 'password'),
+                  currentCode: field(d, 'currentCode'),
+                }
+              : proof
+                ? { emailCode: field(d, 'emailCode') }
+                : {},
           )
           onEnrolled(out.recoveryCodes, out.done)
         }}
       >
-        <CodeInput label={proof ? "The app's code" : 'Code'} />
+        <CodeInput label={proof || changing ? 'The new code' : 'Code'} />
         {proof && <CodeInput name="emailCode" label="The emailed code" />}
+        {changing && (
+          <>
+            <p className="text-sm text-neutral-600">
+              To change it, confirm it's you: your password and a code from your
+              current second step (or a recovery code).
+            </p>
+            <input
+              name="password"
+              type="password"
+              required
+              autoComplete="current-password"
+              placeholder="Password"
+              className={input}
+            />
+            <CodeInput name="currentCode" label="Current code" />
+          </>
+        )}
       </AuthForm>
+      {changing?.current === 'email' && method === 'totp' && (
+        <button
+          type="button"
+          className={`self-start ${linkButton}`}
+          onClick={() => void steps.sendCode()}
+        >
+          Email me a current code
+        </button>
+      )}
       <button
         type="button"
         className={`self-start ${linkButton}`}

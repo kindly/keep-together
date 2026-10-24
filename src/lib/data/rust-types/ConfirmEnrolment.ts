@@ -6,4 +6,12 @@ export type ConfirmEnrolment = { method: Method, code: string,
  * After a 2FA reset (`needsEmailCode`), the emailed code too when
  * `method` is `totp`.
  */
-emailCode?: string, };
+emailCode?: string, 
+/**
+ * Changing method while signed in: your password...
+ */
+password?: string, 
+/**
+ * ...and a code from your current second factor (or a recovery code).
+ */
+currentCode?: string, };

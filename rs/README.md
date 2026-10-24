@@ -27,10 +27,11 @@ Env (`api`):
 | `KEEP_PORT` | `8787` | |
 | `KEEP_MAX_OPEN_ORGS` | `64` | org files kept open beyond those in use |
 | `KEEP_DEV_AUTH=1` | off | the dev login (below). **Dev auth is no auth**: anyone who can reach the port signs in as anyone. It is honoured only on a loopback bind; on any other address it is ignored with a warning. Loopback is not the whole story: Vite's `/api` proxy is reachable wherever Vite is (`tailscale serve` puts it on the tailnet, `allowedHosts: ['.ts.net']`), and a DNS-rebinding page in your browser can reach `127.0.0.1`. Fine for seed data; never put real data behind dev auth |
-| `KEEP_ENV` | unset | `prod` / `staging`: refuses `KEEP_DEV_AUTH`, needs `KEEP_APP_ORIGIN`; `prod` refuses `KEEP_MAIL=log` |
+| `KEEP_ENV` | unset (= `dev`) | `prod` / `staging`: refuses `KEEP_DEV_AUTH` and `KEEP_MAIL=log`, needs `KEEP_APP_ORIGIN` (https), `KEEP_CLIENT_IP_HEADER`, `KEEP_SETTINGS_KEY` and `KEEP_AUTH_PEPPER` (`api::auth::boot`) |
 | `KEEP_APP_ORIGIN` | `http://localhost:3000` | the SPA's origin: links in emails, the trusted `Origin` for writes |
-| `KEEP_CLIENT_IP_HEADER` | unset (peer address) | the proxy's client-address header for rate limits (`Fly-Client-IP` on Fly); never where clients reach the api directly |
-| `KEEP_MAIL` | `log` | `smtp`: send via `KEEP_SMTP_URL` (`smtp://localhost:1025`, Mailpit) as `KEEP_MAIL_FROM` (`comms::mail`) |
+| `KEEP_CLIENT_IP_HEADER` | unset (peer address) | the proxy's client-address header for rate limits (`Fly-Client-IP` on Fly); never where clients reach the api directly. Its value counts only if it is one IP (IPv6 by /64); `X-Forwarded-For`/`Forwarded` are refused |
+| `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER` | published dev keys | 32 bytes, base64: TOTP secrets sealed (AES-GCM), codes HMAC (`auth::keys`) |
+| `KEEP_MAIL` | `log` | `log` only for dev on a loopback bind; `smtp`: send via `KEEP_SMTP_URL` (`smtp://localhost:1025`, Mailpit) as `KEEP_MAIL_FROM` (`comms::mail`); `off`: no mail, and what needs it is refused (`mail_off`) |
 | `KEEP_QC_SEED=1` | off | with dev auth: `POST /api/dev/qc-seed` and `qc-crowd` (≤ 10k) |
 
 The 10k measurement (`scripts/perf-search10k-rs/`):
@@ -164,27 +165,50 @@ reaches nothing but `/api/auth/*` (`/api/me` is 401).
 | route | |
 |---|---|
 | `GET auth/state` | `AuthState {stage, email, method, stepUpUntil}`, signed out included |
-| `POST auth/sign-in`, `auth/second-factor`, `auth/send-code` | the steps |
-| `POST auth/enrol/totp` → `TotpEnrolment {secret, url, qrSvg}`; `auth/enrol/email`; `auth/enrol/confirm {method, code}` → `Enrolled {recoveryCodes, state}` | set up (or, within the step-up hour, change) the second factor |
+| `POST auth/sign-in {email, password, emailCode?}`, `auth/second-factor`, `auth/send-code` | the steps (`check_email`: send the password again with the emailed code) |
+| `POST auth/enrol/totp` → `TotpEnrolment {secret, url, qrSvg}`; `auth/enrol/email`; `auth/enrol/confirm {method, code, emailCode?, password?, currentCode?}` → `Enrolled {recoveryCodes, state}` | set up, or (with the password and the current factor) change, the second factor |
 | `POST auth/step-up {password, code}` | admin actions work for an hour after a sign-in or step-up; else `403 step_up_required` |
 | `POST auth/sign-out` | ends the session and its live streams |
 | `POST auth/reset/request {email}` · `reset/check {token}` · `reset/complete {token, password}` | 15-minute single-use link to `/reset#<token>`; completing it ends every session of the user |
 | `POST auth/invite/check {token}` · `invite/accept {token, password}` | 7-day single-use link to `/invite#<token>`; a new address sets a password and enrols, an existing account gives its password |
-| `GET auth/account` · `POST auth/account/password {current, new}` · `auth/account/recovery-codes` | your own account |
+| `GET auth/account` · `POST auth/account/password {current, new}` · `auth/account/recovery-codes` · `GET auth/account/sessions` · `POST auth/account/sessions/sign-out-others` | your own account |
 | `GET /api/t/{slug}/members` | `MembersPage {members, invites}`, any member |
 | `POST …/members/invite {email, role}` · `members/invites/{id}/revoke` · `members/{userId}/role {role}` · `members/{userId}/remove` · `members/{userId}/reset-2fa` | admin within the step-up hour; a group always keeps an admin; 2FA reset only for someone in no other group |
 
-Rules: argon2id (min 8, max 256 characters); an unknown email is verified
-against a dummy hash and answers exactly like a wrong password; reset
-requests answer `{ok: true}` for any address, the mail going out in the
-background; TOTP codes are accepted once (the step is stored); rate limits
-(`auth::limits`, in memory) per client IP and per email on password
-checks, per user on codes, per address on emails. `Tenant::require_admin`
-is role admin plus the step-up hour, for admin-only domain routes too.
+Rules (after the S1 security review):
+- Passwords: argon2id, 12–128 characters, not on the bundled breached list
+  (`auth::password`). An unknown email is verified against a dummy hash
+  and answers exactly like a wrong password; a sign-in re-checks inside
+  its write that the hash it verified is still the account's.
+- Reset requests answer `{ok: true}` for any address; the lookup, link
+  and mail happen after the response. No `Server-Timing` on `/api/auth/*`.
+- TOTP codes are accepted once (the step is stored). TOTP secrets are
+  sealed under `KEEP_SETTINGS_KEY`; recovery codes (≈99 bits) and emailed
+  codes (10 minutes) are HMAC under `KEEP_AUTH_PEPPER`.
+- Rate limits (`auth::limits`, in memory): per client IP and per email on
+  sign-in passwords, per user on a signed-in user's passwords and on
+  codes, per address on emails. Past the per-email limit a sign-in answers
+  `check_email` and needs an emailed code with the password
+  (`auth::gate`): it slows guessing without locking the owner out.
+- Wrong codes are counted in `platform.db` (`auth::failures`): 5 end a
+  partial sign-in, 10 in an hour lock the user's second factor for the
+  rest of it (emailed; a password reset lifts it).
+- After a 2FA reset, enrolling needs an emailed code as well. Changing a
+  signed-in user's factor needs the password and the current factor, and
+  doesn't renew the step-up hour; any completed enrolment signs the
+  user's other sessions out.
+- Password, factor and recovery-code changes and 2FA resets are mailed to
+  the account (`auth::notices`; transactional, never suppressed).
+- Bodies are read in full within 30 s before routing (`api::body`; 16 KiB
+  on `/api/auth/*`), and `Tenant::write` re-checks the session and role.
+- `Tenant::require_admin` is role admin plus the step-up hour, for
+  admin-only domain routes too.
 
 Sessions (`auth::sessions`, invariants in its docs): the cookie
-`kt_session` is a 256-bit token, only its SHA-256 stored; `HttpOnly;
-SameSite=Lax; Path=/`, `Secure` unless the `Host` is loopback; the token
+`__Host-kt_session` (`kt_session` without `Secure` on a loopback `Host`)
+is a 256-bit token, only its SHA-256 stored; `HttpOnly; SameSite=Lax;
+Path=/`; 7 days, ended sooner by 12 idle hours; "Your account" lists
+your sessions and signs the others out; the token
 rotates on sign-in completion, step-up and your own role change;
 revoke-all on password reset, 2FA reset, removal and someone else
 changing your role; streams end within a moment of a revocation in this

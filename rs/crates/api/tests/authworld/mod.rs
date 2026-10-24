@@ -76,17 +76,22 @@ pub fn now_secs() -> u64 {
 }
 
 pub fn world() -> World {
-    build(false, config())
+    build(false, config(), false)
 }
 
 /// As [`world`], with `KEEP_DEV_AUTH` on.
 pub fn world_dev() -> World {
-    build(true, config())
+    build(true, config(), false)
 }
 
 /// As [`world`], with `config` (e.g. a client-IP header).
 pub fn world_with(config: Config) -> World {
-    build(false, config)
+    build(false, config, false)
+}
+
+/// As [`world`], with `KEEP_MAIL=off` (staging until SES).
+pub fn world_mail_off() -> World {
+    build(false, config(), true)
 }
 
 /// The test worlds' auth config: links start at [`ORIGIN`].
@@ -97,7 +102,7 @@ pub fn config() -> Config {
     }
 }
 
-fn build(dev_auth: bool, config: Config) -> World {
+fn build(dev_auth: bool, config: Config, mail_off: bool) -> World {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(
         Store::open_with(
@@ -152,7 +157,10 @@ fn build(dev_auth: bool, config: Config) -> World {
         })
         .unwrap();
     }
-    let (mailer, outbox) = Mailer::memory();
+    let (mut mailer, outbox) = Mailer::memory();
+    if mail_off {
+        mailer = Mailer::from_vars(|k| (k == "KEEP_MAIL").then(|| "off".to_owned())).unwrap();
+    }
     let state = AppState::new(store.clone(), dev_auth).with_auth(Runtime::new(config, mailer));
     World {
         _tmp: tmp,

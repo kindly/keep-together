@@ -543,6 +543,8 @@ async fn a_new_reset_link_is_15_minutes_long() {
         json!({ "email": "ann@alpha.org" }),
     )
     .await;
+    // Written after the response (S1 codex C7): the mail says it's done.
+    w.mail_to("ann@alpha.org").await;
     let ttl: i64 = w
         .store
         .platform()

@@ -92,6 +92,7 @@ function Signed() {
   if (enrolling)
     return (
       <EnrolForm
+        changing={{ current: account.method }}
         onEnrolled={(c, done) => {
           setEnrolling(false)
           setCodes(c)
@@ -162,11 +163,9 @@ function Signed() {
         <button
           type="button"
           className={primary}
-          onClick={() =>
-            // Changing method needs a recent sign-in: the server says so
-            // on the first enrol call; ask first instead.
-            setStepUp(() => async () => setEnrolling(true))
-          }
+          // Confirming the change asks for the password and the current
+          // factor (not a step-up: changing it doesn't renew one).
+          onClick={() => setEnrolling(true)}
         >
           Change how you sign in
         </button>

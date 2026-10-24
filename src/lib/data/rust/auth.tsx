@@ -129,13 +129,22 @@ export function useSignInSteps() {
      * The codes, and `done` to move the page on (signed in) once they've
      * been shown: the session already changed on the server.
      */
+    /**
+     * `extra`: after a 2FA reset, the emailed code (`emailCode`); changing
+     * method while signed in, the password and a code from the current
+     * factor (`password`, `currentCode`).
+     */
     confirmEnrolment: async (
       method: Method,
       code: string,
-      emailCode?: string,
+      extra: {
+        emailCode?: string
+        password?: string
+        currentCode?: string
+      } = {},
     ) => {
       const out = await ending(() =>
-        post<Enrolled>('auth/enrol/confirm', { method, code, emailCode }),
+        post<Enrolled>('auth/enrol/confirm', { method, code, ...extra }),
       )
       return {
         recoveryCodes: out.recoveryCodes,

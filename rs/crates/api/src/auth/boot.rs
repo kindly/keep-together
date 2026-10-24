@@ -5,9 +5,9 @@
 //! | var | |
 //! |---|---|
 //! | `KEEP_APP_ORIGIN` | the SPA's origin; required (https) when deployed |
-//! | `KEEP_CLIENT_IP_HEADER` | the proxy's client-address header (`Fly-Client-IP`); required when deployed, or every client shares the proxy's rate-limit bucket. Its value counts only when it is one IP address |
+//! | `KEEP_CLIENT_IP_HEADER` | the proxy's client-address header (`Fly-Client-IP`); required when deployed, or every client shares the proxy's rate-limit bucket. Its value counts only when it is one IP address; `X-Forwarded-For` and `Forwarded` (lists a client can prepend to) are refused |
 //! | `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER` | 32 bytes, base64 ([`auth::keys`]); required when deployed, else the published dev keys |
-//! | `KEEP_MAIL=log` | prints codes and links: only with `KEEP_ENV=dev`, or `KEEP_ENV` unset on a loopback bind |
+//! | `KEEP_MAIL=log` | prints codes and links: only for dev (`KEEP_ENV=dev`, or unset) on a loopback bind. `KEEP_MAIL=off`: no mail, and the api refuses what needs it (staging until SES) |
 //! | `KEEP_DEV_AUTH=1` | refused when deployed |
 
 use std::net::IpAddr;
@@ -27,12 +27,13 @@ pub fn runtime(var: impl Fn(&str) -> Option<String>, bind: IpAddr) -> Result<Run
     }
 
     let mailer = Mailer::from_vars(&var).map_err(|e| format!("mail settings: {e}"))?;
-    let log_allowed =
-        keep_env.as_deref() == Some("dev") || (keep_env.is_none() && bind.is_loopback());
-    if mailer.is_log() && !log_allowed {
+    // Dev is KEEP_ENV=dev, or unset (a local `cargo run`); a deployed
+    // machine also binds a reachable address.
+    let dev = matches!(keep_env.as_deref(), None | Some("dev"));
+    if mailer.is_log() && !(dev && bind.is_loopback()) {
         return Err(
-            "KEEP_MAIL=log writes sign-in codes and links to the log: it needs KEEP_ENV=dev \
-             (or KEEP_ENV unset on a loopback bind). Set KEEP_MAIL=smtp"
+            "KEEP_MAIL=log writes sign-in codes and links to the log: only for dev \
+             (KEEP_ENV=dev or unset) on a loopback bind. Set KEEP_MAIL=smtp, or off"
                 .into(),
         );
     }
@@ -57,10 +58,16 @@ pub fn runtime(var: impl Fn(&str) -> Option<String>, bind: IpAddr) -> Result<Run
     }
     match var("KEEP_CLIENT_IP_HEADER") {
         Some(name) => {
-            config.client_ip_header = Some(
-                name.parse()
-                    .map_err(|_| format!("KEEP_CLIENT_IP_HEADER={name:?} is not a header name"))?,
-            );
+            let header: axum::http::HeaderName = name
+                .parse()
+                .map_err(|_| format!("KEEP_CLIENT_IP_HEADER={name:?} is not a header name"))?;
+            if matches!(header.as_str(), "x-forwarded-for" | "forwarded") {
+                return Err(format!(
+                    "KEEP_CLIENT_IP_HEADER={name:?} is a list a client can prepend to: name \
+                     the proxy's single-address header (Fly-Client-IP)"
+                ));
+            }
+            config.client_ip_header = Some(header);
         }
         None if deployed => {
             return Err(
@@ -188,8 +195,16 @@ mod tests {
                 vars.push((k, v.trim().trim_matches('"').to_owned()));
             }
         }
-        for k in ["KEEP_ENV", "KEEP_APP_ORIGIN", "KEEP_CLIENT_IP_HEADER", "KEEP_MAIL"] {
-            assert!(vars.iter().any(|(n, _)| *n == k), "fly.staging.toml lacks {k}");
+        for k in [
+            "KEEP_ENV",
+            "KEEP_APP_ORIGIN",
+            "KEEP_CLIENT_IP_HEADER",
+            "KEEP_MAIL",
+        ] {
+            assert!(
+                vars.iter().any(|(n, _)| *n == k),
+                "fly.staging.toml lacks {k}"
+            );
         }
         assert!(boot_owned(&vars, ANY).is_err(), "no keys yet");
         vars.push(("KEEP_SETTINGS_KEY", Keys::generate()));
@@ -205,7 +220,8 @@ mod tests {
             boot(&[], LOOPBACK).is_ok(),
             "local dev: KEEP_ENV unset, loopback"
         );
-        assert!(boot(&[("KEEP_ENV", "dev")], ANY).is_ok());
+        assert!(boot(&[("KEEP_ENV", "dev")], LOOPBACK).is_ok());
+        assert!(boot(&[("KEEP_ENV", "dev")], ANY).is_err(), "reachable");
         assert!(
             boot(&[], ANY).is_err(),
             "KEEP_ENV unset on a reachable bind (a deployed machine missing it)"
@@ -214,6 +230,20 @@ mod tests {
         let mut st = staging();
         st[1].1 = "log".into();
         assert!(boot_owned(&st, ANY).is_err());
+        // C8: staging runs with no mail at all until SES is set up.
+        st[1].1 = "off".into();
+        assert!(boot_owned(&st, ANY).is_ok_and(|rt| rt.mailer.is_off()));
+    }
+
+    /// C9: a list header is refused by name.
+    #[test]
+    fn a_forwarded_for_header_is_refused() {
+        for name in ["X-Forwarded-For", "forwarded"] {
+            let mut st = staging();
+            st[3].1 = name.into();
+            let err = boot_owned(&st, ANY).err().unwrap();
+            assert!(err.contains("Fly-Client-IP"), "{name}: {err}");
+        }
     }
 
     /// Local dev runs with the published dev keys; half a pair is refused.
