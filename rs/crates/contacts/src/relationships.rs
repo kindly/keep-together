@@ -144,6 +144,8 @@ pub fn prepare_relationship_type(
             "Both labels are required",
         ));
     }
+    crate::rules::width("labelAB", &p.label_ab, crate::rules::NAME_MAX)?;
+    crate::rules::width("labelBA", &p.label_ba, crate::rules::NAME_MAX)?;
     Ok(p)
 }
 
@@ -157,6 +159,12 @@ pub fn prepare_relationship(
         }
     }
     let mut problems = Vec::new();
+    if crate::rules::too_long(&p.description, crate::rules::DESCRIPTION_MAX) {
+        problems.push(Problem::new(
+            "description",
+            format!("At most {} characters", crate::rules::DESCRIPTION_MAX),
+        ));
+    }
     if p.contact_a == p.contact_b {
         problems.push(Problem::new(
             "contactB",
