@@ -71,6 +71,11 @@ impl Contract for ContactAcquisition {
     type Payload = Acquisition;
     type State = AcquisitionState;
 
+    /// Restore to a moment before the first revision: none.
+    fn empty(&self) -> Option<Acquisition> {
+        Some(Acquisition::default())
+    }
+
     fn load(&self, tx: &OrgTx, id: &str) -> Result<AcquisitionState, ContractError> {
         Ok(AcquisitionState {
             code_id: load_acquisition(tx.read(), id)?,

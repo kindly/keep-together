@@ -1143,13 +1143,13 @@ fn restore_to_here_runs_only_the_slices_that_differ_in_one_named_group() {
     .unwrap();
     let mut ran = done.restored.clone();
     ran.sort();
-    // Fields had no revision by then: a slice never saved before the
-    // moment stays as it is (as Convex's restoreEntityTo). Never the
-    // archive switch.
-    assert_eq!(ran, ["contacts.details"]);
+    // Fields had no revision by then: a slice first saved after the
+    // moment goes back to empty (codex C1 #3; Convex's restoreEntityTo
+    // left it as it was). Never the archive switch.
+    assert_eq!(ran, ["contacts.details", "contacts.fields"]);
     let v = view(&world.a, &ann);
     assert_eq!(v.details.last_name, "Smith");
-    assert_eq!(v.fields.values, [value(&vol, &o[0])]);
+    assert!(v.fields.values.is_empty());
     assert!(v.archived);
     let h = r(&world.a, |c| page(c, &ann, None, 10));
     assert_eq!(

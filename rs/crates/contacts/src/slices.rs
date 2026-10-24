@@ -308,6 +308,11 @@ impl Contract for ContactMethods {
     type Payload = Methods;
     type State = Methods;
 
+    /// Restore to a moment before the first revision: none.
+    fn empty(&self) -> Option<Methods> {
+        Some(Methods::default())
+    }
+
     fn prepare(&self, payload: Methods) -> Result<Methods, ContractError> {
         prepare_methods(payload)
     }
@@ -428,6 +433,11 @@ impl Contract for ContactAddresses {
     const PROJECTIONS: &'static [&'static str] = &[SEARCH_TABLE];
     type Payload = Addresses;
     type State = Addresses;
+
+    /// Restore to a moment before the first revision: none.
+    fn empty(&self) -> Option<Addresses> {
+        Some(Addresses::default())
+    }
 
     fn prepare(&self, payload: Addresses) -> Result<Addresses, ContractError> {
         prepare_addresses(payload)
@@ -713,6 +723,11 @@ impl Contract for ContactFieldValues {
     const COUNTER: &'static str = "fields_version";
     type Payload = FieldValues;
     type State = FieldState;
+
+    /// Restore to a moment before the first revision: none.
+    fn empty(&self) -> Option<FieldValues> {
+        Some(FieldValues::default())
+    }
 
     fn prepare(&self, payload: FieldValues) -> Result<FieldValues, ContractError> {
         prepare_fields(payload)

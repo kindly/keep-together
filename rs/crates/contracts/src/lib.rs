@@ -424,6 +424,14 @@ pub trait Contract: Sync + 'static {
         None
     }
 
+    /// The slice's payload before anything was written to it, if it has
+    /// one (child rows: none). A restore to a moment before the slice's
+    /// first revision writes this; a slice without one (written at
+    /// create) is left as it is.
+    fn empty(&self) -> Option<Self::Payload> {
+        None
+    }
+
     /// Restore only: what can be written back now (e.g. a retired dropdown
     /// option dropped), which is applied *and* recorded. `restored_at` is
     /// when the restored revision was written (ms; `command.at` when the
@@ -694,6 +702,8 @@ pub trait DynContract: Sync {
     fn entity(&self) -> &'static str;
     fn counter(&self) -> &'static str;
     fn upcast_step(&self, from: u32, payload: Value) -> Option<Value>;
+    /// [`Contract::empty`], as a payload at the code's version.
+    fn empty_value(&self) -> Option<Value>;
     fn execute_value(
         &self,
         ctx: &Ctx,
@@ -717,6 +727,9 @@ impl<C: Contract> DynContract for C {
     }
     fn upcast_step(&self, from: u32, payload: Value) -> Option<Value> {
         self.upcast(from, payload)
+    }
+    fn empty_value(&self) -> Option<Value> {
+        self.empty().and_then(|p| serde_json::to_value(p).ok())
     }
     fn execute_value(
         &self,

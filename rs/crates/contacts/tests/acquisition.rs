@@ -1012,3 +1012,83 @@ fn filter_options_list_every_part_archived_too_per_org() {
     let theirs = read(&f.w.b, |c| Ok(sources::filter_options(c)?));
     assert!(!theirs.iter().any(|o| o.id == f.street.category));
 }
+
+// codex C1 #3: a slice first written after the moment goes back to empty.
+// Creation records only details (no code here), so the email, address and
+// code added since have no revision at or before it: they were skipped,
+// and "restore to creation" left them all in place.
+#[test]
+fn restore_to_creation_empties_the_slices_written_since() {
+    let Acq { w, street, ada, .. } = acq();
+    let created: i64 = read(&w.a, |c| {
+        Ok(c.query_row(
+            "SELECT max(id) FROM revisions WHERE entity_id = ?1",
+            [&ada],
+            |r| r.get(0),
+        )?)
+    });
+    tx(&w.a, |ctx| {
+        save_form(
+            ctx,
+            &ada,
+            serde_json::from_value(serde_json::json!({
+                "methods": {
+                    "expected": 0,
+                    "emails": [{ "label": "home", "address": "ada@example.com", "isPrimary": true }],
+                    "phones": []
+                },
+                "addresses": {
+                    "expected": 0,
+                    "addresses": [{
+                        "label": "home", "line1": "1 Analytical Row", "line2": "", "line3": "",
+                        "town": "London", "postcode": "N1 1AA", "country": "GB", "isPrimary": true
+                    }]
+                }
+            }))
+            .unwrap(),
+        )
+    })
+    .unwrap();
+    set(&w.a, &ada, Some(&street.version), 0).unwrap();
+    // B's contact is untouched by A's restore.
+    let b = add(&w.b, "Bea", "Other", None);
+
+    let done = tx(&w.a, |ctx| {
+        restore_contact(
+            ctx,
+            &ada,
+            RestoreRequest::ToRevision {
+                to_revision: created,
+            },
+        )
+    })
+    .unwrap();
+    let mut restored = done.restored.clone();
+    restored.sort();
+    assert_eq!(
+        restored,
+        [
+            "contacts.acquisition",
+            "contacts.addresses",
+            "contacts.methods"
+        ]
+    );
+    let v = view(&w.a, &ada);
+    assert_eq!(v.methods, Methods::default());
+    assert_eq!(v.addresses, Addresses::default());
+    assert!(v.acquisition.is_none());
+    assert_eq!(v.details.first_name, "Ada");
+    // A second restore to the same moment has nothing left to do.
+    let again = tx(&w.a, |ctx| {
+        restore_contact(
+            ctx,
+            &ada,
+            RestoreRequest::ToRevision {
+                to_revision: created,
+            },
+        )
+    })
+    .unwrap();
+    assert!(again.restored.is_empty(), "{:?}", again.restored);
+    assert_eq!(view(&w.b, &b).details.first_name, "Bea");
+}

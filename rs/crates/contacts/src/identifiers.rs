@@ -419,6 +419,11 @@ impl Contract for ContactIdentifiers {
     type Payload = Identifiers;
     type State = IdentifierState;
 
+    /// Restore to a moment before the first revision: none.
+    fn empty(&self) -> Option<Identifiers> {
+        Some(Identifiers::default())
+    }
+
     fn prepare(&self, payload: Identifiers) -> Result<Identifiers, ContractError> {
         prepare_identifiers(payload)
     }
