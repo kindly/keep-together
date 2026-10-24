@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
+serde.workspace = true
+ts-rs.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
