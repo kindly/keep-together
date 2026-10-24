@@ -324,10 +324,17 @@ needs the aws CLI, litestream 0.5.x and sqlite3, and builds
 `KEEP_RESET_SEED=riverside`: on the first boot of a new image (the
 image ref differs from `/data/.image`) the entrypoint wipes `/data`
 before Litestream starts, and the api seeds the `riverside` org. Restarts
-and restored volumes keep their data. Until B3 ports the real riverside
-seed it is a placeholder: one org, an admin `riverside-admin@example.com`
-and 12 contacts. Until auth (A4) lands there is no way to sign in on
-staging, because dev auth stays loopback-only.
+and restored volumes keep their data. The seed is `seed::riverside`
+(Convex's `testSeed`): 100 donors with notes, relationships,
+identifiers, field values and acquisition codes, and one user per role
+(`admin@`, `staff@`, `viewer@keep-together.example`), each signing in
+with a password and TOTP. Their credentials are the six Fly secrets
+`KEEP_RIVERSIDE_<ADMIN|STAFF|VIEWER>_<PASSWORD|TOTP>`
+(`scripts/fly/staging.sh` makes missing ones and prints them once); the
+boot stops naming any that is missing, and they never reach the log. The
+TOTP secrets survive the reset, so an authenticator app keeps working
+across deploys. Locally, `KEEP_ENV=dev keep dev seed-riverside` makes the
+same world and prints generated sign-ins.
 
 ## To verify on the first real run
 

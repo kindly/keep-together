@@ -92,6 +92,7 @@ dependencies = [
  "platform",
  "rusqlite",
  "rusqlite_migration",
+ "seed",
  "sentry",
  "serde",
  "serde_json",
@@ -392,6 +393,7 @@ dependencies = [
  "contracts",
  "platform",
  "rusqlite",
+ "seed",
  "serde_json",
  "store",
  "tempfile",
@@ -2361,11 +2363,18 @@ name = "seed"
 version = "0.1.0"
 dependencies = [
  "api",
+ "auth",
  "contacts",
  "contracts",
+ "platform",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sources",
  "store",
+ "tempfile",
+ "thiserror",
+ "unicode-normalization",
 ]
 
 [[package]]

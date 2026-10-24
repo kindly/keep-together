@@ -1,19 +1,14 @@
-//! `seed`: load the perf generator's contacts (JSONL from
+//! The perf generator's contacts (JSONL from
 //! `scripts/perf-search10k-rs/export-jsonl.mjs`) into one organisation,
 //! in-process, through the same contract functions the API calls: create
 //! (details), then the form save (methods, addresses, the "Volunteer
 //! status" value), then archive. One transaction per contact, as a user's
 //! saves would be. Re-runnable: a contact already made (by clientKey) is
-//! skipped.
-//!
-//!   cargo run --release -p seed -- --data data --slug perf-a --name "Perf A" \
-//!     --admin perf-a@example.com --jsonl $TMPDIR/rs10k/a.jsonl --prefix perfa
+//! skipped. The `seed` bin (`api/src/bin/seed.rs`) is its command line.
 
 use std::io::BufRead;
-use std::path::PathBuf;
 use std::time::Instant;
 
-use api::schema;
 use contacts::form::{create, save_form, set_archived};
 use contacts::types::{
     AddressRow, Addresses, CreateContact, Details, EmailRow, Expected, FieldOptionPayload,
@@ -21,7 +16,7 @@ use contacts::types::{
 };
 use contracts::{ContractError, Exec, Source, execute};
 use serde::Deserialize;
-use store::{OrgDb, Role, Store, StoreConfig};
+use store::{OrgDb, Role, Store};
 
 /// One line of the JSONL: the generator's person (its acquisition `code`
 /// is ignored: source codes aren't in the spike).
@@ -37,17 +32,6 @@ struct Person {
 
 const FIELD: &str = "Volunteer status";
 const OPTIONS: [&str; 3] = ["Active", "Lapsed", "Prospect"];
-
-fn arg(name: &str) -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
-    args.iter()
-        .position(|a| a == &format!("--{name}"))
-        .and_then(|i| args.get(i + 1).cloned())
-}
-
-fn required(name: &str) -> String {
-    arg(name).unwrap_or_else(|| panic!("--{name} is required"))
-}
 
 /// The organisation's "Volunteer status" field and its options, made on
 /// the first run (for every kind, as the QC fixture's).
@@ -155,27 +139,31 @@ fn one(
     })
 }
 
-fn main() {
-    let dir = PathBuf::from(arg("data").unwrap_or_else(|| "data".into()));
-    let slug = required("slug");
-    let admin = required("admin");
-    let jsonl = required("jsonl");
-    let prefix = arg("prefix").unwrap_or_else(|| slug.clone());
+/// What [`load`] loads, and where.
+pub struct Load {
+    pub slug: String,
+    pub name: Option<String>,
+    pub admin: String,
+    pub jsonl: std::path::PathBuf,
+    /// clientKeys are `<prefix>-<line>`.
+    pub prefix: String,
+}
 
-    let store = Store::open_with(
-        StoreConfig {
-            dir,
-            org_migrations: schema::org_migrations(),
-            readers: 1,
-            max_open: StoreConfig::DEFAULT_MAX_OPEN,
-        },
-        schema::PLATFORM_SCHEMAS,
-    )
-    .expect("open data dir");
+/// Load `job.jsonl` into the organisation at `job.slug` (made if new,
+/// with `job.admin` as its admin), printing progress to stderr. Panics on
+/// a bad line, as a load script should.
+pub fn load(store: &Store, job: Load) {
+    let Load {
+        slug,
+        name,
+        admin,
+        jsonl,
+        prefix,
+    } = job;
     let tenant = match store.platform().tenant_by_slug(&slug).expect("platform") {
         Some(t) => t,
         None => store
-            .create_tenant(&slug, &arg("name").unwrap_or_else(|| slug.clone()))
+            .create_tenant(&slug, &name.unwrap_or_else(|| slug.clone()))
             .expect("create organisation"),
     };
     let user = store.platform().upsert_user(&admin).expect("user");

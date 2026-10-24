@@ -7,6 +7,7 @@
 //! keep auth reset-2fa <email> [--reason <text>]
 //! keep auth invite <slug> <email> [--role admin|staff|viewer]
 //! keep dev seed-demo [--slug <slug>] [--admin-email <email>]
+//! keep dev seed-riverside
 //! ```
 
 use std::path::PathBuf;
@@ -19,7 +20,8 @@ const USAGE: &str = "usage:
   keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <email>
   keep [--data <dir>] auth reset-2fa <email> [--reason <text>]
   keep [--data <dir>] auth invite <slug> <email> [--role admin|staff|viewer]
-  keep [--data <dir>] dev seed-demo [--slug <slug>] [--admin-email <email>]";
+  keep [--data <dir>] dev seed-demo [--slug <slug>] [--admin-email <email>]
+  keep [--data <dir>] dev seed-riverside   (KEEP_ENV=dev|staging)";
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
     eprintln!("{msg}");
@@ -126,6 +128,43 @@ fn main() -> ExitCode {
                         d.contact_ids.len()
                     );
                     println!("{}", d.created.invite.text);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(e),
+            }
+        }
+        ["dev", "seed-riverside"] => {
+            let seeded = cli::tenant::open(&data)
+                .map_err(|e| e.to_string())
+                .and_then(|store| cli::dev::seed_riverside(&store).map_err(|e| e.to_string()));
+            match seeded {
+                Ok((s, credentials)) => {
+                    let t = &s.tenant;
+                    println!(
+                        "{} {} ({}): {} donors created",
+                        if s.created { "created" } else { "updated" },
+                        t.slug,
+                        t.id,
+                        s.donors_created
+                    );
+                    for c in credentials {
+                        if c.generated {
+                            println!(
+                                "  {:<6} {}  password {}  totp {}",
+                                c.role.as_str(),
+                                c.email,
+                                c.password,
+                                c.totp_secret
+                            );
+                        } else {
+                            println!(
+                                "  {:<6} {}  (credentials from KEEP_RIVERSIDE_{}_*)",
+                                c.role.as_str(),
+                                c.email,
+                                c.role.as_str().to_uppercase()
+                            );
+                        }
+                    }
                     ExitCode::SUCCESS
                 }
                 Err(e) => fail(e),

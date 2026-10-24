@@ -7,7 +7,8 @@
 #   scripts/fly/staging.sh
 #
 # Makes the app in lhr, its 1 GB volume keep_data, asks for any secret
-# still missing, adds the certificate for staging.keep-together.org.uk and
+# still missing, generates the riverside sign-ins and the QC token if
+# missing (printed once: note them), adds the certificate for staging.keep-together.org.uk and
 # prints the Route 53 record to add, and a deploy token for GitHub.
 # The first deploy is `fly deploy -c fly.staging.toml --ha=false` (or a
 # push to main). Re-run it any time: it also checks the app still has one
@@ -74,6 +75,43 @@ if ((${#missing[@]})); then
     fly secrets set -a "$APP" --stage "${pairs[@]}"; }
 else
   echo "all set"
+fi
+
+say "Generated secrets (riverside sign-ins, QC token)"
+# Made here, never typed: the riverside users' passwords and TOTP secrets
+# (the reset seed reads them on every deploy, so an authenticator keeps
+# working) and KEEP_QC_TOKEN, which lets the nightly QC run seed qc-
+# groups (/api/qc/*). Printed once; Fly can't show them again.
+hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+b32() { head -c 20 /dev/urandom | base32 | tr -d '=\n'; }
+gen=()
+for role in ADMIN STAFF VIEWER; do
+  if ! grep -qx "KEEP_RIVERSIDE_${role}_PASSWORD" <<<"$have"; then
+    pw=$(hex 24)
+    gen+=("KEEP_RIVERSIDE_${role}_PASSWORD=$pw")
+    echo "riverside ${role,,}@keep-together.example password: $pw"
+  fi
+  if ! grep -qx "KEEP_RIVERSIDE_${role}_TOTP" <<<"$have"; then
+    totp=$(b32)
+    gen+=("KEEP_RIVERSIDE_${role}_TOTP=$totp")
+    echo "riverside ${role,,}@keep-together.example TOTP secret: $totp"
+    echo "  otpauth://totp/keep-together:${role,,}%40keep-together.example?secret=$totp&issuer=keep-together"
+  fi
+done
+qc_token=
+if ! grep -qx KEEP_QC_TOKEN <<<"$have"; then
+  qc_token=$(hex 32)
+  gen+=("KEEP_QC_TOKEN=$qc_token")
+fi
+if ((${#gen[@]})); then
+  printf '+ fly secrets set -a %s --stage <%d generated values>\n' "$APP" "${#gen[@]}" >&2
+  fly secrets set -a "$APP" --stage "${gen[@]}"
+else
+  echo "all set"
+fi
+if [[ -n $qc_token ]]; then
+  echo "The nightly QC runner needs the same token (qc/README.md, Staging):"
+  echo "  printf %s $qc_token | gh secret set KEEP_QC_TOKEN"
 fi
 
 say "Certificate for $HOST"
