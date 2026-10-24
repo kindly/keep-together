@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use api::{AppState, app, schema};
-use axum::Router;
 use store::{Store, StoreConfig};
 
 #[tokio::main]
@@ -31,7 +30,7 @@ async fn main() {
         .await
         .expect("bind");
     eprintln!("keep-api on http://127.0.0.1:{port} (data {dir}, dev auth {dev_auth})");
-    axum::serve(listener, app(state, Router::new()))
+    axum::serve(listener, app(state, api::routes::router()))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

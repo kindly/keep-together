@@ -10,6 +10,8 @@ publish = false
 [workspace.dependencies]
 store = { path = "crates/store" }
 contracts = { path = "crates/contracts" }
+contacts = { path = "crates/contacts" }
+api = { path = "crates/api" }
 axum = "0.8.9"
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "signal"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "limits"] }
@@ -18,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 ts-rs = { version = "12", features = ["serde-json-impl"] }
+unicode-normalization = "0.1"
 uuid = { version = "1.29", features = ["v4", "v7"] }
 
 tower = { version = "0.5", features = ["util"] }
