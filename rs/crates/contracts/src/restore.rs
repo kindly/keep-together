@@ -108,7 +108,7 @@ pub fn restore(
     let Row {
         entity_id,
         revision,
-    } = self::revision(ctx.tx, revision_id)?.ok_or(ContractError::NotFound)?;
+    } = self::revision(ctx.tx.read(), revision_id)?.ok_or(ContractError::NotFound)?;
     let contract = registry
         .get(&revision.contract)
         .ok_or_else(|| ContractError::UnknownContract(revision.contract.clone()))?;
@@ -173,7 +173,7 @@ pub fn restore_entity_to(
 ) -> Result<Vec<String>, ContractError> {
     let exclude: HashSet<&str> = exclude.iter().copied().collect();
     let latest: Vec<(String, i64)> = {
-        let mut stmt = ctx.tx.prepare(
+        let mut stmt = ctx.tx.read().prepare(
             "SELECT contract, max(id) FROM revisions WHERE entity = ?1 AND entity_id = ?2
              GROUP BY contract",
         )?;
@@ -198,6 +198,7 @@ pub fn restore_entity_to(
         }
         let target: Option<i64> = ctx
             .tx
+            .read()
             .query_row(
                 "SELECT max(id) FROM revisions
                  WHERE entity = ?1 AND entity_id = ?2 AND contract = ?3 AND at <= ?4",
@@ -210,7 +211,10 @@ pub fn restore_entity_to(
         if target == latest_id {
             continue;
         }
-        let (Some(t), Some(l)) = (revision(ctx.tx, target)?, revision(ctx.tx, latest_id)?) else {
+        let (Some(t), Some(l)) = (
+            revision(ctx.tx.read(), target)?,
+            revision(ctx.tx.read(), latest_id)?,
+        ) else {
             continue;
         };
         if state(&t.revision) != state(&l.revision) {

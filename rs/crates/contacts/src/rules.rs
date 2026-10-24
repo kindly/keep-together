@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use contracts::{ContractError, Problem, mint_ids};
+use contracts::{ContractError, Problem, is_client_id, mint_ids};
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
@@ -186,12 +186,29 @@ macro_rules! primary {
 }
 primary!(EmailRow, PhoneRow, AddressRow);
 
-/// Mint missing keys, require unique keys, exactly one primary (none if
-/// the list is empty).
+/// The most rows of one kind (emails, phones, addresses) a contact holds
+/// (L6): enough for any real contact, small enough that a contact stays
+/// one cheap read.
+pub const MAX_CHILD_ROWS: usize = 50;
+
+/// Mint missing keys, require unique well-formed keys, exactly one primary
+/// (none if the list is empty), at most [`MAX_CHILD_ROWS`].
 fn prepare_rows<T: Primary>(rows: &mut [T], field: &str) -> Result<(), ContractError> {
+    if rows.len() > MAX_CHILD_ROWS {
+        return Err(ContractError::invalid(
+            field,
+            format!("At most {MAX_CHILD_ROWS} entries"),
+        ));
+    }
     mint_ids(rows, |r| r.key());
     let mut keys = HashSet::new();
     for r in rows.iter_mut() {
+        if !r.key().as_deref().is_some_and(is_client_id) {
+            return Err(ContractError::invalid(
+                field,
+                "Row keys are 32 lower-case hex characters",
+            ));
+        }
         if !keys.insert(r.key().clone()) {
             return Err(ContractError::invalid(field, "Duplicate row key"));
         }

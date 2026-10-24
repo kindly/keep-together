@@ -6,14 +6,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use contracts::{ChildRow, Command, Contract, ContractError, reconcile};
+use contracts::{
+    ChildRow, Command, Contract, ContractError, OrgTx, ProjectionTx, WriteTx, reconcile,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
-use store::OrgTx;
 
 use crate::fields::{FieldRow, OptionRow, field_row, option_row};
 use crate::number::take_number;
-use crate::projection::rebuild_search;
+use crate::projection::{SEARCH_TABLE, rebuild_search};
 use crate::rules::{
     computed_names, fold, normalise_email, normalise_phone, prepare_addresses, prepare_details,
     prepare_fields, prepare_methods, sort_values,
@@ -77,6 +78,7 @@ impl Contract for ContactDetails {
     const VERSION: u32 = 1;
     const ENTITY: &'static str = "contacts";
     const COUNTER: &'static str = "details_version";
+    const PROJECTIONS: &'static [&'static str] = &[SEARCH_TABLE];
     type Payload = Details;
     type State = Details;
 
@@ -85,7 +87,7 @@ impl Contract for ContactDetails {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Details, ContractError> {
-        Ok(load_details(tx, id)?)
+        Ok(load_details(tx.read(), id)?)
     }
 
     fn apply(
@@ -111,7 +113,7 @@ impl Contract for ContactDetails {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&Details>,
         n: &Details,
@@ -182,7 +184,7 @@ impl Contract for ContactDetails {
         Ok(())
     }
 
-    fn project(&self, tx: &OrgTx, id: &str) -> Result<(), ContractError> {
+    fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
         Ok(rebuild_search(tx, id)?)
     }
 }
@@ -294,6 +296,7 @@ impl Contract for ContactMethods {
     const VERSION: u32 = 1;
     const ENTITY: &'static str = "contacts";
     const COUNTER: &'static str = "methods_version";
+    const PROJECTIONS: &'static [&'static str] = &[SEARCH_TABLE];
     type Payload = Methods;
     type State = Methods;
 
@@ -302,7 +305,7 @@ impl Contract for ContactMethods {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Methods, ContractError> {
-        Ok(load_methods(tx, id)?)
+        Ok(load_methods(tx.read(), id)?)
     }
 
     fn apply(
@@ -317,7 +320,7 @@ impl Contract for ContactMethods {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&Methods>,
         next: &Methods,
@@ -381,7 +384,7 @@ impl Contract for ContactMethods {
         Ok(())
     }
 
-    fn project(&self, tx: &OrgTx, id: &str) -> Result<(), ContractError> {
+    fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
         Ok(rebuild_search(tx, id)?)
     }
 }
@@ -414,6 +417,7 @@ impl Contract for ContactAddresses {
     const VERSION: u32 = 1;
     const ENTITY: &'static str = "contacts";
     const COUNTER: &'static str = "addresses_version";
+    const PROJECTIONS: &'static [&'static str] = &[SEARCH_TABLE];
     type Payload = Addresses;
     type State = Addresses;
 
@@ -422,7 +426,7 @@ impl Contract for ContactAddresses {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Addresses, ContractError> {
-        Ok(load_addresses(tx, id)?)
+        Ok(load_addresses(tx.read(), id)?)
     }
 
     fn apply(
@@ -437,7 +441,7 @@ impl Contract for ContactAddresses {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&Addresses>,
         next: &Addresses,
@@ -489,7 +493,7 @@ impl Contract for ContactAddresses {
         Ok(())
     }
 
-    fn project(&self, tx: &OrgTx, id: &str) -> Result<(), ContractError> {
+    fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
         Ok(rebuild_search(tx, id)?)
     }
 }
@@ -505,13 +509,13 @@ impl Contract for ContactArchive {
     type State = Archive;
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Archive, ContractError> {
-        Ok(
-            tx.query_row("SELECT archived FROM contacts WHERE id = ?1", [id], |r| {
+        Ok(tx
+            .read()
+            .query_row("SELECT archived FROM contacts WHERE id = ?1", [id], |r| {
                 Ok(Archive {
                     archived: r.get(0)?,
                 })
-            })?,
-        )
+            })?)
     }
 
     fn apply(
@@ -526,7 +530,7 @@ impl Contract for ContactArchive {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         _: Option<&Archive>,
         next: &Archive,
@@ -693,8 +697,8 @@ impl Contract for ContactFieldValues {
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<FieldState, ContractError> {
         Ok(FieldState {
-            values: load_field_values(tx, id)?,
-            kind: contact_kind(tx, id)?,
+            values: load_field_values(tx.read(), id)?,
+            kind: contact_kind(tx.read(), id)?,
             restoring: false,
         })
     }
@@ -715,7 +719,7 @@ impl Contract for ContactFieldValues {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&FieldState>,
         next: &FieldState,
@@ -771,7 +775,7 @@ impl Contract for ContactFieldValues {
         let mut out = Vec::new();
         let mut skipped = HashSet::new();
         for v in p.values.drain(..) {
-            let fits = match field_row(tx, &v.field_id)? {
+            let fits = match field_row(tx.read(), &v.field_id)? {
                 Some(f) => {
                     f.applies_to.contains(&kind)
                         || held

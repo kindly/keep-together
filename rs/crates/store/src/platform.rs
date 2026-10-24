@@ -10,8 +10,12 @@ use rusqlite_migration::{M, Migrations};
 use crate::conn::{self, ReaderPool};
 use crate::{StoreError, TenantId};
 
-const MIGRATIONS: &[M<'static>] = &[M::up(
-    "CREATE TABLE tenants (
+/// How long a session lasts from sign-in (L2; auth replaces the store).
+pub const SESSION_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+const MIGRATIONS: &[M<'static>] = &[
+    M::up(
+        "CREATE TABLE tenants (
         id TEXT PRIMARY KEY,
         slug TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL
@@ -31,7 +35,19 @@ const MIGRATIONS: &[M<'static>] = &[M::up(
         user_id INTEGER NOT NULL REFERENCES users(id),
         created_at INTEGER NOT NULL
     ) STRICT;",
-)];
+    ),
+    // Hourly snapshots (`api::backup`): what each org's (and the
+    // 'platform' row's) last snapshots were taken at. No FK: the platform
+    // file has a row too. `api::backup` runs the same DDL.
+    M::up(
+        "CREATE TABLE IF NOT EXISTS snapshots (tenant_id TEXT PRIMARY KEY, last_revision INTEGER, at INTEGER NOT NULL, daily_revision INTEGER, daily_day TEXT, monthly_month TEXT) STRICT;",
+    ),
+];
+
+/// `platform.db`'s schema (copied first at boot when steps are pending).
+pub(crate) fn migrations() -> Migrations<'static> {
+    Migrations::from_slice(MIGRATIONS)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Role {
@@ -106,7 +122,7 @@ fn tenant_row(id: String, slug: String, name: String) -> rusqlite::Result<Tenant
 impl Platform {
     pub(crate) fn open(path: &Path, readers: usize) -> Result<Self, StoreError> {
         let mut writer = conn::open(path, true, false)?;
-        Migrations::from_slice(MIGRATIONS).to_latest(&mut writer)?;
+        migrations().to_latest(&mut writer)?;
         Ok(Self {
             writer: Mutex::new(writer),
             readers: ReaderPool::open(path, readers)?,
@@ -232,6 +248,16 @@ impl Platform {
         Ok(token)
     }
 
+    /// Forget expired sessions. Returns how many.
+    pub fn delete_expired_sessions(&self, now_ms: i64) -> Result<usize, StoreError> {
+        self.write(|tx| {
+            Ok(tx.execute(
+                "DELETE FROM sessions WHERE created_at <= ?1",
+                [now_ms - SESSION_TTL_MS],
+            )?)
+        })
+    }
+
     pub fn delete_session(&self, token: &str) -> Result<(), StoreError> {
         self.write(|tx| {
             tx.execute("DELETE FROM sessions WHERE token = ?1", [token])?;
@@ -239,12 +265,13 @@ impl Platform {
         })
     }
 
-    pub fn session(&self, token: &str) -> Result<Option<Session>, StoreError> {
+    /// The live session for `token`: unknown and expired read the same.
+    pub fn session(&self, token: &str, now_ms: i64) -> Result<Option<Session>, StoreError> {
         self.read(|c| {
             c.query_row(
                 "SELECT u.id, u.email FROM sessions s JOIN users u ON u.id = s.user_id
-                 WHERE s.token = ?1",
-                [token],
+                 WHERE s.token = ?1 AND s.created_at > ?2",
+                params![token, now_ms - SESSION_TTL_MS],
                 |r| {
                     Ok(Session {
                         user: UserId(r.get(0)?),

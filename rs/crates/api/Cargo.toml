@@ -10,6 +10,7 @@ store.workspace = true
 contracts.workspace = true
 contacts.workspace = true
 axum.workspace = true
+futures-util.workspace = true
 tokio.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
@@ -20,6 +21,7 @@ ts-rs.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 tower.workspace = true
 http-body-util.workspace = true

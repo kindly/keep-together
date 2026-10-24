@@ -239,9 +239,7 @@ async function localPool(opts) {
         }),
       ),
       timed('vite build', () =>
-        run(vite, ['build', '--outDir', 'dist-qc', '--emptyOutDir'], {
-          env: { ...process.env, VITE_BACKEND: 'rust' },
-        }),
+        run(vite, ['build', '--outDir', 'dist-qc', '--emptyOutDir']),
       ),
     ])
   }

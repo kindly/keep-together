@@ -10,12 +10,14 @@ use axum::extract::Path;
 use axum::http::{Request, StatusCode, header};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
-use contracts::{Command, Contract, ContractError, Exec, Executed, Source, execute};
+use contracts::{
+    Command, Contract, ContractError, Exec, Executed, OrgTx, Source, WriteTx, execute,
+};
 use http_body_util::BodyExt;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use store::{M, OrgTx, Role, Store, StoreConfig};
+use store::{M, Role, Store, StoreConfig};
 use tower::ServiceExt;
 
 const TOY_SCHEMA: &str = "CREATE TABLE toys (
@@ -40,11 +42,11 @@ impl Contract for Details {
     type State = Name;
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Name, ContractError> {
-        Ok(
-            tx.query_row("SELECT name FROM toys WHERE id = ?1", [id], |r| {
+        Ok(tx
+            .read()
+            .query_row("SELECT name FROM toys WHERE id = ?1", [id], |r| {
                 Ok(Name { name: r.get(0)? })
-            })?,
-        )
+            })?)
     }
 
     fn apply(&self, _: Option<&Name>, p: &Name, _: &Command) -> Result<Name, ContractError> {
@@ -56,7 +58,7 @@ impl Contract for Details {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&Name>,
         next: &Name,
@@ -162,6 +164,7 @@ fn world(dev_auth: bool) -> World {
             dir: tmp.path().to_path_buf(),
             org_migrations: store::Migrations::new(steps),
             readers: 2,
+            max_open: StoreConfig::DEFAULT_MAX_OPEN,
         })
         .unwrap(),
     );

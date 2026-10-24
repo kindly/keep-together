@@ -11,6 +11,7 @@ rusqlite_migration.workspace = true
 serde.workspace = true
 ts-rs.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
