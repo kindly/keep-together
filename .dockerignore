@@ -1,0 +1,14 @@
+# rs/Dockerfile builds from the repo root.
+.git
+node_modules
+dist
+dist-*
+rs/target
+rs/data
+qc-data
+qc-results
+qc-report
+test-results
+factory/out
+*.local
+.env

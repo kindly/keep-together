@@ -109,7 +109,8 @@ impl SnapshotConfig {
     /// From the environment; `None` when `KEEP_SNAPSHOT_BUCKET` is unset
     /// (dev, QC, tests: snapshots off).
     ///
-    /// `KEEP_SNAPSHOT_BUCKET`, `KEEP_SNAPSHOT_REGION` (default eu-west-2),
+    /// `KEEP_SNAPSHOT_BUCKET` (or `file:///some/dir`), `KEEP_SNAPSHOT_REGION`
+    /// (default eu-west-2),
     /// `KEEP_SNAPSHOT_ACCESS_KEY_ID`, `KEEP_SNAPSHOT_SECRET_ACCESS_KEY`,
     /// optionally `KEEP_SNAPSHOT_ENDPOINT` (any S3-compatible store), and
     /// `KEEP_ENV` (default `dev`). Not the `AWS_*` names: those belong to
@@ -119,6 +120,19 @@ impl SnapshotConfig {
         let Some(bucket) = var("KEEP_SNAPSHOT_BUCKET") else {
             return Ok(None);
         };
+        let env = var("KEEP_ENV").unwrap_or_else(|| "dev".into());
+        // A directory standing in for the bucket: local runs of the image's
+        // restore path, without S3.
+        if let Some(dir) = bucket.strip_prefix("file://") {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+            let local = object_store::local::LocalFileSystem::new_with_prefix(dir)
+                .map_err(|e| e.to_string())?;
+            return Ok(Some(Self {
+                data_dir: data_dir.to_path_buf(),
+                env,
+                bucket: Arc::new(local),
+            }));
+        }
         let need =
             |k: &str| var(k).ok_or_else(|| format!("{k} is required with KEEP_SNAPSHOT_BUCKET"));
         let mut s3 = AmazonS3Builder::new()
@@ -137,7 +151,7 @@ impl SnapshotConfig {
         let bucket = s3.build().map_err(|e| e.to_string())?;
         Ok(Some(Self {
             data_dir: data_dir.to_path_buf(),
-            env: var("KEEP_ENV").unwrap_or_else(|| "dev".into()),
+            env,
             bucket: Arc::new(bucket),
         }))
     }
@@ -465,6 +479,132 @@ fn copy_and_compress(path: &Path, tmp_dir: &Path, name: &str) -> Result<Vec<u8>,
     })();
     let _ = std::fs::remove_file(&tmp);
     out
+}
+
+// ---- restore -----------------------------------------------------------
+
+/// What [`restore_latest`] put back: `(name, key, bytes on disk)`.
+pub type Restored = Vec<(String, String, u64)>;
+
+/// Restore `platform.db` and every org it lists from the newest snapshot
+/// of each (any tier), into an empty `data_dir`. Orgs the bucket holds
+/// that the restored `platform.db` doesn't list (staging's reset leaves
+/// old ones behind until they expire) are not restored. Each file is
+/// checked with `integrity_check` before it's moved into place.
+pub async fn restore_latest(
+    bucket: &dyn ObjectStore,
+    env: &str,
+    data_dir: &Path,
+) -> Result<Restored, String> {
+    if platform_path(data_dir).exists() {
+        return Err(format!(
+            "{} exists: restore only into an empty data dir",
+            platform_path(data_dir).display()
+        ));
+    }
+    std::fs::create_dir_all(data_dir.join("orgs")).map_err(|e| e.to_string())?;
+    let latest = latest_keys(bucket, env).await?;
+    let platform_key = latest
+        .get(PLATFORM)
+        .ok_or_else(|| format!("no platform snapshot for env {env:?}"))?;
+    let mut out = vec![];
+    let size = fetch_into(bucket, platform_key, &platform_path(data_dir)).await?;
+    out.push((PLATFORM.to_owned(), platform_key.to_string(), size));
+    let platform = platform_path(data_dir);
+    let tenants: Vec<String> = off(move || {
+        let conn = open_read_only(&platform)?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM tenants ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([], |r| r.get(0))
+            .and_then(|rows| rows.collect())
+            .map_err(|e| e.to_string())
+    })
+    .await?;
+    for id in tenants {
+        if !is_tenant_id(&id) {
+            return Err(format!("platform.db lists a malformed tenant id {id:?}"));
+        }
+        let key = latest
+            .get(id.as_str())
+            .ok_or_else(|| format!("no snapshot of org {id}"))?;
+        let size = fetch_into(bucket, key, &data_dir.join("orgs").join(format!("{id}.db"))).await?;
+        out.push((id, key.to_string(), size));
+    }
+    Ok(out)
+}
+
+/// The newest key per file name across the three tiers. Stamps sort as
+/// strings (`YYYY-MM-DDTHHZ`), and the same hour in two tiers is the
+/// same copy.
+async fn latest_keys(
+    bucket: &dyn ObjectStore,
+    env: &str,
+) -> Result<std::collections::HashMap<String, ObjectPath>, String> {
+    use futures_util::TryStreamExt;
+    let mut latest: std::collections::HashMap<String, (String, ObjectPath)> = Default::default();
+    for tier in [Tier::Hourly, Tier::Daily, Tier::Monthly] {
+        let prefix = ObjectPath::from(format!("{}/{env}", tier.as_str()));
+        let metas: Vec<_> = bucket
+            .list(Some(&prefix))
+            .try_collect()
+            .await
+            .map_err(|e| format!("list {prefix}: {e}"))?;
+        for meta in metas {
+            let parts: Vec<_> = meta.location.parts().collect();
+            let [_, _, name, file] = parts.as_slice() else {
+                continue;
+            };
+            let Some(stamp) = file.as_ref().strip_suffix(".db.zst") else {
+                continue;
+            };
+            let entry = latest.entry(name.as_ref().to_owned());
+            let newer = |(s, _): &(String, ObjectPath)| stamp > s.as_str();
+            match entry {
+                std::collections::hash_map::Entry::Occupied(mut o) => {
+                    if newer(o.get()) {
+                        o.insert((stamp.to_owned(), meta.location.clone()));
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert((stamp.to_owned(), meta.location.clone()));
+                }
+            }
+        }
+    }
+    Ok(latest.into_iter().map(|(n, (_, k))| (n, k)).collect())
+}
+
+/// Download, decompress to `<target>.restoring`, `integrity_check`, then
+/// rename into place. Returns the restored size.
+async fn fetch_into(
+    bucket: &dyn ObjectStore,
+    key: &ObjectPath,
+    target: &Path,
+) -> Result<u64, String> {
+    let bytes = bucket
+        .get(key)
+        .await
+        .map_err(|e| format!("get {key}: {e}"))?
+        .bytes()
+        .await
+        .map_err(|e| format!("read {key}: {e}"))?;
+    let target = target.to_path_buf();
+    off(move || {
+        let partial = target.with_extension("db.restoring");
+        let raw = zstd::decode_all(&bytes[..]).map_err(|e| e.to_string())?;
+        std::fs::write(&partial, &raw).map_err(|e| e.to_string())?;
+        let check: String = open_read_only(&partial)?
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if check != "ok" {
+            let _ = std::fs::remove_file(&partial);
+            return Err(format!("{}: integrity_check: {check}", target.display()));
+        }
+        std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
+        Ok(raw.len() as u64)
+    })
+    .await
 }
 
 // ---- health ------------------------------------------------------------

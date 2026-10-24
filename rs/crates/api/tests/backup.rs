@@ -267,3 +267,76 @@ async fn health_reports_the_age_of_the_last_platform_snapshot() {
     let age = h.snapshot_age_seconds.unwrap();
     assert!((0..5).contains(&age), "{age}");
 }
+
+#[tokio::test]
+async fn restore_puts_back_the_newest_copy_of_every_listed_org() {
+    let w = world();
+    w.job.run_once(NOON).await.unwrap();
+    add_contacts(&w.store, &w.a, "Later", 1);
+    let later = datetime!(2026-10-24 15:00 UTC);
+    w.job.run_once(later).await.unwrap();
+    // An org the bucket holds but platform.db doesn't list (a staging
+    // reset's leftover) stays out.
+    let ghost = "fedcba9876543210fedcba9876543210";
+    let copy = w
+        .bucket
+        .get(&key(Tier::Hourly, "test", w.b.id.as_str(), NOON))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    w.bucket
+        .put(&key(Tier::Monthly, "test", ghost, NOON), copy.into())
+        .await
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let restored = api::backup::restore_latest(w.bucket.as_ref(), "test", target.path())
+        .await
+        .unwrap();
+    let names: Vec<_> = restored
+        .iter()
+        .map(|(n, k, _)| (n.as_str(), k.as_str()))
+        .collect();
+    let (a, b) = (w.a.id.as_str(), w.b.id.as_str());
+    let (first, second) = if a < b { (a, b) } else { (b, a) };
+    let key_of = |name: &str| {
+        let at = if name == "platform" || name == a {
+            later
+        } else {
+            NOON
+        };
+        key(Tier::Hourly, "test", name, at).to_string()
+    };
+    assert_eq!(
+        names,
+        [
+            ("platform", key_of("platform").as_str()),
+            (first, key_of(first).as_str()),
+            (second, key_of(second).as_str()),
+        ]
+    );
+
+    // The restored dir opens as a store, with each org's rows its own.
+    let store = open(target.path());
+    let last_names = |slug: &str| {
+        let t = store.platform().tenant_by_slug(slug).unwrap().unwrap();
+        store
+            .org(&t.id)
+            .unwrap()
+            .read(|r| {
+                let mut stmt = r.prepare("SELECT DISTINCT last_name FROM contacts ORDER BY 1")?;
+                stmt.query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    };
+    assert_eq!(last_names("alpha"), ["Alphason", "Later"]);
+    assert_eq!(last_names("bravo"), ["Bravoson"]);
+    assert!(!target.path().join(format!("orgs/{ghost}.db")).exists());
+
+    // Never over existing data.
+    let again = api::backup::restore_latest(w.bucket.as_ref(), "test", target.path()).await;
+    assert!(again.unwrap_err().contains("empty data dir"));
+}

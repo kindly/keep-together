@@ -1,0 +1,50 @@
+# keep-staging: one machine, one volume, London. Created by
+# scripts/fly/staging.sh (the human runs it); deployed by
+# .github/workflows/deploy.yml on every push to main. Reset to the
+# riverside seed on each deploy (KEEP_RESET_SEED, scripts/ops/entrypoint.sh).
+# Secrets (fly secrets list): LITESTREAM_BUCKET, LITESTREAM_ACCESS_KEY_ID,
+# LITESTREAM_SECRET_ACCESS_KEY, KEEP_SNAPSHOT_BUCKET,
+# KEEP_SNAPSHOT_ACCESS_KEY_ID, KEEP_SNAPSHOT_SECRET_ACCESS_KEY, SENTRY_DSN.
+
+app = "keep-staging"
+primary_region = "lhr"
+# Litestream is PID 1: it forwards the signal to the api, waits for it to
+# exit, then flushes the last WAL frames to S3 before exiting itself.
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "rs/Dockerfile"
+
+[env]
+  KEEP_ENV = "staging"
+  KEEP_RESET_SEED = "riverside"
+  KEEP_SNAPSHOT_REGION = "eu-west-2"
+
+[mounts]
+  source = "keep_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always on: Litestream and the hourly snapshots run in this machine.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "5s"
+    # Room for an empty-volume restore before the first check counts.
+    grace_period = "120s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[metrics]
+  port = 9090
+  path = "/metrics"
