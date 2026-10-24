@@ -25,7 +25,8 @@ export async function recorder(
   user: QcUser,
   tenantId: string,
 ): Promise<Recorder> {
-  const client = new ConvexHttpClient(inst.url)
+  // Pending B2 (qc/pending.ts): Convex's URL is gone from the pool.
+  const client = new ConvexHttpClient(inst.api)
   const { tokens } = await client.action(api.auth.signIn, {
     provider: 'password',
     params: { email: user.email, password: user.password, flow: 'signIn' },

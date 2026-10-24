@@ -1,16 +1,8 @@
-import {
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import {
   HeldResultError,
-  LEGS,
   OverBudgetError,
   RECORD,
   REPEATS,
@@ -32,7 +24,8 @@ import type { FlowStep } from './timing'
 // a failed flow is traced (one extra sample, outside the judged set); the
 // passing ones prove nothing else is. The held-result guard is proved
 // both ways: the generous flow, a real round trip, passes it, and a
-// sample the page answers alone fails it.
+// sample the page answers alone fails it. A checkbox click is timed from
+// its pointerdown.
 
 function openContacts(page: Page, slug: string): FlowStep<string> {
   // The header's link: the group home also has a "Find a contact" card.
@@ -74,6 +67,42 @@ function localClick(page: Page): FlowStep {
     action: () => page.mouse.click(5, 5),
     until: () => (window as unknown as Clicked).__qcClicked === true,
     server: true,
+  }
+}
+
+interface Checked {
+  __qcChecked?: boolean
+}
+
+/**
+ * A checkbox whose `click` handler busies the page for `busyMs`, as a
+ * React re-render on onChange would. Its `input` event comes after that,
+ * so a sample timed from pointerdown includes it and one timed from
+ * `input` doesn't.
+ */
+function busyCheckbox(page: Page, busyMs: number): FlowStep<number> {
+  return {
+    before: async () => {
+      await page.evaluate((ms) => {
+        const w = window as unknown as Checked
+        w.__qcChecked = false
+        document.getElementById('qc-box')?.remove()
+        const box = document.createElement('input')
+        box.type = 'checkbox'
+        box.id = 'qc-box'
+        box.style.cssText = 'position:fixed;top:0;left:0;z-index:9999'
+        box.addEventListener('click', () => {
+          const end = performance.now() + ms
+          while (performance.now() < end) {
+            // busy, like a synchronous re-render
+          }
+          w.__qcChecked = true
+        })
+        document.body.append(box)
+      }, busyMs)
+    },
+    action: () => page.locator('#qc-box').click(),
+    until: () => (window as unknown as Checked).__qcChecked === true,
   }
 }
 
@@ -148,14 +177,19 @@ test.describe('harness', () => {
     const judged = !RECORD && rttMs <= RTT_CEILING_MS
     expect(record.pass).toBe(judged ? true : null)
     expect(record.trace).toBeUndefined()
-    // Every sample got its answer from the server (the guard passed).
-    if (LEGS) expect(record.detail.every((d) => d.answered)).toBe(true)
+    // Every sample got its answer from the server (the guard passed), and
+    // each request carries its server time.
+    expect(record.detail.every((d) => d.answered)).toBe(true)
+    const calls = record.detail.flatMap((d) => d.calls)
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.every((c) => c.endMs === null || c.serverMs !== null)).toBe(
+      true,
+    )
     // Real samples: a client navigation plus a query takes milliseconds.
     expect(Math.min(...record.samplesMs)).toBeGreaterThan(1)
   })
 
   test('a held result fails the guard', async ({ page, users }) => {
-    test.skip(!LEGS, 'no WebSocket tap: the guard is off')
     await page.goto(`/t/${users.a.slug}`)
     await expect(
       runFlow(
@@ -172,56 +206,25 @@ test.describe('harness', () => {
     ).rejects.toThrow(HeldResultError)
   })
 
-  test("a hold's wait is outside the timed window", async ({ page, users }) => {
-    // A hold on an instance no other worker uses, by a live process that
-    // isn't this one (the runner). It's taken at the end of `before`, so
-    // the sample meets it, and released HOLD_MS later.
-    const HOLD_MS = 1000
-    const instance = `harness-w${test.info().parallelIndex}`
-    const dir = path.join(runDir(), 'quiet')
-    mkdirSync(dir, { recursive: true })
-    const hold = path.join(dir, `hold-${instance}.json`)
-    const step = openContacts(page, users.a.slug)
-    let timer: ReturnType<typeof setTimeout> | undefined
-    try {
-      const record = await runFlow(
-        {
-          page,
-          rttMs: 0,
-          worker: test.info().parallelIndex,
-          instance,
-          where: test.info().titlePath.join(' › '),
-          repeats: 1,
-          warmUp: false,
-        },
-        'harness.generous',
-        {
-          ...step,
-          before: async () => {
-            await step.before!()
-            writeFileSync(
-              hold,
-              JSON.stringify({
-                pid: process.ppid,
-                who: 'harness',
-                at: Date.now(),
-              }),
-            )
-            timer = setTimeout(() => rmSync(hold, { force: true }), HOLD_MS)
-          },
-        },
-      )
-      const [d] = record.detail
-      // Most of the hold is waited out (the settle after `before` takes
-      // a few frames of it)...
-      expect(d.quietWaitMs).toBeGreaterThanOrEqual(HOLD_MS / 2)
-      // ...and none of it is in the sample: the click to the list.
-      expect(record.samplesMs[0]).toBeLessThan(HOLD_MS / 2)
-      expect(d.endMs).toBe(record.samplesMs[0])
-    } finally {
-      clearTimeout(timer)
-      rmSync(hold, { force: true })
-    }
+  // A click is timed from its pointerdown, not from the checkbox's
+  // `input` event, which only fires after the click handler's work.
+  test('a checkbox click is timed from pointerdown', async ({
+    page,
+    users,
+  }) => {
+    await page.goto(`/t/${users.a.slug}`)
+    const record = await runFlow(
+      {
+        page,
+        rttMs: 0,
+        worker: test.info().parallelIndex,
+        where: test.info().titlePath.join(' › '),
+        warmUp: false,
+      },
+      'harness.generous',
+      busyCheckbox(page, 80),
+    )
+    expect(Math.min(...record.samplesMs)).toBeGreaterThanOrEqual(80)
   })
 
   test('a failing traced sample keeps the verdict', async ({

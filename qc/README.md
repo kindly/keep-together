@@ -1,35 +1,38 @@
 # QC suite
 
-Playwright drives the production build of the SPA (`vite build` +
-`vite preview`, headless Chromium, 1280×800) against live Convex dev
-deployments, times every user interaction from the input event to the
-result on screen, and fails the run when a flow is over budget, a route
-has no flow, or two tenants can see each other's data.
+Playwright drives the production build of the SPA (headless Chromium,
+1280×800) against local release builds of the Rust api, times every user
+interaction from the input event to the result on screen, and fails the
+run when a flow is over budget, a server call is over 100 ms, a ported
+route has no flow, or two tenants can see each other's data.
 
 The design and the reasons behind it: `factory/plans/qc-suite.sv`, ADR
-0018 and `docs/spikes/07-qc-harness.md`. `convex-test` under `pnpm check`
-stays the correctness layer; QC is never part of `pnpm check`.
+0018 and `docs/spikes/07-qc-harness.md`; the move to Rust:
+`factory/plans/migration-rust.sv` (F3) and `docs/spikes/10-rust-sqlite.md`.
+`cargo test` and `pnpm check` stay the correctness layer; QC is never part
+of `pnpm check`.
 
 ## Running it
 
 ```bash
-pnpm qc                                  # full run: push, build, test, judge
+sudo scripts/qc-netem.sh on 3            # the human, once per boot: the hosted RTT on the api ports
+pnpm qc                                  # full run: build, start the pool, test, judge
 pnpm qc qc/flows/contacts.spec.ts        # one spec file (a filtered run)
-QC_REPEATS=1 pnpm qc                     # fast functional pass, 1 timed sample per flow
+QC_REPEATS=1 QC_NO_NETEM=1 pnpm qc       # fast functional pass at loopback speed
 QC_MODE=record pnpm qc                   # measure and write history, assert nothing
 QC_NO_WAIT=1 pnpm qc                     # fail at once if another run holds the lock
-QC_LEGS=0 pnpm qc                        # no WebSocket tap: samples carry no legs (A/B its cost)
-pnpm qc:instances --reset                # prepare the pool and empty every instance
+pnpm qc --target staging                 # the nightly: against keep-staging, no pool, no netem
+pnpm qc:pool                             # build and start the pool, and hold it (Ctrl-C stops it)
+pnpm qc:rtt --write                      # re-measure the hosted RTT into qc/rtt.json
 ```
 
-- **Run it outside the Claude sandbox.** The sandbox's proxy blocks the
-  WebSockets the SPA needs, slows the network enough to skew timings, and
-  `pnpm qc` writes to the main checkout (lock, env files).
+- **Run it outside the Claude sandbox.** It binds the pool's ports and
+  writes the lock in the main checkout.
 - **The lock.** `pnpm qc` takes `.qc.lock` in the main checkout for the
-  whole run, from push to the last test. A run from another worktree
-  waits its turn; `QC_NO_WAIT=1` (or `--no-wait` to
-  `scripts/qc-instances.mjs`) fails fast instead. A lock whose pid is dead,
-  or that is more than two hours old, is taken over.
+  whole run. The pool's ports are the machine's, so a run from another
+  worktree waits its turn; `QC_NO_WAIT=1` (or `--no-wait`) fails fast
+  instead. A lock whose pid is dead, or that is more than two hours old,
+  is taken over.
 - **No `--reporter`.** `qc/reporter.ts` carries the run's gates, and a
   command-line `--reporter` would replace it, so `playwright.config.ts`
   refuses one.
@@ -37,45 +40,60 @@ pnpm qc:instances --reset                # prepare the pool and empty every inst
 
 ## The pool
 
-`pnpm qc` runs `scripts/qc-instances.mjs`, which:
+`pnpm qc` runs `scripts/qc.mjs`, which:
 
-1. ensures `dev/qc-1..3` exist (`QC_INSTANCES` changes the count), each
-   with Convex Auth keys and a deploy key in `.env.qc-<i>.local` in the
-   main checkout;
-2. pushes this checkout's code to every instance in parallel with
-   `convex deploy`, never `convex dev`, so `.env.local` is left alone;
-3. builds `dist-qc/qc-<i>` against each instance's URL and writes
-   `qc/.instances.json`;
-4. runs `playwright test` and holds the lock until it exits.
+1. builds the release `api` (`cargo build --release -p api` in `rs/`) and
+   the SPA into `dist-qc/`, in parallel (`--no-build` skips it);
+2. starts `QC_INSTANCES` (default 3) apis, instance `i` on `KEEP_PORT`
+   8801+i with an empty data dir `qc-data/<i>`, `KEEP_DEV_AUTH=1` and
+   `KEEP_QC_SEED=1`, on 127.0.0.1. Every run starts from empty files;
+3. checks each api's round trip against `qc/rtt.json` (see Netem);
+4. writes `qc/.instances.json`, and Playwright's webServer starts one
+   `qc/serve.mjs` per instance on 4301+i: the build, with `/api` proxied
+   to that instance's api over kept-alive connections, as one hosted
+   origin serves both. The change stream gets a connection of its own;
+5. runs `playwright test` and stops the apis when it exits.
 
 Workers map onto instances by index, about two per instance. Each worker
-seeds fresh tenants (`r<run>w<n>-a|b`) through `platform/qcSeed:fixture`,
-which refuses to run unless the deployment has `QC_SEED_ENABLED=1` (set
-only on the pool). Nothing is wiped between runs, so data accumulates;
-`--reset` replaces every instance's data with an empty snapshot when it
-gets in the way. The human's own dev deployment is never a pool member.
+seeds fresh tenants (`r<run>w<n>-a|b`) through `POST /api/dev/qc-seed`,
+which the api refuses unless it runs with dev auth and `KEEP_QC_SEED=1`.
+Every tenant is its own SQLite file, so one worker's bulk write (the
+paged list's crowd, `POST /api/dev/qc-crowd`) holds up no other worker's
+samples: the Convex era's quiet holds are gone.
 
-### Quiet holds
+### Netem
 
-Workers share instances, and a deployment commits one transaction at a
-time. A spec that writes in bulk mid-run (the paged list's crowd, 100
-contacts a commit) makes every sample another worker commits meanwhile
-wait behind it: the field flows paid ~70 ms on their commit → response
-leg that way, and blame could only call it unclear. So a bulk write
-goes inside `holdQuiet(instance.name, who, fn)` (`qc/quiet.ts`):
+QC times the app at the round trip a user has to the hosted app: the
+median TCP connect from this machine to `keep-staging`, in
+`qc/rtt.json` (30 ms, the Convex era's RTT to Dublin, until staging is
+up; then `pnpm qc:rtt --write`). `scripts/qc-netem.sh on N` adds half of
+it each way on loopback, on the api ports only, so serve.mjs, Chromium
+and Playwright aren't delayed. It needs root, so the human runs it; it
+lasts until `off` or a reboot. An assert run fails if the apis answer
+faster than 80% of the target (netem off); `QC_NO_NETEM=1` runs anyway,
+and `rttMs` in history says what the samples saw. Record mode doesn't
+check.
 
-- each timed sample marks itself busy on its instance from the tap to
-  the result; before marking it waits, unmarked, for any other worker's
-  hold, so the wait is never in the sample (`quietWaitMs` records it);
-- the holder waits for samples already under way, then writes;
-- every wait gives up after 2 min with an error naming the holder or
-  the busy pids, and a mark whose process is gone (or older than 5 min)
-  is ignored and removed.
+### Staging
 
-Interference the suite makes is removed this way, never excused in
-blame. A new bulk seed during a run takes a hold too; seeds in worker
-setup don't, since no timed flow runs before them on that worker, but
-they do run while other workers time `auth.signIn`, so keep them small.
+`pnpm qc --target staging` is the nightly: one instance, the hosted app
+at `QC_STAGING_URL` (default `https://staging.keep-together.org.uk`), no
+build, no netem, no lock. Its history lines carry `env: staging`. Until
+A4 and B3, staging runs with dev auth and the QC seed (it resets on every
+deploy).
+
+### Pending ports
+
+Until a wave step ports its module, its specs and tests are skipped
+(`qc/pending.ts`, each with a `pendingPort` annotation naming the step)
+and its flows are marked `pendingPort` in `qc/budgets.ts`. Every run
+lists them by step in a banner, with the routes still being ported, and
+none of them fails the run. A step that ports a module deletes its lines
+from `qc/pending.ts`, re-points the specs at the Rust api, and drops the
+flows' marks. Helpers the Convex specs called are stubs in
+`qc/convex-pending.ts` until then; B3 deletes it. Two interim flows stand
+in for B1's meanwhile (`qc/flows/interim.spec.ts`: the seeded field's
+filter, the plain history panel's "Restore this").
 
 ## Reading the output
 
@@ -90,8 +108,11 @@ After the run the reporter prints one row per flow:
 | `budget` | the failing line: every sample must be under this |
 | `headroom` | budget − max; negative means over |
 | `over` | samples at or over the budget |
-| `RTT` | median WebSocket round trip of the workers, for context only |
+| `RTT` | median HTTP round trip from the workers to their api, for context only |
 | last column | `ok`, `OVER`, `KNOWN OVER` / `ok (known over)`, `not judged` (record mode or RTT ceiling), `self-test`; `· TARGET` when the flow is flagged against its target; `(re-measured: 1st max N)` after a spike |
+
+Then the server table: per route, the calls' `Server-Timing` total
+(p50, p95, max) against its limit.
 
 Banners to look for:
 
@@ -104,182 +125,58 @@ Banners to look for:
   the RTT ceiling aren't checked. See Budgets.
 - **`KNOWN OVER`**: every approved exception in `qc/budgets.ts`, listed on
   every run with its samples, so none is forgotten.
+- **`pendingPort`**: what isn't on the Rust backend yet, by step (see
+  Pending ports).
 - **`RTT over 150 ms`**: the link is too slow to judge latency. Behaviour
   is still checked, but latency asserts were skipped. Rerun on a better
   link.
 - **`SPIKES`**: flows that were over budget once and judged on their
-  re-measure, with both sample sets, and server functions that passed
-  with one slow call.
+  re-measure, with both sample sets, and routes that passed with one slow
+  call.
 - **`LINK`**: samples at or over budget while this machine's first hop
   (a `ping` to the default gateway every 100 ms, `qc/link.setup.ts`) was
-  at 50 ms or more instead of its usual 2–5 ms. On Wi-Fi the link to
-  the router freezes for 200–600 ms now and then, or crawls at 50–130 ms
-  for a few seconds, and every flow on every instance waits it out
-  (factory/out/builder-qcstall.md). They're judged as usual: the banner
-  says where the time went, it doesn't excuse it. A wired link avoids it.
-- **`EXCEPTED`**: the server exceptions banner: every approved exception
-  (`SERVER_EXCEPTIONS` in `qc/budgets.ts`), on every run, with its
-  ceiling and the calls it excepted this run (see Budgets).
+  at 50 ms or more instead of its usual 2–5 ms. Judged as usual: the
+  banner says where the time went, it doesn't excuse it. It matters for
+  the staging run; the local pool's traffic never leaves the machine.
 - **`QC RUN FAILED, whatever the test counts above say`**: a gate the
   tests can't see failed: the coverage gate, a flow in `qc/budgets.ts`
-  that nothing timed, or the worker-setup sign-in over budget.
+  that nothing timed, the server rule, or the worker-setup sign-in over
+  budget.
 
 Each flow also gets one line in `qc-results/history.jsonl` (gitignored,
 local): samples, p50/p95, budget (the failing line), `targetMs` and the
-`target` check (`overTarget`, `baselineMs`, `riseMs`, `flagged`; absent on
-lines from before targets and for kinds without one), pass, RTT, git sha and the run's
-Convex server execution times. Its `detail` (and `firstDetail` for a
-re-measure) has one entry per sample: wall-clock time, worker and
-instance, and the sample's legs from a tap on the page's WebSocket:
-when the Mutation went out, when the server committed it (server
-clock), when its MutationResponse and the Transition carrying it came
-back, plus long tasks, host CPU, load and the first hop's worst round
-trip (`linkMs`). A slow sample's legs say whose time it was: a late
-commit with the first hop slow is the link; a late response or
-Transition with a clean link is the deployment. The run directory
-(`qc-results/runs/<id>/`) also keeps every server call
-(`server-calls.jsonl`), each worker's RTT every 2 s from Node
-(`rtt-*.jsonl`, probing `platform/qcProbe:rtt`, which server timings
-leave out) and the first-hop pings (`link.json`).
+`target` check, pass, RTT, `env`, git sha and the run's server times by
+route. Its `detail` (and `firstDetail` for a re-measure) has one entry per
+sample: wall-clock time, worker and instance, and what the sample asked
+the api: each `/api` request the watched page (and, for propagation
+between tabs, the input page) made in the window, with its start and end
+from the input event, status and `Server-Timing` (`serverMs`, `dbMs`);
+the first change event the watched page got (`eventMs`); long tasks, host
+CPU, load and the first hop's worst round trip (`linkMs`). A slow sample's
+calls say whose time it was: server time, or the round trips around it.
+Lines from the Convex era keep their legs, blame and judgements; the trend
+report reads both.
 
-How the legs are taken, and their limits:
+How the calls are taken: a tap installed from each page's first script
+wraps `fetch` (the SPA looks it up on every call) and `EventSource`, and
+inside the timed window only notes times and strings; they're read after
+the result is on screen. A call's end is when its response headers
+arrived. A sample's calls are every request started after it was armed
+(after the settle, just before the action): on a checkbox, React's
+onChange runs on `click`, before the trusted `input` event t0 is taken
+from, so its request can start a moment before t0 (a negative
+`startMs`).
 
-- Inside the timed window the tap only keeps each frame's string and
-  time; it's parsed after the result is on screen. An incoming frame's
-  time is its `MessageEvent.timeStamp`, so the SPA's own handling of it
-  isn't counted in the leg. Measured cost of the tap: see
-  factory/out/builder-qcstall.md (the A/B, `QC_LEGS=0` against 1).
-- `commitMs` is on the server's clock, so it's only as good as the two
-  clocks agree (a few ms).
-- `linkMs` counts an unanswered echo from its send until the link
-  answered again. Without a gateway or a working `ping` the reporter
-  prints `link: first hop not watched`, so a missing LINK banner never
-  means a clean link.
-- On a checkbox click, t0 is the trusted `input` event fired inside the
-  click, a few ms after the press.
-
-### Blame
-
-Every sample at or over budget, in both sets of a re-measure, gets a
-breakdown and a verdict (`qc/blame.ts`). They go on its history line as
-`detail[i].blame`, in a `BLAME` list after the table, and as counts by
-verdict next to the failures (all slow samples, then each failed flow).
-The reporter's blame is context. What judges a sample is the same
-blame, computed live in the worker for the judged set (see Ours).
-
-```
-128 = page 18 · to Convex ≈21 · our function 30 (contacts/mutations:setAcquisition) · back ≈46 · Transition 13 · overhead beyond the probe 49 · probe 30 ms @ that moment (run median 33) · link 1 ms → convex/network (…)
-```
-
-| Leg | From the sample |
-|---|---|
-| page | input → send, plus the Transition (or last message) → result on screen; long tasks shown when any |
-| to Convex ≈ | send → commit, less our function (server clock) |
-| our function | the matching call in `server-calls.jsonl`: same function (`fns`, from the frame the page sent), same instance. A mutation's call must complete from 10 ms before to 100 ms after its commit timestamp, both on the server clock, so clock skew can't move it. When that window holds no call at all and the response itself came more than 100 ms after the commit (a concurrent long mutation on the instance held the log line past the window, and the response with it), the match looks for the late line between the end of the commit window and the response + 10 ms, marked `(late log line)`. Never before the commit window: a call logged before our commit can't be ours, and another worker's call must never excuse ours. Without a commit (a query change, an action), between the send and the response or screen message ± 10 ms on the page's clock. Zero or two candidates (two workers share an instance) is `unmatched`, never a guess; history from before `fns` is always unmatched. A query change takes the slowest query it adds |
-| back ≈ | commit → response (server clock) |
-| Transition | response → the Transition carrying the result |
-| Convex + network | send → screen message, less our function, when there's no commit to split it (a query change) |
-| overhead beyond the probe | send → screen message, less our function and the probe: what a no-op round trip at that moment wouldn't take. Derived, it overlaps the legs |
-| probe | the worker's `qcProbe:rtt` samples within 1 s of the sample, and its run median |
-| link | the first hop's worst round trip during the sample |
-| Convex slow on … | a spell: other instances with a call at or over 100 ms within 500 ms of the sample (rule 4) |
-| re-runs | the page's own subscribed queries (`subs`, tracked by the tap from the page's first script) that started after the commit (−10 ms) and completed by the Transition (+10 ms) on that instance: what the sample waited for besides our mutation. Their **critical path** is the union of their intervals (human, 2026-10-21): re-runs side by side count once (≈ the slowest), ones after another add up, and a chain of overlaps counts all it covers. Max and sum are kept too |
-| our share | page + our function + the re-runs' critical path. None for a save whose re-runs can't be told (no `subs`), so it never understates |
-
-The legs before `overhead` add up to the sample. `≈` legs rest on
-`commitMs`, so they're as good as the two clocks agree; a call's log time
-lands about 15 ms before its response reaches the page.
-
-The verdict is the first rule that holds. **Ours evidence comes first**
-(human, 2026-10-21): a link stall, a slow probe or a spell doesn't make
-our page, function or re-runs slower, so not ours only when every part
-of ours is known and normal.
-
-1. `unclear`: no legs (`QC_LEGS=0`, or the page sent nothing).
-2. `ours`: page time 40 ms or more.
-3. `ours`: our function 50 ms or more (half the server budget).
-4. `ours`: the re-runs' critical path 50 ms or more.
-5. `unclear`: our function unmatched, or a save's re-runs unknown (no
-   `subs`): ours isn't known to be normal.
-6. `link`: the first hop was at 50 ms or more (the LINK rule).
-7. `convex/network`: a probe at that moment at 1.5× the worker's run
-   median and 20 ms over it, or a spell: calls at or over 100 ms on two
-   other instances within 500 ms, of at least two different functions.
-   Seeds, bulk functions, `auth:*` and the sample's own functions don't
-   count, so a regression of our code, slow on every instance at once,
-   stays `ours`. The probe runs every 2 s and misses most stalls; the
-   other instances catch them.
-8. `unclear`: ours all normal, the excess in the legs between them. That
-   is no evidence it wasn't ours, and unclear counts as ours (see Ours).
-
-### Ours
-
-Human, 2026-10-21 (ADR 0018 amendment). The set re-measure stays as it
-is (see Budgets). Then, **inside the judged set**, every sample at or
-over budget is blamed live in the worker (`qc/live.ts`, `qc/judge.ts`):
-
-| Verdict | What happens |
-|---|---|
-| `ours` | fails, as today; no retry |
-| `unclear` | counts as ours: fails, no retry |
-| `link` or `convex/network` (positive evidence: a first-hop stall, the probe elevated, or a spell) | measured again, up to **2** more attempts. An attempt under budget passes it (`passed on retry`); an attempt that is over and ours fails it. Still over and not ours after the last: **our share** of that attempt must be under **budget − 50 ms**, the budget being the failing line, never the target (repeatable 150 → 100, infrequent 200 → 150, rare 250 → 200) to pass (`passed on our share`), else `failed: our share over` |
-
-- **Retry cap:** 10 extra attempts per run, across all workers (files in
-  `qc-results/runs/<id>/retries/`). Past it a sample is judged as today
-  (over budget fails) as `failed: retry cap`.
-- **Self-test and knownOver flows** are judged as before this rule (any
-  sample over budget in the judged set fails the flow; a knownOver flow
-  still doesn't fail the run) and never spend the run's retries.
-- **Live data.** The log collector and the link monitor append
-  `server-calls.live.jsonl` and `link.live.jsonl` in the run directory as
-  they go. Before blaming, the worker pings every instance with the probe
-  query and waits until each log stream has passed the sample's window
-  plus 500 ms (the spell window), at most 8 s; `convex logs` lags 30 ms at
-  the median, under 100 ms at p99. **An attempt whose streams didn't
-  catch up is `unclear`, so ours, whatever the partial data said**: calls
-  may be missing, so the function or its re-runs could be understated.
-  `[logs behind]` marks it. The first hop is read the same way: if the
-  monitor answered no ping sent after the sample within 2 s (it died, or
-  the gateway stopped answering ICMP), the link counts as not watched
-  for that sample, never as a stall; an echo never answered counts as
-  lost until the next reply, at most 1 s.
-- **Without the run's server data** (no log collector) a slow sample
-  fails exactly as before: the streams never catch up, so every attempt
-  is `unclear`, and even caught up its function would be unmatched,
-  which comes before any probe or link evidence. The only difference is
-  the wait: each such sample waits out the 8 s catch-up first.
-- **Reading it:** the table's last column adds `(1 passed on retry, …)`;
-  a `JUDGED` list after `BLAME` shows each judged sample's attempts,
-  verdicts and our share; and next to the failures,
-  `ours: N slow samples judged, R retried (E extra attempts): …`. A failed
-  flow's error names each failing sample's rule and attempts. History
-  carries `detail[i].judge` (rule, attempts) and `judged` (counts by rule)
-  per flow.
-- **Hidden-ours signals**, tracked per flow, not judged: the medians of the
-  characters (≈ bytes) the page received per sample, the requests it
-  sent, and the commit latency (send → commit less the probe), as
-  `signals` in history and three columns in the trend report. The trend
-  flags a flow that passed on our share in most of the runs that timed it
-  (at least two): `leans on our share`.
-
-`pnpm qc:report` renders that history to
-`qc-report/trend.html`: per-flow p50/p95 over the last 30 runs against the
-budget line. The Playwright HTML report is in `qc-report/playwright/`,
+`pnpm qc:report` renders that history to `qc-report/trend.html`: per-flow
+p50/p95 over the last 30 runs against the budget line, and per-route
+server times. The Playwright HTML report is in `qc-report/playwright/`,
 with a screenshot for each failed test and a trace for each flow that
 failed its budget.
 
 **Tracing is off for timed samples** (human, 2026-10-23). Playwright's
 tracing snapshots the whole DOM around every action, the timed click
-included, so its cost grows with the page: ~230 ms of snapshotting on one
-`contacts.loadMore` click, a median of 190 ms traced against 95 ms
-untraced (factory/out/builder-fields6-report.md). That is the harness's
-overhead, not the app's work: turning it off removes no app work, and it
-lowers the measured times of big pages. It also changed what some flows
-measured until the held-result rule below was added: without tracing a
-`before` finished inside one round trip, so a search cleared and typed
-again drew the answer the client still held (search p50 ~4 ms, with
-nothing from the server). Compare history across both changes with that
-in mind. A flow that fails its budget gets one more
+included, so its cost grows with the page (~230 ms of snapshotting on one
+`contacts.loadMore` click). A flow that fails its budget gets one more
 sample, untimed and unjudged, with tracing on, attached to the test as
 `trace` (worker-setup sign-ins write theirs to
 `test-results/.traces/<run>/`); if that sample throws, the flow keeps its
@@ -289,26 +186,16 @@ errors (`console`), not a trace; to trace one, rerun it with
 `pnpm qc --trace on <spec>` and ignore its times.
 
 **Held results.** Every timed sample must do the work it claims to
-measure. The Convex client keeps a removed query's result until the
-server acknowledges the removal, so after every `before` the harness
-waits until the server has answered every query-set change the page
-sent (`settle` in `qc/timing.ts`). A flow whose result comes from the
-server says `server: true`, and a sample in which the watched page got
-no query result from the server before `until` held fails with
-`HeldResultError` (each sample records it as `answered`). The app also
-holds results on purpose, and a flow that should time the round trip has
-to step around them in `before`: a route loader's 5 s prewarm
-(`released(page, ['module:fn'])` waits until the page no longer
-subscribes to it), the contact page's 2-minute keep-alive cache, and the
-rows the contacts list remembers per filter while mounted (reload the
-page). `settings.nav` and `contact.revisit` are local by design (the
-Fields tab reads what the contacts list subscribes to; a revisit draws
-from the cache) and don't say `server: true`.
-
-Server execution times come from `convex logs`: every uncached call of
-our own functions on a user path must take under 100 ms, bar one spike
-per function (see Budgets). `auth:*`, admin and cached calls are
-reported, not asserted.
+measure. TanStack Query keeps what it fetched until something invalidates
+it (the change stream, or this tab's own write), so a flow whose result
+comes from the server says `server: true`. After every `before` the
+harness waits until the page has no `/api` request in flight for three
+frames (`settle`); then, for a `server: true` sample, it drops every
+cached query no component observes (as Convex dropped an unsubscribed
+query; after the settle, since a query a `before` left loses its observer
+only in an effect), and a sample in which the watched page got no `/api`
+answer before `until` held fails with `HeldResultError`. `contact.revisit` times the cache on purpose and isn't
+`server: true`.
 
 ## Budgets
 
@@ -331,13 +218,12 @@ Each
 flow call takes one untimed warm-up, then `QC_REPEATS` (default 5) timed
 samples.
 
-**Spikes.** Convex dev deployments occasionally stall (server time jumps
-from ~15 ms to 120–160 ms), so a judged flow with any sample at or over
-budget is **re-measured once**, straight away in the same test, with K
-fresh samples. Only the re-measure is judged: the flow fails if it has a
-sample at or over budget that is ours (see Ours: a sample that isn't
-ours is retried, then judged on our share). This covers both kinds; the one-sample
-sign-in in the worker fixture re-measures by signing in again. Record
+**Spikes.** A machine occasionally stalls, so a judged flow with any
+sample at or over budget is **re-measured once**, straight away in the
+same test, with K fresh samples. Only the re-measure is judged: the flow
+fails if any sample in it is at or over budget too (ADR 0018's base rule;
+the Convex era's blame-and-retry went with Convex). The one-sample sign-in
+in the worker fixture re-measures by signing in again. Record
 mode and runs over the RTT ceiling judge nothing, so they never
 re-measure. Functional assertions never retry.
 
@@ -347,13 +233,15 @@ history line carries `remeasured: true` and `firstSamplesMs` (its
 `samplesMs` are the judged re-measure). The trend report rings those
 points. A flow that spikes run after run is slow, not unlucky: look at it.
 
-The server rule has the same shape: each asserted function may have
-**one** call at or over 100 ms in a run, as long as it has other calls
-and all of them are under. A second slow call fails, and so does a
-function whose only call was slow, since nothing re-measured it. The
-function's other calls in the run are its re-measure: the server can't
-replay a call, and a stall is one moment, so one slow call per function
-is what it looks like. Server spikes are in the same banner.
+The server rule has the same shape (qc/server.ts): every call a timed
+sample made must take under **100 ms on the server**, by its response's
+`Server-Timing: total`, grouped by route (`POST /t/:slug/contacts/:id/save`).
+Each route may have **one** call at or over 100 ms in a run, as long as it
+has other calls and all of them are under. A second slow call fails, and
+so does a route whose only call was slow. `/api/dev/*` (the sign-in stub,
+the QC seed) is reported, not asserted. An answered call without the
+header fails: the api sets it on every response. Bulk routes
+(`BULK_ROUTES` in qc/budgets.ts) have their own limit.
 
 | Kind | Applies to | Failing line | Target (tracked) |
 |---|---|---|---|
@@ -371,22 +259,13 @@ Two marks change how a flow is judged:
   must name the reason, who approved it and the date. Remove it with the
   fix. None is set today: the marks on `contact.addEmail` and `gift.save`
   were lifted with the two-tier budgets (human, 2026-10-23).
-- **A server exception** (`SERVER_EXCEPTIONS` in `qc/budgets.ts`): one
-  function's calls that log a given line are timed and recorded in a row
-  of their own (`<fn> [excepted]`), listed in the `EXCEPTED` banner on
-  every run, and exempt from the 100 ms rule. Each excepted call must
-  still be under the exception's `ceilingMs`: one at or over it fails the
-  run, with no spike allowance. The function's other calls are judged
-  as usual. The one there: a `contacts/queries:list` call that read a
-  grown pinned page in full, which the backend does whatever
-  `maximumRowsRead` says ("list re-run after a bulk write into an open
-  page: ~150 ms reading the grown range", human 2026-10-23;
-  `contacts.loadMore`'s insert into page 0 makes them), with a ceiling
-  of 250 ms (human 2026-10-23).
 - **`pending: true`**: no spec times the flow yet; a run that doesn't
   time it warns instead of failing. Drop it when the spec lands.
+- **`pendingPort: '<step>'`**: the flow's module isn't on the Rust backend
+  yet (see "Pending ports"); listed in the banner, never failing. The step
+  that ports it drops the mark.
 
-**Raising a budget, exempting a flow (a `knownOver` mark, a server exception, the bulk kind,
+**Raising a budget, exempting a flow (a `knownOver` mark, the bulk kind,
 or anything else that stops a sample failing) needs the human's explicit
 OK**, given in the task or on the plan page. A flow over budget means
 fixing the code, not the number. The only budgets set without a further
@@ -399,7 +278,8 @@ OK are the initial recorded ones (plan step 9b).
    OK (see Budgets).
 2. **Write the spec** in `qc/flows/<area>.spec.ts`, importing `test` and
    `expect` from `../fixtures` (they give `page` signed in as user A,
-   `users`, `flow`, `rttMs`). Selectors: `getByRole`, `getByLabel`,
+   `users`, `world`, `instance`, `flow`, `session`, `rttMs`; `apiGet` and
+   `qcCrowd` reach the api directly). Selectors: `getByRole`, `getByLabel`,
    `getByPlaceholder`; add a `data-testid` only where the UI is ambiguous.
 3. **Annotate the route** the test exercises, with its full path as in
    `src/routeTree.gen.ts`:
@@ -431,9 +311,11 @@ OK are the initial recorded ones (plan step 9b).
 
 ### The coverage gate
 
-Every route in `src/routeTree.gen.ts` must be covered by at least one test
-that **ran** (not skipped) with a matching `route` annotation, and every
-route annotation must name a real route. `qc/reporter.ts` checks this at
+Every route in `src/routeTree.gen.ts` that the Rust backend serves
+(`src/lib/data/ported.ts`) must be covered by at least one test that
+**ran** (not skipped) with a matching `route` annotation, and every route
+annotation must name a real route. Routes being ported are listed in the
+pendingPort banner instead. `qc/reporter.ts` checks this at
 the end of the run, from the annotations Playwright reports, including
 those pushed at runtime:
 
@@ -455,12 +337,7 @@ that shows tenant data adds its case there.
 
 ## The builder obligation
 
-A builder whose change touches `src/` or `convex/` runs `pnpm qc` before
+A builder whose change touches `src/` or `rs/` runs `pnpm qc` before
 reporting DONE and puts the summary table in the report. If it fails,
 fix the code, or report BLOCKED with the first failing lines and the log
 path; never raise a budget to get green.
-
-**Exception:** a branch that changes `convex/schema.ts` doesn't run
-`pnpm qc` until it's merged. The pool is shared, and that schema, plus the
-data the seed writes under it, would stop every main-based run from
-deploying. Say "pnpm qc pending merge" in the report instead.

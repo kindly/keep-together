@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-// Serves the VITE_BACKEND=rust build for the QC flows, proxying /api to the
-// Rust server over kept-alive connections.
+// Serves the SPA build for the QC flows (one per pool instance,
+// playwright.config.ts), proxying /api to that instance's api over
+// kept-alive connections, as the api itself does when hosted (one origin).
 //
-//   node qc-rs/serve.mjs [--dir dist-qc-rs] [--port 4300] [--api http://127.0.0.1:8787]
+//   node qc/serve.mjs [--dir dist-qc] [--port 4301] [--api http://127.0.0.1:8801]
 //
 // Why not `vite preview`: its proxy opens a new TCP connection to the API
-// for every request, so with netem's 30 ms RTT on :8787 each call pays a
-// handshake as well (~64 ms instead of ~33). A deployed SPA keeps its
-// connection to the API open (as Convex keeps its WebSocket), so this
-// proxy does too.
+// for every request, so under netem's RTT on the api's port each call pays
+// a handshake as well (~64 ms instead of ~33 at 30 ms). A browser keeps
+// its connection to the API open, so this proxy does too. The change
+// stream (`…/events`) is long-lived, so it gets a connection of its own
+// rather than holding one of the pool's.
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
@@ -17,9 +19,9 @@ const arg = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`)
   return i === -1 ? dflt : process.argv[i + 1]
 }
-const dir = path.resolve(arg('dir', 'dist-qc-rs'))
-const port = Number(arg('port', process.env.QC_RS_PORT ?? 4300))
-const api = new URL(arg('api', process.env.KEEP_API ?? 'http://127.0.0.1:8787'))
+const dir = path.resolve(arg('dir', 'dist-qc'))
+const port = Number(arg('port', 4301))
+const api = new URL(arg('api', 'http://127.0.0.1:8801'))
 const agent = new http.Agent({ keepAlive: true, maxSockets: 16 })
 
 const types = {
@@ -36,6 +38,7 @@ const types = {
 http
   .createServer((req, res) => {
     if (req.url.startsWith('/api/') || req.url === '/api') {
+      const stream = /\/events(\?|$)/.test(req.url)
       const up = http.request(
         {
           host: api.hostname,
@@ -43,7 +46,7 @@ http
           method: req.method,
           path: req.url,
           headers: { ...req.headers, host: api.host },
-          agent,
+          agent: stream ? false : agent,
         },
         (r) => {
           res.writeHead(r.statusCode, r.headers)
@@ -51,9 +54,13 @@ http
         },
       )
       up.on('error', (e) => {
+        if (res.headersSent) return res.destroy()
         res.writeHead(502)
         res.end(String(e))
       })
+      // A tab that closes its event stream closes the api's end too
+      // (never a pooled request: that would drop a kept-alive socket).
+      if (stream) res.on('close', () => up.destroy())
       req.pipe(up)
       return
     }
@@ -68,5 +75,5 @@ http
     createReadStream(file).pipe(res)
   })
   .listen(port, 'localhost', () =>
-    console.log(`qc-rs: ${dir} on http://localhost:${port}, /api → ${api}`),
+    console.log(`qc: ${dir} on http://localhost:${port}, /api → ${api}`),
   )

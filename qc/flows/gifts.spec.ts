@@ -1,5 +1,5 @@
 import { expect, test } from '../fixtures'
-import { holdQuiet } from '../quiet'
+import { holdQuiet } from '../convex-pending'
 import {
   CONTACT_ROUTE,
   createContact,

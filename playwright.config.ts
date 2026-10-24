@@ -3,16 +3,16 @@ import { availableParallelism } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, devices } from '@playwright/test'
 
-// QC suite (ADR 0018, factory/plans/qc-suite.sv): the production build,
-// served by `vite preview`, driven by headless Chromium against a live
-// Convex dev deployment. Runs outside the Claude sandbox (WebSockets don't
-// pass its proxy) and is never part of `pnpm check`.
+// QC suite (ADR 0018, factory/plans/qc-suite.sv; migration-rust F3): the
+// production build, served by qc/serve.mjs, driven by headless Chromium
+// against local release builds of the Rust api (or staging). Runs outside
+// the Claude sandbox (it binds ports) and is never part of `pnpm check`.
 //
-// The pool comes from qc/.instances.json, which scripts/qc-instances.mjs
-// writes after pushing and building (`pnpm qc` runs it first, under the
-// QC lock). Each instance gets its own preview server; mapping workers to
-// instances is qc/fixtures.ts's job, which also points each test's
-// baseURL at its own instance.
+// The pool comes from qc/.instances.json, which scripts/qc.mjs writes
+// after building and starting the apis (`pnpm qc` runs it first, under
+// the QC lock). Each local instance gets its own serve.mjs, proxying /api
+// to its api; mapping workers to instances is qc/fixtures.ts's job, which
+// also points each test's baseURL at its own instance.
 
 // One id per run, shared by the runner, the reporter and every worker. It
 // names the run's tenants (`r<run>w<n>-a|b`) and its records in
@@ -48,11 +48,11 @@ const chromium =
 
 interface Instance {
   name: string
-  deployment: string
-  url: string
-  envFile: string
-  port: number
-  outDir: string
+  api: string
+  baseURL: string
+  /** Local instances only: serve.mjs's port and the build it serves. */
+  servePort?: number
+  serveDir?: string
 }
 
 const instancesFile = fileURLToPath(
@@ -60,7 +60,7 @@ const instancesFile = fileURLToPath(
 )
 if (!existsSync(instancesFile)) {
   throw new Error(
-    `qc/.instances.json is missing: run \`pnpm qc\`, which prepares the pool, or \`pnpm qc:instances\` first`,
+    `qc/.instances.json is missing: run \`pnpm qc\`, which prepares the pool, or \`pnpm qc:pool\` first`,
   )
 }
 const instances: Array<Instance> = JSON.parse(
@@ -89,7 +89,7 @@ export default defineConfig({
   outputDir: 'test-results',
   globalSetup: './qc/global-setup.ts',
   use: {
-    baseURL: `http://localhost:${instances[0].port}`,
+    baseURL: instances[0].baseURL,
     headless: true,
     viewport: { width: 1280, height: 800 },
     // Off: tracing snapshots the DOM around every action, timed ones too,
@@ -109,10 +109,16 @@ export default defineConfig({
       },
     },
   ],
-  webServer: instances.map((inst) => ({
-    command: `vite preview --outDir ${inst.outDir} --port ${inst.port} --strictPort`,
-    url: `http://localhost:${inst.port}`,
-    reuseExistingServer: false,
-    timeout: 30_000,
-  })),
+  webServer: instances.flatMap((inst) =>
+    inst.servePort
+      ? [
+          {
+            command: `node qc/serve.mjs --dir ${inst.serveDir} --port ${inst.servePort} --api ${inst.api}`,
+            url: inst.baseURL,
+            reuseExistingServer: false,
+            timeout: 30_000,
+          },
+        ]
+      : [],
+  ),
 })

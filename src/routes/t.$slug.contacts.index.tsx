@@ -1,7 +1,7 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useQuery } from 'convex/react'
 import type { FunctionReturnType } from 'convex/server'
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
@@ -13,7 +13,6 @@ import type { ListRow } from '../lib/paged-list'
 import {
   FEATURES,
   preloadContactList,
-  releaseListHold,
   useContactList,
   useContactSearch,
   useBulkSetField,
@@ -101,10 +100,6 @@ function ContactList() {
           ...(fieldFilters.length > 0 && { fields: fieldFilters }),
         },
   )
-  // After the queries above: their subscriptions are in place by now. After
-  // every render, not just the first: navigating to the list from the list
-  // runs the loader (a new hold) without remounting the page.
-  useEffect(releaseListHold)
   const contacts = searching ? listed?.rows : paged.rows
   // More may match than the rows on screen: beyond the window, or not
   // loaded yet.

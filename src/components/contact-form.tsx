@@ -15,6 +15,7 @@ import type {
 } from '../lib/contact-form-state'
 import {
   initialState,
+  newKey,
   reduce,
   submission,
   tornSlices,
@@ -170,8 +171,12 @@ export function ContactForm({
       return
     }
     dispatch({ type: 'saving' })
-    for (const action of await saveContactForm(submitted, () => latest.current))
-      dispatch(action)
+    const actions = await saveContactForm(submitted, () => latest.current)
+    // A stale slice came back merged (`server` after `saved`): the queued
+    // retry is a whole edit already made, so it goes now, not after the
+    // autosave pause.
+    if (actions.some((a) => a.type === 'server')) saveNow.current = true
+    for (const action of actions) dispatch(action)
   }
 
   useEffect(() => {
@@ -473,7 +478,7 @@ function MethodsFields({
                 emails: [
                   ...value.emails,
                   {
-                    key: crypto.randomUUID(),
+                    key: newKey(),
                     label: 'home',
                     address: '',
                     isPrimary: value.emails.length === 0,
@@ -556,7 +561,7 @@ function MethodsFields({
                 phones: [
                   ...value.phones,
                   {
-                    key: crypto.randomUUID(),
+                    key: newKey(),
                     label: 'home',
                     number: '',
                     isPrimary: value.phones.length === 0,
@@ -669,7 +674,7 @@ function AddressFields({
               addresses: [
                 ...value.addresses,
                 {
-                  key: crypto.randomUUID(),
+                  key: newKey(),
                   label: 'home',
                   line1: '',
                   line2: '',
@@ -894,7 +899,7 @@ function IdentifierFields({
                 identifiers: [
                   ...value.identifiers,
                   {
-                    key: crypto.randomUUID(),
+                    key: newKey(),
                     typeId: '' as Id<'identifierTypes'>,
                     value: '',
                   },

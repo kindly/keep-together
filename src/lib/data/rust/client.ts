@@ -1,7 +1,8 @@
 /**
  * `fetch` for the Rust API (rs/README.md, "HTTP conventions"). Same
- * origin: Vite proxies `/api` to the server in dev, so the session cookie
- * (`kt_session`, HttpOnly) rides along with no CORS. Every failure is a
+ * origin by default: Vite proxies `/api` to the server in dev and the api
+ * serves the SPA when hosted, so the session cookie (`kt_session`,
+ * HttpOnly) rides along with no CORS. Every failure is a
  * JSON `ApiError` tagged by `kind`; anything else (the server down, a
  * proxy's HTML page) becomes `internal`.
  */
@@ -40,8 +41,14 @@ export function describe(error: ApiError): string {
   }
 }
 
-/** The API sits at the origin's root, wherever the SPA itself is served. */
-const API = '/api'
+/**
+ * The API's base: the origin's root unless the build sets `VITE_API_BASE`
+ * (an origin, no trailing slash), wherever the SPA itself is served.
+ */
+const API = `${import.meta.env.VITE_API_BASE ?? ''}/api`
+
+/** An API path's URL, for what isn't a `fetch` (the event stream). */
+export const apiUrl = (path: string) => `${API}/${path}`
 
 /** A tenant's resource path: `tenantPath('x', 'contacts', id)`. */
 export function tenantPath(slug: string, ...parts: Array<string>): string {
@@ -55,9 +62,11 @@ async function call<T>(
 ): Promise<T> {
   let response: Response
   try {
-    response = await fetch(`${API}/${path}`, {
+    response = await fetch(apiUrl(path), {
       method,
-      credentials: 'same-origin',
+      // Same origin: as 'same-origin'. Another `VITE_API_BASE`: the cookie
+      // still goes (the api has to allow the SPA's origin).
+      credentials: 'include',
       headers: body === undefined ? {} : { 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     })

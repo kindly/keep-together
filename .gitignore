@@ -28,8 +28,7 @@ todos.json
 
 # QC suite output (pnpm qc)
 dist-qc/
-dist-qc-rs/
-qc-rs/.flows/
+qc-data/
 qc-results/
 qc-report/
 test-results/

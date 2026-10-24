@@ -15,7 +15,7 @@ import {
   uniqueName,
   want,
 } from './contact.helpers'
-import type { Page, WebSocketRoute } from '@playwright/test'
+import type { Page } from '@playwright/test'
 
 // QC step 8: the contact page (factory/plans/qc-suite.sv). Details and the
 // save pane, emails / phones / addresses, advisory warnings (ADR 0015),
@@ -103,8 +103,19 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
       until: paneSaved,
     })
     await expect(page.getByText('No email, phone or address yet')).toBeHidden()
+    expect(await emails.count()).toBe(n)
+    // Three at least, whatever QC_REPEATS timed: one goes, and two must
+    // be left to tell primary from not.
+    while ((await emails.count()) < 3) {
+      await add.click()
+      await emails
+        .last()
+        .getByPlaceholder('email address')
+        .fill(`${last}-${++n}@example.com`.toLowerCase())
+      await saveButton(page).click()
+      await expect(saved(page)).toBeVisible()
+    }
     const count = await emails.count()
-    expect(count).toBe(n)
 
     // Label the second, make it primary, remove the first.
     await emails.nth(1).getByRole('combobox').selectOption('work')
@@ -572,60 +583,62 @@ test.describe(
   'a save against an unseen change',
   { annotation: CONTACT_ROUTE },
   () => {
-    test('shows the stale notice, then merges and saves', async ({
+    test('merges the change and retries at once: both edits saved', async ({
       page,
       browser,
       baseURL,
+      flow,
       users,
       session,
     }) => {
       const url = await createContact(page, users.a.slug, uniqueName('stale'))
-      // Tab B's socket goes through a gate: while held, nothing the server
-      // sends reaches B, so B saves against a counter it hasn't seen move.
+      // Tab B gets no change events (its stream is refused), so it saves
+      // against a counter it hasn't seen move: the save answers the stale
+      // slice's state now, B merges it and sends the retry straight away.
       const other = await secondTab(browser, baseURL!, await session())
-      let held: Array<string | Buffer> | null = null
-      let route: WebSocketRoute | undefined
-      await other.context().routeWebSocket(/.*/, (ws) => {
-        route = ws
-        const server = ws.connectToServer()
-        ws.onMessage((m) => server.send(m))
-        server.onMessage((m) => (held ? held.push(m) : ws.send(m)))
-      })
+      await other.context().route('**/api/t/*/events', (r) => r.abort())
       try {
         await other.goto(url)
         await expect(other.getByLabel('Known as')).toBeVisible()
-        await other.getByLabel('Title', { exact: true }).fill('from b')
-
-        held = []
-        await page.getByLabel('Known as').fill('from a')
-        await saveButton(page).click()
-        await expect(saved(page)).toBeVisible()
-        await saveButton(other).click()
-        // Let B's save reach the server and be answered (and held).
-        await page.waitForTimeout(1000)
-        // Deliver A's change first and let B render it, then B's save
-        // result: the order a slower link gives. Released together, React
-        // may apply the result first and clear the notice in the same
-        // render.
-        const release = held
-        const answer = release.findIndex(
-          (m) => typeof m === 'string' && m.includes('"MutationResponse"'),
-        )
-        expect(answer).toBeGreaterThan(0)
-        for (const m of release.slice(0, answer)) route!.send(m)
-        await expect(other.getByLabel('Known as')).toHaveValue('from a')
-        held = null
-        for (const m of release.slice(answer)) route!.send(m)
-
-        await expect(
-          other.getByText(/details changed by .* while you were editing/),
-        ).toBeVisible()
-        // B retries against the newer state: both edits end up saved.
-        await expect(other.getByText(/while you were editing/)).toBeHidden()
-        await expect(saved(other)).toBeVisible()
-        await expect(other.getByLabel('Known as')).toHaveValue('from a')
+        let n = 0
+        await flow(other, 'contact.staleMerge', {
+          before: async () => {
+            n += 1
+            await page.getByLabel('Known as').fill(`from a ${n}`)
+            await saveButton(page).click()
+            await expect(saved(page)).toBeVisible()
+            await want(other, `from a ${n}`)
+            // Last, and saved by the action: typed any earlier, B's 700 ms
+            // autosave could send it (and merge) inside `before` under load.
+            await other.getByLabel('Title', { exact: true }).fill(`from b ${n}`)
+          },
+          action: () => saveButton(other).click(),
+          // Saved, with A's change merged in under B's own.
+          until: (label) => {
+            const w = (window as unknown as { __qcWant?: string }).__qcWant
+            const holds = [...document.querySelectorAll('label')].some(
+              (l) =>
+                l.querySelector('span')?.childNodes[0]?.textContent === label &&
+                l.querySelector('input')?.value === w,
+            )
+            return (
+              holds &&
+              [...document.querySelectorAll('span')].some((x) =>
+                x.textContent.startsWith('All changes saved'),
+              )
+            )
+          },
+          arg: 'Known as',
+          server: true,
+        })
+        // Both edits are on the server: A sees B's, live.
         await expect(page.getByLabel('Title', { exact: true })).toHaveValue(
-          'from b',
+          `from b ${n}`,
+        )
+        await expect(other.getByLabel('Known as')).toHaveValue(`from a ${n}`)
+        await other.reload()
+        await expect(other.getByLabel('Title', { exact: true })).toHaveValue(
+          `from b ${n}`,
         )
       } finally {
         await other.context().close()

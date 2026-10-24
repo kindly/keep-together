@@ -1,4 +1,4 @@
-import { BULK_FUNCTIONS } from './budgets.ts'
+import { BULK_ROUTES } from './budgets.ts'
 import type { FlowKind } from './budgets.ts'
 import type { HistoryLine } from './reporter'
 import { DRIFT_MS, DRIFT_RUNS, targetReason } from './target.ts'
@@ -25,7 +25,7 @@ const KIND_SHORT: Record<FlowKind, string> = {
 //
 // Everything here is pure; the CLI does the file reading and writing.
 
-/** The server's 100 ms rule for every uncached call (qc/server-timings.ts). */
+/** The server's 100 ms rule for every call (qc/server.ts). */
 export const SERVER_BUDGET_MS = 100
 
 export interface Run {
@@ -51,7 +51,7 @@ export interface FlowPoint {
   pass: boolean | null
   knownOver?: string
   rttOver: boolean
-  /** Slow samples that passed only on our share (qc/judge.ts). */
+  /** Convex-era runs: slow samples that passed only on our share. */
   passedOnShare?: number
   /** How the judged set's slow samples were judged, by rule. */
   judged?: HistoryLine['judged']
@@ -498,7 +498,7 @@ ${chart({
 
 function serverCard(s: ServerSeries, runs: Array<Run>): string {
   // A bulk function has its own limit (qc/budgets.ts), not the 100 ms rule.
-  const budgetMs = BULK_FUNCTIONS[s.fn] ?? SERVER_BUDGET_MS
+  const budgetMs = BULK_ROUTES[s.fn] ?? SERVER_BUDGET_MS
   const marks = s.points.map((p, i) => {
     if (!p) return null
     const r = runs[i]
@@ -584,20 +584,20 @@ export function renderTrend(t: Trend, generatedAt: string): string {
 ${latestTable(t)}
 
 <h2>Flows over runs</h2>
-<p class="muted"><span class="tag over">OVER</span> failed · <span class="tag known">known over</span> approved exception (qc/budgets.ts) · <span class="tag spike">re-measured</span> a spike over budget, passed on its one re-measure (the point is the re-measure; hover for the first) · <span class="tag share">passed on our share</span> a slow sample that wasn't ours (link or Convex, with evidence) passed with our share under budget − 50 ms (qc/README.md "Ours") · <span class="tag rtt">RTT over ceiling</span> samples measured the link; latency not asserted · <span class="tag target">TARGET</span> median at or over target, or drifting up (tracked, never failing) · dashed line: budget (the failing line) · dotted line: target</p>
+<p class="muted"><span class="tag over">OVER</span> failed · <span class="tag known">known over</span> approved exception (qc/budgets.ts) · <span class="tag spike">re-measured</span> a spike over budget, passed on its one re-measure (the point is the re-measure; hover for the first) · <span class="tag share">passed on our share</span> (Convex-era runs only) a slow sample that wasn't ours passed with our share under budget − 50 ms · <span class="tag rtt">RTT over ceiling</span> samples measured the link; latency not asserted · <span class="tag target">TARGET</span> median at or over target, or drifting up (tracked, never failing) · dashed line: budget (the failing line) · dotted line: target</p>
 <div class="grid">
 ${t.flows.map((s) => flowCard(s, t.runs)).join('\n')}
 </div>
 
 <h2>Server functions over runs</h2>
-<p class="muted">Uncached executions from the Convex log stream. Asserted calls must each be under ${SERVER_BUDGET_MS} ms, bar one spike per function per run when its other calls are under (ringed point).</p>
+<p class="muted">Server time per route from each response's <code>Server-Timing</code> (Convex-era runs: uncached executions per function, from its log stream). Asserted calls must each be under ${SERVER_BUDGET_MS} ms, bar one spike per route per run when its other calls are under (ringed point).</p>
 <div class="grid">
 ${asserted.map((s) => serverCard(s, t.runs)).join('\n')}
 </div>
 ${
   reported.length
     ? `<h3>Reported, not asserted</h3>
-<p class="muted"><code>auth:*</code>, admin, HTTP and seed calls.</p>
+<p class="muted"><code>/dev/*</code> routes (the sign-in stub and the QC seed); Convex-era runs: <code>auth:*</code>, admin, HTTP and seed calls.</p>
 <div class="grid">
 ${reported.map((s) => serverCard(s, t.runs)).join('\n')}
 </div>`

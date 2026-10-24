@@ -16,35 +16,39 @@ import type {
   TestCase,
   TestResult,
 } from '@playwright/test/reporter'
-import QcReporter, { serverExceptionBanner, summarise } from './reporter'
+import QcReporter, { pendingBanner, summarise } from './reporter'
 import type { HistoryLine } from './reporter'
-import { readBlameContext } from './blame'
-import type { BlameContext } from './blame'
 import { readRoutes } from './coverage'
-import type { FlowRecord, SampleDetail } from './timing'
-import recorded from './blame.fixture.json'
+import { isPorted } from '../src/lib/data/ported'
+import type { ApiCall, FlowRecord, SampleDetail } from './timing'
 
-// Blame explains; it must never judge (qc/README.md "Blame"). These run
-// the reporter on the same records with and without the run's server
-// calls and probes, and with torn files, and check that nothing a run is
-// judged on changes.
+// The reporter's gates over the workers' records: the flow table and
+// history, the server rule over each sample's Server-Timing (qc/server.ts),
+// and what isn't on the Rust backend yet (pendingPort).
 
-type Fixture = {
-  sample: SampleDetail & { worker: number; instance: string }
-  calls: BlameContext['calls']
-  probes: BlameContext['probes']
-}
-const cases = recorded as unknown as Record<string, Fixture>
-const slow = cases.slowFunction
-const ctx: BlameContext = {
-  calls: Object.values(cases).flatMap((c) => c.calls),
-  probes: Object.values(cases).flatMap((c) => c.probes),
-}
+const ID = '0190f1d23c4b7a008000000000000001'
 
-const detail = (endMs: number): SampleDetail => {
-  const { worker: _w, instance: _i, ...d } = slow.sample
-  return { ...d, endMs }
-}
+const call = (serverMs: number): ApiCall => ({
+  method: 'POST',
+  url: `/api/t/r1w0-a/contacts/${ID}/save`,
+  startMs: 2,
+  endMs: 40,
+  status: 200,
+  serverMs,
+  dbMs: serverMs / 2,
+})
+
+const detail = (endMs: number, serverMs = 5): SampleDetail => ({
+  at: 1_792_000_000_000,
+  calls: [call(serverMs)],
+  eventMs: null,
+  endMs,
+  answered: true,
+  longTaskMs: 0,
+  hidden: false,
+  hostCpu: null,
+  load1: 0.5,
+})
 
 // contact.addEmail failed twice (a slow first set, re-measured over
 // budget again); contact.save passed.
@@ -62,7 +66,7 @@ const records = (runId: string): Array<FlowRecord> => [
     firstDetail: [detail(165), detail(90)],
     rttMs: 30,
     rttOver: false,
-    budgetMs: 100,
+    budgetMs: 150,
     medianMs: 127.45,
     maxMs: 159.9,
     pass: false,
@@ -78,7 +82,7 @@ const records = (runId: string): Array<FlowRecord> => [
     detail: [detail(80), detail(82)],
     rttMs: 30,
     rttOver: false,
-    budgetMs: 100,
+    budgetMs: 150,
     medianMs: 81,
     maxMs: 82,
     pass: true,
@@ -91,123 +95,47 @@ const base = {
   sha: 'abc',
   dirty: false,
   mode: 'assert' as const,
+  env: 'local' as const,
   server: null,
 }
 
-const stripBlame = (lines: Array<HistoryLine>) =>
-  lines.map((l) => ({
-    ...l,
-    detail: l.detail?.map(({ blame: _, ...d }) => d),
-    firstDetail: l.firstDetail?.map(({ blame: _, ...d }) => d),
-  }))
-
-describe('summarise: blame changes no judgement', () => {
-  test('the same lines with and without blame context, blame aside', () => {
-    const withBlame = summarise(records('r1'), base, null, ctx)
-    const without = summarise(records('r1'), base, null, {
-      calls: [],
-      probes: [],
+describe('summarise', () => {
+  test('one line per flow, both sets of a re-measure kept with their calls', () => {
+    const lines = summarise(records('r1'), base, null)
+    expect(lines.map((l) => [l.flow, l.pass, l.n, l.overBudget])).toEqual([
+      ['contact.addEmail', false, 2, 1],
+      ['contact.save', true, 2, 0],
+    ])
+    const [add] = lines
+    expect(add.remeasured).toBe(true)
+    expect(add.firstSamplesMs).toEqual([165, 90])
+    expect(add.detail?.[0]).toMatchObject({
+      worker: 0,
+      instance: 'qc-1',
+      calls: [{ method: 'POST', serverMs: 5 }],
     })
-    expect(stripBlame(withBlame)).toEqual(stripBlame(without))
-    expect(withBlame.map((l) => [l.flow, l.pass, l.overBudget])).toEqual([
-      ['contact.addEmail', false, 1],
-      ['contact.save', true, 0],
-    ])
-  })
-
-  test('blame goes on samples at or over budget only, in both sets', () => {
-    const [email, save] = summarise(records('r1'), base, null, ctx)
-    expect(email.detail!.map((d) => d.blame?.verdict)).toEqual([
-      'ours',
-      undefined,
-    ])
-    expect(email.firstDetail!.map((d) => d.blame?.verdict)).toEqual([
-      'ours',
-      undefined,
-    ])
-    expect(save.detail!.every((d) => d.blame === undefined)).toBe(true)
-    // Without calls the function is unmatched: unclear, still attached.
-    const [bare] = summarise(records('r1'), base, null, {
-      calls: [],
-      probes: [],
-    })
-    expect(bare.detail![0].blame?.verdict).toBe('unclear')
+    expect(add.firstDetail).toHaveLength(2)
+    expect(add.env).toBe('local')
   })
 })
 
-describe('summarise: judgements and signals (qc/judge.ts)', () => {
-  test("counts each flow's judged samples by rule and keeps the signals", () => {
-    const recs = records('r1')
-    const email = recs[0]
-    email.pass = true
-    email.detail[0] = {
-      ...email.detail[0],
-      bytesIn: 2000,
-      requests: 2,
-      judge: {
-        pass: true,
-        rule: 'passed on our share',
-        shareBudgetMs: 50,
-        attempts: [
-          { ms: 159.9, verdict: 'convex/network', ourShareMs: 44 },
-          { ms: 130, verdict: 'convex/network', ourShareMs: 45 },
-          { ms: 128, verdict: 'convex/network', ourShareMs: 41 },
-        ],
-      },
-    }
-    email.detail[1] = { ...email.detail[1], bytesIn: 3000, requests: 4 }
-    const [line] = summarise(recs, base, null, ctx)
-    expect(line.pass).toBe(true)
-    expect(line.judged).toEqual({ 'passed on our share': 1 })
-    expect(line.signals).toMatchObject({ bytesInP50: 2500, requestsP50: 3 })
-    expect(line.signals!.commitLatencyP50).toEqual(expect.any(Number))
-  })
-
-  test('no signals on history from before them', () => {
-    const [line] = summarise(records('r1'), base, null, ctx)
-    expect(line.signals).toBeUndefined()
-    expect(line.judged).toBeUndefined()
-  })
-})
-
-describe('readBlameContext', () => {
-  let dir: string
-  beforeEach(() => {
-    dir = mkdtempSync(path.join(os.tmpdir(), 'qc-blame-'))
-  })
-  afterEach(() => rmSync(dir, { recursive: true, force: true }))
-
-  test('a torn line is skipped and counted, the rest read', () => {
-    const [a, b] = slow.calls
-    writeFileSync(
-      path.join(dir, 'server-calls.jsonl'),
-      `${JSON.stringify(a)}\n${JSON.stringify(b)}\n{"instance":"qc-1","at":17`,
+describe('pendingBanner', () => {
+  test('lists each step with its skipped tests, flows and the unported routes', () => {
+    const out = pendingBanner(new Map([['A1', 3]]), [
+      '/t/$slug/contacts/',
+      '/t/$slug/settings/fields',
+    ]).join('\n')
+    expect(out).toMatch(/A1: 3 tests skipped · flows .*contact\.note\.add/)
+    // A step with flows and no tests skipped this run is still listed.
+    expect(out).toMatch(/B2: 0 tests skipped · flows .*gift\.record/)
+    expect(out).toContain(
+      'routes being ported (exempt from coverage): /t/$slug/settings/fields',
     )
-    writeFileSync(
-      path.join(dir, 'rtt-1.jsonl'),
-      `${JSON.stringify(slow.probes[0])}\n{"at":`,
-    )
-    const got = readBlameContext(dir)
-    expect(got.calls).toEqual([a, b])
-    expect(got.probes).toEqual([slow.probes[0]])
-    expect(got.skipped).toBe(2)
-  })
-
-  test('an unreadable file is skipped and counted', () => {
-    mkdirSync(path.join(dir, 'rtt-2.jsonl'))
-    expect(readBlameContext(dir)).toEqual({ calls: [], probes: [], skipped: 1 })
-  })
-
-  test('no run directory: empty', () => {
-    expect(readBlameContext(path.join(dir, 'nope'))).toEqual({
-      calls: [],
-      probes: [],
-      skipped: 0,
-    })
+    expect(out).not.toContain('/t/$slug/contacts/,')
   })
 })
 
-describe('onEnd: the same status and gates with and without blame input', () => {
+describe('onEnd: the server rule, pending ports and coverage', () => {
   const routes = readRoutes()
   const repo = process.cwd()
   let dir: string
@@ -227,12 +155,17 @@ describe('onEnd: the same status and gates with and without blame input', () => 
     vi.restoreAllMocks()
   })
 
-  // One run of the reporter over `recs`: every route covered, a filtered
-  // run (so untimed flows only warn). Returns the status and the gates.
+  // One run of the reporter over `recs`, as a full run (not filtered)
+  // unless `filtered`; `covered` are the route annotations of the tests
+  // that ran, and `skipped` the pendingPort tests skipped.
   const runReporter = async (
     id: string,
     recs: Array<FlowRecord>,
-    blameFiles: 'none' | 'good' | 'torn',
+    opts: {
+      covered?: Array<string>
+      skipped?: Array<string>
+      filtered?: boolean
+    } = {},
   ) => {
     vi.stubEnv('QC_RUN_ID', id)
     const run = path.join(dir, 'qc-results', 'runs', id)
@@ -241,33 +174,43 @@ describe('onEnd: the same status and gates with and without blame input', () => 
       path.join(run, 'pid-1.jsonl'),
       recs.map((r) => JSON.stringify(r) + '\n').join(''),
     )
-    if (blameFiles !== 'none') {
-      const calls = ctx.calls.map((c) => JSON.stringify(c)).join('\n')
-      const probes = ctx.probes.map((p) => JSON.stringify(p)).join('\n')
-      const tear = blameFiles === 'torn' ? '\n{"at":1792' : ''
-      writeFileSync(path.join(run, 'server-calls.jsonl'), calls + tear)
-      writeFileSync(path.join(run, 'rtt-1.jsonl'), probes + tear)
-    }
     const logged: Array<string> = []
     vi.spyOn(console, 'log').mockImplementation((m: string) => {
       logged.push(m)
     })
     const reporter = new QcReporter()
     reporter.onBegin({
-      argv: ['node', 'playwright', 'test', 'qc/flows/contact.spec.ts'],
+      argv: [
+        'node',
+        'playwright',
+        'test',
+        ...((opts.filtered ?? true) ? ['qc/flows/contact.spec.ts'] : []),
+      ],
     } as unknown as FullConfig)
     reporter.onTestEnd(
       {
-        annotations: routes.map((r) => ({ type: 'route', description: r })),
+        annotations: (opts.covered ?? routes).map((r) => ({
+          type: 'route',
+          description: r,
+        })),
       } as unknown as TestCase,
       { status: 'passed', annotations: [] } as unknown as TestResult,
     )
+    for (const step of opts.skipped ?? [])
+      reporter.onTestEnd(
+        {
+          annotations: [{ type: 'pendingPort', description: step }],
+        } as unknown as TestCase,
+        { status: 'skipped', annotations: [] } as unknown as TestResult,
+      )
     const res = await reporter.onEnd({ status: 'passed' } as FullResult)
     vi.restoreAllMocks()
     const out = logged.join('\n')
     const gates = out
       .split('\n')
-      .filter((l) => /QC RUN FAILED|over budget twice|coverage:/.test(l))
+      .filter((l) =>
+        /QC RUN FAILED|over budget twice|coverage:|^!! server/.test(l),
+      )
     const history = readFileSync(
       path.join(dir, 'qc-results', 'history.jsonl'),
       'utf8',
@@ -279,51 +222,87 @@ describe('onEnd: the same status and gates with and without blame input', () => 
     return { status: res?.status, gates, history, out }
   }
 
-  test('a passing run passes whatever the blame input', async () => {
-    const results = []
-    for (const [id, files] of [
-      ['ra', 'none'],
-      ['rb', 'good'],
-      ['rc', 'torn'],
-    ] as const) {
-      results.push(await runReporter(id, records(id), files))
-    }
-    for (const r of results) {
-      expect(r.status).toBeUndefined()
-      expect(r.gates).toEqual([])
-      expect(r.history.map((l) => [l.flow, l.pass])).toEqual([
-        ['contact.addEmail', false],
-        ['contact.save', true],
-      ])
-    }
-    expect(results[1].out).toMatch(/blame: 2 samples at or over budget: ours 2/)
-    expect(results[0].out).toMatch(/unclear 2/)
-    expect(results[2].out).toMatch(/blame: 2 unreadable lines/)
+  const withServer = (id: string, ms: Array<number>) =>
+    records(id).map((r) =>
+      r.flow === 'contact.save'
+        ? { ...r, detail: ms.map((x) => detail(80, x)) }
+        : r,
+    )
+
+  test('every call under 100 ms: a table per route, in history too', async () => {
+    const r = await runReporter('s1', withServer('s1', [12, 30]))
+    expect(r.status).toBeUndefined()
+    expect(r.gates).toEqual([])
+    expect(r.out).toMatch(/POST \/t\/:slug\/contacts\/:id\/save\s+6\s/)
+    expect(r.history[0].server).toMatchObject({
+      pass: true,
+      functions: [
+        { fn: 'POST /t/:slug/contacts/:id/save', type: 'route', n: 6 },
+      ],
+    })
   })
 
-  test('a failing worker-setup flow fails the run whatever the blame input', async () => {
-    const failing = (id: string) =>
-      records(id).map((r) =>
-        r.flow === 'contact.save'
-          ? {
-              ...r,
-              samplesMs: [130, 82],
-              firstSamplesMs: [140, 90],
-              detail: [detail(130), detail(82)],
-              firstDetail: [detail(140), detail(90)],
-              pass: false,
-            }
-          : r,
-      )
-    const a = await runReporter('rd', failing('rd'), 'none')
-    const b = await runReporter('re', failing('re'), 'good')
-    const c = await runReporter('rf', failing('rf'), 'torn')
-    for (const r of [a, b, c]) expect(r.status).toBe('failed')
-    expect(b.gates).toEqual(a.gates)
-    expect(c.gates).toEqual(a.gates)
-    expect(a.gates.join('\n')).toMatch(
-      /contact.save over budget twice in worker 0 setup/,
+  test('one slow call is a spike; two fail the run', async () => {
+    const spike = await runReporter('s2', withServer('s2', [140, 30]))
+    expect(spike.status).toBeUndefined()
+    expect(spike.out).toMatch(/SPIKES[\s\S]*server POST \/t\/:slug/)
+    const two = await runReporter('s3', withServer('s3', [140, 120]))
+    expect(two.status).toBe('failed')
+    expect(two.gates.join('\n')).toMatch(
+      /server POST \/t\/:slug\/contacts\/:id\/save: 2 of 6 calls at or over 100 ms/,
     )
+  })
+
+  test('record mode lists a server miss, never fails on it', async () => {
+    vi.stubEnv('QC_MODE', 'record')
+    vi.resetModules()
+    const { default: Recording } = await import('./reporter')
+    expect(Recording).toBeDefined()
+    // RECORD is read at import: the module above is a fresh one.
+    vi.stubEnv('QC_RUN_ID', 's4')
+    const run = path.join(dir, 'qc-results', 'runs', 's4')
+    mkdirSync(run, { recursive: true })
+    writeFileSync(
+      path.join(run, 'pid-1.jsonl'),
+      withServer('s4', [140, 120])
+        .map((r) => JSON.stringify({ ...r, pass: null }) + '\n')
+        .join(''),
+    )
+    const logged: Array<string> = []
+    vi.spyOn(console, 'log').mockImplementation((m: string) => {
+      logged.push(m)
+    })
+    const reporter = new Recording()
+    reporter.onBegin({
+      argv: ['node', 'playwright', 'test', 'qc/flows/contact.spec.ts'],
+    } as unknown as FullConfig)
+    const res = await reporter.onEnd({ status: 'passed' } as FullResult)
+    expect(res?.status).toBeUndefined()
+    expect(logged.join('\n')).toMatch(/not judged: server POST/)
+  })
+
+  test('pendingPort tests are counted, and unported routes need no flow', async () => {
+    const ported = routes.filter((r) => isPorted(r))
+    const r = await runReporter('p1', records('p1'), {
+      covered: ported,
+      skipped: ['A1', 'A1', 'B2'],
+      filtered: false,
+    })
+    expect(r.gates.filter((g) => g.includes('coverage:'))).toEqual([])
+    expect(r.out).toMatch(/A1: 2 tests skipped/)
+    expect(r.out).toMatch(/B2: 1 tests skipped/)
+    // A ported route left uncovered still fails a full run.
+    const gap = await runReporter('p2', records('p2'), {
+      covered: ported.filter((x) => x !== '/t/$slug/contacts/new'),
+      filtered: false,
+    })
+    expect(gap.status).toBe('failed')
+    expect(gap.gates.join('\n')).toMatch(
+      /coverage: no test that ran covers \/t\/\$slug\/contacts\/new/,
+    )
+    // pendingPort flows aren't "not timed" failures; others are.
+    expect(gap.out).not.toMatch(/not timed: [^\n]*contact\.note\.add/)
+    expect(gap.out).toMatch(/not timed: [^\n]*contacts\.search\.phone/)
   })
 })
 
@@ -495,28 +474,4 @@ describe('onEnd: two-tier budgets, the line alone decides (human, 2026-10-23)', 
       /contact.save over budget twice in worker 0 setup: 150, 90, 95 ms, .* budget < 150/,
     )
   })
-})
-
-test('the server exceptions banner lists every exception, with or without server data', () => {
-  const none = serverExceptionBanner(null).join('\n')
-  // Exceptions counted as exceptions; no server data, no call count.
-  expect(none).toContain(
-    '1 server exception (approved, qc/budgets.ts SERVER_EXCEPTIONS): timed, held only to their ceilings.',
-  )
-  expect(none).toContain(
-    'contacts/queries:list: EXCEPTED from the 100 ms rule: list re-run after a bulk write into an open page: ~150 ms reading the grown range (human 2026-10-23) · ceiling < 250 ms · no server data',
-  )
-  const some = serverExceptionBanner({
-    exceptions: [
-      'contacts/queries:list: EXCEPTED from the 100 ms rule: … · 4 calls',
-    ],
-    exceptedCalls: 4,
-  }).join('\n')
-  expect(some).toContain(
-    '1 server exception (approved, qc/budgets.ts SERVER_EXCEPTIONS), 4 calls EXCEPTED this run',
-  )
-  expect(some).toContain('· 4 calls')
-  expect(
-    serverExceptionBanner({ exceptions: [], exceptedCalls: 1 }).join('\n'),
-  ).toContain(', 1 call EXCEPTED this run')
 })

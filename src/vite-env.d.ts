@@ -1,7 +1,6 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** Which backend the contacts pages run on (`src/lib/data`); default convex. */
-  readonly VITE_BACKEND?: 'convex' | 'rust'
-  readonly VITE_CONVEX_URL?: string
+  /** The Rust API's origin when it isn't the SPA's own (`src/lib/data`). */
+  readonly VITE_API_BASE?: string
 }

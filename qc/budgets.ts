@@ -36,17 +36,18 @@
 //
 // A judged flow with any sample at or over its line is re-measured once
 // (K fresh samples) and fails only if that set is over too
-// (qc/timing.ts). A sample over the line in that set is then judged on
-// whose time it was (qc/judge.ts, human 2026-10-21): ours or unclear
-// fails; not ours (link or Convex, with evidence) is retried up to twice,
-// then passes only if our share of it is under maxMs − 50 (100 ms for
-// repeatable).
+// (qc/timing.ts; ADR 0018's base rule, migration-rust F3).
 //
 // `knownOver` is an exception the human approved: the flow is still timed
 // and recorded in full, but being over budget doesn't fail the run. Every
 // run lists every knownOver flow in a banner, timed or not, so it can't be
 // forgotten. Remove the mark with the fix. None is set today (the two
 // there were lifted with the two-tier budgets, human 2026-10-23).
+//
+// `pendingPort: '<step>'` marks a flow of a module the Rust backend
+// doesn't serve yet (migration-rust.sv; its tests are in qc/pending.ts).
+// Untimed, it is listed in the run's banner instead of failing it. The
+// step that ports the module drops the mark.
 
 export type FlowKind =
   'repeatable' | 'infrequent' | 'rare' | 'oncePerSession' | 'bulk'
@@ -61,6 +62,8 @@ export interface Budget {
   selfTest?: true
   /** No spec times it yet: missing from a run warns instead of failing. */
   pending?: true
+  /** Its module isn't on the Rust backend yet: the step that ports it. */
+  pendingPort?: string
   /** Approved exception, "<reason> (<who> <date>)": over budget never fails. */
   knownOver?: string
 }
@@ -68,6 +71,8 @@ export interface Budget {
 const repeatable = { kind: 'repeatable', maxMs: 150, targetMs: 100 } as const
 const infrequent = { kind: 'infrequent', maxMs: 200, targetMs: 150 } as const
 const rare = { kind: 'rare', maxMs: 250, targetMs: 200 } as const
+/** A repeatable flow a wave step still has to port (qc/pending.ts). */
+const port = (step: string) => ({ ...repeatable, pendingPort: step })
 
 export const budgets = {
   // Step 9b, recorded 2026-10-18 in runs tn357fbu, tn35ew84, tn35t6tx
@@ -85,7 +90,7 @@ export const budgets = {
   'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 410 },
   'contacts.nav': repeatable,
   'contacts.search': repeatable,
-  'contacts.searchIdentifier': repeatable,
+  'contacts.searchIdentifier': port('A1'),
   'contacts.search.phone': repeatable,
   'contacts.search.postcode': repeatable,
   'contacts.search.emailPart': repeatable,
@@ -96,60 +101,64 @@ export const budgets = {
   'contact.save': repeatable,
   'contact.addEmail': repeatable,
   'contact.livePropagation': repeatable,
+  // A save against a change this tab hasn't seen: the 200 with the stale
+  // slice, the merge and the retry sent at once (migration-rust F3 step 5),
+  // from Save to "All changes saved".
+  'contact.staleMerge': repeatable,
   // Back to a contact opened in the last 2 minutes: the keep-alive cache
   // (perf-storage step 2). Expected well under, at about one frame.
   'contact.revisit': repeatable,
   'contact.archive': repeatable,
   'contact.restore': rare,
-  'contact.note.add': repeatable,
-  'contact.note.save': repeatable,
-  'contact.note.pin': repeatable,
-  'contact.note.archive': repeatable,
-  'contact.identifier.add': repeatable,
-  'contact.identifier.remove': repeatable,
-  'contact.hold.release': repeatable,
-  'contact.acquisition.set': repeatable,
-  'contacts.createWithCode': infrequent,
-  'contacts.filter.sourceCategory': repeatable,
-  'contacts.filter.sourceVersion': repeatable,
+  'contact.note.add': port('A1'),
+  'contact.note.save': port('A1'),
+  'contact.note.pin': port('A1'),
+  'contact.note.archive': port('A1'),
+  'contact.identifier.add': port('A1'),
+  'contact.identifier.remove': port('A1'),
+  'contact.hold.release': port('A1'),
+  'contact.acquisition.set': port('A2'),
+  'contacts.createWithCode': { ...infrequent, pendingPort: 'A2' },
+  'contacts.filter.sourceCategory': port('A2'),
+  'contacts.filter.sourceVersion': port('A2'),
   'contacts.loadMore': repeatable,
   // Dropdown fields (plan step 6): the classes of the tag flows they
   // replaced (human, g1q14, 2026-10-21; the tag flows left in step 7).
-  'fields.create': repeatable,
-  'fields.option.add': repeatable,
-  'fields.archive': repeatable,
+  'fields.create': port('B1'),
+  'fields.option.add': port('B1'),
+  'fields.archive': port('B1'),
   'fields.filter': repeatable,
   'contact.field.set': repeatable,
   'contact.field.clear': repeatable,
-  'settings.staffFields.toggle': repeatable,
-  'settings.nav': repeatable,
-  'settings.tab': repeatable,
-  'settings.staffIdentifierTypes.toggle': repeatable,
-  'settings.identifierTypes.create': repeatable,
-  'settings.identifierTypes.rename': repeatable,
-  'settings.identifierTypes.archive': repeatable,
-  'settings.staffSourceCodes.toggle': repeatable,
-  'settings.sourceCodes.open': repeatable,
-  'settings.sourceCodes.addDetail': repeatable,
-  'settings.sourceCodes.rename': repeatable,
-  'settings.sourceCodes.archive': repeatable,
+  'settings.staffFields.toggle': port('B1'),
+  'settings.nav': port('A3'),
+  'settings.tab': port('A3'),
+  'settings.staffIdentifierTypes.toggle': port('A1'),
+  'settings.identifierTypes.create': port('A1'),
+  'settings.identifierTypes.rename': port('A1'),
+  'settings.identifierTypes.archive': port('A1'),
+  'settings.staffSourceCodes.toggle': port('A2'),
+  'settings.sourceCodes.open': port('A2'),
+  'settings.sourceCodes.addDetail': port('A2'),
+  'settings.sourceCodes.rename': port('A2'),
+  'settings.sourceCodes.archive': port('A2'),
   // Cash gifts step 3: recording a gift creates a record (contacts.create's
   // class), from an existing contact or with a new one in the same save.
-  'gift.record': infrequent,
-  'gift.recordNewContact': infrequent,
+  'gift.record': { ...infrequent, pendingPort: 'B2' },
+  'gift.recordNewContact': { ...infrequent, pendingPort: 'B2' },
   // Cash gifts step 5: the gift page and the contact page's panels.
-  'gift.open': repeatable,
-  'gift.save': repeatable,
+  'gift.open': port('B2'),
+  'gift.save': port('B2'),
   // Void and unvoid show the new status only once the server confirms it
   // (gifts are never optimistic, human 2026-10-23).
-  'gift.void': repeatable,
-  'gift.unvoid': repeatable,
-  'contact.gifts.loadMore': repeatable,
-  'contact.giftaid.cancel': repeatable,
-  'contact.giftaid.void': repeatable,
+  'gift.void': port('B2'),
+  'gift.unvoid': port('B2'),
+  'contact.gifts.loadMore': port('B2'),
+  'contact.giftaid.cancel': port('B2'),
+  'contact.giftaid.void': port('B2'),
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
-  'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },
+  'contacts.bulkSetField': { kind: 'bulk', maxMs: 500, pendingPort: 'B1' },
 
   // qc/harness.spec.ts: proves the timing path can fail and pass.
   'harness.impossible': { kind: 'repeatable', maxMs: 1, selfTest: true },
@@ -166,49 +175,13 @@ export function budgetFor(name: FlowName): Budget {
 }
 
 /**
- * Server functions behind `bulk` flows: an action over many records at once
- * (bulkSetField runs one contract and one search-projection rebuild per
- * contact). Exempt from the 100 ms server rule like their flows (human,
- * 2026-10-18): each has its own limit in ms, recorded like the `bulk` flow
- * budgets. bulkSetField takes the limit of bulkTag, the function it
- * replaced (human, dropdown fields g1q14, 2026-10-21): bulkTag's worst was
- * 242.6 ms over runs tn357fbu, tn35ew84, tn35t6tx (2026-10-18), × 1.5,
- * rounded up.
- * qc/server-timings.ts asserts them against it instead of 100 ms.
+ * Routes behind `bulk` flows (`METHOD /path`, as qc/server.ts names them):
+ * an action over many records at once. Exempt from the 100 ms server rule
+ * like their flows (human, 2026-10-18), each with its own limit in ms,
+ * recorded like the `bulk` flow budgets. None on the Rust backend yet:
+ * B1 ports bulkSetField, whose Convex limit was 370 ms (bulkTag's worst,
+ * 242.6 ms over runs tn357fbu, tn35ew84, tn35t6tx, × 1.5, rounded up).
+ * Convex's server exception (a list re-run reading a grown pinned page)
+ * went with Convex's paged list.
  */
-export const BULK_FUNCTIONS: Record<string, number> = {
-  'contacts/mutations:bulkSetField': 370,
-}
-
-/**
- * Approved exceptions to the server rule, by the call itself, not the
- * function: a call of `fn` whose own log has a line containing `logLine`
- * is timed and recorded, listed in a banner on every run, and exempt
- * from the 100 ms rule. Every other call of `fn` is judged as usual. The
- * human's OK is needed for each, as for `knownOver`.
- *
- * Excepted is not unbounded: each excepted call must still be under its
- * exception's `ceilingMs`. One at or over it fails the run, with no spike
- * allowance (qc/server-timings.ts checkBudgets).
- *
- * - The contacts list reading a pinned page whose range a bulk write grew
- *   (contacts.loadMore's insert into page 0): the backend reads the whole
- *   range, ~0.5–0.7 ms a row, before `list` answers it with no rows to
- *   split (convex/contacts/queries.ts GROWN_PAGE_LOG).
- */
-export const SERVER_EXCEPTIONS: Array<{
-  fn: string
-  logLine: string
-  reason: string
-  /** Every excepted call must be under this, in ms. */
-  ceilingMs: number
-}> = [
-  {
-    fn: 'contacts/queries:list',
-    logLine: 'contacts list: grown page read in full',
-    reason:
-      'list re-run after a bulk write into an open page: ~150 ms reading the grown range (human 2026-10-23)',
-    // Ceiling (human, 2026-10-23).
-    ceilingMs: 250,
-  },
-]
+export const BULK_ROUTES: Record<string, number> = {}

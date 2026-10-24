@@ -3,12 +3,10 @@ import { useEffect } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { useTenant } from '../lib/tenant'
 import { contactSeed, dropContactSeed } from '../lib/contact-seed'
-import type { ContactView } from '../lib/contact-seed'
-import { BACKEND, FEATURES, preloadContact, useContact } from '../lib/data'
+import { FEATURES, preloadContact, useContact } from '../lib/data'
 import { ContactForm } from '../components/contact-form'
 import { ContactGiftAid } from '../components/contact-giftaid'
 import { ContactGifts } from '../components/contact-gifts'
-import { ContactHistory } from '../components/contact-history'
 import { RustContactHistory } from '../components/rust-contact-history'
 import { ContactNotes } from '../components/contact-notes'
 import { LeaveGuard } from '../components/leave-guard'
@@ -21,18 +19,6 @@ export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
   loader: ({ context, params }) =>
     preloadContact(context, params.slug, params.contactId),
 })
-
-/**
- * Changes whenever the root does: every contract on the contact bumps its
- * own counter (a `…Version` field) there, so this is what tells the
- * history panel to fetch again.
- */
-function rootVersion(contact: ContactView['contact']) {
-  return Object.entries(contact)
-    .filter(([field]) => field.endsWith('Version'))
-    .map(([field, n]) => `${field}:${String(n)}`)
-    .join(' ')
-}
 
 function ContactPage() {
   const tenant = useTenant()
@@ -77,22 +63,13 @@ function ContactPage() {
           )}
         </div>
         {/* Keyed like the form: a restore notice belongs to its contact. */}
-        {BACKEND === 'rust' ? (
-          <RustContactHistory
-            key={`${tenant._id}:${id}`}
-            id={id}
-            archived={data.contact.archived}
-            archiveVersion={data.contact.archiveVersion}
-          />
-        ) : (
-          <ContactHistory
-            key={`${tenant._id}:${id}`}
-            id={id}
-            version={rootVersion(data.contact)}
-            archived={data.contact.archived}
-            archiveVersion={data.contact.archiveVersion}
-          />
-        )}
+        {/* Moments, "Load older" and "Restore to here" come with B1. */}
+        <RustContactHistory
+          key={`${tenant._id}:${id}`}
+          id={id}
+          archived={data.contact.archived}
+          archiveVersion={data.contact.archiveVersion}
+        />
       </main>
       <LeaveGuard work={work} />
     </UnsavedWorkProvider>
