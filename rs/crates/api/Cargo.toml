@@ -9,6 +9,7 @@ publish.workspace = true
 store.workspace = true
 contracts.workspace = true
 contacts.workspace = true
+platform.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 tokio.workspace = true

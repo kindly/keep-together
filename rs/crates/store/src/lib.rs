@@ -22,7 +22,9 @@ pub use conn::read_only_authorizer;
 pub use events::OrgEvent;
 pub use migrate::MigrationFailed;
 pub use org::{OrgDb, OrgRead, RawTx};
-pub use platform::{Member, Platform, Role, SESSION_TTL_MS, Session, Tenant, UserId};
+pub use platform::{
+    Member, Platform, PlatformSchema, Role, SESSION_TTL_MS, Session, Tenant, UserId,
+};
 pub use rusqlite_migration::{M, Migrations};
 
 #[derive(Debug, thiserror::Error)]
@@ -43,8 +45,18 @@ pub enum StoreError {
         expected: String,
         found: String,
     },
+    #[error("the new organisation's setup failed")]
+    InitFailed,
     #[error("organisation file {0} is missing")]
     MissingFile(PathBuf),
+    #[error("platform schema {0:?} is in platform.db but not in this code: a newer release's")]
+    UnknownSchema(String),
+    #[error("platform schema {name}: stored version {stored} is newer than code version {code}")]
+    NewerSchema {
+        name: &'static str,
+        stored: usize,
+        code: usize,
+    },
 }
 
 /// An organisation's id: 32 lowercase hex characters (a UUIDv7, simple
@@ -123,17 +135,30 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open the data directory. `platform.db` migrates here, copied first
-    /// (into this boot's `premigrate/` directory) if it has steps pending.
+    /// Open the data directory with only `platform.db`'s base schema (no
+    /// crate's [`PlatformSchema`]). For tests on fresh directories: a data
+    /// dir the app has opened carries crate schemas, which this refuses as
+    /// unknown. Binaries use [`Store::open_with`].
     pub fn open(config: StoreConfig) -> Result<Self, StoreError> {
+        Self::open_with(config, &[])
+    }
+
+    /// Open the data directory. `platform.db` migrates here (its base
+    /// schema, then each of `schemas` in order), copied first (into this
+    /// boot's `premigrate/` directory) if any step is pending.
+    pub fn open_with(config: StoreConfig, schemas: &[PlatformSchema]) -> Result<Self, StoreError> {
         std::fs::create_dir_all(config.dir.join("orgs"))?;
         let boot = migrate::BootCopies::new(&config.dir);
         let platform_path = config.dir.join("platform.db");
         if platform_path.exists() {
             let conn = conn::open(&platform_path, false, false)?;
-            migrate::copy_if_pending(&boot, &conn, &platform::migrations(), "platform")?;
+            let copied =
+                migrate::copy_if_pending(&boot, &conn, &platform::migrations(), "platform")?;
+            if !copied && platform::schemas_pending(&conn, schemas)? {
+                migrate::copy_platform(&boot, &conn)?;
+            }
         }
-        let platform = Platform::open(&platform_path, config.readers)?;
+        let platform = Platform::open(&platform_path, config.readers, schemas)?;
         Ok(Self {
             dir: config.dir,
             platform,
@@ -162,18 +187,41 @@ impl Store {
     /// the handle is cached only once the row has committed, and the file
     /// is removed if it didn't.
     pub fn create_tenant(&self, slug: &str, name: &str) -> Result<Tenant, StoreError> {
+        self.create_tenant_with(slug, name, |_, _, _| Ok::<_, StoreError>(()))
+    }
+
+    /// [`Store::create_tenant`], then `init` before the tenant row commits:
+    /// with the platform transaction (its admin membership), the tenant,
+    /// and its new file (seeds). If `init` fails, nothing remains: no row,
+    /// no file.
+    pub fn create_tenant_with<E: From<StoreError>>(
+        &self,
+        slug: &str,
+        name: &str,
+        init: impl FnOnce(&rusqlite::Connection, &Tenant, &OrgDb) -> Result<(), E>,
+    ) -> Result<Tenant, E> {
         let id = TenantId::new();
         let path = self.org_path(&id);
         let mut made = None;
-        let tenant = self.platform.insert_tenant(&id, slug, name, || {
-            made = Some(OrgDb::create(
-                &path,
-                &id,
-                &self.org_migrations,
-                self.readers,
-            )?);
-            Ok(())
+        let mut failed = None;
+        let tenant = self.platform.insert_tenant(&id, slug, name, |tx| {
+            let db = OrgDb::create(&path, &id, &self.org_migrations, self.readers)?;
+            let tenant = Tenant {
+                id: id.clone(),
+                slug: slug.into(),
+                name: name.into(),
+            };
+            let out = init(tx, &tenant, &db);
+            made = Some(db);
+            out.map_err(|e| {
+                failed = Some(e);
+                StoreError::InitFailed
+            })
         });
+        let tenant = match (tenant, failed) {
+            (Err(_), Some(e)) => Err(e),
+            (other, _) => other.map_err(E::from),
+        };
         match tenant {
             Ok(tenant) => {
                 if let Some(db) = made {

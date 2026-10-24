@@ -1,8 +1,6 @@
-import { useMutation } from 'convex/react'
-import { ConvexError } from 'convex/values'
 import { useState } from 'react'
-import { api } from '../../convex/_generated/api'
-import type { ListKind } from '../../convex/lib/lists'
+import { useSetStaffCanManage } from '../lib/data'
+import type { ListKind } from '../lib/data/rust-types/ListKind'
 import { useIsAdmin, useTenant } from '../lib/tenant'
 
 const LABELS = {
@@ -30,16 +28,9 @@ export function StaffListSwitch({ kind }: { kind: ListKind }) {
   const tenant = useTenant()
   const [error, setError] = useState<string | null>(null)
   // No optimistic update: the switch moves when the server's answer
-  // arrives through `mine`, with the counter the next save needs.
-  const saveTypes = useMutation(
-    api.platform.preferences.setStaffCanManageIdentifierTypes,
-  )
-  const saveCodes = useMutation(
-    api.platform.preferences.setStaffCanManageSourceCodes,
-  )
-  const saveFields = useMutation(
-    api.platform.preferences.setStaffCanManageFields,
-  )
+  // arrives through the groups refetch, with the counter the next save
+  // needs.
+  const save = useSetStaffCanManage(tenant)
   if (!isAdmin) return null
 
   const checked = {
@@ -50,37 +41,10 @@ export function StaffListSwitch({ kind }: { kind: ListKind }) {
 
   async function toggle(on: boolean) {
     setError(null)
-    try {
-      if (kind === 'identifierTypes') {
-        await saveTypes({
-          tenantId: tenant._id,
-          expected: tenant.identifierTypesVersion ?? undefined,
-          staffCanManageIdentifierTypes: on,
-        })
-      } else if (kind === 'sourceCodes') {
-        await saveCodes({
-          tenantId: tenant._id,
-          expected: tenant.sourceCodesVersion ?? undefined,
-          staffCanManageSourceCodes: on,
-        })
-      } else {
-        await saveFields({
-          tenantId: tenant._id,
-          expected: tenant.fieldsVersion ?? undefined,
-          staffCanManageFields: on,
-        })
-      }
-    } catch (err) {
-      const errKind =
-        err instanceof ConvexError
-          ? (err.data as { kind?: string }).kind
-          : undefined
-      setError(
-        errKind === 'stale'
-          ? 'Another admin changed this just now; check it and try again'
-          : 'Could not save',
-      )
-    }
+    const outcome = await save(kind, on)
+    if (outcome === 'stale')
+      setError('Another admin changed this just now; check it and try again')
+    else if (outcome === 'failed') setError('Could not save')
   }
 
   return (
