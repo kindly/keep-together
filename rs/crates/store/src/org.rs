@@ -61,6 +61,7 @@ impl OrgDb {
         id: &TenantId,
         migrations: &Migrations<'static>,
         readers: usize,
+        checkpointer: bool,
     ) -> Result<Self, StoreError> {
         if path.exists() {
             return Err(StoreError::WrongFile {
@@ -73,17 +74,19 @@ impl OrgDb {
         conn.execute_batch(STAMP_TABLE)?;
         conn.execute("INSERT INTO _org (tenant_id) VALUES (?1)", [id.as_str()])?;
         drop(conn);
-        Self::open(path, id, migrations, readers)
+        Self::open(path, id, migrations, readers, checkpointer)
     }
 
     /// Open a stamped file. Pending migrations run here too (a file that
     /// appeared after boot); at boot `Store::migrate_all` has already run
-    /// them, with a copy first.
+    /// them, with a copy first. `checkpointer`: start this file's
+    /// checkpointer thread (`store::checkpoint`).
     pub(crate) fn open(
         path: &Path,
         id: &TenantId,
         migrations: &Migrations<'static>,
         readers: usize,
+        checkpointer: bool,
     ) -> Result<Self, StoreError> {
         if !path.exists() {
             return Err(StoreError::MissingFile(path.to_path_buf()));
@@ -108,7 +111,7 @@ impl OrgDb {
             scope,
             readers: ReaderPool::open(path, readers)?,
             events: broadcast::channel(EVENT_BUFFER).0,
-            checkpointer: Checkpointer::start(path, page_size)?,
+            checkpointer: Checkpointer::start(path, page_size, checkpointer)?,
         })
     }
 

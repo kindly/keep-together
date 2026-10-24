@@ -10,7 +10,9 @@
 //!   with `KEEP_ENV=staging`; with `prod` it stops the boot
 //!   (`routes::qc_seed`)
 //! - `KEEP_SNAPSHOT_*`, `KEEP_ENV`: hourly snapshots (`backup`)
-//! - `KEEP_LITESTREAM_SOCKET`: Litestream's control socket, for `/healthz`
+//! - `KEEP_LITESTREAM_SOCKET`: Litestream's control socket, for `/healthz`;
+//!   when set, Litestream also owns org files' WAL checkpoints (no
+//!   checkpointer threads: `store::Store::without_checkpointer`)
 //! - `SENTRY_DSN`: error reporting (`observe`)
 //! - auth (`api::auth::boot`): `KEEP_APP_ORIGIN`, `KEEP_CLIENT_IP_HEADER`,
 //!   `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER`,
@@ -75,6 +77,11 @@ async fn main() {
         eprintln!("open data dir {dir}: {e}");
         std::process::exit(1)
     });
+    let store = if std::env::var_os("KEEP_LITESTREAM_SOCKET").is_some() {
+        store.without_checkpointer()
+    } else {
+        store
+    };
     // TOTP secrets from before auth step 3 are sealed now that the key is
     // known (after the step's pre-migration copy).
     match store

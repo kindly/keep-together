@@ -289,8 +289,12 @@ impl Job for IdleClose {
     }
     fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
         Box::pin(async move {
-            self.0.close_idle(IDLE_CLOSE_AFTER);
-            Ok(())
+            // Off the async runtime: closing a file may checkpoint it.
+            let store = self.0.clone();
+            tokio::task::spawn_blocking(move || store.close_idle(IDLE_CLOSE_AFTER))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         })
     }
 }

@@ -21,7 +21,12 @@
 //!
 //! The last connection to close still checkpoints the file (SQLite does
 //! that whatever `wal_autocheckpoint` says), so closing a handle (LRU,
-//! idle-close) leaves no WAL behind. Litestream: `docs/ops.md`.
+//! idle-close) leaves no WAL behind.
+//!
+//! Under Litestream there is no thread (`Store::without_checkpointer`, set
+//! by the api when `KEEP_LITESTREAM_SOCKET` is): Litestream's read lock
+//! stops any other process copying the WAL back, so Litestream does every
+//! checkpoint. The backlog is still tracked for `/healthz`. `docs/ops.md`.
 
 use std::cell::Cell;
 use std::os::raw::c_int;
@@ -96,7 +101,8 @@ struct Shared {
     wake: Condvar,
 }
 
-/// One org file's checkpointer thread; stopped (and joined) when dropped.
+/// One org file's WAL bookkeeping and, unless Litestream owns
+/// checkpoints, its checkpointer thread; stopped (and joined) when dropped.
 pub(crate) struct Checkpointer {
     shared: Arc<Shared>,
     page_size: i64,
@@ -104,18 +110,25 @@ pub(crate) struct Checkpointer {
 }
 
 impl Checkpointer {
-    pub(crate) fn start(path: &Path, page_size: i64) -> std::io::Result<Self> {
+    /// With `run` false, no thread: only the backlog is tracked (from the
+    /// WAL's length at each commit), and whoever else checkpoints the file
+    /// (Litestream) does it.
+    pub(crate) fn start(path: &Path, page_size: i64, run: bool) -> std::io::Result<Self> {
         let shared = Arc::new(Shared::default());
-        let thread = {
+        let thread = if run {
             let (shared, path) = (shared.clone(), path.to_path_buf());
-            std::thread::Builder::new()
-                .name("wal-checkpoint".into())
-                .spawn(move || run(&path, &shared))?
+            Some(
+                std::thread::Builder::new()
+                    .name("wal-checkpoint".into())
+                    .spawn(move || self::run(&path, &shared))?,
+            )
+        } else {
+            None
         };
         Ok(Self {
             shared,
             page_size,
-            thread: Some(thread),
+            thread,
         })
     }
 
@@ -233,6 +246,10 @@ fn run(path: &Path, shared: &Shared) {
         }
         let Some(c) = conn.as_ref() else { continue };
         // Idle: nothing committed for a whole interval, everything copied.
+        // A commit landing between this decision and the TRUNCATE leaves it
+        // frames to copy under the write lock: a write arriving then waits
+        // about one fsync. Rare (a sub-millisecond window after a second
+        // idle) and bounded, so accepted.
         let mode = if busy { "PASSIVE" } else { "TRUNCATE" };
         match checkpoint(c, mode) {
             // Didn't run (another checkpoint in progress): next interval.
