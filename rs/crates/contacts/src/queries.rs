@@ -13,10 +13,8 @@ use ts_rs::TS;
 
 use crate::fields::{field_row, option_row};
 use crate::number::{ParsedNumber, parse_number};
-use crate::projection::FtsVariant;
-use crate::rules::{
-    looks_like_email, looks_like_uk_postcode, matches_all, normalise_email, parse_search,
-};
+use crate::projection::SEARCH_TABLE;
+use crate::rules::{looks_like_email, looks_like_uk_postcode, normalise_email, parse_search};
 use crate::slices::{load_addresses, load_details, load_field_values, load_methods};
 use crate::types::{
     Addresses, ContactPage, ContactRow, ContactView, Counters, FieldValues, HistoryPage, Kind,
@@ -72,11 +70,6 @@ pub struct SearchQuery {
     #[serde(default)]
     #[ts(optional)]
     pub fields: Option<String>,
-    /// `words` (unicode61, the default) or `trigram`: the spike measures
-    /// both on one seed.
-    #[serde(default)]
-    #[ts(optional)]
-    pub fts: Option<String>,
 }
 
 /// A dropdown filter: the field holds this option, or (None) nothing.
@@ -303,7 +296,6 @@ fn quote(term: &str) -> String {
 /// Returns the rows and how many FTS rows were read.
 fn fts_hits(
     conn: &Connection,
-    variant: FtsVariant,
     terms: &[String],
     f: &Filters,
     want: usize,
@@ -311,78 +303,34 @@ fn fts_hits(
     if terms.is_empty() {
         return Ok((vec![], 0));
     }
-    let table = variant.table();
-    match variant {
-        FtsVariant::Words => {
-            // Convex's rules exactly: AND of whole words, the last a prefix.
-            let expr = terms
-                .iter()
-                .enumerate()
-                .map(|(i, t)| {
-                    if i + 1 == terms.len() {
-                        format!("{}*", quote(t))
-                    } else {
-                        quote(t)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            let params = std::iter::once(Value::Text(expr))
-                .chain(f.params.iter().cloned())
-                .chain(std::iter::once(Value::Integer(want as i64)));
-            let rows: Vec<ContactRow> = conn
-                .prepare_cached(&format!(
-                    "SELECT {ROW_COLUMNS} FROM {table} s JOIN contacts c ON c.number = s.rowid
-                     WHERE {table} MATCH ?{}
-                     ORDER BY s.rank, c.sort_key, c.id LIMIT ?",
-                    f.sql
-                ))?
-                .query_map(params_from_iter(params), row)?
-                .collect::<rusqlite::Result<_>>()?;
-            let read = rows.len() as u32;
-            Ok((rows, read))
-        }
-        FtsVariant::Trigram => {
-            // Substrings of 3+ characters narrow by index; shorter terms
-            // are a LIKE over the stored text. Either way the word rules
-            // are checked per row, so this reads every candidate.
-            let (long, short): (Vec<&String>, Vec<&String>) =
-                terms.iter().partition(|t| t.chars().count() >= 3);
-            let mut sql = String::new();
-            let mut params = Vec::new();
-            if !long.is_empty() {
-                sql.push_str(&format!(" AND {table} MATCH ?"));
-                params.push(Value::Text(
-                    long.iter().map(|t| quote(t)).collect::<Vec<_>>().join(" "),
-                ));
-            }
-            for t in &short {
-                sql.push_str(" AND s.text LIKE ?");
-                params.push(Value::Text(format!("%{t}%")));
-            }
-            params.extend(f.params.iter().cloned());
-            let order = if long.is_empty() {
-                "c.sort_key, c.id"
+    let table = SEARCH_TABLE;
+    // Convex's rules exactly: AND of whole words, the last a prefix.
+    let expr = terms
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            if i + 1 == terms.len() {
+                format!("{}*", quote(t))
             } else {
-                "s.rank, c.sort_key, c.id"
-            };
-            let mut stmt = conn.prepare_cached(&format!(
-                "SELECT {ROW_COLUMNS}, s.text FROM {table} s JOIN contacts c ON c.number = s.rowid
-                 WHERE 1 = 1{sql}{} ORDER BY {order}",
-                f.sql
-            ))?;
-            let mut found = stmt.query(params_from_iter(params))?;
-            let mut rows = Vec::new();
-            let mut read = 0;
-            while let Some(r) = found.next()? {
-                read += 1;
-                if rows.len() < want && matches_all(&r.get::<_, String>(8)?, terms) {
-                    rows.push(row(r)?);
-                }
+                quote(t)
             }
-            Ok((rows, read))
-        }
-    }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let params = std::iter::once(Value::Text(expr))
+        .chain(f.params.iter().cloned())
+        .chain(std::iter::once(Value::Integer(want as i64)));
+    let rows: Vec<ContactRow> = conn
+        .prepare_cached(&format!(
+            "SELECT {ROW_COLUMNS} FROM {table} s JOIN contacts c ON c.number = s.rowid
+             WHERE {table} MATCH ?{}
+             ORDER BY s.rank, c.sort_key, c.id LIMIT ?",
+            f.sql
+        ))?
+        .query_map(params_from_iter(params), row)?
+        .collect::<rusqlite::Result<_>>()?;
+    let read = rows.len() as u32;
+    Ok((rows, read))
 }
 
 /// The contacts list with search text: one window of at most LIST_LIMIT
@@ -415,12 +363,6 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<SearchResult, Contra
             invalid_number: None,
         });
     }
-    let variant = match q.fts.as_deref() {
-        None | Some("") => FtsVariant::default(),
-        Some(v) => {
-            FtsVariant::parse(v).ok_or_else(|| ContractError::invalid("fts", "words or trigram"))?
-        }
-    };
     let fields = field_filters(conn, q.fields.as_deref())?;
     let f = filters(include_archived, q.kind, &fields);
     let parsed = parse_search(term);
@@ -476,7 +418,7 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<SearchResult, Contra
         }
     }
     let want = (LIST_LIMIT + 1).saturating_sub(rows.len());
-    let (hits, checked) = fts_hits(conn, variant, &parsed.terms, &f, want + exact)?;
+    let (hits, checked) = fts_hits(conn, &parsed.terms, &f, want + exact)?;
     let hit_count = hits.len();
     for r in hits {
         if seen.insert(r.id.clone()) {

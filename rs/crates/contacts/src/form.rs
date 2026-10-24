@@ -27,11 +27,12 @@ pub fn create(ctx: &Ctx, req: CreateContact, source: Source) -> Result<Created, 
         None => Exec::create(source),
     };
     let Executed { id, .. } = execute(ctx, &DETAILS, req.details, opts)?;
-    let number = ctx
-        .tx
-        .query_row("SELECT number FROM contacts WHERE id = ?1", [&id], |r| {
-            r.get(0)
-        })?;
+    let number =
+        ctx.tx
+            .read()
+            .query_row("SELECT number FROM contacts WHERE id = ?1", [&id], |r| {
+                r.get(0)
+            })?;
     Ok(Created { id, number })
 }
 
@@ -118,7 +119,7 @@ impl<'a> Form<'a> {
 /// save, under one command group when there are several. A field value
 /// refused mid-edit (an option archived) is reported on its field.
 pub fn save_form(ctx: &Ctx, id: &str, form: SaveForm) -> Result<SaveFormResult, ContractError> {
-    let tx = ctx.tx;
+    let tx = ctx.tx.read();
     let Some(now) = counters(tx, id)? else {
         return Err(ContractError::NotFound);
     };
@@ -232,6 +233,7 @@ pub fn restore_contact(
         RestoreRequest::Revision { revision_id } => {
             let owner: Option<(String, String)> = ctx
                 .tx
+                .read()
                 .query_row(
                     "SELECT entity, entity_id FROM revisions WHERE id = ?1",
                     [revision_id],
@@ -241,7 +243,7 @@ pub fn restore_contact(
             if owner != Some(("contacts".into(), id.to_owned())) {
                 return Err(ContractError::NotFound);
             }
-            let contract: String = ctx.tx.query_row(
+            let contract: String = ctx.tx.read().query_row(
                 "SELECT contract FROM revisions WHERE id = ?1",
                 [revision_id],
                 |r| r.get(0),
@@ -252,7 +254,7 @@ pub fn restore_contact(
             })
         }
         RestoreRequest::At { at } => {
-            if counters(ctx.tx, id)?.is_none() {
+            if counters(ctx.tx.read(), id)?.is_none() {
                 return Err(ContractError::NotFound);
             }
             let restored =

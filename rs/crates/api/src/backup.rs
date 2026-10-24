@@ -43,34 +43,6 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 
-/// A named in-process job that runs every `every()`. The shape `api::jobs`
-/// (F1) registers; until it lands, [`spawn`] runs one on its own.
-pub trait Job: Send + Sync + 'static {
-    fn name(&self) -> &'static str;
-    fn every(&self) -> Duration;
-    /// The first run, from start. One period unless the job says otherwise.
-    fn first_after(&self) -> Duration {
-        self.every()
-    }
-    fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
-}
-
-/// Run `job` every `every()`, the first time `first_after()` from now.
-/// Errors go to the log (and Sentry, through [`crate::observe`]).
-pub fn spawn(job: Arc<dyn Job>) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        tokio::time::sleep(job.first_after()).await;
-        let mut tick = tokio::time::interval(job.every());
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            if let Err(err) = job.run().await {
-                crate::observe::error(&format!("job {}: {err}", job.name()));
-            }
-        }
-    })
-}
-
 const PLATFORM: &str = "platform";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -193,7 +165,7 @@ pub struct SnapshotJob {
     config: SnapshotConfig,
 }
 
-impl Job for SnapshotJob {
+impl crate::jobs::Job for SnapshotJob {
     fn name(&self) -> &'static str {
         "snapshots"
     }
@@ -225,12 +197,16 @@ impl Job for SnapshotJob {
             if failed == 0 {
                 Ok(())
             } else {
-                Err(report
+                let err = report
                     .failed
                     .iter()
                     .map(|(name, e)| format!("{name}: {e}"))
                     .collect::<Vec<_>>()
-                    .join("; "))
+                    .join("; ");
+                // The job runner only logs; failed snapshots also go to
+                // Sentry.
+                crate::observe::error(&format!("snapshots: {err}"));
+                Err(err)
             }
         })
     }
@@ -403,22 +379,12 @@ fn latest_revision(path: &Path) -> Result<i64, String> {
         .map_err(|e| format!("read revisions of {}: {e}", path.display()))
 }
 
-/// The ledger lives in `platform.db`. Created here until it joins the
-/// platform migrations (F1).
-const LEDGER: &str = "CREATE TABLE IF NOT EXISTS snapshots (
-    tenant_id TEXT PRIMARY KEY,
-    last_revision INTEGER,
-    at INTEGER NOT NULL,
-    daily_revision INTEGER,
-    daily_day TEXT,
-    monthly_month TEXT
-) STRICT";
-
+/// The ledger: `snapshots` in `platform.db` (platform migration 2), which
+/// the store has migrated before any job or health check runs.
 fn open_ledger(platform: &Path) -> Result<Connection, String> {
     let conn = Connection::open(platform).map_err(|e| e.to_string())?;
     conn.busy_timeout(Duration::from_secs(5))
         .map_err(|e| e.to_string())?;
-    conn.execute_batch(LEDGER).map_err(|e| e.to_string())?;
     Ok(conn)
 }
 
@@ -551,6 +517,10 @@ pub struct Restored {
     /// same file was tried next.
     pub passed_over: Vec<(String, String)>,
 }
+
+/// After boot, how long a database may go without its first sync before
+/// `/healthz` calls it an error.
+const STARTUP_GRACE: Duration = Duration::from_secs(120);
 
 /// How far ahead of `now` a stamp may be (clock skew) before it's ignored.
 const FUTURE_SKEW: time::Duration = time::Duration::minutes(10);
@@ -737,8 +707,9 @@ pub struct BackupHealth {
     pub snapshot_age_seconds: Option<i64>,
     /// Files that failed in the last run of this process.
     pub snapshot_error_count: usize,
-    /// `off` (no socket configured), `ok`, or `error` (unreachable, or a
-    /// database not replicating).
+    /// `off` (no socket configured), `ok`, `starting` (in the first two
+    /// minutes, databases that haven't synced yet), or `error`
+    /// (unreachable, or a database not replicating).
     pub litestream: &'static str,
     /// The worst database's seconds since its last sync.
     pub litestream_lag_seconds: Option<i64>,
@@ -779,6 +750,7 @@ struct HealthState {
     litestream_socket: Option<PathBuf>,
     last_run: Mutex<Option<RunReport>>,
     restore: Option<RestoreMarker>,
+    started: std::time::Instant,
     /// The last Litestream problem logged, so a lasting one is logged
     /// once, not on every 15 s health check.
     last_litestream_problem: Mutex<Option<String>>,
@@ -808,6 +780,7 @@ pub fn init_health(data_dir: &Path, snapshots: bool, litestream_socket: Option<P
         litestream_socket,
         last_run: Mutex::new(None),
         restore,
+        started: std::time::Instant::now(),
         last_litestream_problem: Mutex::new(None),
     });
 }
@@ -855,16 +828,28 @@ pub async fn health() -> BackupHealth {
         }
     }
     if let Some(socket) = &state.litestream_socket {
+        let mut starting = false;
         let problem = match litestream_list(socket).await {
             Ok(list) => {
                 out.litestream_databases = list.databases.len();
                 let (lag, problem) = lag(&list, now);
                 out.litestream_lag_seconds = lag;
-                problem
+                // Right after boot, databases that haven't synced yet are
+                // expected, not a problem to report.
+                starting = state.started.elapsed() < STARTUP_GRACE
+                    && list
+                        .databases
+                        .iter()
+                        .all(|db| db.status == "replicating" || db.last_sync_at.is_none());
+                problem.filter(|_| !starting)
             }
             Err(e) => Some(e),
         };
-        out.litestream = if problem.is_none() { "ok" } else { "error" };
+        out.litestream = match (&problem, starting) {
+            (Some(_), _) => "error",
+            (None, true) if out.litestream_lag_seconds.is_none() => "starting",
+            (None, _) => "ok",
+        };
         let mut last = state.last_litestream_problem.lock().unwrap();
         if problem.is_some() && *last != problem {
             crate::observe::error(&format!("litestream: {}", problem.as_deref().unwrap_or("")));
@@ -885,41 +870,6 @@ fn snapshot_age(platform: &Path, now: OffsetDateTime) -> Result<Option<i64>, Str
         .map_err(|e| e.to_string())?;
     let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
     Ok(at.map(|at| (now_ms - at) / 1000))
-}
-
-/// `GET /healthz`: 200 while `platform.db` answers (503 otherwise), with
-/// the backup fields alongside. F1's `/healthz` replaces this route at
-/// merge and keeps the body's `backup` field.
-pub fn healthz_route(router: axum::Router, store: Arc<store::Store>) -> axum::Router {
-    use axum::Json;
-    use axum::http::StatusCode;
-    router.route(
-        "/healthz",
-        axum::routing::get(move || {
-            let store = store.clone();
-            async move {
-                let db = off(move || {
-                    store
-                        .platform()
-                        .tenant_by_slug("-")
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
-                })
-                .await;
-                let status = if db.is_ok() {
-                    StatusCode::OK
-                } else {
-                    StatusCode::SERVICE_UNAVAILABLE
-                };
-                let body = serde_json::json!({
-                    "ok": db.is_ok(),
-                    "db": db.err().unwrap_or_else(|| "ok".into()),
-                    "backup": health().await,
-                });
-                (status, Json(body))
-            }
-        }),
-    )
 }
 
 /// Litestream's `GET /list` on its control socket.

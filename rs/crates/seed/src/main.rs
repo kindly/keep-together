@@ -19,7 +19,7 @@ use contacts::types::{
     AddressRow, Addresses, CreateContact, Details, EmailRow, Expected, FieldOptionPayload,
     FieldPayload, FieldValue, FieldValues, Kind, Methods, PhoneRow, SaveForm,
 };
-use contracts::{ContractError, Ctx, Exec, Source, execute};
+use contracts::{ContractError, Exec, Source, execute};
 use serde::Deserialize;
 use store::{OrgDb, Role, Store, StoreConfig};
 
@@ -52,8 +52,8 @@ fn required(name: &str) -> String {
 /// The organisation's "Volunteer status" field and its options, made on
 /// the first run (for every kind, as the QC fixture's).
 fn volunteer_field(db: &OrgDb) -> Result<(String, Vec<String>), ContractError> {
-    db.write(|tx| {
-        let ctx = Ctx::new(tx, None);
+    contracts::transact(db, None, |ctx| {
+        let tx = ctx.tx.read();
         if let Some(f) = contacts::fields::definitions(tx)?
             .into_iter()
             .find(|f| f.label == FIELD)
@@ -61,7 +61,7 @@ fn volunteer_field(db: &OrgDb) -> Result<(String, Vec<String>), ContractError> {
             return Ok((f.id, f.options.into_iter().map(|o| o.id).collect()));
         }
         let field = execute(
-            &ctx,
+            ctx,
             &contacts::fields::FIELD,
             FieldPayload {
                 label: FIELD.into(),
@@ -74,7 +74,7 @@ fn volunteer_field(db: &OrgDb) -> Result<(String, Vec<String>), ContractError> {
         for (position, label) in OPTIONS.iter().enumerate() {
             options.push(
                 execute(
-                    &ctx,
+                    ctx,
                     &contacts::fields::FIELD_OPTION,
                     FieldOptionPayload {
                         field_id: field.id.clone(),
@@ -97,13 +97,12 @@ fn one(
     client_key: String,
     field: &(String, Vec<String>),
 ) -> Result<bool, ContractError> {
-    db.write(|tx| {
-        let ctx = Ctx::new(tx, None);
+    contracts::transact(db, None, |ctx| {
         let details = Details {
             client_key: Some(client_key),
             ..p.details
         };
-        let id = match create(&ctx, CreateContact { id: None, details }, Source::Seed) {
+        let id = match create(ctx, CreateContact { id: None, details }, Source::Seed) {
             Ok(created) => created.id,
             Err(ContractError::Duplicate { .. }) => return Ok(false),
             Err(e) => return Err(e),
@@ -118,7 +117,7 @@ fn one(
             .into_iter()
             .collect();
         let out = save_form(
-            &ctx,
+            ctx,
             &id,
             SaveForm {
                 source: None,
@@ -149,7 +148,7 @@ fn one(
             ));
         }
         if p.archived {
-            set_archived(&ctx, &id, 0, true)?;
+            set_archived(ctx, &id, 0, true)?;
         }
         Ok(true)
     })
@@ -166,6 +165,7 @@ fn main() {
         dir,
         org_migrations: schema::org_migrations(),
         readers: 1,
+        max_open: StoreConfig::DEFAULT_MAX_OPEN,
     })
     .expect("open data dir");
     let tenant = match store.platform().tenant_by_slug(&slug).expect("platform") {

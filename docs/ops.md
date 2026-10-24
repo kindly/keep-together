@@ -292,7 +292,8 @@ needs the aws CLI, litestream 0.5.x and sqlite3, and builds
   - `snapshotAgeSeconds`: of the last `platform.db` snapshot, which every
     run takes;
   - `snapshotErrorCount`: from this process's last run;
-  - `litestream`: `ok`, `error` or `off`;
+  - `litestream`: `ok`, `error` or `off`, or `starting` in the first two
+    minutes while databases haven't synced yet;
   - `litestreamLagSeconds`: the worst database's seconds since its last
     sync, from the control socket's `GET /list`;
   - `litestreamDatabases`;

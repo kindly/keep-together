@@ -3,7 +3,11 @@
 
 pub mod auth;
 pub mod backup;
+pub mod boot;
 pub mod error;
+pub mod events;
+pub mod health;
+pub mod jobs;
 pub mod observe;
 pub mod reset;
 pub mod routes;
@@ -49,6 +53,13 @@ impl From<Role> for RoleName {
     }
 }
 
+/// Dev auth (and every `/api/dev/*` route) only on a loopback bind (M1): a
+/// server reachable from elsewhere never accepts the dev login, whatever
+/// `KEEP_DEV_AUTH` says.
+pub fn dev_auth_allowed(requested: bool, bind: std::net::IpAddr) -> bool {
+    requested && bind.is_loopback()
+}
+
 /// Path parameters for tenant routes: always a named-field struct, since
 /// the nested `{slug}` is a parameter too (`Path<String>` fails with two).
 /// `Path(IdParam { id })` for `…/{id}/…`.
@@ -76,6 +87,8 @@ where
 pub fn app(state: AppState, domain: Router) -> Router {
     let tenant_routes = Router::new()
         .route("/", get(tenant::info))
+        .route("/events", get(events::events))
+        .route("/boot", get(boot::boot))
         .merge(domain)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -90,6 +103,7 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .route("/api/dev/qc-seed", post(routes::qc_seed::fixture))
         .route("/api/dev/qc-crowd", post(routes::qc_seed::crowd))
         .route("/api/me", get(auth::me))
+        .route("/healthz", get(health::healthz))
         .nest("/api/t/{slug}", tenant_routes)
         .with_state(state)
         .layer(middleware::from_fn(timing::middleware))

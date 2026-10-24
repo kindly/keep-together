@@ -7,7 +7,7 @@ use std::sync::Arc;
 use api::backup::{SnapshotConfig, SnapshotJob, Tier, key};
 use contacts::form::create;
 use contacts::types::{CreateContact, Details, Kind};
-use contracts::{Ctx, Source};
+use contracts::{Source, transact};
 use futures_util::TryStreamExt;
 use object_store::memory::InMemory;
 use object_store::path::Path as ObjectPath;
@@ -21,34 +21,32 @@ fn open(dir: &Path) -> Store {
         dir: dir.into(),
         org_migrations: api::schema::org_migrations(),
         readers: 1,
+        max_open: StoreConfig::DEFAULT_MAX_OPEN,
     })
     .unwrap()
 }
 
 fn add_contacts(store: &Store, tenant: &Tenant, last: &str, n: usize) {
-    store
-        .org(&tenant.id)
-        .unwrap()
-        .write(|tx| {
-            let ctx = Ctx::new(tx, None);
-            for i in 0..n {
-                let details = Details {
-                    client_key: None,
-                    kind: Kind::Individual,
-                    title: String::new(),
-                    first_name: format!("P{i}"),
-                    last_name: last.into(),
-                    nickname: String::new(),
-                    name: String::new(),
-                    birth_date: None,
-                    is_deceased: false,
-                    deceased_date: None,
-                };
-                create(&ctx, CreateContact { id: None, details }, Source::Seed)?;
-            }
-            Ok::<_, contracts::ContractError>(())
-        })
-        .unwrap();
+    let db = store.org(&tenant.id).unwrap();
+    transact(&db, None, |ctx| {
+        for i in 0..n {
+            let details = Details {
+                client_key: None,
+                kind: Kind::Individual,
+                title: String::new(),
+                first_name: format!("P{i}"),
+                last_name: last.into(),
+                nickname: String::new(),
+                name: String::new(),
+                birth_date: None,
+                is_deceased: false,
+                deceased_date: None,
+            };
+            create(ctx, CreateContact { id: None, details }, Source::Seed)?;
+        }
+        Ok::<_, contracts::ContractError>(())
+    })
+    .unwrap();
 }
 
 struct World {

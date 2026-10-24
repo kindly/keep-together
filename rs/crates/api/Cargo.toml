@@ -10,6 +10,7 @@ store.workspace = true
 contracts.workspace = true
 contacts.workspace = true
 axum.workspace = true
+futures-util.workspace = true
 tokio.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
@@ -22,10 +23,10 @@ object_store = { version = "0.14.2", features = ["aws"] }
 zstd = "0.14.3"
 tower-http = { version = "0.7.1", features = ["fs"] }
 sentry = { version = "0.49.3", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
-futures-util = "0.3.34"
 time = { version = "0.3.55", features = ["formatting", "parsing", "macros"] }
 tower.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 http-body-util.workspace = true

@@ -4,9 +4,4 @@ import type { ContactKind } from "./ContactKind";
 /**
  * `GET contacts/search` query string.
  */
-export type SearchQuery = { q: string, includeArchived?: boolean, kind?: ContactKind, fields?: string, 
-/**
- * `words` (unicode61, the default) or `trigram`: the spike measures
- * both on one seed.
- */
-fts?: string, };
+export type SearchQuery = { q: string, includeArchived?: boolean, kind?: ContactKind, fields?: string, };

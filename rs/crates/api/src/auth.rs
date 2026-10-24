@@ -2,6 +2,7 @@
 //! so with `KEEP_DEV_AUTH` unset nobody can log in and no existing cookie
 //! is honoured either.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::State;
@@ -10,7 +11,7 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
-use store::Session;
+use store::{Session, Store};
 use ts_rs::TS;
 
 use crate::error::{ApiError, Body};
@@ -42,7 +43,7 @@ pub(crate) async fn session(
         .to_owned();
     let store = state.store.clone();
     let start = Instant::now();
-    let session = blocking(move || store.platform().session(&token)).await?;
+    let session = blocking(move || store.platform().session(&token, contracts::now_ms())).await?;
     timing.add_platform(start.elapsed());
     session.ok_or(ApiError::Unauthenticated)
 }
@@ -115,6 +116,43 @@ pub struct Me {
     pub memberships: Vec<Membership>,
 }
 
+/// The signed-in user, for tenant routes that answer about them (`/boot`):
+/// it can read their own memberships and nothing else of the platform.
+#[derive(Clone)]
+pub struct Account {
+    store: Arc<Store>,
+    session: Session,
+}
+
+impl Account {
+    pub(crate) fn new(state: &AppState, session: &Session) -> Self {
+        Self {
+            store: state.store.clone(),
+            session: session.clone(),
+        }
+    }
+
+    /// Who is signed in, and their organisations.
+    pub async fn me(&self, timing: &Timing) -> Result<Me, ApiError> {
+        let store = self.store.clone();
+        let user = self.session.user;
+        let start = Instant::now();
+        let members = blocking(move || store.platform().memberships(user)).await?;
+        timing.add_platform(start.elapsed());
+        Ok(Me {
+            email: self.session.email.clone(),
+            memberships: members
+                .into_iter()
+                .map(|m| Membership {
+                    slug: m.tenant.slug,
+                    name: m.tenant.name,
+                    role: m.role.into(),
+                })
+                .collect(),
+        })
+    }
+}
+
 /// `GET /api/me`: who is logged in, and their organisations.
 pub async fn me(
     State(state): State<AppState>,
@@ -122,21 +160,7 @@ pub async fn me(
     headers: HeaderMap,
 ) -> Result<Json<Me>, ApiError> {
     let session = session(&state, &headers, &timing).await?;
-    let store = state.store.clone();
-    let start = Instant::now();
-    let members = blocking(move || store.platform().memberships(session.user)).await?;
-    timing.add_platform(start.elapsed());
-    Ok(Json(Me {
-        email: session.email,
-        memberships: members
-            .into_iter()
-            .map(|m| Membership {
-                slug: m.tenant.slug,
-                name: m.tenant.name,
-                role: m.role.into(),
-            })
-            .collect(),
-    }))
+    Ok(Json(Account::new(&state, &session).me(&timing).await?))
 }
 
 #[derive(Deserialize, TS)]

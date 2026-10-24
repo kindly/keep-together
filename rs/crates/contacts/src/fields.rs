@@ -8,9 +8,8 @@
 //! option)` rather than Convex's numbered slots, so there is no field
 //! limit and no slot to free; retire and delete aren't in the spike.
 
-use contracts::{Command, Contract, ContractError, Problem};
+use contracts::{Command, Contract, ContractError, OrgTx, Problem, WriteTx};
 use rusqlite::{Connection, OptionalExtension, params};
-use store::OrgTx;
 
 use crate::types::{FieldDefinition, FieldOptionPayload, FieldOptionView, FieldPayload, Kind};
 
@@ -127,7 +126,7 @@ impl Contract for ContactField {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<FieldPayload, ContractError> {
-        Ok(tx.query_row(
+        Ok(tx.read().query_row(
             "SELECT label, applies_to, is_active FROM contact_fields WHERE id = ?1",
             [id],
             |r| {
@@ -151,7 +150,7 @@ impl Contract for ContactField {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&FieldPayload>,
         next: &FieldPayload,
@@ -179,6 +178,14 @@ impl Contract for ContactField {
                 params![id, next.label, normalized, kinds, next.is_active],
             )?;
         } else {
+            let count: i64 =
+                tx.query_row("SELECT count(*) FROM contact_fields", [], |r| r.get(0))?;
+            if count >= MAX_FIELDS {
+                return Err(ContractError::rejected(
+                    "field_limit",
+                    format!("An organisation has at most {MAX_FIELDS} fields"),
+                ));
+            }
             tx.execute(
                 "INSERT INTO contact_fields (id, label, label_normalized, applies_to, is_active)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -188,6 +195,9 @@ impl Contract for ContactField {
         Ok(())
     }
 }
+
+/// The most dropdown fields one organisation defines (L6).
+pub const MAX_FIELDS: i64 = 200;
 
 impl Contract for ContactFieldOption {
     const NAME: &'static str = "contacts.fieldOption";
@@ -206,7 +216,7 @@ impl Contract for ContactFieldOption {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<FieldOptionPayload, ContractError> {
-        Ok(tx.query_row(
+        Ok(tx.read().query_row(
             "SELECT field_id, label, position, is_active FROM contact_field_options WHERE id = ?1",
             [id],
             |r| {
@@ -237,7 +247,7 @@ impl Contract for ContactFieldOption {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&FieldOptionPayload>,
         next: &FieldOptionPayload,

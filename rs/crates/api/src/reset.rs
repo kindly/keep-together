@@ -11,7 +11,7 @@
 
 use contacts::form::create;
 use contacts::types::{CreateContact, Details, Kind};
-use contracts::{Ctx, Source};
+use contracts::{Source, transact};
 use store::{Role, Store};
 
 pub const SLUG: &str = "riverside";
@@ -66,11 +66,10 @@ pub fn seed(store: &Store) -> Result<bool, String> {
             ORGS.iter()
                 .map(|name| details(Kind::Organization, "", "", name)),
         );
-    db.write(|tx| {
-        let ctx = Ctx::new(tx, None);
+    transact(&db, None, |ctx| {
         for d in details {
             create(
-                &ctx,
+                ctx,
                 CreateContact {
                     id: None,
                     details: d,
@@ -113,6 +112,7 @@ mod tests {
                 dir: tmp.path().into(),
                 org_migrations: crate::schema::org_migrations(),
                 readers: 1,
+                max_open: StoreConfig::DEFAULT_MAX_OPEN,
             })
             .unwrap()
         };
