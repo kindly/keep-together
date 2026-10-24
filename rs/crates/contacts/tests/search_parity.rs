@@ -29,6 +29,7 @@ fn world() -> World {
             M::up(contacts::MIGRATION),
         ]),
         readers: 2,
+        max_open: StoreConfig::DEFAULT_MAX_OPEN,
     })
     .unwrap();
     let a = store.create_tenant("alpha", "Alpha").unwrap();
@@ -41,7 +42,7 @@ fn world() -> World {
 }
 
 fn w<T>(db: &OrgDb, f: impl FnOnce(&Ctx) -> Result<T, ContractError>) -> T {
-    db.write(|tx| f(&Ctx::new(tx, Some(1)))).unwrap()
+    contracts::transact(db, Some(1), f).unwrap()
 }
 
 /// What `contact()` in searchList.test.ts takes.

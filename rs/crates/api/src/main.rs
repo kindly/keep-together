@@ -20,6 +20,7 @@ async fn main() {
         dir: dir.clone().into(),
         org_migrations: schema::org_migrations(),
         readers: 4,
+        max_open: StoreConfig::DEFAULT_MAX_OPEN,
     })
     .expect("open data dir");
     let state = AppState {

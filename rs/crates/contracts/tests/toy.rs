@@ -3,13 +3,14 @@
 //! (child rows with ids; the address is the identity).
 
 use contracts::{
-    ChildRow, Command, Contract, ContractError, Ctx, Exec, Registry, Source, command_group,
-    execute, history, mint_ids, reconcile, restore, restore_entity_to,
+    ChildRow, Command, Contract, ContractError, Ctx, Exec, OrgTx, ProjectionTx, Registry, Source,
+    WriteTx, command_group, execute, history, mint_ids, reconcile, restore, restore_entity_to,
+    transact,
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use store::{M, Migrations, OrgDb, OrgTx, Store, StoreConfig};
+use store::{M, Migrations, OrgDb, Store, StoreConfig};
 
 const TOY_SCHEMA: &str = "
 CREATE TABLE toys (
@@ -53,14 +54,14 @@ impl Contract for Details {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<DetailsSlice, ContractError> {
-        Ok(
-            tx.query_row("SELECT name, colour FROM toys WHERE id = ?1", [id], |r| {
+        Ok(tx
+            .read()
+            .query_row("SELECT name, colour FROM toys WHERE id = ?1", [id], |r| {
                 Ok(DetailsSlice {
                     name: r.get(0)?,
                     colour: r.get(1)?,
                 })
-            })?,
-        )
+            })?)
     }
 
     fn apply(
@@ -74,7 +75,7 @@ impl Contract for Details {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&DetailsSlice>,
         next: &DetailsSlice,
@@ -93,7 +94,7 @@ impl Contract for Details {
         Ok(())
     }
 
-    fn project(&self, tx: &OrgTx, id: &str) -> Result<(), ContractError> {
+    fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
         tx.execute(
             "INSERT OR REPLACE INTO toy_search (toy_id, text)
              SELECT id, lower(name) FROM toys WHERE id = ?1",
@@ -154,8 +155,9 @@ impl Contract for Emails {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Vec<EmailRow>, ContractError> {
-        let mut stmt =
-            tx.prepare("SELECT id, address, label FROM toy_emails WHERE toy_id = ?1 ORDER BY id")?;
+        let mut stmt = tx
+            .read()
+            .prepare("SELECT id, address, label FROM toy_emails WHERE toy_id = ?1 ORDER BY id")?;
         let rows = stmt.query_map([id], |r| {
             Ok(EmailRow {
                 id: r.get(0)?,
@@ -184,7 +186,7 @@ impl Contract for Emails {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&Vec<EmailRow>>,
         next: &Vec<EmailRow>,
@@ -220,6 +222,7 @@ fn org() -> (tempfile::TempDir, std::sync::Arc<OrgDb>) {
         dir: tmp.path().to_path_buf(),
         org_migrations: Migrations::new(vec![M::up(contracts::MIGRATION), M::up(TOY_SCHEMA)]),
         readers: 2,
+        max_open: StoreConfig::DEFAULT_MAX_OPEN,
     })
     .unwrap();
     let tenant = store.create_tenant("toys", "Toys").unwrap();
@@ -247,7 +250,15 @@ fn write<T>(
     db: &OrgDb,
     f: impl FnOnce(&Ctx) -> Result<T, ContractError>,
 ) -> Result<T, ContractError> {
-    db.write(|tx| f(&Ctx::new(tx, Some(7))))
+    transact(db, Some(7), f)
+}
+
+/// Run `f` on the transaction itself (for `at`).
+fn in_tx<T>(
+    db: &OrgDb,
+    f: impl FnOnce(&OrgTx) -> Result<T, ContractError>,
+) -> Result<T, ContractError> {
+    transact(db, Some(7), |ctx| f(ctx.tx))
 }
 
 fn create(db: &OrgDb, name: &str) -> String {
@@ -596,19 +607,19 @@ fn restore_upcasts_old_revisions_and_records_a_new_command() {
     let id = create(&db, "Current");
     // A revision written by an older build, at v1 (the name was `title`).
     let old: i64 = db
-        .write(|tx| {
-            tx.execute(
+        .write_raw(|tx| {
+            tx.conn().execute(
                 "INSERT INTO revisions (entity, entity_id, contract, version, counter, payload, source, at)
                  VALUES ('toys', ?1, 'toys.details', 1, 0, '{\"title\":\"From v1\"}', 'ui', 0)",
                 [&id],
             )?;
-            Ok::<_, rusqlite::Error>(tx.last_insert_rowid())
+            Ok::<_, rusqlite::Error>(tx.conn().last_insert_rowid())
         })
         .unwrap();
 
     let out = write(&db, |ctx| restore(ctx, &registry(), old, None)).unwrap();
     assert_eq!(out.counter, 1);
-    let state = db.write(|tx| Details.load(tx, &id)).unwrap();
+    let state = in_tx(&db, |tx| Details.load(tx, &id)).unwrap();
     assert_eq!(state, details("From v1"));
 
     let latest = &db.read(|r| history(r, "toys", &id, 1)).unwrap()[0];
@@ -624,13 +635,13 @@ fn restore_refuses_what_it_cannot_upcast() {
     let (_tmp, db) = org();
     let id = create(&db, "Current");
     let insert = |contract: &str, version: u32| -> i64 {
-        db.write(|tx| {
-            tx.execute(
+        db.write_raw(|tx| {
+            tx.conn().execute(
                 "INSERT INTO revisions (entity, entity_id, contract, version, counter, payload, source, at)
                  VALUES ('toys', ?1, ?2, ?3, 0, '{}', 'ui', 0)",
                 params![id, contract, version],
             )?;
-            Ok::<_, rusqlite::Error>(tx.last_insert_rowid())
+            Ok::<_, rusqlite::Error>(tx.conn().last_insert_rowid())
         })
         .unwrap()
     };
@@ -704,18 +715,17 @@ fn restore_brings_back_a_removed_child_with_its_id() {
 #[test]
 fn restore_entity_to_a_time_restores_only_slices_that_differ() {
     let (_tmp, db) = org();
-    let id = db
-        .write(|tx| {
-            execute(
-                &at(tx, 1_000),
-                &Details,
-                details("Original"),
-                Exec::create(Source::Ui),
-            )
-        })
-        .unwrap()
-        .id;
-    db.write(|tx| {
+    let id = in_tx(&db, |tx| {
+        execute(
+            &at(tx, 1_000),
+            &Details,
+            details("Original"),
+            Exec::create(Source::Ui),
+        )
+    })
+    .unwrap()
+    .id;
+    in_tx(&db, |tx| {
         execute(
             &at(tx, 1_000),
             &Emails,
@@ -727,7 +737,7 @@ fn restore_entity_to_a_time_restores_only_slices_that_differ() {
     })
     .unwrap();
     // Later: details changed, emails changed then changed back to the same state.
-    db.write(|tx| {
+    in_tx(&db, |tx| {
         execute(
             &at(tx, 2_000),
             &Details,
@@ -736,11 +746,11 @@ fn restore_entity_to_a_time_restores_only_slices_that_differ() {
         )
     })
     .unwrap();
-    let a = db.write(|tx| Emails.load(tx, &id)).unwrap()[0].clone();
+    let a = in_tx(&db, |tx| Emails.load(tx, &id)).unwrap()[0].clone();
     let same = || EmailsSlice {
         emails: vec![email(Some(&a.id), &a.address, &a.label)],
     };
-    db.write(|tx| {
+    in_tx(&db, |tx| {
         execute(
             &at(tx, 2_000),
             &Emails,
@@ -750,12 +760,13 @@ fn restore_entity_to_a_time_restores_only_slices_that_differ() {
     })
     .unwrap();
 
-    let restored = db
-        .write(|tx| restore_entity_to(&at(tx, 3_000), &registry(), "toys", &id, 1_500, &[], None))
-        .unwrap();
+    let restored = in_tx(&db, |tx| {
+        restore_entity_to(&at(tx, 3_000), &registry(), "toys", &id, 1_500, &[], None)
+    })
+    .unwrap();
     assert_eq!(restored, vec!["toys.details".to_owned()]);
     assert_eq!(
-        db.write(|tx| Details.load(tx, &id)).unwrap(),
+        in_tx(&db, |tx| Details.load(tx, &id)).unwrap(),
         details("Original")
     );
     let latest = &db.read(|r| history(r, "toys", &id, 1)).unwrap()[0];
@@ -763,9 +774,10 @@ fn restore_entity_to_a_time_restores_only_slices_that_differ() {
 
     // Nothing differs any more: no group, no revisions.
     let before = revision_count(&db);
-    let again = db
-        .write(|tx| restore_entity_to(&at(tx, 4_000), &registry(), "toys", &id, 1_500, &[], None))
-        .unwrap();
+    let again = in_tx(&db, |tx| {
+        restore_entity_to(&at(tx, 4_000), &registry(), "toys", &id, 1_500, &[], None)
+    })
+    .unwrap();
     assert!(again.is_empty());
     assert_eq!(revision_count(&db), before);
 }
@@ -775,4 +787,159 @@ fn canonical_ignores_key_order_child_order_and_nulls() {
     let a = json!({ "b": 1, "a": [{ "id": "2", "x": null }, { "id": "1" }] });
     let b = json!({ "a": [{ "id": "1" }, { "id": "2" }], "b": 1, "c": null });
     assert_eq!(contracts::canonical(&a), contracts::canonical(&b));
+}
+
+#[test]
+fn the_transaction_reads_but_cannot_write_outside_a_contract() {
+    let (_tmp, db) = org();
+    let id = create(&db, "Bear");
+    // `read()` sees the transaction's own writes …
+    let seen: String = transact(&db, Some(7), |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("Renamed"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )?;
+        Ok::<_, ContractError>(ctx.tx.read().query_row(
+            "SELECT name FROM toys WHERE id = ?1",
+            [&id],
+            |r| r.get(0),
+        )?)
+    })
+    .unwrap();
+    assert_eq!(seen, "Renamed");
+    // … and is query_only, so a raw write fails (and rolls back).
+    let err = transact(&db, Some(7), |ctx| {
+        ctx.tx
+            .read()
+            .execute("UPDATE toys SET name = 'raw' WHERE id = ?1", [&id])
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("readonly"), "{err}");
+    let name: String = db
+        .read(|r| r.query_row("SELECT name FROM toys WHERE id = ?1", [&id], |r| r.get(0)))
+        .unwrap();
+    assert_eq!(name, "Renamed");
+    // The next transaction's contracts still write.
+    create(&db, "Another");
+}
+
+#[test]
+fn each_executed_contract_publishes_one_event_after_commit() {
+    let (_tmp, db) = org();
+    let mut events = db.subscribe();
+    let id = transact(&db, Some(7), |ctx| {
+        let out = execute(ctx, &Details, details("Bear"), Exec::create(Source::Ui))?;
+        execute(
+            ctx,
+            &Emails,
+            EmailsSlice {
+                emails: vec![email(None, "a@x.org", "home")],
+            },
+            Exec::update(&out.id, Some(0), Source::Ui),
+        )?;
+        // Not before the commit.
+        assert!(events.try_recv().is_err());
+        Ok::<_, ContractError>(out.id)
+    })
+    .unwrap();
+    let revisions: Vec<i64> = db
+        .read(|r| {
+            r.prepare("SELECT id FROM revisions ORDER BY id")?
+                .query_map([], |row| row.get(0))?
+                .collect()
+        })
+        .unwrap();
+    let first = events.try_recv().unwrap();
+    let second = events.try_recv().unwrap();
+    assert_eq!(
+        first,
+        store::OrgEvent {
+            seq: revisions[0],
+            entity: "toys".into(),
+            id: id.clone(),
+            contract: "toys.details".into(),
+            counter: 0,
+        }
+    );
+    assert_eq!(
+        (second.seq, second.contract.as_str()),
+        (revisions[1], "toys.emails")
+    );
+    assert!(events.try_recv().is_err());
+}
+
+#[test]
+fn a_rolled_back_or_stale_command_publishes_nothing() {
+    let (_tmp, db) = org();
+    let id = create(&db, "Bear");
+    let mut events = db.subscribe();
+    let rolled_back: Result<(), ContractError> = transact(&db, Some(7), |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("Renamed"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )?;
+        Err(ContractError::rejected("test", "the caller gave up"))
+    });
+    assert!(rolled_back.is_err());
+    let stale = write(&db, |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("Renamed"),
+            Exec::update(&id, Some(5), Source::Ui),
+        )
+    });
+    assert!(matches!(stale, Err(ContractError::Stale { .. })));
+    assert!(events.try_recv().is_err());
+}
+
+#[test]
+fn client_ids_and_child_keys_are_32_hex_characters() {
+    let (_tmp, db) = org();
+    for bad in [
+        "short",
+        "../../etc/passwd",
+        &"A".repeat(32),
+        &"g".repeat(32),
+    ] {
+        let err = write(&db, |ctx| {
+            execute(
+                ctx,
+                &Details,
+                details("Bear"),
+                Exec::create_with_id(bad, Source::Ui),
+            )
+        })
+        .unwrap_err();
+        assert!(matches!(err, ContractError::Invalid(_)), "{bad}: {err:?}");
+    }
+    let good = contracts::new_id();
+    write(&db, |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("Bear"),
+            Exec::create_with_id(&good, Source::Ui),
+        )
+    })
+    .unwrap();
+    let err = write(&db, |ctx| {
+        execute(
+            ctx,
+            &Emails,
+            EmailsSlice {
+                emails: vec![email(Some("e1"), "a@x.org", "home")],
+            },
+            Exec::update(&good, Some(0), Source::Ui),
+        )
+    })
+    .unwrap_err();
+    let ContractError::Invalid(problems) = err else {
+        panic!("{err:?}")
+    };
+    assert_eq!(problems[0].field, "emails.0.id");
 }

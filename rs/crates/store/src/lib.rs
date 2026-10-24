@@ -8,6 +8,7 @@
 
 mod conn;
 mod events;
+mod migrate;
 mod org;
 mod platform;
 
@@ -15,10 +16,13 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+pub use conn::read_only_authorizer;
 pub use events::OrgEvent;
-pub use org::{OrgDb, OrgRead, OrgTx};
-pub use platform::{Member, Platform, Role, Session, Tenant, UserId};
+pub use migrate::MigrationFailed;
+pub use org::{OrgDb, OrgRead, RawTx};
+pub use platform::{Member, Platform, Role, SESSION_TTL_MS, Session, Tenant, UserId};
 pub use rusqlite_migration::{M, Migrations};
 
 #[derive(Debug, thiserror::Error)]
@@ -47,7 +51,7 @@ pub enum StoreError {
 /// form), which is also its file name under `orgs/`. Not constructible
 /// outside this crate except by reading `platform.db`, and validated even
 /// then, so a corrupt row can't become a path.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TenantId(String);
 
 impl TenantId {
@@ -74,23 +78,47 @@ impl fmt::Debug for TenantId {
     }
 }
 
+impl fmt::Display for TenantId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Opening options for a [`Store`].
 pub struct StoreConfig {
     pub dir: PathBuf,
-    /// The org schema, run on every org file when it opens. Append-only.
+    /// The org schema, run on every org file (at boot by
+    /// [`Store::migrate_all`], and on open). Append-only.
     pub org_migrations: Migrations<'static>,
     /// Reader connections per file.
     pub readers: usize,
+    /// Open org handles kept beyond those in use (`KEEP_MAX_OPEN_ORGS`).
+    pub max_open: usize,
 }
 
-/// The data directory: `platform.db` and `orgs/<tenant-id>.db`, with a
-/// cache of open org handles (one writer + reader pool per file).
+impl StoreConfig {
+    pub const DEFAULT_MAX_OPEN: usize = 64;
+}
+
+/// One organisation's place in the handle cache. The slot's own mutex is
+/// that org's open lock: opening (and migrating) one file never blocks a
+/// request to another.
+type Slot = Arc<Mutex<Option<Arc<OrgDb>>>>;
+
+struct Entry {
+    slot: Slot,
+    last_used: Instant,
+}
+
+/// The data directory: `platform.db` and `orgs/<tenant-id>.db`, with an LRU
+/// of open org handles (one writer + reader pool per file).
 pub struct Store {
     dir: PathBuf,
     platform: Platform,
     org_migrations: Migrations<'static>,
     readers: usize,
-    orgs: Mutex<HashMap<TenantId, Arc<OrgDb>>>,
+    max_open: usize,
+    orgs: Mutex<HashMap<TenantId, Entry>>,
 }
 
 impl Store {
@@ -102,6 +130,7 @@ impl Store {
             platform,
             org_migrations: config.org_migrations,
             readers: config.readers.max(1),
+            max_open: config.max_open.max(1),
             orgs: Mutex::new(HashMap::new()),
         })
     }
@@ -119,22 +148,60 @@ impl Store {
     }
 
     /// Create a tenant: its `platform.db` row and its org file (stamped
-    /// with its id, migrated). The row commits only if the file was made.
+    /// with its id, migrated). The row commits only if the file was made;
+    /// the handle is cached only once the row has committed, and the file
+    /// is removed if it didn't.
     pub fn create_tenant(&self, slug: &str, name: &str) -> Result<Tenant, StoreError> {
         let id = TenantId::new();
-        self.platform.insert_tenant(&id, slug, name, || {
-            let path = self.org_path(&id);
-            let db = OrgDb::create(&path, &id, &self.org_migrations, self.readers)?;
-            self.orgs.lock().unwrap().insert(id.clone(), Arc::new(db));
+        let path = self.org_path(&id);
+        let mut made = None;
+        let tenant = self.platform.insert_tenant(&id, slug, name, || {
+            made = Some(OrgDb::create(
+                &path,
+                &id,
+                &self.org_migrations,
+                self.readers,
+            )?);
             Ok(())
-        })
+        });
+        match tenant {
+            Ok(tenant) => {
+                if let Some(db) = made {
+                    self.cache(&id, Arc::new(db));
+                }
+                Ok(tenant)
+            }
+            Err(err) => {
+                if made.take().is_some() {
+                    remove_db_files(&path);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    fn slot(&self, id: &TenantId) -> Slot {
+        let mut orgs = self.orgs.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = orgs.entry(id.clone()).or_insert_with(|| Entry {
+            slot: Arc::default(),
+            last_used: Instant::now(),
+        });
+        entry.last_used = Instant::now();
+        entry.slot.clone()
+    }
+
+    fn cache(&self, id: &TenantId, db: Arc<OrgDb>) {
+        *self.slot(id).lock().unwrap_or_else(|e| e.into_inner()) = Some(db);
+        self.evict();
     }
 
     /// The open handle on one organisation's file. Fails if the file is
-    /// missing or stamped with another tenant's id.
+    /// missing or stamped with another tenant's id. Only this org's open
+    /// lock is held while it opens.
     pub fn org(&self, id: &TenantId) -> Result<Arc<OrgDb>, StoreError> {
-        let mut orgs = self.orgs.lock().unwrap();
-        if let Some(db) = orgs.get(id) {
+        let slot = self.slot(id);
+        let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(db) = guard.as_ref() {
             return Ok(db.clone());
         }
         let db = Arc::new(OrgDb::open(
@@ -143,8 +210,106 @@ impl Store {
             &self.org_migrations,
             self.readers,
         )?);
-        orgs.insert(id.clone(), db.clone());
+        *guard = Some(db.clone());
+        drop(guard);
+        self.evict();
         Ok(db)
+    }
+
+    /// Close least-recently-used handles until at most `max_open` are
+    /// open. A handle in use (someone holds its `Arc`) or being opened is
+    /// never closed; it is reconsidered next time.
+    fn evict(&self) {
+        let mut orgs = self.orgs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut open: Vec<(Instant, TenantId)> = orgs
+            .iter()
+            .filter(|(_, e)| e.slot.try_lock().is_ok_and(|s| s.is_some()))
+            .map(|(id, e)| (e.last_used, id.clone()))
+            .collect();
+        if open.len() <= self.max_open {
+            return;
+        }
+        open.sort();
+        let mut excess = open.len() - self.max_open;
+        for (_, id) in open {
+            if excess == 0 {
+                break;
+            }
+            if close_if_unused(&orgs[&id].slot) {
+                orgs.remove(&id);
+                excess -= 1;
+            }
+        }
+    }
+
+    /// Close handles nobody has used for `idle` (the API runs this as a
+    /// job). Returns how many were closed.
+    pub fn close_idle(&self, idle: Duration) -> usize {
+        let mut orgs = self.orgs.lock().unwrap_or_else(|e| e.into_inner());
+        let stale: Vec<TenantId> = orgs
+            .iter()
+            .filter(|(_, e)| e.last_used.elapsed() >= idle)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut closed = 0;
+        for id in stale {
+            if close_if_unused(&orgs[&id].slot) {
+                orgs.remove(&id);
+                closed += 1;
+            }
+        }
+        closed
+    }
+
+    /// How many org files are open now.
+    pub fn open_count(&self) -> usize {
+        self.orgs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|e| e.slot.try_lock().map_or(true, |s| s.is_some()))
+            .count()
+    }
+
+    /// Every organisation's id, from `platform.db`. Jobs loop over these
+    /// one file at a time; nothing spans two files in one transaction.
+    pub fn each_org(&self) -> Result<Vec<TenantId>, StoreError> {
+        Ok(self.platform.tenants()?.into_iter().map(|t| t.id).collect())
+    }
+
+    /// Bring every `orgs/*.db` to the head schema before serving: 4 files
+    /// at a time, each copied first (`VACUUM INTO premigrate/<id>.v<from>.db`)
+    /// if it has migrations pending. The first failure is returned naming
+    /// the org; the caller stops the boot.
+    pub fn migrate_all(&self) -> Result<usize, MigrationFailed> {
+        migrate::migrate_all(&self.dir, &self.org_migrations, 4)
+    }
+}
+
+/// Drop the cache's handle if nobody else holds it and nobody is about to
+/// open or use it (holds the slot). Called with the map locked, so no new
+/// slot clone can appear meanwhile. True if the slot is now empty.
+fn close_if_unused(slot: &Slot) -> bool {
+    if Arc::strong_count(slot) > 1 {
+        return false;
+    }
+    let Ok(mut guard) = slot.try_lock() else {
+        return false;
+    };
+    match guard.as_ref() {
+        Some(db) if Arc::strong_count(db) > 1 => false,
+        _ => {
+            *guard = None;
+            true
+        }
+    }
+}
+
+fn remove_db_files(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut p = path.as_os_str().to_owned();
+        p.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(p));
     }
 }
 
@@ -159,6 +324,7 @@ mod tests {
                 "CREATE TABLE things (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
             )]),
             readers: 2,
+            max_open: StoreConfig::DEFAULT_MAX_OPEN,
         })
         .unwrap()
     }
@@ -179,8 +345,11 @@ mod tests {
         assert_ne!(a.id, b.id);
 
         let a_db = store.org(&a.id).unwrap();
-        a_db.write(|tx| tx.execute("INSERT INTO things (name) VALUES ('a-thing')", []))
-            .unwrap();
+        a_db.write_raw(|tx| {
+            tx.conn()
+                .execute("INSERT INTO things (name) VALUES ('a-thing')", [])
+        })
+        .unwrap();
         let count = |db: &OrgDb| {
             db.read(|r| {
                 r.query_row("SELECT count(*) FROM things", [], |row| {
@@ -228,7 +397,7 @@ mod tests {
         let b_path = tmp.path().join(format!("orgs/{}.db", b.id.as_str()));
         let sql = format!("ATTACH DATABASE '{}' AS other", b_path.display());
         let db = store.org(&a.id).unwrap();
-        assert!(db.write(|tx| tx.execute_batch(&sql)).is_err());
+        assert!(db.write_raw(|tx| tx.conn().execute_batch(&sql)).is_err());
         assert!(db.read(|r| r.execute_batch(&sql)).is_err());
     }
 

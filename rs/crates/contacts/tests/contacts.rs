@@ -27,6 +27,7 @@ fn world() -> World {
             M::up(contacts::MIGRATION),
         ]),
         readers: 2,
+        max_open: StoreConfig::DEFAULT_MAX_OPEN,
     })
     .unwrap();
     let a = store.create_tenant("alpha", "Alpha").unwrap();
@@ -39,7 +40,7 @@ fn world() -> World {
 }
 
 fn w<T>(db: &OrgDb, f: impl FnOnce(&Ctx) -> Result<T, ContractError>) -> Result<T, ContractError> {
-    db.write(|tx| f(&Ctx::new(tx, Some(1))))
+    contracts::transact(db, Some(1), f)
 }
 
 fn r<T>(db: &OrgDb, f: impl FnOnce(&rusqlite::Connection) -> Result<T, ContractError>) -> T {
@@ -1057,23 +1058,20 @@ fn exact_matches_come_first() {
 #[test]
 fn search_windows_are_capped_and_say_so() {
     let world = world();
-    world
-        .a
-        .write(|tx| {
-            let ctx = Ctx::new(tx, None);
-            for i in 0..120 {
-                create(
-                    &ctx,
-                    CreateContact {
-                        id: None,
-                        details: person(&format!("p{i}"), "Smith"),
-                    },
-                    Source::Seed,
-                )?;
-            }
-            Ok::<_, ContractError>(())
-        })
-        .unwrap();
+    contracts::transact(&world.a, None, |ctx| {
+        for i in 0..120 {
+            create(
+                ctx,
+                CreateContact {
+                    id: None,
+                    details: person(&format!("p{i}"), "Smith"),
+                },
+                Source::Seed,
+            )?;
+        }
+        Ok::<_, ContractError>(())
+    })
+    .unwrap();
     for fts in ["words", "trigram"] {
         let res = r(&world.a, |c| {
             search(

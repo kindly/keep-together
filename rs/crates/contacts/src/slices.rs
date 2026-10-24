@@ -6,10 +6,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use contracts::{ChildRow, Command, Contract, ContractError, reconcile};
+use contracts::{
+    ChildRow, Command, Contract, ContractError, OrgTx, ProjectionTx, WriteTx, reconcile,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
-use store::OrgTx;
 
 use crate::fields::{FieldRow, OptionRow, field_row, option_row};
 use crate::number::take_number;
@@ -85,7 +86,7 @@ impl Contract for ContactDetails {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Details, ContractError> {
-        Ok(load_details(tx, id)?)
+        Ok(load_details(tx.read(), id)?)
     }
 
     fn apply(
@@ -111,7 +112,7 @@ impl Contract for ContactDetails {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&Details>,
         n: &Details,
@@ -182,7 +183,7 @@ impl Contract for ContactDetails {
         Ok(())
     }
 
-    fn project(&self, tx: &OrgTx, id: &str) -> Result<(), ContractError> {
+    fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
         Ok(rebuild_search(tx, id)?)
     }
 }
@@ -302,7 +303,7 @@ impl Contract for ContactMethods {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Methods, ContractError> {
-        Ok(load_methods(tx, id)?)
+        Ok(load_methods(tx.read(), id)?)
     }
 
     fn apply(
@@ -317,7 +318,7 @@ impl Contract for ContactMethods {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&Methods>,
         next: &Methods,
@@ -381,7 +382,7 @@ impl Contract for ContactMethods {
         Ok(())
     }
 
-    fn project(&self, tx: &OrgTx, id: &str) -> Result<(), ContractError> {
+    fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
         Ok(rebuild_search(tx, id)?)
     }
 }
@@ -422,7 +423,7 @@ impl Contract for ContactAddresses {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Addresses, ContractError> {
-        Ok(load_addresses(tx, id)?)
+        Ok(load_addresses(tx.read(), id)?)
     }
 
     fn apply(
@@ -437,7 +438,7 @@ impl Contract for ContactAddresses {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&Addresses>,
         next: &Addresses,
@@ -489,7 +490,7 @@ impl Contract for ContactAddresses {
         Ok(())
     }
 
-    fn project(&self, tx: &OrgTx, id: &str) -> Result<(), ContractError> {
+    fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
         Ok(rebuild_search(tx, id)?)
     }
 }
@@ -505,13 +506,13 @@ impl Contract for ContactArchive {
     type State = Archive;
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<Archive, ContractError> {
-        Ok(
-            tx.query_row("SELECT archived FROM contacts WHERE id = ?1", [id], |r| {
+        Ok(tx
+            .read()
+            .query_row("SELECT archived FROM contacts WHERE id = ?1", [id], |r| {
                 Ok(Archive {
                     archived: r.get(0)?,
                 })
-            })?,
-        )
+            })?)
     }
 
     fn apply(
@@ -526,7 +527,7 @@ impl Contract for ContactArchive {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         _: Option<&Archive>,
         next: &Archive,
@@ -693,8 +694,8 @@ impl Contract for ContactFieldValues {
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<FieldState, ContractError> {
         Ok(FieldState {
-            values: load_field_values(tx, id)?,
-            kind: contact_kind(tx, id)?,
+            values: load_field_values(tx.read(), id)?,
+            kind: contact_kind(tx.read(), id)?,
             restoring: false,
         })
     }
@@ -715,7 +716,7 @@ impl Contract for ContactFieldValues {
 
     fn write(
         &self,
-        tx: &OrgTx,
+        tx: &WriteTx,
         id: &str,
         before: Option<&FieldState>,
         next: &FieldState,
@@ -771,7 +772,7 @@ impl Contract for ContactFieldValues {
         let mut out = Vec::new();
         let mut skipped = HashSet::new();
         for v in p.values.drain(..) {
-            let fits = match field_row(tx, &v.field_id)? {
+            let fits = match field_row(tx.read(), &v.field_id)? {
                 Some(f) => {
                     f.applies_to.contains(&kind)
                         || held

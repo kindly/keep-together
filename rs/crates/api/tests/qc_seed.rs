@@ -36,6 +36,7 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
             dir: tmp.path().to_path_buf(),
             org_migrations: schema::org_migrations(),
             readers: 1,
+            max_open: StoreConfig::DEFAULT_MAX_OPEN,
         })
         .unwrap(),
     );

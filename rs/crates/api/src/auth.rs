@@ -42,7 +42,7 @@ pub(crate) async fn session(
         .to_owned();
     let store = state.store.clone();
     let start = Instant::now();
-    let session = blocking(move || store.platform().session(&token)).await?;
+    let session = blocking(move || store.platform().session(&token, contracts::now_ms())).await?;
     timing.add_platform(start.elapsed());
     session.ok_or(ApiError::Unauthenticated)
 }

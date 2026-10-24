@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::limits::Limit;
 use rusqlite::{Connection, OpenFlags};
 
@@ -27,8 +28,39 @@ pub(crate) fn open(path: &Path, create: bool, read_only: bool) -> rusqlite::Resu
     conn.pragma_update(None, "foreign_keys", "ON")?;
     if read_only {
         conn.pragma_update(None, "query_only", "ON")?;
+        conn.authorizer(Some(reader_authorizer))?;
     }
     Ok(conn)
+}
+
+/// Reader connections may not switch `query_only` (or the schema-trust
+/// pragmas) back off; table-valued pragmas like `pragma_table_info(t)`
+/// stay readable. Writes are refused by `query_only` itself.
+fn reader_authorizer(ctx: AuthContext<'_>) -> Authorization {
+    match ctx.action {
+        AuthAction::Pragma { pragma_name, .. }
+            if ["query_only", "writable_schema", "trusted_schema"]
+                .contains(&pragma_name.to_ascii_lowercase().as_str()) =>
+        {
+            Authorization::Deny
+        }
+        AuthAction::Attach { .. } | AuthAction::Detach { .. } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }
+}
+
+/// For SQL text from outside the code (`keep sql`): plain `SELECT`s only.
+/// Reading tables and columns, calling functions and recursive CTEs are
+/// allowed; every write, `ATTACH`, `PRAGMA` and transaction statement is
+/// refused at prepare time.
+pub fn read_only_authorizer(ctx: AuthContext<'_>) -> Authorization {
+    match ctx.action {
+        AuthAction::Select
+        | AuthAction::Read { .. }
+        | AuthAction::Function { .. }
+        | AuthAction::Recursive => Authorization::Allow,
+        _ => Authorization::Deny,
+    }
 }
 
 /// A fixed set of read-only connections. A reader takes the first free

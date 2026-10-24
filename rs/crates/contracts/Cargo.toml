@@ -16,4 +16,5 @@ ts-rs.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+trybuild.workspace = true
 tempfile.workspace = true

@@ -25,6 +25,7 @@ fn world() -> World {
             dir: tmp.path().to_path_buf(),
             org_migrations: schema::org_migrations(),
             readers: 2,
+            max_open: StoreConfig::DEFAULT_MAX_OPEN,
         })
         .unwrap(),
     );

@@ -66,7 +66,7 @@ impl Tenant {
         let user = self.user;
         blocking(move || {
             let start = Instant::now();
-            let out = db.write(|tx| f(&Ctx::new(tx, Some(user))));
+            let out = contracts::transact(&db, Some(user), f);
             timing.add_db(start.elapsed());
             out
         })
