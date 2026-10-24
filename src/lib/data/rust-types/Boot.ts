@@ -20,4 +20,10 @@ fields: Array<FieldDefinition>,
 /**
  * As `GET contacts` with no parameters.
  */
-firstPage: ContactPage, };
+firstPage: ContactPage, 
+/**
+ * The newest revision id in the snapshot `fields` and `firstPage`
+ * were read from: open `/events?after=<seq>` so no change committed
+ * since is missed.
+ */
+seq: number, };

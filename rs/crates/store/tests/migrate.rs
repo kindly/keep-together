@@ -29,11 +29,24 @@ fn org_file(dir: &Path, id: &TenantId) -> std::path::PathBuf {
     dir.join(format!("orgs/{id}.db"))
 }
 
+/// The one boot directory under `premigrate/`.
+fn boot_dir(dir: &Path) -> std::path::PathBuf {
+    let boots: Vec<_> = std::fs::read_dir(dir.join("premigrate"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(boots.len(), 1, "{boots:?}");
+    boots[0].clone()
+}
+
+/// The copies in the boot directory (manifest left out).
 fn premigrate(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir.join("premigrate"))
+    let mut names: Vec<String> = std::fs::read_dir(boot_dir(dir))
         .map(|d| {
             d.flatten()
                 .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n != "manifest")
                 .collect()
         })
         .unwrap_or_default();
@@ -69,7 +82,7 @@ fn every_file_migrates_at_boot_after_a_copy() {
     for id in [&a, &b] {
         assert_eq!(user_version(&org_file(dir, id)), 2);
         // The copy is the file as it was: v1, its row, intact.
-        let copy = rusqlite::Connection::open(dir.join(format!("premigrate/{id}.v1.db"))).unwrap();
+        let copy = rusqlite::Connection::open(boot_dir(dir).join(format!("{id}.v1.db"))).unwrap();
         let (v, rows, ok): (i64, i64, String) = copy
             .query_row(
                 "SELECT (SELECT user_version FROM pragma_user_version),
@@ -116,7 +129,7 @@ fn a_failing_migration_stops_the_boot_naming_the_org() {
     assert!(err.to_string().contains(b.as_str()));
     // B is untouched (the migration is one transaction); its copy exists.
     assert_eq!(user_version(&org_file(dir, &b)), 1);
-    assert!(dir.join(format!("premigrate/{b}.v1.db")).exists());
+    assert!(boot_dir(dir).join(format!("{b}.v1.db")).exists());
     let _ = a;
 }
 
@@ -128,4 +141,99 @@ fn a_stray_file_stops_the_boot() {
     std::fs::write(dir.join("orgs/not-a-tenant.db"), b"").unwrap();
     let err = store(dir, &[V1, V2]).migrate_all().unwrap_err();
     assert_eq!(err.org, "not-a-tenant");
+}
+
+/// A rollback after a release that migrated `platform.db` and the org
+/// files, and after which a new org was created at the new schema: the
+/// script puts every copy back and sets the new org aside, so the previous
+/// release's code finds nothing newer than it knows.
+#[test]
+fn the_rollback_script_restores_the_last_boot_for_the_previous_release() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let (a, b) = at_v1(dir);
+    // The previous release's platform.db: before the `snapshots` step.
+    let platform = dir.join("platform.db");
+    rusqlite::Connection::open(&platform)
+        .unwrap()
+        .execute_batch("DROP TABLE snapshots; PRAGMA user_version = 1;")
+        .unwrap();
+
+    // The new release boots: platform and both orgs migrate (copied first),
+    // then serves, and a new org is made at v2.
+    let s = store(dir, &[V1, V2]);
+    assert_eq!(s.migrate_all().unwrap(), 2);
+    let c = s.create_tenant("gamma", "Gamma").unwrap().id;
+    s.org(&a)
+        .unwrap()
+        .write_raw(|tx| {
+            tx.conn()
+                .execute("INSERT INTO things (name) VALUES ('after')", [])
+        })
+        .unwrap();
+    drop(s);
+    assert_eq!(user_version(&platform), 2);
+    assert_eq!(
+        premigrate(dir),
+        vec![
+            format!("{a}.v1.db"),
+            format!("{b}.v1.db"),
+            "platform.v1.db".into()
+        ]
+    );
+
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/ops/rollback-migration.sh");
+    let run = |apply: bool| {
+        let mut cmd = std::process::Command::new("bash");
+        cmd.arg(&script).arg(dir);
+        if apply {
+            cmd.arg("--apply");
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    // A dry run changes nothing.
+    let dry = run(false);
+    assert!(dry.contains("created after the boot"), "{dry}");
+    assert_eq!(user_version(&platform), 2);
+
+    run(true);
+    assert_eq!(user_version(&platform), 1);
+    assert_eq!(user_version(&org_file(dir, &a)), 1);
+    assert_eq!(user_version(&org_file(dir, &b)), 1);
+    assert!(!org_file(dir, &c).exists());
+    let kept: Vec<String> = std::fs::read_dir(dir.join("orgs"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".rolled-back-"))
+        .collect();
+    assert!(
+        kept.iter()
+            .any(|n| n.starts_with(c.as_str()) && n.ends_with("Z")),
+        "{kept:?}"
+    );
+    assert!(kept.iter().any(|n| n.starts_with(a.as_str())), "{kept:?}");
+    // A's write after the boot is gone with the rollback.
+    let rows: i64 = rusqlite::Connection::open(org_file(dir, &a))
+        .unwrap()
+        .query_row("SELECT count(*) FROM things", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+
+    // The previous release's org code finds no file ahead of it.
+    let old = Store::open(StoreConfig {
+        dir: dir.to_path_buf(),
+        org_migrations: Migrations::new(vec![M::up(V1)]),
+        readers: 1,
+        max_open: 4,
+    })
+    .unwrap();
+    assert_eq!(old.migrate_all().unwrap(), 0);
 }

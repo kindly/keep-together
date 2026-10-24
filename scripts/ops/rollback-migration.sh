@@ -1,58 +1,88 @@
 #!/usr/bin/env bash
-# Put org files back as they were before a boot migration.
+# Put a data directory back as it was before the last boot that migrated.
 #
-# At boot the api copies every org file it is about to migrate to
-# <data>/premigrate/<tenant-id>.v<from>.db (VACUUM INTO) and then migrates
-# it. Rolling a release back = deploy the previous image AND put these
-# copies back, because the old code refuses a file whose schema is newer
-# than it knows.
+# Before migrating, the api copies every file it is about to migrate
+# (`platform.db` and each org file) into one directory per boot,
+# <data>/premigrate/boot-<ms>/<name>.v<from>.db, with a `manifest` of the
+# org files that existed at that boot. Rolling a release back = deploy the
+# previous image AND run this, because the old code refuses any file whose
+# schema is newer than it knows:
 #
-#   scripts/ops/rollback-migration.sh <data-dir> <from-version>           # dry run
-#   scripts/ops/rollback-migration.sh <data-dir> <from-version> --apply
+#   scripts/ops/rollback-migration.sh <data-dir>            # dry run
+#   scripts/ops/rollback-migration.sh <data-dir> --apply
 #
-# <from-version> is the org schema version the previous release ran (the
-# `v<N>` in the copies' names). Only copies at that version are restored.
-# STOP THE API FIRST: the files must not be open. Writes made after the
-# migration are lost for every org restored (that is what a rollback is);
-# the replaced files are kept as <id>.db.rolled-back-<utc> beside them.
+# It restores every copy in the newest boot directory, and sets aside org
+# files the manifest doesn't list (made at the new schema after the boot;
+# their tenants' rows are gone with the restored platform.db anyway).
+# STOP THE API FIRST: the files must not be open. Writes made since that
+# boot are lost for every restored file (that is what a rollback is); each
+# replaced or set-aside file, with its -wal and -shm, is kept beside it as
+# <file>.rolled-back-<utc>[-wal|-shm]. Nothing is deleted.
 set -euo pipefail
 
-data="${1:?usage: $0 <data-dir> <from-version> [--apply]}"
-from="${2:?usage: $0 <data-dir> <from-version> [--apply]}"
-apply="${3:-}"
-[[ "$from" =~ ^[0-9]+$ ]] || { echo "from-version must be a number" >&2; exit 2; }
-
+data="${1:?usage: $0 <data-dir> [--apply]}"
+apply="${2:-}"
 premigrate="$data/premigrate"
 orgs="$data/orgs"
-[[ -d "$premigrate" ]] || { echo "no $premigrate: nothing was migrated" >&2; exit 1; }
 
-stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 shopt -s nullglob
-copies=("$premigrate"/*.v"$from".db)
-if (( ${#copies[@]} == 0 )); then
-  echo "no copies at v$from in $premigrate" >&2
+boots=("$premigrate"/boot-*/)
+if (( ${#boots[@]} == 0 )); then
+  echo "no boot copies in $premigrate: nothing was migrated" >&2
   exit 1
 fi
+boot="${boots[-1]%/}"
+manifest="$boot/manifest"
+[[ -f "$manifest" ]] || { echo "$boot has no manifest" >&2; exit 1; }
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+echo "boot copies: $boot"
 
-for copy in "${copies[@]}"; do
+run() {
+  echo "+ $*"
+  if [[ "$apply" == "--apply" ]]; then "$@"; fi
+}
+
+# Move a database and its -wal/-shm aside (the WAL may hold its last commits).
+set_aside() {
+  local file="$1"
+  for suffix in "" -wal -shm; do
+    if [[ -e "$file$suffix" ]]; then
+      run mv "$file$suffix" "$file.rolled-back-$stamp$suffix"
+    fi
+  done
+}
+
+restore() {
+  local copy="$1" target="$2"
+  set_aside "$target"
+  run cp "$copy" "$target"
+  if [[ "$apply" == "--apply" ]] && command -v sqlite3 >/dev/null; then
+    sqlite3 "$target" "PRAGMA integrity_check;" | grep -qx ok \
+      || { echo "integrity check failed on $target" >&2; exit 1; }
+  fi
+}
+
+for copy in "$boot"/*.v*.db; do
   name="$(basename "$copy")"
-  id="${name%.v$from.db}"
-  [[ "$id" =~ ^[0-9a-f]{32}$ ]] || { echo "skip $name: not a tenant id" >&2; continue; }
-  target="$orgs/$id.db"
-  echo "+ $copy -> $target"
-  if [[ "$apply" == "--apply" ]]; then
-    if [[ -e "$target" ]]; then
-      mv "$target" "$target.rolled-back-$stamp"
-      rm -f "$target-wal" "$target-shm"
-    fi
-    cp "$copy" "$target"
-    if command -v sqlite3 >/dev/null; then
-      sqlite3 "$target" "PRAGMA integrity_check;" | grep -qx ok \
-        || { echo "integrity check failed on $target" >&2; exit 1; }
-    fi
+  stem="${name%.v*.db}"
+  if [[ "$stem" == platform ]]; then
+    restore "$copy" "$data/platform.db"
+  elif [[ "$stem" =~ ^[0-9a-f]{32}$ ]]; then
+    restore "$copy" "$orgs/$stem.db"
+  else
+    echo "skip $name: not platform or a tenant id" >&2
+  fi
+done
+
+# Org files created after that boot: at the new schema, unknown to the
+# restored platform.db.
+for file in "$orgs"/*.db; do
+  if ! grep -qxF "$(basename "$file")" "$manifest"; then
+    echo "created after the boot: $(basename "$file")"
+    set_aside "$file"
   fi
 done
 
 if [[ "$apply" != "--apply" ]]; then
-  echo "dry run: re-run with --apply (API stopped) to restore ${#copies[@]} file(s)"
+  echo "dry run: re-run with --apply (API stopped)"
 fi

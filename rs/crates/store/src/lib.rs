@@ -119,12 +119,21 @@ pub struct Store {
     readers: usize,
     max_open: usize,
     orgs: Mutex<HashMap<TenantId, Entry>>,
+    boot: migrate::BootCopies,
 }
 
 impl Store {
+    /// Open the data directory. `platform.db` migrates here, copied first
+    /// (into this boot's `premigrate/` directory) if it has steps pending.
     pub fn open(config: StoreConfig) -> Result<Self, StoreError> {
         std::fs::create_dir_all(config.dir.join("orgs"))?;
-        let platform = Platform::open(&config.dir.join("platform.db"), config.readers)?;
+        let boot = migrate::BootCopies::new(&config.dir);
+        let platform_path = config.dir.join("platform.db");
+        if platform_path.exists() {
+            let conn = conn::open(&platform_path, false, false)?;
+            migrate::copy_if_pending(&boot, &conn, &platform::migrations(), "platform")?;
+        }
+        let platform = Platform::open(&platform_path, config.readers)?;
         Ok(Self {
             dir: config.dir,
             platform,
@@ -132,6 +141,7 @@ impl Store {
             readers: config.readers.max(1),
             max_open: config.max_open.max(1),
             orgs: Mutex::new(HashMap::new()),
+            boot,
         })
     }
 
@@ -278,11 +288,12 @@ impl Store {
     }
 
     /// Bring every `orgs/*.db` to the head schema before serving: 4 files
-    /// at a time, each copied first (`VACUUM INTO premigrate/<id>.v<from>.db`)
-    /// if it has migrations pending. The first failure is returned naming
-    /// the org; the caller stops the boot.
+    /// at a time, each copied first (`VACUUM INTO
+    /// premigrate/boot-<ms>/<id>.v<from>.db`) if it has migrations pending.
+    /// The first failure is returned naming the org; the caller stops the
+    /// boot.
     pub fn migrate_all(&self) -> Result<usize, MigrationFailed> {
-        migrate::migrate_all(&self.dir, &self.org_migrations, 4)
+        migrate::migrate_all(&self.dir, &self.boot, &self.org_migrations, 4)
     }
 }
 

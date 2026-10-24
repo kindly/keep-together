@@ -33,7 +33,16 @@ impl Stream {
         cookie: &str,
         last: Option<&str>,
     ) -> (StatusCode, Option<Self>) {
-        let mut req = request("GET", &format!("/api/t/{slug}/events"), Some(cookie), None);
+        Self::open_at(w, &format!("/api/t/{slug}/events"), cookie, last).await
+    }
+
+    async fn open_at(
+        w: &World,
+        path: &str,
+        cookie: &str,
+        last: Option<&str>,
+    ) -> (StatusCode, Option<Self>) {
+        let mut req = request("GET", path, Some(cookie), None);
         if let Some(last) = last {
             req.headers_mut()
                 .insert("last-event-id", last.parse().unwrap());
@@ -221,6 +230,11 @@ async fn too_far_behind_or_unreadable_resets() {
         let mut s = s.unwrap();
         let msg = s.next(Duration::from_secs(2)).await.unwrap();
         assert_eq!(msg.event.as_deref(), Some("reset"), "{last}");
+        // The reset names the head, so a reconnect after it resumes there.
+        let head: i64 = db
+            .read(|r| r.query_row("SELECT max(id) FROM revisions", [], |row| row.get(0)))
+            .unwrap();
+        assert_eq!(msg.id, Some(head.to_string()), "{last}");
         // After a reset the stream is live from now on.
         s.nothing().await;
         let c = create(&w, "alpha", &ann, "After").await;
@@ -274,4 +288,45 @@ async fn viewers_may_listen() {
     assert_eq!(s, StatusCode::OK);
     let c = create(&w, "alpha", &ann, "Seen").await;
     assert_eq!(stream.unwrap().change().await.id, c["id"].as_str().unwrap());
+}
+
+#[tokio::test]
+async fn an_id_ahead_of_the_file_resets_to_its_head() {
+    // The file went back in time (a restore, a rollback): the client's id
+    // is beyond anything in it, and ids after the head will be reused.
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    create(&w, "alpha", &ann, "One").await;
+    create(&w, "alpha", &ann, "Two").await;
+    let (_, s) = Stream::open(&w, "alpha", &ann, Some("5000")).await;
+    let mut s = s.unwrap();
+    let msg = s.next(Duration::from_secs(2)).await.unwrap();
+    assert_eq!(msg.event.as_deref(), Some("reset"));
+    assert_eq!(msg.id.as_deref(), Some("2"));
+    // A new command reuses id 3 and is delivered.
+    let three = create(&w, "alpha", &ann, "Three").await;
+    let e = s.change().await;
+    assert_eq!((e.seq, e.id.as_str()), (3, three["id"].as_str().unwrap()));
+}
+
+#[tokio::test]
+async fn a_cold_load_resumes_after_its_boot_seq() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    create(&w, "alpha", &ann, "Before").await;
+    let (_, boot) = w.call("GET", "/api/t/alpha/boot", &ann, None).await;
+    let seq = boot["seq"].as_i64().unwrap();
+    assert_eq!(seq, 1);
+    // Someone saves between /boot and /events …
+    let between = create(&w, "alpha", &ann, "Between").await;
+    // … and `?after=` the boot's seq still delivers it.
+    let (_, s) = Stream::open_at(&w, &format!("/api/t/alpha/events?after={seq}"), &ann, None).await;
+    assert_eq!(
+        s.unwrap().change().await.id,
+        between["id"].as_str().unwrap()
+    );
+    // A browser reconnect keeps the URL but sends its newer id: the header wins.
+    let (_, s) = Stream::open_at(&w, "/api/t/alpha/events?after=0", &ann, Some("2")).await;
+    let mut s = s.unwrap();
+    s.nothing().await;
 }

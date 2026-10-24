@@ -44,6 +44,11 @@ const MIGRATIONS: &[M<'static>] = &[
     ),
 ];
 
+/// `platform.db`'s schema (copied first at boot when steps are pending).
+pub(crate) fn migrations() -> Migrations<'static> {
+    Migrations::from_slice(MIGRATIONS)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Role {
     Viewer,
@@ -117,7 +122,7 @@ fn tenant_row(id: String, slug: String, name: String) -> rusqlite::Result<Tenant
 impl Platform {
     pub(crate) fn open(path: &Path, readers: usize) -> Result<Self, StoreError> {
         let mut writer = conn::open(path, true, false)?;
-        Migrations::from_slice(MIGRATIONS).to_latest(&mut writer)?;
+        migrations().to_latest(&mut writer)?;
         Ok(Self {
             writer: Mutex::new(writer),
             readers: ReaderPool::open(path, readers)?,
