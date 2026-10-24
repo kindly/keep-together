@@ -1,6 +1,6 @@
 //! Search parity with Convex (rust spike step 3): a sample of
 //! `convex/contacts/searchList.test.ts` and `search.test.ts` ported case
-//! for case, run end to end through `search` on both FTS variants. Where a
+//! for case, run end to end through `search`. Where a
 //! Convex test asserts an order, so does this; where it asserts a set, the
 //! set is compared sorted.
 
@@ -29,6 +29,7 @@ fn world() -> World {
             M::up(contacts::MIGRATION),
         ]),
         readers: 2,
+        max_open: StoreConfig::DEFAULT_MAX_OPEN,
     })
     .unwrap();
     let a = store.create_tenant("alpha", "Alpha").unwrap();
@@ -41,7 +42,7 @@ fn world() -> World {
 }
 
 fn w<T>(db: &OrgDb, f: impl FnOnce(&Ctx) -> Result<T, ContractError>) -> T {
-    db.write(|tx| f(&Ctx::new(tx, Some(1)))).unwrap()
+    contracts::transact(db, Some(1), f).unwrap()
 }
 
 /// What `contact()` in searchList.test.ts takes.
@@ -140,31 +141,9 @@ fn contact(db: &OrgDb, c: C) -> (String, i64) {
     (created.id, created.number)
 }
 
-/// `list()`: the search on both variants, which must agree on the rows
-/// (and on their order wherever Convex's rank decides it).
+/// `list()`: the search.
 fn list(db: &OrgDb, q: SearchQuery) -> SearchResult {
-    let run = |fts: &str| {
-        db.read(|c| {
-            search(
-                c,
-                &SearchQuery {
-                    fts: Some(fts.into()),
-                    ..q.clone()
-                },
-            )
-        })
-        .unwrap()
-    };
-    let (words, trigram) = (run("words"), run("trigram"));
-    let ids = |r: &SearchResult| {
-        let mut v: Vec<_> = r.rows.iter().map(|r| r.id.clone()).collect();
-        v.sort();
-        v
-    };
-    assert_eq!(ids(&words), ids(&trigram), "{:?}: words vs trigram", q.q);
-    assert_eq!(words.number_match, trigram.number_match, "{:?}", q.q);
-    assert_eq!(words.invalid_number, trigram.invalid_number, "{:?}", q.q);
-    words
+    db.read(|c| search(c, &q)).unwrap()
 }
 
 fn q(text: &str) -> SearchQuery {

@@ -15,5 +15,7 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(contracts::MIGRATION),
         // 2: contacts, children, dropdown fields, both FTS variants
         M::up(contacts::MIGRATION),
+        // 3: drop the trigram FTS variant
+        M::up(contacts::DROP_TRIGRAM),
     ])
 }

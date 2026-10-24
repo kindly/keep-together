@@ -40,7 +40,12 @@ pub fn reconcile<'a, T: ChildRow + PartialEq>(
     let mut seen = HashSet::new();
     let mut problems = Vec::new();
     for (i, row) in next.iter().enumerate() {
-        if !seen.insert(row.id()) {
+        if !is_client_id(row.id()) {
+            problems.push(Problem::new(
+                format!("{field}.{i}.id"),
+                "32 lower-case hex characters",
+            ));
+        } else if !seen.insert(row.id()) {
             problems.push(Problem::new(format!("{field}.{i}.id"), "duplicate id"));
         }
     }
@@ -68,6 +73,15 @@ pub fn reconcile<'a, T: ChildRow + PartialEq>(
     }
     out.removed = before.iter().filter(|r| !seen.contains(r.id())).collect();
     Ok(out)
+}
+
+/// An id a client may choose (an entity's pre-generated id, a child
+/// row's key): 32 lower-case hex characters, like [`new_id`].
+pub fn is_client_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Give every row without an id a fresh one (in `prepare`, so the minted

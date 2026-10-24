@@ -17,7 +17,7 @@ use contacts::types::{
     ChannelLabel, CreateContact, Details, EmailRow, Expected, FieldOptionPayload, FieldPayload,
     Kind, Methods, SaveForm,
 };
-use contracts::{ContractError, Ctx, Exec, Source, command_group, execute};
+use contracts::{ContractError, Exec, Source, command_group, execute, transact};
 use serde::{Deserialize, Serialize};
 use store::{OrgDb, Role};
 use ts_rs::TS;
@@ -114,9 +114,8 @@ fn side(
     slug: &str,
     with_field: bool,
 ) -> Result<Vec<String>, ContractError> {
-    db.write(|tx| {
-        let ctx = Ctx::new(tx, None);
-        let group = command_group(&ctx, "qc seed")?;
+    transact(db, None, |ctx| {
+        let group = command_group(ctx, "qc seed")?;
         let name = format!("{label}-{run_id}");
         let mut ids = vec![];
         for d in [
@@ -134,7 +133,7 @@ fn side(
             .filter(char::is_ascii_alphanumeric)
             .collect();
             let id = create(
-                &ctx,
+                ctx,
                 CreateContact {
                     id: None,
                     details: d,
@@ -143,7 +142,7 @@ fn side(
             )?
             .id;
             save_form(
-                &ctx,
+                ctx,
                 &id,
                 SaveForm {
                     methods: Some(Expected {
@@ -165,7 +164,7 @@ fn side(
         }
         if with_field {
             let field = execute(
-                &ctx,
+                ctx,
                 &FIELD,
                 FieldPayload {
                     label: QC_FIELD.into(),
@@ -176,7 +175,7 @@ fn side(
             )?;
             for (position, label) in QC_OPTIONS.iter().enumerate() {
                 execute(
-                    &ctx,
+                    ctx,
                     &FIELD_OPTION,
                     FieldOptionPayload {
                         field_id: field.id.clone(),
@@ -265,6 +264,9 @@ pub struct QcCrowdRequest {
     pub count: u32,
 }
 
+/// The most contacts one `qc-crowd` call makes (L1).
+pub const CROWD_MAX: u32 = 10_000;
+
 /// `POST /api/dev/qc-crowd {slug, lastName, count}`: `count` individuals
 /// named `n0001 <lastName>` … through the details contract, 100 to a
 /// transaction (as Convex's `crowd`). Returns the count.
@@ -273,6 +275,14 @@ pub async fn crowd(
     Body(req): Body<QcCrowdRequest>,
 ) -> Result<Json<u32>, ApiError> {
     enabled(&state)?;
+    if req.count > CROWD_MAX {
+        return Err(ApiError::Invalid {
+            problems: vec![contracts::Problem::new(
+                "count",
+                format!("at most {CROWD_MAX}"),
+            )],
+        });
+    }
     let store = state.store.clone();
     blocking(move || {
         let tenant = store
@@ -281,9 +291,8 @@ pub async fn crowd(
             .ok_or(ApiError::NotFound)?;
         let db = store.org(&tenant.id)?;
         for from in (0..req.count).step_by(100) {
-            db.write(|tx| {
-                let ctx = Ctx::new(tx, None);
-                let group = command_group(&ctx, "qc crowd")?;
+            transact(&db, None, |ctx| {
+                let group = command_group(ctx, "qc crowd")?;
                 for i in from..(from + 100).min(req.count) {
                     let d = person(
                         Kind::Individual,
@@ -292,7 +301,7 @@ pub async fn crowd(
                         "",
                     );
                     execute(
-                        &ctx,
+                        ctx,
                         &contacts::DETAILS,
                         d,
                         Exec::create(Source::Seed).in_group(&group),

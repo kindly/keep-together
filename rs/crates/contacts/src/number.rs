@@ -3,7 +3,7 @@
 //! stored. System-owned: no payload carries it; the details contract's
 //! create takes the next one.
 
-use rusqlite::{Connection, OptionalExtension};
+use contracts::WriteTx;
 
 /// An organisation's first contact number.
 pub const FIRST_NUMBER: i64 = 10001;
@@ -76,21 +76,8 @@ pub fn parse_number(term: &str) -> Option<ParsedNumber> {
 /// Take the next number from the organisation's sequence (in the create's
 /// transaction, after its duplicate check, so every number taken goes on a
 /// contact).
-pub(crate) fn take_number(conn: &Connection) -> rusqlite::Result<i64> {
-    let next: Option<i64> = conn
-        .query_row(
-            "SELECT next FROM contact_number_sequence WHERE id = 1",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let number = next.unwrap_or(FIRST_NUMBER);
-    conn.execute(
-        "INSERT INTO contact_number_sequence (id, next) VALUES (1, ?1)
-         ON CONFLICT (id) DO UPDATE SET next = excluded.next",
-        [number + 1],
-    )?;
-    Ok(number)
+pub(crate) fn take_number(tx: &WriteTx) -> rusqlite::Result<i64> {
+    tx.take_sequence("contact_number_sequence", FIRST_NUMBER)
 }
 
 #[cfg(test)]

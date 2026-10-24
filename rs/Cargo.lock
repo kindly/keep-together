@@ -9,6 +9,7 @@ dependencies = [
  "axum",
  "contacts",
  "contracts",
+ "futures-util",
  "http-body-util",
  "rusqlite",
  "rusqlite_migration",
@@ -28,6 +29,10 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
+name = "auth"
+version = "0.1.0"
 
 [[package]]
 name = "axum"
@@ -114,6 +119,21 @@ name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
+
+[[package]]
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "rusqlite",
+ "serde_json",
+ "store",
+ "tempfile",
+]
+
+[[package]]
+name = "comms"
+version = "0.1.0"
 
 [[package]]
 name = "contacts"
@@ -227,6 +247,14 @@ dependencies = [
  "libc",
  "r-efi",
 ]
+
+[[package]]
+name = "giftaid"
+version = "0.1.0"
+
+[[package]]
+name = "giving"
+version = "0.1.0"
 
 [[package]]
 name = "hashbrown"
@@ -434,6 +462,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
+name = "platform"
+version = "0.1.0"
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -634,6 +666,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "sources"
+version = "0.1.0"
+
+[[package]]
 name = "sqlite-wasm-rs"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -651,8 +687,11 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
  "rusqlite_migration",
+ "serde",
  "tempfile",
  "thiserror",
+ "tokio",
+ "ts-rs",
  "uuid",
 ]
 
