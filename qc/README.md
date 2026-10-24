@@ -102,8 +102,8 @@ and its flows are marked `pendingPort` in `qc/budgets.ts`. Every run
 lists them by step in a banner, with the routes still being ported, and
 none of them fails the run. A step that ports a module deletes its lines
 from `qc/pending.ts`, re-points the specs at the Rust api, and drops the
-flows' marks. Helpers the Convex specs called are stubs in
-`qc/convex-pending.ts` until then; B3 deletes it.
+flows' marks. Every module is on the Rust backend now (B3): the list is
+empty and no flow is marked, and the mechanism stays for the next port.
 
 ## Reading the output
 

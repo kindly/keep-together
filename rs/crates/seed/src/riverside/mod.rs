@@ -1,8 +1,9 @@
 //! `riverside`: the manual-test world (Convex `platform/testSeed.ts`),
 //! staging's reset seed and `keep dev seed-riverside`. One organisation,
 //! one password + TOTP user per membership role, and the 100 donors of
-//! [`data`] with their notes, relationships, identifiers, field values
-//! and acquisition codes, all through the contracts (source `seed`, as
+//! [`data`] with their notes, relationships, identifiers, field values,
+//! acquisition codes, gifts and Gift Aid declarations, all through the
+//! contracts (source `seed`, as
 //! the admin).
 //!
 //! Only where `KEEP_ENV` is `dev` or `staging`, said explicitly ([`allowed`]):
@@ -27,6 +28,11 @@ use contacts::relationships::{RELATIONSHIP, RelationshipPayload};
 use contacts::types::{Archive, FieldOptionPayload, FieldPayload, FieldValue, FieldValues, Kind};
 use contacts::{ADDRESSES, ARCHIVE, DETAILS, FIELD_VALUES, METHODS};
 use contracts::{CommandGroup, ContractError, Ctx, Exec, Source, command_group, execute, transact};
+use giftaid::{
+    CancellationPayload, DeclarationPayload, Method as DeclarationMethod, Scope, VoidPayload,
+};
+use giving::types::{AllocationRow, Method as GiftMethod};
+use giving::{GiftPayload, Status as GiftStatus, StatusPayload};
 use rusqlite::{Connection, OptionalExtension};
 use store::{Platform, Role, Store, StoreError, Tenant};
 
@@ -260,13 +266,17 @@ pub fn world(ctx: &Ctx) -> Result<usize, ContractError> {
     }
     let refs = reference_data(ctx)?;
     let extras = data::extras(&w);
+    let giving = data::giving(&w);
     let mut ids: Vec<String> = Vec::with_capacity(DONOR_COUNT);
-    for (n, batch) in w.donors.chunks(BATCH).zip(extras.chunks(BATCH)).enumerate() {
+    let people: Vec<_> = w.donors.iter().zip(&extras).zip(&giving).collect();
+    for (n, batch) in people.chunks(BATCH).enumerate() {
         let from = n * BATCH;
-        let to = from + batch.0.len() - 1;
+        let to = from + batch.len() - 1;
         let group = command_group(ctx, &format!("riverside seed: donors {from}–{to}"))?;
-        for (d, extra) in batch.0.iter().zip(batch.1) {
-            ids.push(donor(ctx, &group, &refs, d, extra)?);
+        for ((d, extra), gave) in batch {
+            let id = donor(ctx, &group, &refs, d, extra)?;
+            gifts(ctx, &group, &refs, &id, d, extra, gave)?;
+            ids.push(id);
         }
     }
     relationships(ctx, &w, &ids)?;
@@ -500,6 +510,119 @@ fn donor(
         }
     }
     Ok(id)
+}
+
+/// A donor's gifts (each whole to its acquisition code, else the
+/// default) and declarations.
+fn gifts(
+    ctx: &Ctx,
+    group: &CommandGroup,
+    refs: &Refs,
+    id: &str,
+    d: &DonorSpec,
+    extra: &data::Extras,
+    gave: &data::Giving,
+) -> Result<(), ContractError> {
+    let code = |c| {
+        refs.codes
+            .iter()
+            .find(|(k, _)| *k == c)
+            .map(|(_, id)| id.clone())
+    };
+    let Some(code_id) = extra
+        .acquisition
+        .and_then(code)
+        .or_else(|| code(data::DEFAULT_CODE))
+    else {
+        // The default code archived on an older riverside: no gifts.
+        return Ok(());
+    };
+    for g in &gave.gifts {
+        let gift = giving::create_gift(
+            ctx,
+            GiftPayload {
+                contact_id: id.into(),
+                received_on: g.received_on.clone(),
+                amount: g.amount,
+                method: if g.card_reference.is_some() {
+                    GiftMethod::Card
+                } else {
+                    GiftMethod::Cash
+                },
+                reference: g.card_reference.clone(),
+                allocations: vec![AllocationRow {
+                    key: None,
+                    source_code_id: code_id.clone(),
+                    amount: g.amount,
+                }],
+                client_key: None,
+            },
+            Source::Seed,
+            Some(group),
+        )?;
+        if g.void {
+            execute(
+                ctx,
+                &giving::STATUS,
+                StatusPayload {
+                    status: GiftStatus::Void,
+                },
+                Exec::update(&gift, None, Source::Seed).in_group(group),
+            )?;
+        }
+    }
+    for decl in &gave.declarations {
+        let Some(home) = d.addresses.addresses.first() else {
+            continue;
+        };
+        let made = giftaid::make_declaration(
+            ctx,
+            DeclarationPayload {
+                contact_id: id.into(),
+                scope: match decl.kind {
+                    data::DeclarationKind::Future => Scope::Future,
+                    data::DeclarationKind::FutureAndPast4y => Scope::FutureAndPast4y,
+                },
+                gift_id: None,
+                made_on: decl.made_on.clone(),
+                method: [
+                    DeclarationMethod::PaperForm,
+                    DeclarationMethod::Oral,
+                    DeclarationMethod::StaffTickedNoEvidence,
+                ][decl.method],
+                wording_version: giftaid::HMRC_MODEL_WORDING_VERSION.into(),
+                first_name: d.details.first_name.clone(),
+                last_name: d.details.last_name.clone(),
+                address_line1: home.line1.clone(),
+                postcode: home.postcode.clone(),
+            },
+            Source::Seed,
+            Some(group),
+        )?
+        .id;
+        if let Some(from) = &decl.cancelled_from {
+            execute(
+                ctx,
+                &giftaid::CANCELLATION,
+                CancellationPayload {
+                    cancelled_from: Some(from.clone()),
+                    note: Some("Asked by phone to stop".into()),
+                },
+                Exec::update(&made, None, Source::Seed).in_group(group),
+            )?;
+        }
+        if decl.voided {
+            execute(
+                ctx,
+                &giftaid::VOID,
+                VoidPayload {
+                    reason: "Entered against the wrong person".into(),
+                },
+                Exec::update(&made, None, Source::Seed).in_group(group),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn relationships(ctx: &Ctx, w: &World, ids: &[String]) -> Result<(), ContractError> {

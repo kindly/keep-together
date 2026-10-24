@@ -577,3 +577,88 @@ fn an_archived_external_reference_stays_archived_and_its_rows_are_skipped() {
     })
     .unwrap();
 }
+
+#[test]
+fn the_giving_generator_is_deterministic_and_varied() {
+    let world = data::generate();
+    let giving = data::giving(&world);
+    assert_eq!(data::giving(&world), giving);
+    assert_eq!(giving.len(), DONOR_COUNT);
+    let gifts: Vec<_> = giving.iter().flat_map(|g| &g.gifts).collect();
+    let givers = giving.iter().filter(|g| !g.gifts.is_empty()).count();
+    assert!((40..80).contains(&givers), "{givers}");
+    assert!(gifts.iter().any(|g| g.card_reference.is_some()));
+    assert!(gifts.iter().any(|g| g.card_reference.is_none()));
+    assert!(gifts.iter().any(|g| g.void));
+    assert!(
+        gifts
+            .iter()
+            .all(|g| g.amount > 0 && g.received_on.as_str() < "2026-10")
+    );
+    let declarations: Vec<_> = giving.iter().flat_map(|g| &g.declarations).collect();
+    assert!(declarations.len() > 5, "{}", declarations.len());
+    assert_eq!(declarations.iter().filter(|d| d.voided).count(), 1);
+    assert!(declarations.iter().any(|d| d.cancelled_from.is_some()));
+    // Only living individuals with an address declare.
+    for (g, d) in giving.iter().zip(&world.donors) {
+        if !g.declarations.is_empty() {
+            assert_eq!(d.details.kind, contacts::types::Kind::Individual);
+            assert!(!d.details.is_deceased && !d.addresses.addresses.is_empty());
+        }
+    }
+}
+
+#[test]
+fn gifts_and_declarations_land_through_the_contracts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(tmp.path());
+    seed(&store, &passwords("staff-password-123"));
+    let world = data::generate();
+    let giving = data::giving(&world);
+    let gifts: Vec<_> = giving.iter().flat_map(|g| &g.gifts).collect();
+    let declarations: Vec<_> = giving.iter().flat_map(|g| &g.declarations).collect();
+    let db = store.org(&riverside_tenant(&store).id).unwrap();
+    db.read(|r| {
+        let n = |sql: &str| r.query_row(sql, [], |row| row.get::<_, i64>(0));
+        assert_eq!(n("SELECT count(*) FROM gifts")?, gifts.len() as i64);
+        assert_eq!(
+            n("SELECT count(*) FROM gifts WHERE status = 'void'")?,
+            gifts.iter().filter(|g| g.void).count() as i64
+        );
+        assert_eq!(
+            n("SELECT count(*) FROM gifts WHERE method = 'card'")?,
+            gifts.iter().filter(|g| g.card_reference.is_some()).count() as i64
+        );
+        assert_eq!(
+            n("SELECT sum(amount) FROM gifts")?,
+            gifts.iter().map(|g| g.amount).sum::<i64>()
+        );
+        // Every gift wholly allocated to a source code version.
+        assert_eq!(
+            n("SELECT count(*) FROM gifts g WHERE g.amount <>
+                 (SELECT sum(a.amount) FROM gift_allocations a WHERE a.gift_id = g.id)")?,
+            0
+        );
+        assert_eq!(
+            n("SELECT count(*) FROM gift_aid_declarations")?,
+            declarations.len() as i64
+        );
+        assert_eq!(
+            n("SELECT count(*) FROM gift_aid_declarations WHERE voided_at IS NOT NULL")?,
+            1
+        );
+        assert_eq!(
+            n("SELECT count(*) FROM gift_aid_declarations WHERE cancelled_from IS NOT NULL")?,
+            declarations
+                .iter()
+                .filter(|d| d.cancelled_from.is_some())
+                .count() as i64
+        );
+        assert_eq!(
+            n("SELECT count(*) FROM revisions WHERE source <> 'seed'")?,
+            0
+        );
+        Ok::<_, rusqlite::Error>(())
+    })
+    .unwrap();
+}

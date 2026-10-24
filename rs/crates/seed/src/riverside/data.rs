@@ -879,3 +879,132 @@ pub fn extras(world: &World) -> Vec<Extras> {
         })
         .collect()
 }
+
+/// The giving generator's seed ([`giving`]).
+pub const GIVING_SEED: u32 = 20261025;
+/// The code a gift is allocated to when its donor has no acquisition code.
+pub const DEFAULT_CODE: (&str, &str) = ("Website", "001");
+/// Gift amounts, pence.
+const AMOUNTS: &[i64] = &[
+    500, 1000, 1000, 1500, 2000, 2000, 2500, 5000, 10_000, 25_000,
+];
+
+/// One gift: allocated whole to the donor's acquisition code, else
+/// [`DEFAULT_CODE`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct GiftSpec {
+    pub received_on: String,
+    pub amount: i64,
+    /// A card gift, with this reader receipt; else cash.
+    pub card_reference: Option<String>,
+    /// Entered by mistake: voided after it was recorded.
+    pub void: bool,
+}
+
+/// How a declaration was made, in the giftaid crate's terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclarationKind {
+    Future,
+    FutureAndPast4y,
+}
+
+/// One Gift Aid declaration, the name and address its donor's own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeclarationSpec {
+    pub made_on: String,
+    pub kind: DeclarationKind,
+    /// 0 paper form, 1 oral, 2 staff ticked without evidence (warns).
+    pub method: usize,
+    /// Cancelled from this date.
+    pub cancelled_from: Option<String>,
+    /// Made in error.
+    pub voided: bool,
+}
+
+/// A donor's gifts and declarations.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Giving {
+    pub gifts: Vec<GiftSpec>,
+    pub declarations: Vec<DeclarationSpec>,
+}
+
+fn date(r: &mut Rng, years: &[u32]) -> String {
+    let year = r.pick(years);
+    // Up to September 2026: every date is before the seed's first run.
+    let month = 1 + r.int(if year == 2026 { 9 } else { 12 });
+    let day = 1 + r.int(28);
+    format!("{year}-{month:02}-{day:02}")
+}
+
+/// One [`Giving`] per donor of [`generate`] (gifts and Gift Aid, B2). Same
+/// output on every call. About 60 % give, one to four times; a few gifts
+/// are void; about half of the givers who are living individuals with an
+/// address have a declaration, a few cancelled, one voided.
+pub fn giving(world: &World) -> Vec<Giving> {
+    let mut r = Rng::new(GIVING_SEED);
+    let mut receipts = 0;
+    let mut out: Vec<Giving> = world
+        .donors
+        .iter()
+        .map(|d| {
+            if !r.chance(0.6) {
+                return Giving::default();
+            }
+            let gifts = (0..1 + r.int(4))
+                .map(|_| {
+                    let received_on = date(&mut r, &[2024, 2025, 2025, 2026, 2026]);
+                    let amount = r.pick(AMOUNTS);
+                    let card_reference = r.chance(0.3).then(|| {
+                        receipts += 1;
+                        format!("RCPT-{receipts:05}")
+                    });
+                    let void = r.chance(0.05);
+                    GiftSpec {
+                        received_on,
+                        amount,
+                        card_reference,
+                        void,
+                    }
+                })
+                .collect();
+            let eligible = d.details.kind == Kind::Individual
+                && !d.details.is_deceased
+                && !d.addresses.addresses.is_empty();
+            let declarations = if eligible && r.chance(0.5) {
+                let made_on = date(&mut r, &[2023, 2024, 2025]);
+                let kind = if r.chance(0.6) {
+                    DeclarationKind::FutureAndPast4y
+                } else {
+                    DeclarationKind::Future
+                };
+                let method = r.int(3);
+                let cancelled_from = r
+                    .chance(0.1)
+                    .then(|| date(&mut r, &[2026]))
+                    .filter(|c| *c > made_on);
+                vec![DeclarationSpec {
+                    made_on,
+                    kind,
+                    method,
+                    cancelled_from,
+                    voided: false,
+                }]
+            } else {
+                vec![]
+            };
+            Giving {
+                gifts,
+                declarations,
+            }
+        })
+        .collect();
+    // One declaration made in error: the first one there is, voided.
+    if let Some(d) = out
+        .iter_mut()
+        .flat_map(|g| g.declarations.iter_mut())
+        .find(|d| d.cancelled_from.is_none())
+    {
+        d.voided = true;
+    }
+    out
+}

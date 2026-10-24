@@ -111,6 +111,45 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
         );
     }
 
+    // Gifts and Gift Aid: the Trust's gift under its code, Ada's
+    // declaration, on each side.
+    for (i, pence) in api::routes::qc_seed::QC_GIFT_PENCE.into_iter().enumerate() {
+        let t = &world["tenants"][i];
+        let tenant = store
+            .platform()
+            .tenant_by_slug(t["slug"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let db = store.org(&tenant.id).unwrap();
+        let gift_ids = t["giftIds"].as_array().unwrap();
+        assert_eq!(gift_ids.len(), 1);
+        let (contact, amount): (String, i64) = db
+            .read(|c| {
+                c.query_row(
+                    "SELECT contact_id, amount FROM gifts WHERE id = ?1",
+                    [gift_ids[0].as_str().unwrap()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            (contact.as_str(), amount),
+            (t["contactIds"][2].as_str().unwrap(), pence)
+        );
+        let decl = t["declarationIds"].as_array().unwrap();
+        assert_eq!(decl.len(), 1);
+        let holder: String = db
+            .read(|c| {
+                c.query_row(
+                    "SELECT contact_id FROM gift_aid_declarations WHERE id = ?1",
+                    [decl[0].as_str().unwrap()],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(holder, t["contactIds"][0].as_str().unwrap());
+    }
+
     let (s, n) = post(
         &app,
         "/api/dev/qc-crowd",

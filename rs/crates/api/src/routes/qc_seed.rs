@@ -6,7 +6,9 @@
 //! codes (A2): the starter categories, a Street detail named for the side
 //! and run (`Alpha<run>`, `Bravo<run>`) and Event's `Gala`, each with
 //! versions 001 and 002; Charles carries Street-<side>-001 and the Trust
-//! -002, and the Gala codes are free for the flows to set. Users
+//! -002, and the Gala codes are free for the flows to set. Gifts and Gift
+//! Aid (B2): the Trust gave once under its code (A £12.34, B £56.78), and
+//! Ada holds one paper declaration (future gifts, made 2025-01-01). Users
 //! sign in with the dev login, so there are no passwords.
 //!
 //! Refused (403) unless both `KEEP_DEV_AUTH=1` and `KEEP_QC_SEED=1`.
@@ -133,7 +135,14 @@ pub struct QcTenant {
     pub slug: String,
     /// In creation order: Ada, Charles, the Trust.
     pub contact_ids: Vec<String>,
+    /// The Trust's gift.
+    pub gift_ids: Vec<String>,
+    /// Ada's declaration.
+    pub declaration_ids: Vec<String>,
 }
+
+/// The Trust's seeded gift, pence, per side (A, B).
+pub const QC_GIFT_PENCE: [i64; 2] = [1234, 5678];
 
 #[derive(Serialize, TS)]
 #[ts(export)]
@@ -183,6 +192,30 @@ fn contact_ids(db: &OrgDb) -> Result<Vec<String>, ContractError> {
         .rows;
     rows.sort_by_key(|r| r.number);
     Ok(rows.into_iter().map(|r| r.id).collect())
+}
+
+/// The Trust's gifts and Ada's declarations, as seeded.
+fn seeded_giving(
+    db: &OrgDb,
+    contacts: &[String],
+) -> Result<(Vec<String>, Vec<String>), ContractError> {
+    Ok(db.read(|r| {
+        let ids = |sql: &str, contact: &str| {
+            r.prepare(sql)?
+                .query_map([contact], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()
+        };
+        Ok::<_, rusqlite::Error>((
+            ids(
+                "SELECT id FROM gifts WHERE contact_id = ?1 ORDER BY rowid",
+                &contacts[2],
+            )?,
+            ids(
+                "SELECT id FROM gift_aid_declarations WHERE contact_id = ?1 ORDER BY rowid",
+                &contacts[0],
+            )?,
+        ))
+    })?)
 }
 
 fn side(
@@ -333,6 +366,51 @@ fn side(
                 Exec::update(contact, Some(0), Source::Seed).in_group(&group),
             )?;
         }
+        // The Trust's gift under its own code, and Ada's declaration.
+        let trust_code: String = ctx.tx.read().query_row(
+            "SELECT v.id FROM source_codes v
+             JOIN source_codes d ON d.id = v.parent_id
+             JOIN source_codes c ON c.id = d.parent_id
+             WHERE c.name = 'Street' AND d.name = ?1 AND v.name = '002'",
+            [&street_detail],
+            |r| r.get(0),
+        )?;
+        let pence = QC_GIFT_PENCE[usize::from(!with_field)];
+        giving::create_gift(
+            ctx,
+            giving::GiftPayload {
+                contact_id: ids[2].clone(),
+                received_on: "2025-06-01".into(),
+                amount: pence,
+                method: giving::types::Method::Cash,
+                reference: None,
+                allocations: vec![giving::types::AllocationRow {
+                    key: None,
+                    source_code_id: trust_code,
+                    amount: pence,
+                }],
+                client_key: None,
+            },
+            Source::Seed,
+            Some(&group),
+        )?;
+        giftaid::make_declaration(
+            ctx,
+            giftaid::DeclarationPayload {
+                contact_id: ids[0].clone(),
+                scope: giftaid::Scope::Future,
+                gift_id: None,
+                made_on: "2025-01-01".into(),
+                method: giftaid::Method::PaperForm,
+                wording_version: giftaid::HMRC_MODEL_WORDING_VERSION.into(),
+                first_name: "Ada".into(),
+                last_name: name.clone(),
+                address_line1: "1 High Street".into(),
+                postcode: "SW1A 1AA".into(),
+            },
+            Source::Seed,
+            Some(&group),
+        )?;
         if with_field {
             let field = execute(
                 ctx,
@@ -488,7 +566,13 @@ fn seed_world(store: &Store, req: QcSeedRequest) -> Result<QcWorld, ApiError> {
         } else {
             contact_ids(&db)?
         };
-        tenants.push(QcTenant { slug, contact_ids });
+        let (gift_ids, declaration_ids) = seeded_giving(&db, &contact_ids)?;
+        tenants.push(QcTenant {
+            slug,
+            contact_ids,
+            gift_ids,
+            declaration_ids,
+        });
     }
     Ok(QcWorld {
         users: users

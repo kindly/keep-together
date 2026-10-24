@@ -2393,6 +2393,8 @@ dependencies = [
  "auth",
  "contacts",
  "contracts",
+ "giftaid",
+ "giving",
  "platform",
  "rusqlite",
  "serde",
