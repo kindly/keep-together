@@ -494,10 +494,12 @@ function MethodsFields({
                 [`emails.${i}`, `emails#${row.key}`],
               )}
               footer={
-                <EmailHold
-                  address={row.address}
-                  hold={holdOn(row.address, held)}
-                />
+                FEATURES.emailHolds ? (
+                  <EmailHold
+                    address={row.address}
+                    hold={holdOn(row.address, held)}
+                  />
+                ) : undefined
               }
               primary={row.isPrimary}
               onPrimary={() =>
