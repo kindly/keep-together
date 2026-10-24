@@ -49,5 +49,6 @@ pub const PLATFORM_SCHEMAS: &[PlatformSchema] =
 /// order. A crate with reference data adds its line here.
 pub fn seed_new_org(ctx: &Ctx) -> Result<(), ContractError> {
     contacts::seed_new_org(ctx)?;
+    sources::seed_new_org(ctx)?;
     Ok(())
 }

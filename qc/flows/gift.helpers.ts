@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { devLogin } from '../fixtures'
+import { sessionCookie, sessionToken } from '../fixtures'
 import type { Instance, QcUser } from '../fixtures'
 import type { Created } from '../../src/lib/data/rust-types/Created'
 import type { Executed } from '../../src/lib/data/rust-types/Executed'
@@ -7,8 +7,8 @@ import type { RecordedGift } from '../../src/lib/data/rust-types/RecordedGift'
 import type { SourcePicker } from '../../src/lib/data/rust-types/SourcePicker'
 
 // Gifts and declarations for the gift page and contact panel specs (cash
-// gifts step 5), made through the Rust API as the signed-in user (a dev
-// session), outside any timed window.
+// gifts step 5), made through the Rust API as the signed-in user (a fresh
+// session: fixtures' sessionToken), outside any timed window.
 
 export const GIFT_ROUTE = {
   type: 'route',
@@ -18,7 +18,7 @@ export const GIFT_ROUTE = {
 /** Who records: a session on one tenant. */
 export type Recorder = {
   inst: Instance
-  /** The `kt_session` cookie's value. */
+  /** The session cookie's value. */
   token: string
   slug: string
   /** A source code of the tenant, for every gift. */
@@ -34,7 +34,7 @@ async function call<T>(
   const res = await fetch(`${r.inst.api}/api/t/${r.slug}/${path}`, {
     method,
     headers: {
-      cookie: `kt_session=${r.token}`,
+      cookie: sessionCookie(r.inst, r.token),
       ...(body !== undefined && { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -49,7 +49,7 @@ export async function recorder(
   user: QcUser,
   slug: string,
 ): Promise<Recorder> {
-  const token = await devLogin(inst, user.email)
+  const token = await sessionToken(inst, user.email)
   const q = new URLSearchParams({ today: today(), search: 'Event-Gala-001' })
   const { codes } = await call<SourcePicker>(
     { inst, token, slug },

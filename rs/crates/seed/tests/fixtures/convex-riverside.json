@@ -1,0 +1,5323 @@
+{
+ "donors": [
+  {
+   "clientKey": "seed-donor-000",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "St Mary's Primary School PTA",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-000-e0",
+      "label": "work",
+      "address": "hello@stmarysprimaryscho.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-000-p0",
+      "label": "work",
+      "number": "020 3504 0047",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-000-a0",
+      "label": "work",
+      "line1": "1 Ffordd yr Eglwys",
+      "line2": "",
+      "line3": "Smethwick",
+      "town": "Sandwell",
+      "postcode": "B66 3PQ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-001",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Hackney Rotary Club",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-001-e0",
+      "label": "work",
+      "address": "office@hackneyrotaryclub.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-001-a0",
+      "label": "work",
+      "line1": "148 Elm Grove",
+      "line2": "",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Runs the Saturday food bank rota; knows everyone.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Raised £430 at the sponsored walk.",
+     "pinned": false,
+     "archived": true
+    },
+    {
+     "body": "Gift Aid declaration came in by post; scan is in the shared drive.",
+     "pinned": true,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-002",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Patel & Sons Pharmacy",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-002-e0",
+      "label": "work",
+      "address": "info@patelsonspharmacy.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-002-p0",
+      "label": "work",
+      "number": "+44 7768 135976",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-002-a0",
+      "label": "work",
+      "line1": "117 Elm Grove",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-003",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Greenway Housing Co-operative",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-003-e0",
+      "label": "work",
+      "address": "office@greenwayhousingcoo.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-003-p0",
+      "label": "work",
+      "number": "07360 861919",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-003-a0",
+      "label": "work",
+      "line1": "106 Church Road",
+      "line2": "",
+      "line3": "Brixton",
+      "town": "London",
+      "postcode": "",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-004",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "The Wilson Family Foundation",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [],
+    "phones": [
+     {
+      "key": "seed-004-p0",
+      "label": "work",
+      "number": "+44 7204 561212",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-004-a0",
+      "label": "work",
+      "line1": "106 Mill Lane",
+      "line2": "",
+      "line3": "Kirkby",
+      "town": "Liverpool",
+      "postcode": "",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": true,
+   "notes": [
+    {
+     "body": "Moving house in the spring. Check the address before any mailing.",
+     "pinned": true,
+     "archived": false
+    },
+    {
+     "body": "Moving house in the spring. Check the address before any mailing.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-005",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Bristol Rovers Supporters' Trust",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-005-e0",
+      "label": "work",
+      "address": "info@bristolroverssuppo.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-005-p0",
+      "label": "work",
+      "number": "07979 225238",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-005-a0",
+      "label": "work",
+      "line1": "13 Canal Walk",
+      "line2": "",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-006",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Leeds Grand Mosque Women's Group",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-006-e0",
+      "label": "work",
+      "address": "info@leedsgrandmosquewo.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-006-a0",
+      "label": "work",
+      "line1": "12 Kingsway",
+      "line2": "",
+      "line3": "",
+      "town": "Ludlow",
+      "postcode": "SY8 1AZ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-007",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Kirkby Allotment Society",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-007-e0",
+      "label": "work",
+      "address": "office@kirkbyallotmentsoc.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-007-p0",
+      "label": "work",
+      "number": "0131 603 6915",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-007-a0",
+      "label": "work",
+      "line1": "50 High Street",
+      "line2": "Flat 1",
+      "line3": "Headingley",
+      "town": "Leeds",
+      "postcode": "LS6 3BN",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-008",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Cardiff Bay Rowing Club",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [],
+    "phones": [
+     {
+      "key": "seed-008-p0",
+      "label": "work",
+      "number": "07448 639099",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-008-a0",
+      "label": "work",
+      "line1": "11 High Street",
+      "line2": "",
+      "line3": "",
+      "town": "Totnes",
+      "postcode": "TQ9 5RY",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-009",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Morrison Engineering Ltd",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-009-e0",
+      "label": "work",
+      "address": "treasurer@morrisonengineerin.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-009-p0",
+      "label": "work",
+      "number": "+44 7819 724240",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-009-a0",
+      "label": "work",
+      "line1": "107 Albert Street",
+      "line2": "",
+      "line3": "Headingley",
+      "town": "Leeds",
+      "postcode": "LS6 3BN",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-010",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Guru Nanak Gurdwara Smethwick",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-010-e0",
+      "label": "work",
+      "address": "office@gurunanakgurdwaras.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-010-p0",
+      "label": "work",
+      "number": "07556 071473",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-010-a0",
+      "label": "work",
+      "line1": "161 Church Road",
+      "line2": "Flat 3",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-011",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Brixton Credit Union",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-011-e0",
+      "label": "work",
+      "address": "treasurer@brixtoncreditunion.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-011-p0",
+      "label": "work",
+      "number": "07728 230575",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-011-a0",
+      "label": "work",
+      "line1": "148 Queens Crescent",
+      "line2": "",
+      "line3": "Leith",
+      "town": "Edinburgh",
+      "postcode": "EH6 6QU",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-012",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Hope Street Methodist Church",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-012-e0",
+      "label": "work",
+      "address": "treasurer@hopestreetmethodis.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-012-p0",
+      "label": "work",
+      "number": "0131 882 4691",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-012-a0",
+      "label": "work",
+      "line1": "69 Elm Grove",
+      "line2": "",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-013",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Thames Valley Community Foundation",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-013-e0",
+      "label": "work",
+      "address": "office@thamesvalleycommun.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-013-p0",
+      "label": "work",
+      "number": "+44 7008 291578",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": []
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-014",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Ludlow Women’s Institute",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-014-e0",
+      "label": "work",
+      "address": "office@ludlowwomensinstit.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-014-p0",
+      "label": "work",
+      "number": "07741 815897",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": []
+   },
+   "archived": true,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-015",
+   "details": {
+    "kind": "organization",
+    "title": "",
+    "firstName": "",
+    "lastName": "",
+    "nickname": "",
+    "name": "Oakfield Bakery",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-015-e0",
+      "label": "work",
+      "address": "treasurer@oakfieldbakery.org.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-015-p0",
+      "label": "work",
+      "number": "07420 428575",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-015-a0",
+      "label": "work",
+      "line1": "98 Church Road",
+      "line2": "",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Raised £430 at the sponsored walk.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Gift Aid declaration came in by post; scan is in the shared drive.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Large one-off gift in memory of their mother.",
+     "pinned": true,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-016",
+   "details": {
+    "kind": "individual",
+    "title": "Rev",
+    "firstName": "Ama",
+    "lastName": "Patel",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1939-07-16",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-016-x1",
+     "type": "Membership number",
+     "value": "RCT-0001"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-016-e9",
+      "label": "home",
+      "address": "thepatels@hotmail.co.uk",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-016-e1",
+      "label": "work",
+      "address": "apatel@example.co.uk",
+      "isPrimary": false
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-016-p0",
+      "label": "home",
+      "number": "+44 7612 696498",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-016-a0",
+      "label": "home",
+      "line1": "8 Albert Street",
+      "line2": "",
+      "line3": "Headingley",
+      "town": "Leeds",
+      "postcode": "LS6 3BN",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-017",
+   "details": {
+    "kind": "individual",
+    "title": "Prof",
+    "firstName": "Rhys",
+    "lastName": "Patel",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-017-e9",
+      "label": "home",
+      "address": "thepatels@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-017-p0",
+      "label": "home",
+      "number": "+44 7910 349802",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-017-a0",
+      "label": "home",
+      "line1": "8 Albert Street",
+      "line2": "",
+      "line3": "Headingley",
+      "town": "Leeds",
+      "postcode": "LS6 3BN",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-018",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Tendai",
+    "lastName": "Kowalski",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-018-e9",
+      "label": "home",
+      "address": "thekowalskis@btinternet.com",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-018-e1",
+      "label": "work",
+      "address": "tkowalski@example.co.uk",
+      "isPrimary": false
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-018-p0",
+      "label": "home",
+      "number": "07569 701282",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-018-a0",
+      "label": "home",
+      "line1": "74 Albert Street",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": true,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-019",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Tomasz",
+    "lastName": "Kowalski",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1994-06-01",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-019-e9",
+      "label": "home",
+      "address": "thekowalskis@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-019-p0",
+      "label": "home",
+      "number": "020 5457 2791",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-019-a0",
+      "label": "home",
+      "line1": "74 Albert Street",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-020",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Oliver",
+    "lastName": "Kowalski",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-020-x1",
+     "type": "Membership number",
+     "value": "RCT-0005"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-020-e0",
+      "label": "home",
+      "address": "oliver.kowalski96@outlook.com",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-020-e1",
+      "label": "work",
+      "address": "okowalski@nhs.net",
+      "isPrimary": false
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-020-p0",
+      "label": "home",
+      "number": "029 9355 2344",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-020-a0",
+      "label": "home",
+      "line1": "74 Albert Street",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-021",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Kofi",
+    "lastName": "Evans",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-021-x0",
+     "type": "External reference",
+     "value": "LEGACY-0001"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-021-e9",
+      "label": "home",
+      "address": "theevanss@yahoo.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-021-a0",
+      "label": "home",
+      "line1": "79 Victoria Avenue",
+      "line2": "Flat 2",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-022",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Rhys",
+    "lastName": "Evans",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-022-e0",
+      "label": "home",
+      "address": "rhys.evans@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-022-a0",
+      "label": "home",
+      "line1": "79 Victoria Avenue",
+      "line2": "Flat 2",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-023",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Mei",
+    "lastName": "Evans",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1951-08-22",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-023-e0",
+      "label": "home",
+      "address": "mei.evans10@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-023-a0",
+      "label": "home",
+      "line1": "79 Victoria Avenue",
+      "line2": "Flat 2",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-024",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Mohammed",
+    "lastName": "Hussain",
+    "nickname": "Mo",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-024-x1",
+     "type": "Membership number",
+     "value": "RCT-0009"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-024-e9",
+      "label": "home",
+      "address": "thehussains@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-024-p0",
+      "label": "home",
+      "number": "07230 742331",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-024-a0",
+      "label": "home",
+      "line1": "39 Ffordd yr Eglwys",
+      "line2": "",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-025",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Harjit",
+    "lastName": "Hussain",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-025-e9",
+      "label": "home",
+      "address": "thehussains@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-025-a0",
+      "label": "home",
+      "line1": "39 Ffordd yr Eglwys",
+      "line2": "",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-026",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Ahmed",
+    "lastName": "Rossi",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-026-x0",
+     "type": "External reference",
+     "value": "LEGACY-0002"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-026-e9",
+      "label": "home",
+      "address": "therossis@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-026-a0",
+      "label": "home",
+      "line1": "77 Ffordd yr Eglwys",
+      "line2": "",
+      "line3": "",
+      "town": "Totnes",
+      "postcode": "TQ9 5RY",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Runs the Saturday food bank rota; knows everyone.",
+     "pinned": true,
+     "archived": false
+    },
+    {
+     "body": "Mentioned leaving a gift in their will. Follow up gently in the autumn.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-027",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Grace",
+    "lastName": "Rossi",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1954-03-27",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-027-e9",
+      "label": "home",
+      "address": "therossis@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-027-p0",
+      "label": "home",
+      "number": "0131 630 2961",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-027-a0",
+      "label": "home",
+      "line1": "77 Ffordd yr Eglwys",
+      "line2": "",
+      "line3": "",
+      "town": "Totnes",
+      "postcode": "TQ9 5RY",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-028",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Sofia",
+    "lastName": "Mahmood",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-028-x1",
+     "type": "Membership number",
+     "value": "RCT-0013"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-028-e9",
+      "label": "home",
+      "address": "themahmoods@sky.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-028-p0",
+      "label": "home",
+      "number": "07122 414712",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-028-a0",
+      "label": "home",
+      "line1": "114 High Street",
+      "line2": "Flat 10",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-029",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Zara",
+    "lastName": "Mahmood",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1993-07-16",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-029-e9",
+      "label": "home",
+      "address": "themahmoods@sky.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-029-p0",
+      "label": "home",
+      "number": "+44 7780 224851",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-029-a0",
+      "label": "home",
+      "line1": "114 High Street",
+      "line2": "Flat 10",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Contact via their daughter, who manages their post.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Moving house in the spring. Check the address before any mailing.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Contact via their daughter, who manages their post.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-030",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Niamh",
+    "lastName": "Mahmood",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1964-12-16",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-030-e0",
+      "label": "home",
+      "address": "niamh.mahmood@icloud.com",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-030-e1",
+      "label": "work",
+      "address": "nmahmood@nhs.net",
+      "isPrimary": false
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-030-p0",
+      "label": "home",
+      "number": "020 2704 3349",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-030-a0",
+      "label": "home",
+      "line1": "114 High Street",
+      "line2": "Flat 10",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Runs the Saturday food bank rota; knows everyone.",
+     "pinned": true,
+     "archived": false
+    },
+    {
+     "body": "Asked not to be phoned at work.",
+     "pinned": true,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-031",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Bronwen",
+    "lastName": "Nwosu",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [],
+    "phones": [
+     {
+      "key": "seed-031-p0",
+      "label": "home",
+      "number": "020 4902 3359",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-031-a0",
+      "label": "home",
+      "line1": "28 Church Road",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-032",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Siobhan",
+    "lastName": "Nwosu",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1984-02-28",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-032-x0",
+     "type": "External reference",
+     "value": "LEGACY-0003"
+    },
+    {
+     "key": "seed-032-x1",
+     "type": "Membership number",
+     "value": "RCT-0017"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-032-e9",
+      "label": "home",
+      "address": "thenwosus@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-032-p0",
+      "label": "home",
+      "number": "07365 288967",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-032-a0",
+      "label": "home",
+      "line1": "28 Church Road",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-033",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Yusuf",
+    "lastName": "Nwosu",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1996-01-04",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-033-e0",
+      "label": "home",
+      "address": "yusuf.nwosu2@outlook.com",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-033-e1",
+      "label": "work",
+      "address": "ynwosu@council.gov.uk",
+      "isPrimary": false
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-033-p0",
+      "label": "home",
+      "number": "+44 7265 315739",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-033-a0",
+      "label": "home",
+      "line1": "28 Church Road",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-034",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Yusuf",
+    "lastName": "Begum",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1951-12-09",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-034-e1",
+      "label": "work",
+      "address": "ybegum@example.co.uk",
+      "isPrimary": false
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-034-p0",
+      "label": "home",
+      "number": "07466 583635",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-034-a0",
+      "label": "home",
+      "line1": "5 Ffordd yr Eglwys",
+      "line2": "",
+      "line3": "Didsbury",
+      "town": "Manchester",
+      "postcode": "M20 2LN",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Moving house in the spring. Check the address before any mailing.",
+     "pinned": true,
+     "archived": false
+    },
+    {
+     "body": "Asked not to be phoned at work.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-035",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Hannah",
+    "lastName": "Begum",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1991-04-09",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-035-e9",
+      "label": "home",
+      "address": "thebegums@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-035-p0",
+      "label": "home",
+      "number": "07779 317448",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-035-a0",
+      "label": "home",
+      "line1": "5 Ffordd yr Eglwys",
+      "line2": "",
+      "line3": "Didsbury",
+      "town": "Manchester",
+      "postcode": "M20 2LN",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Gift Aid declaration came in by post; scan is in the shared drive.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Prefers a phone call to email. Best after 6pm.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Moving house in the spring. Check the address before any mailing.",
+     "pinned": true,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-036",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Róisín",
+    "lastName": "Wong",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1954-12-28",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-036-x1",
+     "type": "Membership number",
+     "value": "RCT-0021"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-036-e0",
+      "label": "home",
+      "address": "roisin.wong@yahoo.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-036-a0",
+      "label": "home",
+      "line1": "91 Elm Grove",
+      "line2": "",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": true,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-037",
+   "details": {
+    "kind": "individual",
+    "title": "Rev",
+    "firstName": "Imran",
+    "lastName": "Wong",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-037-x0",
+     "type": "External reference",
+     "value": "LEGACY-0004"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-037-e9",
+      "label": "home",
+      "address": "thewongs@gmail.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-037-p0",
+      "label": "home",
+      "number": "07152 139321",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-037-a0",
+      "label": "home",
+      "line1": "91 Elm Grove",
+      "line2": "",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": true,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-038",
+   "details": {
+    "kind": "individual",
+    "title": "Rev",
+    "firstName": "Bronwen",
+    "lastName": "Hughes",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-038-e9",
+      "label": "home",
+      "address": "thehughess@sky.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-038-p0",
+      "label": "home",
+      "number": "07506 277012",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-038-a0",
+      "label": "home",
+      "line1": "63 Ffordd yr Eglwys",
+      "line2": "Flat 6",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": true,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-039",
+   "details": {
+    "kind": "individual",
+    "title": "Rev",
+    "firstName": "Ahmed",
+    "lastName": "Hughes",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-039-e9",
+      "label": "home",
+      "address": "thehughess@sky.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-039-a0",
+      "label": "home",
+      "line1": "63 Ffordd yr Eglwys",
+      "line2": "Flat 6",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-040",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Oliver",
+    "lastName": "Hughes",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-040-x0",
+     "type": "External reference",
+     "value": "LEGACY-0005"
+    },
+    {
+     "key": "seed-040-x1",
+     "type": "Membership number",
+     "value": "RCT-0025"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-040-e0",
+      "label": "home",
+      "address": "oliver.hughes76@gmail.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-040-p0",
+      "label": "home",
+      "number": "0131 703 0934",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-040-a0",
+      "label": "home",
+      "line1": "63 Ffordd yr Eglwys",
+      "line2": "Flat 6",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Large one-off gift in memory of their mother.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Large print for any letters, please.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Mentioned leaving a gift in their will. Follow up gently in the autumn.",
+     "pinned": true,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-041",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Anjali",
+    "lastName": "Taylor",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-041-e0",
+      "label": "home",
+      "address": "anjali.taylor@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-041-p0",
+      "label": "home",
+      "number": "07324 937507",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-041-a0",
+      "label": "home",
+      "line1": "147 Albert Street",
+      "line2": "",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Runs the Saturday food bank rota; knows everyone.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Matched-giving scheme through their employer; send the form each April.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-042",
+   "details": {
+    "kind": "individual",
+    "title": "Mx",
+    "firstName": "Ahmed",
+    "lastName": "Taylor",
+    "nickname": "",
+    "name": "",
+    "birthDate": "2001-11-26",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-042-e9",
+      "label": "home",
+      "address": "thetaylors@yahoo.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-042-a0",
+      "label": "home",
+      "line1": "147 Albert Street",
+      "line2": "",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-043",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Eleanor",
+    "lastName": "Fraser",
+    "nickname": "Nell",
+    "name": "",
+    "birthDate": "1993-12-23",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-043-e9",
+      "label": "home",
+      "address": "thefrasers@proton.me",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-043-e1",
+      "label": "work",
+      "address": "efraser@example.co.uk",
+      "isPrimary": false
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-043-a0",
+      "label": "home",
+      "line1": "133 Station Road",
+      "line2": "Flat 8",
+      "line3": "Brixton",
+      "town": "London",
+      "postcode": "SW9 8HE",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-044",
+   "details": {
+    "kind": "individual",
+    "title": "Prof",
+    "firstName": "Aisha",
+    "lastName": "Fraser",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1979-02-06",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-044-x0",
+     "type": "External reference",
+     "value": "LEGACY-0006"
+    },
+    {
+     "key": "seed-044-x1",
+     "type": "Membership number",
+     "value": "RCT-0029"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-044-e9",
+      "label": "home",
+      "address": "thefrasers@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-044-p0",
+      "label": "home",
+      "number": "+44 7849 688796",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-044-a0",
+      "label": "home",
+      "line1": "133 Station Road",
+      "line2": "Flat 8",
+      "line3": "Brixton",
+      "town": "London",
+      "postcode": "SW9 8HE",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-045",
+   "details": {
+    "kind": "individual",
+    "title": "Rev",
+    "firstName": "Harjit",
+    "lastName": "Chowdhury",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1971-10-14",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-045-e0",
+      "label": "home",
+      "address": "harjit.chowdhury@gmail.com",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-045-e1",
+      "label": "work",
+      "address": "hchowdhury@example.co.uk",
+      "isPrimary": false
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-045-a0",
+      "label": "home",
+      "line1": "104 Victoria Avenue",
+      "line2": "",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-046",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Priya",
+    "lastName": "Campbell",
+    "nickname": "",
+    "name": "",
+    "birthDate": "2003-04-22",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-046-e0",
+      "label": "home",
+      "address": "priya.campbell@gmail.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-046-p0",
+      "label": "home",
+      "number": "029 8570 8652",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-046-a0",
+      "label": "home",
+      "line1": "132 Queens Crescent",
+      "line2": "",
+      "line3": "Smethwick",
+      "town": "Sandwell",
+      "postcode": "B66 3PQ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-047",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Ewan",
+    "lastName": "Patel",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-047-e0",
+      "label": "home",
+      "address": "ewan.patel6@gmail.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-047-a0",
+      "label": "home",
+      "line1": "28 Mill Lane",
+      "line2": "",
+      "line3": "",
+      "town": "Ludlow",
+      "postcode": "SY8 1AZ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-048",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Arjun",
+    "lastName": "Ferreira",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1968-08-16",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-048-x1",
+     "type": "Membership number",
+     "value": "RCT-0033"
+    }
+   ],
+   "methods": {
+    "emails": [],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-048-a0",
+      "label": "home",
+      "line1": "155 High Street",
+      "line2": "",
+      "line3": "Smethwick",
+      "town": "Sandwell",
+      "postcode": "B66 3PQ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-049",
+   "details": {
+    "kind": "individual",
+    "title": "Prof",
+    "firstName": "Zara",
+    "lastName": "Begum",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1983-12-22",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-049-x0",
+     "type": "External reference",
+     "value": "LEGACY-0007"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-049-e0",
+      "label": "home",
+      "address": "zara.begum@icloud.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-049-p0",
+      "label": "home",
+      "number": "029 5723 4989",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-049-a0",
+      "label": "home",
+      "line1": "36 Station Road",
+      "line2": "",
+      "line3": "Smethwick",
+      "town": "Sandwell",
+      "postcode": "B66 3PQ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Contact via their daughter, who manages their post.",
+     "pinned": false,
+     "archived": true
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-050",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Wei",
+    "lastName": "Wilson",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-050-x0",
+     "type": "External reference",
+     "value": "LEGACY-0008"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-050-e0",
+      "label": "home",
+      "address": "wei.wilson.sky.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-050-p0",
+      "label": "home",
+      "number": "020 4530 1554",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-050-a0",
+      "label": "home",
+      "line1": "61 Kingsway",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Large print for any letters, please.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Large one-off gift in memory of their mother.",
+     "pinned": false,
+     "archived": true
+    },
+    {
+     "body": "Speaks Polish and English; happy to translate leaflets.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-051",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Imran",
+    "lastName": "Wilson",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-051-e0",
+      "label": "home",
+      "address": "imran.wilson@sky.com",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-051-e1",
+      "label": "work",
+      "address": "iwilson@nhs.net",
+      "isPrimary": false
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-051-a0",
+      "label": "home",
+      "line1": "30 Station Road",
+      "line2": "",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-052",
+   "details": {
+    "kind": "individual",
+    "title": "Rev",
+    "firstName": "Tendai",
+    "lastName": "Hughes",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-052-x1",
+     "type": "Membership number",
+     "value": "RCT-0037"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-052-e0",
+      "label": "home",
+      "address": "tendai.hughes@icloud.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-052-a0",
+      "label": "home",
+      "line1": "131 Albert Street",
+      "line2": "",
+      "line3": "Didsbury",
+      "town": "Manchester",
+      "postcode": "M20 2LN",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Returned the last newsletter: \"not known at this address\".",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-053",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Ewan",
+    "lastName": "Okafor",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-053-a0",
+      "label": "home",
+      "line1": "97 Park Terrace",
+      "line2": "Flat 6",
+      "line3": "Jesmond",
+      "town": "Newcastle upon Tyne",
+      "postcode": "NE2 3HE",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-054",
+   "details": {
+    "kind": "individual",
+    "title": "Prof",
+    "firstName": "Ruth",
+    "lastName": "Achebe",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1943-08-09",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-054-e0",
+      "label": "home",
+      "address": "ruth.achebe43@outlook.com",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-054-e1",
+      "label": "work",
+      "address": "rachebe@nhs.net",
+      "isPrimary": false
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-054-p0",
+      "label": "home",
+      "number": "029 9844 3222",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-054-a0",
+      "label": "home",
+      "line1": "83 Albert Street",
+      "line2": "",
+      "line3": "Kirkby",
+      "town": "Liverpool",
+      "postcode": "",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-055",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Gareth",
+    "lastName": "Reid",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-055-e0",
+      "label": "home",
+      "address": "gareth.reid@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-055-a0",
+      "label": "home",
+      "line1": "142 Mill Lane",
+      "line2": "",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Prefers a phone call to email. Best after 6pm.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Raised £430 at the sponsored walk.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-056",
+   "details": {
+    "kind": "individual",
+    "title": "Prof",
+    "firstName": "Gareth",
+    "lastName": "Thompson",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-056-x1",
+     "type": "Membership number",
+     "value": "RCT-0041"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-056-e0",
+      "label": "home",
+      "address": "gareth.thompson@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-056-p0",
+      "label": "home",
+      "number": "07683 938917",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-056-a0",
+      "label": "home",
+      "line1": "176 Ffordd yr Eglwys",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Mentioned leaving a gift in their will. Follow up gently in the autumn.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-057",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Chidi",
+    "lastName": "Kaur",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1942-06-22",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-057-a0",
+      "label": "home",
+      "line1": "6 Kingsway",
+      "line2": "",
+      "line3": "",
+      "town": "Ludlow",
+      "postcode": "SY8 1AZ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-058",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Fatima",
+    "lastName": "Reid",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1973-04-10",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [],
+    "phones": [
+     {
+      "key": "seed-058-p0",
+      "label": "home",
+      "number": "07119 601252",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-058-a0",
+      "label": "home",
+      "line1": "174 Kingsway",
+      "line2": "",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-059",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Leila",
+    "lastName": "Khan",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1983-06-16",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-059-e0",
+      "label": "home",
+      "address": "leila.khan@btinternet",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-059-p0",
+      "label": "home",
+      "number": "0131 318 2210",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-059-a0",
+      "label": "home",
+      "line1": "97 Albert Street",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-060",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Harjit",
+    "lastName": "Reid",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-060-x1",
+     "type": "Membership number",
+     "value": "RCT-0045"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-060-e0",
+      "label": "home",
+      "address": "harjit.reid@icloud.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-060-a0",
+      "label": "home",
+      "line1": "28 Station Road",
+      "line2": "",
+      "line3": "Brixton",
+      "town": "London",
+      "postcode": "SW9 8HE",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-061",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Ifeoma",
+    "lastName": "MacDonald",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1958-08-16",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-061-e0",
+      "label": "home",
+      "address": "ifeoma.macdonald62@sky.com",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-061-e1",
+      "label": "work",
+      "address": "imacdonald@nhs.net",
+      "isPrimary": false
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-061-p0",
+      "label": "home",
+      "number": "0131 732 6653",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-061-a0",
+      "label": "home",
+      "line1": "145 High Street",
+      "line2": "",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-062",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Leila",
+    "lastName": "Campbell",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-062-e1",
+      "label": "work",
+      "address": "lcampbell@ac.uk",
+      "isPrimary": false
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-062-a0",
+      "label": "home",
+      "line1": "18 Albert Street",
+      "line2": "",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Returned the last newsletter: \"not known at this address\".",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Large one-off gift in memory of their mother.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-063",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Kofi",
+    "lastName": "Wilson",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1938-11-23",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [],
+    "phones": [
+     {
+      "key": "seed-063-p0",
+      "label": "home",
+      "number": "07724 769639",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": []
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-064",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Fatima",
+    "lastName": "Wilson",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1975-08-24",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-064-x1",
+     "type": "Membership number",
+     "value": "RCT-0049"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-064-e0",
+      "label": "home",
+      "address": "fatima.wilson79@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-064-p0",
+      "label": "home",
+      "number": "0131 529 2748",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-064-a0",
+      "label": "home",
+      "line1": "127 Mill Lane",
+      "line2": "Flat 4",
+      "line3": "Jesmond",
+      "town": "Newcastle upon Tyne",
+      "postcode": "NE2 3HE",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": true,
+   "notes": [
+    {
+     "body": "Mentioned leaving a gift in their will. Follow up gently in the autumn.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-065",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Eleanor",
+    "lastName": "Jones",
+    "nickname": "Nell",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-065-e0",
+      "label": "home",
+      "address": "eleanor.jones28@outlook.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-065-p0",
+      "label": "home",
+      "number": "07995 150513",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": []
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-066",
+   "details": {
+    "kind": "individual",
+    "title": "Prof",
+    "firstName": "Margaret",
+    "lastName": "O'Brien",
+    "nickname": "Peggy",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-066-x0",
+     "type": "External reference",
+     "value": "LEGACY-0009"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-066-e0",
+      "label": "home",
+      "address": "margaret.obrien@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-066-a0",
+      "label": "home",
+      "line1": "41 Park Terrace",
+      "line2": "",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-067",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Rhys",
+    "lastName": "Evans",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-067-e0",
+      "label": "home",
+      "address": "rhys.evans89@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-067-p0",
+      "label": "home",
+      "number": "07144 778966",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-067-a0",
+      "label": "home",
+      "line1": "129 Kingsway",
+      "line2": "",
+      "line3": "",
+      "town": "Ludlow",
+      "postcode": "SY8 1AZ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Asked not to be phoned at work.",
+     "pinned": true,
+     "archived": false
+    },
+    {
+     "body": "Runs the Saturday food bank rota; knows everyone.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Prefers a phone call to email. Best after 6pm.",
+     "pinned": true,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-068",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Margaret",
+    "lastName": "Ferreira",
+    "nickname": "Peggy",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-068-x1",
+     "type": "Membership number",
+     "value": "RCT-0053"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-068-e0",
+      "label": "home",
+      "address": "margaret.ferreira@outlook.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-068-p0",
+      "label": "home",
+      "number": "020 9040 7775",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-068-a0",
+      "label": "home",
+      "line1": "30 Elm Grove",
+      "line2": "",
+      "line3": "Brixton",
+      "town": "London",
+      "postcode": "SW9 8HE",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-069",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Priya",
+    "lastName": "Fraser",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-069-e0",
+      "label": "home",
+      "address": "priya.fraser26@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-069-p0",
+      "label": "home",
+      "number": "029 7614 8538",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": []
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-070",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Tendai",
+    "lastName": "Campbell",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-070-e0",
+      "label": "home",
+      "address": "tendai.campbell55@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-070-p0",
+      "label": "home",
+      "number": "029 3005 4748",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-070-a0",
+      "label": "home",
+      "line1": "44 Mill Lane",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-071",
+   "details": {
+    "kind": "individual",
+    "title": "Mx",
+    "firstName": "Agnieszka",
+    "lastName": "Hughes",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1998-08-15",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-071-e0",
+      "label": "home",
+      "address": "agnieszka.hughes6@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": []
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-072",
+   "details": {
+    "kind": "individual",
+    "title": "Prof",
+    "firstName": "Oluwaseun",
+    "lastName": "Fraser",
+    "nickname": "Seun",
+    "name": "",
+    "birthDate": "2005-04-01",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-072-x1",
+     "type": "Membership number",
+     "value": "RCT-0057"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-072-e0",
+      "label": "home",
+      "address": "oluwaseun.fraser@icloud.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-072-p0",
+      "label": "home",
+      "number": "0131 186 5397",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-072-a0",
+      "label": "home",
+      "line1": "131 Kingsway",
+      "line2": "Flat 7",
+      "line3": "Brixton",
+      "town": "London",
+      "postcode": "SW9 8HE",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-073",
+   "details": {
+    "kind": "individual",
+    "title": "Mx",
+    "firstName": "Anjali",
+    "lastName": "Smith",
+    "nickname": "",
+    "name": "",
+    "isDeceased": true,
+    "deceasedDate": "2025-06-18"
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-073-e0",
+      "label": "home",
+      "address": "anjali.smith53@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-073-a0",
+      "label": "home",
+      "line1": "80 Kingsway",
+      "line2": "Flat 4",
+      "line3": "Jesmond",
+      "town": "Newcastle upon Tyne",
+      "postcode": "NE2 3HE",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Matched-giving scheme through their employer; send the form each April.",
+     "pinned": false,
+     "archived": true
+    },
+    {
+     "body": "Prefers a phone call to email. Best after 6pm.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-074",
+   "details": {
+    "kind": "individual",
+    "title": "Mx",
+    "firstName": "Bronwen",
+    "lastName": "MacDonald",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-074-e0",
+      "label": "home",
+      "address": "bronwen.macdonald@outlook.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-074-p0",
+      "label": "home",
+      "number": "07837 269459",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-074-a0",
+      "label": "home",
+      "line1": "108 Elm Grove",
+      "line2": "",
+      "line3": "Smethwick",
+      "town": "Sandwell",
+      "postcode": "B66 3PQ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Raised £430 at the sponsored walk.",
+     "pinned": false,
+     "archived": true
+    },
+    {
+     "body": "Runs the Saturday food bank rota; knows everyone.",
+     "pinned": false,
+     "archived": true
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-075",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Kwame",
+    "lastName": "Mahmood",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-075-e0",
+      "label": "home",
+      "address": "kwame.mahmood@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-075-a0",
+      "label": "home",
+      "line1": "139 Queens Crescent",
+      "line2": "",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-076",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Jamal",
+    "lastName": "Williams",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-076-x1",
+     "type": "Membership number",
+     "value": "RCT-0061"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-076-e0",
+      "label": "home",
+      "address": "jamal.williams@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-076-p0",
+      "label": "home",
+      "number": "07840 058514",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-076-a0",
+      "label": "home",
+      "line1": "138 Park Terrace",
+      "line2": "",
+      "line3": "Hackney",
+      "town": "London",
+      "postcode": "E8 1DY",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Matched-giving scheme through their employer; send the form each April.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-077",
+   "details": {
+    "kind": "individual",
+    "title": "Mx",
+    "firstName": "Harjit",
+    "lastName": "Ó Súilleabháin",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1985-07-09",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-077-e0",
+      "label": "home",
+      "address": "harjit.osuilleabhain41@btinternet.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-077-p0",
+      "label": "home",
+      "number": "07122 752741",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-077-a0",
+      "label": "home",
+      "line1": "8 Queens Crescent",
+      "line2": "",
+      "line3": "",
+      "town": "Ludlow",
+      "postcode": "SY8 1AZ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Returned the last newsletter: \"not known at this address\".",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Raised £430 at the sponsored walk.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Raised £430 at the sponsored walk.",
+     "pinned": false,
+     "archived": true
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-078",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Ravi",
+    "lastName": "Mensah",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-078-e0",
+      "label": "home",
+      "address": "ravi.mensah@outlook",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-078-p0",
+      "label": "home",
+      "number": "07875 330599",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-078-a0",
+      "label": "home",
+      "line1": "110 Canal Walk",
+      "line2": "",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Contact via their daughter, who manages their post.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-079",
+   "details": {
+    "kind": "individual",
+    "title": "Mx",
+    "firstName": "Siobhan",
+    "lastName": "Kaur",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1958-08-06",
+    "isDeceased": true,
+    "deceasedDate": "2025-09-11"
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-079-e0",
+      "label": "home",
+      "address": "siobhan.kaur@icloud.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-079-p0",
+      "label": "home",
+      "number": "029 2428 1048",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-079-a0",
+      "label": "home",
+      "line1": "133 High Street",
+      "line2": "Flat 8",
+      "line3": "Leith",
+      "town": "Edinburgh",
+      "postcode": "",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Large one-off gift in memory of their mother.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Mentioned leaving a gift in their will. Follow up gently in the autumn.",
+     "pinned": true,
+     "archived": false
+    },
+    {
+     "body": "Met at the summer fete. Keen to volunteer on the stall next year.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-080",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Tendai",
+    "lastName": "Gill",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1989-06-27",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-080-x0",
+     "type": "External reference",
+     "value": "LEGACY-0010"
+    },
+    {
+     "key": "seed-080-x1",
+     "type": "Membership number",
+     "value": "RCT-0065"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-080-e0",
+      "label": "home",
+      "address": "tendai.gill@sky.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-080-p0",
+      "label": "home",
+      "number": "020 2593 3003",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-080-a0",
+      "label": "home",
+      "line1": "133 Church Road",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-081",
+   "details": {
+    "kind": "individual",
+    "title": "Rev",
+    "firstName": "Kwame",
+    "lastName": "Okafor",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-081-e0",
+      "label": "home",
+      "address": "kwame.okafor4@outlook.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-081-p0",
+      "label": "home",
+      "number": "029 7710 5899",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-081-a0",
+      "label": "home",
+      "line1": "62 Elm Grove",
+      "line2": "",
+      "line3": "Kirkby",
+      "town": "Liverpool",
+      "postcode": "L32 8RR",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-082",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Ama",
+    "lastName": "Mahmood",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-082-e0",
+      "label": "home",
+      "address": "ama.mahmood@icloud.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": []
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-083",
+   "details": {
+    "kind": "individual",
+    "title": "Rev",
+    "firstName": "Margaret",
+    "lastName": "Jones",
+    "nickname": "Peggy",
+    "name": "",
+    "birthDate": "1992-10-10",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-083-e0",
+      "label": "home",
+      "address": "margaret.jones@gmail.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-083-p0",
+      "label": "home",
+      "number": "029 7283 6551",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-083-a0",
+      "label": "home",
+      "line1": "139 Elm Grove",
+      "line2": "",
+      "line3": "Partick",
+      "town": "Glasgow",
+      "postcode": "G11 5RD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-084",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Harjit",
+    "lastName": "Kowalski",
+    "nickname": "",
+    "name": "",
+    "isDeceased": true,
+    "deceasedDate": "2025-02-16"
+   },
+   "identifiers": [
+    {
+     "key": "seed-084-x1",
+     "type": "Membership number",
+     "value": "RCT-0069"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-084-e0",
+      "label": "home",
+      "address": "harjit.kowalski@hotmail.co.uk",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-084-e1",
+      "label": "work",
+      "address": "hkowalski@council.gov.uk",
+      "isPrimary": false
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": []
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-085",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Darius",
+    "lastName": "Chowdhury",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1970-07-18",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-085-e0",
+      "label": "home",
+      "address": "darius.chowdhury84@yahoo.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-085-p0",
+      "label": "home",
+      "number": "+44 7376 932331",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-085-a0",
+      "label": "home",
+      "line1": "53 Church Road",
+      "line2": "",
+      "line3": "Smethwick",
+      "town": "Sandwell",
+      "postcode": "B663PQX",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Prefers a phone call to email. Best after 6pm.",
+     "pinned": false,
+     "archived": true
+    },
+    {
+     "body": "Runs the Saturday food bank rota; knows everyone.",
+     "pinned": true,
+     "archived": false
+    },
+    {
+     "body": "Gift Aid declaration came in by post; scan is in the shared drive.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-086",
+   "details": {
+    "kind": "individual",
+    "title": "Mx",
+    "firstName": "Ruth",
+    "lastName": "MacDonald",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-086-e0",
+      "label": "home",
+      "address": "ruth.macdonald@icloud.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": []
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Met at the summer fete. Keen to volunteer on the stall next year.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Asked not to be phoned at work.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-087",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Ama",
+    "lastName": "Nguyen",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-087-e0",
+      "label": "home",
+      "address": "ama.nguyen@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-087-p0",
+      "label": "home",
+      "number": "0131 105 9077",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-087-a0",
+      "label": "home",
+      "line1": "11 Mill Lane",
+      "line2": "",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-088",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Tomasz",
+    "lastName": "Nowak",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1951-03-08",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-088-x1",
+     "type": "Membership number",
+     "value": "RCT-0073"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-088-e1",
+      "label": "work",
+      "address": "tnowak@nhs.net",
+      "isPrimary": false
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-088-p0",
+      "label": "home",
+      "number": "0131 918 7651",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-088-a0",
+      "label": "home",
+      "line1": "72 Station Road",
+      "line2": "",
+      "line3": "Headingley",
+      "town": "Leeds",
+      "postcode": "LS6 3BN",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-089",
+   "details": {
+    "kind": "individual",
+    "title": "Rev",
+    "firstName": "Anjali",
+    "lastName": "Nguyen",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-089-e0",
+      "label": "home",
+      "address": "anjali.nguyen51@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-089-p0",
+      "label": "home",
+      "number": "+44 7371 965434",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-089-a0",
+      "label": "home",
+      "line1": "149 Canal Walk",
+      "line2": "",
+      "line3": "",
+      "town": "Ludlow",
+      "postcode": "SY8 1AZ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-090",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Oliver",
+    "lastName": "Taylor",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-090-e0",
+      "label": "home",
+      "address": "oliver.taylor@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-090-p0",
+      "label": "home",
+      "number": "0131 340 2850",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-090-a0",
+      "label": "home",
+      "line1": "21 Queens Crescent",
+      "line2": "",
+      "line3": "Hackney",
+      "town": "London",
+      "postcode": "E8 1DY",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Moving house in the spring. Check the address before any mailing.",
+     "pinned": false,
+     "archived": true
+    },
+    {
+     "body": "Gift Aid declaration came in by post; scan is in the shared drive.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Met at the summer fete. Keen to volunteer on the stall next year.",
+     "pinned": true,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-091",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Tomasz",
+    "lastName": "Davies",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-091-x0",
+     "type": "External reference",
+     "value": "LEGACY-0011"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-091-e1",
+      "label": "work",
+      "address": "tdavies@example.co.uk",
+      "isPrimary": false
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-091-a0",
+      "label": "home",
+      "line1": "56 Elm Grove",
+      "line2": "",
+      "line3": "",
+      "town": "Belfast",
+      "postcode": "BT7 1NN",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-092",
+   "details": {
+    "kind": "individual",
+    "title": "Mx",
+    "firstName": "Tomasz",
+    "lastName": "Nguyen",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-092-x1",
+     "type": "Membership number",
+     "value": "RCT-0077"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-092-e0",
+      "label": "home",
+      "address": "tomasz.nguyen1@proton.me",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-092-a0",
+      "label": "home",
+      "line1": "120 Station Road",
+      "line2": "",
+      "line3": "",
+      "town": "Ludlow",
+      "postcode": "SY8 1AZ",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Prefers a phone call to email. Best after 6pm.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Met at the summer fete. Keen to volunteer on the stall next year.",
+     "pinned": false,
+     "archived": true
+    },
+    {
+     "body": "Contact via their daughter, who manages their post.",
+     "pinned": true,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-093",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Agnieszka",
+    "lastName": "Byrne",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-093-e0",
+      "label": "home",
+      "address": "agnieszka.byrne@hotmail.co.uk",
+      "isPrimary": true
+     },
+     {
+      "key": "seed-093-e1",
+      "label": "work",
+      "address": "abyrne@nhs.net",
+      "isPrimary": false
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-093-a0",
+      "label": "home",
+      "line1": "54 Park Terrace",
+      "line2": "Flat 1",
+      "line3": "Clifton",
+      "town": "Bristol",
+      "postcode": "BS8 4AA",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Asked not to be phoned at work.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Large print for any letters, please.",
+     "pinned": false,
+     "archived": false
+    },
+    {
+     "body": "Runs the Saturday food bank rota; knows everyone.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-094",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Mohammed",
+    "lastName": "Taylor",
+    "nickname": "Mo",
+    "name": "",
+    "birthDate": "2001-04-10",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-094-e0",
+      "label": "home",
+      "address": "mohammed.taylor@proton",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-094-a0",
+      "label": "home",
+      "line1": "177 Ffordd yr Eglwys",
+      "line2": "Flat 4",
+      "line3": "Moseley",
+      "town": "Birmingham",
+      "postcode": "B13 8JP",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Raised £430 at the sponsored walk.",
+     "pinned": true,
+     "archived": false
+    },
+    {
+     "body": "Matched-giving scheme through their employer; send the form each April.",
+     "pinned": false,
+     "archived": true
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-095",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Bronwen",
+    "lastName": "Smith",
+    "nickname": "",
+    "name": "",
+    "birthDate": "1961-03-11",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-095-e0",
+      "label": "home",
+      "address": "bronwen.smith@yahoo.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-095-p0",
+      "label": "home",
+      "number": "07080 129912",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-095-a0",
+      "label": "home",
+      "line1": "45 Canal Walk",
+      "line2": "",
+      "line3": "",
+      "town": "Totnes",
+      "postcode": "TQ9 5RY",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Raised £430 at the sponsored walk.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-096",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Aleksandra",
+    "lastName": "Patel",
+    "nickname": "Ola",
+    "name": "",
+    "birthDate": "1940-07-09",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-096-x1",
+     "type": "Membership number",
+     "value": "RCT-0081"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-096-e0",
+      "label": "home",
+      "address": "aleksandra.patel@gmail.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-096-a0",
+      "label": "home",
+      "line1": "52 Main Street",
+      "line2": "",
+      "line3": "Rathmines",
+      "town": "Dublin",
+      "postcode": "D06 F2X8",
+      "country": "IE",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-097",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Eleanor",
+    "lastName": "Gill",
+    "nickname": "Nell",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [
+    {
+     "key": "seed-097-x0",
+     "type": "External reference",
+     "value": "LEGACY-0012"
+    }
+   ],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-097-e0",
+      "label": "home",
+      "address": "eleanor.gill@gmail.com",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-097-p0",
+      "label": "home",
+      "number": "029 6792 6115",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-097-a0",
+      "label": "home",
+      "line1": "14 Rue des Lilas",
+      "line2": "",
+      "line3": "",
+      "town": "Lyon",
+      "postcode": "69003",
+      "country": "FR",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  },
+  {
+   "clientKey": "seed-donor-098",
+   "details": {
+    "kind": "individual",
+    "title": "Dr",
+    "firstName": "Róisín",
+    "lastName": "Ali",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-098-e8",
+      "label": "home",
+      "address": "nkechiandroisin@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": []
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-098-a0",
+      "label": "home",
+      "line1": "148 Station Road",
+      "line2": "",
+      "line3": "Kirkby",
+      "town": "Liverpool",
+      "postcode": "L32 8RR",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": [
+    {
+     "body": "Large one-off gift in memory of their mother.",
+     "pinned": false,
+     "archived": false
+    }
+   ]
+  },
+  {
+   "clientKey": "seed-donor-099",
+   "details": {
+    "kind": "individual",
+    "title": "",
+    "firstName": "Nkechi",
+    "lastName": "O'Brien",
+    "nickname": "",
+    "name": "",
+    "isDeceased": false
+   },
+   "identifiers": [],
+   "methods": {
+    "emails": [
+     {
+      "key": "seed-099-e8",
+      "label": "home",
+      "address": "nkechiandroisin@hotmail.co.uk",
+      "isPrimary": true
+     }
+    ],
+    "phones": [
+     {
+      "key": "seed-099-p0",
+      "label": "home",
+      "number": "07378 524639",
+      "isPrimary": true
+     }
+    ]
+   },
+   "addresses": {
+    "addresses": [
+     {
+      "key": "seed-099-a0",
+      "label": "home",
+      "line1": "103 Albert Street",
+      "line2": "",
+      "line3": "Canton",
+      "town": "Cardiff",
+      "postcode": "CF5 1JD",
+      "country": "GB",
+      "isPrimary": true
+     }
+    ]
+   },
+   "archived": false,
+   "notes": []
+  }
+ ],
+ "relationships": [
+  {
+   "a": 16,
+   "b": 17,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "2010-06-22"
+  },
+  {
+   "a": 18,
+   "b": 19,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "2000-06-16"
+  },
+  {
+   "a": 18,
+   "b": 20,
+   "type": "Parent of",
+   "description": ""
+  },
+  {
+   "a": 21,
+   "b": 22,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "2003-06-13"
+  },
+  {
+   "a": 21,
+   "b": 23,
+   "type": "Parent of",
+   "description": ""
+  },
+  {
+   "a": 24,
+   "b": 25,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "2003-06-05"
+  },
+  {
+   "a": 26,
+   "b": 27,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "2001-06-05"
+  },
+  {
+   "a": 28,
+   "b": 29,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "2000-06-06"
+  },
+  {
+   "a": 28,
+   "b": 30,
+   "type": "Parent of",
+   "description": ""
+  },
+  {
+   "a": 31,
+   "b": 32,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "2003-06-12"
+  },
+  {
+   "a": 31,
+   "b": 33,
+   "type": "Parent of",
+   "description": ""
+  },
+  {
+   "a": 34,
+   "b": 35,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "1993-06-05"
+  },
+  {
+   "a": 36,
+   "b": 37,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "1977-06-13"
+  },
+  {
+   "a": 38,
+   "b": 39,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "2010-06-17"
+  },
+  {
+   "a": 38,
+   "b": 40,
+   "type": "Parent of",
+   "description": ""
+  },
+  {
+   "a": 41,
+   "b": 42,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "1994-06-19"
+  },
+  {
+   "a": 43,
+   "b": 44,
+   "type": "Spouse/partner of",
+   "description": "",
+   "startDate": "1997-06-16"
+  },
+  {
+   "a": 45,
+   "b": 8,
+   "type": "Volunteer for",
+   "description": ""
+  },
+  {
+   "a": 49,
+   "b": 15,
+   "type": "Employee of",
+   "description": ""
+  },
+  {
+   "a": 51,
+   "b": 11,
+   "type": "Volunteer for",
+   "description": ""
+  },
+  {
+   "a": 52,
+   "b": 8,
+   "type": "Employee of",
+   "description": ""
+  },
+  {
+   "a": 54,
+   "b": 15,
+   "type": "Employee of",
+   "description": "Pharmacist"
+  },
+  {
+   "a": 57,
+   "b": 3,
+   "type": "Employee of",
+   "description": ""
+  },
+  {
+   "a": 60,
+   "b": 13,
+   "type": "Volunteer for",
+   "description": ""
+  },
+  {
+   "a": 62,
+   "b": 12,
+   "type": "Volunteer for",
+   "description": ""
+  },
+  {
+   "a": 64,
+   "b": 10,
+   "type": "Volunteer for",
+   "description": ""
+  },
+  {
+   "a": 65,
+   "b": 13,
+   "type": "Employee of",
+   "description": "Volunteer coordinator"
+  },
+  {
+   "a": 66,
+   "b": 14,
+   "type": "Employee of",
+   "description": ""
+  },
+  {
+   "a": 70,
+   "b": 14,
+   "type": "Employee of",
+   "description": "Pharmacist"
+  },
+  {
+   "a": 71,
+   "b": 6,
+   "type": "Volunteer for",
+   "description": ""
+  },
+  {
+   "a": 74,
+   "b": 2,
+   "type": "Trustee of",
+   "description": "Chair",
+   "startDate": "2017-07-01"
+  },
+  {
+   "a": 81,
+   "b": 4,
+   "type": "Volunteer for",
+   "description": ""
+  },
+  {
+   "a": 86,
+   "b": 13,
+   "type": "Employee of",
+   "description": ""
+  },
+  {
+   "a": 87,
+   "b": 3,
+   "type": "Volunteer for",
+   "description": ""
+  },
+  {
+   "a": 89,
+   "b": 11,
+   "type": "Trustee of",
+   "description": "Chair",
+   "startDate": "2015-02-01"
+  },
+  {
+   "a": 91,
+   "b": 1,
+   "type": "Volunteer for",
+   "description": ""
+  },
+  {
+   "a": 93,
+   "b": 8,
+   "type": "Trustee of",
+   "description": "Treasurer",
+   "startDate": "2023-04-01"
+  }
+ ]
+}

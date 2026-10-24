@@ -9,6 +9,17 @@ publish.workspace = true
 store.workspace = true
 contracts.workspace = true
 contacts.workspace = true
-api.workspace = true
+sources.workspace = true
+giving.workspace = true
+giftaid.workspace = true
+platform.workspace = true
+auth.workspace = true
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+api.workspace = true
+tempfile.workspace = true

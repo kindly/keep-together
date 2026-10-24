@@ -33,6 +33,8 @@ Env (`api`):
 | `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER` | published dev keys | 32 bytes, base64: TOTP secrets sealed (AES-GCM), codes HMAC (`auth::keys`) |
 | `KEEP_MAIL` | `log` | `log` only for dev on a loopback bind; `smtp`: send via `KEEP_SMTP_URL` (`smtp://localhost:1025`, Mailpit) as `KEEP_MAIL_FROM` (`comms::mail`); `off`: no mail, and what needs it is refused (`mail_off`) |
 | `KEEP_QC_SEED=1` | off | with dev auth: `POST /api/dev/qc-seed` and `qc-crowd` (≤ 10k) |
+| `KEEP_QC_TOKEN` | unset | with `KEEP_ENV=staging` only: `/api/qc/{seed,crowd,hold,session}` for the nightly QC run, the token in `x-keep-qc-token` (≥ 64 chars); `qc-` groups and `@qc.keep-together.invalid` users only; 404 when off or wrong; with `KEEP_ENV=prod` the boot stops (`routes::qc_seed`) |
+| `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`) |
 
 The 10k measurement (`scripts/perf-search10k-rs/`):
 
@@ -60,8 +62,8 @@ parameter is ignored and both columns measure the words index.)
 | `platform` | control plane: preferences (the three "staff can manage" contracts, `may_manage_list`), encrypted tenant settings, memberships and "last used" group as functions on a `platform.db` transaction, its own `platform.db` schema list |
 | `auth` | staff auth: credentials, second factors, sessions, invites, resets, rate limits, the auth log, in `platform.db` (its own `PlatformSchema`); `api::auth` is its HTTP |
 | `api` | axum app: dev session cookie, `/api/t/{slug}` → one `OrgDb`, SSE, `/boot`, jobs, `/healthz`, `Server-Timing`, JSON errors; `schema.rs` is the org migration list; `routes/` the domain routes and the QC seed. Commands spanning modules live here, in one transaction |
-| `cli` | bin `keep`: `keep sql`, `keep tenant create` |
-| `seed` | bin: the perf generator's JSONL into one organisation, through the same contract functions the API calls |
+| `cli` | bin `keep`: `keep sql`, `keep tenant create`, `keep auth …`, `keep dev …` |
+| `seed` | seeded worlds through the same contract functions the API calls: `riverside` (Convex's `testSeed`: staging's reset seed and `keep dev seed-riverside`) and `perf` (the 10k generator's JSONL; its bin `seed` lives in `api/src/bin/seed.rs`, since `api` depends on this crate) |
 
 Domain crates depend on `contracts` (and each other's public functions),
 **never on `store`, `platform`, `auth` or `api`** — a test in
@@ -334,6 +336,7 @@ keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <ema
 keep [--data <dir>] auth reset-2fa <email> [--reason <text>]
 keep [--data <dir>] auth invite <slug> <email> [--role admin|staff|viewer]
 keep [--data <dir>] dev seed-demo [--slug demo] [--admin-email <email>]
+keep [--data <dir>] dev seed-riverside        # KEEP_ENV=dev (or staging, credentials from env)
 ```
 
 `keep sql` opens the org file `SQLITE_OPEN_READ_ONLY` with `query_only`,
@@ -343,7 +346,12 @@ SQL text from anywhere (an agent) can't change the file. Output is CSV, or
 JSON objects. `keep tenant create` makes the org row, its file with every crate's
 reference data (`api::schema::seed_new_org`) and the admin's membership in
 one go (all or nothing), then invites the admin (a printed stub until A4).
-`keep dev seed-demo` is the same plus three contacts.
+`keep dev seed-demo` is the same plus three contacts. `keep dev
+seed-riverside` is `seed::riverside`, staging's reset seed: the
+`riverside` org with Convex's 100 fixed-seed donors and a password +
+TOTP user per role, refused unless `KEEP_ENV` is `dev` or `staging`;
+on dev, credentials missing from `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`
+are generated and printed.
 
 ## Platform
 

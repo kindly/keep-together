@@ -8,6 +8,14 @@
 //!
 //! Convex's demo also gives the contacts identifiers under two types; they
 //! come with the identifiers port (A1).
+//!
+//! `keep dev seed-riverside`: the manual-test world (`seed::riverside`,
+//! as staging's reset seed): only with `KEEP_ENV=dev` (credentials made
+//! where `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}` aren't set, the user
+//! doesn't have one yet) or `staging` (all six required). TOTP secrets are
+//! sealed with the api's keys (`KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER`;
+//! on dev, with neither set, the dev keys the local api uses).
+//! Re-runnable; prints each user's sign-in.
 
 use contacts::form::{create, save_form};
 use contacts::types::{
@@ -108,4 +116,18 @@ pub fn seed_demo(
         created,
         contact_ids,
     })
+}
+
+/// `keep dev seed-riverside` (`api::reset::riverside_with` with the
+/// process env).
+pub fn seed_riverside(
+    store: &Store,
+) -> Result<(seed::riverside::Seeded, Vec<seed::riverside::Credential>), seed::riverside::SeedError>
+{
+    let keep_env = std::env::var("KEEP_ENV").ok();
+    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    seed::riverside::allowed(keep_env.as_deref())?;
+    let keys = api::reset::keys_from_env(keep_env.as_deref(), env)
+        .map_err(seed::riverside::SeedError::BadCredential)?;
+    api::reset::riverside_with(store, &keys, keep_env.as_deref(), env)
 }

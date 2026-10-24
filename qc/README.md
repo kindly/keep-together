@@ -55,7 +55,7 @@ pnpm qc:rtt --write                      # re-measure the hosted RTT into qc/rtt
 5. runs `playwright test` and stops the apis when it exits.
 
 Workers map onto instances by index, about two per instance. Each worker
-seeds fresh tenants (`r<run>w<n>-a|b`) through `POST /api/dev/qc-seed`,
+seeds fresh tenants (`qc-r<run>w<n>-a|b`) through `POST /api/dev/qc-seed`,
 which the api refuses unless it runs with dev auth and `KEEP_QC_SEED=1`.
 Every tenant is its own SQLite file, so one worker's bulk write (the
 paged list's crowd, `POST /api/dev/qc-crowd`) holds up no other worker's
@@ -78,9 +78,21 @@ check.
 
 `pnpm qc --target staging` is the nightly: one instance, the hosted app
 at `QC_STAGING_URL` (default `https://staging.keep-together.org.uk`), no
-build, no netem, no lock. Its history lines carry `env: staging`. Until
-A4 and B3, staging runs with dev auth and the QC seed (it resets on every
-deploy).
+build, no netem, no lock. Its history lines carry `env: staging`.
+Staging has no dev auth, so set-up goes through its token surface,
+`/api/qc/*` (`rs/crates/api/src/routes/qc_seed.rs`): `KEEP_QC_TOKEN` must
+be in the env (the Fly secret; `scripts/fly/staging.sh` makes it and
+sets it as the GitHub secret too, without ever showing it). With it the workers seed `qc-` groups
+whose users have `@qc.keep-together.invalid` addresses, sign in for real
+(password, then TOTP) for the timed `auth.signIn`, and take further
+sessions from `/api/qc/session` (a TOTP code is good once per 30 s, and
+each test opens its own session). The token reaches nothing outside
+`qc-` groups; a wrong one is a 404. Locally the pool uses `/api/dev/*`
+(dev auth and `KEEP_QC_SEED=1`), the same world under the same names.
+
+```bash
+KEEP_QC_TOKEN=… pnpm qc --target staging
+```
 
 ### Pending ports
 
@@ -90,8 +102,8 @@ and its flows are marked `pendingPort` in `qc/budgets.ts`. Every run
 lists them by step in a banner, with the routes still being ported, and
 none of them fails the run. A step that ports a module deletes its lines
 from `qc/pending.ts`, re-points the specs at the Rust api, and drops the
-flows' marks. Helpers the Convex specs called are stubs in
-`qc/convex-pending.ts` until then; B3 deletes it.
+flows' marks. Every module is on the Rust backend now (B3): the list is
+empty and no flow is marked, and the mechanism stays for the next port.
 
 ## Reading the output
 
@@ -236,7 +248,7 @@ sample made must take under **100 ms on the server**, by its response's
 `Server-Timing: total`, grouped by route (`POST /t/:slug/contacts/:id/save`).
 Each route may have **one** call at or over 100 ms in a run, as long as it
 has other calls and all of them are under. A second slow call fails, and
-so does a route whose only call was slow. `/api/dev/*` (the sign-in stub,
+so does a route whose only call was slow. `/api/dev/*` and `/api/qc/*` (the sign-in stub,
 the QC seed) is reported, not asserted. An answered call without the
 header fails: the api sets it on every response. Bulk routes
 (`BULK_ROUTES` in qc/budgets.ts) have their own limit.

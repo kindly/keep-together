@@ -4,4 +4,12 @@ export type QcTenant = { slug: string,
 /**
  * In creation order: Ada, Charles, the Trust.
  */
-contactIds: Array<string>, };
+contactIds: Array<string>, 
+/**
+ * The Trust's gift.
+ */
+giftIds: Array<string>, 
+/**
+ * Ada's declaration.
+ */
+declarationIds: Array<string>, };

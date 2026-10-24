@@ -53,9 +53,12 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
     unsafe { std::env::set_var("KEEP_QC_SEED", "1") };
     let (s, world) = post(&app, "/api/dev/qc-seed", req.clone()).await;
     assert_eq!(s, StatusCode::OK, "{world}");
-    assert_eq!(world["users"][0]["email"], "qc-r7w0-a@example.com");
+    assert_eq!(
+        world["users"][0]["email"],
+        "qc-r7w0-a@qc.keep-together.invalid"
+    );
     assert_eq!(world["users"][3]["role"], "viewer");
-    assert_eq!(world["tenants"][1]["slug"], "r7w0-b");
+    assert_eq!(world["tenants"][1]["slug"], "qc-r7w0-b");
     assert_eq!(
         world["tenants"][0]["contactIds"].as_array().unwrap().len(),
         3
@@ -108,10 +111,84 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
         );
     }
 
+    // Gifts and Gift Aid: the Trust's gift under its code, Ada's
+    // declaration, on each side.
+    for (i, pence) in api::routes::qc_seed::QC_GIFT_PENCE.into_iter().enumerate() {
+        let t = &world["tenants"][i];
+        let tenant = store
+            .platform()
+            .tenant_by_slug(t["slug"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let db = store.org(&tenant.id).unwrap();
+        let gift_ids = t["giftIds"].as_array().unwrap();
+        assert_eq!(gift_ids.len(), 1);
+        let (contact, amount): (String, i64) = db
+            .read(|c| {
+                c.query_row(
+                    "SELECT contact_id, amount FROM gifts WHERE id = ?1",
+                    [gift_ids[0].as_str().unwrap()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            (contact.as_str(), amount),
+            (t["contactIds"][2].as_str().unwrap(), pence)
+        );
+        let decl = t["declarationIds"].as_array().unwrap();
+        assert_eq!(decl.len(), 1);
+        let holder: String = db
+            .read(|c| {
+                c.query_row(
+                    "SELECT contact_id FROM gift_aid_declarations WHERE id = ?1",
+                    [decl[0].as_str().unwrap()],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(holder, t["contactIds"][0].as_str().unwrap());
+    }
+
+    // L3: every crate's reference data, relationship types included.
+    for t in world["tenants"].as_array().unwrap() {
+        let tenant = store
+            .platform()
+            .tenant_by_slug(t["slug"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let types = store
+            .org(&tenant.id)
+            .unwrap()
+            .read(|c| contacts::relationships::relationship_types(c))
+            .unwrap();
+        assert_eq!(
+            types.len(),
+            contacts::relationships::UK_RELATIONSHIP_TYPES.len()
+        );
+    }
+
+    // L1: an org left half-made (an older build, a crash) re-seeds without
+    // a panic: the world comes back with what is there.
+    store.create_tenant("qc-r8w0-a", "half made").unwrap();
+    let (s, half) = post(
+        &app,
+        "/api/dev/qc-seed",
+        json!({ "runId": "8", "worker": 0 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{half}");
+    assert_eq!(half["tenants"][0]["contactIds"], json!([]));
+    assert_eq!(half["tenants"][0]["giftIds"], json!([]));
+    assert_eq!(
+        half["tenants"][1]["contactIds"].as_array().unwrap().len(),
+        3
+    );
+
     let (s, n) = post(
         &app,
         "/api/dev/qc-crowd",
-        json!({ "slug": "r7w0-a", "lastName": "Crowd", "count": 150 }),
+        json!({ "slug": "qc-r7w0-a", "lastName": "Crowd", "count": 150 }),
     )
     .await;
     assert_eq!((s, n), (StatusCode::OK, json!(150)));

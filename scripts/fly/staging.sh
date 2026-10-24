@@ -7,7 +7,9 @@
 #   scripts/fly/staging.sh
 #
 # Makes the app in lhr, its 1 GB volume keep_data, asks for any secret
-# still missing, adds the certificate for staging.keep-together.org.uk and
+# still missing, generates the riverside sign-ins (printed once: note
+# them) and the QC token (to Fly and the GitHub secret, never shown) if
+# missing, adds the certificate for staging.keep-together.org.uk and
 # prints the Route 53 record to add, and a deploy token for GitHub.
 # The first deploy is `fly deploy -c fly.staging.toml --ha=false` (or a
 # push to main). Re-run it any time: it also checks the app still has one
@@ -23,6 +25,12 @@ ORG=${FLY_ORG:-personal}
 say() { printf '\n== %s\n' "$*"; }
 run() { printf '+ %s\n' "$*" >&2; "$@"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+# NAME=value pairs into Fly through stdin, never argv (argv shows in the
+# process list). --stage: applied by the next deploy.
+import_secrets() {
+  printf '+ fly secrets import -a %s --stage <%d values on stdin>\n' "$APP" "$#" >&2
+  printf '%s\n' "$@" | fly secrets import -a "$APP" --stage
+}
 
 command -v fly >/dev/null || die "needs flyctl: https://fly.io/docs/flyctl/install/"
 command -v jq >/dev/null || die "needs jq"
@@ -61,10 +69,7 @@ generated=()
 for s in KEEP_SETTINGS_KEY KEEP_AUTH_PEPPER; do
   grep -qx "$s" <<<"$have" || generated+=("$s=$(openssl rand -base64 32)")
 done
-if ((${#generated[@]})); then
-  printf '+ fly secrets set -a %s --stage <%d generated keys>\n' "$APP" "${#generated[@]}" >&2
-  fly secrets set -a "$APP" --stage "${generated[@]}"
-fi
+((${#generated[@]} == 0)) || import_secrets "${generated[@]}"
 missing=()
 for s in LITESTREAM_BUCKET LITESTREAM_ACCESS_KEY_ID LITESTREAM_SECRET_ACCESS_KEY \
   KEEP_SNAPSHOT_BUCKET KEEP_SNAPSHOT_ACCESS_KEY_ID KEEP_SNAPSHOT_SECRET_ACCESS_KEY SENTRY_DSN; do
@@ -83,10 +88,54 @@ if ((${#missing[@]})); then
     [[ -z $v ]] || pairs+=("$s=$v")
   done
   # --stage: applied by the next deploy, not by restarting a machine now.
-  ((${#pairs[@]} == 0)) || { printf '+ fly secrets set -a %s --stage <%d values>\n' "$APP" "${#pairs[@]}" >&2
-    fly secrets set -a "$APP" --stage "${pairs[@]}"; }
+  ((${#pairs[@]} == 0)) || import_secrets "${pairs[@]}"
 else
   echo "all set"
+fi
+
+say "Generated secrets (riverside sign-ins, QC token)"
+# Made here, never typed: the riverside users' passwords and TOTP secrets
+# (the reset seed reads them on every deploy, so an authenticator keeps
+# working) and KEEP_QC_TOKEN, which lets the nightly QC run seed qc-
+# groups (/api/qc/*). The riverside sign-ins are printed once (Fly can't
+# show them again); the token never is: it goes to Fly and GitHub on stdin.
+# Secrets reach fly and gh on stdin, never argv (the import_secrets
+# function and printf are bash builtins: no process carries them).
+hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+b32() { head -c 20 /dev/urandom | base32 | tr -d '=\n'; }
+gen=()
+for role in ADMIN STAFF VIEWER; do
+  if ! grep -qx "KEEP_RIVERSIDE_${role}_PASSWORD" <<<"$have"; then
+    pw=$(hex 24)
+    gen+=("KEEP_RIVERSIDE_${role}_PASSWORD=$pw")
+    echo "riverside ${role,,}@keep-together.example password: $pw"
+  fi
+  if ! grep -qx "KEEP_RIVERSIDE_${role}_TOTP" <<<"$have"; then
+    totp=$(b32)
+    gen+=("KEEP_RIVERSIDE_${role}_TOTP=$totp")
+    echo "riverside ${role,,}@keep-together.example TOTP secret: $totp"
+    echo "  otpauth://totp/keep-together:${role,,}%40keep-together.example?secret=$totp&issuer=keep-together"
+  fi
+done
+qc_token=
+if ! grep -qx KEEP_QC_TOKEN <<<"$have"; then
+  # Straight into GitHub too (the nightly runner's copy): never printed.
+  command -v gh >/dev/null && gh auth status >/dev/null 2>&1 ||
+    die "KEEP_QC_TOKEN is missing and gh isn't signed in (gh auth login): it goes to Fly and GitHub at once, never on screen"
+  qc_token=$(hex 32)
+  gen+=("KEEP_QC_TOKEN=$qc_token")
+fi
+if ((${#gen[@]})); then
+  import_secrets "${gen[@]}"
+else
+  echo "all set"
+fi
+if [[ -n $qc_token ]]; then
+  printf '+ gh secret set KEEP_QC_TOKEN <stdin>\n' >&2
+  printf %s "$qc_token" | gh secret set KEEP_QC_TOKEN
+  qc_token=
+  echo "KEEP_QC_TOKEN set on Fly and as the GitHub secret (for a local nightly run: copy it from"
+  echo "  a Fly machine's env, fly ssh console -a $APP -C 'printenv KEEP_QC_TOKEN')"
 fi
 
 say "Certificate for $HOST"

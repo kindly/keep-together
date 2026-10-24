@@ -19,6 +19,7 @@ giving = { path = "crates/giving" }
 giftaid = { path = "crates/giftaid" }
 comms = { path = "crates/comms" }
 cli = { path = "crates/cli" }
+seed = { path = "crates/seed" }
 axum = "0.8.9"
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }

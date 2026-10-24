@@ -23,6 +23,8 @@ pub enum CreateError {
     NoEmail,
     #[error("refused when KEEP_ENV={0}: dev only")]
     NotDev(String),
+    #[error("the qc- prefix is reserved for the QC seed")]
+    ReservedSlug,
 }
 
 impl From<rusqlite::Error> for CreateError {
@@ -73,6 +75,9 @@ pub fn create_in_with(
     admin_email: &str,
     then: impl FnOnce(&Ctx, UserId) -> Result<(), CreateError>,
 ) -> Result<Created, CreateError> {
+    if api::routes::qc_seed::is_qc_slug(slug) {
+        return Err(CreateError::ReservedSlug);
+    }
     let email = admin_email.trim();
     if !email.contains('@') {
         return Err(CreateError::NoEmail);

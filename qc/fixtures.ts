@@ -14,9 +14,9 @@ import type { QcWorld } from '../src/lib/data/rust-types/QcWorld'
 //
 // Per worker: an instance from the pool (a local release api with its own
 // data dir, or staging; qc/.instances.json, written by scripts/qc.mjs),
-// its RTT, a freshly seeded world (`POST /api/dev/qc-seed`: two tenants,
-// `r<run>w<n>-a|b`; admins A and B, plus a staff and a viewer member of
-// tenant A), and one timed UI sign-in per admin (`auth.signIn`: password,
+// its RTT, a freshly seeded world (`POST /api/dev/qc-seed`, or on staging
+// the token surface `/api/qc/seed`: two tenants, `qc-r<run>w<n>-a|b`;
+// admins A and B, plus a staff and a viewer member of tenant A), and one timed UI sign-in per admin (`auth.signIn`: password,
 // then a TOTP code from the seeded secret). Tests start signed in as user A
 // on the worker's own instance, each browser context with a session of
 // its own (`session`).
@@ -33,6 +33,12 @@ import type { QcWorld } from '../src/lib/data/rust-types/QcWorld'
 export interface Instance {
   /** qc-1 …, or staging. */
   name: string
+  /**
+   * How set-up reaches the api: `dev` (a local pool api with dev auth and
+   * KEEP_QC_SEED: `/api/dev/*`), or `qc` (staging: `/api/qc/*` with
+   * KEEP_QC_TOKEN from the env, never written to a file).
+   */
+  surface?: 'dev' | 'qc'
   /** The api's origin, for Node (seed, sign-in, RTT). */
   api: string
   /** The SPA's origin, for the browser (it proxies /api to the api). */
@@ -59,6 +65,20 @@ export function readInstances(): Array<Instance> {
   return JSON.parse(readFileSync('qc/.instances.json', 'utf8'))
 }
 
+/** The set-up route on `inst`'s surface: `/api/dev/<dev>` or `/api/qc/<qc>`. */
+function setupRoute(inst: Instance, dev: string, qc: string): string {
+  return inst.surface === 'qc' ? `/api/qc/${qc}` : `/api/dev/${dev}`
+}
+
+/** The token header for the `qc` surface (KEEP_QC_TOKEN). */
+function setupHeaders(inst: Instance): Record<string, string> {
+  if (inst.surface !== 'qc') return {}
+  const token = process.env.KEEP_QC_TOKEN
+  if (!token)
+    throw new Error('KEEP_QC_TOKEN is unset: the staging run needs it')
+  return { 'x-keep-qc-token': token }
+}
+
 async function post<T>(
   inst: Instance,
   route: string,
@@ -66,17 +86,47 @@ async function post<T>(
 ): Promise<{ data: T; res: Response }> {
   const res = await fetch(`${inst.api}${route}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...setupHeaders(inst) },
     body: JSON.stringify(body),
   })
+  // The body, never the request: it can't hold the token.
   if (!res.ok) throw new Error(`${route}: ${res.status} ${await res.text()}`)
   return { data: (await res.json()) as T, res }
 }
 
-/** A dev session for `email` on `inst`: the `kt_session` cookie's value. */
-export async function devLogin(inst: Instance, email: string): Promise<string> {
-  const { res } = await post(inst, '/api/dev/login', { email })
-  const value = res.headers.get('set-cookie')?.match(/kt_session=([^;]+)/)?.[1]
+/**
+ * The session cookie's name for `url`'s host, as the api reads it:
+ * `kt_session` on a loopback host (local http), else `__Host-kt_session`
+ * (Secure, host-only; `api::auth::COOKIE_NAME`).
+ */
+export function cookieName(url: string): string {
+  const host = new URL(url).hostname
+  return ['127.0.0.1', 'localhost', '[::1]'].includes(host)
+    ? 'kt_session'
+    : '__Host-kt_session'
+}
+
+/** A `Cookie` header carrying `token` to `inst`'s api. */
+export function sessionCookie(inst: Instance, token: string): string {
+  return `${cookieName(inst.api)}=${token}`
+}
+
+/**
+ * A session for `email` on `inst`, without a sign-in (a TOTP code is good
+ * once per 30 s step, and each test wants its own session): the dev login
+ * locally, `/api/qc/session` (QC users only) on staging. The session
+ * cookie's value.
+ */
+export async function sessionToken(
+  inst: Instance,
+  email: string,
+): Promise<string> {
+  const { res } = await post(inst, setupRoute(inst, 'login', 'session'), {
+    email,
+  })
+  const value = res.headers
+    .get('set-cookie')
+    ?.match(/(?:^|[ ,;])(?:__Host-)?kt_session=([^;]+)/)?.[1]
   if (!value) throw new Error(`no session cookie for ${email}`)
   return value
 }
@@ -88,7 +138,7 @@ export function sessionState(inst: Instance, token: string): StorageState {
   return {
     cookies: [
       {
-        name: 'kt_session',
+        name: cookieName(inst.baseURL),
         value: token,
         domain: url.hostname,
         path: '/',
@@ -103,7 +153,7 @@ export function sessionState(inst: Instance, token: string): StorageState {
 }
 
 /**
- * `GET` an api path as `user` (a fresh dev session), for what the pages
+ * `GET` an api path as `user` (a fresh session), for what the pages
  * don't show: the JSON body, or throws on a refusal.
  */
 export async function apiGet<T>(
@@ -111,21 +161,16 @@ export async function apiGet<T>(
   user: QcUser,
   route: string,
 ): Promise<T> {
-  const token = await devLogin(inst, user.email)
+  const token = await sessionToken(inst, user.email)
   const res = await fetch(`${inst.api}${route}`, {
-    headers: { cookie: `kt_session=${token}` },
+    headers: { cookie: sessionCookie(inst, token) },
   })
   if (!res.ok) throw new Error(`${route}: ${res.status} ${await res.text()}`)
   return (await res.json()) as T
 }
 
 /**
- * `count` individuals with one last name in `slug`, written in bulk by the
- * api (`POST /api/dev/qc-crowd`): the paged list's crowd. Each tenant is
- * its own file, so the write holds up no other worker's samples.
- */
-/**
- * `POST` an api path as `user` (a fresh dev session), for setup a spec
+ * `POST` an api path as `user` (a fresh session), for setup a spec
  * doesn't time through a page: the JSON body, or throws on a refusal.
  */
 export async function apiPost<T>(
@@ -134,11 +179,11 @@ export async function apiPost<T>(
   route: string,
   body: unknown,
 ): Promise<T> {
-  const token = await devLogin(inst, user.email)
+  const token = await sessionToken(inst, user.email)
   const res = await fetch(`${inst.api}${route}`, {
     method: 'POST',
     headers: {
-      cookie: `kt_session=${token}`,
+      cookie: sessionCookie(inst, token),
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -148,21 +193,26 @@ export async function apiPost<T>(
 }
 
 /**
- * Hold `address` in `slug`, as a hard bounce does (`POST
- * /api/dev/qc-hold`). An admin's release lifts it again.
+ * Hold `address` in `slug`, as a hard bounce does (`qc-hold`). An
+ * admin's release lifts it again.
  */
 export async function qcHold(
   inst: Instance,
   args: { slug: string; address: string },
 ): Promise<unknown> {
-  return (await post(inst, '/api/dev/qc-hold', args)).data
+  return (await post(inst, setupRoute(inst, 'qc-hold', 'hold'), args)).data
 }
 
+/**
+ * `count` individuals with one last name in `slug`, written in bulk by the
+ * api (`qc-crowd`): the paged list's crowd. Each tenant is its own file,
+ * so the write holds up no other worker's samples.
+ */
 export async function qcCrowd(
   inst: Instance,
   args: { slug: string; lastName: string; count: number },
 ): Promise<unknown> {
-  return (await post(inst, '/api/dev/qc-crowd', args)).data
+  return (await post(inst, setupRoute(inst, 'qc-crowd', 'crowd'), args)).data
 }
 
 type Flow = <TArg = undefined>(
@@ -225,7 +275,8 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 
   world: [
     async ({ instance }, use, workerInfo) => {
-      const { data } = await post<QcWorld>(instance, '/api/dev/qc-seed', {
+      const route = setupRoute(instance, 'qc-seed', 'seed')
+      const { data } = await post<QcWorld>(instance, route, {
         runId: runId(),
         worker: workerInfo.parallelIndex,
       })
@@ -321,7 +372,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 
   session: async ({ instance, users }, use) => {
     await use(async (user = users.a) =>
-      sessionState(instance, await devLogin(instance, user.email)),
+      sessionState(instance, await sessionToken(instance, user.email)),
     )
   },
 

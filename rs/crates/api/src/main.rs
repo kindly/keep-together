@@ -5,7 +5,10 @@
 //! - `KEEP_DEV_AUTH=1`: allow the dev session cookie — honoured only when
 //!   bound to a loopback address (M1)
 //! - `KEEP_STATIC_DIR`: serve the built SPA from there (`static_files`)
-//! - `KEEP_RESET_SEED=riverside`: seed an empty store (`reset`)
+//! - `KEEP_RESET_SEED=riverside`: seed `seed::riverside` (`reset`)
+//! - `KEEP_QC_TOKEN`: the `/api/qc/*` surface for the nightly QC run, only
+//!   with `KEEP_ENV=staging`; with `prod` it stops the boot
+//!   (`routes::qc_seed`)
 //! - `KEEP_SNAPSHOT_*`, `KEEP_ENV`: hourly snapshots (`backup`)
 //! - `KEEP_LITESTREAM_SOCKET`: Litestream's control socket, for `/healthz`
 //! - `SENTRY_DSN`: error reporting (`observe`)
@@ -57,6 +60,7 @@ async fn main() {
     debug_assert!(
         !(dev_auth && api::auth::dev_auth_refused(std::env::var("KEEP_ENV").ok().as_deref()))
     );
+    let qc = qc_access();
 
     let store = Store::open_with(
         StoreConfig {
@@ -93,7 +97,7 @@ async fn main() {
         }
     }
     // After the migrations: the seed writes through the head schema.
-    match api::reset::seed_from_env(&store) {
+    match api::reset::seed_from_env(&store, &auth.keys) {
         Ok(true) => eprintln!("seeded {}", api::reset::SLUG),
         Ok(false) => {}
         Err(e) => {
@@ -118,7 +122,7 @@ async fn main() {
         // A minute after boot (`first_after`), then hourly.
         jobs.register(SnapshotJob::new(config));
     }
-    let state = AppState::new(store, dev_auth).with_auth(auth);
+    let state = AppState::new(store, dev_auth).with_auth(auth).with_qc(qc);
     jobs.register(api::auth::LimitSweep(state.auth.clone()));
     jobs.spawn();
 
@@ -142,6 +146,29 @@ async fn main() {
     .with_graceful_shutdown(shutdown())
     .await
     .expect("serve");
+}
+
+/// `KEEP_QC_TOKEN`: on only with `KEEP_ENV=staging`. The token is never
+/// printed, here or in any error.
+fn qc_access() -> Option<api::routes::qc_seed::QcAccess> {
+    let keep_env = std::env::var("KEEP_ENV").ok();
+    let token = std::env::var("KEEP_QC_TOKEN").ok();
+    match api::routes::qc_seed::QcAccess::from_env(keep_env.as_deref(), token.as_deref()) {
+        Ok(Some(qc)) => {
+            eprintln!("/api/qc/* on (KEEP_QC_TOKEN, KEEP_ENV=staging)");
+            Some(qc)
+        }
+        Ok(None) => {
+            if token.is_some_and(|t| !t.is_empty()) {
+                eprintln!("KEEP_QC_TOKEN ignored: /api/qc/* needs KEEP_ENV=staging");
+            }
+            None
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2)
+        }
+    }
 }
 
 /// Ctrl-C, or SIGTERM (Litestream forwards it to the app it runs).

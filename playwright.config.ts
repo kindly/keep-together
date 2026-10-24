@@ -15,7 +15,7 @@ import { defineConfig, devices } from '@playwright/test'
 // also points each test's baseURL at its own instance.
 
 // One id per run, shared by the runner, the reporter and every worker. It
-// names the run's tenants (`r<run>w<n>-a|b`) and its records in
+// names the run's tenants (`qc-r<run>w<n>-a|b`) and its records in
 // qc-results/runs/. Workers are children of the runner, inherit its env
 // and re-read this file, so they keep its id; the runner always makes a
 // fresh one, so an id left exported in the shell can't merge two runs.

@@ -576,6 +576,14 @@ pub async fn create_tenant(
         return Err(ApiError::Forbidden);
     }
     let session = session(&state, &headers, &timing).await?;
+    if crate::routes::qc_seed::is_qc_slug(&req.slug) {
+        return Err(ApiError::Invalid {
+            problems: vec![contracts::Problem::new(
+                "slug",
+                "qc- is reserved for the QC seed",
+            )],
+        });
+    }
     let store = state.store.clone();
     let tenant = blocking(move || {
         let tenant = store.create_tenant(&req.slug, &req.name)?;
