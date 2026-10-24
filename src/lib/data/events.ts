@@ -79,6 +79,11 @@ const INVALIDATES: Partial<
   // A delete is its own entity (no part left to carry a counter).
   source_codes: (slug) => [keys.sources(slug), keys.contacts(slug)],
   source_code_deletions: (slug) => [keys.sources(slug)],
+  // B2: a gift shows on its page, its contact's panel and my recent gifts;
+  // a declaration changes coverage there and on the Gift Aid panel. The
+  // record-gift save's contact writes come as `contacts` events.
+  gifts: (slug) => [keys.gifts(slug)],
+  gift_aid_declarations: (slug) => [keys.declarations(slug), keys.gifts(slug)],
 }
 
 /**
@@ -146,6 +151,9 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
   for (const queryKey of invalidates(slug, e)) invalidate(qc, queryKey)
   // A code's first use marks it used: the tree offers archive, not delete.
   if (e.contract === 'contacts.acquisition') invalidate(qc, keys.sources(slug))
+  // B2: gifts show their donor's name and address and their codes' names.
+  if (e.entity === 'contacts' || e.entity === 'source_codes')
+    invalidate(qc, keys.gifts(slug))
   if (e.entity === 'contacts') {
     // The view only if this is newer than the counter it holds (an echo
     // of a refetch already made changes nothing); its history always. A

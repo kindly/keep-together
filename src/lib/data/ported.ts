@@ -35,6 +35,9 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/settings/identifiers',
   // A2: Settings › Source codes.
   '/t/$slug/settings/sources',
+  // B2: recording a gift and a gift's page; FEATURES.gifts follows.
+  '/t/$slug/gifts/new',
+  '/t/$slug/gifts/$giftId',
 ]
 
 const ported = new Set<string>(PORTED)

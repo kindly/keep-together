@@ -1,6 +1,5 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { useConvex, useMutation, useQuery } from 'convex/react'
-import { ConvexError } from 'convex/values'
 import { useEffect, useId, useRef, useState } from 'react'
 import type {
   FormEvent,
@@ -9,7 +8,6 @@ import type {
   ReactNode,
   Ref,
 } from 'react'
-import { api } from '../../convex/_generated/api'
 import type { Id } from '../../convex/_generated/dataModel'
 import { formatNumber } from '../../convex/contacts/number'
 import { giftWarnings } from '../../convex/giving/warnings'
@@ -42,6 +40,8 @@ import type {
   Problem,
   TickMethod,
 } from '../lib/gift-form'
+import { fetchGift, useContactSearch, useDonor, useRecordGift } from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
 import { METHOD_LABELS, formatPence, refusal } from '../lib/gifts'
 import { useTenant } from '../lib/tenant'
 import { useReportUnsaved } from '../lib/unsaved'
@@ -192,10 +192,10 @@ type Saved = {
  */
 export function GiftForm() {
   const tenant = useTenant()
-  const convex = useConvex()
+  const qc = useQueryClient()
   const form = useId()
   const today = localToday()
-  const record = useMutation(api.giving.mutations.recordGift)
+  const record = useRecordGift()
   const [draft, setDraft] = useState<GiftDraft>(() => freshDraft(today))
   const [fresh, setFresh] = useState<GiftDraft>(draft)
   const [clientKey, setClientKey] = useState(() => crypto.randomUUID())
@@ -210,16 +210,7 @@ export function GiftForm() {
 
   const existingId = draft.donor?.kind === 'existing' ? draft.donor.id : null
   // Coverage is judged on the gift's date (an empty date input: today).
-  const fetched = useQuery(
-    api.giving.queries.donor,
-    existingId
-      ? {
-          tenantId: tenant._id,
-          contactId: existingId,
-          date: draft.receivedOn || today,
-        }
-      : 'skip',
-  )
+  const fetched = useDonor(existingId, draft.receivedOn || today)
   // While a changed date is re-read, the donor's last answer stays on
   // screen; saving waits for the fresh one.
   const last = useRef<{ id: Id<'contacts'>; info: DonorInfo | null } | null>(
@@ -293,10 +284,7 @@ export function GiftForm() {
   /** The stored gift a repeated save names, as the "Saved" line shows it. */
   async function readBack(giftId: Id<'contributions'>): Promise<Saved> {
     try {
-      const gift = await convex.query(api.giving.queries.get, {
-        tenantId: tenant._id,
-        id: giftId,
-      })
+      const gift = await fetchGift(qc, tenant.slug, giftId)
       return {
         giftId,
         amount: gift?.amount ?? null,
@@ -330,27 +318,20 @@ export function GiftForm() {
     inFlight.current = true
     setSaving(true)
     try {
-      const { giftId } = await record({ tenantId: tenant._id, ...args })
+      const { giftId } = await record(args)
       done({
-        giftId,
+        giftId: giftId as Id<'contributions'>,
         amount: args.amount,
         name: donorName(draft.donor!),
         already: false,
       })
     } catch (err) {
-      const data =
-        err instanceof ConvexError
-          ? (err.data as {
-              kind?: string
-              reason?: string
-              message?: string
-              problems?: Array<Problem>
-            })
-          : null
-      if (data?.kind === 'rejected' && data.reason === 'duplicate') {
-        done(await readBack(data.message as Id<'contributions'>))
-      } else if (data?.kind === 'invalid' && data.problems) {
-        refuse(data.problems)
+      const refused = err instanceof RustApiError ? err.error : null
+      if (refused?.kind === 'duplicate') {
+        // A repeat of a save that landed: it names the gift.
+        done(await readBack(refused.id as Id<'contributions'>))
+      } else if (refused?.kind === 'invalid' && refused.problems.length) {
+        refuse(refused.problems)
       } else {
         setError(refusal(err, 'Could not save the gift: try again', ''))
       }
@@ -647,8 +628,7 @@ type SearchRow = NonNullable<
  */
 function useSearch(term: string, open: boolean) {
   const tenant = useTenant()
-  const now = useQuery(
-    api.contacts.queries.search,
+  const now = useContactSearch(
     open && term ? { tenantId: tenant._id, search: term } : 'skip',
   )
   const last = useRef(now)

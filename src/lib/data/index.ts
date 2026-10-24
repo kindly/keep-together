@@ -50,3 +50,29 @@ export type {
   SourceCodeDescription,
   SourceCodePayload,
 } from './rust/sources'
+export {
+  GIFTS_PAGE_SIZE,
+  fetchGift,
+  useContactGifts,
+  useDeclarations,
+  useDonor,
+  useGift,
+  useGiftAidWrites,
+  useGiftHistory,
+  useGiftWrites,
+  useMyRecentGifts,
+  useRecordGift,
+} from './rust/gifts'
+export type {
+  ContactDeclarations,
+  Declaration,
+  DonorInfo,
+  Gift,
+  GiftFields,
+  GiftMethod,
+  GiftStatus,
+  GiftView,
+  Moment,
+  RecentGift,
+  RecordGiftArgs,
+} from './rust/gifts'

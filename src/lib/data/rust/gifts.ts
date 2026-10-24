@@ -1,0 +1,569 @@
+/**
+ * Gifts and Gift Aid on the Rust API (`/api/t/{slug}/gifts…`,
+ * `…/giftaid…`), through TanStack Query: my recent gifts, a gift, a
+ * contact's gifts, the record-gift page's donor, the gift's history, the
+ * Gift Aid panel, and their writes.
+ *
+ * **Never optimistic** (gifts are financial records, human 2026-10-23):
+ * every write waits for the server's answer, and what lands in the cache
+ * is the server's state, never what the form sent. Reads refetch when the
+ * tenant's event stream names a gift or a declaration (`../events.ts`).
+ *
+ * The answers come back in the shapes the pages rendered from Convex
+ * (`_id`, amounts as `bigint` pence, absent fields `undefined`), so the
+ * pages' formatting, rules and tests are unchanged. Pence cross the wire
+ * as JSON integers (rule 7: never pounds, never a float); `bigint` ↔
+ * `number` happens only here.
+ */
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { QueryClient } from '@tanstack/react-query'
+import { useMemo } from 'react'
+import type { Id } from '../../../../convex/_generated/dataModel'
+import { useTenant } from '../../tenant'
+import { ownWrite } from '../events'
+import type { AllocationView } from '../rust-types/AllocationView'
+import type { Cancelled } from '../rust-types/Cancelled'
+import type { DeclarationRow } from '../rust-types/DeclarationRow'
+import type { DeclarationSummary } from '../rust-types/DeclarationSummary'
+import type { Declarations as WireDeclarations } from '../rust-types/Declarations'
+import type { DonorView } from '../rust-types/DonorView'
+import type { Executed } from '../rust-types/Executed'
+import type { GiftMoment } from '../rust-types/GiftMoment'
+import type { GiftMomentPage } from '../rust-types/GiftMomentPage'
+import type { GiftPage } from '../rust-types/GiftPage'
+import type { GiftRow } from '../rust-types/GiftRow'
+import type { GiftSaved } from '../rust-types/GiftSaved'
+import type { GiftView as WireGiftView } from '../rust-types/GiftView'
+import type { RecentGift as WireRecent } from '../rust-types/RecentGift'
+import type { RecordGift } from '../rust-types/RecordGift'
+import type { RecordedGift } from '../rust-types/RecordedGift'
+import type { SourceCodeDescription } from './sources'
+import { get, post, tenantPath } from './client'
+import { keys } from './keys'
+
+type GiftId = Id<'contributions'>
+type DeclarationId = Id<'giftAidDeclarations'>
+
+// ── shapes ─────────────────────────────────────────────────────────────────
+
+export type GiftMethod = GiftRow['method']
+export type GiftStatus = GiftRow['status']
+
+export type Allocation = Omit<
+  AllocationView,
+  'amount' | 'sourceCodeId' | 'startDate' | 'endDate'
+> & {
+  sourceCodeId: Id<'sourceCodes'>
+  amount: bigint
+  startDate?: string
+  endDate?: string
+}
+
+/** A gift as a page shows it. */
+export type Gift = Omit<
+  GiftRow,
+  'id' | 'contactId' | 'amount' | 'allocations' | 'reference' | 'enteredAt'
+> & {
+  _id: GiftId
+  /** When it was entered (ms since the epoch). */
+  _creationTime: number
+  contactId: Id<'contacts'>
+  amount: bigint
+  reference?: string
+  allocations: Array<Allocation>
+}
+
+/** One gift for its page: the gift, its donor's name and kind. */
+export type GiftView = Gift & {
+  contact: {
+    _id: Id<'contacts'>
+    displayName: string
+    kind: NonNullable<WireGiftView['contact']>['kind']
+  } | null
+}
+
+/** One row of "my recent gifts". */
+export type RecentGift = Omit<WireRecent, 'id' | 'enteredAt' | 'contactId' | 'amount'> & {
+  _id: GiftId
+  _creationTime: number
+  contactId: Id<'contacts'>
+  amount: bigint
+}
+
+/** What the record-gift page knows about a picked contact. */
+export type DonorInfo = Omit<DonorView, 'id' | 'acquisition'> & {
+  id: Id<'contacts'>
+  acquisition: SourceCodeDescription | null
+}
+
+/** A declaration as the Gift Aid panel and the coverage rules read it. */
+export type Declaration = Omit<
+  DeclarationRow,
+  | 'id'
+  | 'contactId'
+  | 'contributionId'
+  | 'cancelledFrom'
+  | 'cancellationNote'
+  | 'voidReason'
+  | 'voidedAt'
+  | 'voidedBy'
+  | 'enteredBy'
+> & {
+  _id: DeclarationId
+  contactId: Id<'contacts'>
+  contributionId?: GiftId
+  cancelledFrom?: string
+  cancellationNote?: string
+  voidReason?: string
+  voidedAt?: number
+  voidedBy?: number
+  enteredBy?: number
+}
+
+export type ContactDeclarations = {
+  declarations: Array<Declaration>
+  currentId: DeclarationId | null
+}
+
+export type { DeclarationSummary }
+
+/** One history entry: revisions of one action, the slices it touched. */
+export type Moment = GiftMoment
+
+/** The record-gift page's one save, amounts in pence as `bigint`. */
+export type RecordGiftArgs = Omit<RecordGift, 'amount' | 'allocations'> & {
+  amount: bigint
+  allocations: Array<{ sourceCodeId: Id<'sourceCodes'>; amount: bigint }>
+}
+
+/** A gift's fields as the edit form saves them. */
+export type GiftFields = {
+  contactId: Id<'contacts'>
+  receivedOn: string
+  amount: bigint
+  method: GiftMethod
+  reference?: string
+  allocations: Array<{
+    key?: string
+    sourceCodeId: Id<'sourceCodes'>
+    amount: bigint
+  }>
+}
+
+// ── wire → page ────────────────────────────────────────────────────────────
+
+const orUndefined = <T,>(v: T | null | undefined): T | undefined =>
+  v === null ? undefined : v
+
+/** Pence from the wire: always a JSON integer. */
+const pence = (n: number): bigint => BigInt(n)
+
+/** Pence to the wire, refusing what JSON can't carry exactly. */
+function toWire(amount: bigint): number {
+  const n = Number(amount)
+  if (!Number.isSafeInteger(n)) throw new RangeError('amount out of range')
+  return n
+}
+
+export function giftFromWire(g: GiftRow): Gift {
+  const { id, enteredAt, contactId, amount, allocations, reference, ...rest } = g
+  return {
+    ...rest,
+    _id: id as GiftId,
+    _creationTime: enteredAt,
+    contactId: contactId as Id<'contacts'>,
+    amount: pence(amount),
+    ...(reference !== null && { reference }),
+    allocations: allocations.map((a) => ({
+      ...a,
+      sourceCodeId: a.sourceCodeId as Id<'sourceCodes'>,
+      amount: pence(a.amount),
+      startDate: orUndefined(a.startDate),
+      endDate: orUndefined(a.endDate),
+    })),
+  }
+}
+
+export function giftViewFromWire(v: WireGiftView): GiftView {
+  const { contact, ...gift } = v
+  return {
+    ...giftFromWire(gift),
+    contact: contact && {
+      _id: contact.id as Id<'contacts'>,
+      displayName: contact.displayName,
+      kind: contact.kind,
+    },
+  }
+}
+
+function recentFromWire(r: WireRecent): RecentGift {
+  const { id, enteredAt, contactId, amount, ...rest } = r
+  return {
+    ...rest,
+    _id: id as GiftId,
+    _creationTime: enteredAt,
+    contactId: contactId as Id<'contacts'>,
+    amount: pence(amount),
+  }
+}
+
+export function declarationFromWire(d: DeclarationRow): Declaration {
+  const {
+    id,
+    contactId,
+    contributionId,
+    cancelledFrom,
+    cancellationNote,
+    voidReason,
+    voidedAt,
+    voidedBy,
+    enteredBy,
+    ...rest
+  } = d
+  return {
+    ...rest,
+    _id: id as DeclarationId,
+    contactId: contactId as Id<'contacts'>,
+    contributionId: orUndefined(contributionId) as GiftId | undefined,
+    cancelledFrom: orUndefined(cancelledFrom),
+    cancellationNote: orUndefined(cancellationNote),
+    voidReason: orUndefined(voidReason),
+    voidedAt: orUndefined(voidedAt),
+    voidedBy: orUndefined(voidedBy),
+    enteredBy: orUndefined(enteredBy),
+  }
+}
+
+function declarationsFromWire(d: WireDeclarations): ContactDeclarations {
+  return {
+    declarations: d.declarations.map(declarationFromWire),
+    currentId: d.currentId as DeclarationId | null,
+  }
+}
+
+function donorFromWire(d: DonorView): DonorInfo {
+  return {
+    ...d,
+    id: d.id as Id<'contacts'>,
+    acquisition: d.acquisition as SourceCodeDescription | null,
+  }
+}
+
+function fieldsToWire(f: GiftFields) {
+  return {
+    ...f,
+    amount: toWire(f.amount),
+    allocations: f.allocations.map((a) => ({ ...a, amount: toWire(a.amount) })),
+  }
+}
+
+// ── reads ──────────────────────────────────────────────────────────────────
+
+/**
+ * The caller's last 10 gifts in this group, newest entered first;
+ * undefined while loading or when `enabled` is false.
+ */
+export function useMyRecentGifts(enabled = true): Array<RecentGift> | undefined {
+  const { slug } = useTenant()
+  return useQuery({
+    queryKey: keys.recentGifts(slug),
+    enabled,
+    queryFn: async () =>
+      (await get<Array<WireRecent>>(tenantPath(slug, 'gifts', 'recent'))).map(
+        recentFromWire,
+      ),
+  }).data
+}
+
+function giftQuery(slug: string, id: string) {
+  return {
+    queryKey: keys.gift(slug, id),
+    queryFn: async (): Promise<GiftView | null> => {
+      try {
+        return giftViewFromWire(
+          await get<WireGiftView>(tenantPath(slug, 'gifts', id)),
+        )
+      } catch (err) {
+        if (isNotFound(err)) return null
+        throw err
+      }
+    },
+  }
+}
+
+const isNotFound = (err: unknown) =>
+  typeof err === 'object' &&
+  err !== null &&
+  'status' in err &&
+  (err as { status: number }).status === 404
+
+/** One gift for its page; null for an unknown id, undefined while loading. */
+export function useGift(id: string): GiftView | null | undefined {
+  const { slug } = useTenant()
+  return useQuery(giftQuery(slug, id)).data
+}
+
+/** One gift read once (the record page's "Already saved" read-back). */
+export function fetchGift(
+  qc: QueryClient,
+  slug: string,
+  id: string,
+): Promise<GiftView | null> {
+  return qc.fetchQuery(giftQuery(slug, id))
+}
+
+/** Gifts a page of the contact's panel asks for (the API caps it at 50). */
+export const GIFTS_PAGE_SIZE = 20
+
+/**
+ * A contact's gifts, newest date first, a page at a time: `rows` (all
+ * pages loaded so far), `status` and `loadMore`, like the contacts list.
+ */
+export function useContactGifts(contactId: string): {
+  rows: Array<Gift> | undefined
+  status: 'loading' | 'more' | 'done'
+  loadMore: () => void
+} {
+  const { slug } = useTenant()
+  const list = useInfiniteQuery({
+    queryKey: keys.contactGifts(slug, contactId),
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => {
+      const q = new URLSearchParams({ limit: String(GIFTS_PAGE_SIZE) })
+      if (pageParam) q.set('cursor', pageParam)
+      return get<GiftPage>(tenantPath(slug, 'contacts', contactId, 'gifts'), q)
+    },
+    getNextPageParam: (page) => (page.isDone ? null : page.nextCursor),
+  })
+  const rows = useMemo(
+    () => list.data?.pages.flatMap((p) => p.rows.map(giftFromWire)),
+    [list.data],
+  )
+  return {
+    rows,
+    status:
+      list.isFetchingNextPage || rows === undefined
+        ? 'loading'
+        : list.hasNextPage
+          ? 'more'
+          : 'done',
+    loadMore: () => void list.fetchNextPage(),
+  }
+}
+
+/**
+ * The record-gift page's donor, judged on the gift's `date`; null for an
+ * unknown contact, undefined while loading or with no contact.
+ */
+export function useDonor(
+  contactId: string | null,
+  date: string,
+): DonorInfo | null | undefined {
+  const { slug } = useTenant()
+  return useQuery({
+    queryKey: keys.donor(slug, contactId ?? '', date),
+    enabled: contactId !== null,
+    queryFn: async (): Promise<DonorInfo | null> => {
+      try {
+        return donorFromWire(
+          await get<DonorView>(
+            tenantPath(slug, 'contacts', contactId!, 'donor'),
+            new URLSearchParams({ date }),
+          ),
+        )
+      } catch (err) {
+        if (isNotFound(err)) return null
+        throw err
+      }
+    },
+  }).data
+}
+
+/**
+ * A contact's Gift Aid declarations as of `today`, newest first, and
+ * which is current; undefined while loading or with no contact. One
+ * query however many parts of a page ask.
+ */
+export function useDeclarations(
+  contactId: string | undefined,
+  today: string,
+): ContactDeclarations | undefined {
+  const { slug } = useTenant()
+  return useQuery({
+    queryKey: keys.declarations(slug, contactId ?? '', today),
+    enabled: contactId !== undefined,
+    queryFn: async () =>
+      declarationsFromWire(
+        await get<WireDeclarations>(
+          tenantPath(slug, 'contacts', contactId!, 'giftaid'),
+          new URLSearchParams({ today }),
+        ),
+      ),
+  }).data
+}
+
+/** Revisions one history page reads (the API's cap). */
+const HISTORY_PAGE = 10
+
+/**
+ * A gift's history, newest first, "Load older" a page at a time. A
+ * command group cut by a page boundary is joined back into one moment.
+ */
+export function useGiftHistory(id: string): {
+  moments: Array<Moment> | undefined
+  loading: boolean
+  loadOlder: (() => void) | undefined
+  error: boolean
+  retry: () => void
+} {
+  const { slug } = useTenant()
+  const pages = useInfiniteQuery({
+    queryKey: keys.giftHistory(slug, id),
+    initialPageParam: null as number | null,
+    queryFn: ({ pageParam }) => {
+      const q = new URLSearchParams({ limit: String(HISTORY_PAGE) })
+      if (pageParam !== null) q.set('before', String(pageParam))
+      return get<GiftMomentPage>(tenantPath(slug, 'gifts', id, 'history'), q)
+    },
+    getNextPageParam: (page) => page.nextBefore,
+  })
+  const moments = useMemo(
+    () => pages.data && joinMoments(pages.data.pages.flatMap((p) => p.moments)),
+    [pages.data],
+  )
+  return {
+    moments,
+    loading: pages.isFetching && moments !== undefined,
+    loadOlder:
+      pages.hasNextPage && !pages.isFetchingNextPage
+        ? () => void pages.fetchNextPage()
+        : undefined,
+    error: pages.isError,
+    retry: () => void pages.refetch(),
+  }
+}
+
+/** Adjacent moments with the same key are one command group, split by a page. */
+export function joinMoments(moments: Array<Moment>): Array<Moment> {
+  const out: Array<Moment> = []
+  for (const m of moments) {
+    const prev = out.at(-1)
+    if (prev && prev.key === m.key) {
+      out[out.length - 1] = {
+        ...prev,
+        slices: [...prev.slices, ...m.slices.filter((s) => !prev.slices.includes(s))],
+      }
+    } else out.push(m)
+  }
+  return out
+}
+
+// ── writes ─────────────────────────────────────────────────────────────────
+
+/** The gift's own view (not its history): a write's answer replaces it. */
+const isGiftView = (key: ReadonlyArray<unknown>, id: string) =>
+  key.length === 5 && key[3] === 'one' && key[4] === id
+
+/** Every read showing gifts: the gift pages, panels, recent and the donor. */
+export function giftsChanged(qc: QueryClient, slug: string) {
+  return qc.invalidateQueries({ queryKey: keys.gifts(slug) })
+}
+
+/**
+ * The record-gift page's one save. Resolves with the ids once the server
+ * has committed; throws `RustApiError` when refused (`409 duplicate`
+ * carries the gift a repeat already saved).
+ */
+export function useRecordGift() {
+  const { slug } = useTenant()
+  const qc = useQueryClient()
+  return async (args: RecordGiftArgs): Promise<RecordedGift> => {
+    const body: RecordGift = {
+      ...args,
+      amount: toWire(args.amount),
+      allocations: args.allocations.map((a) => ({
+        ...a,
+        amount: toWire(a.amount),
+      })),
+    }
+    try {
+      return await post<RecordedGift>(tenantPath(slug, 'gifts', 'record'), body)
+    } finally {
+      // A new contact, an acquisition fill, a declaration: refetch them.
+      void giftsChanged(qc, slug)
+      void qc.invalidateQueries({ queryKey: keys.contacts(slug) })
+      void qc.invalidateQueries({ queryKey: keys.declarations(slug) })
+      void qc.invalidateQueries({ queryKey: keys.sources(slug) })
+    }
+  }
+}
+
+/**
+ * Correct, void or un-void a gift. Each resolves once the server has
+ * committed, with the gift as it now is, which lands in the gift's query
+ * (never what was sent); throws `RustApiError` when refused (`stale`
+ * carries the slice as it is now).
+ */
+export function useGiftWrites(id: string) {
+  const { slug } = useTenant()
+  const qc = useQueryClient()
+  const landed = (contract: string, done: GiftSaved) => {
+    ownWrite(slug, done.id, contract, done.counter)
+    qc.setQueryData(keys.gift(slug, id), giftViewFromWire(done.view))
+    // The panels, the recent list, the history, the donor's coverage.
+    void qc.invalidateQueries({
+      queryKey: keys.gifts(slug),
+      predicate: (q) => !isGiftView(q.queryKey, id),
+    })
+    return { id: done.id as GiftId, counter: done.counter }
+  }
+  return {
+    save: async (expected: number, fields: GiftFields) =>
+      landed(
+        'giving.gift',
+        await post<GiftSaved>(tenantPath(slug, 'gifts', id, 'save'), {
+          ...fieldsToWire(fields),
+          expected,
+        }),
+      ),
+    setStatus: async (expected: number, status: GiftStatus) =>
+      landed(
+        'giving.status',
+        await post<GiftSaved>(tenantPath(slug, 'gifts', id, 'status'), {
+          expected,
+          status,
+        }),
+      ),
+  }
+}
+
+/**
+ * The Gift Aid panel's writes: cancel every declaration open at a date,
+ * or mark one made in error. Each resolves once committed and the panel
+ * has been refetched.
+ */
+export function useGiftAidWrites(contactId: string) {
+  const { slug } = useTenant()
+  const qc = useQueryClient()
+  const after = async <T,>(write: Promise<T>): Promise<T> => {
+    try {
+      return await write
+    } finally {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: keys.declarations(slug) }),
+        giftsChanged(qc, slug),
+      ])
+    }
+  }
+  return {
+    cancel: (cancelledFrom: string, note?: string) =>
+      after(
+        post<Cancelled>(
+          tenantPath(slug, 'contacts', contactId, 'giftaid', 'cancel'),
+          { cancelledFrom, ...(note !== undefined && { note }) },
+        ),
+      ),
+    voidDeclaration: (id: string, reason: string) =>
+      after(post<Executed>(tenantPath(slug, 'giftaid', id, 'void'), { reason })),
+  }
+}
