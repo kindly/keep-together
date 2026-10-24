@@ -3,7 +3,7 @@
 
 mod comms;
 mod contacts;
-mod fields;
+pub mod fields;
 pub mod groups;
 mod identifiers;
 mod notes;

@@ -151,6 +151,8 @@ impl Job for SessionPurge {
 pub fn standard(store: &Arc<Store>) -> Jobs {
     let mut jobs = Jobs::new();
     jobs.register(IdleClose(store.clone()))
-        .register(SessionPurge(store.clone()));
+        .register(SessionPurge(store.clone()))
+        // B1: retires left part way.
+        .register(crate::routes::fields::FieldRetire(store.clone()));
     jobs
 }

@@ -30,6 +30,8 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(sources::MIGRATION),
         // 9: a contact's acquisition code (A2)
         M::up(contacts::acquisition::MIGRATION),
+        // 10: a field's retire phase, field and option delete logs (B1)
+        M::up(contacts::fields::MIGRATION_RETIRE),
     ])
 }
 

@@ -124,13 +124,10 @@ async fn create_archive_and_restore_answer_with_the_view() {
             None,
         )
         .await;
-    let created_rev = history["revisions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["contract"] == "contacts.details" && r["counter"] == 0)
-        .unwrap()["id"]
-        .clone();
+    // Newest first: the create is the last moment.
+    let created = history["moments"].as_array().unwrap().last().unwrap();
+    assert_eq!(created["slices"], json!(["details"]));
+    let created_rev = created["revisionId"].clone();
     let (s, restored) = w
         .call(
             "POST",
