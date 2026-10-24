@@ -7,7 +7,7 @@ import { FEATURES, preloadContact, useContact } from '../lib/data'
 import { ContactForm } from '../components/contact-form'
 import { ContactGiftAid } from '../components/contact-giftaid'
 import { ContactGifts } from '../components/contact-gifts'
-import { RustContactHistory } from '../components/rust-contact-history'
+import { ContactHistory } from '../components/contact-history'
 import { ContactNotes } from '../components/contact-notes'
 import { LeaveGuard } from '../components/leave-guard'
 import { UnsavedWorkProvider, useUnsavedWork } from '../lib/unsaved'
@@ -63,8 +63,7 @@ function ContactPage() {
           )}
         </div>
         {/* Keyed like the form: a restore notice belongs to its contact. */}
-        {/* Moments, "Load older" and "Restore to here" come with B1. */}
-        <RustContactHistory
+        <ContactHistory
           key={`${tenant._id}:${id}`}
           id={id}
           archived={data.contact.archived}

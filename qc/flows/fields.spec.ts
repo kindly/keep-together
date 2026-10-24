@@ -15,7 +15,7 @@ import type { Page } from '@playwright/test'
 // tab (create, add options, archive / reactivate, the staff switch), a
 // value on the contact form (set, clear), the list's field filter and
 // bulk "set field". Tenant A is seeded with one field, "Volunteer status",
-// that no contact carries. A tenant has 5 slots and the world is shared
+// that no contact carries. A tenant has 200 places and the world is shared
 // by the worker's tests, so a test that makes a field gets rid of it
 // again (deleted while unused, retired once used), and values set on the
 // seeded field go only on contacts the test made.
@@ -78,7 +78,7 @@ async function createField(
 }
 
 /**
- * Free a field's slot: delete it while none of its options was used,
+ * Free a field's place: delete it while none of its options was used,
  * else retire it (clearing its values). Leaves the Fields tab open.
  */
 async function dropField(page: Page, slug: string, label: string) {
@@ -212,7 +212,7 @@ test.describe(
       await expect(add).toBeDisabled()
 
       // Each sample makes a field and the next one deletes it again, so the
-      // samples take one slot between them.
+      // samples take one place between them.
       const base = uniqueName('field')
       let n = 0
       let last: string | undefined

@@ -630,14 +630,21 @@ async fn admin_only_domain_routes_need_step_up_too() {
     let w = world();
     let ann = w.sign_in("ann@alpha.org").await;
     w.age_sign_in(&ann, 61 * 60 * 1000);
-    let field =
-        json!({ "label": "Volunteer status", "appliesTo": ["individual"], "isActive": true });
+    // B1: fields became a list staff may be allowed to manage (like source
+    // codes), so the admin-only route here is a Settings switch.
+    let switch = json!({ "staffCanManage": true });
     let r = w
-        .post("/api/t/alpha/fields", Some(&ann), field.clone())
+        .post(
+            "/api/t/alpha/preferences/fields",
+            Some(&ann),
+            switch.clone(),
+        )
         .await;
     assert_eq!(r.kind(), "step_up_required");
     let ann = w.sign_in("ann@alpha.org").await;
-    let r = w.post("/api/t/alpha/fields", Some(&ann), field).await;
+    let r = w
+        .post("/api/t/alpha/preferences/fields", Some(&ann), switch)
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
 }
 

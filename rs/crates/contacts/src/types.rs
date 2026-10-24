@@ -389,8 +389,9 @@ pub struct SetArchived {
     pub archived: bool,
 }
 
-/// `POST contacts/{id}/restore`: one revision, or the whole contact as it
-/// was at `at` (ms; archive excluded, it has its own toggle).
+/// `POST contacts/{id}/restore`: one revision; or the whole contact as it
+/// was just after revision `toRevision` ("Restore to here": exact), or at
+/// `at` (ms). Archive is excluded from both, it has its own toggle.
 #[derive(Clone, Debug, Deserialize, TS)]
 #[serde(untagged)]
 #[ts(export)]
@@ -400,6 +401,11 @@ pub enum RestoreRequest {
         #[ts(type = "number")]
         revision_id: i64,
     },
+    ToRevision {
+        #[serde(rename = "toRevision")]
+        #[ts(type = "number")]
+        to_revision: i64,
+    },
     At {
         #[ts(type = "number")]
         at: i64,
@@ -407,10 +413,13 @@ pub enum RestoreRequest {
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct Restored {
     /// The contracts that ran (empty: already in that state).
     pub restored: Vec<String>,
+    /// Field values the restore left as they are, and why.
+    pub skipped_fields: Vec<crate::slices::FieldRestoreNote>,
 }
 
 /// `GET contacts/{id}/history`: newest first.
@@ -472,9 +481,15 @@ pub struct FieldDefinition {
     pub label: String,
     pub applies_to: Vec<Kind>,
     pub is_active: bool,
+    /// A retire is clearing its values (or stopped part way: run it
+    /// again). No new values, no edits.
+    pub retiring: bool,
     #[ts(type = "number")]
     pub save_version: i64,
+    /// Archived ones included.
     pub options: Vec<FieldOptionView>,
+    /// No option was ever used: the whole field can be deleted.
+    pub deletable: bool,
 }
 
 /// `POST fields`: create a field (no `id`) or save one (`id` + `expected`).
@@ -505,4 +520,80 @@ pub struct SaveFieldOption {
     #[serde(flatten)]
     #[ts(flatten)]
     pub payload: FieldOptionPayload,
+}
+
+/// `contacts.fieldRetire`: where a field is in its retire. Only forward:
+/// live → retiring → retired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum RetirePhase {
+    Live,
+    Retiring,
+    Retired,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FieldRetirePayload {
+    pub phase: RetirePhase,
+}
+
+/// `POST fields/{id}/delete` and `POST fields/options/{id}/delete`: the
+/// row's counter as last read.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[ts(export)]
+pub struct DeleteFieldPart {
+    #[ts(type = "number")]
+    pub expected: i64,
+}
+
+/// What a delete took: the field and its options, or the one option.
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+pub struct DeletedFieldPart {
+    #[ts(type = "number")]
+    pub deleted: i64,
+}
+
+/// `POST fields/{id}/reorder`: every option of the field, archived ones
+/// included, in their new order.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[ts(export)]
+pub struct ReorderOptions {
+    pub order: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ReorderedOptions {
+    /// Options whose position changed (each its own contract).
+    #[ts(type = "number")]
+    pub moved: i64,
+}
+
+/// `POST contacts/bulk-set-field`: set (or clear, `optionId: null`) one
+/// field on up to [`crate::fields::BULK_FIELD_LIMIT`] contacts.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BulkSetField {
+    pub contact_ids: Vec<String>,
+    pub field_id: String,
+    pub option_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BulkSetResult {
+    /// Contacts whose value changed, all in one command group.
+    #[ts(type = "number")]
+    pub changed: i64,
+    /// Contacts the field doesn't apply to (a set only).
+    #[ts(type = "number")]
+    pub skipped: i64,
+    /// The command group, when anything changed.
+    #[ts(type = "number | null")]
+    pub group: Option<i64>,
 }

@@ -92,6 +92,12 @@ const FIXTURES: &[&str] = &[
     // 9: a contact's acquisition code
     "UPDATE contacts SET acquisition_code_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3',
          acquisition_version = 1;",
+    // 10: a field's retire phase, the field and option delete logs
+    "UPDATE contact_fields SET retiring = 1, retire_version = 1;
+     INSERT INTO contact_field_deletions (id, deleted, delete_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', 3, 0);
+     INSERT INTO contact_field_option_deletions (id, delete_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b2', 0);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";

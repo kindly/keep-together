@@ -121,15 +121,13 @@ describe('summarise', () => {
 
 describe('pendingBanner', () => {
   test('lists each step with its skipped tests, flows and the unported routes', () => {
-    const out = pendingBanner(new Map([['B1', 3]]), [
+    const out = pendingBanner(new Map([['B2', 3]]), [
       '/t/$slug/contacts/',
-      '/t/$slug/settings/fields',
+      '/t/$slug/gifts/new',
     ]).join('\n')
-    expect(out).toMatch(/B1: 3 tests skipped · flows .*fields\.create/)
-    // A step with flows and no tests skipped this run is still listed.
-    expect(out).toMatch(/B2: 0 tests skipped · flows .*gift\.record/)
+    expect(out).toMatch(/B2: 3 tests skipped · flows .*gift\.record/)
     expect(out).toContain(
-      'routes being ported (exempt from coverage): /t/$slug/settings/fields',
+      'routes being ported (exempt from coverage): /t/$slug/gifts/new',
     )
     expect(out).not.toContain('/t/$slug/contacts/,')
   })
@@ -285,12 +283,12 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     const ported = routes.filter((r) => isPorted(r))
     const r = await runReporter('p1', records('p1'), {
       covered: ported,
-      skipped: ['B1', 'B1', 'B2'],
+      skipped: ['B2', 'B2', 'A9'],
       filtered: false,
     })
     expect(r.gates.filter((g) => g.includes('coverage:'))).toEqual([])
-    expect(r.out).toMatch(/B1: 2 tests skipped/)
-    expect(r.out).toMatch(/B2: 1 tests skipped/)
+    expect(r.out).toMatch(/B2: 2 tests skipped/)
+    expect(r.out).toMatch(/A9: 1 tests skipped/)
     // A ported route left uncovered still fails a full run.
     const gap = await runReporter('p2', records('p2'), {
       covered: ported.filter((x) => x !== '/t/$slug/contacts/new'),
@@ -301,7 +299,7 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
       /coverage: no test that ran covers \/t\/\$slug\/contacts\/new/,
     )
     // pendingPort flows aren't "not timed" failures; others are.
-    expect(gap.out).not.toMatch(/not timed: [^\n]*fields\.create/)
+    expect(gap.out).not.toMatch(/not timed: [^\n]*gift\.record/)
     expect(gap.out).toMatch(/not timed: [^\n]*contacts\.search\.phone/)
   })
 })
