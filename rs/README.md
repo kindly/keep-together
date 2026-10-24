@@ -215,8 +215,11 @@ the same step).
 `Store::migrate_all()` brings every `orgs/*.db` to head, 4 at a time. Each
 file with steps pending is first copied with `VACUUM INTO` into this boot's
 directory, `premigrate/boot-<ms>/<name>.v<from>.db` (`platform` or the
-tenant id), beside a `manifest` of the org files present at boot; making
-that directory deletes the previous boot's. Any failure stops the boot
+tenant id), beside a `manifest` of the org files present at boot. A boot
+that finishes marks it `complete`; a failed boot leaves it open and the
+retry reuses it (no file copied twice, the first manifest kept), so the
+copies always predate the release still rolling out. Only a migrating
+boot after a completed one starts a new directory and deletes the old. Any failure stops the boot
 naming the file, so a deploy fails visibly. Rollback = the previous image
 plus `scripts/ops/rollback-migration.sh <data> --apply` (API stopped): it
 restores every copy of the last migrating boot, platform included, and
