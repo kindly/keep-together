@@ -231,16 +231,19 @@ staging, because dev auth stays loopback-only.
 
 ## To verify on the first real run
 
-Facts this setup relies on that couldn't be tested here (no AWS or Fly
-from the builder's sandbox):
+Checked locally (podman, 2026-10-24, file replicas instead of S3): the
+image builds; Litestream 0.5.17 accepts `rs/litestream.yml` (socket,
+snapshot keys, `dir` + `watch` beside a `path`, `${VAR}` expansion) and
+picks up an org file created while running; `GET /list` keeps
+`last_sync_at` fresh for idle databases, so the lag check doesn't flag
+quiet orgs; SIGTERM reaches the api through Litestream and both exit
+cleanly; an empty volume restores itself through the entrypoint (row
+below).
 
-- Litestream 0.5.17 accepts `rs/litestream.yml` as written: the `socket`
-  block, `snapshot.interval`/`retention`, `dir` + `watch` next to a
-  `path` entry, `${VAR}` expansion.
-- Whether `last_sync_at` in `GET /list` moves for a database with no
-  writes. If it doesn't, an idle org shows as lag, and the lag check
-  needs a different measure, e.g. comparing each database's txid with
-  its replica's.
+Still to verify on the first real run (no AWS or Fly from the builder's
+sandbox):
+
+- Litestream against S3 with the IAM user limited to its prefix.
 - The snapshot bucket accepts `object_store`'s uploads with
   `x-amz-checksum-sha256`, which Object Lock requires (it refuses a PUT
   without Content-MD5 or a checksum).
@@ -254,4 +257,4 @@ from the builder's sandbox):
 
 | date | env | source | restore (all files) | boot to healthy | counts | marks lost |
 |---|---|---|---|---|---|---|
-| | | | | | | |
+| 2026-10-24 | local podman, file replica (not the drill) | litestream | 0.3 s (10k org + riverside) | api up in < 2 s | equal | 0 rows (SIGKILL mid-write) |

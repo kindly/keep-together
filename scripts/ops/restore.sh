@@ -33,11 +33,19 @@ started=$(now)
 
 case $source in
 litestream)
-  : "${LITESTREAM_BUCKET:?}" "${LITESTREAM_ACCESS_KEY_ID:?}" "${LITESTREAM_SECRET_ACCESS_KEY:?}"
-  export AWS_ACCESS_KEY_ID=$LITESTREAM_ACCESS_KEY_ID
-  export AWS_SECRET_ACCESS_KEY=$LITESTREAM_SECRET_ACCESS_KEY
-  export AWS_REGION=${LITESTREAM_REGION:-eu-west-2}
-  replica=s3://$LITESTREAM_BUCKET/${KEEP_REPLICA_PREFIX:-$ENV_NAME}
+  : "${LITESTREAM_BUCKET:?}"
+  case $LITESTREAM_BUCKET in
+  file://*) # a local replica directory (trying this out without S3)
+    replica=$LITESTREAM_BUCKET/${KEEP_REPLICA_PREFIX:-$ENV_NAME}
+    ;;
+  *)
+    : "${LITESTREAM_ACCESS_KEY_ID:?}" "${LITESTREAM_SECRET_ACCESS_KEY:?}"
+    export AWS_ACCESS_KEY_ID=$LITESTREAM_ACCESS_KEY_ID
+    export AWS_SECRET_ACCESS_KEY=$LITESTREAM_SECRET_ACCESS_KEY
+    export AWS_REGION=${LITESTREAM_REGION:-eu-west-2}
+    replica=s3://$LITESTREAM_BUCKET/${KEEP_REPLICA_PREFIX:-$ENV_NAME}
+    ;;
+  esac
   litestream restore -if-replica-exists -o "$DATA/platform.db" "$replica/platform.db"
   if [ ! -e "$DATA/platform.db" ]; then
     echo "restore: no platform.db replica at $replica" >&2
