@@ -12,8 +12,8 @@ export {
   SignedOut,
   preloadContact,
   preloadContactList,
+  preloadFields,
   queryClient,
-  useBulkSetField,
   useContact,
   useContactList,
   useContactSearch,
@@ -50,3 +50,10 @@ export type {
   SourceCodeDescription,
   SourceCodePayload,
 } from './rust/sources'
+export {
+  BULK_FIELD_LIMIT,
+  bulkFailure,
+  useBulkSetField,
+  useFieldWrites,
+} from './rust/fields'
+export type { BulkFieldState, FieldPayload, OptionPayload } from './rust/fields'

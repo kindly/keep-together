@@ -36,12 +36,21 @@ const REGION = {
 } as unknown as Field
 
 let fields: Array<Field> | undefined
-const mutation = vi.fn()
-const action = vi.fn()
-vi.mock('convex/react', () => ({
-  useQuery: () => fields,
-  useMutation: () => mutation,
-  useAction: () => action,
+const writes = {
+  createField: vi.fn(),
+  saveField: vi.fn(),
+  deleteField: vi.fn(),
+  addOption: vi.fn(),
+  saveOption: vi.fn(),
+  deleteOption: vi.fn(),
+  reorder: vi.fn(),
+  retire: vi.fn(),
+}
+vi.mock('../lib/data', () => ({
+  useFields: () => fields,
+  useFieldWrites: () => writes,
+  preloadFields: () => {},
+  useSetStaffCanManage: () => async () => {},
 }))
 let canManage = true
 vi.mock('../lib/tenant', () => ({
@@ -61,8 +70,8 @@ beforeEach(async () => {
   Page = Route.options.component as ComponentType
   fields = [REGION]
   canManage = true
-  mutation.mockReset().mockResolvedValue(null)
-  action.mockReset()
+  for (const write of Object.values(writes))
+    write.mockReset().mockResolvedValue(null)
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -92,7 +101,7 @@ test('loading, then the fields with archived options hidden', () => {
   fields = [REGION]
   rerender()
   expect(el.textContent).toContain('Region')
-  expect(el.textContent).toContain('(1 of 5 in use)')
+  expect(el.textContent).toContain('(1 of 200 in use)')
   expect(options()).toHaveLength(2)
   expect(el.textContent).toContain('Show archived (1)')
 })
@@ -117,25 +126,21 @@ test('a used option and a used field cannot be deleted', () => {
 test('moving an option sends the whole order, archived ones included', async () => {
   render()
   await click(el.querySelector('[aria-label="Move South up"]')!)
-  expect(mutation).toHaveBeenCalledWith({
-    tenantId: 'tenantA',
-    fieldId: 'f1',
-    order: ['South', 'Old', 'North'],
-  })
+  expect(writes.reorder).toHaveBeenCalledWith('f1', ['South', 'Old', 'North'])
 })
 
 test('retire asks first, then shows progress until it ends', async () => {
   let finish: (v: { cleared: number }) => void = () => {}
-  action.mockReturnValue(new Promise((r) => (finish = r)))
+  writes.retire.mockReturnValue(new Promise((r) => (finish = r)))
   render()
   await click(button('retire'))
-  expect(action).not.toHaveBeenCalled()
+  expect(writes.retire).not.toHaveBeenCalled()
   const dialog = document.querySelector('[role="alertdialog"]')!
   expect(dialog.textContent).toContain('can’t be undone')
   await click(button('Retire field', dialog))
-  expect(action).toHaveBeenCalledWith({ tenantId: 'tenantA', id: 'f1' })
+  expect(writes.retire).toHaveBeenCalledWith('f1')
   expect(el.textContent).toContain('Retiring Region')
-  // The field leaves the list once its slot is free.
+  // The field leaves the list once it is retired.
   fields = []
   await act(async () => finish({ cleared: 3 }))
   rerender()
@@ -179,26 +184,25 @@ test('an open editor merges a save made elsewhere', async () => {
   ].map((i) => i.checked)
   expect(kinds).toEqual([true, false, false])
   await click(button('Save', label.form!))
-  expect(mutation).toHaveBeenCalledWith({
-    tenantId: 'tenantA',
-    id: 'f1',
-    expected: 1,
+  expect(writes.saveField).toHaveBeenCalledWith('f1', 1, {
     label: 'Area',
     appliesTo: ['individual'],
     isActive: true,
   })
 })
 
-test('five fields: the add form gives way to a note', () => {
-  fields = [1, 2, 3, 4, 5].map((n) => ({
+test('every place taken: the add form gives way to a note', () => {
+  // No options: 200 cards render quickly.
+  fields = Array.from({ length: 200 }, (_, n) => ({
     ...REGION,
+    options: [],
     _id: `f${n}`,
     label: `F${n}`,
-    slot: n,
+
   })) as unknown as Array<Field>
   render()
   expect(el.querySelector('input[aria-label="New field"]')).toBeNull()
-  expect(el.textContent).toContain('All 5 fields are in use')
+  expect(el.textContent).toContain('All 200 fields are in use')
 })
 
 const withOptions = (...labels: Array<string>) =>
@@ -217,7 +221,7 @@ const announced = () => el.querySelector('[aria-live="polite"]')!.textContent
 
 test('a move keeps focus on the moved option, and says where it went', async () => {
   let done: (v: null) => void = () => {}
-  mutation.mockReturnValueOnce(new Promise((r) => (done = r)))
+  writes.reorder.mockReturnValueOnce(new Promise((r) => (done = r)))
   fields = [withOptions('Bronze', 'Silver', 'Gold')]
   render()
   await press('Move Bronze down')
@@ -227,7 +231,7 @@ test('a move keeps focus on the moved option, and says where it went', async () 
       .disabled,
   ).toBe(false)
   await press('Move Bronze down')
-  expect(mutation).toHaveBeenCalledTimes(1)
+  expect(writes.reorder).toHaveBeenCalledTimes(1)
   fields = [withOptions('Silver', 'Bronze', 'Gold')]
   rerender()
   await act(async () => done(null))
@@ -259,15 +263,14 @@ test('archiving an option asks first', async () => {
   render()
   const south = [...el.querySelectorAll('[data-testid="field-option"]')][1]
   await click(button('archive', south))
-  expect(mutation).not.toHaveBeenCalled()
+  expect(writes.saveOption).not.toHaveBeenCalled()
   const dialog = document.querySelector('[role="alertdialog"]')!
   expect(dialog.textContent).toContain('Contacts that have it keep it')
   await click(button('Archive', dialog))
-  expect(mutation).toHaveBeenCalledWith({
-    tenantId: 'tenantA',
-    id: 'South',
-    expected: 0,
+  expect(writes.saveOption).toHaveBeenCalledWith('South', 0, {
+    fieldId: 'f1',
     label: 'South',
+    position: 2,
     isActive: false,
   })
 })

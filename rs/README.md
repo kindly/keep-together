@@ -293,8 +293,9 @@ own `INTEGER NOT NULL DEFAULT 0` counter and has its upcasters.
 `standard(&store)`). A job touching organisations uses
 `each_org(&store, |id, db| …)`: one file at a time, never two in one
 transaction; one org's failure doesn't stop the others. Running now:
-`idle-close` (1 min) and `session-purge` (1 h: expired sessions, spent
-reset links, old invites); F2's hourly snapshot
+`idle-close` (1 min), `session-purge` (1 h: expired sessions, spent
+reset links, old invites) and `field-retire` (1 min: retires left part
+way, as whoever started them); F2's hourly snapshot
 registers the same way. A job's first run is `first_after()` after boot
 (default: one period), so the snapshot needn't wait an hour after every
 deploy.
@@ -352,13 +353,17 @@ a `POST`. The same test pins the route table, so a new route is looked at.
 `COUNTER` (an `INTEGER NOT NULL DEFAULT 0` column on the root), `Payload`,
 `State`, and `prepare` → `load` → pure `apply(current, payload, command)`
 → `write` → `project`, plus `upcast(from, payload)` steps and
-`restore_payload`. `execute` runs inside the caller's transaction:
+`restore_payload(tx, payload, current, restored_at)` (`restored_at`: when
+the restored revision was written). `execute` runs inside the caller's transaction:
 counter check (stale ⇒ nothing written), apply, write, counter bump,
 revision row (prepared payload, name, version, counter, actor, source,
 group), projection. `command_group(ctx, name)` labels several commands
 in one transaction. `restore` re-executes a revision as a new command
 through the upcaster chain; `restore_entity_to(at)` restores every slice
-that differs from its state at `at`. Child rows: `mint_ids` in `prepare`,
+that differs from its state at `at`. `contracts::history::page` reads an
+entity's revisions as moments (one per command group, newest first,
+`before`/`limit` keyset pages); each module names its slices with a
+`SliceLabel`. Child rows: `mint_ids` in `prepare`,
 `reconcile` in `write` (by id; identity fields immutable per id).
 
 ## Contacts
@@ -368,7 +373,15 @@ Slices, each a contract with its own counter column on `contacts`:
 address / number is the identity per key), `contacts.addresses` (no
 identity: editable in place), `contacts.archive`, `contacts.fields`
 (dropdown values: rows of `contact_field_values`, not Convex's slots).
-Field definitions are `contacts.field` and `contacts.fieldOption`. The
+Field definitions are `contacts.field` and `contacts.fieldOption`;
+`contacts.fieldRetire` moves a field live → retiring → retired (system-
+owned columns, only forward, never restored), and `contacts.fieldDelete` /
+`contacts.fieldOptionDelete` remove what was never used (each a row of its
+own delete log). A retire archives the field, marks it retiring (no new
+values, no edits), clears it from every holder in batches of 500 (one
+transaction and one "Retire field *Label*" group each), then marks it
+retired; the `field-retire` job finishes any retire a stopped server left.
+The
 contact number is the rowid (`number INTEGER PRIMARY KEY`), handed out from
 `contact_number_sequence` on create; `id` is the API's UUIDv7.
 
@@ -379,16 +392,25 @@ Routes under `/api/t/{slug}` (types in `src/lib/data/rust-types/`):
 | `GET contacts?includeArchived&kind&fields&cursor&limit` | `ContactPage`: keyset pages on `(sort_key, id)`, ≤100 rows |
 | `GET contacts/search?q&includeArchived&kind&fields` | `SearchResult`: exact matches first, then FTS |
 | `GET contacts/{id}` | `ContactView`: every slice, counters, warnings |
-| `GET contacts/{id}/history?before&limit` | `HistoryPage`, newest first; unknown id `404` |
+| `GET contacts/{id}/history?before&limit` | `MomentPage {moments, nextBefore}`: `limit` revisions (default 10) as moments, newest first; a group cut by the page boundary comes back as two halves with one `key`; unknown id `404` |
 | `POST contacts` | `CreateContact` → `CreatedContact {id, number, view}`; a seen `clientKey`/`id` is `409 duplicate` |
 | `POST contacts/{id}/save` | `SaveForm` → `SaveFormResult` (below) |
 | `POST contacts/{id}/archive` | `{expected, archived}` → `ArchivedContact {id, counter, view}`, or `409 stale` |
-| `POST contacts/{id}/restore` | `{revisionId}` or `{at}` → `RestoredContact {restored, view}` |
-| `GET fields` · `POST fields` · `POST fields/options` | definitions; saving them needs admin |
+| `POST contacts/{id}/restore` | `{revisionId}` or `{at}` ("Restore to here": every slice that differs, archive and retired contracts excepted, in one "restore to *ISO time*" group) → `RestoredContact {restored, skippedFields, view}`; a retired contract's revision is `422 rejected {reason: retired_contract}` |
+| `POST contacts/bulk-set-field` | `{contactIds, fieldId, optionId}` (`null` clears) → `BulkSetResult {changed, skipped, group}`: ≤1000 contacts, one command group, all or nothing; staff |
+| `GET fields` | live definitions with `retiring` and `deletable` |
+| `POST fields` · `POST fields/options` | save (`id` + `expected`) or create; a new option goes last |
+| `POST fields/{id}/delete` · `POST fields/options/{id}/delete` | `{expected}` → `{deleted}`; `422 rejected {reason: used}` once used |
+| `POST fields/{id}/reorder` | `{order}` naming every option → `{moved}`; anything else `409 stale` |
+| `POST fields/{id}/retire` | → `{cleared}` when it has ended |
+
+The field routes need a list manager (admin, or staff while "staff can
+manage fields" is on: `platform::may_manage_list`); bulk set is ordinary
+staff editing.
 
 `fields` filters are `fieldId:optionId` or `fieldId:none`, comma-separated.
-Caps (L6): 50 emails, 50 phones and 50 addresses per contact; 200 fields
-per organisation (`422 rejected {reason: field_limit}`).
+Caps (L6): 50 emails, 50 phones and 50 addresses per contact; 200 live
+fields per organisation (a retired one frees its place) (`422 rejected {reason: field_limit}`).
 
 **The form save answers 200, not 409, on a stale slice**, the way Convex's
 `saveForm` does: stale and invalid slices are reported (`stale: {slice:

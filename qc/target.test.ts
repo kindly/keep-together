@@ -35,11 +35,10 @@ describe('budgets: lines and targets', () => {
       kind: 'oncePerSession',
       maxMs: 410,
     })
-    // Pending its port (B1): the mark, not the budget, changes.
+    // Ported (B1): the mark went, the budget stayed.
     expect(budgets['contacts.bulkSetField']).toEqual({
       kind: 'bulk',
       maxMs: 500,
-      pendingPort: 'B1',
     })
   })
 

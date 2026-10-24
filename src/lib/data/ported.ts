@@ -35,6 +35,10 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/settings/identifiers',
   // A2: Settings › Source codes.
   '/t/$slug/settings/sources',
+  // B1: Settings › Fields, and the old tags URLs that land on it.
+  '/t/$slug/settings/fields',
+  '/t/$slug/settings/tags',
+  '/t/$slug/tags',
 ]
 
 const ported = new Set<string>(PORTED)
@@ -54,7 +58,7 @@ export const FEATURES = {
   /** A1: the email hold notice and Release. */
   emailHolds: true,
   /** B1: the list's bulk set. */
-  bulkSetField: false,
+  bulkSetField: true,
   /** B2: the contact's gifts and Gift Aid, home's recent gifts. */
   gifts: isPorted('/t/$slug/gifts/new'),
   /** A3: Settings, and "last used" group. */

@@ -1,5 +1,4 @@
 import { expect, test } from '../fixtures'
-import { released } from '../convex-pending'
 import { secondTab, section, uniqueName, want } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
@@ -146,18 +145,13 @@ test.describe('settings tabs', () => {
     await expect(fieldsTab).toHaveAttribute('aria-current', 'page')
     await expect(typesTab).not.toHaveAttribute('aria-current', 'page')
 
-    // Each tab's loader prewarms its query for 5 s after the tab is left,
-    // so a sample first waits until the tab it opens holds nothing.
+    // `server: true`: the tab left behind no longer observes its query,
+    // which the sample drops, so the tab it opens asks the server.
     let to = 'Fields'
     await flow(page, 'settings.tab', {
       before: async () => {
         to = to === 'Fields' ? 'Identifier types' : 'Fields'
         await want(page, to)
-        await released(page, [
-          to === 'Fields'
-            ? 'contacts/fields:list'
-            : 'contacts/queries:listIdentifierTypes',
-        ])
       },
       action: () => (to === 'Fields' ? fieldsTab : typesTab).click(),
       until: tabLoaded,
@@ -320,10 +314,13 @@ test.describe('settings for staff and viewers', () => {
       await other.goto(`/t/${user.slug}/contacts`)
       await other.getByRole('link', { name: 'Settings', exact: true }).click()
       await other.waitForURL(new RegExp(`${fieldsPath(user.slug)}$`))
+      // A4's Members and Your account follow the lists.
       await expect(tabs(other).getByRole('link')).toHaveText([
         'Fields',
         'Identifier types',
         'Source codes',
+        'Members',
+        'Your account',
       ])
       // Read-only: staff manage a list only when an admin allows it (all
       // off here), viewers never; neither sees the switches.
