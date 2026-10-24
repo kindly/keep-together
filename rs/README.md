@@ -135,14 +135,18 @@ request, an SSE stream) is never closed.
   a loopback address (M1) and the request's `Host` is loopback; the api
   won't start with `KEEP_DEV_AUTH=1` and `KEEP_ENV=prod|staging`.
 - **Cold load.** `GET /api/t/{slug}/boot` → `Boot {me, org, fields,
-  firstPage, seq}`: one request seeds the SPA's cache; `seq` (the newest
-  revision id in the same snapshot) is where its event stream resumes.
+  firstPage, seq}`: one request seeds the SPA's cache; `seq` (the cursor
+  at the same snapshot) is where its event stream resumes.
 - **Live changes.** `GET /api/t/{slug}/events` (`text/event-stream`, any
-  member): one unnamed message per committed contract, `id:` = `seq`,
-  `data:` = `OrgEvent {seq, entity, id, contract, counter}` — ids only,
-  never data. `Last-Event-ID: n` replays revisions after `n` (at most
-  1000); further behind, or an unreadable id, gets one `event: reset` and
-  the client refetches everything. Keep-alive comment every 20 s.
+  member): one unnamed message per committed contract, `id:` = the cursor
+  `<generation>.<seq>`, `data:` = `OrgEvent {seq, entity, id, contract,
+  counter}` — ids only, never data. `Last-Event-ID: g.n` replays revisions
+  after `n` (at most 1000); further behind, an unreadable cursor, or one
+  of another generation gets one `event: reset` and the client refetches
+  everything. The generation is a random id in the org file (`recovery`),
+  rotated by `restore.sh` and `rollback-migration.sh`: a file put back
+  from a copy reuses revision ids, so a tab's old cursor must not replay
+  from them. Keep-alive comment every 20 s.
 - **Health.** `GET /healthz` (no session) → `{ok, db, …}`; 503 when the
   data dir can't be read.
 - **Timing.** Every `/api` response has
