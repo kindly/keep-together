@@ -314,7 +314,7 @@ describe('rust save', () => {
     // The refetch (B's phone at 6) is not mistaken for an echo: merged in.
     const phone = {
       key: 'p1',
-      label: 'mobile' as const,
+      label: 'home' as const,
       number: '07700 900000',
       isPrimary: true,
     }
