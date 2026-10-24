@@ -8,6 +8,8 @@
   </head>
   <body>
     <div id="app"></div>
+    <!-- Error reporting: a no-op unless the build sets VITE_SENTRY_DSN. -->
+    <script type="module" src="/src/lib/sentry.ts"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

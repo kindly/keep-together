@@ -5,7 +5,9 @@
 #     (global services such as IAM, Route 53 and billing are exempt);
 #   - member accounts in that OU: `keep-prod` (marketing mail, the domain),
 #     `keep-mail-tx` (transactional mail only, so a newsletter incident can
-#     never pause sign-in links) and `keep-dev` (stays in the SES sandbox);
+#     never pause sign-in links), `keep-dev` (stays in the SES sandbox) and
+#     `keep-backup` (only the hourly snapshot bucket, so a leaked app key or
+#     a compromised keep-prod can't reach it; scripts/aws/backup.sh fills it);
 #   - AdministratorAccess on each for your Identity Center user, plus a
 #     matching profile per account in ~/.aws/config;
 #   - the platform domain, registered and hosted in keep-prod.
@@ -29,7 +31,7 @@ OU_NAME=keep
 SCP_NAME=keep-region-eu-west-2-only
 DOMAIN=${DOMAIN:-keep-together.org.uk}
 CONFIG=${AWS_CONFIG_FILE:-$HOME/.aws/config}
-ENVS=(prod mail-tx dev) # account keep-<env>, profile keep-<env>
+ENVS=(prod mail-tx dev backup) # account keep-<env>, profile keep-<env>
 
 say() { printf '\n== %s\n' "$*"; }
 run() { printf '+ %s\n' "$*" >&2; "$@"; }

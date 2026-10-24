@@ -1,0 +1,65 @@
+name: Deploy
+
+# Every push to main: the CI checks, then the image to keep-staging (Fly,
+# lhr), which resets itself to the riverside seed. Prod is created at
+# cutover (plan migration-rust.sv, C2); until then `env: prod` refuses.
+#
+# Needs: secret FLY_API_TOKEN (`fly tokens create deploy -a keep-staging`),
+# variable STAGING_URL, and optionally SENTRY_DSN_SPA (the SPA's Sentry
+# DSN, public by design) — scripts/fly/staging.sh prints the commands.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Environment
+        type: choice
+        options: [staging, prod]
+        default: staging
+
+concurrency:
+  group: deploy-${{ inputs.env || 'staging' }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env || 'staging' }}
+    steps:
+      - name: Prod is not live yet
+        if: ${{ inputs.env == 'prod' }}
+        run: |
+          echo "::error::keep-prod is created at cutover (C2); deploy.yml's prod path goes live then."
+          exit 1
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@1.5
+      # --ha=false: one machine, one volume. Two would each replicate
+      # their own platform.db to the same Litestream prefix.
+      - name: Deploy keep-staging
+        run: >
+          flyctl deploy -c fly.staging.toml --remote-only --yes --ha=false
+          --build-arg VITE_SENTRY_DSN="$SENTRY_DSN_SPA"
+          --build-arg VITE_RELEASE="$GITHUB_SHA"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          SENTRY_DSN_SPA: ${{ vars.SENTRY_DSN_SPA }}
+      - name: Smoke test
+        run: |
+          for i in $(seq 30); do
+            if body=$(curl -fsS --max-time 5 "$STAGING_URL/healthz"); then
+              echo "$body"
+              curl -fsS --max-time 5 "$STAGING_URL/" | grep -q '<div id="app">'
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::$STAGING_URL/healthz did not come up"
+          exit 1
+        env:
+          STAGING_URL: ${{ vars.STAGING_URL }}

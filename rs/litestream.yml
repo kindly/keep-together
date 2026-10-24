@@ -1,0 +1,68 @@
+# Litestream 0.5 (the image pins the version). It runs the api itself
+# (`litestream replicate -config /etc/litestream.yml -exec api`, from
+# scripts/ops/entrypoint.sh) and replicates platform.db and every org file
+# to the Litestream bucket in keep-prod (eu-west-2, versioned).
+#
+# ${...} is expanded from the environment when Litestream starts:
+#   LITESTREAM_BUCKET, LITESTREAM_ACCESS_KEY_ID, LITESTREAM_SECRET_ACCESS_KEY
+#     Fly secrets (scripts/fly/staging.sh, keys from scripts/aws/backup.sh);
+#   KEEP_REPLICA_PREFIX
+#     set by the entrypoint: KEEP_ENV, plus a per-deploy part on staging.
+#
+# Replica layout: <prefix>/platform.db/… and <prefix>/orgs/<tenant-id>.db/…
+# scripts/ops/restore.sh restores from exactly these paths.
+
+# Prometheus metrics, scraped by Fly ([metrics] in fly.staging.toml).
+# Only reachable on the machine's private network.
+addr: ":9090"
+
+# The control socket: the api reads `GET /list` (last_sync_at per
+# database) for /healthz.
+socket:
+  enabled: true
+  path: /run/litestream.sock
+
+# A full snapshot daily; snapshots and the LTX files behind them are kept
+# for 7 days, so any point in the last week can be restored.
+snapshot:
+  interval: 24h
+  retention: 168h
+
+dbs:
+  - path: /data/platform.db
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: ${KEEP_REPLICA_PREFIX}/platform.db
+      region: eu-west-2
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+      sync-interval: 1s
+
+  # Every org file, including ones created while running (watch).
+  - dir: /data/orgs
+    pattern: "*.db"
+    watch: true
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: ${KEEP_REPLICA_PREFIX}/orgs
+      region: eu-west-2
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+      sync-interval: 1s
+
+  # The restore drill's write-loss probe (scripts/ops/drill.sh marks).
+  # Its own directory: never under orgs/, where the api and the boot
+  # migration take every file for an organisation.
+  - dir: /data/drill
+    pattern: "*.db"
+    watch: true
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: ${KEEP_REPLICA_PREFIX}/drill
+      region: eu-west-2
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+      sync-interval: 1s

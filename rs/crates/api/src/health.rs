@@ -14,8 +14,8 @@ pub async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>)
     let mut body = json!({ "db": if db_ok { "ok" } else { "error" } });
     // Backups are reported, never judged here: a stale snapshot must not
     // take the only machine out of Fly's rotation. The 15-minute monitor
-    // judges these fields. F2 adds:
-    // body["backup"] = serde_json::to_value(crate::backup::health().await).unwrap_or_default();
+    // (`.github/workflows/health.yml`) judges these fields.
+    body["backup"] = serde_json::to_value(crate::backup::health().await).unwrap_or_default();
     let ok = db_ok;
     body["ok"] = json!(ok);
     let status = if ok {

@@ -1,0 +1,83 @@
+name: Health
+
+# Every 15 minutes: each live environment's /healthz. A failure opens a
+# GitHub issue labelled `health` (GitHub emails it), or comments on the
+# open one, so an outage is one thread. Failing means: not 200 / ok false,
+# the last hourly snapshot older than 2 h (or none), snapshot errors,
+# Litestream not ok or lagging more than LITESTREAM_MAX_LAG seconds
+# (variable, default 300), or a restore that needs a look (a fallback to
+# the snapshots, or orgs left out). /healthz carries counts only; the
+# details are in the app's log and Sentry.
+#
+# Variables: STAGING_URL now, PROD_URL from cutover.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check /healthz
+        id: check
+        env:
+          STAGING_URL: ${{ vars.STAGING_URL }}
+          PROD_URL: ${{ vars.PROD_URL }}
+          MAX_LAG: ${{ vars.LITESTREAM_MAX_LAG || '300' }}
+        run: |
+          problems=""
+          for pair in "staging $STAGING_URL" "prod $PROD_URL"; do
+            set -- $pair
+            env=$1 url=${2:-}
+            [ -n "$url" ] || continue
+            if ! body=$(curl -fsS --max-time 10 "$url/healthz"); then
+              problems="$problems\n- **$env**: $url/healthz unreachable or not 200"
+              continue
+            fi
+            echo "$env: $body"
+            why=$(jq -r --argjson max "$MAX_LAG" --arg env "$env" '
+              [ (if .ok != true then "ok is \(.ok)" else empty end),
+                (.backup // {} | (
+                  (if .snapshots == "on" and ((.snapshotAgeSeconds // 1e9) > 7200)
+                   then "last snapshot \(.snapshotAgeSeconds // "never") s ago" else empty end),
+                  (if (.snapshotErrorCount // 0) > 0
+                   then "\(.snapshotErrorCount) file(s) failed the last snapshot run" else empty end),
+                  (if .litestream == "error" then "litestream not ok (see the log)" else empty end),
+                  (if .restore != null and (.restore.fallback or (.restore.missingOrgs // 0) > 0)
+                   then "restored from \(.restore.source) at \(.restore.at) (fallback: \(.restore.fallback), missing orgs: \(.restore.missingOrgs)); check, then delete /data/.restored"
+                   else empty end),
+                  (if .litestream == "ok" and ((.litestreamLagSeconds // 0) > $max)
+                   then "litestream lag \(.litestreamLagSeconds) s" else empty end),
+                  (if $env == "prod" and .snapshots != "on" then "snapshots off" else empty end),
+                  (if $env == "prod" and .litestream == "off" then "litestream off" else empty end)
+                ))
+              ] | join("; ")' <<<"$body")
+            [ -z "$why" ] || problems="$problems\n- **$env**: $why"
+          done
+          {
+            echo "problems<<EOF"
+            printf '%b\n' "$problems"
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
+          [ -z "$problems" ]
+      - name: Open or update the issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PROBLEMS: ${{ steps.check.outputs.problems }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create health --color B60205 --description "health.yml alerts" 2>/dev/null || true
+          body=$(printf '%s\n\n%s\n' "${PROBLEMS:-the check itself failed}" "Run: $RUN")
+          open=$(gh issue list --label health --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --label health --title "Health check failing ($(date -u +%Y-%m-%dT%H:%MZ))" --body "$body"
+          fi

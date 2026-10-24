@@ -1,0 +1,16 @@
+# rs/Dockerfile builds from the repo root.
+.git
+node_modules
+dist
+dist-*
+rs/target
+rs/data
+qc-data
+qc-results
+qc-report
+test-results
+factory/out
+# Secrets and personal details anywhere in the tree (e.g.
+# scripts/aws/contact.json.local) never enter the build context.
+**/*.local
+**/.env*
