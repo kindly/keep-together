@@ -47,6 +47,7 @@ version = "0.1.0"
 dependencies = [
  "auth",
  "axum",
+ "base32",
  "comms",
  "contacts",
  "contracts",
@@ -106,6 +107,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "base32",
+ "comms",
  "getrandom 0.3.4",
  "governor",
  "qrcodegen",
@@ -338,6 +340,8 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "api",
+ "auth",
+ "contracts",
  "rusqlite",
  "serde_json",
  "store",

@@ -148,18 +148,26 @@ async fn invite(
         let id = tenant_id(&a, &slug)?;
         let now = contracts::now_ms();
         a.store.platform().with_write(|tx| {
-            if let Some(user) = users::by_email(tx, &email)? {
-                if members::role_of(tx, UserId(user), &id)?.is_some() {
-                    return Err(ApiError::Rejected {
-                        reason: "already_member".into(),
-                        message: "That address is already a member.".into(),
-                    });
-                }
+            if let Some(user) = users::by_email(tx, &email)?
+                && members::role_of(tx, UserId(user), &id)?.is_some()
+            {
+                return Err(ApiError::Rejected {
+                    reason: "already_member".into(),
+                    message: "That address is already a member.".into(),
+                });
             }
             let actor = a.session.user;
             let (invite, token) =
                 accounts::create_invite(tx, id.as_str(), &email, role.as_str(), Some(actor), now)?;
-            accounts::log(tx, now, "invited", None, &actor.to_string(), Some(id.as_str()), &format!("{email} as {}", role.as_str()))?;
+            accounts::log(
+                tx,
+                now,
+                "invited",
+                None,
+                &actor.to_string(),
+                Some(id.as_str()),
+                &format!("{email} as {}", role.as_str()),
+            )?;
             Ok((invite, token))
         })
     })
@@ -193,7 +201,15 @@ async fn revoke_invite(
             if !accounts::revoke_invite(tx, tenant.as_str(), &id, now)? {
                 return Err(ApiError::NotFound);
             }
-            accounts::log(tx, now, "invite_revoked", None, &a.session.user.to_string(), Some(tenant.as_str()), &id)?;
+            accounts::log(
+                tx,
+                now,
+                "invite_revoked",
+                None,
+                &a.session.user.to_string(),
+                Some(tenant.as_str()),
+                &id,
+            )?;
             Ok(())
         })
     })
@@ -236,12 +252,24 @@ async fn set_role(
         let tenant = tenant_id(&a, &t.slug)?;
         let now = contracts::now_ms();
         a.store.platform().with_write(|tx| {
-            let current = members::role_of(tx, UserId(target), &tenant)?.ok_or(ApiError::NotFound)?;
-            if current == Role::Admin && role != Role::Admin && members::admin_count(tx, &tenant)? <= 1 {
+            let current =
+                members::role_of(tx, UserId(target), &tenant)?.ok_or(ApiError::NotFound)?;
+            if current == Role::Admin
+                && role != Role::Admin
+                && members::admin_count(tx, &tenant)? <= 1
+            {
                 return Err(last_admin());
             }
             members::set_role(tx, UserId(target), &tenant, role)?;
-            accounts::log(tx, now, "role_changed", Some(target), &a.session.user.to_string(), Some(tenant.as_str()), &format!("{} -> {}", current.as_str(), role.as_str()))?;
+            accounts::log(
+                tx,
+                now,
+                "role_changed",
+                Some(target),
+                &a.session.user.to_string(),
+                Some(tenant.as_str()),
+                &format!("{} -> {}", current.as_str(), role.as_str()),
+            )?;
             if target == a.session.user {
                 Ok(Some(sessions::rotate(tx, &a.session)?))
             } else {
@@ -254,7 +282,9 @@ async fn set_role(
     let res = Json(serde_json::json!({ "ok": true })).into_response();
     match rotated {
         Some(token) => {
-            account.runtime.revoked(Revoked::Session(account.session.id.clone()));
+            account
+                .runtime
+                .revoked(Revoked::Session(account.session.id.clone()));
             with_session(res, &headers, &token, auth::Stage::Full)
         }
         None => {
@@ -278,13 +308,22 @@ async fn remove(
         let tenant = tenant_id(&a, &t.slug)?;
         let now = contracts::now_ms();
         a.store.platform().with_write(|tx| {
-            let current = members::role_of(tx, UserId(target), &tenant)?.ok_or(ApiError::NotFound)?;
+            let current =
+                members::role_of(tx, UserId(target), &tenant)?.ok_or(ApiError::NotFound)?;
             if current == Role::Admin && members::admin_count(tx, &tenant)? <= 1 {
                 return Err(last_admin());
             }
             members::remove_membership(tx, UserId(target), &tenant)?;
             sessions::revoke_user(tx, target)?;
-            accounts::log(tx, now, "member_removed", Some(target), &a.session.user.to_string(), Some(tenant.as_str()), current.as_str())?;
+            accounts::log(
+                tx,
+                now,
+                "member_removed",
+                Some(target),
+                &a.session.user.to_string(),
+                Some(tenant.as_str()),
+                current.as_str(),
+            )?;
             Ok(())
         })
     })

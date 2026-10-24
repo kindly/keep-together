@@ -118,17 +118,30 @@ pub async fn recovery_codes(
     let st = state.clone();
     let codes = blocking(move || {
         st.store.platform().with_write(|tx| {
-            if accounts::credentials(tx, s.user)?.and_then(|c| c.second_factor).is_none() {
+            if accounts::credentials(tx, s.user)?
+                .and_then(|c| c.second_factor)
+                .is_none()
+            {
                 return Err(ApiError::Rejected {
                     reason: "no_second_factor".into(),
                     message: "Set up a second factor first.".into(),
                 });
             }
             let codes = accounts::new_recovery_codes(tx, s.user)?;
-            accounts::log(tx, now, "recovery_codes_renewed", Some(s.user), "self", None, "")?;
+            accounts::log(
+                tx,
+                now,
+                "recovery_codes_renewed",
+                Some(s.user),
+                "self",
+                None,
+                "",
+            )?;
             Ok(codes)
         })
     })
     .await?;
-    Ok(Json(RecoveryCodes { recovery_codes: codes }))
+    Ok(Json(RecoveryCodes {
+        recovery_codes: codes,
+    }))
 }

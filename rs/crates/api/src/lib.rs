@@ -142,7 +142,10 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .merge(auth::routes())
         .nest("/api/t/{slug}", tenant_routes)
         .layer(middleware::from_fn(auth::guard::dev_host))
-        .layer(middleware::from_fn_with_state(state.clone(), auth::guard::csrf))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::guard::csrf,
+        ))
         .with_state(state)
         .layer(middleware::from_fn(timing::middleware))
 }

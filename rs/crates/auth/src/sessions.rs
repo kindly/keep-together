@@ -151,7 +151,11 @@ pub fn rotate(conn: &Connection, s: &Session) -> rusqlite::Result<String> {
     replace(conn, s, s.authenticated_at)
 }
 
-fn replace(conn: &Connection, s: &Session, authenticated_at: Option<i64>) -> rusqlite::Result<String> {
+fn replace(
+    conn: &Connection,
+    s: &Session,
+    authenticated_at: Option<i64>,
+) -> rusqlite::Result<String> {
     let token = secret::token();
     let n = conn.execute(
         "UPDATE auth_sessions SET token_hash = ?2, authenticated_at = ?3,
@@ -194,12 +198,16 @@ pub fn set_email_code(conn: &Connection, id: &str, code: &str, now: i64) -> rusq
 /// Check an emailed code. A wrong one counts; after
 /// [`crate::EMAIL_CODE_ATTEMPTS`] wrong ones, or on success, the code is
 /// gone.
-pub fn check_email_code(conn: &Connection, s: &Session, code: &str, now: i64) -> rusqlite::Result<bool> {
+pub fn check_email_code(
+    conn: &Connection,
+    s: &Session,
+    code: &str,
+    now: i64,
+) -> rusqlite::Result<bool> {
     let live = s.email_code_expires.is_some_and(|e| e > now)
         && s.email_code_attempts < crate::EMAIL_CODE_ATTEMPTS;
     let ok = live
-        && s
-            .email_code_hash
+        && s.email_code_hash
             .as_deref()
             .is_some_and(|h| secret::same(h, &secret::hash(code.trim())));
     if ok || s.email_code_attempts + 1 >= crate::EMAIL_CODE_ATTEMPTS {

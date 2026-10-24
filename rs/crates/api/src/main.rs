@@ -114,17 +114,14 @@ async fn main() {
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown())
-        .await
-        .expect("serve");
+    .await
+    .expect("serve");
 }
 
 /// Auth's settings from the env; refuses (exits) what a deployed
 /// environment must never run with.
 fn auth_runtime(dev_auth: bool) -> api::auth::Runtime {
-    let deployed = matches!(
-        std::env::var("KEEP_ENV").as_deref(),
-        Ok("prod" | "staging")
-    );
+    let deployed = api::auth::dev_auth_refused(std::env::var("KEEP_ENV").ok().as_deref());
     if deployed && std::env::var("KEEP_DEV_AUTH").is_ok_and(|v| v == "1") {
         eprintln!("KEEP_DEV_AUTH=1 is refused with KEEP_ENV=prod|staging");
         std::process::exit(2)

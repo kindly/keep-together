@@ -81,11 +81,9 @@ impl Mailer {
             .map_err(|e| MailError::Smtp(e.to_string()))?
             .build();
         Ok(Self {
-            from: from
-                .parse()
-                .map_err(|e: lettre::address::AddressError| {
-                    MailError::Address(from.into(), e.to_string())
-                })?,
+            from: from.parse().map_err(|e: lettre::address::AddressError| {
+                MailError::Address(from.into(), e.to_string())
+            })?,
             transport: Transport::Smtp(transport),
         })
     }
@@ -100,11 +98,9 @@ impl Mailer {
                 Self::smtp(&url, &from)
             }
             Ok("log") | Err(_) => Ok(Self {
-                from: from
-                    .parse()
-                    .map_err(|e: lettre::address::AddressError| {
-                        MailError::Address(from.clone(), e.to_string())
-                    })?,
+                from: from.parse().map_err(|e: lettre::address::AddressError| {
+                    MailError::Address(from.clone(), e.to_string())
+                })?,
                 transport: Transport::Log,
             }),
             Ok(other) => Err(MailError::Smtp(format!(

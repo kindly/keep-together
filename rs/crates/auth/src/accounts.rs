@@ -58,7 +58,12 @@ pub fn credentials(conn: &Connection, user: i64) -> rusqlite::Result<Option<Cred
 }
 
 /// Set (or replace) the password. Keeps the second factor.
-pub fn set_password(conn: &Connection, user: i64, password: &str, now: i64) -> Result<(), crate::AuthError> {
+pub fn set_password(
+    conn: &Connection,
+    user: i64,
+    password: &str,
+    now: i64,
+) -> Result<(), crate::AuthError> {
     let hash = password::hash(password)?;
     conn.execute(
         "INSERT INTO auth_credentials (user_id, password_hash, updated_at) VALUES (?1, ?2, ?3)
@@ -129,7 +134,12 @@ pub fn new_recovery_codes(conn: &Connection, user: i64) -> rusqlite::Result<Vec<
 }
 
 /// Spend a recovery code. True if it was unused and is now used.
-pub fn use_recovery_code(conn: &Connection, user: i64, input: &str, now: i64) -> rusqlite::Result<bool> {
+pub fn use_recovery_code(
+    conn: &Connection,
+    user: i64,
+    input: &str,
+    now: i64,
+) -> rusqlite::Result<bool> {
     let Some(code) = codes::normalise_recovery(input) else {
         return Ok(false);
     };
@@ -208,7 +218,11 @@ pub fn create_invite(
 const INVITE_COLS: &str = "id, tenant_id, email, role, created_at, expires_at";
 
 /// The pending, unexpired invite for a link token.
-pub fn invite_by_token(conn: &Connection, token: &str, now: i64) -> rusqlite::Result<Option<Invite>> {
+pub fn invite_by_token(
+    conn: &Connection,
+    token: &str,
+    now: i64,
+) -> rusqlite::Result<Option<Invite>> {
     if !secret::well_formed(token) {
         return Ok(None);
     }
@@ -233,7 +247,12 @@ pub fn accept_invite(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<
 }
 
 /// Revoke a pending invite of this organisation. False if there was none.
-pub fn revoke_invite(conn: &Connection, tenant_id: &str, id: &str, now: i64) -> rusqlite::Result<bool> {
+pub fn revoke_invite(
+    conn: &Connection,
+    tenant_id: &str,
+    id: &str,
+    now: i64,
+) -> rusqlite::Result<bool> {
     Ok(conn.execute(
         "UPDATE auth_invites SET revoked_at = ?3
          WHERE tenant_id = ?1 AND id = ?2 AND accepted_at IS NULL AND revoked_at IS NULL",
@@ -289,7 +308,10 @@ pub fn redeem_reset(conn: &Connection, token: &str, now: i64) -> rusqlite::Resul
 
 /// Forget spent and expired links and old invites (the sweep job).
 pub fn sweep(conn: &Connection, now: i64) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM auth_resets WHERE expires_at <= ?1 OR used_at IS NOT NULL", [now])?;
+    conn.execute(
+        "DELETE FROM auth_resets WHERE expires_at <= ?1 OR used_at IS NOT NULL",
+        [now],
+    )?;
     // Kept a month after they stop mattering, for the members page and
     // the log's context.
     conn.execute(

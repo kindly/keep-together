@@ -10,6 +10,8 @@ name = "keep"
 path = "src/main.rs"
 
 [dependencies]
+auth.workspace = true
+contracts.workspace = true
 store.workspace = true
 api.workspace = true
 rusqlite.workspace = true

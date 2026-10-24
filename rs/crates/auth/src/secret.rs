@@ -29,7 +29,10 @@ pub fn hash(token: &str) -> String {
 
 /// Whether `token` has a token's shape, so junk never reaches a lookup.
 pub fn well_formed(token: &str) -> bool {
-    token.len() == 64 && token.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    token.len() == 64
+        && token
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Constant-time equality, for codes compared in memory.

@@ -5,10 +5,10 @@
 use auth::accounts::{self, SecondFactor};
 use auth::limits::allow;
 use auth::{Stage, codes, password, secret, sessions};
+use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use comms::mail::Mail;
 use serde::{Deserialize, Serialize};
 use store::UserId;
@@ -59,7 +59,8 @@ pub async fn reset_request(
     Body(req): Body<ResetRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     link_limit(&state, &ip)?;
-    let email = users::normalise_email(&req.email).unwrap_or_else(|| req.email.trim().to_lowercase());
+    let email =
+        users::normalise_email(&req.email).unwrap_or_else(|| req.email.trim().to_lowercase());
     if !allow(&state.auth.limits.email, &email) {
         return Err(ApiError::RateLimited);
     }
@@ -177,7 +178,8 @@ struct OpenInvite {
 
 fn open_invite(state: &AppState, token: &str) -> Result<OpenInvite, ApiError> {
     state.store.platform().with_read(|c| {
-        let invite = accounts::invite_by_token(c, token, contracts::now_ms())?.ok_or_else(link_expired)?;
+        let invite =
+            accounts::invite_by_token(c, token, contracts::now_ms())?.ok_or_else(link_expired)?;
         let (slug, group): (String, String) = c.query_row(
             "SELECT slug, name FROM tenants WHERE id = ?1",
             [&invite.tenant_id],
@@ -199,7 +201,9 @@ fn open_invite(state: &AppState, token: &str) -> Result<OpenInvite, ApiError> {
 }
 
 fn role_name(role: &str) -> RoleName {
-    store::Role::parse(role).unwrap_or(store::Role::Viewer).into()
+    store::Role::parse(role)
+        .unwrap_or(store::Role::Viewer)
+        .into()
 }
 
 /// `POST /api/auth/invite/check {token}` → `InviteInfo`, without spending
@@ -272,12 +276,24 @@ pub async fn invite_accept(
                 accounts::set_password(tx, user, &req.password, now).map_err(ApiError::internal)?;
             }
             platform::members::add_membership(tx, UserId(user), &tenant.id, role)?;
-            accounts::log(tx, now, "invite_accepted", Some(user), "self", Some(tenant.id.as_str()), role.as_str())?;
+            accounts::log(
+                tx,
+                now,
+                "invite_accepted",
+                Some(user),
+                "self",
+                Some(tenant.id.as_str()),
+                role.as_str(),
+            )?;
             if let Some(old) = &old {
                 sessions::revoke(tx, old)?;
             }
             let factor = accounts::credentials(tx, user)?.and_then(|c| c.second_factor);
-            let stage = if factor.is_some() { Stage::SecondFactor } else { Stage::Enrol };
+            let stage = if factor.is_some() {
+                Stage::SecondFactor
+            } else {
+                Stage::Enrol
+            };
             let token = sessions::create(tx, user, stage, now)?;
             let id = secret::hash(&token);
             let code = if factor == Some(SecondFactor::Email) {
@@ -288,7 +304,12 @@ pub async fn invite_accept(
                 None
             };
             let s = sessions::by_id(tx, &id, now)?.ok_or(ApiError::Internal)?;
-            Ok::<(String, Stage, AuthState, Option<String>), ApiError>((token, stage, state_of(tx, &s)?, code))
+            Ok::<(String, Stage, AuthState, Option<String>), ApiError>((
+                token,
+                stage,
+                state_of(tx, &s)?,
+                code,
+            ))
         })
     })
     .await?;

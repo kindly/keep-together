@@ -17,7 +17,8 @@ mod flows;
 pub mod guard;
 mod links;
 mod members;
-mod users;
+
+pub(crate) use ::auth::users;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -181,8 +182,12 @@ pub(crate) fn with_session(
 }
 
 /// `res` with the session cookie cleared.
-pub(crate) fn without_session(mut res: Response, headers: &HeaderMap) -> Result<Response, ApiError> {
-    res.headers_mut().append(SET_COOKIE, cookie(headers, "", 0)?);
+pub(crate) fn without_session(
+    mut res: Response,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    res.headers_mut()
+        .append(SET_COOKIE, cookie(headers, "", 0)?);
     Ok(res)
 }
 
@@ -237,10 +242,10 @@ impl FromRequestParts<AppState> for ClientIp {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        if let Some(name) = &state.auth.config.client_ip_header {
-            if let Some(v) = parts.headers.get(name).and_then(|v| v.to_str().ok()) {
-                return Ok(ClientIp(v.trim().to_owned()));
-            }
+        if let Some(name) = &state.auth.config.client_ip_header
+            && let Some(v) = parts.headers.get(name).and_then(|v| v.to_str().ok())
+        {
+            return Ok(ClientIp(v.trim().to_owned()));
         }
         Ok(ClientIp(
             parts
@@ -312,23 +317,30 @@ impl Account {
 
     /// Resolves when this session may no longer read `slug`: the session
     /// was revoked (sign-out, revoke-all) or expired, or the membership
-    /// ended. Live streams end with it.
-    pub async fn ended(&self, slug: String) {
+    /// ended. Live streams end with it. Subscribes now, not when first
+    /// polled, so a revocation in between isn't missed.
+    pub fn ended(
+        &self,
+        slug: String,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static + use<> {
         let mut rx = self.runtime.revoked.subscribe();
-        let mut tick = tokio::time::interval(STREAM_RECHECK);
-        tick.tick().await;
-        loop {
-            let recheck = tokio::select! {
-                r = rx.recv() => match r {
-                    Ok(Revoked::Session(id)) => id == self.session.id,
-                    Ok(Revoked::User(user)) => user == self.session.user,
-                    Err(broadcast::error::RecvError::Lagged(_)) => true,
-                    Err(broadcast::error::RecvError::Closed) => false,
-                },
-                _ = tick.tick() => true,
-            };
-            if recheck && !self.still_member(&slug).await {
-                return;
+        let account = self.clone();
+        async move {
+            let mut tick = tokio::time::interval(STREAM_RECHECK);
+            tick.tick().await;
+            loop {
+                let recheck = tokio::select! {
+                    r = rx.recv() => match r {
+                        Ok(Revoked::Session(id)) => id == account.session.id,
+                        Ok(Revoked::User(user)) => user == account.session.user,
+                        Err(broadcast::error::RecvError::Lagged(_)) => true,
+                        Err(broadcast::error::RecvError::Closed) => false,
+                    },
+                    _ = tick.tick() => true,
+                };
+                if recheck && !account.still_member(&slug).await {
+                    return;
+                }
             }
         }
     }
@@ -381,7 +393,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/auth/invite/accept", post(links::invite_accept))
         .route("/api/auth/account", get(account::info))
         .route("/api/auth/account/password", post(account::change_password))
-        .route("/api/auth/account/recovery-codes", post(account::recovery_codes))
+        .route(
+            "/api/auth/account/recovery-codes",
+            post(account::recovery_codes),
+        )
 }
 
 /// `/api/t/{slug}/members…` (in the tenant router: a member session).
@@ -390,6 +405,12 @@ pub fn member_routes() -> Router {
 }
 
 // ── dev login (KEEP_DEV_AUTH) ──────────────────────────────────────────────
+
+/// Whether `KEEP_ENV` names a deployed environment, where `KEEP_DEV_AUTH`
+/// stops the boot (it is for local QC only).
+pub fn dev_auth_refused(keep_env: Option<&str>) -> bool {
+    matches!(keep_env, Some("prod" | "staging"))
+}
 
 #[derive(Deserialize, TS)]
 #[ts(export)]

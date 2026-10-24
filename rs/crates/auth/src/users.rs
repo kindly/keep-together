@@ -1,6 +1,7 @@
 //! `users` rows (the platform's base schema) as auth needs them, on the
-//! caller's transaction. The one place auth writes SQL against a table it
-//! doesn't own; it moves to `platform` if that grows user functions.
+//! caller's transaction. The one place auth writes SQL against tables it
+//! doesn't own (`users`, `memberships`); it moves to `platform` if that
+//! grows user functions.
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -14,8 +15,10 @@ pub fn normalise_email(raw: &str) -> Option<String> {
 }
 
 pub fn by_email(conn: &Connection, email: &str) -> rusqlite::Result<Option<i64>> {
-    conn.query_row("SELECT id FROM users WHERE email = ?1", [email], |r| r.get(0))
-        .optional()
+    conn.query_row("SELECT id FROM users WHERE email = ?1", [email], |r| {
+        r.get(0)
+    })
+    .optional()
 }
 
 /// The user with this (normalised) email, created if new.
@@ -24,7 +27,9 @@ pub fn upsert(conn: &Connection, email: &str) -> rusqlite::Result<i64> {
         "INSERT INTO users (email) VALUES (?1) ON CONFLICT (email) DO NOTHING",
         [email],
     )?;
-    conn.query_row("SELECT id FROM users WHERE email = ?1", [email], |r| r.get(0))
+    conn.query_row("SELECT id FROM users WHERE email = ?1", [email], |r| {
+        r.get(0)
+    })
 }
 
 /// How many organisations `user` belongs to.

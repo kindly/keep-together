@@ -21,12 +21,15 @@ struct World {
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        Store::open_with(StoreConfig {
-            dir: tmp.path().to_path_buf(),
-            org_migrations: schema::org_migrations(),
-            readers: 2,
-            max_open: StoreConfig::DEFAULT_MAX_OPEN,
-        }, schema::PLATFORM_SCHEMAS)
+        Store::open_with(
+            StoreConfig {
+                dir: tmp.path().to_path_buf(),
+                org_migrations: schema::org_migrations(),
+                readers: 2,
+                max_open: StoreConfig::DEFAULT_MAX_OPEN,
+            },
+            schema::PLATFORM_SCHEMAS,
+        )
         .unwrap(),
     );
     let p = store.platform();
@@ -42,10 +45,7 @@ fn world() -> World {
     }
     World {
         _tmp: tmp,
-        app: app(
-            AppState::new(store, true),
-            routes::router(),
-        ),
+        app: app(AppState::new(store, true), routes::router()),
     }
 }
 

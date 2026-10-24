@@ -18,8 +18,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 use super::{host, is_loopback_host};
-use crate::error::ApiError;
 use crate::AppState;
+use crate::error::ApiError;
 
 /// Whether this request may change state, by its fetch metadata and
 /// origin (module docs).
@@ -82,16 +82,34 @@ mod tests {
     fn origin_rules() {
         let app = "https://app.keep-together.org.uk";
         assert!(same_origin(&headers(&[]), app), "not a browser");
-        assert!(same_origin(&headers(&[("sec-fetch-site", "same-origin")]), app));
-        assert!(same_origin(&headers(&[("origin", app), ("sec-fetch-site", "same-site")]), app));
-        assert!(!same_origin(
-            &headers(&[("origin", "https://evil.keep-together.org.uk"), ("sec-fetch-site", "same-site")]),
+        assert!(same_origin(
+            &headers(&[("sec-fetch-site", "same-origin")]),
             app
         ));
-        assert!(!same_origin(&headers(&[("origin", "https://evil.example")]), app));
-        assert!(!same_origin(&headers(&[("sec-fetch-site", "cross-site")]), app));
         assert!(same_origin(
-            &headers(&[("origin", "http://localhost:3000"), ("host", "localhost:3000")]),
+            &headers(&[("origin", app), ("sec-fetch-site", "same-site")]),
+            app
+        ));
+        assert!(!same_origin(
+            &headers(&[
+                ("origin", "https://evil.keep-together.org.uk"),
+                ("sec-fetch-site", "same-site")
+            ]),
+            app
+        ));
+        assert!(!same_origin(
+            &headers(&[("origin", "https://evil.example")]),
+            app
+        ));
+        assert!(!same_origin(
+            &headers(&[("sec-fetch-site", "cross-site")]),
+            app
+        ));
+        assert!(same_origin(
+            &headers(&[
+                ("origin", "http://localhost:3000"),
+                ("host", "localhost:3000")
+            ]),
             app
         ));
         assert!(!same_origin(&headers(&[("origin", "null")]), app));

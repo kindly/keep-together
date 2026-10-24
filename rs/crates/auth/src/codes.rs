@@ -50,8 +50,18 @@ mod tests {
         let r = recovery_code();
         assert_eq!(r.len(), 11);
         assert_eq!(&r[5..6], "-");
-        assert_eq!(normalise_recovery(&r.to_uppercase()).unwrap(), r.replace('-', ""));
-        assert_eq!(normalise_recovery(" abcde fghjk ").as_deref(), Some("abcdefghjk"));
-        assert_eq!(normalise_recovery("abcde-fghj1"), None, "1 isn't in the alphabet");
+        assert_eq!(
+            normalise_recovery(&r.to_uppercase()).unwrap(),
+            r.replace('-', "")
+        );
+        assert_eq!(
+            normalise_recovery(" abcde fghjk ").as_deref(),
+            Some("abcdefghjk")
+        );
+        assert_eq!(
+            normalise_recovery("abcde-fghj1"),
+            None,
+            "1 isn't in the alphabet"
+        );
     }
 }

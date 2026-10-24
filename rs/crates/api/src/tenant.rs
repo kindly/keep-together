@@ -128,7 +128,10 @@ pub(crate) async fn middleware(
         let start = Instant::now();
         let found = blocking(move || {
             // Unknown slug and someone else's organisation read the same.
-            let Some(member) = store.platform().member(store::UserId(session.user), &slug)? else {
+            let Some(member) = store
+                .platform()
+                .member(store::UserId(session.user), &slug)?
+            else {
                 return Err(ApiError::Forbidden);
             };
             let db = store.org(&member.tenant.id)?;

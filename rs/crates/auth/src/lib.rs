@@ -18,11 +18,15 @@
 pub mod accounts;
 pub mod codes;
 pub mod limits;
+mod operator;
 pub mod password;
 pub mod schema;
 pub mod secret;
 pub mod sessions;
 pub mod totp;
+pub mod users;
+
+pub use operator::{operator_invite, operator_reset_2fa};
 
 pub use accounts::SecondFactor;
 pub use schema::SCHEMA;
@@ -50,4 +54,6 @@ pub enum AuthError {
     Sqlite(#[from] rusqlite::Error),
     #[error("password hashing: {0}")]
     Hash(String),
+    #[error("{0:?} is not an email address")]
+    InvalidEmail(String),
 }

@@ -189,7 +189,7 @@ pub async fn events(
     // Ends when the session is revoked (sign-out, revoke-all) or the
     // membership is removed; the client's reconnect then gets a 401/403.
     let slug = tenant.slug.clone();
-    let ended = Box::pin(async move { account.ended(slug).await });
+    let ended = Box::pin(account.ended(slug));
     let stream = tenant.events(last.as_deref()).await?.take_until(ended);
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
 }

@@ -17,7 +17,9 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{ClientIp, Revoked, current, fresh, session_token, users, with_session, without_session};
+use super::{
+    ClientIp, Revoked, current, fresh, session_token, users, with_session, without_session,
+};
 use crate::error::{ApiError, Body};
 use crate::timing::Timing;
 use crate::{AppState, blocking};
@@ -187,39 +189,54 @@ pub async fn sign_in(
     headers: HeaderMap,
     Body(req): Body<SignIn>,
 ) -> Result<Response, ApiError> {
-    let email = users::normalise_email(&req.email).unwrap_or_else(|| req.email.trim().to_lowercase());
+    let email =
+        users::normalise_email(&req.email).unwrap_or_else(|| req.email.trim().to_lowercase());
     password_limits(&state, &ip, &email)?;
     let old = session_token(&headers).map(secret::hash);
     let st = state.clone();
     let (token, stage, out, code) = blocking(move || {
         let now = contracts::now_ms();
         let user = check_password(&st, &email, &req.password)?;
-        st.store.platform().with_write(|tx| {
-            if let Some(old) = &old {
-                sessions::revoke(tx, old)?;
-            }
-            let Some(user) = user else {
-                if let Some(known) = users::by_email(tx, &email)? {
-                    accounts::log(tx, now, "sign_in_failed", Some(known), "self", None, "password")?;
+        st.store
+            .platform()
+            .with_write(|tx| {
+                if let Some(old) = &old {
+                    sessions::revoke(tx, old)?;
                 }
-                return Ok(None);
-            };
-            let factor = accounts::credentials(tx, user)?.and_then(|c| c.second_factor);
-            let stage = if factor.is_some() { Stage::SecondFactor } else { Stage::Enrol };
-            let token = sessions::create(tx, user, stage, now)?;
-            let id = secret::hash(&token);
-            let code = if factor == Some(SecondFactor::Email) {
-                let code = codes::email_code();
-                sessions::set_email_code(tx, &id, &code, now)?;
-                Some(code)
-            } else {
-                None
-            };
-            accounts::log(tx, now, "sign_in_password", Some(user), "self", None, "")?;
-            let s = sessions::by_id(tx, &id, now)?.ok_or(ApiError::Internal)?;
-            Ok::<_, ApiError>(Some((token, stage, state_of(tx, &s)?, code)))
-        })?
-        .ok_or_else(wrong_credentials)
+                let Some(user) = user else {
+                    if let Some(known) = users::by_email(tx, &email)? {
+                        accounts::log(
+                            tx,
+                            now,
+                            "sign_in_failed",
+                            Some(known),
+                            "self",
+                            None,
+                            "password",
+                        )?;
+                    }
+                    return Ok(None);
+                };
+                let factor = accounts::credentials(tx, user)?.and_then(|c| c.second_factor);
+                let stage = if factor.is_some() {
+                    Stage::SecondFactor
+                } else {
+                    Stage::Enrol
+                };
+                let token = sessions::create(tx, user, stage, now)?;
+                let id = secret::hash(&token);
+                let code = if factor == Some(SecondFactor::Email) {
+                    let code = codes::email_code();
+                    sessions::set_email_code(tx, &id, &code, now)?;
+                    Some(code)
+                } else {
+                    None
+                };
+                accounts::log(tx, now, "sign_in_password", Some(user), "self", None, "")?;
+                let s = sessions::by_id(tx, &id, now)?.ok_or(ApiError::Internal)?;
+                Ok::<_, ApiError>(Some((token, stage, state_of(tx, &s)?, code)))
+            })?
+            .ok_or_else(wrong_credentials)
     })
     .await?;
     if let (Some(code), Some(to)) = (code, out.email.as_deref()) {
@@ -245,7 +262,15 @@ pub(crate) fn check_second_factor(
         let used = accounts::use_recovery_code(tx, s.user, code, now)?;
         if used {
             let left = accounts::recovery_codes_left(tx, s.user)?;
-            accounts::log(tx, now, "recovery_code_used", Some(s.user), "self", None, &format!("{left} left"))?;
+            accounts::log(
+                tx,
+                now,
+                "recovery_code_used",
+                Some(s.user),
+                "self",
+                None,
+                &format!("{left} left"),
+            )?;
         }
         return Ok(used);
     }
@@ -288,7 +313,15 @@ pub async fn second_factor(
         let now = contracts::now_ms();
         st.store.platform().with_write(|tx| {
             if !check_second_factor(tx, &s, &req.code, now)? {
-                accounts::log(tx, now, "sign_in_failed", Some(s.user), "self", None, "second factor")?;
+                accounts::log(
+                    tx,
+                    now,
+                    "sign_in_failed",
+                    Some(s.user),
+                    "self",
+                    None,
+                    "second factor",
+                )?;
                 return Ok::<_, ApiError>(None);
             }
             let token = sessions::complete(tx, &s, now)?;
@@ -340,7 +373,11 @@ pub async fn send_code(
 
 /// A session that may (re-)enrol a second factor: an `enrol` one, or a
 /// signed-in one within the step-up window (changing method).
-async fn enrolling(state: &AppState, headers: &HeaderMap, timing: &Timing) -> Result<Session, ApiError> {
+async fn enrolling(
+    state: &AppState,
+    headers: &HeaderMap,
+    timing: &Timing,
+) -> Result<Session, ApiError> {
     match current(state, headers, timing).await? {
         Some(s) if s.stage == Stage::Enrol => Ok(s),
         Some(s) if s.stage == Stage::Full => {
@@ -449,17 +486,24 @@ pub async fn enrol_confirm(
             let ok = match req.method {
                 Method::Totp => match s.pending_secret.as_deref() {
                     Some(pending) => totp::verify(pending, &req.code, (now / 1000) as u64, 0)
-                        .map(|step| accounts::set_second_factor(tx, s.user, SecondFactor::Totp, Some((pending, step)), now))
+                        .map(|step| {
+                            accounts::set_second_factor(
+                                tx,
+                                s.user,
+                                SecondFactor::Totp,
+                                Some((pending, step)),
+                                now,
+                            )
+                        })
                         .transpose()?
                         .is_some(),
                     None => false,
                 },
                 Method::Email => {
-                    sessions::check_email_code(tx, &s, &req.code, now)?
-                        && {
-                            accounts::set_second_factor(tx, s.user, SecondFactor::Email, None, now)?;
-                            true
-                        }
+                    sessions::check_email_code(tx, &s, &req.code, now)? && {
+                        accounts::set_second_factor(tx, s.user, SecondFactor::Email, None, now)?;
+                        true
+                    }
                 }
             };
             if !ok {
@@ -470,7 +514,15 @@ pub async fn enrol_confirm(
                 Method::Totp => "totp",
                 Method::Email => "email",
             };
-            accounts::log(tx, now, "second_factor_enrolled", Some(s.user), "self", None, method)?;
+            accounts::log(
+                tx,
+                now,
+                "second_factor_enrolled",
+                Some(s.user),
+                "self",
+                None,
+                method,
+            )?;
             let token = if s.stage == Stage::Enrol {
                 sessions::complete(tx, &s, now)?
             } else {
@@ -478,7 +530,13 @@ pub async fn enrol_confirm(
                 sessions::step_up(tx, &s, now)?
             };
             let full = sessions::get(tx, &token, now)?.ok_or(ApiError::Internal)?;
-            Ok(Some((token, Enrolled { recovery_codes: recovery, state: state_of(tx, &full)? })))
+            Ok(Some((
+                token,
+                Enrolled {
+                    recovery_codes: recovery,
+                    state: state_of(tx, &full)?,
+                },
+            )))
         })
     })
     .await?;
@@ -535,7 +593,12 @@ pub async fn sign_out(
     if let Some(id) = session_token(&headers).map(secret::hash) {
         let st = state.clone();
         let revoked = id.clone();
-        blocking(move || st.store.platform().with_write(|tx| sessions::revoke(tx, &revoked))).await?;
+        blocking(move || {
+            st.store
+                .platform()
+                .with_write(|tx| sessions::revoke(tx, &revoked))
+        })
+        .await?;
         state.auth.revoked(Revoked::Session(id));
     }
     without_session(Json(AuthState::SIGNED_OUT).into_response(), &headers)

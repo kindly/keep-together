@@ -4,6 +4,7 @@
 //! ```text
 //! keep sql <slug> "<select…>" [--json]
 //! keep tenant create --slug <slug> --name <name> --admin-email <email>
+//! keep auth reset-2fa <email> [--reason <text>]
 //! ```
 
 use std::path::PathBuf;
@@ -13,7 +14,8 @@ use cli::sql::{self, Format};
 
 const USAGE: &str = "usage:
   keep [--data <dir>] sql <slug> \"<select…>\" [--json]
-  keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <email>";
+  keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <email>
+  keep [--data <dir>] auth reset-2fa <email> [--reason <text>]";
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
     eprintln!("{msg}");
@@ -69,6 +71,23 @@ fn main() -> ExitCode {
                     println!("created {} ({}), admin {email}", t.slug, t.id);
                     ExitCode::SUCCESS
                 }
+                Err(e) => fail(e),
+            }
+        }
+        ["auth", "reset-2fa", ..] => {
+            let mut rest = args[2..].to_vec();
+            let reason = take(&mut rest, "--reason").unwrap_or_default();
+            let [email] = rest.as_slice() else {
+                return fail(USAGE);
+            };
+            match cli::auth::reset_2fa(&data, email, &reason) {
+                Ok(true) => {
+                    eprintln!(
+                        "2FA reset for {email} (logged); their sessions ended, next sign-in enrols again"
+                    );
+                    ExitCode::SUCCESS
+                }
+                Ok(false) => fail(format!("no user {email}")),
                 Err(e) => fail(e),
             }
         }

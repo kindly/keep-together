@@ -33,3 +33,4 @@ tower.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 http-body-util.workspace = true
+base32 = "0.5"
