@@ -1,0 +1,101 @@
+name: Restore drill
+
+# Monthly: restore an environment from both backups on a GitHub runner
+# and fail loudly if either can't be restored, a file fails
+# integrity_check, or a source takes 60 s or more. The full drill (machine
+# destroyed, write loss measured) is scripts/ops/restore-drill.sh;
+# docs/ops.md has both.
+#
+# Read-only keys (scripts/aws/backup.sh prints them): secrets
+# DRILL_LITESTREAM_KEY_ID/_SECRET (keep-prod), DRILL_SNAPSHOT_KEY_ID/_SECRET
+# (keep-backup); variables LITESTREAM_BUCKET, SNAPSHOT_BUCKET.
+
+on:
+  schedule:
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Environment
+        type: choice
+        options: [staging, prod]
+        default: staging
+
+env:
+  LITESTREAM_VERSION: 0.5.17
+  LITESTREAM_SHA256: cfb371176d164437ae869f8351cfde49bd1804ae71c61923f75c9cba9c9c006d
+  KEEP_ENV: ${{ inputs.env || 'staging' }}
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.97'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rs
+      - name: Tools
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq sqlite3
+          f=litestream-$LITESTREAM_VERSION-linux-x86_64.tar.gz
+          curl -fsSLo "$RUNNER_TEMP/$f" "https://github.com/benbjohnson/litestream/releases/download/v$LITESTREAM_VERSION/$f"
+          echo "$LITESTREAM_SHA256  $RUNNER_TEMP/$f" | sha256sum -c -
+          sudo tar -xzf "$RUNNER_TEMP/$f" -C /usr/local/bin litestream
+          (cd rs && cargo build --release --locked --bin keep-snapshot)
+          echo "$PWD/rs/target/release" >>"$GITHUB_PATH"
+          echo "$PWD/scripts/ops" >>"$GITHUB_PATH"
+      - name: Replica prefix
+        # Staging replicates under staging/<deployment>: the newest one is
+        # the live one (Fly deployment ids sort by time).
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DRILL_LITESTREAM_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DRILL_LITESTREAM_SECRET }}
+          AWS_REGION: eu-west-2
+          BUCKET: ${{ vars.LITESTREAM_BUCKET }}
+        run: |
+          if [ "$KEEP_ENV" = staging ]; then
+            prefix=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix staging/ --delimiter / \
+              --query 'CommonPrefixes[].Prefix' --output text | tr '\t' '\n' | sort | tail -1)
+            prefix=${prefix%/}
+          else
+            prefix=$KEEP_ENV
+          fi
+          [ -n "$prefix" ] && [ "$prefix" != None ] || { echo "::error::no replica under $KEEP_ENV/"; exit 1; }
+          echo "KEEP_REPLICA_PREFIX=$prefix" >>"$GITHUB_ENV"
+      - name: Restore from Litestream
+        env:
+          LITESTREAM_BUCKET: ${{ vars.LITESTREAM_BUCKET }}
+          LITESTREAM_ACCESS_KEY_ID: ${{ secrets.DRILL_LITESTREAM_KEY_ID }}
+          LITESTREAM_SECRET_ACCESS_KEY: ${{ secrets.DRILL_LITESTREAM_SECRET }}
+        run: restore.sh litestream "$RUNNER_TEMP/litestream" | tee litestream.log
+      - name: Restore from the snapshots
+        env:
+          KEEP_SNAPSHOT_BUCKET: ${{ vars.SNAPSHOT_BUCKET }}
+          KEEP_SNAPSHOT_ACCESS_KEY_ID: ${{ secrets.DRILL_SNAPSHOT_KEY_ID }}
+          KEEP_SNAPSHOT_SECRET_ACCESS_KEY: ${{ secrets.DRILL_SNAPSHOT_SECRET }}
+        run: restore.sh snapshot "$RUNNER_TEMP/snapshot" | tee snapshot.log
+      - name: Judge
+        run: |
+          fail=0
+          {
+            echo "## Restore drill: $KEEP_ENV"
+            echo
+            echo "| source | all files | checked | files |"
+            echo "|---|---|---|---|"
+          } >>"$GITHUB_STEP_SUMMARY"
+          for s in litestream snapshot; do
+            all=$(grep -o 'restore: all files [0-9.]*s' $s.log | grep -o '[0-9.]*s$')
+            checked=$(grep -o 'restore: checked [0-9.]*s' $s.log | grep -o '[0-9.]*s$')
+            files=$(grep -c '^restore: ok ' $s.log)
+            echo "| $s | $all | $checked | $files |" >>"$GITHUB_STEP_SUMMARY"
+            awk -v t="${all%s}" 'BEGIN { exit !(t < 60) }' || { echo "::error::$s restore took $all (limit 60 s)"; fail=1; }
+          done
+          # The two sources hold the same tenants (counts may differ by up
+          # to an hour of writes, so only the tenant list is compared).
+          diff <(sqlite3 -readonly "$RUNNER_TEMP/litestream/platform.db" 'SELECT id FROM tenants ORDER BY id') \
+               <(sqlite3 -readonly "$RUNNER_TEMP/snapshot/platform.db" 'SELECT id FROM tenants ORDER BY id') ||
+            { echo "::error::the two sources list different tenants"; fail=1; }
+          exit $fail

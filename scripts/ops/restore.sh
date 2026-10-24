@@ -15,7 +15,7 @@
 #   RESTORE_EXTRA names other files under orgs/ to restore (the drill's
 #   write-loss marker file).
 # snapshot: the newest hourly/daily/monthly snapshot of each file
-#   (`snapshot-restore`, KEEP_SNAPSHOT_* settings).
+#   (`keep-snapshot restore`, KEEP_SNAPSHOT_* settings).
 #
 # Exit 0: everything restored and checked. Exit 3: no backup to restore
 # from (an environment that never had data). Anything else: failure.
@@ -52,7 +52,7 @@ litestream)
     xargs -r -P 4 -I{} litestream restore -o "$DATA/orgs/{}.db" "$replica/orgs/{}.db"
   ;;
 snapshot)
-  if ! out=$(snapshot-restore --data "$DATA" 2>&1); then
+  if ! out=$(keep-snapshot restore --data "$DATA" 2>&1); then
     echo "$out" >&2
     case $out in *"no platform snapshot"*) exit 3 ;; esac
     exit 1

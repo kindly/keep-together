@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+  # deploy.yml runs the same checks before it deploys.
+  workflow_call:
 
 jobs:
   check:
@@ -17,3 +19,23 @@ jobs:
       - run: pnpm check
         env:
           VITE_CONVEX_URL: ${{ vars.VITE_CONVEX_URL }}
+
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.97'
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rs
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      # `cargo test` re-exports the TS types; the committed ones must match.
+      - run: git diff --exit-code -- ../src/lib/data/rust-types

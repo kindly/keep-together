@@ -8,8 +8,8 @@
 #   scripts/ops/restore-drill.sh litestream # or: snapshot
 #
 # 1. Seed a 10k org ("drill", the perf generator's people) with the `seed`
-#    bin inside the machine, then wait for an hourly snapshot to cover it
-#    (a restart triggers one a minute after boot).
+#    bin inside the machine, then take a snapshot pass at once
+#    (`keep-snapshot run`) rather than wait for the hourly job.
 # 2. Record counts: tenants, and per org contacts, revisions and a set of
 #    search matches (FTS), read straight from the files with sqlite3.
 # 3. Per source:
@@ -77,16 +77,8 @@ if [[ $(drill has-org drill) != 1 ]]; then
   run fly ssh console -a "$APP" -C "seed --data /data --slug drill --name 'Drill 10k' --admin drill@example.com --jsonl /data/drill.jsonl --prefix drill"
   drill cleanup
 fi
-# The snapshot job runs a minute after boot: restart, then wait for a
-# platform snapshot younger than the seed.
-run fly machine restart "$(machine)" -a "$APP"
-wait_healthy
-for _ in $(seq 60); do
-  age=$(healthz | jq -r '.backup.snapshotAgeSeconds // empty')
-  [[ -n $age && $age -lt 120 ]] && break
-  sleep 5
-done
-[[ -n ${age:-} && $age -lt 120 ]] || die "no fresh snapshot after the restart (backup: $(healthz | jq -c .backup))"
+# A snapshot pass now, so the snapshot source has the seeded org.
+run fly ssh console -a "$APP" -C "keep-snapshot run --data /data"
 
 say "2. Census before"
 census | tee "$WORK/before.txt"

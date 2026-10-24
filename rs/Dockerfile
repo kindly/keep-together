@@ -39,7 +39,7 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     [ -d crates/cli ] && pkgs="$pkgs -p cli"; \
     cargo build --release --locked $pkgs; \
     mkdir /out; \
-    for bin in api seed snapshot-restore keep; do \
+    for bin in api seed keep-snapshot keep; do \
       [ -f target/release/$bin ] && cp target/release/$bin /out/; \
     done; \
     ls -l /out
