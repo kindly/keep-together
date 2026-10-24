@@ -1,0 +1,74 @@
+//! Auth's tables in `platform.db`: its own append-only step list,
+//! versioned in `schema_sets` (not `user_version`, which is the platform
+//! list's), run by `Store::migrate_platform_set` inside the boot
+//! migration, so the boot's pre-migration copy covers it. Never edit a
+//! shipped step.
+//!
+//! `users` (id, email) and `memberships` belong to the platform list; auth
+//! adds rows keyed by `users.id`.
+
+pub const SET: &str = "auth";
+
+pub const STEPS: &[&str] = &[
+    // 1: credentials, second factors, sessions, invites, resets, log.
+    "CREATE TABLE auth_credentials (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id),
+        password_hash TEXT NOT NULL,
+        second_factor TEXT CHECK (second_factor IN ('totp', 'email')),
+        totp_secret TEXT,
+        totp_last_step INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        CHECK ((second_factor = 'totp') = (totp_secret IS NOT NULL))
+    ) STRICT;
+    CREATE TABLE auth_recovery_codes (
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        code_hash TEXT NOT NULL,
+        used_at INTEGER,
+        PRIMARY KEY (user_id, code_hash)
+    ) STRICT;
+    CREATE TABLE auth_sessions (
+        token_hash TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        stage TEXT NOT NULL CHECK (stage IN ('second_factor', 'enrol', 'full')),
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        authenticated_at INTEGER,
+        pending_secret TEXT,
+        email_code_hash TEXT,
+        email_code_expires INTEGER,
+        email_code_attempts INTEGER NOT NULL DEFAULT 0,
+        CHECK ((stage = 'full') = (authenticated_at IS NOT NULL))
+    ) STRICT;
+    CREATE INDEX auth_sessions_user ON auth_sessions (user_id);
+    CREATE INDEX auth_sessions_expiry ON auth_sessions (expires_at);
+    CREATE TABLE auth_invites (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        email TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin', 'staff', 'viewer')),
+        invited_by INTEGER REFERENCES users(id),
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        accepted_at INTEGER,
+        revoked_at INTEGER
+    ) STRICT;
+    CREATE INDEX auth_invites_tenant ON auth_invites (tenant_id, email);
+    CREATE TABLE auth_resets (
+        token_hash TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER
+    ) STRICT;
+    CREATE INDEX auth_resets_user ON auth_resets (user_id);
+    CREATE TABLE auth_log (
+        id INTEGER PRIMARY KEY,
+        at INTEGER NOT NULL,
+        event TEXT NOT NULL,
+        user_id INTEGER,
+        actor TEXT NOT NULL,
+        tenant_id TEXT,
+        detail TEXT NOT NULL DEFAULT ''
+    ) STRICT;",
+];
