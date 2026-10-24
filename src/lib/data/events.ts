@@ -114,6 +114,12 @@ export function ownWrite(
  * once; events while that refetch runs mark it dirty, and one more
  * refetch follows it. A bulk write (hundreds of contracts, one event
  * each) costs two refetches, not hundreds cancelled one after another.
+ *
+ * A fetch already in flight is cancelled first: it may have read before
+ * the change, and TanStack Query's refetch joins an in-flight fetch of a
+ * query that has no data yet instead of restarting it, so the event would
+ * be lost (the contact-hold QC flake: a new address's email context,
+ * fetched as the hold committed, never showed the hold).
  */
 const running = new Set<string>()
 const dirty = new Set<string>()
@@ -128,7 +134,12 @@ function invalidate(
     return
   }
   running.add(k)
-  void qc.invalidateQueries({ queryKey, refetchType }).finally(() => {
+  const refetch = () => qc.invalidateQueries({ queryKey, refetchType })
+  const done =
+    qc.isFetching({ queryKey }) > 0
+      ? qc.cancelQueries({ queryKey }).then(refetch)
+      : refetch()
+  void done.finally(() => {
     running.delete(k)
     if (dirty.delete(k)) invalidate(qc, queryKey, refetchType)
   })
