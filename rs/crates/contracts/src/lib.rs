@@ -29,6 +29,7 @@
 //! [`OrgEvent`], published after commit.
 
 mod children;
+pub mod history;
 mod restore;
 
 use std::collections::HashMap;
@@ -42,7 +43,9 @@ use store::{OrgDb, OrgEvent, RawTx};
 use ts_rs::TS;
 
 pub use children::{ChildRow, Reconciled, is_client_id, mint_ids, reconcile};
-pub use restore::{Revision, canonical, history, restore, restore_entity_to};
+pub use restore::{
+    Revision, Upto, canonical, history, restore, restore_entity_to, restore_entity_upto,
+};
 
 /// The org-schema migration this crate owns. Composed into the org
 /// migration list (`api::schema`) before any domain table.
@@ -422,12 +425,15 @@ pub trait Contract: Sync + 'static {
     }
 
     /// Restore only: what can be written back now (e.g. a retired dropdown
-    /// option dropped), which is applied *and* recorded.
+    /// option dropped), which is applied *and* recorded. `restored_at` is
+    /// when the restored revision was written (ms; `command.at` when the
+    /// command names none).
     fn restore_payload(
         &self,
         _tx: &OrgTx,
         payload: Self::Payload,
         _current: &Self::State,
+        _restored_at: i64,
     ) -> Result<Self::Payload, ContractError> {
         Ok(payload)
     }
@@ -571,7 +577,17 @@ pub fn execute<C: Contract>(
                 });
             }
             if opts.source == Source::Restore {
-                payload = contract.restore_payload(tx, payload, &state)?;
+                let restored_at = match opts.restored_from {
+                    Some(revision) => tx
+                        .read()
+                        .query_row("SELECT at FROM revisions WHERE id = ?1", [revision], |r| {
+                            r.get(0)
+                        })
+                        .optional()?
+                        .unwrap_or(command.at),
+                    None => command.at,
+                };
+                payload = contract.restore_payload(tx, payload, &state, restored_at)?;
             }
             (id.to_owned(), Some(state), current + 1)
         }

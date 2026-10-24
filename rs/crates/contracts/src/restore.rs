@@ -171,6 +171,37 @@ pub fn restore_entity_to(
     exclude: &[&str],
     label: Option<&str>,
 ) -> Result<Vec<String>, ContractError> {
+    restore_entity_upto(
+        ctx,
+        registry,
+        entity,
+        entity_id,
+        Upto::At(at),
+        exclude,
+        label,
+    )
+}
+
+/// Where a restore of a whole aggregate stops: every revision written at
+/// or before `At` (ms), or up to and including revision `Revision` (exact
+/// when two commands share a millisecond: revision ids are monotonic per
+/// file).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Upto {
+    At(i64),
+    Revision(i64),
+}
+
+/// [`restore_entity_to`], bounded by [`Upto`].
+pub fn restore_entity_upto(
+    ctx: &Ctx,
+    registry: &Registry,
+    entity: &str,
+    entity_id: &str,
+    upto: Upto,
+    exclude: &[&str],
+    label: Option<&str>,
+) -> Result<Vec<String>, ContractError> {
     let exclude: HashSet<&str> = exclude.iter().copied().collect();
     let latest: Vec<(String, i64)> = {
         let mut stmt = ctx.tx.read().prepare(
@@ -200,9 +231,24 @@ pub fn restore_entity_to(
             .tx
             .read()
             .query_row(
-                "SELECT max(id) FROM revisions
-                 WHERE entity = ?1 AND entity_id = ?2 AND contract = ?3 AND at <= ?4",
-                params![entity, entity_id, contract, at],
+                match upto {
+                    Upto::At(_) => {
+                        "SELECT max(id) FROM revisions
+                         WHERE entity = ?1 AND entity_id = ?2 AND contract = ?3 AND at <= ?4"
+                    }
+                    Upto::Revision(_) => {
+                        "SELECT max(id) FROM revisions
+                         WHERE entity = ?1 AND entity_id = ?2 AND contract = ?3 AND id <= ?4"
+                    }
+                },
+                params![
+                    entity,
+                    entity_id,
+                    contract,
+                    match upto {
+                        Upto::At(at) | Upto::Revision(at) => at,
+                    }
+                ],
                 |r| r.get(0),
             )
             .optional()?
@@ -225,9 +271,10 @@ pub fn restore_entity_to(
         return Ok(vec![]);
     }
     to_restore.sort_by_key(|r| r.id);
-    let label = label
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("restore to {at}"));
+    let label = label.map(str::to_owned).unwrap_or_else(|| match upto {
+        Upto::At(at) => format!("restore to {at}"),
+        Upto::Revision(id) => format!("restore to revision {id}"),
+    });
     let group = command_group(ctx, &label)?;
     let mut restored = Vec::new();
     for r in to_restore {

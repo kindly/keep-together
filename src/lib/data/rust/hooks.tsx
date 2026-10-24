@@ -14,7 +14,6 @@ import {
 import { createContext, useContext, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import type { Id } from '../../../../convex/_generated/dataModel'
-import type { useBulkSetField as convexBulkSetField } from '../../../components/bulk-set-field'
 import { newKey } from '../../contact-form-state'
 import { LIST_PAGE_SIZE } from '../../paged-list'
 import type { ListFilters, PagedList } from '../../paged-list'
@@ -23,12 +22,9 @@ import { useTenant } from '../../tenant'
 import { ownWrite, setCursor } from '../events'
 import type { ContactPage } from '../rust-types/ContactPage'
 import type { ContactView as WireContact } from '../rust-types/ContactView'
-import type { ArchivedContact } from '../rust-types/ArchivedContact'
 import type { Boot } from '../rust-types/Boot'
 import type { CreatedContact } from '../rust-types/CreatedContact'
 import type { FieldDefinition as WireField } from '../rust-types/FieldDefinition'
-import type { HistoryPage } from '../rust-types/HistoryPage'
-import type { RestoredContact } from '../rust-types/RestoredContact'
 import type { Group } from '../rust-types/Group'
 import type { Me } from '../rust-types/Me'
 import type { SaveFormResult } from '../rust-types/SaveFormResult'
@@ -279,6 +275,11 @@ export function preloadContactList({ queryClient: qc }: Loaders, slug: string) {
   void qc.prefetchQuery(fieldsQuery(slug))
 }
 
+/** Settings › Fields: the definitions start as the navigation does. */
+export function preloadFields({ queryClient: qc }: Loaders, slug: string) {
+  void qc.prefetchQuery(fieldsQuery(slug))
+}
+
 export function preloadContact(
   { queryClient: qc }: Loaders,
   slug: string,
@@ -287,12 +288,6 @@ export function preloadContact(
   void qc.prefetchQuery(fieldsQuery(slug))
   void qc.prefetchQuery(contactQuery(slug, id))
 }
-
-/** No bulk set on Rust: never runs (the list hides the selection). */
-export function useBulkSetField(): ReturnType<typeof convexBulkSetField> {
-  return { bulk: IDLE, run: async () => {}, dismiss: () => {} }
-}
-const IDLE = { state: 'idle' } as const
 
 // Not ported yet (A3): nobody to name.
 const NO_MEMBERS: Array<Member> = []
@@ -372,62 +367,4 @@ function listsChanged(qc: QueryClient, slug: string) {
     qc.invalidateQueries({ queryKey: keys.list(slug) }),
     qc.invalidateQueries({ queryKey: keys.search(slug) }),
   ])
-}
-
-// ── history ────────────────────────────────────────────────────────────────
-
-/** The latest revisions (one page, newest first), restore and archive. */
-export function useContactHistory(id: Id<'contacts'>) {
-  const { slug } = useTenant()
-  const qc = useQueryClient()
-  const revisions = useQuery({
-    queryKey: keys.history(slug, id),
-    queryFn: async () =>
-      (await get<HistoryPage>(tenantPath(slug, 'contacts', id, 'history')))
-        .revisions,
-  }).data
-  // Each write answers the contact's view: it lands at once, and only the
-  // lists and the history are fetched again. A refused one (a 409:
-  // changed elsewhere meanwhile) refetches the view too, so the switch and
-  // the form catch up.
-  const landed = (view: WireContact) => {
-    qc.setQueryData(keys.contact(slug, id), view)
-    void qc.invalidateQueries({ queryKey: keys.history(slug, id) })
-    return listsChanged(qc, slug)
-  }
-  const refused = () => qc.invalidateQueries({ queryKey: keys.contacts(slug) })
-  return {
-    revisions,
-    restore: async (revisionId: number) => {
-      let done: RestoredContact
-      try {
-        done = await post<RestoredContact>(
-          tenantPath(slug, 'contacts', id, 'restore'),
-          { revisionId },
-        )
-      } catch (e) {
-        await refused()
-        throw e
-      }
-      for (const contract of done.restored) {
-        const slice = contract.split('.')[1] as keyof WireContact['counters']
-        ownWrite(slug, id, contract, done.view.counters[slice])
-      }
-      await landed(done.view)
-    },
-    setArchived: async (archived: boolean, expected: number) => {
-      let done: ArchivedContact
-      try {
-        done = await post<ArchivedContact>(
-          tenantPath(slug, 'contacts', id, 'archive'),
-          { expected, archived },
-        )
-      } catch (e) {
-        await refused()
-        throw e
-      }
-      ownWrite(slug, id, 'contacts.archive', done.counter)
-      await landed(done.view)
-    },
-  }
 }

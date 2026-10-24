@@ -4,12 +4,14 @@ use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contacts::acquisition::{NewContact, create_contact};
+use contacts::history::{FieldRestoreNote, HISTORY_PAGE};
 use contacts::types::{
-    ContactPage, ContactView, HistoryPage, RestoreRequest, SaveForm, SaveFormResult, SearchResult,
-    SetArchived,
+    BulkSetField, BulkSetResult, ContactPage, ContactView, RestoreRequest, SaveForm,
+    SaveFormResult, SearchResult, SetArchived,
 };
-use contacts::{form, queries};
+use contacts::{fields, form, history, queries};
 use contracts::Source;
+use contracts::history::MomentPage;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -22,6 +24,7 @@ pub fn router() -> Router {
         .route("/contacts", get(list).post(create))
         .route("/contacts/search", get(search))
         .route("/contacts/by-client-key/{key}", get(by_client_key))
+        .route("/contacts/bulk-set-field", post(bulk_set_field))
         .route("/contacts/{id}", get(contact))
         .route("/contacts/{id}/history", get(history))
         .route("/contacts/{id}/save", post(save))
@@ -60,6 +63,8 @@ pub struct ArchivedContact {
 pub struct RestoredContact {
     /// The contracts that ran (empty: already in that state).
     pub restored: Vec<String>,
+    /// Field values the restore left as they are, and why.
+    pub skipped_fields: Vec<FieldRestoreNote>,
     pub view: ContactView,
 }
 
@@ -119,12 +124,13 @@ struct HistoryQuery {
     limit: Option<usize>,
 }
 
-/// `GET contacts/{id}/history?before&limit`: newest first.
+/// `GET contacts/{id}/history?before&limit`: moments, newest first,
+/// `limit` revisions (default 10) older than revision `before`.
 async fn history(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Params(q): Params<HistoryQuery>,
-) -> Result<Json<HistoryPage>, ApiError> {
+) -> Result<Json<MomentPage>, ApiError> {
     t.read(move |r| {
         let exists: bool = r.query_row(
             "SELECT EXISTS (SELECT 1 FROM contacts WHERE id = ?1)",
@@ -134,8 +140,8 @@ async fn history(
         if !exists {
             return Err(ApiError::NotFound);
         }
-        let limit = q.limit.unwrap_or(queries::HISTORY_PAGE_LIMIT);
-        Ok(queries::history(r, &id, q.before, limit)?)
+        let limit = q.limit.unwrap_or(HISTORY_PAGE);
+        Ok(history::page(r, &id, q.before, limit)?)
     })
     .await
     .map(Json)
@@ -197,12 +203,24 @@ async fn restore(
     Body(req): Body<RestoreRequest>,
 ) -> Result<Json<RestoredContact>, ApiError> {
     t.write(move |ctx| {
-        let done = form::restore_contact(ctx, &id, req)?;
+        let done = history::restore_contact(ctx, &id, req)?;
         Ok(RestoredContact {
             restored: done.restored,
+            skipped_fields: done.skipped_fields,
             view: view(ctx.tx.read(), &id)?,
         })
     })
     .await
     .map(Json)
+}
+
+/// `POST contacts/bulk-set-field {contactIds, fieldId, optionId}`: one
+/// command group over up to 1000 contacts (`optionId: null` clears).
+async fn bulk_set_field(
+    Extension(t): Extension<Tenant>,
+    Body(req): Body<BulkSetField>,
+) -> Result<Json<BulkSetResult>, ApiError> {
+    t.write(move |ctx| Ok(fields::bulk_set_field(ctx, &req, Source::Ui)?))
+        .await
+        .map(Json)
 }

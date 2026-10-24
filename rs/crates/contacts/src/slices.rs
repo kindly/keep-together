@@ -634,6 +634,15 @@ fn check_values(
             ));
             continue;
         }
+        // Gone for good: not even a value already on the contact stays
+        // (the retire cleared them all).
+        if field.retired {
+            refused.push(no(
+                "retired_field",
+                format!("{} has been retired", field.label),
+            ));
+            continue;
+        }
         if held.contains(&(v.field_id.as_str(), v.option_id.as_str())) {
             continue;
         }
@@ -654,6 +663,12 @@ fn new_value_refusal(
     kind: Kind,
     mode: &Mode,
 ) -> Option<(&'static str, String)> {
+    if field.retiring {
+        return Some((
+            "retiring_field",
+            format!("{} is being retired", field.label),
+        ));
+    }
     if !field.applies_to.contains(&kind) {
         return Some((
             "wrong_kind",
@@ -763,47 +778,148 @@ impl Contract for ContactFieldValues {
         Ok(())
     }
 
-    /// What a restore can write back now: a value whose field no longer
-    /// suits the contact's kind (or is gone) is left out, and the field
-    /// keeps what the contact holds now. Applied *and* recorded.
+    /// What a restore can write back now ([`field_restore`]): applied
+    /// *and* recorded.
     fn restore_payload(
         &self,
         tx: &OrgTx,
-        mut p: FieldValues,
+        p: FieldValues,
         current: &FieldState,
+        restored_at: i64,
     ) -> Result<FieldValues, ContractError> {
         let Some(kind) = current.kind else {
             return Ok(p);
         };
-        let held: HashMap<&str, &FieldValue> = current
-            .values
-            .iter()
-            .map(|v| (v.field_id.as_str(), v))
-            .collect();
-        let mut out = Vec::new();
-        let mut skipped = HashSet::new();
-        for v in p.values.drain(..) {
-            let fits = match field_row(tx.read(), &v.field_id)? {
-                Some(f) => {
-                    f.applies_to.contains(&kind)
-                        || held
-                            .get(v.field_id.as_str())
-                            .is_some_and(|h| h.option_id == v.option_id)
-                }
-                None => false,
-            };
-            if fits {
-                out.push(v);
-            } else {
-                skipped.insert(v.field_id.clone());
-            }
-        }
-        for field_id in skipped {
-            if let Some(h) = held.get(field_id.as_str()) {
-                out.push((*h).clone());
-            }
-        }
-        sort_values(&mut out);
-        Ok(FieldValues { values: out })
+        Ok(FieldValues {
+            values: field_restore(tx.read(), kind, &current.values, &p.values, restored_at)?.values,
+        })
     }
+}
+
+/// Why a restore left a field as it is (Convex `FieldRestoreNote`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum FieldRestoreReason {
+    /// The field is retired (or being retired): its value is left out.
+    Retired,
+    /// The field no longer applies to the contact's kind: the contact
+    /// keeps what it holds now.
+    WrongKind,
+    /// The field didn't exist at the revision's time: the contact keeps
+    /// what it holds now.
+    AddedAfter,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct FieldRestoreNote {
+    pub label: String,
+    pub reason: FieldRestoreReason,
+}
+
+/// What restoring `values` (a revision written at `restored_at`) writes
+/// to a contact of `kind` holding `held` now, and what it leaves alone
+/// (Convex `planFieldRestore`):
+///   - a retired field's value is left out (a retiring one's too, unless
+///     the contact still holds that very value);
+///   - a value whose field no longer suits the kind is not written, and
+///     the field keeps its current value;
+///   - a field created after the revision is not the revision's to clear:
+///     it keeps its current value (noted only if it holds one).
+pub struct FieldRestore {
+    pub values: Vec<FieldValue>,
+    pub notes: Vec<FieldRestoreNote>,
+}
+
+pub fn field_restore(
+    conn: &Connection,
+    kind: Kind,
+    held: &[FieldValue],
+    values: &[FieldValue],
+    restored_at: i64,
+) -> rusqlite::Result<FieldRestore> {
+    let held_by: HashMap<&str, &FieldValue> =
+        held.iter().map(|v| (v.field_id.as_str(), v)).collect();
+    let mut out = Vec::new();
+    let mut notes = Vec::new();
+    let mut keep = HashSet::new();
+    for v in values {
+        let Some(f) = field_row(conn, &v.field_id)? else {
+            // Deleted: never used, so never on a contact. Nothing to note.
+            continue;
+        };
+        let holds_it = held_by
+            .get(v.field_id.as_str())
+            .is_some_and(|h| h.option_id == v.option_id);
+        let reason = if f.retired || (f.retiring && !holds_it) {
+            Some(FieldRestoreReason::Retired)
+        } else if !f.applies_to.contains(&kind) && !holds_it {
+            keep.insert(v.field_id.clone());
+            Some(FieldRestoreReason::WrongKind)
+        } else {
+            None
+        };
+        match reason {
+            Some(reason) => notes.push(FieldRestoreNote {
+                label: f.label,
+                reason,
+            }),
+            None => out.push(v.clone()),
+        }
+    }
+    let named: HashSet<&str> = values.iter().map(|v| v.field_id.as_str()).collect();
+    for h in held {
+        if keep.contains(&h.field_id) {
+            out.push(h.clone());
+        } else if !named.contains(h.field_id.as_str())
+            && field_created_after(conn, &h.field_id, restored_at)?
+        {
+            out.push(h.clone());
+            if let Some(f) = field_row(conn, &h.field_id)? {
+                notes.push(FieldRestoreNote {
+                    label: f.label,
+                    reason: FieldRestoreReason::AddedAfter,
+                });
+            }
+        }
+    }
+    sort_values(&mut out);
+    Ok(FieldRestore { values: out, notes })
+}
+
+/// The field's first revision is newer than `at`.
+fn field_created_after(conn: &Connection, field_id: &str, at: i64) -> rusqlite::Result<bool> {
+    let created: Option<i64> = conn
+        .prepare_cached(
+            "SELECT min(at) FROM revisions
+             WHERE entity = 'contact_fields' AND entity_id = ?1 AND contract = 'contacts.field'",
+        )?
+        .query_row([field_id], |r| r.get(0))?;
+    Ok(created.is_some_and(|c| c > at))
+}
+
+/// What restoring the `contacts.fields` revision `revision_id` onto the
+/// contact as it is now leaves as it is, for the restore's answer.
+pub fn field_restore_notes(
+    conn: &Connection,
+    contact_id: &str,
+    revision_id: i64,
+) -> Result<Vec<FieldRestoreNote>, ContractError> {
+    let Some((payload, at)): Option<(String, i64)> = conn
+        .query_row(
+            "SELECT payload, at FROM revisions WHERE id = ?1 AND contract = 'contacts.fields'",
+            [revision_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(vec![]);
+    };
+    let Some(kind) = contact_kind(conn, contact_id)? else {
+        return Ok(vec![]);
+    };
+    let p: FieldValues = serde_json::from_str(&payload)?;
+    let held = load_field_values(conn, contact_id)?;
+    Ok(field_restore(conn, kind, &held, &p.values, at)?.notes)
 }

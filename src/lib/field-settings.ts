@@ -4,16 +4,27 @@
  * else makes meanwhile (the usual three-way merge, ADR 0017), reordering,
  * and failures as one line for the user.
  */
-import { ConvexError } from 'convex/values'
-import type { FunctionReturnType } from 'convex/server'
-import type { api } from '../../convex/_generated/api'
-import { CONTACT_KINDS } from '../../convex/contacts/fieldTypes'
-import type { ContactKind } from '../../convex/contacts/fieldTypes'
+import type { FieldDefinition } from './data'
+import { RustApiError } from './data/rust/client'
+import type { ContactKind } from './data/rust-types/ContactKind'
 import { threeWayMerge } from './merge'
 
-/** One row of `contacts.fields.list`. */
-export type Field = FunctionReturnType<typeof api.contacts.fields.list>[number]
+/** One live field, as `GET fields` answers it (`useFields`). */
+export type Field = FieldDefinition
 export type Option = Field['options'][number]
+
+/** Every kind, in the order the form lists them: a new field's default. */
+export const CONTACT_KINDS: ReadonlyArray<ContactKind> = [
+  'individual',
+  'organization',
+  'household',
+]
+
+/** The longest a field's or an option's label can be (the server's). */
+export const FIELD_LABEL_MAX = 60
+
+/** The most live fields a group can have (the server's `MAX_FIELDS`). */
+export const FIELD_LIMIT = 200
 
 export const KIND_LABEL: Record<ContactKind, string> = {
   individual: 'Individuals',
@@ -190,22 +201,14 @@ export function failureMessage(
   err: unknown,
   from: 'form' | 'row' = 'form',
 ): string {
-  const data =
-    err instanceof ConvexError
-      ? (err.data as {
-          kind?: string
-          message?: string
-          problems?: Array<{ message: string }>
-        })
-      : null
-  if (data?.kind === 'invalid' && data.problems?.length)
-    return data.problems.map((p) => p.message).join('; ')
-  if (data?.kind === 'stale')
+  if (!(err instanceof RustApiError)) return 'Could not save'
+  const e = err.error
+  if (e.kind === 'stale')
     return from === 'form'
       ? 'Someone else changed this just now. Their changes are merged in: check, then save again.'
       : 'Someone else changed this just now; check it and try again.'
-  if (data?.kind === 'forbidden')
+  if (e.kind === 'forbidden')
     return 'You can no longer manage fields in this group'
-  if (data?.kind === 'not_found') return 'This no longer exists'
-  return data?.message ?? data?.kind ?? 'Could not save'
+  if (e.kind === 'not_found') return 'This no longer exists'
+  return err.message
 }

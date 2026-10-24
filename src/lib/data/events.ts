@@ -61,6 +61,10 @@ const INVALIDATES: Partial<
   // Definitions: the filters, the form's dropdowns, every value's label.
   contact_fields: (slug) => [keys.fields(slug), keys.contacts(slug)],
   contact_field_options: (slug) => [keys.fields(slug), keys.contacts(slug)],
+  // B1: a delete is its own entity (no row left to carry a counter). A
+  // retire's start and end are `contacts.fieldRetire` on contact_fields.
+  contact_field_deletions: (slug) => [keys.fields(slug)],
+  contact_field_option_deletions: (slug) => [keys.fields(slug)],
   // A Settings switch: the groups carry it (and what it means for whom);
   // the source tree carries canManage (A2).
   tenant_preferences: (slug) => [keys.groups, keys.sources(slug)],

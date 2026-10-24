@@ -29,6 +29,8 @@ pub fn world() -> World {
             // A2: `get` reads the contact's acquisition code.
             M::up(sources::MIGRATION),
             M::up(contacts::acquisition::MIGRATION),
+            // B1: a field's retire phase, the delete logs.
+            M::up(contacts::fields::MIGRATION_RETIRE),
         ]),
         readers: 2,
         max_open: StoreConfig::DEFAULT_MAX_OPEN,

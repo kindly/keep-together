@@ -206,7 +206,7 @@ async fn every_contacts_route_is_scoped_to_the_callers_organisation() {
             None,
         )
         .await;
-    let a_revision = a_history["revisions"][0]["id"].clone();
+    let a_revision = a_history["moments"][0]["revisionId"].clone();
     assert!(a_revision.is_i64());
     for (method, path, body) in [
         ("GET", format!("/api/t/beta/contacts/{a_id}/history"), None),
@@ -386,7 +386,12 @@ async fn the_form_round_trip() {
             None,
         )
         .await;
-    assert_eq!(hist["revisions"].as_array().unwrap().len(), 2);
+    // Four revisions: the create, the methods + addresses save (one
+    // group), the details save. Two a page, so the group is cut in two:
+    // the halves share a key for the client to join.
+    assert_eq!(hist["moments"].as_array().unwrap().len(), 2);
+    assert_eq!(hist["moments"][0]["slices"], json!(["details"]));
+    assert_eq!(hist["moments"][1]["slices"], json!(["addresses"]));
     let before = hist["nextBefore"].as_i64().unwrap();
     let (_, older) = w
         .call(
@@ -396,6 +401,10 @@ async fn the_form_round_trip() {
             None,
         )
         .await;
-    assert_eq!(older["revisions"].as_array().unwrap().len(), 2);
+    assert_eq!(older["moments"].as_array().unwrap().len(), 2);
+    assert_eq!(older["moments"][0]["key"], hist["moments"][1]["key"]);
+    assert_eq!(older["moments"][0]["slices"], json!(["methods"]));
+    assert_eq!(older["moments"][0]["groupName"], "contact form save");
+    assert_eq!(older["moments"][1]["slices"], json!(["details"]));
     assert_eq!(older["nextBefore"], Value::Null);
 }

@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import type { FunctionReturnType } from 'convex/server'
 import type { api } from '../../convex/_generated/api'
-import { HistoryFeed, skippedFieldsNote } from './contact-history'
+import { skippedFieldsNote } from './contact-history'
+import { HistoryFeed } from './convex-history-feed'
 
 type Page = FunctionReturnType<typeof api.contacts.queries.history>
 type Opts = { numItems: number; cursor: string | null; endCursor?: string }

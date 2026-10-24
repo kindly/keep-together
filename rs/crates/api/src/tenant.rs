@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use contracts::Ctx;
 use serde::Serialize;
-use store::{OrgDb, OrgRead, Role, Store, UserId};
+use store::{OrgDb, OrgRead, Role, Store, TenantId, UserId};
 use ts_rs::TS;
 
 use crate::error::ApiError;
@@ -34,9 +34,13 @@ pub struct Tenant {
     /// When this session last proved password + second factor.
     authenticated_at: i64,
     timing: Timing,
-    /// For [`Tenant::write`]'s re-check only (handlers never see it).
+    /// For [`Tenant::run_job`]'s `platform.db` marker only: handlers never
+    /// see the store.
+    tenant_id: TenantId,
+    /// For [`Tenant::write`]'s re-check and `run_job`'s marker (handlers
+    /// never see it).
     store: Arc<Store>,
-    /// The session's stored hash.
+    /// The session's stored hash, for [`Tenant::write`]'s re-check.
     session_id: String,
 }
 
@@ -77,23 +81,10 @@ impl Tenant {
         let db = self.db.clone();
         let timing = self.timing.clone();
         let user = self.user;
-        let store = self.store.clone();
-        let session = self.session_id.clone();
-        let slug = self.slug.clone();
+        let check = self.recheck();
         blocking(move || {
             let start = Instant::now();
-            let now = contracts::now_ms();
-            let live = store
-                .platform()
-                .with_read(|c| ::auth::sessions::by_id(c, &session, now))?
-                .is_some_and(|s| s.user == user && s.stage == ::auth::Stage::Full);
-            if !live {
-                return Err(ApiError::Unauthenticated);
-            }
-            match store.platform().member(UserId(user), &slug)? {
-                Some(m) if m.role >= Role::Staff => {}
-                _ => return Err(ApiError::Forbidden),
-            }
+            check()?;
             timing.add_platform(start.elapsed());
             let start = Instant::now();
             let out = contracts::transact(&db, Some(user), f);
@@ -105,15 +96,89 @@ impl Tenant {
 }
 
 impl Tenant {
+    /// A check, run on a blocking thread, that this session is still live
+    /// and its user still staff or above here, on `platform.db` (S1 codex
+    /// C5): the middleware's check can be stale by the time a write runs.
+    fn recheck(&self) -> impl FnOnce() -> Result<(), ApiError> + Send + 'static + use<> {
+        let (store, session) = (self.store.clone(), self.session_id.clone());
+        let (user, slug) = (self.user, self.slug.clone());
+        move || {
+            let now = contracts::now_ms();
+            let live = store
+                .platform()
+                .with_read(|c| ::auth::sessions::by_id(c, &session, now))?
+                .is_some_and(|s| s.user == user && s.stage == ::auth::Stage::Full);
+            if !live {
+                return Err(ApiError::Unauthenticated);
+            }
+            match store.platform().member(UserId(user), &slug)? {
+                Some(m) if m.role >= Role::Staff => Ok(()),
+                _ => Err(ApiError::Forbidden),
+            }
+        }
+    }
+
     /// Admin-only routes: role `admin`, and a sign-in (or step-up) within
     /// the last hour (ADR 0020), else `403 step_up_required`.
     pub fn require_admin(&self) -> Result<(), ApiError> {
         if self.role < Role::Admin {
             return Err(ApiError::Forbidden);
         }
+        self.require_step_up()
+    }
+
+    /// Irreversible commands (retiring or deleting a field), whoever may
+    /// run them: a sign-in (or step-up) within the last hour, else `403
+    /// step_up_required`.
+    pub fn require_step_up(&self) -> Result<(), ApiError> {
         if contracts::now_ms() - self.authenticated_at >= ::auth::STEP_UP_MS {
             return Err(ApiError::StepUpRequired);
         }
+        Ok(())
+    }
+
+    /// Mark `job`'s work on `key` pending in `platform.db`, before the
+    /// work's first commit (write-ahead), so a server stopping anywhere
+    /// after it leaves the work to the job. Idempotent.
+    pub async fn mark_job(&self, job: &'static str, key: String) -> Result<(), ApiError> {
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        blocking(move || crate::jobs::mark_pending(&store, &id, job, &key)).await
+    }
+
+    /// Run `step` again and again, each run its own transaction as this
+    /// user, until it answers `true`: in the background, after this
+    /// returns. `job`/`key` are marked pending in `platform.db` first (a
+    /// no-op after [`Tenant::mark_job`]) and cleared at the end, so a server stopping part way leaves the work
+    /// to the job of that name ([`crate::jobs::each_pending_org`]). A
+    /// failure is logged and sent to Sentry, and leaves the marker.
+    pub async fn run_job<F>(&self, job: &'static str, key: String, step: F) -> Result<(), ApiError>
+    where
+        F: Fn(&Ctx) -> Result<bool, ApiError> + Send + 'static,
+    {
+        // As in `write`: the session and role still hold when it starts.
+        blocking(self.recheck()).await?;
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        {
+            let (store, id, key) = (store.clone(), id.clone(), key.clone());
+            blocking(move || crate::jobs::mark_pending(&store, &id, job, &key)).await?;
+        }
+        let db = self.db.clone();
+        let user = self.user;
+        tokio::task::spawn_blocking(move || {
+            let done = loop {
+                match contracts::transact(&db, Some(user), &step) {
+                    Ok(true) => break Ok(()),
+                    Ok(false) => continue,
+                    Err(e) => break Err(e),
+                }
+            };
+            let done = done.and_then(|()| {
+                crate::jobs::clear_pending(&store, &id, job, &key).map_err(ApiError::from)
+            });
+            if let Err(e) = done {
+                crate::observe::error(&format!("{job} {id} {key}: {e:?}"));
+            }
+        });
         Ok(())
     }
 
@@ -185,6 +250,7 @@ pub(crate) async fn middleware(
             user: session.user,
             authenticated_at: session.authenticated_at.unwrap_or(0),
             timing: timing.clone(),
+            tenant_id: member.tenant.id.clone(),
             store: state.store.clone(),
             session_id: session.id.clone(),
         })
@@ -249,6 +315,7 @@ mod tests {
             .with_write(|tx| ::auth::sessions::create(tx, cat.0, ::auth::Stage::Full, now))
             .unwrap();
         let tenant = Tenant {
+            tenant_id: t.id.clone(),
             db: store.org(&t.id).unwrap(),
             slug: "alpha".into(),
             name: "Alpha".into(),

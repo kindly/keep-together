@@ -5,4 +5,17 @@ import type { FieldOptionView } from "./FieldOptionView";
 /**
  * `GET fields`: a field with its options in the admin's order.
  */
-export type FieldDefinition = { id: string, label: string, appliesTo: Array<ContactKind>, isActive: boolean, saveVersion: number, options: Array<FieldOptionView>, };
+export type FieldDefinition = { id: string, label: string, appliesTo: Array<ContactKind>, isActive: boolean, 
+/**
+ * A retire is clearing its values (or stopped part way: run it
+ * again). No new values, no edits.
+ */
+retiring: boolean, saveVersion: number, 
+/**
+ * Archived ones included.
+ */
+options: Array<FieldOptionView>, 
+/**
+ * No option was ever used: the whole field can be deleted.
+ */
+deletable: boolean, };
