@@ -2,21 +2,23 @@
 import { act, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
-import { ConvexError } from 'convex/values'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { Id } from '../../convex/_generated/dataModel'
 import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
-import {
-  BulkFieldControls,
-  BulkFieldResult,
-  useBulkSetField,
-} from './bulk-set-field'
+import { useBulkSetField } from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
+import type * as Client from '../lib/data/rust/client'
+import { BulkFieldControls, BulkFieldResult } from './bulk-set-field'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const bulkSetField = vi.fn()
-vi.mock('convex/react', () => ({ useMutation: () => bulkSetField }))
-vi.mock('../lib/tenant', () => ({ useTenant: () => ({ _id: 'tenantA' }) }))
+vi.mock('../lib/data/rust/client', async (original) => ({
+  ...(await original<typeof Client>()),
+  post: (_path: string, body: unknown) => bulkSetField(body),
+}))
+vi.mock('../lib/tenant', () => ({ useTenant: () => ({ slug: 'alpha' }) }))
 
 const FIELD: FieldDefinition = {
   _id: 'fVol' as Id<'contactFields'>,
@@ -40,8 +42,8 @@ const FIELD: FieldDefinition = {
   ],
 }
 
-/** 150 ids: two batches. */
-const IDS = Array.from({ length: 150 }, (_, i) => `c${i}` as Id<'contacts'>)
+/** 1500 ids: two batches (1000, 500). */
+const IDS = Array.from({ length: 1500 }, (_, i) => `c${i}` as Id<'contacts'>)
 
 /**
  * The list page's shape: the controls show only while selected rows are
@@ -75,7 +77,13 @@ beforeEach(() => {
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
-  act(() => root.render(<Page />))
+  act(() =>
+    root.render(
+      <QueryClientProvider client={new QueryClient()}>
+        <Page />
+      </QueryClientProvider>,
+    ),
+  )
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -119,7 +127,7 @@ test('the result shows after every selected row has left the list', async () => 
   expect(bulkSetField).toHaveBeenCalledTimes(2)
   expect(document.querySelector('select[aria-label="Field to set"]')).toBeNull()
   expect(text('status')).toBe(
-    'Set “Volunteer status” to “Active” on 135 contacts; skipped 15 of a kind it doesn’t apply to' +
+    'Set “Volunteer status” to “Active” on 1350 contacts; skipped 150 of a kind it doesn’t apply to' +
       'Dismiss',
   )
 })
@@ -133,7 +141,12 @@ test('a later batch failing still says what the run did, skipped included', asyn
       },
     )
     .mockRejectedValueOnce(
-      new ConvexError({ kind: 'stale' as const, current: 3 }),
+      new RustApiError(409, {
+        kind: 'stale',
+        contract: 'contacts.fields',
+        counter: 3,
+        current: null,
+      }),
     )
   await setActive()
   expect(text('alert')).toBe(

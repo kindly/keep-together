@@ -9,6 +9,7 @@
 pub mod acquisition;
 pub mod fields;
 pub mod form;
+pub mod history;
 pub mod identifiers;
 pub mod notes;
 pub mod number;
@@ -222,6 +223,9 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &acquisition::ACQUISITION,
         &fields::FIELD,
         &fields::FIELD_OPTION,
+        &fields::FIELD_RETIRE,
+        &fields::FIELD_DELETE,
+        &fields::FIELD_OPTION_DELETE,
         &identifiers::IDENTIFIERS,
         &identifiers::IDENTIFIER_TYPE,
         &notes::NOTE,

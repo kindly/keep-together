@@ -84,7 +84,7 @@ test.describe('tenancy against id and slug manipulation', () => {
       'GET',
       `/api/t/${b.slug}/contacts/${bId}/history`,
     )
-    const bRevision = histB.json.revisions[0].id as number
+    const bRevision = histB.json.moments[0].revisionId as number
     const viewA = await apiAs(tokA, 'GET', `/api/t/${a.slug}/contacts/${aId}`)
     const fieldsA = await apiAs(tokA, 'GET', `/api/t/${a.slug}/fields`)
     const field = fieldsA.json[0] ?? fieldsA.json.fields?.[0]
@@ -110,6 +110,17 @@ test.describe('tenancy against id and slug manipulation', () => {
       ['GET', '/fields'],
       ['POST', '/fields', { label: 'x' }],
       ['POST', '/fields/options', { label: 'x' }],
+      // B1: the fields admin, bulk set and restore to a moment.
+      ['POST', `/fields/${bId}/delete`, { expected: 0 }],
+      ['POST', `/fields/options/${bId}/delete`, { expected: 0 }],
+      ['POST', `/fields/${bId}/reorder`, { order: [] }],
+      ['POST', `/fields/${bId}/retire`],
+      [
+        'POST',
+        '/contacts/bulk-set-field',
+        { contactIds: [bId], fieldId: bId, optionId: null },
+      ],
+      ['POST', `/contacts/${bId}/restore`, { at: 0 }],
     ]
     for (const [m, r, body] of onB) {
       const res = await apiAs(tokA, m, `/api/t/${b.slug}${r}`, body)
@@ -130,7 +141,7 @@ test.describe('tenancy against id and slug manipulation', () => {
       `/api/t/${a.slug}/contacts/${bId}/history`,
     )
     expect([404, 200]).toContain(hist.status)
-    if (hist.status === 200) expect(hist.json.revisions).toEqual([])
+    if (hist.status === 200) expect(hist.json.moments).toEqual([])
     for (const [m, r, body] of [
       ['GET', `/contacts/${bId}`],
       [
@@ -140,6 +151,7 @@ test.describe('tenancy against id and slug manipulation', () => {
       ],
       ['POST', `/contacts/${bId}/archive`, { expected: 1, archived: true }],
       ['POST', `/contacts/${bId}/restore`, { revisionId: bRevision }],
+      ['POST', `/contacts/${bId}/restore`, { at: Date.now() }],
     ] as Array<['GET' | 'POST', string, unknown?]>) {
       const res = await apiAs(tokA, m, `/api/t/${a.slug}${r}`, body)
       expect([m, r, res.status]).toEqual([m, r, 404])
@@ -158,7 +170,7 @@ test.describe('tenancy against id and slug manipulation', () => {
       tokA,
       'POST',
       `/api/t/${a.slug}/contacts/${aId}/restore`,
-      { revisionId: histA2.json.revisions[0].id },
+      { revisionId: histA2.json.moments[0].revisionId },
     )
     expect(other.status).toBe(404)
 

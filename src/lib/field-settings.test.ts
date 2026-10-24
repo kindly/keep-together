@@ -1,4 +1,3 @@
-import { ConvexError } from 'convex/values'
 import { describe, expect, test } from 'vitest'
 import {
   conflictsOf,
@@ -13,6 +12,7 @@ import {
   shownOptions,
   toggleKind,
 } from './field-settings'
+import { RustApiError } from './data/rust/client'
 import type { Field, FieldFields, Option } from './field-settings'
 
 const option = (id: string, isActive = true, used = false) =>
@@ -145,27 +145,33 @@ describe('rebase', () => {
 
 describe('failureMessage', () => {
   test('stale reads differently from a form and a row', () => {
-    const stale = new ConvexError({ kind: 'stale', current: 3 })
+    const stale = new RustApiError(409, {
+      kind: 'stale',
+      contract: 'contacts.field',
+      counter: 3,
+      current: null,
+    })
     expect(failureMessage(stale)).toMatch(/merged in/)
     expect(failureMessage(stale, 'row')).toMatch(/try again/)
   })
   test('a rejection shows its message; invalid lists its problems', () => {
     expect(
       failureMessage(
-        new ConvexError({
+        new RustApiError(422, {
           kind: 'rejected',
-          reason: 'no_free_slot',
-          message: 'A group can have at most 5 fields',
+          reason: 'field_limit',
+          message: 'An organisation has at most 200 fields',
         }),
       ),
-    ).toBe('A group can have at most 5 fields')
+    ).toBe('An organisation has at most 200 fields')
     expect(
       failureMessage(
-        new ConvexError({
+        new RustApiError(422, {
           kind: 'invalid',
           problems: [{ field: 'label', message: 'A field needs a label' }],
         }),
       ),
     ).toBe('A field needs a label')
+    expect(failureMessage(new Error('network'))).toBe('Could not save')
   })
 })
