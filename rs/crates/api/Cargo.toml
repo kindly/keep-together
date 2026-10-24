@@ -11,6 +11,7 @@ contracts.workspace = true
 contacts.workspace = true
 comms.workspace = true
 platform.workspace = true
+sources.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 tokio.workspace = true

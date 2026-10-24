@@ -158,8 +158,13 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /identifier-types",
             "GET /preferences",
             "GET /relationship-types",
+            "GET /sources",
+            "GET /sources/filter-options",
+            "GET /sources/picker",
+            "GET /sources/{id}",
             "POST /comms/release",
             "POST /contacts",
+            "POST /contacts/{id}/acquisition",
             "POST /contacts/{id}/archive",
             "POST /contacts/{id}/restore",
             "POST /contacts/{id}/save",
@@ -174,6 +179,9 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /preferences/{kind}",
             "POST /relationship-types",
             "POST /relationships",
+            "POST /sources",
+            "POST /sources/{id}/delete",
+            "POST /sources/{id}/save",
         ],
         "the route table changed: check any new GET only reads, then update this list"
     );

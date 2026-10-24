@@ -117,10 +117,10 @@ export const budgets = {
   'contact.identifier.add': repeatable,
   'contact.identifier.remove': repeatable,
   'contact.hold.release': repeatable,
-  'contact.acquisition.set': port('A2'),
-  'contacts.createWithCode': { ...infrequent, pendingPort: 'A2' },
-  'contacts.filter.sourceCategory': port('A2'),
-  'contacts.filter.sourceVersion': port('A2'),
+  'contact.acquisition.set': repeatable,
+  'contacts.createWithCode': infrequent,
+  'contacts.filter.sourceCategory': repeatable,
+  'contacts.filter.sourceVersion': repeatable,
   'contacts.loadMore': repeatable,
   // Dropdown fields (plan step 6): the classes of the tag flows they
   // replaced (human, g1q14, 2026-10-21; the tag flows left in step 7).
@@ -139,11 +139,11 @@ export const budgets = {
   'settings.identifierTypes.create': repeatable,
   'settings.identifierTypes.rename': repeatable,
   'settings.identifierTypes.archive': repeatable,
-  'settings.staffSourceCodes.toggle': port('A2'),
-  'settings.sourceCodes.open': port('A2'),
-  'settings.sourceCodes.addDetail': port('A2'),
-  'settings.sourceCodes.rename': port('A2'),
-  'settings.sourceCodes.archive': port('A2'),
+  'settings.staffSourceCodes.toggle': repeatable,
+  'settings.sourceCodes.open': repeatable,
+  'settings.sourceCodes.addDetail': repeatable,
+  'settings.sourceCodes.rename': repeatable,
+  'settings.sourceCodes.archive': repeatable,
   // Cash gifts step 3: recording a gift creates a record (contacts.create's
   // class), from an existing contact or with a new one in the same save.
   'gift.record': { ...infrequent, pendingPort: 'B2' },

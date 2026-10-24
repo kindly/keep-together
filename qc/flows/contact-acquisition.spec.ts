@@ -4,7 +4,7 @@ import type { Page } from '@playwright/test'
 
 // Source codes step 5 (factory/plans/source-codes.sv): the acquisition code
 // picker on a contact and on the new-contact form, and the list's source
-// filter. The seed (convex/platform/qcSeed.ts) gives each tenant
+// filter. The seed (rs/crates/api/src/routes/qc_seed.rs) gives each tenant
 // Street-<Alpha|Bravo><run>-001/-002 and Event-Gala-001/-002, with Charles
 // on Street-…-001 and the Trust on Street-…-002. Tests here set only
 // Event-Gala codes, so the Street filter's answer stays those two.
@@ -139,8 +139,9 @@ test.describe('acquisition code', () => {
               ?.textContent.includes('Event-Gala-002'),
           ),
       })
+      // On every revision of the create (both slices, one group).
       await expect(
-        page.getByText('new contact, acquisition code Event-Gala-002'),
+        page.getByText('new contact, acquisition code Event-Gala-002').first(),
       ).toBeVisible()
     },
   )

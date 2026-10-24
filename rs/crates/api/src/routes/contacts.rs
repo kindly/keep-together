@@ -3,9 +3,10 @@
 use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
+use contacts::acquisition::{NewContact, create_contact};
 use contacts::types::{
-    ContactPage, ContactView, CreateContact, HistoryPage, RestoreRequest, SaveForm, SaveFormResult,
-    SearchResult, SetArchived,
+    ContactPage, ContactView, HistoryPage, RestoreRequest, SaveForm, SaveFormResult, SearchResult,
+    SetArchived,
 };
 use contacts::{form, queries};
 use contracts::Source;
@@ -140,14 +141,14 @@ async fn history(
     .map(Json)
 }
 
-/// `POST contacts`: details only; a duplicate `clientKey` or `id` is
-/// `409 duplicate {id}`.
+/// `POST contacts`: details, and an acquisition code (A2) when the form
+/// picked one; a duplicate `clientKey` or `id` is `409 duplicate {id}`.
 async fn create(
     Extension(t): Extension<Tenant>,
-    Body(req): Body<CreateContact>,
+    Body(req): Body<NewContact>,
 ) -> Result<Json<CreatedContact>, ApiError> {
     t.write(move |ctx| {
-        let created = form::create(ctx, req, Source::Ui)?;
+        let created = create_contact(ctx, req, Source::Ui)?;
         Ok(CreatedContact {
             view: view(ctx.tx.read(), &created.id)?,
             id: created.id,

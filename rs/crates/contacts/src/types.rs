@@ -182,6 +182,8 @@ pub struct Counters {
     pub fields: i64,
     #[ts(type = "number")]
     pub identifiers: i64,
+    #[ts(type = "number")]
+    pub acquisition: i64,
 }
 
 /// An advisory warning (ADR 0015 tier 2): storable but probably wrong.
@@ -212,6 +214,8 @@ pub struct ContactView {
     pub methods: Methods,
     pub addresses: Addresses,
     pub fields: FieldValues,
+    /// The acquisition code described, read now (null: none).
+    pub acquisition: Option<sources::CodeDescription>,
     pub counters: Counters,
     pub warnings: Vec<Warning>,
     /// In the order entered, named by their types.

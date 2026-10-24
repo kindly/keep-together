@@ -6,6 +6,7 @@
 //! a `&Connection` read on it, and nothing else: there is no tenant here,
 //! the org file is the scope.
 
+pub mod acquisition;
 pub mod fields;
 pub mod form;
 pub mod identifiers;
@@ -218,6 +219,7 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &ADDRESSES,
         &ARCHIVE,
         &FIELD_VALUES,
+        &acquisition::ACQUISITION,
         &fields::FIELD,
         &fields::FIELD_OPTION,
         &identifiers::IDENTIFIERS,

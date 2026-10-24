@@ -20,10 +20,6 @@ export interface Pending {
 }
 
 export const PENDING: ReadonlyArray<Pending> = [
-  // A2: source codes and acquisition.
-  { step: 'A2', file: 'contact-acquisition.spec.ts' },
-  { step: 'A2', file: 'sources.spec.ts' },
-  { step: 'A2', title: /source codes show none of B's/ },
   // Settings' list tabs (A3 ported the layout and Switch group): the Fields
   // tab (the first tab, which the tab-switching flows open), the
   // staff/viewer read-only pass over it, and the per-list switch test

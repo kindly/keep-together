@@ -27,6 +27,9 @@ fn world() -> World {
             M::up(contacts::MIGRATION),
             M::up(contacts::DROP_TRIGRAM),
             M::up(contacts::MIGRATION_IDENTIFIERS_NOTES),
+            // A2: `get` reads the contact's acquisition code.
+            M::up(sources::MIGRATION),
+            M::up(contacts::acquisition::MIGRATION),
         ]),
         readers: 2,
         max_open: StoreConfig::DEFAULT_MAX_OPEN,
@@ -311,6 +314,7 @@ fn each_slice_has_its_own_counter_and_never_falsely_conflicts() {
             archive: 0,
             fields: 0,
             identifiers: 0,
+            acquisition: 0,
         }
     );
     // One revision per command, with contract name, version and the

@@ -121,13 +121,11 @@ describe('summarise', () => {
 
 describe('pendingBanner', () => {
   test('lists each step with its skipped tests, flows and the unported routes', () => {
-    const out = pendingBanner(new Map([['A2', 3]]), [
+    const out = pendingBanner(new Map([['B1', 3]]), [
       '/t/$slug/contacts/',
       '/t/$slug/settings/fields',
     ]).join('\n')
-    expect(out).toMatch(
-      /A2: 3 tests skipped · flows .*contact\.acquisition\.set/,
-    )
+    expect(out).toMatch(/B1: 3 tests skipped · flows .*fields\.create/)
     // A step with flows and no tests skipped this run is still listed.
     expect(out).toMatch(/B2: 0 tests skipped · flows .*gift\.record/)
     expect(out).toContain(
@@ -287,11 +285,11 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     const ported = routes.filter((r) => isPorted(r))
     const r = await runReporter('p1', records('p1'), {
       covered: ported,
-      skipped: ['A2', 'A2', 'B2'],
+      skipped: ['B1', 'B1', 'B2'],
       filtered: false,
     })
     expect(r.gates.filter((g) => g.includes('coverage:'))).toEqual([])
-    expect(r.out).toMatch(/A2: 2 tests skipped/)
+    expect(r.out).toMatch(/B1: 2 tests skipped/)
     expect(r.out).toMatch(/B2: 1 tests skipped/)
     // A ported route left uncovered still fails a full run.
     const gap = await runReporter('p2', records('p2'), {
@@ -303,7 +301,7 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
       /coverage: no test that ran covers \/t\/\$slug\/contacts\/new/,
     )
     // pendingPort flows aren't "not timed" failures; others are.
-    expect(gap.out).not.toMatch(/not timed: [^\n]*contact\.acquisition\.set/)
+    expect(gap.out).not.toMatch(/not timed: [^\n]*fields\.create/)
     expect(gap.out).toMatch(/not timed: [^\n]*contacts\.search\.phone/)
   })
 })

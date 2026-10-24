@@ -1,4 +1,3 @@
-import { ConvexError } from 'convex/values'
 import { describe, expect, test } from 'vitest'
 import type { Id } from '../../convex/_generated/dataModel'
 import {
@@ -15,6 +14,10 @@ import {
   shownParts,
 } from './source-codes'
 import type { Part } from './source-codes'
+import { RustApiError } from './data/rust/client'
+import type { ApiError } from './data/rust-types/ApiError'
+
+const refused = (error: ApiError) => new RustApiError(422, error)
 
 const id = (s: string) => s as Id<'sourceCodes'>
 
@@ -27,7 +30,7 @@ function part(over: Partial<Part> & Pick<Part, '_id' | 'level'>): Part {
     used: false,
     saveVersion: 0,
     ...over,
-  } as Part
+  }
 }
 
 // Street (archived) → Wesser → 001; Online → Web → 001 (used).
@@ -188,22 +191,23 @@ describe('an open editor follows saves made elsewhere', () => {
 test('failures read as one line', () => {
   expect(
     failureMessage(
-      new ConvexError({
+      refused({
         kind: 'invalid',
-        problems: [{ message: 'A' }, { message: 'B' }],
+        problems: [
+          { field: 'name', message: 'A' },
+          { field: 'name', message: 'B' },
+        ],
       }),
     ),
   ).toBe('A; B')
   expect(
-    failureMessage(new ConvexError({ kind: 'stale', current: 2 })),
+    failureMessage(
+      refused({ kind: 'stale', contract: 'sources.code', counter: 2, current: {} }),
+    ),
   ).toMatch(/merged in/)
   expect(
     failureMessage(
-      new ConvexError({
-        kind: 'rejected',
-        reason: 'used',
-        message: 'Only archive',
-      }),
+      refused({ kind: 'rejected', reason: 'used', message: 'Only archive' }),
     ),
   ).toBe('Only archive')
   expect(failureMessage(new Error('boom'))).toBe('Could not save')
@@ -233,7 +237,12 @@ test('a flag clears once the field matches theirs again', () => {
 })
 
 test('a stale archive or delete asks for a retry, not a re-save', () => {
-  const stale = new ConvexError({ kind: 'stale', current: 2 })
+  const stale = refused({
+    kind: 'stale',
+    contract: 'sources.code',
+    counter: 2,
+    current: {},
+  })
   expect(failureMessage(stale, 'row')).toBe(
     'Someone else changed this code just now; check it and try again.',
   )

@@ -1,15 +1,11 @@
-import { useQuery as useLiveQuery } from 'convex/react'
-import type { FunctionReturnType } from 'convex/server'
-import { useId, useRef, useState } from 'react'
+import { useId, useState } from 'react'
 import type { KeyboardEvent, Ref } from 'react'
-import { api } from '../../convex/_generated/api'
-import { dateStatus } from '../../convex/sources/rules'
-import type { DateStatus } from '../../convex/sources/rules'
-import { useTenant } from '../lib/tenant'
+import { useSourcePicker } from '../lib/data'
+import type { PickerEntry } from '../lib/data'
+import { dateStatus } from '../lib/source-codes'
+import type { DateStatus } from '../lib/source-codes'
 
-export type PickerEntry = FunctionReturnType<
-  typeof api.sources.queries.picker
->['codes'][number]
+export type { PickerEntry }
 
 /** A code as the picker shows it: picked just now, or described on a contact. */
 export type ShownCode = {
@@ -76,21 +72,13 @@ export function SourceCodePicker({
   lockWhenSet?: boolean
   inputRef?: Ref<HTMLInputElement>
 }) {
-  const tenant = useTenant()
   const listId = useId()
   const [search, setSearch] = useState('')
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const today = localToday()
-  // Not cached (lib/query-cache): the args change with every keystroke.
-  // Until the new answer comes, the last one stands.
-  const now = useLiveQuery(
-    api.sources.queries.picker,
-    open ? { tenantId: tenant._id, today, search } : 'skip',
-  )
-  const last = useRef(now)
-  if (now !== undefined) last.current = now
-  const found = open ? (now ?? last.current) : undefined
+  // Until a new search's answer comes, the last one stands.
+  const found = useSourcePicker(open ? { today, search } : 'skip')
   const codes = found?.codes ?? []
 
   function pick(entry: PickerEntry) {

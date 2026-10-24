@@ -2,7 +2,11 @@
 //! Convex's `platform/qcSeed`): per run and Playwright worker, two
 //! organisations and four users (admin A, admin B, A's staff and viewer),
 //! three distinctively named contacts each, and A's "Volunteer status"
-//! field (Active / Lapsed / Prospect, every kind, on no contact). Users
+//! field (Active / Lapsed / Prospect, every kind, on no contact). Source
+//! codes (A2): the starter categories, a Street detail named for the side
+//! and run (`Alpha<run>`, `Bravo<run>`) and Event's `Gala`, each with
+//! versions 001 and 002; Charles carries Street-<side>-001 and the Trust
+//! -002, and the Gala codes are free for the flows to set. Users
 //! sign in with the dev login, so there are no passwords.
 //!
 //! Refused (403) unless both `KEEP_DEV_AUTH=1` and `KEEP_QC_SEED=1`.
@@ -10,6 +14,7 @@
 
 use axum::Json;
 use axum::extract::State;
+use contacts::acquisition::{ACQUISITION, Acquisition};
 use contacts::fields::{FIELD, FIELD_OPTION};
 use contacts::form::{create, save_form};
 use contacts::identifiers::{
@@ -22,6 +27,7 @@ use contacts::types::{
 };
 use contracts::{ContractError, Exec, Source, command_group, execute, transact};
 use serde::{Deserialize, Serialize};
+use sources::{SeedDetail, SeedVersion, seed_details};
 use store::{OrgDb, Role};
 use ts_rs::TS;
 
@@ -53,6 +59,8 @@ fn qc_identifiers(base: &str) -> QcIdentifiers {
     }
 }
 pub const QC_OPTIONS: [&str; 3] = ["Active", "Lapsed", "Prospect"];
+/// Event's detail on both sides; its codes are on no contact.
+pub const QC_EVENT_DETAIL: &str = "Gala";
 
 fn enabled(state: &AppState) -> Result<(), ApiError> {
     let qc = std::env::var("KEEP_QC_SEED").is_ok_and(|v| v == "1");
@@ -236,6 +244,53 @@ fn side(
                     is_active: false,
                 },
                 Exec::update(&type_id, Some(0), Source::Seed).in_group(&group),
+            )?;
+        }
+        sources::seed_new_org(ctx)?;
+        let versions = || {
+            ["001", "002"]
+                .map(|name| SeedVersion {
+                    name: name.into(),
+                    ..Default::default()
+                })
+                .to_vec()
+        };
+        let street_detail = format!("{label}{run_id}");
+        seed_details(
+            ctx,
+            &[
+                SeedDetail {
+                    category: "Street".into(),
+                    name: street_detail.clone(),
+                    versions: versions(),
+                    ..Default::default()
+                },
+                SeedDetail {
+                    category: "Event".into(),
+                    name: QC_EVENT_DETAIL.into(),
+                    versions: versions(),
+                    ..Default::default()
+                },
+            ],
+            Some(&group),
+        )?;
+        // Charles on Street-<side>-001, the Trust on -002.
+        for (contact, version) in [(&ids[1], "001"), (&ids[2], "002")] {
+            let code: String = ctx.tx.read().query_row(
+                "SELECT v.id FROM source_codes v
+                 JOIN source_codes d ON d.id = v.parent_id
+                 JOIN source_codes c ON c.id = d.parent_id
+                 WHERE c.name = 'Street' AND d.name = ?1 AND v.name = ?2",
+                [&street_detail, version],
+                |r| r.get(0),
+            )?;
+            execute(
+                ctx,
+                &ACQUISITION,
+                Acquisition {
+                    code_id: Some(code),
+                },
+                Exec::update(contact, Some(0), Source::Seed).in_group(&group),
             )?;
         }
         if with_field {

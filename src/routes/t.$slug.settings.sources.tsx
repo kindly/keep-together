@@ -1,16 +1,17 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery } from 'convex/react'
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
-import {
-  SOURCE_DESCRIPTION_MAX,
-  SOURCE_NAME_MAX,
-} from '../../convex/sources/rules'
 import { ConfirmDialog } from '../components/confirm-dialog'
 import { StaffListSwitch } from '../components/staff-list-switch'
 import {
+  preloadSourceTree,
+  useSourceTree,
+  useSourceWrites,
+} from '../lib/data'
+import {
+  SOURCE_DESCRIPTION_MAX,
+  SOURCE_NAME_MAX,
   archiveHides,
   childNoun,
   conflictsOf,
@@ -25,13 +26,16 @@ import {
   shownParts,
 } from '../lib/source-codes'
 import type { Draft, Fields, Part } from '../lib/source-codes'
-import { useCanManageList, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/sources')({
   component: SourceCodesPage,
-  // Not ported yet: renders "being ported" (lib/data/ported.ts). Its
-  // loader prewarmed Convex queries; the porting step writes a new one.
+  loader: ({ context, params }) => preloadSourceTree(context, params.slug),
 })
+
+/** Whether I may change the tree: the server says, with the tree. */
+function useCanManage(): boolean {
+  return useSourceTree()?.canManage ?? false
+}
 
 const INDENT = { category: '', detail: 'pl-6', version: 'pl-12' } as const
 
@@ -52,9 +56,8 @@ const LEVEL_NAME = {
  * meanwhile.
  */
 function SourceCodesPage() {
-  const tenant = useTenant()
-  const canManage = useCanManageList('sourceCodes')
-  const parts = useQuery(api.sources.queries.tree, { tenantId: tenant._id })
+  const canManage = useCanManage()
+  const parts = useSourceTree()?.parts
   const [showArchived, setShowArchived] = useState(false)
   // Rows with an editor or add form open, which stay shown (shownParts).
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
@@ -133,8 +136,7 @@ function AddPart({
   under?: string
   onDone?: () => void
 }) {
-  const tenant = useTenant()
-  const create = useMutation(api.sources.mutations.create)
+  const { create } = useSourceWrites()
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -145,7 +147,7 @@ function AddPart({
     setError(null)
     setBusy(true)
     try {
-      await create({ tenantId: tenant._id, parentId, name, isActive: true })
+      await create({ parentId, name, isActive: true })
       setName('')
       onDone?.()
     } catch (err) {
@@ -227,10 +229,8 @@ function PartRow({
   kept: boolean
   markOpen: (id: string, isOpen: boolean) => void
 }) {
-  const tenant = useTenant()
-  const canManage = useCanManageList('sourceCodes')
-  const save = useMutation(api.sources.mutations.save)
-  const remove = useMutation(api.sources.mutations.remove)
+  const canManage = useCanManage()
+  const { save, remove } = useSourceWrites()
   const [editing, setEditing] = useState(false)
   const [adding, setAdding] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -257,12 +257,7 @@ function PartRow({
     setError(null)
     setBusy(true)
     try {
-      await save({
-        tenantId: tenant._id,
-        id: part._id,
-        expected,
-        ...payload(fieldsOf(part), isActive),
-      })
+      await save(part._id, expected, payload(fieldsOf(part), isActive))
     } catch (err) {
       setError(failureMessage(err, 'row'))
     } finally {
@@ -275,11 +270,7 @@ function PartRow({
     setError(null)
     setBusy(true)
     try {
-      await remove({
-        tenantId: tenant._id,
-        id: part._id,
-        expected: part.saveVersion,
-      })
+      await remove(part._id, part.saveVersion)
     } catch (err) {
       setError(failureMessage(err, 'row'))
       setBusy(false)
@@ -430,8 +421,7 @@ function PartRow({
  * next save goes against it.
  */
 function EditPart({ part, onDone }: { part: Part; onDone: () => void }) {
-  const tenant = useTenant()
-  const save = useMutation(api.sources.mutations.save)
+  const { save } = useSourceWrites()
   const [draft, setDraft] = useState<Draft>(() => openDraft(part))
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -451,12 +441,7 @@ function EditPart({ part, onDone }: { part: Part; onDone: () => void }) {
     setError(null)
     setBusy(true)
     try {
-      await save({
-        tenantId: tenant._id,
-        id: part._id,
-        expected: draft.baseVersion,
-        ...payload(draft.fields, part.isActive),
-      })
+      await save(part._id, draft.baseVersion, payload(draft.fields, part.isActive))
       onDone()
     } catch (err) {
       setError(failureMessage(err))

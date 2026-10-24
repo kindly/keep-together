@@ -3,15 +3,35 @@
  * shows, why a part can't be deleted, and how an open editor follows a
  * part someone else saves meanwhile (the usual three-way merge, ADR 0017).
  */
-import { ConvexError } from 'convex/values'
-import type { FunctionReturnType } from 'convex/server'
-import type { api } from '../../convex/_generated/api'
-import type { SourceCodePayload } from '../../convex/sources/validators'
+import type { Part, SourceCodePayload } from './data'
+import { RustApiError } from './data/rust/client'
+import type { SourceDateStatus } from './data/rust-types/SourceDateStatus'
 import { threeWayMerge } from './merge'
 
-/** One row of `sources.queries.tree`. */
-export type Part = FunctionReturnType<typeof api.sources.queries.tree>[number]
+/** One row of the tree (`GET sources`). */
+export type { Part }
 export type Level = Part['level']
+
+export type DateStatus = SourceDateStatus
+
+/** The longest a part's name can be (the server's `SOURCE_NAME_MAX`). */
+export const SOURCE_NAME_MAX = 40
+/** The longest a description can be (`SOURCE_DESCRIPTION_MAX`). */
+export const SOURCE_DESCRIPTION_MAX = 1000
+
+/**
+ * Where `today` falls in a code's dates (the server's `date_status`, for
+ * a code the picker didn't list: one a contact carries). Dates guide,
+ * never block.
+ */
+export function dateStatus(
+  dates: { startDate?: string; endDate?: string },
+  today: string,
+): DateStatus {
+  if (dates.startDate && today < dates.startDate) return 'notStarted'
+  if (dates.endDate && today > dates.endDate) return 'ended'
+  return 'current'
+}
 
 /** What a part under one of this level is called; null under a version. */
 export function childNoun(level: Level): 'detail' | 'version' | null {
@@ -186,22 +206,17 @@ export function failureMessage(
   err: unknown,
   from: 'form' | 'row' = 'form',
 ): string {
-  const data =
-    err instanceof ConvexError
-      ? (err.data as {
-          kind?: string
-          message?: string
-          problems?: Array<{ message: string }>
-        })
-      : null
-  if (data?.kind === 'invalid' && data.problems?.length)
+  if (!(err instanceof RustApiError)) return 'Could not save'
+  const data = err.error
+  if (data.kind === 'invalid' && data.problems.length)
     return data.problems.map((p) => p.message).join('; ')
-  if (data?.kind === 'stale')
+  if (data.kind === 'stale')
     return from === 'form'
       ? 'Someone else changed this code just now. Their changes are merged in: check, then save again.'
       : 'Someone else changed this code just now; check it and try again.'
-  if (data?.kind === 'forbidden')
+  if (data.kind === 'forbidden')
     return 'You can no longer manage source codes in this group'
-  if (data?.kind === 'not_found') return 'This code no longer exists'
-  return data?.message ?? data?.kind ?? 'Could not save'
+  if (data.kind === 'not_found') return 'This code no longer exists'
+  if (data.kind === 'rejected') return data.message
+  return err.message
 }

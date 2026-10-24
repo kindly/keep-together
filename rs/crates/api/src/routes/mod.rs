@@ -10,6 +10,7 @@ mod notes;
 mod preferences;
 pub mod qc_seed;
 mod relationships;
+mod sources;
 
 use axum::Router;
 use axum::extract::rejection::QueryRejection;
@@ -29,6 +30,7 @@ pub fn router() -> Router {
         .merge(notes::router())
         .merge(relationships::router())
         .merge(comms::router())
+        .merge(sources::router())
 }
 
 /// A query string whose rejection is an [`ApiError::Invalid`], like

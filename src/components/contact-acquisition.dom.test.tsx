@@ -4,7 +4,8 @@ import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { Id } from '../../convex/_generated/dataModel'
-import type { SourceCodeDescription } from '../../convex/sources/code'
+import type { SourceCodeDescription } from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
 import { ContactAcquisition } from './contact-acquisition'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -15,16 +16,19 @@ const ENTRY = {
   code: 'Event-Gala-001',
   status: 'current',
 }
-vi.mock('convex/react', () => ({
-  useConvex: () => ({ prewarmQuery: () => {} }),
-  useMutation: () => setAcquisition,
+vi.mock('../lib/data', () => ({
+  useSetAcquisition: () => setAcquisition,
   // The picker's search, open or not.
-  useQuery: () => ({ codes: [ENTRY], truncated: false }),
+  useSourcePicker: () => ({ codes: [ENTRY], truncated: false }),
 }))
-vi.mock('../lib/tenant', () => ({ useTenant: () => ({ _id: 'tenantA' }) }))
-vi.mock('./contact-history', () => ({
-  useHistoryHold: () => ({ hold: () => {}, release: () => {} }),
-}))
+
+const stale = (counter: number) =>
+  new RustApiError(409, {
+    kind: 'stale',
+    contract: 'contacts.acquisition',
+    counter,
+    current: {},
+  })
 
 const described = (versionId: string, code: string) =>
   ({ versionId, code, isActive: true }) as unknown as SourceCodeDescription
@@ -88,9 +92,7 @@ test('a set code shows no search box; it is replaced by removing, then picking',
 
   setAcquisition.mockResolvedValue({ id: 'c1', counter: 2 })
   await remove()
-  expect(setAcquisition).toHaveBeenLastCalledWith(
-    expect.objectContaining({ expected: 1, codeId: null }),
-  )
+  expect(setAcquisition).toHaveBeenLastCalledWith(null, 1)
   // Saved, but the page still holds the old description: still saving,
   // and the old code never comes back meanwhile.
   render(undefined, old, 2)
@@ -101,9 +103,7 @@ test('a set code shows no search box; it is replaced by removing, then picking',
 
   setAcquisition.mockResolvedValue({ id: 'c1', counter: 3 })
   await pickNew()
-  expect(setAcquisition).toHaveBeenLastCalledWith(
-    expect.objectContaining({ expected: 2, codeId: 'new' }),
-  )
+  expect(setAcquisition).toHaveBeenLastCalledWith('new', 2)
   // The root carries the new code before its description loads.
   render('new', null, 3)
   expect(shown()).toContain('Event-Gala-001')
@@ -125,7 +125,6 @@ test('after a remove, the search box takes focus once it is enabled', async () =
 })
 
 test('a code changed under the open confirm: Remove is stale, the new code stays', async () => {
-  const { ConvexError } = await import('convex/values')
   render('old', described('old', 'Street-Alpha-001'))
   await act(async () =>
     el
@@ -136,14 +135,10 @@ test('a code changed under the open confirm: Remove is stale, the new code stays
   )
   // Someone else sets another code while the confirm is open.
   render('other', described('other', 'Event-Gala-002'), 2)
-  setAcquisition.mockRejectedValue(
-    new ConvexError({ kind: 'stale', current: 2 }),
-  )
+  setAcquisition.mockRejectedValue(stale(2))
   await act(async () => button('Remove').click())
   // Sent against the counter the confirm opened on, so the server refuses.
-  expect(setAcquisition).toHaveBeenLastCalledWith(
-    expect.objectContaining({ expected: 1, codeId: null }),
-  )
+  expect(setAcquisition).toHaveBeenLastCalledWith(null, 1)
   expect(shown()).toContain('Event-Gala-002')
   expect(el.querySelector('[role="alert"]')?.textContent).toContain(
     'Someone else changed the source code',
@@ -152,11 +147,8 @@ test('a code changed under the open confirm: Remove is stale, the new code stays
 })
 
 test('a refused save keeps the code and says why', async () => {
-  const { ConvexError } = await import('convex/values')
   render('old', described('old', 'Street-Alpha-001'))
-  setAcquisition.mockRejectedValue(
-    new ConvexError({ kind: 'stale', current: 3 }),
-  )
+  setAcquisition.mockRejectedValue(stale(3))
   await remove()
   expect(shown()).toContain('Street-Alpha-001')
   expect(shown()).not.toContain('saving…')
