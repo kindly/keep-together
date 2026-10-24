@@ -3,6 +3,8 @@
 
 mod contacts;
 mod fields;
+pub mod groups;
+mod preferences;
 pub mod qc_seed;
 mod sources;
 
@@ -19,6 +21,7 @@ pub fn router() -> Router {
     Router::new()
         .merge(contacts::router())
         .merge(fields::router())
+        .merge(preferences::router())
         .merge(sources::router())
 }
 

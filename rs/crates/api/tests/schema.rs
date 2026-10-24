@@ -47,7 +47,18 @@ const FIXTURES: &[&str] = &[
      INSERT INTO contact_search_trigram (rowid, text) VALUES (10001, 'ann smith ann@x.org');",
     // 3: drop the trigram FTS variant (no new tables)
     "",
-    // 4: source codes
+    // 4: tenant preferences
+    "INSERT INTO tenant_preferences (id, staff_can_manage_identifier_types, identifier_types_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6', 1, 1);
+     INSERT INTO revisions (id, entity, entity_id, contract, version, counter, payload, actor,
+         source, at)
+     VALUES (2, 'tenant_preferences', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6',
+         'tenantPreferences.identifierTypes', 1, 1,
+         '{\"staffCanManageIdentifierTypes\":true}', 1, 'ui', 2000);",
+    // 5: tenant settings
+    "INSERT INTO tenant_settings (id, name, nonce, ciphertext, version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f7', 'webhook', 'AAAAAAAAAAAAAAAA', 'AAAA', 0);",
+    // 6: source codes
     "INSERT INTO source_codes (id, parent_id, level, name, name_normalized, is_active, used)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1', NULL, 'category', 'Street', 'street', 1, 1),
             ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1', 'detail',
@@ -55,7 +66,7 @@ const FIXTURES: &[&str] = &[
             ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a2', 'version',
              '001', '001', 1, 1);
      INSERT INTO source_code_deletions (id, deleted) VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a4', 1);",
-    // 5: a contact's acquisition code
+    // 7: a contact's acquisition code
     "UPDATE contacts SET acquisition_code_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3',
          acquisition_version = 1;",
 ];
@@ -231,7 +242,11 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
     let mut conn = Connection::open_in_memory().unwrap();
     org_migrations().to_latest(&mut conn).unwrap();
     let mut owners = BTreeMap::new();
-    let registries = [&*contacts::REGISTRY, &*sources::REGISTRY];
+    let registries = [
+        &*contacts::REGISTRY,
+        &*platform::REGISTRY,
+        &*sources::REGISTRY,
+    ];
     for c in registries.iter().flat_map(|r| r.contracts()) {
         let (ty, notnull, default): (String, bool, Option<String>) = conn
             .query_row(

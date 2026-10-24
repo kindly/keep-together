@@ -238,11 +238,9 @@ async fn save_and_delete_answer_counters_stale_and_used() {
 }
 
 // sources.test.ts › list management › admins always; staff only with the
-// switch; viewers never; per tenant. The switch is A3's
-// (`tenantPreferences.sourceCodes`); until it merges staff are refused,
-// as with the switch off.
+// switch; viewers never; per tenant.
 #[tokio::test]
-async fn admins_manage_staff_and_viewers_only_read_and_assign() {
+async fn admins_manage_staff_only_with_the_switch_viewers_never_per_org() {
     let w = world();
     let p = w.store.platform();
     p.set_membership(
@@ -284,6 +282,81 @@ async fn admins_manage_staff_and_viewers_only_read_and_assign() {
         let (s, tree) = w.call("GET", "/api/t/alpha/sources", who, None).await;
         assert_eq!((s, &tree["canManage"]), (StatusCode::OK, &json!(false)));
     }
+    // B's switch on opens nothing in A.
+    let bob = w.login("bob@beta.org").await;
+    let switch =
+        |on: bool, expected: Option<i64>| json!({ "staffCanManage": on, "expected": expected });
+    let (s, _) = w
+        .call(
+            "POST",
+            "/api/t/beta/preferences/sourceCodes",
+            &bob,
+            Some(switch(true, None)),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = w
+        .call("POST", &writes(0)[0].0, &sam, Some(writes(0)[0].1.clone()))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // A's switch on: staff manage (the tree says so), viewers still don't.
+    let (s, on) = w
+        .call(
+            "POST",
+            "/api/t/alpha/preferences/sourceCodes",
+            &ann,
+            Some(switch(true, None)),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, tree) = w.call("GET", "/api/t/alpha/sources", &sam, None).await;
+    assert_eq!(tree["canManage"], true);
+    let (s, made) = w
+        .call("POST", &writes(0)[0].0, &sam, Some(writes(0)[0].1.clone()))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{made}");
+    let v2 = made["id"].as_str().unwrap();
+    let (s, _) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/sources/{v2}/save"),
+            &sam,
+            Some(json!({ "expected": 0, "name": "003", "isActive": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, gone) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/sources/{v2}/delete"),
+            &sam,
+            Some(json!({ "expected": 1 })),
+        )
+        .await;
+    assert_eq!((s, gone), (StatusCode::OK, json!({ "deleted": 1 })));
+    for (path, body) in writes(0) {
+        let (s, _) = w.call("POST", &path, &val, Some(body)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{path}");
+    }
+    // Off again: staff are refused, admins aren't.
+    let (s, _) = w
+        .call(
+            "POST",
+            "/api/t/alpha/preferences/sourceCodes",
+            &ann,
+            Some(switch(false, on["counter"].as_i64())),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = w
+        .call("POST", &writes(0)[0].0, &sam, Some(writes(0)[0].1.clone()))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = w
+        .call("POST", &writes(0)[0].0, &ann, Some(writes(0)[0].1.clone()))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
     // Staff assign codes (ordinary editing); viewers don't.
     let ada = contact(&w, "alpha", &ann).await;
     let set = format!("/api/t/alpha/contacts/{ada}/acquisition");

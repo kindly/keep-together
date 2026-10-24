@@ -10,6 +10,7 @@ use contacts::acquisition::{SetAcquisition, set_acquisition};
 use contacts::queries;
 use contacts::types::ContactView;
 use contracts::{ContractError, Exec, Executed, Source, execute};
+use platform::{ListKind, Role, may_manage_list};
 use rusqlite::Connection;
 use serde::Serialize;
 use sources::types::{
@@ -17,7 +18,6 @@ use sources::types::{
     SourceCodePayload, Tree,
 };
 use sources::{CODE, Created, DELETION, DeletionPayload};
-use store::Role;
 use ts_rs::TS;
 
 use super::Params;
@@ -34,25 +34,11 @@ pub fn router() -> Router {
         .route("/contacts/{id}/acquisition", post(acquisition))
 }
 
-/// The lists whose management the organisation may hand to staff.
-// TODO(A3): replace with `platform::ListKind` / `platform::may_manage_list`
-// (port/a3, af866f4) once A3 merges; same shape.
-#[derive(Clone, Copy)]
-enum ListKind {
-    SourceCodes,
-}
-
-/// Stub of `platform::may_manage_list`: admins only until the staff switch
-/// (`tenantPreferences.sourceCodes`, A3) exists.
-///
-/// Checked by these routes, not by the contract (Convex's `managesList`
-/// covered restore too): a route that restores `sources.*` revisions must
-/// call it as well.
-fn may_manage_list(_conn: &Connection, role: Role, kind: ListKind) -> rusqlite::Result<bool> {
-    let ListKind::SourceCodes = kind;
-    Ok(role == Role::Admin)
-}
-
+/// Managing the list is for admins, and staff while the organisation's
+/// "staff can manage source codes" switch is on (`platform`). Checked by
+/// these routes, not by the contract (Convex's `managesList` covered
+/// restore too): a route that restores `sources.*` revisions must call
+/// it as well.
 fn require_manager(conn: &Connection, role: Role) -> Result<(), ApiError> {
     if may_manage_list(conn, role, ListKind::SourceCodes)? {
         Ok(())

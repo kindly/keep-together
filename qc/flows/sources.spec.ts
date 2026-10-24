@@ -1,6 +1,5 @@
 import { expect, test } from '../fixtures'
 import { runId } from '../timing'
-import { released } from '../convex-pending'
 import { secondTab, want } from './contact.helpers'
 import type { Page } from '@playwright/test'
 
@@ -9,7 +8,7 @@ import type { Page } from '@playwright/test'
 // editing a part, archiving it, deleting an unused one, a save merged
 // over someone else's, and the admin-only "staff can manage source codes"
 // switch. User A is an admin of tenant A, whose categories are the seven
-// starters plus a Street detail named `Alpha<run>` (qcSeed). The world is
+// starters plus a Street detail named `Alpha<run>` (qc_seed.rs). The world is
 // shared by every test in a worker, so each test makes its own details
 // under Online, and leaves the switch off.
 
@@ -102,20 +101,15 @@ test.describe('source codes', { annotation: SOURCES_ROUTE }, () => {
     users,
   }) => {
     test.info().annotations.push(SETTINGS_ROUTE)
-    await page.goto(`/t/${users.a.slug}/settings/fields`)
     const tabs = page.getByRole('navigation', { name: 'Settings sections' })
     const sources = tabs.getByRole('link', { name: 'Source codes' })
-    const fieldsTab = tabs.getByRole('link', { name: 'Fields' })
     await flow(page, 'settings.sourceCodes.open', {
       before: async () => {
-        if (page.url().endsWith('/settings/sources')) {
-          await fieldsTab.click()
-          await expect(
-            page.getByRole('heading', { name: 'Fields', exact: true }),
-          ).toBeVisible()
-        }
-        // The tab's loader prewarms the tree for 5 s after it is left.
-        await released(page, ['sources/queries:tree'])
+        // A fresh load of another Settings page (Switch group: ported,
+        // unlike Fields): the tree isn't cached (it is kept, fresh, once
+        // read), so the click fetches it.
+        await page.goto(`/t/${users.a.slug}/settings/groups`)
+        await expect(sources).toBeVisible()
       },
       action: () => sources.click(),
       until: sourcesLoaded,

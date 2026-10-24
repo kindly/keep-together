@@ -29,6 +29,7 @@ import type { CreatedContact } from '../rust-types/CreatedContact'
 import type { FieldDefinition as WireField } from '../rust-types/FieldDefinition'
 import type { HistoryPage } from '../rust-types/HistoryPage'
 import type { RestoredContact } from '../rust-types/RestoredContact'
+import type { Group } from '../rust-types/Group'
 import type { Me } from '../rust-types/Me'
 import type { SaveFormResult } from '../rust-types/SaveFormResult'
 import type { SearchResult as WireSearch } from '../rust-types/SearchResult'
@@ -92,31 +93,40 @@ function useMe(): Me | null | undefined {
   return me.data
 }
 
-function tenantOf(m: Me['memberships'][number]): Tenant {
-  return {
-    // The slug stands in for the id: the Rust API is addressed by slug.
-    _id: m.slug as Id<'tenants'>,
-    slug: m.slug,
-    name: m.name,
-    role: m.role,
-    lastUsedAt: null,
-    staffCanManageIdentifierTypes: false,
-    identifierTypesVersion: null,
-    staffCanManageSourceCodes: false,
-    sourceCodesVersion: null,
-    staffCanManageFields: false,
-    fieldsVersion: null,
-    canManageIdentifierTypes: false,
-    canManageSourceCodes: false,
-    canManageFields: false,
+/** `GET /api/groups` (`mine`); null when signed out. */
+async function fetchGroups(): Promise<Array<Group> | null> {
+  try {
+    return await get<Array<Group>>('groups')
+  } catch (e) {
+    if (e instanceof RustApiError && e.status === 401) return null
+    throw e
   }
+}
+
+const groupsQuery = {
+  queryKey: keys.groups,
+  queryFn: fetchGroups,
+  // Memberships change without a tenant event (an invite elsewhere); a
+  // switch saved in this group arrives as its event (events.ts).
+  staleTime: 60_000,
+  refetchOnWindowFocus: true,
+}
+
+function tenantOf(g: Group): Tenant {
+  // The slug stands in for the id: the Rust API is addressed by slug.
+  return { _id: g.slug as Id<'tenants'>, ...g }
 }
 
 const MyTenants = createContext<Array<Tenant> | undefined>(undefined)
 
+/**
+ * The caller's groups, with each one's role, "last used" and list
+ * switches. Asked for alongside `/boot` on a cold load (`boot` below), not
+ * after it.
+ */
 export function MyTenantsProvider({ children }: { children: ReactNode }) {
-  const me = useMe()
-  const tenants = useMemo(() => me?.memberships.map(tenantOf), [me])
+  const groups = useQuery(groupsQuery).data
+  const tenants = useMemo(() => groups?.map(tenantOf), [groups])
   return <MyTenants.Provider value={tenants}>{children}</MyTenants.Provider>
 }
 
@@ -169,6 +179,8 @@ const unfiltered = (slug: string) => keys.list(slug, { q: '' })
  */
 export function boot(qc: QueryClient, slug: string) {
   const answer = get<Boot>(tenantPath(slug, 'boot'))
+  // In parallel: the tenant layout needs the caller's groups too.
+  void qc.prefetchQuery(groupsQuery)
   // Before anything it answers can render: the stream opens after it.
   void answer.then(
     (b) => setCursor(slug, b.seq),

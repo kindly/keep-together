@@ -20,7 +20,12 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/contacts/',
   '/t/$slug/contacts/new',
   '/t/$slug/contacts/$contactId',
-  // A2. Its layout (Settings) is A3's: reachable once that is ported.
+  // A3: Settings' layout (its list tabs come with their slices) and
+  // Switch group.
+  '/t/$slug/settings',
+  '/t/$slug/settings/',
+  '/t/$slug/settings/groups',
+  // A2: Settings › Source codes.
   '/t/$slug/settings/sources',
 ]
 

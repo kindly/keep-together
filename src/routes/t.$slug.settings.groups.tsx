@@ -1,5 +1,6 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { useMyTenants, useTenant } from '../lib/tenant'
+import { useMyTenants } from '../lib/data'
+import { useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/groups')({
   component: SwitchGroup,

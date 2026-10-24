@@ -5,7 +5,6 @@ import type { Id } from '../../convex/_generated/dataModel'
 import { ConfirmDialog } from '../components/confirm-dialog'
 import { StaffListSwitch } from '../components/staff-list-switch'
 import {
-  FEATURES,
   preloadSourceTree,
   useSourceTree,
   useSourceWrites,
@@ -85,8 +84,7 @@ function SourceCodesPage() {
           on a contact or a gift.
         </p>
       </div>
-      {/* A3's switch, once Settings is on the Rust API. */}
-      {FEATURES.settings && <StaffListSwitch kind="sourceCodes" />}
+      <StaffListSwitch kind="sourceCodes" />
       {canManage && <AddPart parentId={undefined} noun="category" />}
       {parts === undefined ? (
         <p className="text-sm text-neutral-500">Loading…</p>
