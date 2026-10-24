@@ -96,6 +96,18 @@ async fn main() {
             std::process::exit(1)
         }
     }
+    // After the migrations: the org files are read at the head schema.
+    match jobs::reconcile_pending(&store) {
+        Ok((added, failed)) => {
+            if added > 0 {
+                eprintln!("marked {added} unfinished job(s) pending");
+            }
+            for f in failed {
+                eprintln!("pending-job reconcile: {f}");
+            }
+        }
+        Err(e) => eprintln!("pending-job reconcile: {e}"),
+    }
     // After the migrations: the seed writes through the head schema.
     match api::reset::seed_from_env(&store, &auth.keys) {
         Ok(true) => eprintln!("seeded {}", api::reset::SLUG),
