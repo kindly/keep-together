@@ -570,6 +570,7 @@ pub trait DynContract: Sync {
     fn name(&self) -> &'static str;
     fn version(&self) -> u32;
     fn entity(&self) -> &'static str;
+    fn counter(&self) -> &'static str;
     fn upcast_step(&self, from: u32, payload: Value) -> Option<Value>;
     fn execute_value(
         &self,
@@ -588,6 +589,9 @@ impl<C: Contract> DynContract for C {
     }
     fn entity(&self) -> &'static str {
         C::ENTITY
+    }
+    fn counter(&self) -> &'static str {
+        C::COUNTER
     }
     fn upcast_step(&self, from: u32, payload: Value) -> Option<Value> {
         self.upcast(from, payload)
@@ -622,6 +626,28 @@ impl Registry {
 
     pub fn get(&self, name: &str) -> Option<&'static dyn DynContract> {
         self.0.get(name).copied()
+    }
+
+    /// Every registered contract, by name.
+    pub fn contracts(&self) -> impl Iterator<Item = &'static dyn DynContract> + '_ {
+        let mut all: Vec<_> = self.0.values().copied().collect();
+        all.sort_by_key(|c| c.name());
+        all.into_iter()
+    }
+
+    /// Upcast steps a contract's version needs and doesn't have: each
+    /// `(name, from)`. Empty when every stored version can be restored.
+    pub fn missing_upcasters(&self) -> Vec<(&'static str, u32)> {
+        let probe = Value::Object(Default::default());
+        let mut missing = Vec::new();
+        for c in self.contracts() {
+            for from in 1..c.version() {
+                if c.upcast_step(from, probe.clone()).is_none() {
+                    missing.push((c.name(), from));
+                }
+            }
+        }
+        missing
     }
 }
 

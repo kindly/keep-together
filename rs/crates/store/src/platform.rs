@@ -36,14 +36,11 @@ const MIGRATIONS: &[M<'static>] = &[
         created_at INTEGER NOT NULL
     ) STRICT;",
     ),
-    // Hourly snapshots (`api::backup`): the last revision id each org's
-    // snapshot was taken at.
+    // Hourly snapshots (`api::backup`): what each org's (and the
+    // 'platform' row's) last snapshots were taken at. No FK: the platform
+    // file has a row too. `api::backup` runs the same DDL.
     M::up(
-        "CREATE TABLE IF NOT EXISTS snapshots (
-        tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
-        last_revision INTEGER NOT NULL,
-        at INTEGER NOT NULL
-    ) STRICT;",
+        "CREATE TABLE IF NOT EXISTS snapshots (tenant_id TEXT PRIMARY KEY, last_revision INTEGER, at INTEGER NOT NULL, daily_revision INTEGER, daily_day TEXT, monthly_month TEXT) STRICT;",
     ),
 ];
 

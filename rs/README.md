@@ -1,18 +1,33 @@
-# rs/ — Rust + SQLite spike
+# rs/ — the Rust + SQLite backend
 
-The experiment in `factory/plans/rust-spike.sv`: the contacts slice
-rebuilt on axum + rusqlite, one SQLite file per organisation. `convex/`
-and `main` are untouched; the SPA picks a backend with
-`VITE_BACKEND=convex|rust`.
+keep-together is moving off Convex (`factory/plans/migration-rust.sv`):
+axum + rusqlite, **one SQLite file per organisation** plus `platform.db`.
+Each route is ported straight here; `convex/` is read-only reference until
+cutover. The SPA picks a backend with `VITE_BACKEND=convex|rust` until F3
+makes it Rust-only.
 
 ```
-cargo test                       # from rs/: every crate; also re-exports the TS types
-KEEP_DEV_AUTH=1 cargo run -p api # http://127.0.0.1:8787, data in rs/data/
+cargo test                                 # from rs/: every crate; also re-exports the TS types
+cargo clippy --all-targets -- -D warnings
+KEEP_DEV_AUTH=1 KEEP_PORT=8788 cargo run -p api   # data in rs/data/ (gitignored)
+VITE_BACKEND=rust KEEP_PORT=8788 pnpm dev         # from the repo root: Vite proxies /api to it
+cargo run -p cli --bin keep -- sql <slug> "SELECT count(*) FROM contacts"
 ```
 
-Env: `KEEP_DATA_DIR` (default `data`), `KEEP_PORT` (default 8787),
-`KEEP_DEV_AUTH=1` (dev login; without it no session is honoured),
-`KEEP_QC_SEED=1` (with dev auth: `POST /api/dev/qc-seed` and `qc-crowd`).
+Each worktree runs its api on its own `KEEP_PORT` (8787 + n) with its own
+`rs/data/`; Vite proxies `/api` to `KEEP_PORT` (or `KEEP_API`), and only
+when `VITE_BACKEND=rust`.
+
+Env (`api`):
+
+| var | default | |
+|---|---|---|
+| `KEEP_DATA_DIR` | `data` | `platform.db`, `orgs/`, `premigrate/` |
+| `KEEP_BIND` | `127.0.0.1` | Fly sets `0.0.0.0` |
+| `KEEP_PORT` | `8787` | |
+| `KEEP_MAX_OPEN_ORGS` | `64` | org files kept open beyond those in use |
+| `KEEP_DEV_AUTH=1` | off | the dev login (below). **Dev auth is no auth**: anyone who can reach the port signs in as anyone. It is honoured only on a loopback bind; on any other address it is ignored with a warning |
+| `KEEP_QC_SEED=1` | off | with dev auth: `POST /api/dev/qc-seed` and `qc-crowd` (≤ 10k) |
 
 The 10k measurement (`scripts/perf-search10k-rs/`):
 
@@ -26,15 +41,26 @@ node ../scripts/perf-search10k-rs/measure.mjs --out $TMPDIR/rs-measure
 node ../scripts/perf-search10k-rs/analyze.mjs $TMPDIR/rs-measure/raw.json --rtt 30
 ```
 
+(`measure.mjs` still asks for `fts=trigram`; that variant is gone, so the
+parameter is ignored and both columns measure the words index.)
+
 ## Crates
 
 | crate | owns |
 |---|---|
-| `store` | `platform.db` (tenants, users, memberships, sessions) and `orgs/<tenant-id>.db`; pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`); one writer per file behind a mutex + a read-only reader pool; migrations on open |
-| `contracts` | `Contract` trait, `execute`, revisions, command groups, restore through upcasters, child-row reconcile |
-| `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history (no `store::Platform`, no tenant) |
-| `api` | axum app: dev session cookie, `/api/t/{slug}` → one `OrgDb`, `Server-Timing`, JSON errors; `schema.rs` is the org migration list; `routes/` the domain routes and the QC seed |
+| `store` | `platform.db` (tenants, users, memberships, sessions, snapshots) and `orgs/<tenant-id>.db`; pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`, no `ATTACH`); per file one writer behind a mutex + a read-only reader pool; the handle LRU; boot migration; each file's event channel |
+| `contracts` | the **only write path**: `transact`, `Contract`, `execute`, revisions, command groups, restore through upcasters, child-row reconcile, events |
+| `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history |
+| `sources`, `giving`, `giftaid`, `comms` | domain crates, empty until wave A/B |
+| `platform`, `auth` | control plane and staff auth, empty until A3/A4 |
+| `api` | axum app: dev session cookie, `/api/t/{slug}` → one `OrgDb`, SSE, `/boot`, jobs, `/healthz`, `Server-Timing`, JSON errors; `schema.rs` is the org migration list; `routes/` the domain routes and the QC seed. Commands spanning modules live here, in one transaction |
+| `cli` | bin `keep`: `keep sql`, `keep tenant create` |
 | `seed` | bin: the perf generator's JSONL into one organisation, through the same contract functions the API calls |
+
+Domain crates depend on `contracts` (and each other's public functions),
+**never on `store`, `platform`, `auth` or `api`** — a test in
+`api/tests/schema.rs` reads their manifests. They can't name an
+organisation or open a file.
 
 ## Tenancy
 
@@ -52,9 +78,14 @@ Belt and braces: `TenantId` is 32 hex chars and can only come from a
 stamped with its tenant id and refused if it doesn't match; connections
 can't `ATTACH` (limit 0); reader connections are `query_only`.
 
-Domain crates (`contacts`) depend on `contracts` and take `&OrgTx` /
-`&OrgRead` / `&Ctx`. They never depend on `store::Platform` and never
-name an organisation.
+Domain functions take `&Ctx` (writes) or `&Connection` (reads, from
+`OrgRead` or `ctx.tx.read()`), and nothing that names an organisation.
+
+**Handles (M2).** `Store::org(id)` opens a file under that org's own lock
+(an open or a migration of one org never blocks a request to another),
+then keeps it in an LRU capped at `KEEP_MAX_OPEN_ORGS`; the `idle-close`
+job closes handles unused for 10 minutes. A handle someone holds (a
+request, an SSE stream) is never closed.
 
 ## HTTP conventions (what the SPA codes against)
 
@@ -87,13 +118,25 @@ name an organisation.
 
   Tier-2 warnings (ADR 0015) aren't errors: they ride along in read
   responses.
-- **Auth (stub).** `POST /api/dev/login {email}` sets the `kt_session`
-  cookie (HttpOnly, SameSite=Lax); `POST /api/dev/logout`; `GET /api/me`
-  → `Me {email, memberships: [{slug, name, role}]}`;
-  `POST /api/dev/tenants {slug, name}` makes an org with the caller as
-  admin; `GET /api/t/{slug}` → `TenantInfo`. All dev endpoints are
-  refused unless `KEEP_DEV_AUTH=1`. In dev, Vite proxies `/api` to :8787,
-  so the cookie is same-origin.
+- **Auth (stub; dev auth is no auth).** `POST /api/dev/login {email}`
+  signs in as that email, no password, and sets the `kt_session` cookie
+  (HttpOnly, SameSite=Lax); sessions expire after 7 days. `POST
+  /api/dev/logout`; `GET /api/me` → `Me {email, memberships: [{slug,
+  name, role}]}`; `POST /api/dev/tenants {slug, name}` makes an org with
+  the caller as admin; `GET /api/t/{slug}` → `TenantInfo`. All dev
+  endpoints, and every session, are refused unless `KEEP_DEV_AUTH=1` and
+  the server binds a loopback address (M1). A4 replaces this with real
+  auth.
+- **Cold load.** `GET /api/t/{slug}/boot` → `Boot {me, org, fields,
+  firstPage}`: one request seeds the SPA's cache.
+- **Live changes.** `GET /api/t/{slug}/events` (`text/event-stream`, any
+  member): one unnamed message per committed contract, `id:` = `seq`,
+  `data:` = `OrgEvent {seq, entity, id, contract, counter}` — ids only,
+  never data. `Last-Event-ID: n` replays revisions after `n` (at most
+  1000); further behind, or an unreadable id, gets one `event: reset` and
+  the client refetches everything. Keep-alive comment every 20 s.
+- **Health.** `GET /healthz` (no session) → `{ok, db, …}`; 503 when the
+  data dir can't be read.
 - **Timing.** Every `/api` response has
   `Server-Timing: platform;dur=…, db;dur=…, total;dur=…` (ms).
   `platform` = session + membership lookup, `db` = time inside org-file
@@ -103,7 +146,7 @@ name an organisation.
   `convex/_generated`; never edit by hand). Payload JSON with no fixed shape
   is typed `unknown`.
 
-## Writing a domain route (for step 2a)
+## Writing a domain route
 
 ```rust
 #[derive(Deserialize)]
@@ -122,8 +165,77 @@ async fn save(
 ```
 
 `ContractError` converts into `ApiError` with `?`. Mount the domain
-`Router` with `api::app(state, routes)`; add schema steps to
-`api::schema::org_migrations()` (append-only).
+`Router` with `api::app(state, routes)`. Every route gets an isolation
+test: under two orgs, B never sees A, and A's ids under B's slug answer
+404. A create, archive or restore answers with the entity's view, read in
+the same transaction (one round trip).
+
+## The write path (M3)
+
+`contracts::transact(&db, actor, |ctx| …)` is the only way to write an
+org file; `Tenant::write` calls it. Inside, `ctx.tx` is an `OrgTx`: it has
+no `Deref` to a connection and no write method. `ctx.tx.read()` gives the
+transaction's connection with `query_only` on, so it sees the
+transaction's own writes and refuses any of its own. The only writable
+connections are the `WriteTx` a contract's `write` gets and the
+`ProjectionTx` its `project` hook gets, which only `execute` (and
+`reproject`, for a projection's backfill) construct; `WriteTx::take_sequence`
+hands out system-owned numbers. `contracts/tests/sealed/` proves with
+`trybuild` that domain code can't call `execute` on raw SQL, deref an
+`OrgTx`, or forge a `WriteTx`. Domain crates don't depend on `store`, so
+they never see `OrgDb::write_raw`.
+
+Each executed contract emits an `OrgEvent`; `OrgDb::write_raw` publishes
+them after the commit, in commit order. A refused or rolled-back command
+publishes nothing.
+
+Ids a client chooses (a pre-generated entity id, a child row's key) are 32
+lower-case hex characters; anything else is `422 invalid`.
+
+## Schema and migrations
+
+`api::schema::org_migrations()` is the org schema: append-only, one
+transactional step per change (no loosen/tighten dance: SQLite doesn't
+re-validate rows, so a step that adds a constraint backfills or refuses in
+the same step).
+
+**At boot**, before listening, `Store::migrate_all()` brings every
+`orgs/*.db` to head, 4 at a time. A file with steps pending is first copied
+with `VACUUM INTO premigrate/<id>.v<from>.db` (older copies of that org
+deleted). Any failure stops the boot naming the org, so a deploy fails
+visibly. Rollback = the previous image plus
+`scripts/ops/rollback-migration.sh <data> <from-version> --apply` (API
+stopped), which puts the copies back.
+
+**A new step adds its fixture** to `FIXTURES` in `api/tests/schema.rs`:
+representative rows at that version. The test builds a file at every past
+version, migrates it to head, and checks row counts and
+`integrity_check`. The same file guards rule 7 (no `REAL`; any
+`*amount*`/`*pence*` column is `INTEGER`) and that every contract owns its
+own `INTEGER NOT NULL DEFAULT 0` counter and has its upcasters.
+
+## Jobs
+
+`api::jobs`: named in-process interval jobs (`Job` trait, `Jobs::register`,
+`standard(&store)`). A job touching organisations uses
+`each_org(&store, |id, db| …)`: one file at a time, never two in one
+transaction; one org's failure doesn't stop the others. Running now:
+`idle-close` (1 min) and `session-purge` (1 h); F2's hourly snapshot
+registers the same way.
+
+## `keep`
+
+```
+keep [--data <dir>] sql <slug> "<select…>" [--json]
+keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <email>
+```
+
+`keep sql` opens the org file `SQLITE_OPEN_READ_ONLY` with `query_only`,
+`ATTACH` limited to 0, an authorizer that allows only `SELECT`, column
+reads, functions and recursive CTEs, one statement, and a 10 s timeout:
+SQL text from anywhere (an agent) can't change the file. Output is CSV, or
+JSON objects. `keep tenant create` makes the org and its admin membership;
+A3 adds the seeds and the emailed invite.
 
 ## Contracts
 
@@ -140,7 +252,7 @@ through the upcaster chain; `restore_entity_to(at)` restores every slice
 that differs from its state at `at`. Child rows: `mint_ids` in `prepare`,
 `reconcile` in `write` (by id; identity fields immutable per id).
 
-## Contacts (step 2a)
+## Contacts
 
 Slices, each a contract with its own counter column on `contacts`:
 `contacts.details` (v1), `contacts.methods` (emails + phones; the
@@ -156,16 +268,18 @@ Routes under `/api/t/{slug}` (types in `src/lib/data/rust-types/`):
 | route | |
 |---|---|
 | `GET contacts?includeArchived&kind&fields&cursor&limit` | `ContactPage`: keyset pages on `(sort_key, id)`, ≤100 rows |
-| `GET contacts/search?q&includeArchived&kind&fields&fts` | `SearchResult`: exact matches first, then FTS |
+| `GET contacts/search?q&includeArchived&kind&fields` | `SearchResult`: exact matches first, then FTS |
 | `GET contacts/{id}` | `ContactView`: every slice, counters, warnings |
-| `GET contacts/{id}/history?before&limit` | `HistoryPage`, newest first |
-| `POST contacts` | `CreateContact` → `Created {id, number}`; a seen `clientKey`/`id` is `409 duplicate` |
+| `GET contacts/{id}/history?before&limit` | `HistoryPage`, newest first; unknown id `404` |
+| `POST contacts` | `CreateContact` → `CreatedContact {id, number, view}`; a seen `clientKey`/`id` is `409 duplicate` |
 | `POST contacts/{id}/save` | `SaveForm` → `SaveFormResult` (below) |
-| `POST contacts/{id}/archive` | `{expected, archived}` → `Executed`, or `409 stale` |
-| `POST contacts/{id}/restore` | `{revisionId}` or `{at}` → `Restored` |
+| `POST contacts/{id}/archive` | `{expected, archived}` → `ArchivedContact {id, counter, view}`, or `409 stale` |
+| `POST contacts/{id}/restore` | `{revisionId}` or `{at}` → `RestoredContact {restored, view}` |
 | `GET fields` · `POST fields` · `POST fields/options` | definitions; saving them needs admin |
 
 `fields` filters are `fieldId:optionId` or `fieldId:none`, comma-separated.
+Caps (L6): 50 emails, 50 phones and 50 addresses per contact; 200 fields
+per organisation (`422 rejected {reason: field_limit}`).
 
 **The form save answers 200, not 409, on a stale slice**, the way Convex's
 `saveForm` does: stale and invalid slices are reported (`stale: {slice:
@@ -175,9 +289,7 @@ the form merges and retries without another read.
 
 **Search** keeps Convex's matching rules (every term a whole word, the
 last a prefix; names with their joined forms, emails whole and split,
-phones as digits and tail, postcodes compact and spaced). Two FTS5 tables
-are kept side by side for the measurement; `fts=words` (unicode61 with
-prefix indexes, the default) or `fts=trigram`. Words is the choice: the
-rules are a plain `MATCH`, it was faster on every case, and its index is
-half the size. Trigram matches substrings, so it needs the word rules
-checked per row, and entries under three characters fall back to a scan.
+phones as digits and tail, postcodes compact and spaced) as a plain FTS5
+`MATCH` on `contact_search_words` (unicode61 with prefix indexes). The
+spike's trigram variant was measured and dropped (org schema step 3): it
+was slower on every case and its index twice the size.

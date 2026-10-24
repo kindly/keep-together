@@ -943,3 +943,138 @@ fn client_ids_and_child_keys_are_32_hex_characters() {
     };
     assert_eq!(problems[0].field, "emails.0.id");
 }
+
+#[test]
+fn a_slice_first_written_after_the_moment_is_left_as_it_is() {
+    let (_tmp, db) = org();
+    let id = in_tx(&db, |tx| {
+        execute(
+            &at(tx, 1_000),
+            &Details,
+            details("Original"),
+            Exec::create(Source::Ui),
+        )
+    })
+    .unwrap()
+    .id;
+    in_tx(&db, |tx| {
+        execute(
+            &at(tx, 2_000),
+            &Emails,
+            EmailsSlice {
+                emails: vec![email(None, "late@x.org", "home")],
+            },
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
+    in_tx(&db, |tx| {
+        execute(
+            &at(tx, 2_000),
+            &Details,
+            details("Changed"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
+    let restored = in_tx(&db, |tx| {
+        restore_entity_to(&at(tx, 3_000), &registry(), "toys", &id, 1_500, &[], None)
+    })
+    .unwrap();
+    assert_eq!(restored, vec!["toys.details".to_owned()]);
+    // The email added after the moment stays.
+    assert_eq!(in_tx(&db, |tx| Emails.load(tx, &id)).unwrap().len(), 1);
+}
+
+#[test]
+fn a_changed_slice_of_an_unregistered_contract_is_refused() {
+    let (_tmp, db) = org();
+    let id = in_tx(&db, |tx| {
+        execute(
+            &at(tx, 1_000),
+            &Details,
+            details("Original"),
+            Exec::create(Source::Ui),
+        )
+    })
+    .unwrap()
+    .id;
+    in_tx(&db, |tx| {
+        execute(
+            &at(tx, 2_000),
+            &Details,
+            details("Changed"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
+    // A registry that has lost the contract (renamed, retired).
+    let only_emails = Registry::new(&[&Emails]);
+    let err = in_tx(&db, |tx| {
+        restore_entity_to(&at(tx, 3_000), &only_emails, "toys", &id, 1_500, &[], None)
+    })
+    .unwrap_err();
+    assert!(
+        matches!(err, ContractError::UnknownContract(ref c) if c == "toys.details"),
+        "{err:?}"
+    );
+    assert_eq!(
+        in_tx(&db, |tx| Details.load(tx, &id)).unwrap(),
+        details("Changed")
+    );
+}
+
+#[test]
+fn the_upcaster_chain_runs_in_order_and_stops_at_the_code_version() {
+    let v1 = json!({ "title": "Old" });
+    assert_eq!(
+        contracts::upcast(&Details, v1.clone(), 1).unwrap(),
+        json!({ "name": "Old", "colour": null })
+    );
+    // At the code's version: unchanged.
+    let v2 = json!({ "name": "New", "colour": "red" });
+    assert_eq!(contracts::upcast(&Details, v2.clone(), 2).unwrap(), v2);
+    assert!(matches!(
+        contracts::upcast(&Details, v2, 3),
+        Err(ContractError::NewerThanCode { .. })
+    ));
+}
+
+#[test]
+fn missing_upcast_steps_are_listed_statically() {
+    assert!(registry().missing_upcasters().is_empty());
+
+    struct NoSteps;
+    impl Contract for NoSteps {
+        const NAME: &'static str = "toys.nosteps";
+        const VERSION: u32 = 3;
+        const ENTITY: &'static str = "toys";
+        const COUNTER: &'static str = "details_version";
+        type Payload = DetailsSlice;
+        type State = DetailsSlice;
+        fn load(&self, tx: &OrgTx, id: &str) -> Result<DetailsSlice, ContractError> {
+            Details.load(tx, id)
+        }
+        fn apply(
+            &self,
+            _: Option<&DetailsSlice>,
+            p: &DetailsSlice,
+            _: &Command,
+        ) -> Result<DetailsSlice, ContractError> {
+            Ok(p.clone())
+        }
+        fn write(
+            &self,
+            tx: &WriteTx,
+            id: &str,
+            before: Option<&DetailsSlice>,
+            next: &DetailsSlice,
+        ) -> Result<(), ContractError> {
+            Details.write(tx, id, before, next)
+        }
+    }
+    assert_eq!(
+        Registry::new(&[&Details, &NoSteps]).missing_upcasters(),
+        vec![("toys.nosteps", 1), ("toys.nosteps", 2)]
+    );
+}

@@ -12,9 +12,11 @@ pub async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>)
     let store = state.store.clone();
     let db_ok = blocking(move || store.each_org().map(|_| ())).await.is_ok();
     let mut body = json!({ "db": if db_ok { "ok" } else { "error" } });
+    // Backups are reported, never judged here: a stale snapshot must not
+    // take the only machine out of Fly's rotation. The 15-minute monitor
+    // judges these fields. F2 adds:
+    // body["backup"] = serde_json::to_value(crate::backup::health().await).unwrap_or_default();
     let ok = db_ok;
-    // F2 merges `crate::backup::health()` (snapshot age, Litestream lag)
-    // into `body` here, and `ok &= health.ok()`.
     body["ok"] = json!(ok);
     let status = if ok {
         StatusCode::OK

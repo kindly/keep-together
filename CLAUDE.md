@@ -32,6 +32,45 @@ guidance" at the end for how it ranks against this file.
    remembers to write.
 7. Money is integer pence (`v.int64()`) — never float, never pounds.
 
+## Migration to Rust (in progress)
+
+keep-together is moving off Convex to Rust (axum + rusqlite) with **one
+SQLite file per organisation** (`factory/plans/migration-rust.sv`; ADR
+0024). Until cutover:
+
+- **Convex is frozen**: fixes only. New and ported work goes in `rs/`;
+  `convex/` is read-only reference for the port. The Convex sections of
+  this file stay true for `convex/` and go at cutover.
+- Read `rs/README.md` first: crates, HTTP conventions, the write path,
+  migrations, jobs, `keep`.
+- **Writes**: only through `contracts::transact` → `execute` (sealed: an
+  `OrgTx` has no write method; `trybuild` proves it). Handlers are pure
+  state application; derived rows only in a contract's `project` hook.
+- **Tenancy is the file** (rule 6): no `tenantId` columns, no scoped
+  constructors. Domain crates depend on `contracts`, never on `store`,
+  `platform`, `auth` or `api` (a test reads their manifests). Commands
+  that span modules live in `api`, in one transaction.
+- **Money** is `INTEGER` pence; no `REAL` column anywhere (a schema test).
+- **Schema**: append a step to `api::schema::org_migrations()` and its
+  fixture to `FIXTURES` in `rs/crates/api/tests/schema.rs`. One
+  transactional step per change; files migrate at boot, copy first, fail
+  closed. Never edit a shipped step.
+- **Every route** gets an isolation test (two orgs: B never sees A; A's ids
+  under B's slug are 404). Client-chosen ids are 32 lower-case hex.
+- **Live updates**: each committed contract is an SSE event
+  (`/api/t/{slug}/events`, ids only); clients refetch. Gifts are never
+  optimistic.
+- **Jobs**: register on `api::jobs`; loop orgs with `each_org`, one file
+  at a time.
+- **Local only**: each worktree runs its api on its own `KEEP_PORT` (8787 +
+  n) with data in `rs/data/`; no cloud deployments, no Convex deploys.
+  `KEEP_DEV_AUTH=1` is no auth and only works on a loopback bind.
+- **Tests**: port every Convex test whose rule still holds as a named Rust
+  (or dom) test; the report carries a parity table. `cargo test`, `cargo
+  clippy --all-targets -- -D warnings` (from `rs/`) and `pnpm check`.
+- Agents' SQL goes through `keep sql <slug> "<select…>"`: read-only by
+  construction.
+
 ## Stack
 
 Convex (all backend state + compute) · Vite + React 19 + TanStack Router

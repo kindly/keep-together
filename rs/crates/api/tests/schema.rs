@@ -211,3 +211,38 @@ fn domain_crates_cannot_reach_the_store_or_the_platform() {
         }
     }
 }
+
+/// Every registered contract owns its own `INTEGER NOT NULL DEFAULT 0`
+/// counter column on its root table, and every past version can be
+/// upcast (Convex's registry meta-tests).
+#[test]
+fn every_contract_has_its_own_counter_column_and_its_upcasters() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    org_migrations().to_latest(&mut conn).unwrap();
+    let registry = &*contacts::REGISTRY;
+    let mut owners = BTreeMap::new();
+    for c in registry.contracts() {
+        let (ty, notnull, default): (String, bool, Option<String>) = conn
+            .query_row(
+                "SELECT type, \"notnull\", dflt_value FROM pragma_table_info(?1) WHERE name = ?2",
+                [c.entity(), c.counter()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap_or_else(|e| panic!("{}: {}.{}: {e}", c.name(), c.entity(), c.counter()));
+        assert_eq!(
+            (ty.as_str(), notnull, default.as_deref()),
+            ("INTEGER", true, Some("0")),
+            "{}",
+            c.name()
+        );
+        if let Some(other) = owners.insert((c.entity(), c.counter()), c.name()) {
+            panic!(
+                "{} and {other} share {}.{}",
+                c.name(),
+                c.entity(),
+                c.counter()
+            );
+        }
+    }
+    assert!(registry.missing_upcasters().is_empty());
+}
