@@ -31,6 +31,7 @@
 //! - per client address: at most [`QC_CALLS`] calls a minute, and after
 //!   [`QC_FAILURES`] wrong tokens in 10 minutes every call is 429 before
 //!   the token is looked at;
+//! - `qc-` slugs are reserved ([`is_qc_slug`]): nothing else makes one;
 //! - it reaches only `qc-` organisations and users whose every membership
 //!   is in one: `crowd`/`hold` 404 on any other slug, `seed` refuses (403)
 //!   a QC address that someone made a member of a real group, `session`
@@ -396,7 +397,10 @@ fn base(req: &QcSeedRequest) -> Result<String, ApiError> {
     Ok(format!("r{}w{}", req.run_id, req.worker))
 }
 
-fn is_qc_slug(slug: &str) -> bool {
+/// Whether `slug` is in the reserved `qc-` space: only [`seed_world`]
+/// makes such groups; `keep tenant create` and `/api/dev/tenants` refuse
+/// them, so the token never reaches a real group.
+pub fn is_qc_slug(slug: &str) -> bool {
     slug.starts_with(QC_SLUG_PREFIX)
 }
 

@@ -82,7 +82,7 @@ build, no netem, no lock. Its history lines carry `env: staging`.
 Staging has no dev auth, so set-up goes through its token surface,
 `/api/qc/*` (`rs/crates/api/src/routes/qc_seed.rs`): `KEEP_QC_TOKEN` must
 be in the env (the Fly secret; `scripts/fly/staging.sh` makes it and
-prints the `gh secret set` line). With it the workers seed `qc-` groups
+sets it as the GitHub secret too, without ever showing it). With it the workers seed `qc-` groups
 whose users have `@qc.keep-together.invalid` addresses, sign in for real
 (password, then TOTP) for the timed `auth.signIn`, and take further
 sessions from `/api/qc/session` (a TOTP code is good once per 30 s, and

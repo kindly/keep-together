@@ -102,6 +102,15 @@ fn malformed_or_taken_slugs_and_a_missing_email_are_refused_and_create_nothing()
         create_in(&store, "beta", "Beta", "   "),
         Err(CreateError::NoEmail)
     ));
+    // qc- is the QC seed's (the staging token reaches qc- groups only).
+    assert!(matches!(
+        create_in(&store, "qc-foodbank", "Foodbank", "x@x.org"),
+        Err(CreateError::ReservedSlug)
+    ));
+    assert!(matches!(
+        cli::dev::seed_demo(&store, "qc-demo", None),
+        Err(CreateError::ReservedSlug)
+    ));
     assert_eq!(org_files(tmp.path()), 1);
     assert_eq!(store.platform().tenants().unwrap().len(), 1);
     // None of the refused attempts made a user.

@@ -332,6 +332,64 @@ async fn d_only_qc_groups_and_qc_users() {
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// Q1: only the QC seed makes `qc-` groups; the dev tenant route (like
+/// `keep tenant create`, cli/tests/tenant.rs) refuses the prefix.
+#[tokio::test]
+async fn d_the_qc_prefix_is_reserved() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        Store::open_with(
+            StoreConfig {
+                dir: tmp.path().to_path_buf(),
+                org_migrations: schema::org_migrations(),
+                readers: 1,
+                max_open: StoreConfig::DEFAULT_MAX_OPEN,
+            },
+            schema::PLATFORM_SCHEMAS,
+        )
+        .unwrap(),
+    );
+    let dev = app(AppState::new(store.clone(), true), routes::router());
+    let send = |path: &str, body: Value, cookie: Option<String>| {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(c) = cookie {
+            req = req.header(header::COOKIE, c);
+        }
+        dev.clone()
+            .oneshot(req.body(HttpBody::from(body.to_string())).unwrap())
+    };
+    let res = send("/api/dev/login", json!({ "email": "ann@alpha.org" }), None)
+        .await
+        .unwrap();
+    let cookie = res.headers()[header::SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let res = send(
+        "/api/dev/tenants",
+        json!({ "slug": "qc-foodbank", "name": "Foodbank" }),
+        Some(cookie.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(store.platform().tenants().unwrap().is_empty());
+    let res = send(
+        "/api/dev/tenants",
+        json!({ "slug": "foodbank", "name": "Foodbank" }),
+        Some(cookie),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn d_the_qc_group_cap() {
     let qc = on();
