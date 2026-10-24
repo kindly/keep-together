@@ -5,8 +5,9 @@
 use std::cell::RefCell;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use rusqlite_migration::Migrations;
 use tokio::sync::broadcast;
@@ -23,9 +24,13 @@ const STAMP_TABLE: &str = "CREATE TABLE IF NOT EXISTS _org (tenant_id TEXT NOT N
 /// (and replays from `revisions`, or resets).
 const EVENT_BUFFER: usize = 1024;
 
+/// While set, the only tables the writer may write: a projection hook's.
+type Scope = Arc<Mutex<Option<Vec<String>>>>;
+
 pub struct OrgDb {
     path: PathBuf,
     writer: Mutex<Connection>,
+    scope: Scope,
     readers: ReaderPool,
     events: broadcast::Sender<OrgEvent>,
 }
@@ -82,9 +87,19 @@ impl OrgDb {
         let mut writer = conn::open(path, false, false)?;
         check_stamp(&writer, path, id)?;
         migrations.to_latest(&mut writer)?;
+        let scope = Scope::default();
+        let checked = scope.clone();
+        writer.authorizer(Some(move |ctx: AuthContext<'_>| {
+            let scope = checked.lock().unwrap_or_else(|e| e.into_inner());
+            match scope.as_deref() {
+                None => Authorization::Allow,
+                Some(tables) => projection_authorizer(tables, ctx),
+            }
+        }))?;
         Ok(Self {
             path: path.to_path_buf(),
             writer: Mutex::new(writer),
+            scope,
             readers: ReaderPool::open(path, readers)?,
             events: broadcast::channel(EVENT_BUFFER).0,
         })
@@ -110,14 +125,16 @@ impl OrgDb {
         let raw = RawTx {
             tx: conn.transaction_with_behavior(TransactionBehavior::Immediate)?,
             events: RefCell::new(Vec::new()),
+            scope: &self.scope,
         };
         let out = f(&raw);
         // Whatever `f` did, the connection is writable again for the next
         // transaction (and for the rollback).
+        raw.narrow_writes_to(None);
         let reset = raw.set_query_only(false);
         let out = out?;
         reset?;
-        let RawTx { tx, events } = raw;
+        let RawTx { tx, events, .. } = raw;
         tx.commit()?;
         for event in events.into_inner() {
             // No subscribers is fine.
@@ -153,6 +170,7 @@ impl OrgDb {
 pub struct RawTx<'a> {
     tx: Transaction<'a>,
     events: RefCell<Vec<OrgEvent>>,
+    scope: &'a Scope,
 }
 
 impl RawTx<'_> {
@@ -165,12 +183,49 @@ impl RawTx<'_> {
         self.events.borrow_mut().push(event);
     }
 
+    /// While `Some`, statements prepared on the writer may write only
+    /// these tables (and an FTS table's `<name>_*` shadow tables), and
+    /// may otherwise only read: `contracts` sets it around a `project`
+    /// hook. The check runs when a statement is prepared, so a statement
+    /// first prepared (and cached) outside the scope isn't re-checked.
+    pub fn narrow_writes_to(&self, tables: Option<&[&str]>) {
+        *self.scope.lock().unwrap_or_else(|e| e.into_inner()) =
+            tables.map(|t| t.iter().map(|s| (*s).to_owned()).collect());
+    }
+
     /// `PRAGMA query_only` on the writer, for the rest of this transaction
     /// (reset when it ends). `contracts` keeps it on except while a
     /// contract writes.
     pub fn set_query_only(&self, on: bool) -> rusqlite::Result<()> {
         self.tx
             .pragma_update(None, "query_only", if on { "ON" } else { "OFF" })
+    }
+}
+
+/// Inside a projection scope: reads, and writes to `tables` only.
+fn projection_authorizer(tables: &[String], ctx: AuthContext<'_>) -> Authorization {
+    let allowed = |table: &str| {
+        tables.iter().any(|t| {
+            table == t
+                || table
+                    .strip_prefix(t.as_str())
+                    .is_some_and(|r| r.starts_with('_'))
+        })
+    };
+    match ctx.action {
+        AuthAction::Select
+        | AuthAction::Read { .. }
+        | AuthAction::Function { .. }
+        | AuthAction::Recursive => Authorization::Allow,
+        AuthAction::Pragma { pragma_value, .. } if pragma_value.is_none() => Authorization::Allow,
+        AuthAction::Insert { table_name }
+        | AuthAction::Delete { table_name }
+        | AuthAction::Update { table_name, .. }
+            if allowed(table_name) =>
+        {
+            Authorization::Allow
+        }
+        _ => Authorization::Deny,
     }
 }
 

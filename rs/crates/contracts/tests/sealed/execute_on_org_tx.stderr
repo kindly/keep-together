@@ -1,5 +1,0 @@
-error[E0599]: no method named `execute` found for reference `&OrgTx<'_>` in the current scope
- --> tests/sealed/execute_on_org_tx.rs:3:12
-  |
-3 |     ctx.tx.execute("DELETE FROM contacts", [])
-  |            ^^^^^^^ method not found in `&OrgTx<'_>`

@@ -173,6 +173,45 @@ impl ContractError {
 
 /// A write transaction on one organisation's file, as domain code sees
 /// it: reads through [`OrgTx::read`], writes only through [`execute`].
+///
+/// Sealed (M3). These don't compile (the doctests check the error codes,
+/// which, unlike rustc's wording, are stable across releases):
+///
+/// Domain code holding a transaction can't run raw SQL on it,
+/// ```compile_fail,E0599
+/// fn handler(ctx: &contracts::Ctx) -> rusqlite::Result<usize> {
+///     ctx.tx.execute("DELETE FROM contacts", [])
+/// }
+/// ```
+/// can't treat it as a connection,
+/// ```compile_fail,E0308
+/// fn handler(ctx: &contracts::Ctx) {
+///     let _conn: &rusqlite::Connection = ctx.tx;
+/// }
+/// ```
+/// can't forge a writable connection from the read view,
+/// ```compile_fail,E0423
+/// fn handler(ctx: &contracts::Ctx) {
+///     let _ = contracts::WriteTx(ctx.tx.read());
+/// }
+/// ```
+/// ```compile_fail,E0423
+/// fn handler(ctx: &contracts::Ctx) {
+///     let _ = contracts::ProjectionTx(ctx.tx.read());
+/// }
+/// ```
+/// and can't wrap some other transaction in an `OrgTx`.
+/// ```compile_fail,E0451
+/// fn forge<'a>(raw: &'a store::RawTx<'a>) -> contracts::OrgTx<'a> {
+///     contracts::OrgTx { raw }
+/// }
+/// ```
+/// (The same shapes with the seal's own API compile:)
+/// ```
+/// fn handler(ctx: &contracts::Ctx) -> rusqlite::Result<i64> {
+///     ctx.tx.read().query_row("SELECT 1", [], |r| r.get(0))
+/// }
+/// ```
 pub struct OrgTx<'a> {
     raw: &'a RawTx<'a>,
 }
@@ -233,7 +272,10 @@ impl WriteTx<'_> {
 
 /// The connection a contract's `project` hook gets: for derived rows
 /// (search) rebuilt from the root's state. Only [`execute`] and
-/// [`reproject`] construct one.
+/// [`reproject`] construct one, and while it is in use the connection may
+/// write only the contract's `PROJECTIONS` tables: a write to a domain
+/// table (which would skip its counter and revision) is refused when the
+/// statement is prepared.
 pub struct ProjectionTx<'a>(&'a Connection);
 
 impl Deref for ProjectionTx<'_> {
@@ -310,6 +352,9 @@ pub trait Contract: Sync + 'static {
     const ENTITY: &'static str;
     /// The counter column this contract owns on the root.
     const COUNTER: &'static str;
+    /// The derived tables `project` writes (e.g. an FTS table). Inside the
+    /// hook every other write is refused.
+    const PROJECTIONS: &'static [&'static str] = &[];
 
     /// The full state of the slice, as the client sends it.
     type Payload: Serialize + DeserializeOwned;
@@ -515,37 +560,39 @@ pub fn execute<C: Contract>(
 
     let next = contract.apply(before.as_ref(), &payload, &command)?;
     let seq = tx.writes(|conn| {
-        contract.write(&WriteTx(conn), &id, before.as_ref(), &next)?;
-        let bumped = conn.execute(
-            &format!("UPDATE {} SET {} = ?1 WHERE id = ?2", C::ENTITY, C::COUNTER),
-            params![counter, id],
-        )?;
-        if bumped != 1 {
-            // A create whose `write` didn't insert the root.
-            return Err(ContractError::NotFound);
-        }
-        conn.execute(
-            "INSERT INTO revisions (entity, entity_id, contract, version, counter, payload,
+        atomically(conn, || {
+            contract.write(&WriteTx(conn), &id, before.as_ref(), &next)?;
+            let bumped = conn.execute(
+                &format!("UPDATE {} SET {} = ?1 WHERE id = ?2", C::ENTITY, C::COUNTER),
+                params![counter, id],
+            )?;
+            if bumped != 1 {
+                // A create whose `write` didn't insert the root.
+                return Err(ContractError::NotFound);
+            }
+            conn.execute(
+                "INSERT INTO revisions (entity, entity_id, contract, version, counter, payload,
                  actor, source, group_id, group_name, restored_from, at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                C::ENTITY,
-                id,
-                C::NAME,
-                C::VERSION,
-                counter,
-                serde_json::to_string(&payload)?,
-                command.actor,
-                command.source.as_str(),
-                opts.group.map(|g| g.id),
-                opts.group.map(|g| g.name.as_str()),
-                opts.restored_from,
-                command.at,
-            ],
-        )?;
-        let seq = conn.last_insert_rowid();
-        contract.project(&ProjectionTx(conn), &id)?;
-        Ok(seq)
+                params![
+                    C::ENTITY,
+                    id,
+                    C::NAME,
+                    C::VERSION,
+                    counter,
+                    serde_json::to_string(&payload)?,
+                    command.actor,
+                    command.source.as_str(),
+                    opts.group.map(|g| g.id),
+                    opts.group.map(|g| g.name.as_str()),
+                    opts.restored_from,
+                    command.at,
+                ],
+            )?;
+            let seq = conn.last_insert_rowid();
+            project(tx, contract, conn, &id)?;
+            Ok(seq)
+        })
     })?;
     tx.raw.emit(OrgEvent {
         seq,
@@ -557,11 +604,44 @@ pub fn execute<C: Contract>(
     Ok(Executed { id, counter })
 }
 
+/// Run `f` under a savepoint: on error, everything it wrote is undone, so
+/// a caller that catches the error and carries on (a form saving the
+/// slices that can save) commits none of a half-run command. Convex gets
+/// this from a throw aborting the mutation.
+fn atomically<T>(
+    conn: &Connection,
+    f: impl FnOnce() -> Result<T, ContractError>,
+) -> Result<T, ContractError> {
+    conn.execute_batch("SAVEPOINT contract_execute")?;
+    match f() {
+        Ok(out) => {
+            conn.execute_batch("RELEASE contract_execute")?;
+            Ok(out)
+        }
+        Err(err) => {
+            conn.execute_batch("ROLLBACK TO contract_execute; RELEASE contract_execute")?;
+            Err(err)
+        }
+    }
+}
+
 /// Rebuild one root's derived rows outside a command (a projection's
 /// backfill). No counter, no revision, no event.
 pub fn reproject<C: Contract>(ctx: &Ctx, contract: &C, id: &str) -> Result<(), ContractError> {
-    ctx.tx
-        .writes(|conn| contract.project(&ProjectionTx(conn), id))
+    ctx.tx.writes(|conn| project(ctx.tx, contract, conn, id))
+}
+
+/// Run `project` with writes narrowed to the contract's projections.
+fn project<C: Contract>(
+    tx: &OrgTx,
+    contract: &C,
+    conn: &Connection,
+    id: &str,
+) -> Result<(), ContractError> {
+    tx.raw.narrow_writes_to(Some(C::PROJECTIONS));
+    let out = contract.project(&ProjectionTx(conn), id);
+    tx.raw.narrow_writes_to(None);
+    out
 }
 
 /// A contract with its types erased, for restore (which finds the

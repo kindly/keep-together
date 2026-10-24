@@ -201,6 +201,41 @@ async fn every_contacts_route_is_scoped_to_the_callers_organisation() {
         )
         .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+    let (_, a_history) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/contacts/{a_id}/history"),
+            &ann,
+            None,
+        )
+        .await;
+    let a_revision = a_history["revisions"][0]["id"].clone();
+    assert!(a_revision.is_i64());
+    for (method, path, body) in [
+        ("GET", format!("/api/t/beta/contacts/{a_id}/history"), None),
+        (
+            "POST",
+            format!("/api/t/beta/contacts/{a_id}/archive"),
+            Some(json!({ "expected": 0, "archived": true })),
+        ),
+        (
+            "POST",
+            format!("/api/t/beta/contacts/{a_id}/restore"),
+            Some(json!({ "at": 0 })),
+        ),
+        (
+            "POST",
+            format!("/api/t/beta/contacts/{a_id}/restore"),
+            Some(json!({ "revisionId": a_revision })),
+        ),
+    ] {
+        let (s, b) = w.call(method, &path, &bob, body).await;
+        assert_eq!(
+            (s, b["kind"].as_str()),
+            (StatusCode::NOT_FOUND, Some("not_found")),
+            "{method} {path}"
+        );
+    }
     // B can't name A's field in its own filters.
     let (s, b) = w
         .call(

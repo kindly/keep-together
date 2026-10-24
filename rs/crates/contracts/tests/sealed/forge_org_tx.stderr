@@ -1,5 +1,0 @@
-error[E0451]: field `raw` of struct `OrgTx` is private
- --> tests/sealed/forge_org_tx.rs:3:24
-  |
-3 |     contracts::OrgTx { raw }
-  |                        ^^^ private field

@@ -109,3 +109,37 @@ fn dev_auth_only_on_loopback() {
     assert!(!api::dev_auth_allowed(true, ip("192.168.1.10")));
     assert!(!api::dev_auth_allowed(false, ip("127.0.0.1")));
 }
+
+struct Early(Arc<AtomicUsize>);
+
+impl Job for Early {
+    fn name(&self) -> &'static str {
+        "early"
+    }
+    fn every(&self) -> Duration {
+        Duration::from_secs(3600)
+    }
+    fn first_after(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+    fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_job_may_run_first_sooner_than_its_period() {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let mut jobs = Jobs::new();
+    jobs.register(Early(runs.clone()));
+    jobs.spawn();
+    tokio::time::sleep(Duration::from_secs(61)).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    tokio::time::sleep(Duration::from_secs(3000)).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+}

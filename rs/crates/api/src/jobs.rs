@@ -17,6 +17,12 @@ pub const IDLE_CLOSE_AFTER: Duration = Duration::from_secs(10 * 60);
 pub trait Job: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     fn every(&self) -> Duration;
+    /// The delay before the first run after boot (default: one period).
+    /// A job that must not wait a whole period after every deploy (the
+    /// hourly snapshot) returns less.
+    fn first_after(&self) -> Duration {
+        self.every()
+    }
     fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
 }
 
@@ -39,7 +45,7 @@ impl Jobs {
         self.jobs.iter().map(|j| j.name()).collect()
     }
 
-    /// Start every job: the first run one period after start, then every
+    /// Start every job: the first run `first_after` after start, then every
     /// period (a slow run delays the next, never overlaps it). Errors are
     /// logged with the job's name; the job keeps its schedule.
     pub fn spawn(self) -> Vec<JoinHandle<()>> {
@@ -48,8 +54,8 @@ impl Jobs {
             .map(|job| {
                 tokio::spawn(async move {
                     let every = job.every();
-                    let mut timer =
-                        tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+                    let start = tokio::time::Instant::now() + job.first_after();
+                    let mut timer = tokio::time::interval_at(start, every);
                     timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     loop {
                         timer.tick().await;

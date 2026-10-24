@@ -246,3 +246,76 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
     }
     assert!(registry.missing_upcasters().is_empty());
 }
+
+/// Rule 6 / M3, the part the compiler can't see: `ctx.tx.read()` is a
+/// plain `&Connection` that is only `query_only`, so one line of domain
+/// code could switch that off or end the transaction. Domain crates may
+/// not contain the strings that would: `query_only`, `authorizer(`,
+/// `unchecked_transaction`, or a SQL literal that starts with a
+/// transaction-control, `ATTACH` or `PRAGMA` keyword.
+#[test]
+fn domain_crates_cannot_switch_the_read_view_off() {
+    const WORDS: &[&str] = &["query_only", "authorizer(", "unchecked_transaction"];
+    const SQL: &[&str] = &[
+        "COMMIT",
+        "BEGIN",
+        "ROLLBACK",
+        "SAVEPOINT",
+        "RELEASE",
+        "ATTACH",
+        "DETACH",
+        "PRAGMA",
+        "END",
+    ];
+    fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    /// SQL keywords at the start of a string literal (after whitespace).
+    fn literal_keywords(text: &str) -> Vec<String> {
+        let mut found = vec![];
+        for (i, _) in text.match_indices('"') {
+            let rest = text[i + 1..].trim_start();
+            let word: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect::<String>()
+                .to_ascii_uppercase();
+            if SQL.contains(&word.as_str()) {
+                found.push(word);
+            }
+        }
+        found
+    }
+    assert_eq!(
+        literal_keywords(r#"x("pragma query_only = 0")"#),
+        vec!["PRAGMA"]
+    );
+    assert_eq!(literal_keywords(r#"x(" COMMIT; BEGIN")"#), vec!["COMMIT"]);
+    assert!(literal_keywords(r#"x("SELECT 1", "Ended", "begins")"#).is_empty());
+
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = vec![];
+    for domain in ["contacts", "sources", "giving", "giftaid", "comms"] {
+        sources(&crates.join(domain).join("src"), &mut files);
+    }
+    assert!(!files.is_empty());
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        for word in WORDS {
+            assert!(!text.contains(word), "{} mentions {word}", file.display());
+        }
+        let sql = literal_keywords(&text);
+        assert!(
+            sql.is_empty(),
+            "{}: SQL starting with {sql:?}",
+            file.display()
+        );
+    }
+}

@@ -26,7 +26,7 @@ Env (`api`):
 | `KEEP_BIND` | `127.0.0.1` | Fly sets `0.0.0.0` |
 | `KEEP_PORT` | `8787` | |
 | `KEEP_MAX_OPEN_ORGS` | `64` | org files kept open beyond those in use |
-| `KEEP_DEV_AUTH=1` | off | the dev login (below). **Dev auth is no auth**: anyone who can reach the port signs in as anyone. It is honoured only on a loopback bind; on any other address it is ignored with a warning |
+| `KEEP_DEV_AUTH=1` | off | the dev login (below). **Dev auth is no auth**: anyone who can reach the port signs in as anyone. It is honoured only on a loopback bind; on any other address it is ignored with a warning. Loopback is not the whole story: Vite's `/api` proxy is reachable wherever Vite is (`tailscale serve` puts it on the tailnet, `allowedHosts: ['.ts.net']`), and a DNS-rebinding page in your browser can reach `127.0.0.1`. Fine for seed data; never put real data behind dev auth |
 | `KEEP_QC_SEED=1` | off | with dev auth: `POST /api/dev/qc-seed` and `qc-crowd` (≤ 10k) |
 
 The 10k measurement (`scripts/perf-search10k-rs/`):
@@ -128,7 +128,8 @@ request, an SSE stream) is never closed.
   the server binds a loopback address (M1). A4 replaces this with real
   auth.
 - **Cold load.** `GET /api/t/{slug}/boot` → `Boot {me, org, fields,
-  firstPage}`: one request seeds the SPA's cache.
+  firstPage, seq}`: one request seeds the SPA's cache; `seq` (the newest
+  revision id in the same snapshot) is where its event stream resumes.
 - **Live changes.** `GET /api/t/{slug}/events` (`text/event-stream`, any
   member): one unnamed message per committed contract, `id:` = `seq`,
   `data:` = `OrgEvent {seq, entity, id, contract, counter}` — ids only,
@@ -180,10 +181,21 @@ transaction's own writes and refuses any of its own. The only writable
 connections are the `WriteTx` a contract's `write` gets and the
 `ProjectionTx` its `project` hook gets, which only `execute` (and
 `reproject`, for a projection's backfill) construct; `WriteTx::take_sequence`
-hands out system-owned numbers. `contracts/tests/sealed/` proves with
-`trybuild` that domain code can't call `execute` on raw SQL, deref an
-`OrgTx`, or forge a `WriteTx`. Domain crates don't depend on `store`, so
+hands out system-owned numbers. While `project` runs, the writer's
+authorizer allows writes only to the tables the contract lists in
+`PROJECTIONS` (and their FTS shadow tables), so a hook can't change a slice
+without its counter and revision. Each `execute` runs under a savepoint: a
+command that fails part-way leaves nothing, even if its caller catches the
+error and commits the rest. `compile_fail` doctests on `OrgTx` prove that
+domain code can't call `execute` on raw SQL, deref an `OrgTx`, or forge a
+`WriteTx`/`ProjectionTx`/`OrgTx`. Domain crates don't depend on `store`, so
 they never see `OrgDb::write_raw`.
+
+The seal stops at `read()`: it is a `&Connection` with `query_only` on,
+which a deliberate `PRAGMA query_only=OFF` or a `COMMIT` could get round.
+`api/tests/schema.rs` therefore greps domain sources for `query_only`,
+`authorizer(`, `unchecked_transaction` and SQL literals starting with
+`COMMIT`/`BEGIN`/`ROLLBACK`/`SAVEPOINT`/`RELEASE`/`ATTACH`/`DETACH`/`PRAGMA`/`END`.
 
 Each executed contract emits an `OrgEvent`; `OrgDb::write_raw` publishes
 them after the commit, in commit order. A refused or rolled-back command
@@ -199,13 +211,18 @@ transactional step per change (no loosen/tighten dance: SQLite doesn't
 re-validate rows, so a step that adds a constraint backfills or refuses in
 the same step).
 
-**At boot**, before listening, `Store::migrate_all()` brings every
-`orgs/*.db` to head, 4 at a time. A file with steps pending is first copied
-with `VACUUM INTO premigrate/<id>.v<from>.db` (older copies of that org
-deleted). Any failure stops the boot naming the org, so a deploy fails
-visibly. Rollback = the previous image plus
-`scripts/ops/rollback-migration.sh <data> <from-version> --apply` (API
-stopped), which puts the copies back.
+**At boot**, before listening, `Store::open` migrates `platform.db` and
+`Store::migrate_all()` brings every `orgs/*.db` to head, 4 at a time. Each
+file with steps pending is first copied with `VACUUM INTO` into this boot's
+directory, `premigrate/boot-<ms>/<name>.v<from>.db` (`platform` or the
+tenant id), beside a `manifest` of the org files present at boot; making
+that directory deletes the previous boot's. Any failure stops the boot
+naming the file, so a deploy fails visibly. Rollback = the previous image
+plus `scripts/ops/rollback-migration.sh <data> --apply` (API stopped): it
+restores every copy of the last migrating boot, platform included, and
+sets aside org files created after it (not in the manifest, so at the new
+schema). Replaced files are kept as `<file>.rolled-back-<utc>` with their
+`-wal`/`-shm`.
 
 **A new step adds its fixture** to `FIXTURES` in `api/tests/schema.rs`:
 representative rows at that version. The test builds a file at every past
@@ -221,7 +238,9 @@ own `INTEGER NOT NULL DEFAULT 0` counter and has its upcasters.
 `each_org(&store, |id, db| …)`: one file at a time, never two in one
 transaction; one org's failure doesn't stop the others. Running now:
 `idle-close` (1 min) and `session-purge` (1 h); F2's hourly snapshot
-registers the same way.
+registers the same way. A job's first run is `first_after()` after boot
+(default: one period), so the snapshot needn't wait an hour after every
+deploy.
 
 ## `keep`
 

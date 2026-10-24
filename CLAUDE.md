@@ -44,8 +44,15 @@ SQLite file per organisation** (`factory/plans/migration-rust.sv`; ADR
 - Read `rs/README.md` first: crates, HTTP conventions, the write path,
   migrations, jobs, `keep`.
 - **Writes**: only through `contracts::transact` → `execute` (sealed: an
-  `OrgTx` has no write method; `trybuild` proves it). Handlers are pure
-  state application; derived rows only in a contract's `project` hook.
+  `OrgTx` has no write method; `compile_fail` doctests prove it), each
+  command atomic under its own savepoint. Handlers are pure
+  state application; derived rows only in a contract's `project` hook,
+  which may write only the tables its `PROJECTIONS` names. `ctx.tx.read()`
+  is refused writes at runtime (`query_only`), not at compile time, so
+  domain crates must not contain `query_only`, `authorizer(`,
+  `unchecked_transaction`, or SQL literals starting with
+  `COMMIT`/`BEGIN`/`ROLLBACK`/`SAVEPOINT`/`RELEASE`/`ATTACH`/`PRAGMA`/`END`
+  (`rs/crates/api/tests/schema.rs` greps for them).
 - **Tenancy is the file** (rule 6): no `tenantId` columns, no scoped
   constructors. Domain crates depend on `contracts`, never on `store`,
   `platform`, `auth` or `api` (a test reads their manifests). Commands

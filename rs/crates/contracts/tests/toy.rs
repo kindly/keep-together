@@ -42,6 +42,7 @@ impl Contract for Details {
     const VERSION: u32 = 2;
     const ENTITY: &'static str = "toys";
     const COUNTER: &'static str = "details_version";
+    const PROJECTIONS: &'static [&'static str] = &["toy_search"];
     type Payload = DetailsSlice;
     type State = DetailsSlice;
 
@@ -1077,4 +1078,154 @@ fn missing_upcast_steps_are_listed_statically() {
         Registry::new(&[&Details, &NoSteps]).missing_upcasters(),
         vec![("toys.nosteps", 1), ("toys.nosteps", 2)]
     );
+}
+
+/// A contract whose `write` inserts a child row and then fails.
+struct HalfWrite;
+
+impl Contract for HalfWrite {
+    const NAME: &'static str = "toys.halfwrite";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = "toys";
+    const COUNTER: &'static str = "emails_version";
+    type Payload = EmailsSlice;
+    type State = Vec<EmailRow>;
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<Vec<EmailRow>, ContractError> {
+        Emails.load(tx, id)
+    }
+    fn apply(
+        &self,
+        _: Option<&Vec<EmailRow>>,
+        _: &EmailsSlice,
+        _: &Command,
+    ) -> Result<Vec<EmailRow>, ContractError> {
+        Ok(vec![])
+    }
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        _: Option<&Vec<EmailRow>>,
+        _: &Vec<EmailRow>,
+    ) -> Result<(), ContractError> {
+        tx.execute(
+            "INSERT INTO toy_emails (id, toy_id, address, label) VALUES (?1, ?2, 'half@x.org', 'x')",
+            params![contracts::new_id(), id],
+        )?;
+        Err(ContractError::rejected("half", "failed after a write"))
+    }
+}
+
+#[test]
+fn a_failed_command_leaves_nothing_even_when_its_caller_carries_on() {
+    let (_tmp, db) = org();
+    let id = create(&db, "Bear");
+    let before = revision_count(&db);
+    // The caller catches the error and commits the rest of its transaction.
+    transact(&db, Some(7), |ctx| {
+        let err = execute(
+            ctx,
+            &HalfWrite,
+            EmailsSlice { emails: vec![] },
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ContractError::Rejected { .. }));
+        execute(
+            ctx,
+            &Details,
+            details("Still saved"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
+    let emails: i64 = db
+        .read(|r| r.query_row("SELECT count(*) FROM toy_emails", [], |row| row.get(0)))
+        .unwrap();
+    assert_eq!(emails, 0);
+    assert_eq!(revision_count(&db), before + 1);
+    assert_eq!(
+        in_tx(&db, |tx| Details.load(tx, &id)).unwrap(),
+        details("Still saved")
+    );
+}
+
+/// A `project` hook that also writes the root: refused, it would change a
+/// slice with no counter and no revision.
+struct SneakyProjection;
+
+impl Contract for SneakyProjection {
+    const NAME: &'static str = "toys.sneaky";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = "toys";
+    const COUNTER: &'static str = "details_version";
+    const PROJECTIONS: &'static [&'static str] = &["toy_search"];
+    type Payload = DetailsSlice;
+    type State = DetailsSlice;
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<DetailsSlice, ContractError> {
+        Details.load(tx, id)
+    }
+    fn apply(
+        &self,
+        _: Option<&DetailsSlice>,
+        p: &DetailsSlice,
+        _: &Command,
+    ) -> Result<DetailsSlice, ContractError> {
+        Ok(p.clone())
+    }
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        before: Option<&DetailsSlice>,
+        next: &DetailsSlice,
+    ) -> Result<(), ContractError> {
+        Details.write(tx, id, before, next)
+    }
+    fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
+        // Its own projection table is fine …
+        tx.execute(
+            "INSERT OR REPLACE INTO toy_search (toy_id, text) VALUES (?1, 'x')",
+            [id],
+        )?;
+        // … a domain table is not.
+        tx.execute("UPDATE toys SET colour = 'sneaky' WHERE id = ?1", [id])?;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_projection_hook_writes_only_its_projection_tables() {
+    let (_tmp, db) = org();
+    let id = create(&db, "Bear");
+    let err = write(&db, |ctx| {
+        execute(
+            ctx,
+            &SneakyProjection,
+            details("Bear"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("not authorized"), "{err}");
+    let colour: Option<String> = db
+        .read(|r| {
+            r.query_row("SELECT colour FROM toys WHERE id = ?1", [&id], |row| {
+                row.get(0)
+            })
+        })
+        .unwrap();
+    assert_eq!(colour, None);
+    // The scope ends with the hook: the next command writes as usual.
+    write(&db, |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("Renamed"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
 }

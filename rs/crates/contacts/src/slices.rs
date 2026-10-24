@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::fields::{FieldRow, OptionRow, field_row, option_row};
 use crate::number::take_number;
-use crate::projection::rebuild_search;
+use crate::projection::{SEARCH_TABLE, rebuild_search};
 use crate::rules::{
     computed_names, fold, normalise_email, normalise_phone, prepare_addresses, prepare_details,
     prepare_fields, prepare_methods, sort_values,
@@ -78,6 +78,7 @@ impl Contract for ContactDetails {
     const VERSION: u32 = 1;
     const ENTITY: &'static str = "contacts";
     const COUNTER: &'static str = "details_version";
+    const PROJECTIONS: &'static [&'static str] = &[SEARCH_TABLE];
     type Payload = Details;
     type State = Details;
 
@@ -295,6 +296,7 @@ impl Contract for ContactMethods {
     const VERSION: u32 = 1;
     const ENTITY: &'static str = "contacts";
     const COUNTER: &'static str = "methods_version";
+    const PROJECTIONS: &'static [&'static str] = &[SEARCH_TABLE];
     type Payload = Methods;
     type State = Methods;
 
@@ -415,6 +417,7 @@ impl Contract for ContactAddresses {
     const VERSION: u32 = 1;
     const ENTITY: &'static str = "contacts";
     const COUNTER: &'static str = "addresses_version";
+    const PROJECTIONS: &'static [&'static str] = &[SEARCH_TABLE];
     type Payload = Addresses;
     type State = Addresses;
 
