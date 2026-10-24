@@ -17,5 +17,9 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(contacts::MIGRATION),
         // 3: drop the trigram FTS variant
         M::up(contacts::DROP_TRIGRAM),
+        // 4: source codes (A2)
+        M::up(sources::MIGRATION),
+        // 5: a contact's acquisition code (A2)
+        M::up(contacts::acquisition::MIGRATION),
     ])
 }

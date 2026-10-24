@@ -12,6 +12,7 @@ contracts.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sources.workspace = true
 ts-rs.workspace = true
 unicode-normalization.workspace = true
 

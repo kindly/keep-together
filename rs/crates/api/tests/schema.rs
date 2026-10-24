@@ -47,6 +47,17 @@ const FIXTURES: &[&str] = &[
      INSERT INTO contact_search_trigram (rowid, text) VALUES (10001, 'ann smith ann@x.org');",
     // 3: drop the trigram FTS variant (no new tables)
     "",
+    // 4: source codes
+    "INSERT INTO source_codes (id, parent_id, level, name, name_normalized, is_active, used)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1', NULL, 'category', 'Street', 'street', 1, 1),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1', 'detail',
+             'Wesser', 'wesser', 1, 1),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a2', 'version',
+             '001', '001', 1, 1);
+     INSERT INTO source_code_deletions (id, deleted) VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0a4', 1);",
+    // 5: a contact's acquisition code
+    "UPDATE contacts SET acquisition_code_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3',
+         acquisition_version = 1;",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
@@ -219,9 +230,9 @@ fn domain_crates_cannot_reach_the_store_or_the_platform() {
 fn every_contract_has_its_own_counter_column_and_its_upcasters() {
     let mut conn = Connection::open_in_memory().unwrap();
     org_migrations().to_latest(&mut conn).unwrap();
-    let registry = &*contacts::REGISTRY;
     let mut owners = BTreeMap::new();
-    for c in registry.contracts() {
+    let registries = [&*contacts::REGISTRY, &*sources::REGISTRY];
+    for c in registries.iter().flat_map(|r| r.contracts()) {
         let (ty, notnull, default): (String, bool, Option<String>) = conn
             .query_row(
                 "SELECT type, \"notnull\", dflt_value FROM pragma_table_info(?1) WHERE name = ?2",
@@ -244,7 +255,9 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
             );
         }
     }
-    assert!(registry.missing_upcasters().is_empty());
+    for registry in registries {
+        assert!(registry.missing_upcasters().is_empty());
+    }
 }
 
 /// Rule 6 / M3, the part the compiler can't see: `ctx.tx.read()` is a

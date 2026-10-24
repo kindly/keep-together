@@ -11,6 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params_from_iter};
 use serde::Deserialize;
 use ts_rs::TS;
 
+use crate::acquisition::{SourceFilter, acquisition_of, parse_source_filter, source_clause};
 use crate::fields::{field_row, option_row};
 use crate::number::{ParsedNumber, parse_number};
 use crate::projection::SEARCH_TABLE;
@@ -44,6 +45,10 @@ pub struct ListQuery {
     #[serde(default)]
     #[ts(optional)]
     pub fields: Option<String>,
+    /// One part of a source code: `category|detail|version:<id>`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub source: Option<String>,
     /// A page's `nextCursor`.
     #[serde(default)]
     #[ts(optional)]
@@ -70,6 +75,10 @@ pub struct SearchQuery {
     #[serde(default)]
     #[ts(optional)]
     pub fields: Option<String>,
+    /// One part of a source code: `category|detail|version:<id>`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub source: Option<String>,
 }
 
 /// A dropdown filter: the field holds this option, or (None) nothing.
@@ -157,9 +166,18 @@ struct Filters {
     params: Vec<Value>,
 }
 
-fn filters(include_archived: bool, kind: Option<Kind>, fields: &[FieldFilter]) -> Filters {
+fn filters(
+    include_archived: bool,
+    kind: Option<Kind>,
+    fields: &[FieldFilter],
+    source: Option<&SourceFilter>,
+) -> Filters {
     let mut sql = String::new();
     let mut params = Vec::new();
+    if let Some(source) = source {
+        sql.push_str(source_clause(source));
+        params.push(Value::Text(source.id.clone()));
+    }
     if !include_archived {
         sql.push_str(" AND c.archived = 0");
     }
@@ -221,13 +239,19 @@ fn decode_cursor(cursor: &str) -> Result<(String, String), ContractError> {
 /// filter is in the one query, so a page is always full while more match.
 pub fn list(conn: &Connection, q: &ListQuery) -> Result<ContactPage, ContractError> {
     let fields = field_filters(conn, q.fields.as_deref())?;
+    let source = parse_source_filter(q.source.as_deref())?;
     let limit = q
         .limit
         .map_or(LIST_LIMIT, |l| (l as usize).clamp(1, LIST_LIMIT));
     let Filters {
         mut sql,
         mut params,
-    } = filters(q.include_archived.unwrap_or(false), q.kind, &fields);
+    } = filters(
+        q.include_archived.unwrap_or(false),
+        q.kind,
+        &fields,
+        source.as_ref(),
+    );
     if let Some(cursor) = &q.cursor {
         let (key, id) = decode_cursor(cursor)?;
         sql.push_str(" AND (c.sort_key, c.id) > (?, ?)");
@@ -350,6 +374,7 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<SearchResult, Contra
                 include_archived: Some(include_archived),
                 kind: q.kind,
                 fields: q.fields.clone(),
+                source: q.source.clone(),
                 cursor: None,
                 limit: None,
             },
@@ -364,7 +389,8 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<SearchResult, Contra
         });
     }
     let fields = field_filters(conn, q.fields.as_deref())?;
-    let f = filters(include_archived, q.kind, &fields);
+    let source = parse_source_filter(q.source.as_deref())?;
+    let f = filters(include_archived, q.kind, &fields, source.as_ref());
     let parsed = parse_search(term);
     let number = parse_number(term);
 
@@ -446,7 +472,7 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<SearchResult, Contra
 pub(crate) fn counters(conn: &Connection, id: &str) -> rusqlite::Result<Option<Counters>> {
     conn.prepare_cached(
         "SELECT details_version, methods_version, addresses_version, archive_version,
-                fields_version
+                fields_version, acquisition_version
          FROM contacts WHERE id = ?1",
     )?
     .query_row([id], |r| {
@@ -456,6 +482,7 @@ pub(crate) fn counters(conn: &Connection, id: &str) -> rusqlite::Result<Option<C
             addresses: r.get(2)?,
             archive: r.get(3)?,
             fields: r.get(4)?,
+            acquisition: r.get(5)?,
         })
     })
     .optional()
@@ -586,6 +613,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<ContactView>, ContractE
         fields: FieldValues {
             values: load_field_values(conn, id)?,
         },
+        acquisition: acquisition_of(conn, id)?,
         counters: counters(conn, id)?.unwrap_or_default(),
         warnings,
     }))

@@ -27,6 +27,9 @@ fn world() -> World {
         org_migrations: Migrations::new(vec![
             M::up(contracts::MIGRATION),
             M::up(contacts::MIGRATION),
+            // A2: `get` reads the contact's acquisition code.
+            M::up(sources::MIGRATION),
+            M::up(contacts::acquisition::MIGRATION),
         ]),
         readers: 2,
         max_open: StoreConfig::DEFAULT_MAX_OPEN,

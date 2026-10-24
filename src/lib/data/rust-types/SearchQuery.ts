@@ -4,4 +4,8 @@ import type { ContactKind } from "./ContactKind";
 /**
  * `GET contacts/search` query string.
  */
-export type SearchQuery = { q: string, includeArchived?: boolean, kind?: ContactKind, fields?: string, };
+export type SearchQuery = { q: string, includeArchived?: boolean, kind?: ContactKind, fields?: string, 
+/**
+ * One part of a source code: `category|detail|version:<id>`.
+ */
+source?: string, };
