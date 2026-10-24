@@ -81,7 +81,9 @@ function NewPassword({ token }: { token: string }) {
         setDone(true)
       }}
     >
-      <p className="text-sm text-neutral-500">At least 8 characters.</p>
+      <p className="text-sm text-neutral-500">
+        12 to 128 characters, not one leaked in a breach.
+      </p>
       <input
         name="password"
         type="password"

@@ -27,6 +27,7 @@ vi.mock('@tanstack/react-router', () => ({
 
 const state = vi.hoisted(() => ({
   current: undefined as AuthState | undefined,
+  notice: null as string | null,
 }))
 const steps = vi.hoisted(() => ({
   signIn: vi.fn(),
@@ -40,6 +41,7 @@ const steps = vi.hoisted(() => ({
 }))
 vi.mock('../lib/data', () => ({
   useAuthState: () => state.current,
+  useSignInNotice: () => state.notice,
   useSignInSteps: () => steps,
   useSignOut: () => vi.fn(),
 }))
@@ -55,6 +57,7 @@ beforeEach(() => {
   document.body.append(el)
   root = createRoot(el)
   navigated.length = 0
+  state.notice = null
   vi.clearAllMocks()
 })
 afterEach(() => {
@@ -69,6 +72,7 @@ const as = (stage: AuthState['stage'], extra: Partial<AuthState> = {}) => {
     email: 'ann@example.org',
     method: null,
     stepUpUntil: null,
+    needsEmailCode: false,
     ...extra,
   }
 }
@@ -154,7 +158,11 @@ test('enrolling shows the QR code, then the recovery codes until acknowledged', 
   expect(el.textContent).toContain('ABCDEF')
   fill('Code', '123456')
   await submit()
-  expect(steps.confirmEnrolment).toHaveBeenCalledWith('totp', '123456')
+  expect(steps.confirmEnrolment).toHaveBeenCalledWith(
+    'totp',
+    '123456',
+    undefined,
+  )
   expect(el.textContent).toContain('aaaaa-bbbbb')
   expect(done).not.toHaveBeenCalled()
   expect(navigated).toEqual([])
@@ -166,4 +174,61 @@ test('signed in: on to the group', () => {
   as('signed_in')
   render()
   expect(navigated).toEqual(['/'])
+})
+
+// S1 review M5: past the address's sign-in limit the server answers
+// check_email; the same email and password go again with the emailed code.
+test('check your email: the code goes with the same email and password', async () => {
+  as('signed_out', { email: null })
+  steps.signIn.mockResolvedValueOnce({
+    stage: 'check_email',
+    email: 'ann@example.org',
+    method: null,
+    stepUpUntil: null,
+    needsEmailCode: false,
+  })
+  render()
+  fill('Email', 'ann@example.org')
+  fill('Password', 'a-long-password')
+  await submit()
+  expect(el.textContent).toContain("we've emailed it a 6-digit code")
+  fill('Emailed code', '123456')
+  await submit()
+  expect(steps.signIn).toHaveBeenLastCalledWith(
+    'ann@example.org',
+    'a-long-password',
+    '123456',
+  )
+})
+
+// S1 review M1: a sign-in ended by too many wrong codes says why.
+test('why the last sign-in ended is shown over the password form', () => {
+  as('signed_out', { email: null })
+  state.notice = 'Too many wrong codes. Sign in again.'
+  render()
+  expect(el.querySelector('[role=alert]')!.textContent).toBe(
+    'Too many wrong codes. Sign in again.',
+  )
+})
+
+// S1 review M7: after a 2FA reset, the emailed code goes with the app's.
+test('enrolling after a reset asks for the emailed code too', async () => {
+  as('enrol', { needsEmailCode: true })
+  steps.enrolTotp.mockResolvedValue({
+    secret: 'ABCDEF',
+    url: 'otpauth://totp/x',
+    qrSvg: '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+  })
+  steps.confirmEnrolment.mockResolvedValue({ recoveryCodes: [], done: vi.fn() })
+  render()
+  expect(el.textContent).toContain('emailed you a code')
+  await click('Use an authenticator app')
+  fill("The app's code", '111111')
+  fill('The emailed code', '222222')
+  await submit()
+  expect(steps.confirmEnrolment).toHaveBeenCalledWith(
+    'totp',
+    '111111',
+    '222222',
+  )
 })

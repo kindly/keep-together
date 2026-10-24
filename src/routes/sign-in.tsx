@@ -2,6 +2,7 @@ import { Link, Navigate, createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import {
   AuthForm,
+  CodeInput,
   EnrolForm,
   RecoveryCodesNotice,
   SecondFactorForm,
@@ -9,7 +10,12 @@ import {
   input,
   linkButton,
 } from '../components/auth-steps'
-import { useAuthState, useSignInSteps, useSignOut } from '../lib/data'
+import {
+  useAuthState,
+  useSignInNotice,
+  useSignInSteps,
+  useSignOut,
+} from '../lib/data'
 
 export const Route = createFileRoute('/sign-in')({ component: SignIn })
 
@@ -41,7 +47,12 @@ function SignIn() {
   } else if (state.stage === 'second_factor') {
     body = <SecondFactorForm method={state.method} email={state.email} />
   } else if (state.stage === 'enrol') {
-    body = <EnrolForm onEnrolled={(c, done) => setCodes({ codes: c, done })} />
+    body = (
+      <EnrolForm
+        needsEmailCode={state.needsEmailCode}
+        onEnrolled={(c, done) => setCodes({ codes: c, done })}
+      />
+    )
   } else {
     body = <PasswordForm />
   }
@@ -67,12 +78,57 @@ function SignIn() {
 
 function PasswordForm() {
   const steps = useSignInSteps()
+  const notice = useSignInNotice()
+  // Too many sign-ins for this address lately: the server emailed a code
+  // (if the password was right); it goes with the same email and password.
+  const [pending, setPending] = useState<{
+    email: string
+    password: string
+  } | null>(null)
+
+  if (pending) {
+    return (
+      <section className="flex flex-col gap-3">
+        <p className="text-sm text-neutral-600">
+          There have been several sign-ins for {pending.email} lately, so we've
+          emailed it a 6-digit code as well. Enter it to carry on.
+        </p>
+        <AuthForm
+          submit="Continue"
+          onSubmit={async (d) => {
+            await steps.signIn(
+              pending.email,
+              pending.password,
+              field(d, 'code'),
+            )
+          }}
+        >
+          <CodeInput label="Emailed code" />
+        </AuthForm>
+        <button
+          type="button"
+          className={`self-start ${linkButton}`}
+          onClick={() => setPending(null)}
+        >
+          Start again
+        </button>
+      </section>
+    )
+  }
   return (
     <section className="flex flex-col gap-3">
+      {notice && (
+        <p role="alert" className="text-sm text-red-700">
+          {notice}
+        </p>
+      )}
       <AuthForm
         submit="Sign in"
         onSubmit={async (d) => {
-          await steps.signIn(field(d, 'email'), field(d, 'password'))
+          const email = field(d, 'email')
+          const password = field(d, 'password')
+          const state = await steps.signIn(email, password)
+          if (state.stage === 'check_email') setPending({ email, password })
         }}
       >
         <input

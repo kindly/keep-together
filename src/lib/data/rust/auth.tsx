@@ -4,6 +4,10 @@
  * sign-in is two requests (password, then a code); between them the
  * browser holds a partial session that reaches nothing but these routes,
  * so `/api/me` answers 401 and the app treats it as signed out.
+ *
+ * Too many wrong codes end a partial sign-in (`sign_in_again`) or lock the
+ * second step for an hour (`locked`): the state is refetched (signed out)
+ * and the reason kept for the password form to show ([`useSignInNotice`]).
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { AccountInfo } from '../rust-types/AccountInfo'
@@ -15,14 +19,44 @@ import type { MembersPage } from '../rust-types/MembersPage'
 import type { Method } from '../rust-types/Method'
 import type { RecoveryCodes } from '../rust-types/RecoveryCodes'
 import type { Role } from '../rust-types/Role'
+import type { SessionInfo } from '../rust-types/SessionInfo'
 import type { TotpEnrolment } from '../rust-types/TotpEnrolment'
-import { get, post, tenantPath } from './client'
+import { authErrorMessage } from '../../auth-errors'
+import { RustApiError, get, post, tenantPath } from './client'
 import { keys } from './keys'
 
-export type { AccountInfo, AuthState, InviteInfo, MembersPage, Method, Role }
+export type {
+  AccountInfo,
+  AuthState,
+  InviteInfo,
+  MembersPage,
+  Method,
+  Role,
+  SessionInfo,
+}
 
 const authKey = ['auth'] as const
 const accountKey = ['auth', 'account'] as const
+const sessionsKey = ['auth', 'account', 'sessions'] as const
+const noticeKey = ['auth', 'notice'] as const
+
+/** Why the last partial sign-in ended, if it did (shown once). */
+export function useSignInNotice(): string | null {
+  return (
+    useQuery({
+      queryKey: noticeKey,
+      queryFn: () => null as string | null,
+      initialData: null,
+      staleTime: Infinity,
+    }).data ?? null
+  )
+}
+
+/** Whether `err` ended the partial sign-in (the password is next). */
+const endedSignIn = (err: unknown) =>
+  err instanceof RustApiError &&
+  err.error.kind === 'rejected' &&
+  (err.error.reason === 'sign_in_again' || err.error.reason === 'locked')
 const membersKey = (slug: string) => ['t', slug, 'members'] as const
 
 /** Where this browser's sign-in stands; undefined while loading. */
@@ -53,15 +87,40 @@ function useSessionChanged() {
 export function useSignInSteps() {
   const changed = useSessionChanged()
   const qc = useQueryClient()
+  /** `f`; if it ended the sign-in, back to the password, saying why. */
+  const ending = async <T,>(f: () => Promise<T>) => {
+    try {
+      return await f()
+    } catch (err) {
+      if (endedSignIn(err)) {
+        qc.setQueryData(noticeKey, authErrorMessage(err))
+        await qc.invalidateQueries({ queryKey: authKey, exact: true })
+      }
+      throw err
+    }
+  }
   const step = async (path: string, body: unknown = {}) => {
     const state = await post<AuthState>(path, body)
     await changed(state)
     return state
   }
   return {
-    signIn: (email: string, password: string) =>
-      step('auth/sign-in', { email, password }),
-    secondFactor: (code: string) => step('auth/second-factor', { code }),
+    /**
+     * `check_email` (too many sign-ins for the address lately): no session
+     * yet; send the password again with the emailed code.
+     */
+    signIn: async (email: string, password: string, emailCode?: string) => {
+      qc.setQueryData(noticeKey, null)
+      const state = await post<AuthState>('auth/sign-in', {
+        email,
+        password,
+        emailCode,
+      })
+      if (state.stage !== 'check_email') await changed(state)
+      return state
+    },
+    secondFactor: (code: string) =>
+      ending(() => step('auth/second-factor', { code })),
     /** A new emailed code (method email). */
     sendCode: () => post<{ ok: boolean }>('auth/send-code'),
     enrolTotp: () => post<TotpEnrolment>('auth/enrol/totp'),
@@ -70,8 +129,14 @@ export function useSignInSteps() {
      * The codes, and `done` to move the page on (signed in) once they've
      * been shown: the session already changed on the server.
      */
-    confirmEnrolment: async (method: Method, code: string) => {
-      const out = await post<Enrolled>('auth/enrol/confirm', { method, code })
+    confirmEnrolment: async (
+      method: Method,
+      code: string,
+      emailCode?: string,
+    ) => {
+      const out = await ending(() =>
+        post<Enrolled>('auth/enrol/confirm', { method, code, emailCode }),
+      )
       return {
         recoveryCodes: out.recoveryCodes,
         done: () => changed(out.state),
@@ -127,7 +192,20 @@ export function useAccountActions() {
       await refresh()
       return out.recoveryCodes
     },
+    /** Every session of yours but this one ends. */
+    signOutOthers: async () => {
+      await post('auth/account/sessions/sign-out-others')
+      await qc.invalidateQueries({ queryKey: sessionsKey })
+    },
   }
+}
+
+/** Your signed-in sessions, most recently used first. */
+export function useSessions(): Array<SessionInfo> | undefined {
+  return useQuery({
+    queryKey: sessionsKey,
+    queryFn: () => get<Array<SessionInfo>>('auth/account/sessions'),
+  }).data
 }
 
 // ── members ────────────────────────────────────────────────────────────────

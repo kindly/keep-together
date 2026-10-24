@@ -169,6 +169,35 @@ mod tests {
         assert!(boot_owned(&bad_key, ANY).is_err());
     }
 
+    /// H1: `fly.staging.toml`'s own `[env]`, plus the secrets
+    /// `scripts/fly/staging.sh` sets, boots; without the secrets it
+    /// doesn't.
+    #[test]
+    fn fly_staging_toml_boots_with_its_secrets() {
+        let toml = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fly.staging.toml"),
+        )
+        .unwrap();
+        let mut vars: Vec<(&'static str, String)> = vec![];
+        let mut in_env = false;
+        for line in toml.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_env = line == "[env]";
+            } else if in_env && let Some((k, v)) = line.split_once(" = ") {
+                let k: &'static str = Box::leak(k.trim().to_owned().into_boxed_str());
+                vars.push((k, v.trim().trim_matches('"').to_owned()));
+            }
+        }
+        for k in ["KEEP_ENV", "KEEP_APP_ORIGIN", "KEEP_CLIENT_IP_HEADER", "KEEP_MAIL"] {
+            assert!(vars.iter().any(|(n, _)| *n == k), "fly.staging.toml lacks {k}");
+        }
+        assert!(boot_owned(&vars, ANY).is_err(), "no keys yet");
+        vars.push(("KEEP_SETTINGS_KEY", Keys::generate()));
+        vars.push(("KEEP_AUTH_PEPPER", Keys::generate()));
+        let rt = boot_owned(&vars, ANY).expect("boots");
+        assert_eq!(rt.config.app_origin, "https://staging.keep-together.org.uk");
+    }
+
     /// L3: the log mailer only for dev.
     #[test]
     fn the_log_mailer_is_for_dev_only() {
