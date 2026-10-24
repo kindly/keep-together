@@ -34,9 +34,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use object_store::aws::{AmazonS3Builder, Checksum};
+use object_store::aws::{AmazonS3Builder, Checksum, S3ConditionalPut};
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -48,14 +48,18 @@ use time::macros::format_description;
 pub trait Job: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     fn every(&self) -> Duration;
+    /// The first run, from start. One period unless the job says otherwise.
+    fn first_after(&self) -> Duration {
+        self.every()
+    }
     fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
 }
 
-/// Run `job` every `every()`, the first time `first_after` from now.
+/// Run `job` every `every()`, the first time `first_after()` from now.
 /// Errors go to the log (and Sentry, through [`crate::observe`]).
-pub fn spawn(job: Arc<dyn Job>, first_after: Duration) -> tokio::task::JoinHandle<()> {
+pub fn spawn(job: Arc<dyn Job>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        tokio::time::sleep(first_after).await;
+        tokio::time::sleep(job.first_after()).await;
         let mut tick = tokio::time::interval(job.every());
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -86,13 +90,22 @@ impl Tier {
     }
 }
 
-/// The object key of one snapshot.
+/// The object key of one snapshot. Stamped to the minute, so a second
+/// pass in the same hour (`keep-snapshot run` beside the job) gets its own
+/// key: keys are never overwritten (see [`SnapshotJob`]).
 pub fn key(tier: Tier, env: &str, name: &str, at: OffsetDateTime) -> ObjectPath {
-    let stamp = at
-        .to_offset(time::UtcOffset::UTC)
-        .format(format_description!("[year]-[month]-[day]T[hour]Z"))
-        .expect("format a UTC hour");
-    ObjectPath::from(format!("{}/{env}/{name}/{stamp}.db.zst", tier.as_str()))
+    ObjectPath::from(format!(
+        "{}/{env}/{name}/{}.db.zst",
+        tier.as_str(),
+        stamp(at)
+    ))
+}
+
+/// `YYYY-MM-DDTHHMMZ` in UTC: sorts as a string in time order.
+fn stamp(at: OffsetDateTime) -> String {
+    at.to_offset(time::UtcOffset::UTC)
+        .format(format_description!("[year]-[month]-[day]T[hour][minute]Z"))
+        .expect("format a UTC minute")
 }
 
 /// The snapshot job's settings.
@@ -142,7 +155,10 @@ impl SnapshotConfig {
             .with_secret_access_key(need("KEEP_SNAPSHOT_SECRET_ACCESS_KEY")?)
             // An Object Lock bucket refuses a PUT without an integrity
             // checksum (Content-MD5 or x-amz-checksum-*).
-            .with_checksum_algorithm(Checksum::SHA256);
+            .with_checksum_algorithm(Checksum::SHA256)
+            // `PutMode::Create` sends `If-None-Match: *`; the bucket policy
+            // refuses any PUT from the app without it.
+            .with_conditional_put(S3ConditionalPut::ETagMatch);
         if let Some(endpoint) = var("KEEP_SNAPSHOT_ENDPOINT") {
             s3 = s3
                 .with_allow_http(endpoint.starts_with("http://"))
@@ -179,6 +195,14 @@ impl Job for SnapshotJob {
 
     fn every(&self) -> Duration {
         Duration::from_secs(3600)
+    }
+
+    /// A minute after boot, not an hour: staging's reset empties the
+    /// ledger on every deploy, and prod must get a snapshot even when
+    /// deploys come faster than hourly. A minute keeps a crash loop from
+    /// uploading every few seconds.
+    fn first_after(&self) -> Duration {
+        Duration::from_secs(60)
     }
 
     fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
@@ -227,17 +251,31 @@ impl SnapshotJob {
         Self { config }
     }
 
-    /// Snapshot what's due at `now`. Errors only if the data dir or the
-    /// ledger can't be read; a failing file is in the report.
+    /// Snapshot what's due at `now`. Errors only if the data dir can't be
+    /// read; a failing file is in the report.
+    ///
+    /// `platform.db` goes first and `orgs/` is listed after its copy, so
+    /// the platform copy never names an org this run didn't see.
     pub async fn run_once(&self, now: OffsetDateTime) -> Result<RunReport, String> {
-        let dir = self.config.data_dir.clone();
-        let sources = off(move || sources(&dir)).await?;
         let mut report = RunReport::default();
-        for source in sources {
+        let platform = Source {
+            name: PLATFORM.into(),
+            path: platform_path(&self.config.data_dir),
+        };
+        let dir = self.config.data_dir.clone();
+        let mut sources = vec![platform];
+        let mut listed = false;
+        while let Some(source) = sources.pop() {
             match self.one(&source, now).await {
                 Ok(tiers) if tiers.is_empty() => report.skipped += 1,
                 Ok(tiers) => report.uploaded.push((source.name, tiers)),
                 Err(e) => report.failed.push((source.name, e)),
+            }
+            if !listed {
+                listed = true;
+                let dir = dir.clone();
+                sources = off(move || org_sources(&dir)).await?;
+                sources.reverse(); // popped from the end: sorted order
             }
         }
         Ok(report)
@@ -266,19 +304,35 @@ impl SnapshotJob {
         let Some((tiers, revision, bytes)) = prepared else {
             return Ok(vec![]);
         };
+        // Create-only: a key that exists (a second pass in the same
+        // minute) is left alone and that tier stays due for the next run.
+        // Nothing the app holds can replace a stored snapshot.
         let payload = PutPayload::from(bytes);
+        let mut uploaded = vec![];
         for tier in &tiers {
             let key = key(*tier, &self.config.env, &source.name, now);
-            self.config
+            let opts = PutOptions {
+                mode: PutMode::Create,
+                ..Default::default()
+            };
+            match self
+                .config
                 .bucket
-                .put(&key, payload.clone())
+                .put_opts(&key, payload.clone(), opts)
                 .await
-                .map_err(|e| format!("upload {key}: {e}"))?;
+            {
+                Ok(_) => uploaded.push(*tier),
+                Err(object_store::Error::AlreadyExists { .. }) => {}
+                Err(e) => return Err(format!("upload {key}: {e}")),
+            }
+        }
+        if uploaded.is_empty() {
+            return Ok(vec![]);
         }
         let ledger_path = platform_path(&self.config.data_dir);
-        let (name, recorded) = (source.name.clone(), tiers.clone());
+        let (name, recorded) = (source.name.clone(), uploaded.clone());
         off(move || record(&ledger_path, &name, revision, &recorded, now)).await?;
-        Ok(tiers)
+        Ok(uploaded)
     }
 }
 
@@ -295,13 +349,9 @@ fn platform_path(data_dir: &Path) -> PathBuf {
     data_dir.join("platform.db")
 }
 
-/// `platform.db` first, then every `orgs/<32 hex>.db`, sorted. Anything
-/// else in `orgs/` (premigrate copies, stray files) is not an org.
-fn sources(data_dir: &Path) -> Result<Vec<Source>, String> {
-    let mut out = vec![Source {
-        name: PLATFORM.into(),
-        path: platform_path(data_dir),
-    }];
+/// Every `orgs/<32 hex>.db`, sorted. Anything else in `orgs/` is not an
+/// org.
+fn org_sources(data_dir: &Path) -> Result<Vec<Source>, String> {
     let mut orgs = vec![];
     let entries = std::fs::read_dir(data_dir.join("orgs")).map_err(|e| e.to_string())?;
     for entry in entries {
@@ -318,8 +368,7 @@ fn sources(data_dir: &Path) -> Result<Vec<Source>, String> {
         }
     }
     orgs.sort_by(|a, b| a.name.cmp(&b.name));
-    out.extend(orgs);
-    Ok(out)
+    Ok(orgs)
 }
 
 fn is_tenant_id(s: &str) -> bool {
@@ -483,18 +532,39 @@ fn copy_and_compress(path: &Path, tmp_dir: &Path, name: &str) -> Result<Vec<u8>,
 
 // ---- restore -----------------------------------------------------------
 
-/// What [`restore_latest`] put back: `(name, key, bytes on disk)`.
-pub type Restored = Vec<(String, String, u64)>;
+/// What [`restore_latest`] did.
+#[derive(Debug, Default)]
+pub struct Restored {
+    /// `(name, key, bytes on disk)` for every file put back.
+    pub files: Vec<(String, String, u64)>,
+    /// Orgs `platform.db` lists that have no usable snapshot. Everything
+    /// else was restored; whether to boot without them is the caller's
+    /// call (`restore.sh` exits 4).
+    pub missing: Vec<String>,
+    /// `(key, why)` for copies passed over: stamped in the future, or
+    /// failing to decompress or `integrity_check`. An older copy of the
+    /// same file was tried next.
+    pub passed_over: Vec<(String, String)>,
+}
 
-/// Restore `platform.db` and every org it lists from the newest snapshot
-/// of each (any tier), into an empty `data_dir`. Orgs the bucket holds
-/// that the restored `platform.db` doesn't list (staging's reset leaves
-/// old ones behind until they expire) are not restored. Each file is
-/// checked with `integrity_check` before it's moved into place.
+/// How far ahead of `now` a stamp may be (clock skew) before it's ignored.
+const FUTURE_SKEW: time::Duration = time::Duration::minutes(10);
+
+/// Restore `platform.db` and every org it lists from the newest good
+/// snapshot of each (any tier), into an empty `data_dir`.
+///
+/// - Copies stamped later than `now` are ignored (a planted far-future key
+///   would otherwise win), and a copy that fails to decompress or check
+///   gives way to the next-newest.
+/// - Orgs the bucket holds that the restored `platform.db` doesn't list
+///   (staging's reset leaves old ones behind) are not restored.
+/// - An org with no usable copy is listed in `missing`; the rest are
+///   still restored.
 pub async fn restore_latest(
     bucket: &dyn ObjectStore,
     env: &str,
     data_dir: &Path,
+    now: OffsetDateTime,
 ) -> Result<Restored, String> {
     if platform_path(data_dir).exists() {
         return Err(format!(
@@ -503,13 +573,19 @@ pub async fn restore_latest(
         ));
     }
     std::fs::create_dir_all(data_dir.join("orgs")).map_err(|e| e.to_string())?;
-    let latest = latest_keys(bucket, env).await?;
-    let platform_key = latest
-        .get(PLATFORM)
-        .ok_or_else(|| format!("no platform snapshot for env {env:?}"))?;
-    let mut out = vec![];
-    let size = fetch_into(bucket, platform_key, &platform_path(data_dir)).await?;
-    out.push((PLATFORM.to_owned(), platform_key.to_string(), size));
+    let mut out = Restored::default();
+    let candidates = candidate_keys(bucket, env, now, &mut out.passed_over).await?;
+    let no_keys = vec![];
+    let platform_keys = candidates.get(PLATFORM).unwrap_or(&no_keys);
+    if platform_keys.is_empty() {
+        return Err(format!("no platform snapshot for env {env:?}"));
+    }
+    let Some((key, size)) =
+        fetch_newest_good(bucket, platform_keys, &platform_path(data_dir), &mut out).await
+    else {
+        return Err("no platform snapshot passed its checks".into());
+    };
+    out.files.push((PLATFORM.to_owned(), key, size));
     let platform = platform_path(data_dir);
     let tenants: Vec<String> = off(move || {
         let conn = open_read_only(&platform)?;
@@ -525,24 +601,29 @@ pub async fn restore_latest(
         if !is_tenant_id(&id) {
             return Err(format!("platform.db lists a malformed tenant id {id:?}"));
         }
-        let key = latest
-            .get(id.as_str())
-            .ok_or_else(|| format!("no snapshot of org {id}"))?;
-        let size = fetch_into(bucket, key, &data_dir.join("orgs").join(format!("{id}.db"))).await?;
-        out.push((id, key.to_string(), size));
+        let keys = candidates.get(id.as_str()).unwrap_or(&no_keys);
+        let target = data_dir.join("orgs").join(format!("{id}.db"));
+        match fetch_newest_good(bucket, keys, &target, &mut out).await {
+            Some((key, size)) => out.files.push((id, key, size)),
+            None => out.missing.push(id),
+        }
     }
     Ok(out)
 }
 
-/// The newest key per file name across the three tiers. Stamps sort as
-/// strings (`YYYY-MM-DDTHHZ`), and the same hour in two tiers is the
-/// same copy.
-async fn latest_keys(
+/// Every key per file name across the three tiers, newest first. Stamps
+/// sort as strings (`YYYY-MM-DDTHHMMZ`); later than `now` (plus skew) is
+/// passed over.
+async fn candidate_keys(
     bucket: &dyn ObjectStore,
     env: &str,
-) -> Result<std::collections::HashMap<String, ObjectPath>, String> {
+    now: OffsetDateTime,
+    passed_over: &mut Vec<(String, String)>,
+) -> Result<std::collections::HashMap<String, Vec<ObjectPath>>, String> {
     use futures_util::TryStreamExt;
-    let mut latest: std::collections::HashMap<String, (String, ObjectPath)> = Default::default();
+    let latest_ok = stamp(now + FUTURE_SKEW);
+    let mut found: std::collections::HashMap<String, Vec<(String, ObjectPath)>> =
+        Default::default();
     for tier in [Tier::Hourly, Tier::Daily, Tier::Monthly] {
         let prefix = ObjectPath::from(format!("{}/{env}", tier.as_str()));
         let metas: Vec<_> = bucket
@@ -558,21 +639,40 @@ async fn latest_keys(
             let Some(stamp) = file.as_ref().strip_suffix(".db.zst") else {
                 continue;
             };
-            let entry = latest.entry(name.as_ref().to_owned());
-            let newer = |(s, _): &(String, ObjectPath)| stamp > s.as_str();
-            match entry {
-                std::collections::hash_map::Entry::Occupied(mut o) => {
-                    if newer(o.get()) {
-                        o.insert((stamp.to_owned(), meta.location.clone()));
-                    }
-                }
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert((stamp.to_owned(), meta.location.clone()));
-                }
+            if stamp > latest_ok.as_str() {
+                passed_over.push((meta.location.to_string(), "stamped in the future".into()));
+                continue;
             }
+            found
+                .entry(name.as_ref().to_owned())
+                .or_default()
+                .push((stamp.to_owned(), meta.location.clone()));
         }
     }
-    Ok(latest.into_iter().map(|(n, (_, k))| (n, k)).collect())
+    Ok(found
+        .into_iter()
+        .map(|(name, mut keys)| {
+            keys.sort_by(|a, b| b.0.cmp(&a.0));
+            (name, keys.into_iter().map(|(_, k)| k).collect())
+        })
+        .collect())
+}
+
+/// The first of `keys` (newest first) that downloads, decompresses and
+/// passes `integrity_check`, put at `target`.
+async fn fetch_newest_good(
+    bucket: &dyn ObjectStore,
+    keys: &[ObjectPath],
+    target: &Path,
+    out: &mut Restored,
+) -> Option<(String, u64)> {
+    for key in keys {
+        match fetch_into(bucket, key, target).await {
+            Ok(size) => return Some((key.to_string(), size)),
+            Err(e) => out.passed_over.push((key.to_string(), e)),
+        }
+    }
+    None
 }
 
 /// Download, decompress to `<target>.restoring`, `integrity_check`, then
@@ -585,24 +685,29 @@ async fn fetch_into(
     let bytes = bucket
         .get(key)
         .await
-        .map_err(|e| format!("get {key}: {e}"))?
+        .map_err(|e| format!("get: {e}"))?
         .bytes()
         .await
-        .map_err(|e| format!("read {key}: {e}"))?;
+        .map_err(|e| format!("read: {e}"))?;
     let target = target.to_path_buf();
     off(move || {
         let partial = target.with_extension("db.restoring");
-        let raw = zstd::decode_all(&bytes[..]).map_err(|e| e.to_string())?;
-        std::fs::write(&partial, &raw).map_err(|e| e.to_string())?;
-        let check: String = open_read_only(&partial)?
-            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
-        if check != "ok" {
+        let result = (|| {
+            let raw = zstd::decode_all(&bytes[..]).map_err(|e| format!("decompress: {e}"))?;
+            std::fs::write(&partial, &raw).map_err(|e| e.to_string())?;
+            let check: String = open_read_only(&partial)?
+                .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+                .map_err(|e| format!("integrity_check: {e}"))?;
+            if check != "ok" {
+                return Err(format!("integrity_check: {check}"));
+            }
+            std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
+            Ok(raw.len() as u64)
+        })();
+        if result.is_err() {
             let _ = std::fs::remove_file(&partial);
-            return Err(format!("{}: integrity_check: {check}", target.display()));
         }
-        std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
-        Ok(raw.len() as u64)
+        result
     })
     .await
 }
@@ -613,6 +718,10 @@ async fn fetch_into(
 /// GitHub cron (`.github/workflows/health.yml`) judges it. A stale backup
 /// must not fail Fly's health check, which would take the only machine
 /// out of service.
+///
+/// `/healthz` is public, so this holds counts and status words only:
+/// error text (bucket names, account ids, tenant ids) goes to the log and
+/// Sentry.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupHealth {
@@ -622,7 +731,7 @@ pub struct BackupHealth {
     /// takes; `None` before the first.
     pub snapshot_age_seconds: Option<i64>,
     /// Files that failed in the last run of this process.
-    pub snapshot_errors: Vec<String>,
+    pub snapshot_error_count: usize,
     /// `off` (no socket configured), `ok`, or `error` (unreachable, or a
     /// database not replicating).
     pub litestream: &'static str,
@@ -630,27 +739,88 @@ pub struct BackupHealth {
     pub litestream_lag_seconds: Option<i64>,
     /// Databases Litestream tracks.
     pub litestream_databases: usize,
-    pub litestream_error: Option<String>,
+    /// How this volume's data was last restored, while that needs a look
+    /// (`entrypoint.sh` writes `/data/.restored`; the human removes it).
+    pub restore: Option<RestoreMarker>,
 }
+
+/// `/data/.restored`, written by the entrypoint after an empty-volume
+/// restore.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreMarker {
+    /// `litestream` or `snapshot`.
+    pub source: String,
+    /// The snapshots were used because Litestream had no replica: up to an
+    /// hour of writes may be gone. Needs a human.
+    pub fallback: bool,
+    /// Orgs `platform.db` lists that couldn't be restored.
+    pub missing_orgs: usize,
+    pub at: String,
+}
+
+impl RestoreMarker {
+    /// A restore someone has to look at (`health.yml` alerts on it).
+    pub fn needs_review(&self) -> bool {
+        self.fallback || self.missing_orgs > 0
+    }
+}
+
+pub const RESTORE_MARKER: &str = ".restored";
 
 struct HealthState {
     data_dir: PathBuf,
     snapshots: bool,
     litestream_socket: Option<PathBuf>,
     last_run: Mutex<Option<RunReport>>,
+    restore: Option<RestoreMarker>,
+    /// The last Litestream problem logged, so a lasting one is logged
+    /// once, not on every 15 s health check.
+    last_litestream_problem: Mutex<Option<String>>,
 }
 
 static HEALTH: OnceLock<HealthState> = OnceLock::new();
 
 /// Set once at boot: where [`health`] looks. `litestream_socket` is
-/// `KEEP_LITESTREAM_SOCKET` (the image sets `/run/litestream.sock`).
+/// `KEEP_LITESTREAM_SOCKET` (the image sets `/run/litestream.sock`). A
+/// restore marker that needs review is reported to the log and Sentry
+/// here, once per boot.
 pub fn init_health(data_dir: &Path, snapshots: bool, litestream_socket: Option<PathBuf>) {
+    let restore = read_restore_marker(data_dir);
+    if let Some(marker) = restore.as_ref().filter(|m| m.needs_review()) {
+        crate::observe::error(&format!(
+            "data restored from {} at {} (fallback: {}, missing orgs: {}): check it, then delete {}",
+            marker.source,
+            marker.at,
+            marker.fallback,
+            marker.missing_orgs,
+            data_dir.join(RESTORE_MARKER).display()
+        ));
+    }
     let _ = HEALTH.set(HealthState {
         data_dir: data_dir.to_path_buf(),
         snapshots,
         litestream_socket,
         last_run: Mutex::new(None),
+        restore,
+        last_litestream_problem: Mutex::new(None),
     });
+}
+
+fn read_restore_marker(data_dir: &Path) -> Option<RestoreMarker> {
+    let raw = std::fs::read_to_string(data_dir.join(RESTORE_MARKER)).ok()?;
+    match serde_json::from_str(&raw) {
+        Ok(marker) => Some(marker),
+        Err(e) => {
+            crate::observe::error(&format!("unreadable {RESTORE_MARKER}: {e}"));
+            Some(RestoreMarker {
+                source: "unknown".into(),
+                fallback: true,
+                missing_orgs: 0,
+                at: String::new(),
+            })
+        }
+    }
 }
 
 /// The backup part of `/healthz`.
@@ -658,15 +828,16 @@ pub async fn health() -> BackupHealth {
     let mut out = BackupHealth {
         snapshots: "off",
         snapshot_age_seconds: None,
-        snapshot_errors: vec![],
+        snapshot_error_count: 0,
         litestream: "off",
         litestream_lag_seconds: None,
         litestream_databases: 0,
-        litestream_error: None,
+        restore: None,
     };
     let Some(state) = HEALTH.get() else {
         return out;
     };
+    out.restore = state.restore.clone();
     let now = OffsetDateTime::now_utc();
     if state.snapshots {
         out.snapshots = "on";
@@ -675,27 +846,25 @@ pub async fn health() -> BackupHealth {
             .await
             .unwrap_or(None);
         if let Some(run) = state.last_run.lock().unwrap().as_ref() {
-            out.snapshot_errors = run
-                .failed
-                .iter()
-                .map(|(n, e)| format!("{n}: {e}"))
-                .collect();
+            out.snapshot_error_count = run.failed.len();
         }
     }
     if let Some(socket) = &state.litestream_socket {
-        match litestream_list(socket).await {
+        let problem = match litestream_list(socket).await {
             Ok(list) => {
                 out.litestream_databases = list.databases.len();
                 let (lag, problem) = lag(&list, now);
                 out.litestream_lag_seconds = lag;
-                out.litestream = if problem.is_none() { "ok" } else { "error" };
-                out.litestream_error = problem;
+                problem
             }
-            Err(e) => {
-                out.litestream = "error";
-                out.litestream_error = Some(e);
-            }
+            Err(e) => Some(e),
+        };
+        out.litestream = if problem.is_none() { "ok" } else { "error" };
+        let mut last = state.last_litestream_problem.lock().unwrap();
+        if problem.is_some() && *last != problem {
+            crate::observe::error(&format!("litestream: {}", problem.as_deref().unwrap_or("")));
         }
+        *last = problem;
     }
     out
 }
@@ -826,11 +995,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keys_carry_tier_env_file_and_utc_hour() {
+    fn keys_carry_tier_env_file_and_utc_minute() {
         let at = datetime!(2026-10-24 13:59:12 +01:00);
         assert_eq!(
             key(Tier::Daily, "staging", "platform", at).as_ref(),
-            "daily/staging/platform/2026-10-24T12Z.db.zst"
+            "daily/staging/platform/2026-10-24T1259Z.db.zst"
         );
     }
 
@@ -859,6 +1028,28 @@ mod tests {
         // A new month: monthly even when untouched.
         let next_month = datetime!(2026-11-01 00:10 UTC);
         assert_eq!(due(&done, Some(5), next_month), [Tier::Monthly]);
+    }
+
+    #[test]
+    fn the_restore_marker_flags_fallbacks_and_missing_orgs() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(read_restore_marker(tmp.path()), None);
+        let write = |json: &str| std::fs::write(tmp.path().join(RESTORE_MARKER), json).unwrap();
+        write(
+            r#"{"source":"litestream","fallback":false,"missingOrgs":0,"at":"2026-10-24T10:00:00Z"}"#,
+        );
+        assert!(!read_restore_marker(tmp.path()).unwrap().needs_review());
+        write(
+            r#"{"source":"snapshot","fallback":true,"missingOrgs":0,"at":"2026-10-24T10:00:00Z"}"#,
+        );
+        assert!(read_restore_marker(tmp.path()).unwrap().needs_review());
+        write(
+            r#"{"source":"snapshot","fallback":false,"missingOrgs":2,"at":"2026-10-24T10:00:00Z"}"#,
+        );
+        assert!(read_restore_marker(tmp.path()).unwrap().needs_review());
+        // Unreadable counts as needing a look, not as fine.
+        write("garbage");
+        assert!(read_restore_marker(tmp.path()).unwrap().needs_review());
     }
 
     #[test]

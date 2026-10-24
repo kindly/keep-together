@@ -11,7 +11,6 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use api::backup::{self, SnapshotConfig, SnapshotJob};
 use api::{AppState, app, schema};
@@ -49,9 +48,8 @@ async fn main() {
         std::env::var_os("KEEP_LITESTREAM_SOCKET").map(Into::into),
     );
     if let Some(config) = snapshots {
-        // The first run a minute after boot, so a crash loop can't upload
-        // every few seconds; then hourly.
-        backup::spawn(Arc::new(SnapshotJob::new(config)), Duration::from_secs(60));
+        // The first run a minute after boot (`first_after`), then hourly.
+        backup::spawn(Arc::new(SnapshotJob::new(config)));
     }
 
     let state = AppState {

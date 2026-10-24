@@ -43,7 +43,7 @@ async fn lag_comes_from_the_control_socket_and_a_dead_socket_is_an_error() {
     fake_litestream(socket.clone(), "200 OK", body);
     let h = api::backup::health().await;
     assert_eq!(h.snapshots, "off");
-    assert_eq!(h.litestream, "ok", "{:?}", h.litestream_error);
+    assert_eq!(h.litestream, "ok");
     assert_eq!(h.litestream_databases, 2);
     let lag = h.litestream_lag_seconds.unwrap();
     assert!((3..6).contains(&lag), "{lag}");
@@ -51,5 +51,10 @@ async fn lag_comes_from_the_control_socket_and_a_dead_socket_is_an_error() {
     std::fs::remove_file(&socket).unwrap();
     let h = api::backup::health().await;
     assert_eq!(h.litestream, "error");
-    assert!(h.litestream_error.unwrap().contains("connect"));
+    // Public: a status word, never the error text (paths, buckets).
+    let body = serde_json::to_string(&h).unwrap();
+    assert!(
+        !body.contains("connect") && !body.contains("litestream.sock"),
+        "{body}"
+    );
 }

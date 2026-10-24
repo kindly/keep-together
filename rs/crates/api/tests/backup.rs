@@ -119,6 +119,8 @@ async fn restore(bucket: &InMemory, key: &ObjectPath) -> (String, Vec<String>) {
 }
 
 const NOON: OffsetDateTime = datetime!(2026-10-24 12:00 UTC);
+/// "Now" for the restores: after every run in these tests.
+const LATER: OffsetDateTime = datetime!(2026-12-01 00:00 UTC);
 
 #[tokio::test]
 async fn first_run_uploads_every_file_at_every_tier() {
@@ -292,10 +294,12 @@ async fn restore_puts_back_the_newest_copy_of_every_listed_org() {
         .unwrap();
 
     let target = tempfile::tempdir().unwrap();
-    let restored = api::backup::restore_latest(w.bucket.as_ref(), "test", target.path())
+    let restored = api::backup::restore_latest(w.bucket.as_ref(), "test", target.path(), LATER)
         .await
         .unwrap();
+    assert!(restored.missing.is_empty() && restored.passed_over.is_empty());
     let names: Vec<_> = restored
+        .files
         .iter()
         .map(|(n, k, _)| (n.as_str(), k.as_str()))
         .collect();
@@ -337,6 +341,106 @@ async fn restore_puts_back_the_newest_copy_of_every_listed_org() {
     assert!(!target.path().join(format!("orgs/{ghost}.db")).exists());
 
     // Never over existing data.
-    let again = api::backup::restore_latest(w.bucket.as_ref(), "test", target.path()).await;
+    let again = api::backup::restore_latest(w.bucket.as_ref(), "test", target.path(), LATER).await;
     assert!(again.unwrap_err().contains("empty data dir"));
+}
+
+#[tokio::test]
+async fn a_stored_snapshot_is_never_replaced() {
+    let w = world();
+    w.job.run_once(NOON).await.unwrap();
+    let a_key = key(Tier::Hourly, "test", w.a.id.as_str(), NOON);
+    let before = w.bucket.get(&a_key).await.unwrap().bytes().await.unwrap();
+
+    // A second pass in the same minute after a change: the key exists, so
+    // nothing is replaced and A stays due.
+    add_contacts(&w.store, &w.a, "Later", 1);
+    let report = w.job.run_once(NOON).await.unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert!(!report.uploaded.iter().any(|(n, _)| n == w.a.id.as_str()));
+    let after = w.bucket.get(&a_key).await.unwrap().bytes().await.unwrap();
+    assert_eq!(before, after);
+
+    // The next minute it goes up under its own key.
+    let minute = datetime!(2026-10-24 12:01 UTC);
+    let report = w.job.run_once(minute).await.unwrap();
+    let a = report.uploaded.iter().find(|(n, _)| n == w.a.id.as_str());
+    assert_eq!(a.map(|(_, t)| t.clone()), Some(vec![Tier::Hourly]));
+    let (_, names) = restore(
+        &w.bucket,
+        &key(Tier::Hourly, "test", w.a.id.as_str(), minute),
+    )
+    .await;
+    assert_eq!(names, ["Alphason", "Later"]);
+}
+
+#[tokio::test]
+async fn restore_ignores_future_stamps_and_falls_back_past_bad_copies() {
+    let w = world();
+    w.job.run_once(NOON).await.unwrap();
+    add_contacts(&w.store, &w.a, "Later", 1);
+    let one = datetime!(2026-10-24 13:00 UTC);
+    w.job.run_once(one).await.unwrap();
+    let a = w.a.id.as_str();
+    // Planted: a far-future copy (it would sort first), and junk as the
+    // newest real-looking copy of A.
+    w.bucket
+        .put(
+            &key(Tier::Hourly, "test", a, datetime!(2099-01-01 00:00 UTC)),
+            b"junk".to_vec().into(),
+        )
+        .await
+        .unwrap();
+    let two = datetime!(2026-10-24 14:00 UTC);
+    w.bucket
+        .put(&key(Tier::Hourly, "test", a, two), b"junk".to_vec().into())
+        .await
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let now = datetime!(2026-10-24 15:00 UTC);
+    let restored = api::backup::restore_latest(w.bucket.as_ref(), "test", target.path(), now)
+        .await
+        .unwrap();
+    assert!(restored.missing.is_empty());
+    let passed: Vec<_> = restored
+        .passed_over
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
+    assert_eq!(passed.len(), 2, "{passed:?}");
+    assert!(passed.iter().any(|k| k.contains("2099-01-01")));
+    assert!(
+        passed
+            .iter()
+            .any(|k| k.contains(&key(Tier::Hourly, "test", a, two).to_string()))
+    );
+    let (_, key_used, _) = restored.files.iter().find(|(n, _, _)| n == a).unwrap();
+    assert_eq!(key_used, &key(Tier::Hourly, "test", a, one).to_string());
+}
+
+#[tokio::test]
+async fn an_org_without_a_snapshot_is_reported_and_the_rest_restored() {
+    let w = world();
+    w.job.run_once(NOON).await.unwrap();
+    // A's copies all gone (an upload that failed, an org made mid-run).
+    for tier in [Tier::Hourly, Tier::Daily, Tier::Monthly] {
+        w.bucket
+            .delete(&key(tier, "test", w.a.id.as_str(), NOON))
+            .await
+            .unwrap();
+    }
+    let target = tempfile::tempdir().unwrap();
+    let restored = api::backup::restore_latest(w.bucket.as_ref(), "test", target.path(), LATER)
+        .await
+        .unwrap();
+    assert_eq!(restored.missing, [w.a.id.as_str().to_owned()]);
+    let names: Vec<_> = restored.files.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(names, ["platform", w.b.id.as_str()]);
+    assert!(
+        target
+            .path()
+            .join(format!("orgs/{}.db", w.b.id.as_str()))
+            .exists()
+    );
 }
