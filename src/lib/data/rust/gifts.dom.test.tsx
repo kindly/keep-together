@@ -208,7 +208,9 @@ test('a refused save leaves the gift as the server last said', async () => {
         receivedOn: '2026-10-21',
         amount: 2500n,
         method: 'cash',
-        allocations: [{ key: 'k1', sourceCodeId: 's1' as never, amount: 2500n }],
+        allocations: [
+          { key: 'k1', sourceCodeId: 's1' as never, amount: 2500n },
+        ],
       }),
     ).rejects.toMatchObject({ status: 409, error: { kind: 'stale' } })
   })
@@ -225,7 +227,9 @@ test('a refused save leaves the gift as the server last said', async () => {
 
 test('the record save sends JSON integer pence and refuses what JSON would round', async () => {
   const record = mount(() => useRecordGift())
-  answers.push(json(200, { contactId: 'c1', giftId: GIFT, declarationId: null }))
+  answers.push(
+    json(200, { contactId: 'c1', giftId: GIFT, declarationId: null }),
+  )
   const args = {
     clientKey: 'k',
     contact: 'c1',
@@ -291,6 +295,10 @@ test('a command group cut by a page boundary is one moment', () => {
       restored: false,
     }) as Moment
   expect(
-    joinMoments([m('g1', ['status'], 3), m('g1', ['gift', 'status'], 2), m('r1', ['gift'], 1)]),
+    joinMoments([
+      m('g1', ['status'], 3),
+      m('g1', ['gift', 'status'], 2),
+      m('r1', ['gift'], 1),
+    ]),
   ).toEqual([m('g1', ['status', 'gift'], 3), m('r1', ['gift'], 1)])
 })

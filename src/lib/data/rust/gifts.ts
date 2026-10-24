@@ -15,7 +15,11 @@
  * as JSON integers (rule 7: never pounds, never a float); `bigint` ↔
  * `number` happens only here.
  */
-import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import type { Id } from '../../../../convex/_generated/dataModel'
@@ -83,7 +87,10 @@ export type GiftView = Gift & {
 }
 
 /** One row of "my recent gifts". */
-export type RecentGift = Omit<WireRecent, 'id' | 'enteredAt' | 'contactId' | 'amount'> & {
+export type RecentGift = Omit<
+  WireRecent,
+  'id' | 'enteredAt' | 'contactId' | 'amount'
+> & {
   _id: GiftId
   _creationTime: number
   contactId: Id<'contacts'>
@@ -152,7 +159,7 @@ export type GiftFields = {
 
 // ── wire → page ────────────────────────────────────────────────────────────
 
-const orUndefined = <T,>(v: T | null | undefined): T | undefined =>
+const orUndefined = <T>(v: T | null | undefined): T | undefined =>
   v === null ? undefined : v
 
 /** Pence from the wire: always a JSON integer. */
@@ -166,7 +173,8 @@ function toWire(amount: bigint): number {
 }
 
 export function giftFromWire(g: GiftRow): Gift {
-  const { id, enteredAt, contactId, amount, allocations, reference, ...rest } = g
+  const { id, enteredAt, contactId, amount, allocations, reference, ...rest } =
+    g
   return {
     ...rest,
     _id: id as GiftId,
@@ -263,7 +271,9 @@ function fieldsToWire(f: GiftFields) {
  * The caller's last 10 gifts in this group, newest entered first;
  * undefined while loading or when `enabled` is false.
  */
-export function useMyRecentGifts(enabled = true): Array<RecentGift> | undefined {
+export function useMyRecentGifts(
+  enabled = true,
+): Array<RecentGift> | undefined {
   const { slug } = useTenant()
   return useQuery({
     queryKey: keys.recentGifts(slug),
@@ -451,7 +461,10 @@ export function joinMoments(moments: Array<Moment>): Array<Moment> {
     if (prev && prev.key === m.key) {
       out[out.length - 1] = {
         ...prev,
-        slices: [...prev.slices, ...m.slices.filter((s) => !prev.slices.includes(s))],
+        slices: [
+          ...prev.slices,
+          ...m.slices.filter((s) => !prev.slices.includes(s)),
+        ],
       }
     } else out.push(m)
   }
@@ -545,7 +558,7 @@ export function useGiftWrites(id: string) {
 export function useGiftAidWrites(contactId: string) {
   const { slug } = useTenant()
   const qc = useQueryClient()
-  const after = async <T,>(write: Promise<T>): Promise<T> => {
+  const after = async <T>(write: Promise<T>): Promise<T> => {
     try {
       return await write
     } finally {
@@ -564,6 +577,8 @@ export function useGiftAidWrites(contactId: string) {
         ),
       ),
     voidDeclaration: (id: string, reason: string) =>
-      after(post<Executed>(tenantPath(slug, 'giftaid', id, 'void'), { reason })),
+      after(
+        post<Executed>(tenantPath(slug, 'giftaid', id, 'void'), { reason }),
+      ),
   }
 }

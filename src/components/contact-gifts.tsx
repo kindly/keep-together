@@ -5,7 +5,6 @@ import { METHOD_LABELS, formatDay, formatPence } from '../lib/gifts'
 import { giftCoverage, useDeclarations } from '../lib/giftaid'
 import { useTenant } from '../lib/tenant'
 
-
 /**
  * A contact's gifts, newest date first, a page at a time like the
  * contacts list (cash gifts step 5), each a link to its gift. A void

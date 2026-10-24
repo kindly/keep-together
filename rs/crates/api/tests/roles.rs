@@ -176,6 +176,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /contacts",
             "POST /contacts/{id}/acquisition",
             "POST /contacts/{id}/archive",
+            "POST /contacts/{id}/giftaid",
             "POST /contacts/{id}/giftaid/cancel",
             "POST /contacts/{id}/restore",
             "POST /contacts/{id}/save",

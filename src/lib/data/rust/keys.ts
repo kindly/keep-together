@@ -27,7 +27,13 @@ export const keys = {
   notes: (slug: string, contactId?: string, archived?: boolean) =>
     contactId === undefined
       ? (['t', slug, 'notes'] as const)
-      : (['t', slug, 'notes', contactId, archived ? 'archived' : 'live'] as const),
+      : ([
+          't',
+          slug,
+          'notes',
+          contactId,
+          archived ? 'archived' : 'live',
+        ] as const),
   // "Also used by" and holds for a contact's saved emails; without an id,
   // every contact's (another contact's save or a release changes them).
   emailContext: (slug: string, id?: string) =>

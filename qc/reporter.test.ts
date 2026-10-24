@@ -127,7 +127,11 @@ describe('pendingBanner', () => {
     ]).join('\n')
     expect(out).toMatch(/B1: 3 tests skipped · flows .*fields\.create/)
     // A step with flows and no tests skipped this run is still listed.
-    expect(out).toMatch(/B2: 0 tests skipped · flows .*gift\.record/)
+    expect(pendingBanner(new Map(), []).join('\n')).toMatch(
+      /B1: 0 tests skipped · flows .*fields\.create/,
+    )
+    // A ported step (B2) has nothing left to list.
+    expect(out).not.toMatch(/B2:/)
     expect(out).toContain(
       'routes being ported (exempt from coverage): /t/$slug/settings/fields',
     )

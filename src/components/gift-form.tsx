@@ -40,7 +40,12 @@ import type {
   Problem,
   TickMethod,
 } from '../lib/gift-form'
-import { fetchGift, useContactSearch, useDonor, useRecordGift } from '../lib/data'
+import {
+  fetchGift,
+  useContactSearch,
+  useDonor,
+  useRecordGift,
+} from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
 import { METHOD_LABELS, formatPence, refusal } from '../lib/gifts'
 import { useTenant } from '../lib/tenant'

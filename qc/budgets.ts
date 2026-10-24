@@ -146,18 +146,18 @@ export const budgets = {
   'settings.sourceCodes.archive': repeatable,
   // Cash gifts step 3: recording a gift creates a record (contacts.create's
   // class), from an existing contact or with a new one in the same save.
-  'gift.record': { ...infrequent, pendingPort: 'B2' },
-  'gift.recordNewContact': { ...infrequent, pendingPort: 'B2' },
+  'gift.record': infrequent,
+  'gift.recordNewContact': infrequent,
   // Cash gifts step 5: the gift page and the contact page's panels.
-  'gift.open': port('B2'),
-  'gift.save': port('B2'),
+  'gift.open': repeatable,
+  'gift.save': repeatable,
   // Void and unvoid show the new status only once the server confirms it
   // (gifts are never optimistic, human 2026-10-23).
-  'gift.void': port('B2'),
-  'gift.unvoid': port('B2'),
-  'contact.gifts.loadMore': port('B2'),
-  'contact.giftaid.cancel': port('B2'),
-  'contact.giftaid.void': port('B2'),
+  'gift.void': repeatable,
+  'gift.unvoid': repeatable,
+  'contact.gifts.loadMore': repeatable,
+  'contact.giftaid.cancel': repeatable,
+  'contact.giftaid.void': repeatable,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500, pendingPort: 'B1' },

@@ -1194,6 +1194,55 @@ async fn the_gift_aid_panel_cancels_and_voids() {
     assert_eq!(panel["declarations"][0]["warnings"], json!([]));
 }
 
+/// `POST contacts/{id}/giftaid` (Convex's `declare`): a declaration on its
+/// own, refused for an organisation, the path's contact only.
+#[tokio::test]
+async fn a_declaration_on_its_own() {
+    let g = setup().await;
+    let jo = g.existing("alpha", &g.ann, json!({}), None).await;
+    let body = |contact: &str| {
+        json!({
+            "contactId": contact, "scope": "futureAndPast4y", "madeOn": "2025-01-01",
+            "method": "paperForm", "wordingVersion": "hmrc-2016-04", "firstName": "Jo",
+            "lastName": "Bloggs", "addressLine1": "1", "postcode": "AB1 2CD",
+        })
+    };
+    let made = ok(&g.w, "POST", &format!("/api/t/alpha/contacts/{jo}/giftaid"), &g.ann, Some(body(&jo))).await;
+    assert_eq!(made["counter"], 0);
+    assert_eq!(g.declarations(&jo).await["currentId"], made["id"]);
+    let other = g.existing("alpha", &g.ann, json!({}), None).await;
+    let (s, e) = g
+        .w
+        .call("POST", &format!("/api/t/alpha/contacts/{jo}/giftaid"), &g.ann, Some(body(&other)))
+        .await;
+    assert_eq!((s, &e["kind"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid")));
+    let acme = g
+        .existing(
+            "alpha",
+            &g.ann,
+            json!({ "kind": "organization", "firstName": "", "lastName": "", "name": "Acme" }),
+            None,
+        )
+        .await;
+    let (s, e) = g
+        .w
+        .call("POST", &format!("/api/t/alpha/contacts/{acme}/giftaid"), &g.ann, Some(body(&acme)))
+        .await;
+    assert_eq!((s, &e["reason"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!("not_individual")));
+    // A's contact under B's slug: 404; a viewer: 403.
+    let (s, _) = g
+        .w
+        .call("POST", &format!("/api/t/beta/contacts/{jo}/giftaid"), &g.bob, Some(body(&jo)))
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let val = g.w.login("val@alpha.org").await;
+    let (s, _) = g
+        .w
+        .call("POST", &format!("/api/t/alpha/contacts/{jo}/giftaid"), &val, Some(body(&jo)))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
 /// Every route: B never sees A's gifts or declarations, and A's ids under
 /// B's slug answer 404 (reads and writes alike); a viewer reads but never
 /// writes.

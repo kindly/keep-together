@@ -1,12 +1,14 @@
 //! `/api/t/{slug}/…giftaid…`: the contact page's Gift Aid panel. Viewers
-//! read; staff and admins record cancellations and voids. Declarations
-//! are made by the record-gift save (`gifts.rs`).
+//! read; staff and admins record declarations, cancellations and voids.
+//! The record-gift save (`gifts.rs`) makes the tick's declaration in its
+//! own transaction; `POST contacts/{id}/giftaid` is Convex's `declare`, a
+//! declaration on its own (imports, QC set-up).
 
 use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contracts::{Executed, Source};
-use giftaid::types::{Cancelled, Declarations, RecordCancellation, VoidPayload};
+use giftaid::types::{Cancelled, DeclarationPayload, Declarations, RecordCancellation, VoidPayload};
 use serde::Deserialize;
 
 use super::Params;
@@ -14,7 +16,7 @@ use crate::{ApiError, Body, IdParam, Tenant};
 
 pub fn router() -> Router {
     Router::new()
-        .route("/contacts/{id}/giftaid", get(by_contact))
+        .route("/contacts/{id}/giftaid", get(by_contact).post(declare))
         .route("/contacts/{id}/giftaid/cancel", post(cancel))
         .route("/giftaid/{id}/void", post(void))
 }
@@ -37,6 +39,31 @@ async fn by_contact(
             return Err(ApiError::NotFound);
         }
         Ok(giftaid::by_contact(r, &id, &q.today)?)
+    })
+    .await
+    .map(Json)
+}
+
+/// `POST contacts/{id}/giftaid {…declaration}`: a declaration as made
+/// (the path's contact; the body's `contactId` must match it).
+async fn declare(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+    Body(req): Body<DeclarationPayload>,
+) -> Result<Json<Executed>, ApiError> {
+    t.write(move |ctx| {
+        if contacts::donors::kind_of(ctx.tx.read(), &id)?.is_none() {
+            return Err(ApiError::NotFound);
+        }
+        if req.contact_id != id {
+            return Err(ApiError::Invalid {
+                problems: vec![contracts::Problem::new(
+                    "contactId",
+                    "The declaration's contact is the one in the path",
+                )],
+            });
+        }
+        Ok(giftaid::make_declaration(ctx, req, Source::Ui, None)?)
     })
     .await
     .map(Json)
