@@ -94,6 +94,12 @@ impl BootCopies {
             return Ok(d.clone());
         }
         if let Some(unfinished) = self.newest().filter(|d| !d.join("complete").exists()) {
+            // A copy the failed boot didn't finish.
+            for entry in std::fs::read_dir(&unfinished)?.flatten() {
+                if entry.path().extension().is_some_and(|x| x == "tmp") {
+                    std::fs::remove_file(entry.path())?;
+                }
+            }
             *dir = Some(unfinished.clone());
             return Ok(unfinished);
         }
@@ -144,13 +150,22 @@ impl BootCopies {
         if copied {
             return Ok(());
         }
+        // Written to `.tmp`, synced, then renamed: a boot killed mid-copy
+        // (disk full, OOM) leaves only a `.tmp`, which the check above
+        // ignores and the next boot deletes, never a truncated `.db` the
+        // retry would trust.
         let copy = dir.join(format!("{name}.v{from}.db"));
+        let tmp = dir.join(format!("{name}.v{from}.db.tmp"));
+        let _ = std::fs::remove_file(&tmp);
         // `VACUUM INTO` attaches its target: lift the no-ATTACH limit on
         // this boot-only connection for that one statement.
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 1)?;
-        let copied = conn.execute("VACUUM INTO ?1", [copy.to_string_lossy()]);
+        let copied = conn.execute("VACUUM INTO ?1", [tmp.to_string_lossy()]);
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
         copied?;
+        std::fs::File::open(&tmp)?.sync_all()?;
+        std::fs::rename(&tmp, &copy)?;
+        std::fs::File::open(&dir)?.sync_all()?;
         Ok(())
     }
 }

@@ -318,3 +318,45 @@ fn a_failed_boot_keeps_its_copies_for_the_retry_and_the_rollback() {
     store(dir, &[V1, UNIQUE, V3]).migrate_all().unwrap();
     assert_ne!(boot_dir(dir), first);
 }
+
+/// A boot killed mid-copy (disk full, OOM) leaves a partial `.tmp`, never
+/// a `.db` the retry would trust: the retry discards it and copies again.
+#[test]
+fn a_partial_copy_from_an_interrupted_boot_is_redone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let (a, _b) = at_v1(dir);
+    // The interrupted boot: an incomplete directory, a truncated copy of A.
+    let boot = dir.join("premigrate/boot-000000000000001");
+    std::fs::create_dir_all(&boot).unwrap();
+    let manifest: String = std::fs::read_dir(dir.join("orgs"))
+        .unwrap()
+        .flatten()
+        .map(|e| format!("{}\n", e.file_name().to_string_lossy()))
+        .collect();
+    std::fs::write(boot.join("manifest"), manifest).unwrap();
+    let whole = std::fs::read(org_file(dir, &a)).unwrap();
+    let partial = boot.join(format!("{a}.v1.db.tmp"));
+    std::fs::write(&partial, &whole[..whole.len() / 2]).unwrap();
+
+    let s = store(dir, &[V1, V2]);
+    assert_eq!(s.migrate_all().unwrap(), 2);
+    assert_eq!(boot_dir(dir), boot);
+    assert!(!partial.exists());
+    let copy = rusqlite::Connection::open(boot.join(format!("{a}.v1.db"))).unwrap();
+    let (ok, rows): (String, i64) = copy
+        .query_row(
+            "SELECT (SELECT integrity_check FROM pragma_integrity_check),
+                    (SELECT count(*) FROM things)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((ok.as_str(), rows), ("ok", 1));
+    assert!(
+        std::fs::read_dir(&boot)
+            .unwrap()
+            .flatten()
+            .all(|e| !e.file_name().to_string_lossy().ends_with(".tmp"))
+    );
+}
