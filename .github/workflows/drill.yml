@@ -1,10 +1,14 @@
 name: Restore drill
 
-# Monthly: restore an environment from both backups on a GitHub runner
+# Monthly: restore staging from both backups on a GitHub runner
 # and fail loudly if either can't be restored, a file fails
 # integrity_check, or a source takes 60 s or more. The full drill (machine
 # destroyed, write loss measured) is scripts/ops/restore-drill.sh;
 # docs/ops.md has both.
+#
+# Staging only. Whether prod's donor data may be restored on a GitHub
+# runner is the human's decision (review F2, M5); until then the reader
+# keys can't read prod either.
 #
 # Read-only keys (scripts/aws/backup.sh prints them): secrets
 # DRILL_LITESTREAM_KEY_ID/_SECRET (keep-prod), DRILL_SNAPSHOT_KEY_ID/_SECRET
@@ -14,17 +18,11 @@ on:
   schedule:
     - cron: '0 6 1 * *'
   workflow_dispatch:
-    inputs:
-      env:
-        description: Environment
-        type: choice
-        options: [staging, prod]
-        default: staging
 
 env:
   LITESTREAM_VERSION: 0.5.17
   LITESTREAM_SHA256: cfb371176d164437ae869f8351cfde49bd1804ae71c61923f75c9cba9c9c006d
-  KEEP_ENV: ${{ inputs.env || 'staging' }}
+  KEEP_ENV: staging
 
 jobs:
   restore:
@@ -49,20 +47,16 @@ jobs:
           echo "$PWD/scripts/ops" >>"$GITHUB_PATH"
       - name: Replica prefix
         # Staging replicates under staging/<deployment>: the newest one is
-        # the live one (Fly deployment ids sort by time).
+        # the live one (Fly deployment ids are ULIDs, so they sort by time).
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.DRILL_LITESTREAM_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DRILL_LITESTREAM_SECRET }}
           AWS_REGION: eu-west-2
           BUCKET: ${{ vars.LITESTREAM_BUCKET }}
         run: |
-          if [ "$KEEP_ENV" = staging ]; then
-            prefix=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix staging/ --delimiter / \
-              --query 'CommonPrefixes[].Prefix' --output text | tr '\t' '\n' | sort | tail -1)
-            prefix=${prefix%/}
-          else
-            prefix=$KEEP_ENV
-          fi
+          prefix=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix staging/ --delimiter / \
+            --query 'CommonPrefixes[].Prefix' --output text | tr '\t' '\n' | sort | tail -1)
+          prefix=${prefix%/}
           [ -n "$prefix" ] && [ "$prefix" != None ] || { echo "::error::no replica under $KEEP_ENV/"; exit 1; }
           echo "KEEP_REPLICA_PREFIX=$prefix" >>"$GITHUB_ENV"
       - name: Restore from Litestream

@@ -11,14 +11,17 @@
 #   0.5 can't restore a whole `dir` in one command, hence the loop.
 #   Needs LITESTREAM_BUCKET, LITESTREAM_ACCESS_KEY_ID,
 #   LITESTREAM_SECRET_ACCESS_KEY and KEEP_REPLICA_PREFIX (the entrypoint
-#   sets it; KEEP_ENV when unset).
-#   RESTORE_EXTRA names other files under orgs/ to restore (the drill's
-#   write-loss marker file).
-# snapshot: the newest hourly/daily/monthly snapshot of each file
+#   sets it; KEEP_ENV when unset). LITESTREAM_BUCKET=file:///dir reads a
+#   local replica instead (trying it out without S3).
+#   RESTORE_DRILL=1 also restores drill/marks.db, the drill's write-loss
+#   probe.
+# snapshot: the newest good hourly/daily/monthly snapshot of each file
 #   (`keep-snapshot restore`, KEEP_SNAPSHOT_* settings).
 #
 # Exit 0: everything restored and checked. Exit 3: no backup to restore
-# from (an environment that never had data). Anything else: failure.
+# from (an environment that never had data). Exit 4: restored and checked,
+# but some orgs platform.db lists had no backup (printed as `MISSING org
+# <id>`). Anything else: failure.
 set -eu
 
 source=${1:?usage: restore.sh litestream|snapshot <data-dir>}
@@ -43,6 +46,8 @@ litestream)
     export AWS_ACCESS_KEY_ID=$LITESTREAM_ACCESS_KEY_ID
     export AWS_SECRET_ACCESS_KEY=$LITESTREAM_SECRET_ACCESS_KEY
     export AWS_REGION=${LITESTREAM_REGION:-eu-west-2}
+    # Temporary credentials (a human's SSO profile, for a local drill).
+    [ -z "${LITESTREAM_SESSION_TOKEN:-}" ] || export AWS_SESSION_TOKEN=$LITESTREAM_SESSION_TOKEN
     replica=s3://$LITESTREAM_BUCKET/${KEEP_REPLICA_PREFIX:-$ENV_NAME}
     ;;
   esac
@@ -53,19 +58,30 @@ litestream)
   fi
   echo "restore: platform.db $(secs "$started")s"
   ids=$(sqlite3 -readonly "$DATA/platform.db" 'SELECT id FROM tenants')
-  # Each name is 32 hex chars (or a fixed RESTORE_EXTRA name), so word
-  # splitting is safe.
+  # Ids are 32 hex chars, so word splitting is safe. A missing replica
+  # (an org created in the last second) is reported below, not fatal here.
   # shellcheck disable=SC2086
-  printf '%s\n' $ids ${RESTORE_EXTRA:-} | grep -v '^$' |
-    xargs -r -P 4 -I{} litestream restore -o "$DATA/orgs/{}.db" "$replica/orgs/{}.db"
+  printf '%s\n' $ids | grep -v '^$' |
+    xargs -r -P 4 -I{} litestream restore -if-replica-exists -o "$DATA/orgs/{}.db" "$replica/orgs/{}.db"
+  for id in $ids; do
+    [ -e "$DATA/orgs/$id.db" ] || echo "MISSING org $id: no replica"
+  done
+  if [ "${RESTORE_DRILL:-}" = 1 ]; then
+    mkdir -p "$DATA/drill"
+    litestream restore -if-replica-exists -o "$DATA/drill/marks.db" "$replica/drill/marks.db"
+  fi
   ;;
 snapshot)
-  if ! out=$(keep-snapshot restore --data "$DATA" 2>&1); then
-    echo "$out" >&2
+  status=0
+  out=$(keep-snapshot restore --data "$DATA" 2>&1) || status=$?
+  echo "$out"
+  case $status in
+  0 | 4) ;; # 4: MISSING lines, counted below
+  *)
     case $out in *"no platform snapshot"*) exit 3 ;; esac
     exit 1
-  fi
-  echo "$out"
+    ;;
+  esac
   ;;
 *)
   echo "restore: unknown source $source" >&2
@@ -76,7 +92,7 @@ echo "restore: all files $(secs "$started")s"
 
 # Checks: every restored file is intact; row counts for the record.
 fail=0
-for db in "$DATA/platform.db" "$DATA"/orgs/*.db; do
+for db in "$DATA/platform.db" "$DATA"/orgs/*.db "$DATA"/drill/*.db; do
   [ -e "$db" ] || continue
   check=$(sqlite3 -readonly "$db" 'PRAGMA integrity_check' 2>&1 | head -1)
   if [ "$check" != ok ]; then
@@ -86,10 +102,18 @@ for db in "$DATA/platform.db" "$DATA"/orgs/*.db; do
   fi
   case $db in
   */platform.db) counts=$(sqlite3 -readonly "$db" "SELECT 'tenants=' || count(*) FROM tenants") ;;
-  */drill-marks.db) counts=$(sqlite3 -readonly "$db" "SELECT 'marks=' || count(*) || ' max=' || coalesce(max(i), 0) FROM marks") ;;
+  */drill/marks.db) counts=$(sqlite3 -readonly "$db" "SELECT 'marks=' || count(*) || ' max=' || coalesce(max(i), 0) FROM marks") ;;
   *) counts=$(sqlite3 -readonly "$db" "SELECT 'contacts=' || count(*) FROM contacts; SELECT 'revisions=' || count(*) FROM revisions" | tr '\n' ' ') ;;
   esac
   echo "restore: ok $(basename "$db") $counts"
 done
 echo "restore: checked $(secs "$started")s"
-exit $fail
+[ "$fail" = 0 ] || exit 1
+missing=0
+for id in $(sqlite3 -readonly "$DATA/platform.db" 'SELECT id FROM tenants'); do
+  [ -e "$DATA/orgs/$id.db" ] || missing=$((missing + 1))
+done
+if [ "$missing" -gt 0 ]; then
+  echo "restore: $missing org(s) missing" >&2
+  exit 4
+fi

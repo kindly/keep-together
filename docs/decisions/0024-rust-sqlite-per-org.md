@@ -106,17 +106,20 @@ Actions: staging on every push to `main`, prod by hand.
   child process.
 - An in-process job snapshots every org file that changed in the past
   hour, plus `platform.db`, to a bucket in a separate `keep-backup`
-  account with Object Lock. The app's key can put and read there, never
-  delete. Kept hourly for 48 h, daily for 30 days, monthly for 12
-  months.
+  account with Object Lock. The app's key can add and read there, never
+  delete or overwrite. Kept hourly for 48 h, daily for 30 days, monthly
+  for 12 months.
 - The drill (`docs/ops.md`): destroy the machine and its volume, restore
   from each source onto a new volume, and check integrity, row counts
   and search results. A 10k org must be back in under 60 s from either
   source, with at most 1 s of acknowledged writes lost on Litestream.
-  It runs before any real data, then monthly in CI.
-- An empty volume restores itself at boot (Litestream first, then the
-  snapshots), and a failed restore stops the boot rather than start
-  empty.
+  It runs before any real data. After that it runs monthly in CI for
+  staging, and by hand for prod, on the human's own machine: prod data
+  is never restored on GitHub's runners.
+- An empty volume restores itself at boot from Litestream. It falls back
+  to the snapshots only when Litestream has nothing, and then loudly
+  (Sentry, `/healthz`, an issue) until a human has checked. A failed
+  restore stops the boot rather than start empty.
 
 **Monitoring.** `/healthz` reports the database, the last snapshot's age
 and Litestream's lag. A GitHub cron every 15 minutes opens an issue when

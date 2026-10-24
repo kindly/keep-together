@@ -8,17 +8,23 @@
 # It makes, if missing:
 #   - in keep-prod: the Litestream bucket keep-litestream-<account> (shared
 #     by every env under its own prefix): versioned, SSE-S3, public access
-#     blocked; old versions expire after 30 days, and on staging, whose
-#     replica prefix changes on every deploy, anything after 14 days;
+#     blocked; old versions expire after 30 days. Staging's old per-deploy
+#     prefixes are not expired by a rule (it would also hit the live one);
+#     docs/ops.md has the prune command;
 #   - in keep-backup: the snapshot bucket keep-snapshots-<account> with
 #     Object Lock (governance mode, 2 days by default), SSE-S3, public
-#     access blocked, and lifecycle by tier prefix: hourly/ 2 days, daily/
-#     30 days, monthly/ 365 days;
+#     access blocked, lifecycle by tier prefix (hourly/ 2 days, daily/ 30
+#     days, monthly/ 365 days, and an overwritten version is kept as long
+#     as its tier), and a bucket policy that refuses any PUT from the app
+#     users without `If-None-Match: *`: the app can add a snapshot, never
+#     replace one;
 #   - per env, an IAM user in each account, limited to that env's prefix:
 #     keep-litestream-<env> (Litestream needs delete, for its own retention)
 #     and keep-snapshots-<env> (put, get, list; never delete);
 #   - once, read-only drill users in both accounts (keep-drill-reader), for
-#     .github/workflows/drill.yml.
+#     .github/workflows/drill.yml, limited to staging's prefixes: whether a
+#     GitHub runner may read prod's donor data is the human's decision
+#     (review F2, M5), so it can't yet.
 #
 # New access keys are printed once, with the `fly secrets set` / `gh
 # secret set` lines that use them. A user that already has a key gets no
@@ -71,9 +77,7 @@ run aws s3api put-bucket-lifecycle-configuration --bucket "$LITESTREAM_BUCKET" "
   --lifecycle-configuration '{"Rules":[
     {"ID":"old-versions","Status":"Enabled","Filter":{"Prefix":""},
      "NoncurrentVersionExpiration":{"NoncurrentDays":30},
-     "AbortIncompleteMultipartUpload":{"DaysAfterInitiation":7}},
-    {"ID":"staging-old-generations","Status":"Enabled","Filter":{"Prefix":"staging/"},
-     "Expiration":{"Days":14}}]}'
+     "AbortIncompleteMultipartUpload":{"DaysAfterInitiation":7}}]}'
 
 say "Snapshot bucket $SNAPSHOT_BUCKET (keep-backup)"
 if ! bucket_exists "$SNAPSHOT_BUCKET" "${backup[@]}"; then
@@ -87,8 +91,10 @@ fi
   die "$SNAPSHOT_BUCKET exists without Object Lock; it can't be added later"
 # Governance, not compliance: the keep-backup admin can still remove a
 # version (with bypass), nobody else can, and the app's key can't delete
-# at all. 2 days = the hourly tier, the shortest one; longer tiers stay
-# protected by having no delete permission anywhere but the admin.
+# at all. 2 days = the hourly tier, the shortest one. Longer tiers are
+# protected by the app having no delete, no retention change and no
+# overwrite (the bucket policy below), and by an overwritten version
+# living as long as its tier.
 run aws s3api put-object-lock-configuration --bucket "$SNAPSHOT_BUCKET" "${backup[@]}" \
   --object-lock-configuration \
   '{"ObjectLockEnabled":"Enabled","Rule":{"DefaultRetention":{"Mode":"GOVERNANCE","Days":2}}}'
@@ -96,13 +102,33 @@ secure_bucket "$SNAPSHOT_BUCKET" "${backup[@]}"
 run aws s3api put-bucket-lifecycle-configuration --bucket "$SNAPSHOT_BUCKET" "${backup[@]}" \
   --lifecycle-configuration '{"Rules":[
     {"ID":"hourly","Status":"Enabled","Filter":{"Prefix":"hourly/"},
-     "Expiration":{"Days":2},"NoncurrentVersionExpiration":{"NoncurrentDays":1}},
+     "Expiration":{"Days":2},"NoncurrentVersionExpiration":{"NoncurrentDays":2}},
     {"ID":"daily","Status":"Enabled","Filter":{"Prefix":"daily/"},
-     "Expiration":{"Days":30},"NoncurrentVersionExpiration":{"NoncurrentDays":1}},
+     "Expiration":{"Days":30},"NoncurrentVersionExpiration":{"NoncurrentDays":30}},
     {"ID":"monthly","Status":"Enabled","Filter":{"Prefix":"monthly/"},
-     "Expiration":{"Days":365},"NoncurrentVersionExpiration":{"NoncurrentDays":1}},
+     "Expiration":{"Days":365},"NoncurrentVersionExpiration":{"NoncurrentDays":365}},
     {"ID":"multipart","Status":"Enabled","Filter":{"Prefix":""},
      "AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+
+# The app users may only create keys, never overwrite one: S3 evaluates
+# `s3:if-none-match` in bucket policies (conditional writes, 2024), and the
+# app sends `If-None-Match: *` on every PUT. Principal "*" with an ARN
+# pattern, because a bucket policy can't name users that don't exist yet.
+run aws s3api put-bucket-policy --bucket "$SNAPSHOT_BUCKET" "${backup[@]}" --policy "{
+  \"Version\": \"2012-10-17\",
+  \"Statement\": [
+    {\"Sid\": \"AppCreatesNeverOverwrites\", \"Effect\": \"Deny\", \"Principal\": \"*\",
+     \"Action\": \"s3:PutObject\", \"Resource\": \"arn:aws:s3:::$SNAPSHOT_BUCKET/*\",
+     \"Condition\": {\"StringLike\": {\"aws:PrincipalArn\": \"arn:aws:iam::$backup_account:user/keep-snapshots-*\"},
+                    \"Null\": {\"s3:if-none-match\": \"true\"}}},
+    {\"Sid\": \"AppNeverDeletes\", \"Effect\": \"Deny\", \"Principal\": \"*\",
+     \"Action\": [\"s3:DeleteObject\", \"s3:DeleteObjectVersion\", \"s3:PutObjectRetention\",
+                  \"s3:BypassGovernanceRetention\", \"s3:PutObjectLegalHold\"],
+     \"Resource\": \"arn:aws:s3:::$SNAPSHOT_BUCKET/*\",
+     \"Condition\": {\"StringLike\": {\"aws:PrincipalArn\": [
+       \"arn:aws:iam::$backup_account:user/keep-snapshots-*\",
+       \"arn:aws:iam::$backup_account:user/keep-drill-reader\"]}}}
+  ]}"
 
 # user, account (prod|backup), policy JSON: create the user if missing,
 # set its inline policy, and keep a new access key (as new_keys[user@account])
@@ -152,18 +178,29 @@ iam_user "keep-snapshots-$ENV_NAME" backup "{
      \"Resource\": [\"arn:aws:s3:::$SNAPSHOT_BUCKET\", \"arn:aws:s3:::$SNAPSHOT_BUCKET/*\"]}
   ]}"
 
-say "IAM keep-drill-reader (read-only, both accounts)"
+say "IAM keep-drill-reader (read-only, staging only, both accounts)"
+# Staging only until the human decides whether a GitHub runner may read
+# prod (review F2, M5). The policy is re-put on every run, so re-running
+# this script narrows a reader created by an earlier version.
 iam_user keep-drill-reader prod "{
   \"Version\": \"2012-10-17\",
   \"Statement\": [
-    {\"Effect\": \"Allow\", \"Action\": \"s3:GetObject\", \"Resource\": \"arn:aws:s3:::$LITESTREAM_BUCKET/*\"},
-    {\"Effect\": \"Allow\", \"Action\": [\"s3:ListBucket\", \"s3:GetBucketLocation\"], \"Resource\": \"arn:aws:s3:::$LITESTREAM_BUCKET\"}
+    {\"Effect\": \"Allow\", \"Action\": \"s3:GetObject\", \"Resource\": \"arn:aws:s3:::$LITESTREAM_BUCKET/staging/*\"},
+    {\"Effect\": \"Allow\", \"Action\": \"s3:ListBucket\", \"Resource\": \"arn:aws:s3:::$LITESTREAM_BUCKET\",
+     \"Condition\": {\"StringLike\": {\"s3:prefix\": [\"staging/*\", \"staging\"]}}},
+    {\"Effect\": \"Allow\", \"Action\": \"s3:GetBucketLocation\", \"Resource\": \"arn:aws:s3:::$LITESTREAM_BUCKET\"}
   ]}"
 iam_user keep-drill-reader backup "{
   \"Version\": \"2012-10-17\",
   \"Statement\": [
-    {\"Effect\": \"Allow\", \"Action\": \"s3:GetObject\", \"Resource\": \"arn:aws:s3:::$SNAPSHOT_BUCKET/*\"},
-    {\"Effect\": \"Allow\", \"Action\": [\"s3:ListBucket\", \"s3:GetBucketLocation\"], \"Resource\": \"arn:aws:s3:::$SNAPSHOT_BUCKET\"}
+    {\"Effect\": \"Allow\", \"Action\": \"s3:GetObject\",
+     \"Resource\": [\"arn:aws:s3:::$SNAPSHOT_BUCKET/hourly/staging/*\",
+                    \"arn:aws:s3:::$SNAPSHOT_BUCKET/daily/staging/*\",
+                    \"arn:aws:s3:::$SNAPSHOT_BUCKET/monthly/staging/*\"]},
+    {\"Effect\": \"Allow\", \"Action\": \"s3:ListBucket\", \"Resource\": \"arn:aws:s3:::$SNAPSHOT_BUCKET\",
+     \"Condition\": {\"StringLike\": {\"s3:prefix\": [\"hourly/staging/*\", \"daily/staging/*\", \"monthly/staging/*\",
+                                                    \"hourly/staging\", \"daily/staging\", \"monthly/staging\"]}}},
+    {\"Effect\": \"Allow\", \"Action\": \"s3:GetBucketLocation\", \"Resource\": \"arn:aws:s3:::$SNAPSHOT_BUCKET\"}
   ]}"
 
 say "Done"

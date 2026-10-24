@@ -51,3 +51,18 @@ dbs:
       access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
       secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
       sync-interval: 1s
+
+  # The restore drill's write-loss probe (scripts/ops/drill.sh marks).
+  # Its own directory: never under orgs/, where the api and the boot
+  # migration take every file for an organisation.
+  - dir: /data/drill
+    pattern: "*.db"
+    watch: true
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: ${KEEP_REPLICA_PREFIX}/drill
+      region: eu-west-2
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+      sync-interval: 1s

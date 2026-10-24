@@ -9,7 +9,9 @@
 # Makes the app in lhr, its 1 GB volume keep_data, asks for any secret
 # still missing, adds the certificate for staging.keep-together.org.uk and
 # prints the Route 53 record to add, and a deploy token for GitHub.
-# The first deploy is `fly deploy -c fly.staging.toml` (or a push to main).
+# The first deploy is `fly deploy -c fly.staging.toml --ha=false` (or a
+# push to main). Re-run it any time: it also checks the app still has one
+# machine and one volume.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -23,24 +25,35 @@ run() { printf '+ %s\n' "$*" >&2; "$@"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 command -v fly >/dev/null || die "needs flyctl: https://fly.io/docs/flyctl/install/"
+command -v jq >/dev/null || die "needs jq"
 fly auth whoami >/dev/null || die "not signed in: fly auth login"
 
+# Names from flyctl's JSON lists, whichever case the field has (it differs
+# between commands and versions). An empty list is normal on a new app.
+names() { jq -r '.[]? | (.Name // .name // empty)'; }
+
 say "App $APP"
-if fly apps list --json | grep -q "\"Name\": *\"$APP\""; then
+if fly apps list --json | names | grep -qx "$APP"; then
   echo "exists"
 else
   run fly apps create "$APP" --org "$ORG"
 fi
 
 say "Volume keep_data ($REGION, 1 GB)"
-if fly volumes list -a "$APP" --json | grep -q '"Name": *"keep_data"'; then
-  echo "exists"
-else
-  run fly volumes create keep_data -a "$APP" --region "$REGION" --size 1 --yes
-fi
+# One machine, one volume: a second copy of the data would replicate to
+# the same Litestream prefix as the first.
+vols=$(fly volumes list -a "$APP" --json | names | grep -cx keep_data || true)
+case $vols in
+0) run fly volumes create keep_data -a "$APP" --region "$REGION" --size 1 --yes ;;
+1) echo "exists" ;;
+*) die "$APP has $vols keep_data volumes; keep one (fly volumes list -a $APP) and destroy the rest" ;;
+esac
+machines=$(fly machines list -a "$APP" --json | jq 'length' 2>/dev/null || echo 0)
+((machines <= 1)) ||
+  die "$APP has $machines machines; it must have one (fly machines list -a $APP, then fly machine destroy)"
 
 say "Secrets"
-have=$(fly secrets list -a "$APP" --json | grep -o '"Name": *"[A-Z_]*"' | grep -o '[A-Z_]*"$' | tr -d '"')
+have=$(fly secrets list -a "$APP" --json | names || true)
 missing=()
 for s in LITESTREAM_BUCKET LITESTREAM_ACCESS_KEY_ID LITESTREAM_SECRET_ACCESS_KEY \
   KEEP_SNAPSHOT_BUCKET KEEP_SNAPSHOT_ACCESS_KEY_ID KEEP_SNAPSHOT_SECRET_ACCESS_KEY SENTRY_DSN; do
@@ -81,4 +94,5 @@ say "Deploy token for GitHub Actions (deploy.yml)"
 echo "  fly tokens create deploy -a $APP --expiry 8760h | gh secret set FLY_API_TOKEN"
 echo "  gh variable set STAGING_URL --body https://$HOST"
 echo
-echo "First deploy: fly deploy -c fly.staging.toml   (or push to main)"
+echo "First deploy: fly deploy -c fly.staging.toml --ha=false   (or push to main)"
+echo "(--ha=false always: without it flyctl's first deploy makes two machines and two volumes)"

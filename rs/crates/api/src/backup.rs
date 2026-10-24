@@ -125,7 +125,8 @@ impl SnapshotConfig {
     /// `KEEP_SNAPSHOT_BUCKET` (or `file:///some/dir`), `KEEP_SNAPSHOT_REGION`
     /// (default eu-west-2),
     /// `KEEP_SNAPSHOT_ACCESS_KEY_ID`, `KEEP_SNAPSHOT_SECRET_ACCESS_KEY`,
-    /// optionally `KEEP_SNAPSHOT_ENDPOINT` (any S3-compatible store), and
+    /// optionally `KEEP_SNAPSHOT_SESSION_TOKEN` (temporary credentials) and
+    /// `KEEP_SNAPSHOT_ENDPOINT` (any S3-compatible store), and
     /// `KEEP_ENV` (default `dev`). Not the `AWS_*` names: those belong to
     /// Litestream's replica, which is another account and another key.
     pub fn from_env(data_dir: &Path) -> Result<Option<Self>, String> {
@@ -159,6 +160,10 @@ impl SnapshotConfig {
             // `PutMode::Create` sends `If-None-Match: *`; the bucket policy
             // refuses any PUT from the app without it.
             .with_conditional_put(S3ConditionalPut::ETagMatch);
+        // Temporary credentials (a human's SSO profile, for a local drill).
+        if let Some(token) = var("KEEP_SNAPSHOT_SESSION_TOKEN") {
+            s3 = s3.with_token(token);
+        }
         if let Some(endpoint) = var("KEEP_SNAPSHOT_ENDPOINT") {
             s3 = s3
                 .with_allow_http(endpoint.starts_with("http://"))

@@ -39,9 +39,11 @@ jobs:
           exit 1
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@1.5
+      # --ha=false: one machine, one volume. Two would each replicate
+      # their own platform.db to the same Litestream prefix.
       - name: Deploy keep-staging
         run: >
-          flyctl deploy -c fly.staging.toml --remote-only --yes
+          flyctl deploy -c fly.staging.toml --remote-only --yes --ha=false
           --build-arg VITE_SENTRY_DSN="$SENTRY_DSN_SPA"
           --build-arg VITE_RELEASE="$GITHUB_SHA"
         env:

@@ -3,9 +3,11 @@ name: Health
 # Every 15 minutes: each live environment's /healthz. A failure opens a
 # GitHub issue labelled `health` (GitHub emails it), or comments on the
 # open one, so an outage is one thread. Failing means: not 200 / ok false,
-# the last hourly snapshot older than 2 h (or none), snapshot errors, or
+# the last hourly snapshot older than 2 h (or none), snapshot errors,
 # Litestream not ok or lagging more than LITESTREAM_MAX_LAG seconds
-# (variable, default 300).
+# (variable, default 300), or a restore that needs a look (a fallback to
+# the snapshots, or orgs left out). /healthz carries counts only; the
+# details are in the app's log and Sentry.
 #
 # Variables: STAGING_URL now, PROD_URL from cutover.
 
@@ -43,9 +45,12 @@ jobs:
                 (.backup // {} | (
                   (if .snapshots == "on" and ((.snapshotAgeSeconds // 1e9) > 7200)
                    then "last snapshot \(.snapshotAgeSeconds // "never") s ago" else empty end),
-                  (if (.snapshotErrors // []) | length > 0
-                   then "snapshot errors: \(.snapshotErrors | join("; "))" else empty end),
-                  (if .litestream == "error" then "litestream: \(.litestreamError)" else empty end),
+                  (if (.snapshotErrorCount // 0) > 0
+                   then "\(.snapshotErrorCount) file(s) failed the last snapshot run" else empty end),
+                  (if .litestream == "error" then "litestream not ok (see the log)" else empty end),
+                  (if .restore != null and (.restore.fallback or (.restore.missingOrgs // 0) > 0)
+                   then "restored from \(.restore.source) at \(.restore.at) (fallback: \(.restore.fallback), missing orgs: \(.restore.missingOrgs)); check, then delete /data/.restored"
+                   else empty end),
                   (if .litestream == "ok" and ((.litestreamLagSeconds // 0) > $max)
                    then "litestream lag \(.litestreamLagSeconds) s" else empty end),
                   (if $env == "prod" and .snapshots != "on" then "snapshots off" else empty end),

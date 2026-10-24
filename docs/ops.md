@@ -35,9 +35,12 @@ Data on the volume (`/data`):
 |---|---|
 | `platform.db` | tenants, users, memberships, sessions, the snapshot ledger |
 | `orgs/<tenant-id>.db` | one organisation, named by its 32-hex tenant id |
-| `premigrate/` | the `VACUUM INTO` copies taken before a boot migration (F1) |
+| `premigrate/` | the `VACUUM INTO` copies taken before a boot migration (F1); `scripts/ops/rollback-migration.sh <data> [--apply]` puts them back |
 | `snapshots-tmp/` | the snapshot job's scratch copies, removed after each file |
+| `drill/` | the restore drill's write-loss probe, only during a drill |
 | `.image` | the image the data belongs to (staging's reset compares it) |
+| `.restored` | how the volume was last restored; reported until a human deletes it |
+| `restore.log` | the last empty-volume restore's output |
 
 ## Settings
 
@@ -53,7 +56,8 @@ Fly secrets:
 | `LITESTREAM_BUCKET`, `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY` | `scripts/aws/backup.sh <env>` | Litestream, `restore.sh litestream` |
 | `KEEP_SNAPSHOT_BUCKET`, `KEEP_SNAPSHOT_ACCESS_KEY_ID`, `KEEP_SNAPSHOT_SECRET_ACCESS_KEY` | `scripts/aws/backup.sh <env>` | the snapshot job, `keep-snapshot` |
 | `SENTRY_DSN` | Sentry project, EU region | api errors |
-| `KEEP_RESTORE_SOURCE`, `RESTORE_EXTRA` | set and unset by the drill | the entrypoint's restore |
+| `KEEP_RESTORE_SOURCE`, `RESTORE_DRILL` | set and unset by the drill | the entrypoint's restore |
+| `KEEP_RESTORE_ALLOW_MISSING` | the human, after a restore stopped on missing orgs | the entrypoint's restore |
 
 GitHub (repo settings): secret `FLY_API_TOKEN`; variables `STAGING_URL`,
 `SENTRY_DSN_SPA` (built into the SPA; a DSN is public by design),
@@ -78,7 +82,11 @@ In order. Each script is idempotent and echoes every command.
    the secrets it still lacks, the certificate; it prints the Route 53
    record and the GitHub token commands.
 4. Add the Route 53 record, run the printed `gh` commands, then deploy:
-   `fly deploy -c fly.staging.toml` or push to `main`.
+   `fly deploy -c fly.staging.toml --ha=false` or push to `main`.
+   **Always `--ha=false`:** without it flyctl's first deploy makes two
+   machines with two volumes, each replicating its own `platform.db` to
+   the same prefix. `staging.sh` refuses to go on when the app has more
+   than one machine or volume.
 5. Run the restore drill (below) and paste its table into the log at the
    end of this page.
 
@@ -97,17 +105,31 @@ gets `staging/<deployment>` because its reset recreates every file on
 each deploy, and a fresh file must not meet the previous one's replica.
 It syncs every second, takes a full snapshot daily and keeps 7 days, so
 any point in the last week can be restored. Old object versions expire
-after 30 days, and staging's prefixes after 14. The IAM user
-`keep-litestream-<env>` can read, write and delete under its env's
-prefix only. Litestream needs delete for its own retention.
+after 30 days. The IAM user `keep-litestream-<env>` can read, write and
+delete under its env's prefix only. Litestream needs delete for its own
+retention.
+
+Staging's old per-deploy prefixes stay until pruned. No lifecycle rule
+expires them, because one would also delete the live generation's files
+whenever staging goes 14 days without a deploy. They are small. To prune
+all but the newest few (as an admin of keep-prod):
+
+```
+b=keep-litestream-<keep-prod account>
+aws s3api list-objects-v2 --profile keep-prod --bucket $b --prefix staging/ --delimiter / \
+  --query 'CommonPrefixes[].Prefix' --output text | tr '\t' '\n' | sort | head -n -3 |
+  while read -r p; do aws s3 rm --profile keep-prod --recursive "s3://$b/$p"; done
+```
 
 **Hourly snapshots.** Bucket `keep-snapshots-<keep-backup account>` in
 the `keep-backup` account, which runs nothing else, with Object Lock
-(governance, 2 days). The job is `api::backup`. Every hour it copies
-each org file whose newest revision moved since its last snapshot, plus
-`platform.db`, with `VACUUM INTO`. It checks the copy with
-`integrity_check`, compresses it with zstd and uploads it to
-`<tier>/<env>/<tenant-id|platform>/<YYYY-MM-DDTHHZ>.db.zst`:
+(governance, 2 days). The job is `api::backup`. A minute after boot and
+then every hour, it copies `platform.db` and then each org file whose
+newest revision moved since its last snapshot, with `VACUUM INTO`.
+`orgs/` is listed after the platform copy, so that copy never names an
+org the run didn't see. It checks the copy with `integrity_check`,
+compresses it with zstd and uploads it to
+`<tier>/<env>/<tenant-id|platform>/<YYYY-MM-DDTHHMMZ>.db.zst`:
 
 - `hourly/` when the file changed in the last hour; expires after 2 days;
 - `daily/` at the first run of a UTC day, when it changed since the last
@@ -116,11 +138,24 @@ each org file whose newest revision moved since its last snapshot, plus
   expires after 365 days.
 
 The newest state of every file is always in the bucket: hourly for two
-days, then daily, then monthly. The IAM user `keep-snapshots-<env>` can
-put, get and list under its env's prefixes and is explicitly denied
-delete, retention changes and bucket policy or lifecycle changes. A
-leaked app key can't destroy a snapshot, and neither can anyone who owns
-`keep-prod`. The ledger of what was uploaded is the `snapshots` table in
+days, then daily, then monthly.
+
+**Nothing the app holds can remove or replace a snapshot.**
+- Every upload is create-only (`If-None-Match: *`). The bucket policy
+  refuses a PUT from a `keep-snapshots-*` user without that header, so a
+  stolen app key can add junk keys but can't overwrite a real one. A key
+  that already exists (two passes in one minute) is skipped and stays
+  due.
+- The IAM user `keep-snapshots-<env>` can put, get and list under its
+  env's prefixes. Both its policy and the bucket policy deny delete,
+  retention changes, legal holds, governance bypass, and bucket policy
+  or lifecycle changes.
+- An overwritten version (only an admin can make one) lives as long as
+  its tier: 2, 30 or 365 days.
+- A restore ignores keys stamped in the future and falls back past a
+  copy that fails its check, so planted junk can't block one.
+
+Nobody who owns `keep-prod` can reach the bucket either. The ledger of what was uploaded is the `snapshots` table in
 `platform.db`. Fly's daily volume snapshots are a third copy we don't
 rely on.
 
@@ -131,21 +166,37 @@ running api.
 
 **A lost machine or volume** restores itself. When a machine boots on a
 volume without `platform.db` and a backup is configured, the entrypoint
-runs `restore.sh` into `/data/restoring`, trying Litestream first and
-then the snapshots if Litestream has nothing. The files move into place
-only when every one is back and passed `integrity_check`. Then
-Litestream starts as usual. If a source exists but fails (bad
-credentials, a corrupt file), the machine doesn't start. Starting empty
-there would replicate an empty `platform.db` over the real one. So:
+runs `restore.sh` into `/data/restoring`. The files move into place only
+when every one is back and passed `integrity_check`. Then Litestream
+starts as usual.
 
 ```
 fly volumes create keep_data -a keep-staging --region lhr --size 1
-fly deploy -c fly.staging.toml --image <current image>   # or fly machine run …
-fly logs -a keep-staging | grep 'restore:'
+fly deploy -c fly.staging.toml --image <current image> --ha=false
+fly logs -a keep-staging | grep -E 'entrypoint|restore:'
 ```
 
-Set the secret `KEEP_RESTORE_SOURCE=snapshot` (`--stage`, before the
-deploy) to restore from the snapshots on purpose, and unset it after.
+What the entrypoint does, by case:
+- **Litestream has the data:** it restores from Litestream.
+- **Litestream has no replica at all** (exit 3): it falls back to the
+  snapshots. Up to an hour of writes may be gone, so the fallback is
+  loud: a `FALLBACK` log line, a Sentry error at every boot, and
+  `backup.restore` in `/healthz`, which `health.yml` turns into an
+  issue. All of these last until you check the data and delete
+  `/data/.restored`. Staging never falls back: its fresh per-deploy
+  prefix is always empty, and its snapshots belong to the previous
+  deploy.
+- **Orgs that `platform.db` lists have no backup** (exit 4, e.g. an org
+  created in the last second, or an upload that failed): the machine
+  doesn't start. The log names the orgs (`MISSING org <id>`). To boot
+  without them, set `KEEP_RESTORE_ALLOW_MISSING=1` and deploy again; the
+  restore is then recorded as needing review. Unset it afterwards.
+- **A source exists but fails** (bad credentials, a corrupt file): the
+  machine doesn't start. Starting empty would replicate an empty
+  `platform.db` over the real one.
+
+Set the secret `KEEP_RESTORE_SOURCE=snapshot` before the deploy to
+restore from the snapshots on purpose, and unset it after.
 
 **Point in time** (an app bug or a bad import, data still there). Restore
 next to the live data, look, then swap by hand. Inside the machine:
@@ -178,45 +229,80 @@ human against `keep-staging`. It:
    `seed` bin) and takes a snapshot pass;
 2. records counts with `drill.sh census`: tenants, and per org contacts,
    revisions and the matches of five search terms;
-3. per source, destroys the machine (`--force`) and its volume, creates
-   an empty volume and redeploys the same image, so the entrypoint
-   restores; for Litestream it first starts a loop committing one row a
-   time to `orgs/drill-marks.db` and printing each, to measure what the
-   kill lost;
+3. per source, destroys the machine and its volume, creates an empty
+   volume and redeploys the same image, so the entrypoint restores. For
+   Litestream it first starts a loop committing one row at a time to
+   `drill/marks.db`, then crashes the machine with `drill.sh hard-stop`.
+   That SIGKILLs Litestream, the api and the loop together and deletes
+   the data, so neither a graceful flush nor a restart ships anything
+   that wasn't replicated;
 4. waits for `/healthz`, reads `restore: all files Ns` from the logs,
-   recounts and diffs, and compares the last committed mark with the
-   last restored one;
-5. prints the table below and exits 1 if anything misses.
+   recounts and diffs. The loss is the kill time minus the newest
+   restored mark, both by the machine's clock: an upper bound on the
+   window of committed writes lost;
+5. prints the table below and exits 1 if anything misses. On any exit it
+   unsets the secrets it set (`KEEP_RESTORE_SOURCE`, `RESTORE_DRILL`).
 
 **Pass:** a 10k org back in under 60 s from either source, counts and
 search matches equal, and at most 1 s of committed writes lost on
 Litestream. Snapshots lose up to an hour by design.
 
-`drill.yml` repeats the restore part monthly (the 1st, 06:00 UTC) with
-read-only keys. It restores from both sources on a runner, fails if a
-file fails `integrity_check`, if either source takes 60 s or more, or if
-the two list different tenants, and puts the timings in the run summary.
+`drill.yml` repeats the restore part monthly (the 1st, 06:00 UTC) for
+**staging only**, with read-only keys that can only read staging. It
+restores from both sources on a runner, and fails if a file fails
+`integrity_check`, if either source takes 60 s or more, if an org is
+missing, or if the two sources list different tenants. The timings go
+in the run summary.
+
+**Prod is never restored on GitHub** (human, 2026-10-24). GitHub's
+runners are probably outside the UK, and their logs are public if the
+repo is. Neither the drill key nor `drill.yml` can read prod. The prod
+drill is restore-only, run occasionally by the human on their own
+machine or a UK box, with their own AWS profiles:
+
+```
+aws sso login --profile mgmt
+scripts/ops/restore-drill.sh local prod          # add --keep to keep the files
+```
+
+It restores from Litestream and from the snapshots into a private
+temporary directory, and checks every file. It prints only pass/fail,
+timings, file and contact totals, and whether both sources list the same
+tenants: no org names or ids. Then it deletes the restored data. It
+needs the aws CLI, litestream 0.5.x and sqlite3, and builds
+`keep-snapshot` from `rs/`. Paste its lines into the drill log.
 
 ## Monitoring
 
 - `/healthz` (Fly's check every 15 s, and the cron): 200 when
-  `platform.db` answers. Its `backup` field has `snapshotAgeSeconds` (of
-  the last `platform.db` snapshot, which every run takes),
-  `snapshotErrors` (from this process's last run), `litestream`
-  (`ok`/`error`/`off`), `litestreamLagSeconds` (the worst database's
-  seconds since its last sync, from the control socket's `GET /list`)
-  and `litestreamDatabases`. A stale backup doesn't fail the Fly check:
-  that would take the only machine out of service.
+  `platform.db` answers. Its `backup` field has:
+  - `snapshotAgeSeconds`: of the last `platform.db` snapshot, which every
+    run takes;
+  - `snapshotErrorCount`: from this process's last run;
+  - `litestream`: `ok`, `error` or `off`;
+  - `litestreamLagSeconds`: the worst database's seconds since its last
+    sync, from the control socket's `GET /list`;
+  - `litestreamDatabases`;
+  - `restore`: present after an empty-volume restore, as `{source,
+    fallback, missingOrgs, at}`.
+
+  It is public, so it has counts and status words only. Error text
+  (bucket names, account ids, tenant ids) goes to the log and Sentry, and
+  a lasting Litestream problem is logged once, not every 15 s. A stale
+  backup doesn't fail the Fly check: that would take the only machine
+  out of service.
 - `health.yml` every 15 minutes, for each URL in `STAGING_URL` and
   `PROD_URL`: fails on a non-200, a snapshot older than 2 h or never
-  taken, snapshot errors, Litestream not `ok`, or a lag over
-  `LITESTREAM_MAX_LAG` (default 300 s). A failure opens an issue labelled
-  `health`, or comments on the open one. GitHub emails it.
+  taken, snapshot errors, Litestream not `ok`, a lag over
+  `LITESTREAM_MAX_LAG` (default 300 s), or a restore that fell back or
+  left orgs out. A failure opens an issue labelled `health`, or comments
+  on the open one. GitHub emails it.
 - Sentry, EU region. The api reports panics and logged errors
-  (`SENTRY_DSN`). The SPA loads Sentry's CDN bundle (one pinned version,
-  with SRI) only when the build had `VITE_SENTRY_DSN`. Both drop users,
-  cookies, headers, bodies and query strings, and redact anything shaped
-  like an email address.
+  (`SENTRY_DSN`). The SPA imports `@sentry/browser` (npm, pinned) as a
+  separate chunk, only when the build had `VITE_SENTRY_DSN`. It contacts
+  Sentry only when there's an error to send. Both turn off user, cookie,
+  header, body and query-string collection, scrub what's left, and
+  redact anything shaped like an email address.
 - Litestream's Prometheus metrics on :9090, scraped by Fly (`[metrics]`).
 
 ## Staging reset
@@ -243,7 +329,16 @@ below).
 Still to verify on the first real run (no AWS or Fly from the builder's
 sandbox):
 
-- Litestream against S3 with the IAM user limited to its prefix.
+- Litestream against S3 with the IAM user limited to its prefix, and
+  that `restore -if-replica-exists` with that user reports a missing
+  replica (exit 3) rather than mistaking an access error for one.
+- The snapshot bucket policy: a PUT by `keep-snapshots-staging` without
+  `If-None-Match` is refused (403), and one with it succeeds. Try it
+  once with the new key:
+  `aws s3api put-object --bucket <b> --key hourly/staging/test/x --body /dev/null`
+  should fail, and the same with `--if-none-match '*'` should succeed.
+- flyctl's JSON field names in `staging.sh` (`Name`/`name` both handled)
+  and that `--ha=false` keeps the first deploy at one machine.
 - The snapshot bucket accepts `object_store`'s uploads with
   `x-amz-checksum-sha256`, which Object Lock requires (it refuses a PUT
   without Content-MD5 or a checksum).

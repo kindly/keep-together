@@ -10,5 +10,7 @@ qc-results
 qc-report
 test-results
 factory/out
-*.local
-.env
+# Secrets and personal details anywhere in the tree (e.g.
+# scripts/aws/contact.json.local) never enter the build context.
+**/*.local
+**/.env*
