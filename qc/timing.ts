@@ -6,18 +6,21 @@ import { budgetFor } from './budgets'
 import type { FlowKind, FlowName } from './budgets'
 
 // Client-perceived latency (factory/plans/qc-suite.sv, "What latency
-// means"). Timed inside the page: t0 is the event timestamp of the *last*
-// input event the action dispatches (or navigation start for a page
+// means"). Timed inside the page: t0 is the event timestamp of the start
+// of the *last* gesture the action makes (or navigation start for a page
 // load), and t1 is `performance.now()` in the first animation frame where
 // the `until` predicate holds.
 //
-// Why the last: the rule is "from the input event to the result on
-// screen", and for a typed action that input is the keystroke that
+// A gesture starts at a pointerdown or a keydown; the events that follow
+// it (mousedown, beforeinput, input) only set t0 when no gesture did.
+// Why the last gesture: the rule is "from the input event to the result
+// on screen", and for a typed action that input is the keystroke that
 // completes it. Playwright types one key per CDP round trip, so timing
 // from the first key would charge Playwright's typing speed to the app.
-// For a click, the last event we listen for is mousedown, which arrives
-// with pointerdown. `fill()` is a single insertText (one input event), so
-// either way it times from that. Playwright's own expect polling (100 ms+)
+// Why its start: a checkbox's `input` event comes after `click`, where
+// React has already re-rendered and the query's request started, so
+// timing from it would leave that out. `fill()` is a single insertText
+// (no key events), so it times from its beforeinput. Playwright's own expect polling (100 ms+)
 // is far too coarse for this.
 //
 // Samples are judged raw: every one must be under the flow's maxMs
@@ -175,8 +178,8 @@ export interface FlowStep<TArg = undefined> {
   until: (arg: TArg) => unknown
   arg?: TArg
   /**
-   * 'input' (default): t0 is the last pointer/key/input event the action
-   * dispatches (one click, the final keystroke, or fill's single input).
+   * 'input' (default): t0 is the start of the last gesture the action
+   * makes (a click's pointerdown, the final keydown, or fill's input).
    * 'navigation': t0 is the new document's navigation start; the action
    * must resolve before render, e.g.
    * `page.goto(url, { waitUntil: 'commit' })`.
@@ -264,8 +267,6 @@ type RawCall = [
 interface QcWindow {
   __qcListening?: boolean
   __qcArmed?: boolean
-  /** performance.now() when this sample was armed, just before its action. */
-  __qcArmedAt?: number
   __qcT0?: number
   /** Every `/api` request since the tap went in (capped). */
   __qcCalls?: Array<RawCall>
@@ -279,8 +280,9 @@ interface QcWindow {
   __qcQuiet?: number
 }
 
-// Capture-phase listeners record the timestamp of each trusted input event
-// after arming; the last one wins (see the top of this file).
+// Capture-phase listeners record the timestamp of trusted input events
+// after arming: each pointerdown or keydown starts a gesture and sets t0,
+// the rest only fill it in when none did (see the top of this file).
 // Event.timeStamp shares performance.now()'s time base, so t0 is when the
 // browser saw the input, not when Playwright sent it.
 //
@@ -303,7 +305,10 @@ function arm(now: boolean) {
       window.addEventListener(
         type,
         (e) => {
-          if (w.__qcArmed && e.isTrusted) w.__qcT0 = e.timeStamp
+          if (!w.__qcArmed || !e.isTrusted) return
+          if (type === 'pointerdown' || type === 'keydown')
+            w.__qcT0 = e.timeStamp
+          else w.__qcT0 ??= e.timeStamp
         },
         { capture: true },
       )
@@ -378,7 +383,6 @@ function arm(now: boolean) {
   }
   if (!now) return
   w.__qcT0 = undefined
-  w.__qcArmedAt = performance.now()
   w.__qcArmed = true
 }
 
@@ -400,14 +404,11 @@ function readSample([t0, t1, watched]: [number, number, boolean]) {
   const w = window as unknown as QcWindow
   const rel = (t: number | null) =>
     t === null ? null : Math.round((t - t0) * 10) / 10
-  // Every request since the sample was armed (after the settle, just
-  // before the action) is the action's. Not only those after t0: on a
-  // checkbox, React's onChange runs on `click`, before the trusted
-  // `input` event t0 is taken from, and its request can start first
-  // (a negative startMs).
-  const from = Math.min(t0 - 1, w.__qcArmedAt ?? t0 - 1)
+  // The action's requests start after its gesture did. Not from arming:
+  // a request between arming and the action (a late event refetch from
+  // `before`) would answer a sample whose result came from the cache.
   const calls = (w.__qcCalls ?? [])
-    .filter(([start]) => start >= from && start <= t1)
+    .filter(([start]) => start >= t0 - 1 && start <= t1)
     .map(([start, end, method, url, status, timing]) => ({
       method,
       url,

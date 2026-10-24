@@ -16,7 +16,8 @@
  *   live from now, so it invalidates the whole tenant: what is shown
  *   refetches, and everything cached is marked so its next use does. The
  *   server subscribes before it answers, so a refetch begun on `open`
- *   can't miss a commit.
+ *   can't miss a commit. The browser's reconnects of that stream do the
+ *   same until its first event or reset gives the tenant a cursor.
  * - The browser reconnects by itself after a network error, sending
  *   `Last-Event-ID`. After a refused reconnect (a 502 while the api
  *   restarts, a 401) it gives up for good, so this reopens the stream
@@ -163,8 +164,10 @@ export function useOrgEvents(slug: string) {
       ))
       s.onopen = () => {
         failures = 0
-        // Live from now: whatever was read before may be behind.
-        if (after === undefined) invalidate(qc, ['t', slug])
+        // Live from now: whatever was read before may be behind. Not on
+        // the browser's own reconnect once an event has come: that sends
+        // its id as Last-Event-ID, and the server replays from it.
+        if (!cursors.has(slug)) invalidate(qc, ['t', slug])
       }
       s.onmessage = (m: MessageEvent<string>) => {
         seen(m)

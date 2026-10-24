@@ -482,6 +482,21 @@ describe('the contact page live, over the event stream', () => {
     await vi.waitFor(() => expect(gets()).toBe(2))
   })
 
+  test('with no cursor, the browser’s reconnects refetch until an event gives one', async () => {
+    const events = await open()
+    act(() => events.open())
+    await vi.waitFor(() => expect(gets()).toBe(2))
+    // Reconnected before any event: no Last-Event-ID, live from now again.
+    act(() => events.open())
+    await vi.waitFor(() => expect(gets()).toBe(3))
+    act(() => events.reset(5))
+    await vi.waitFor(() => expect(gets()).toBe(4))
+    // Now the browser sends Last-Event-ID and the server replays.
+    act(() => events.open())
+    await new Promise((r) => setTimeout(r, 50))
+    expect(gets()).toBe(4)
+  })
+
   test('a cold load’s boot cursor: the stream opens after it, and refetches nothing', async () => {
     const { setCursor } = await import('../events')
     setCursor('a', 41)
