@@ -62,6 +62,21 @@ restore() {
   fi
 }
 
+# An org file put back gets a new recovery generation
+# (rs/crates/api/src/events.rs), so a tab's event cursor from the history
+# rolled back resets instead of replaying from a reused seq. A copy from
+# before the table existed gets a fresh one when it next migrates.
+rotate_generation() {
+  local target="$1"
+  echo "+ new recovery generation in $target"
+  [[ "$apply" == "--apply" ]] || return 0
+  command -v sqlite3 >/dev/null \
+    || { echo "sqlite3 is needed to rotate $target's recovery generation" >&2; exit 1; }
+  if [[ $(sqlite3 "$target" "SELECT count(*) FROM sqlite_master WHERE name = 'recovery'") == 1 ]]; then
+    sqlite3 "$target" "UPDATE recovery SET generation = lower(hex(randomblob(16)))"
+  fi
+}
+
 for copy in "$boot"/*.v*.db; do
   name="$(basename "$copy")"
   stem="${name%.v*.db}"
@@ -69,6 +84,7 @@ for copy in "$boot"/*.v*.db; do
     restore "$copy" "$data/platform.db"
   elif [[ "$stem" =~ ^[0-9a-f]{32}$ ]]; then
     restore "$copy" "$orgs/$stem.db"
+    rotate_generation "$orgs/$stem.db"
   else
     echo "skip $name: not platform or a tenant id" >&2
   fi

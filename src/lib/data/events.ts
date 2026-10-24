@@ -184,12 +184,17 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
   }
 }
 
-/** The last event id each tenant's stream got (see the top). */
-const cursors = new Map<string, number>()
+/**
+ * The last event id each tenant's stream got (see the top). Opaque:
+ * `<generation>.<seq>`, the generation telling a file put back from a
+ * backup from the history this tab saw (the server resets a cursor of
+ * another generation).
+ */
+const cursors = new Map<string, string>()
 
 /** A cold load's `/boot`: the stream opens after its snapshot. */
-export function setCursor(slug: string, seq: number) {
-  cursors.set(slug, seq)
+export function setCursor(slug: string, cursor: string) {
+  cursors.set(slug, cursor)
 }
 
 /** Waits before reopening a refused stream: 1 s, 2 s, 5 s, then 10 s. */
@@ -205,15 +210,17 @@ export function useOrgEvents(slug: string) {
     let failures = 0
     // Every event and reset carries an id: the cursor follows it.
     const seen = (m: MessageEvent) => {
-      const id = Number(m.lastEventId)
-      if (m.lastEventId !== '' && Number.isSafeInteger(id))
-        cursors.set(slug, id)
+      if (m.lastEventId !== '') cursors.set(slug, m.lastEventId)
     }
     const open = () => {
       const after = cursors.get(slug)
       const path = tenantPath(slug, 'events')
       const s = (source = new EventSource(
-        apiUrl(after === undefined ? path : `${path}?after=${after}`),
+        apiUrl(
+          after === undefined
+            ? path
+            : `${path}?after=${encodeURIComponent(after)}`,
+        ),
         { withCredentials: true },
       ))
       s.onopen = () => {
