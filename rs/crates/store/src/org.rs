@@ -127,6 +127,9 @@ impl OrgDb {
             events: RefCell::new(Vec::new()),
             scope: &self.scope,
         };
+        // A panic in an earlier transaction's projection hook unwinds
+        // past its reset: start every transaction unscoped.
+        raw.narrow_writes_to(None);
         let out = f(&raw);
         // Whatever `f` did, the connection is writable again for the next
         // transaction (and for the rollback).
@@ -184,9 +187,9 @@ impl RawTx<'_> {
     }
 
     /// While `Some`, statements prepared on the writer may write only
-    /// these tables (and an FTS table's `<name>_*` shadow tables), and
-    /// may otherwise only read: `contracts` sets it around a `project`
-    /// hook. The check runs when a statement is prepared, so a statement
+    /// these tables (and an FTS5 table's five shadow tables,
+    /// `<name>_{data,idx,content,docsize,config}`), and may otherwise only
+    /// read: `contracts` sets it around a `project` hook. The check runs when a statement is prepared, so a statement
     /// first prepared (and cached) outside the scope isn't re-checked.
     pub fn narrow_writes_to(&self, tables: Option<&[&str]>) {
         *self.scope.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -204,12 +207,15 @@ impl RawTx<'_> {
 
 /// Inside a projection scope: reads, and writes to `tables` only.
 fn projection_authorizer(tables: &[String], ctx: AuthContext<'_>) -> Authorization {
+    // A projection table, or one of an FTS5 table's own shadow tables.
+    const FTS5_SHADOWS: [&str; 5] = ["data", "idx", "content", "docsize", "config"];
     let allowed = |table: &str| {
         tables.iter().any(|t| {
             table == t
                 || table
                     .strip_prefix(t.as_str())
-                    .is_some_and(|r| r.starts_with('_'))
+                    .and_then(|r| r.strip_prefix('_'))
+                    .is_some_and(|suffix| FTS5_SHADOWS.contains(&suffix))
         })
     };
     match ctx.action {

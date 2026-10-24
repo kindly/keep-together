@@ -40,13 +40,13 @@ fn boot_dir(dir: &Path) -> std::path::PathBuf {
     boots[0].clone()
 }
 
-/// The copies in the boot directory (manifest left out).
+/// The copies in the boot directory (manifest and marker left out).
 fn premigrate(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(boot_dir(dir))
         .map(|d| {
             d.flatten()
                 .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n != "manifest")
+                .filter(|n| n.ends_with(".db"))
                 .collect()
         })
         .unwrap_or_default();
@@ -236,4 +236,85 @@ fn the_rollback_script_restores_the_last_boot_for_the_previous_release() {
     })
     .unwrap();
     assert_eq!(old.migrate_all().unwrap(), 0);
+}
+
+/// A release whose boot fails part-way, twice (Fly restarts the machine):
+/// the second boot reuses the first one's copies instead of deleting
+/// them, so a rollback still restores everything the first boot migrated.
+#[test]
+fn a_failed_boot_keeps_its_copies_for_the_retry_and_the_rollback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let (a, b) = at_v1(dir);
+    let x = {
+        let s = store(dir, &[V1]);
+        let x = s.create_tenant("xray", "Xray").unwrap().id;
+        // Rows the new constraint refuses: X never migrates.
+        s.org(&x)
+            .unwrap()
+            .write_raw(|tx| {
+                tx.conn().execute_batch(
+                    "INSERT INTO things (name) VALUES ('dup'); INSERT INTO things (name) VALUES ('dup');",
+                )
+            })
+            .unwrap();
+        x
+    };
+    let platform = dir.join("platform.db");
+    rusqlite::Connection::open(&platform)
+        .unwrap()
+        .execute_batch("DROP TABLE snapshots; PRAGMA user_version = 1;")
+        .unwrap();
+    const UNIQUE: &str = "CREATE UNIQUE INDEX things_unique_name ON things (name);";
+
+    // Boot 1: platform migrates (copied), X fails.
+    let err = store(dir, &[V1, UNIQUE]).migrate_all().unwrap_err();
+    assert_eq!(err.org, x.as_str());
+    assert_eq!(user_version(&platform), 2);
+    let first = boot_dir(dir);
+    let after_first = premigrate(dir);
+    assert!(after_first.contains(&"platform.v1.db".to_owned()));
+    assert!(!first.join("complete").exists());
+
+    // Boot 2 (the retry): platform has nothing pending, X fails again.
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let err = store(dir, &[V1, UNIQUE]).migrate_all().unwrap_err();
+    assert_eq!(err.org, x.as_str());
+    // Same directory, nothing lost.
+    assert_eq!(boot_dir(dir), first);
+    for name in &after_first {
+        assert!(premigrate(dir).contains(name), "{name} lost");
+    }
+
+    // Rolling back restores platform and every org that migrated.
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/ops/rollback-migration.sh");
+    let out = std::process::Command::new("bash")
+        .arg(&script)
+        .arg(dir)
+        .arg("--apply")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(user_version(&platform), 1);
+    for id in [&a, &b, &x] {
+        assert_eq!(user_version(&org_file(dir, id)), 1, "{id:?}");
+    }
+
+    // Once a boot completes, the next migrating release starts afresh.
+    rusqlite::Connection::open(org_file(dir, &x))
+        .unwrap()
+        .execute("DELETE FROM things WHERE name = 'dup'", [])
+        .unwrap();
+    let s = store(dir, &[V1, UNIQUE]);
+    s.migrate_all().unwrap();
+    assert!(boot_dir(dir).join("complete").exists());
+    drop(s);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    store(dir, &[V1, UNIQUE, V3]).migrate_all().unwrap();
+    assert_ne!(boot_dir(dir), first);
 }

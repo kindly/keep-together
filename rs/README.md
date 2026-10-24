@@ -3,20 +3,20 @@
 keep-together is moving off Convex (`factory/plans/migration-rust.sv`):
 axum + rusqlite, **one SQLite file per organisation** plus `platform.db`.
 Each route is ported straight here; `convex/` is read-only reference until
-cutover. The SPA picks a backend with `VITE_BACKEND=convex|rust` until F3
-makes it Rust-only.
+cutover. The SPA talks only to this API.
 
 ```
 cargo test                                 # from rs/: every crate; also re-exports the TS types
 cargo clippy --all-targets -- -D warnings
 KEEP_DEV_AUTH=1 KEEP_PORT=8788 cargo run -p api   # data in rs/data/ (gitignored)
-VITE_BACKEND=rust KEEP_PORT=8788 pnpm dev         # from the repo root: Vite proxies /api to it
+KEEP_PORT=8788 pnpm dev                           # from the repo root: Vite proxies /api to it
 cargo run -p cli --bin keep -- sql <slug> "SELECT count(*) FROM contacts"
 ```
 
 Each worktree runs its api on its own `KEEP_PORT` (8787 + n) with its own
-`rs/data/`; Vite proxies `/api` to `KEEP_PORT` (or `KEEP_API`), and only
-when `VITE_BACKEND=rust`.
+`rs/data/`; Vite (`pnpm dev`, `vite preview`) always proxies `/api` to
+`127.0.0.1:$KEEP_PORT` (or `KEEP_API`). With no api running, `/api` calls
+get proxy errors.
 
 Env (`api`):
 
@@ -183,7 +183,7 @@ connections are the `WriteTx` a contract's `write` gets and the
 `reproject`, for a projection's backfill) construct; `WriteTx::take_sequence`
 hands out system-owned numbers. While `project` runs, the writer's
 authorizer allows writes only to the tables the contract lists in
-`PROJECTIONS` (and their FTS shadow tables), so a hook can't change a slice
+`PROJECTIONS` (and their five FTS5 shadow tables), so a hook can't change a slice
 without its counter and revision. Each `execute` runs under a savepoint: a
 command that fails part-way leaves nothing, even if its caller catches the
 error and commits the rest. `compile_fail` doctests on `OrgTx` prove that

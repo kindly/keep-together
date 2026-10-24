@@ -277,18 +277,59 @@ fn domain_crates_cannot_switch_the_read_view_off() {
             }
         }
     }
-    /// SQL keywords at the start of a string literal (after whitespace).
+    /// The contents of every string literal in `text` (plain and raw;
+    /// char literals like `'"'` skipped).
+    fn literals(text: &str) -> Vec<&str> {
+        let bytes = text.as_bytes();
+        let mut out = vec![];
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 3,
+                b'r' if matches!(bytes.get(i + 1), Some(b'"' | b'#')) => {
+                    let hashes = bytes[i + 1..].iter().take_while(|b| **b == b'#').count();
+                    let start = i + 2 + hashes;
+                    if bytes.get(start - 1) != Some(&b'"') {
+                        i += 1;
+                        continue;
+                    }
+                    let close = format!("\"{}", "#".repeat(hashes));
+                    let end = text[start..].find(&close).map_or(text.len(), |e| start + e);
+                    out.push(&text[start..end]);
+                    i = end + close.len();
+                }
+                b'"' => {
+                    let start = i + 1;
+                    let mut j = start;
+                    while j < bytes.len() && bytes[j] != b'"' {
+                        j += if bytes[j] == b'\\' { 2 } else { 1 };
+                    }
+                    out.push(&text[start..j.min(text.len())]);
+                    i = j + 1;
+                }
+                _ => i += 1,
+            }
+        }
+        out
+    }
+    /// SQL keywords that open a string literal: written as SQL is (all
+    /// upper or all lower case), and followed by whitespace or `;`, or the
+    /// whole literal. A label such as "End", "Begin" or "Release date" is
+    /// not SQL.
     fn literal_keywords(text: &str) -> Vec<String> {
         let mut found = vec![];
-        for (i, _) in text.match_indices('"') {
-            let rest = text[i + 1..].trim_start();
+        for lit in literals(text) {
+            let rest = lit.trim_start();
             let word: String = rest
                 .chars()
                 .take_while(|c| c.is_ascii_alphabetic())
-                .collect::<String>()
-                .to_ascii_uppercase();
-            if SQL.contains(&word.as_str()) {
-                found.push(word);
+                .collect();
+            let upper = word.to_ascii_uppercase();
+            let sql_case = word == upper || word == word.to_ascii_lowercase();
+            let next = rest[word.len()..].chars().next();
+            let ends = next.is_none_or(|c| c.is_whitespace() || c == ';');
+            if SQL.contains(&upper.as_str()) && sql_case && ends {
+                found.push(upper);
             }
         }
         found
@@ -298,7 +339,17 @@ fn domain_crates_cannot_switch_the_read_view_off() {
         vec!["PRAGMA"]
     );
     assert_eq!(literal_keywords(r#"x(" COMMIT; BEGIN")"#), vec!["COMMIT"]);
-    assert!(literal_keywords(r#"x("SELECT 1", "Ended", "begins")"#).is_empty());
+    assert_eq!(literal_keywords(r#"x("COMMIT")"#), vec!["COMMIT"]);
+    assert_eq!(
+        literal_keywords(r##"x(r#"ROLLBACK TO a"#)"##),
+        vec!["ROLLBACK"]
+    );
+    assert!(
+        literal_keywords(
+            r#"x("SELECT 1", "Ended", "begins", "End", "Begin", "Release date", '"', "a \" BEGIN")"#
+        )
+        .is_empty()
+    );
 
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = vec![];

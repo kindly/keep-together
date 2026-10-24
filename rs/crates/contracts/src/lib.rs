@@ -174,42 +174,58 @@ impl ContractError {
 /// A write transaction on one organisation's file, as domain code sees
 /// it: reads through [`OrgTx::read`], writes only through [`execute`].
 ///
-/// Sealed (M3). These don't compile (the doctests check the error codes,
-/// which, unlike rustc's wording, are stable across releases):
+/// Sealed (M3). Each `compile_fail` case below has a twin that does
+/// compile and differs only in the forbidden part: stable rustdoc doesn't
+/// check a `compile_fail` block's error code, so the twin is what proves
+/// the failure is the seal (not, say, a missing import).
 ///
-/// Domain code holding a transaction can't run raw SQL on it,
-/// ```compile_fail,E0599
+/// Domain code holding a transaction can't run raw SQL on it …
+/// ```compile_fail
 /// fn handler(ctx: &contracts::Ctx) -> rusqlite::Result<usize> {
 ///     ctx.tx.execute("DELETE FROM contacts", [])
 /// }
 /// ```
-/// can't treat it as a connection,
-/// ```compile_fail,E0308
+/// ```
+/// fn handler(ctx: &contracts::Ctx) -> rusqlite::Result<usize> {
+///     ctx.tx.read().execute("DELETE FROM contacts", []) // compiles; query_only refuses it
+/// }
+/// ```
+/// … can't treat it as a connection …
+/// ```compile_fail
 /// fn handler(ctx: &contracts::Ctx) {
 ///     let _conn: &rusqlite::Connection = ctx.tx;
 /// }
 /// ```
-/// can't forge a writable connection from the read view,
-/// ```compile_fail,E0423
+/// ```
+/// fn handler(ctx: &contracts::Ctx) {
+///     let _conn: &rusqlite::Connection = ctx.tx.read();
+/// }
+/// ```
+/// … can't forge a writable connection from the read view …
+/// ```compile_fail
 /// fn handler(ctx: &contracts::Ctx) {
 ///     let _ = contracts::WriteTx(ctx.tx.read());
 /// }
 /// ```
-/// ```compile_fail,E0423
+/// ```compile_fail
 /// fn handler(ctx: &contracts::Ctx) {
 ///     let _ = contracts::ProjectionTx(ctx.tx.read());
 /// }
 /// ```
-/// and can't wrap some other transaction in an `OrgTx`.
-/// ```compile_fail,E0451
+/// ```
+/// fn handler(_: &contracts::Ctx, w: &contracts::WriteTx, p: &contracts::ProjectionTx) {
+///     let _: (&rusqlite::Connection, &rusqlite::Connection) = (w, p);
+/// }
+/// ```
+/// … and can't wrap some other transaction in an `OrgTx`.
+/// ```compile_fail
 /// fn forge<'a>(raw: &'a store::RawTx<'a>) -> contracts::OrgTx<'a> {
 ///     contracts::OrgTx { raw }
 /// }
 /// ```
-/// (The same shapes with the seal's own API compile:)
 /// ```
-/// fn handler(ctx: &contracts::Ctx) -> rusqlite::Result<i64> {
-///     ctx.tx.read().query_row("SELECT 1", [], |r| r.get(0))
+/// fn forge<'a>(raw: &'a store::RawTx<'a>) -> &'a rusqlite::Connection {
+///     raw.conn()
 /// }
 /// ```
 pub struct OrgTx<'a> {
@@ -638,10 +654,17 @@ fn project<C: Contract>(
     conn: &Connection,
     id: &str,
 ) -> Result<(), ContractError> {
+    /// Ends the scope however `project` ends, a panic included: the
+    /// unwinding transaction's ROLLBACK must not run inside the scope.
+    struct Scoped<'r>(&'r RawTx<'r>);
+    impl Drop for Scoped<'_> {
+        fn drop(&mut self) {
+            self.0.narrow_writes_to(None);
+        }
+    }
     tx.raw.narrow_writes_to(Some(C::PROJECTIONS));
-    let out = contract.project(&ProjectionTx(conn), id);
-    tx.raw.narrow_writes_to(None);
-    out
+    let _scoped = Scoped(tx.raw);
+    contract.project(&ProjectionTx(conn), id)
 }
 
 /// A contract with its types erased, for restore (which finds the

@@ -27,6 +27,7 @@ CREATE TABLE toy_emails (
     label TEXT NOT NULL
 ) STRICT;
 CREATE TABLE toy_search (toy_id TEXT PRIMARY KEY, text TEXT NOT NULL) STRICT;
+CREATE TABLE toy_search_notes (toy_id TEXT NOT NULL) STRICT;
 ";
 
 struct Details;
@@ -1228,4 +1229,128 @@ fn a_projection_hook_writes_only_its_projection_tables() {
         )
     })
     .unwrap();
+}
+
+/// A projection hook that panics (an `unwrap` on odd data).
+struct PanickyProjection;
+
+impl Contract for PanickyProjection {
+    const NAME: &'static str = "toys.panicky";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = "toys";
+    const COUNTER: &'static str = "details_version";
+    const PROJECTIONS: &'static [&'static str] = &["toy_search"];
+    type Payload = DetailsSlice;
+    type State = DetailsSlice;
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<DetailsSlice, ContractError> {
+        Details.load(tx, id)
+    }
+    fn apply(
+        &self,
+        _: Option<&DetailsSlice>,
+        p: &DetailsSlice,
+        _: &Command,
+    ) -> Result<DetailsSlice, ContractError> {
+        Ok(p.clone())
+    }
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        before: Option<&DetailsSlice>,
+        next: &DetailsSlice,
+    ) -> Result<(), ContractError> {
+        Details.write(tx, id, before, next)
+    }
+    fn project(&self, _: &ProjectionTx, _: &str) -> Result<(), ContractError> {
+        panic!("odd data")
+    }
+}
+
+#[test]
+fn a_panicking_projection_leaves_the_org_writable() {
+    let (_tmp, db) = org();
+    let id = create(&db, "Bear");
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        write(&db, |ctx| {
+            execute(
+                ctx,
+                &PanickyProjection,
+                details("Boom"),
+                Exec::update(&id, Some(0), Source::Ui),
+            )
+        })
+    }));
+    assert!(panicked.is_err());
+    // Rolled back, and the next commands write domain tables as usual.
+    assert_eq!(
+        in_tx(&db, |tx| Details.load(tx, &id)).unwrap(),
+        details("Bear")
+    );
+    write(&db, |ctx| {
+        execute(
+            ctx,
+            &Details,
+            details("Renamed"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
+    create(&db, "Another");
+}
+
+/// A projection hook writing a table that merely shares its projection's
+/// name prefix: refused (only the five FTS5 shadow suffixes count).
+struct PrefixProjection;
+
+impl Contract for PrefixProjection {
+    const NAME: &'static str = "toys.prefix";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = "toys";
+    const COUNTER: &'static str = "details_version";
+    const PROJECTIONS: &'static [&'static str] = &["toy_search"];
+    type Payload = DetailsSlice;
+    type State = DetailsSlice;
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<DetailsSlice, ContractError> {
+        Details.load(tx, id)
+    }
+    fn apply(
+        &self,
+        _: Option<&DetailsSlice>,
+        p: &DetailsSlice,
+        _: &Command,
+    ) -> Result<DetailsSlice, ContractError> {
+        Ok(p.clone())
+    }
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        before: Option<&DetailsSlice>,
+        next: &DetailsSlice,
+    ) -> Result<(), ContractError> {
+        Details.write(tx, id, before, next)
+    }
+    fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
+        tx.execute("INSERT INTO toy_search_notes (toy_id) VALUES (?1)", [id])?;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_table_sharing_a_projections_prefix_is_not_a_projection() {
+    let (_tmp, db) = org();
+    let id = create(&db, "Bear");
+    let err = write(&db, |ctx| {
+        execute(
+            ctx,
+            &PrefixProjection,
+            details("Bear"),
+            Exec::update(&id, Some(0), Source::Ui),
+        )
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("not authorized"), "{err}");
 }

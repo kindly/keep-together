@@ -4,10 +4,15 @@
 //! of serving some organisations on an old schema.
 //!
 //! Before a file's pending migrations run, `VACUUM INTO` writes a copy to
-//! this boot's directory, `premigrate/boot-<ms>/<name>.v<from>.db`
+//! the boot directory, `premigrate/boot-<ms>/<name>.v<from>.db`
 //! (`platform` or the tenant id), next to a `manifest` of the org files
-//! that existed at boot. Creating a boot directory deletes the previous
-//! one: the copies always belong to the last boot that migrated anything.
+//! that existed at boot. A boot that finishes marks the directory
+//! `complete`. A boot that fails leaves it incomplete, and the next boot
+//! (Fly's restart, the operator's retry) **reuses** it: same manifest, and
+//! no second copy of a file already copied there. So the copies always
+//! hold every file as it was before the release that is still being rolled
+//! out. Only a boot that needs copies while the newest directory is
+//! complete starts a new one, deleting the old.
 //!
 //! Rolling back a release is the previous image plus
 //! `scripts/ops/rollback-migration.sh`: it puts that boot's copies back
@@ -64,11 +69,33 @@ impl BootCopies {
         }
     }
 
-    /// The directory, with its manifest; the previous boot's copies go.
+    /// The newest boot directory under `premigrate/`, if any.
+    fn newest(&self) -> Option<PathBuf> {
+        let mut boots: Vec<PathBuf> = std::fs::read_dir(self.data.join("premigrate"))
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_dir()
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("boot-"))
+            })
+            .collect();
+        boots.sort();
+        boots.pop()
+    }
+
+    /// The directory copies go to: an unfinished boot's (kept, with its
+    /// manifest), or a new one with its manifest, the old ones deleted.
     fn dir(&self) -> Result<PathBuf, StoreError> {
         let mut dir = self.dir.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(d) = dir.as_ref() {
             return Ok(d.clone());
+        }
+        if let Some(unfinished) = self.newest().filter(|d| !d.join("complete").exists()) {
+            *dir = Some(unfinished.clone());
+            return Ok(unfinished);
         }
         let root = self.data.join("premigrate");
         let made = root.join(&self.name);
@@ -93,10 +120,31 @@ impl BootCopies {
         Ok(made)
     }
 
+    /// The boot finished: mark the newest directory (this boot's, or an
+    /// earlier failed boot's that this one completed) so the next boot
+    /// that migrates starts afresh.
+    pub(crate) fn complete(&self) -> Result<(), StoreError> {
+        if let Some(newest) = self.newest() {
+            std::fs::write(newest.join("complete"), "")?;
+        }
+        Ok(())
+    }
+
     /// Copy the file behind `conn` (schema version `from`) as `name`.
+    /// Kept if this directory already holds a copy of `name` (an earlier,
+    /// failed boot made it before the file changed).
     fn copy(&self, conn: &Connection, name: &str, from: i64) -> Result<(), StoreError> {
-        let copy = self.dir()?.join(format!("{name}.v{from}.db"));
-        let _ = std::fs::remove_file(&copy);
+        let dir = self.dir()?;
+        let prefix = format!("{name}.v");
+        let copied = std::fs::read_dir(&dir)?.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".db"))
+        });
+        if copied {
+            return Ok(());
+        }
+        let copy = dir.join(format!("{name}.v{from}.db"));
         // `VACUUM INTO` attaches its target: lift the no-ATTACH limit on
         // this boot-only connection for that one statement.
         conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 1)?;
@@ -160,7 +208,13 @@ pub(crate) fn migrate_all(
     });
     match failed.into_inner().unwrap() {
         Some(err) => Err(err),
-        None => Ok(migrated.into_inner().unwrap()),
+        None => {
+            boot.complete().map_err(|source| MigrationFailed {
+                org: "premigrate".into(),
+                source,
+            })?;
+            Ok(migrated.into_inner().unwrap())
+        }
     }
 }
 

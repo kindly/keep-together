@@ -10,11 +10,10 @@ const config = defineConfig(({ mode }) => {
   // `.env.local` included, as the SPA sees it.
   const env = { ...loadEnv(mode, process.cwd(), ''), ...process.env }
   // The Rust API (rs/): same origin, so its session cookie needs no CORS.
-  // Only for VITE_BACKEND=rust (M1): a Convex build never sends /api
-  // anywhere. Each worktree runs its api on its own KEEP_PORT; KEEP_API
-  // overrides the whole target.
+  // Each worktree runs its api on its own KEEP_PORT; KEEP_API overrides
+  // the whole target. Dev and preview only: a build has no proxy.
   const api = env.KEEP_API ?? `http://127.0.0.1:${env.KEEP_PORT ?? '8787'}`
-  const proxy = env.VITE_BACKEND === 'rust' ? { '/api': api } : undefined
+  const proxy = { '/api': api }
   return {
     // GitHub Pages serves the SPA under /<repo>/; the workflow sets BASE_PATH.
     // Locally and on any root-hosted static host this stays '/'.
