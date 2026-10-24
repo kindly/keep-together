@@ -13,8 +13,8 @@
 
 - Built from scratch (`../ngo-go-rs` is scrapped), as a new `rs/` Cargo workspace on branch `spike/rust` in this repo. `main` and Convex stay untouched.
 - SQLite with **one database file per organisation**, plus a small `platform.db` for tenants, memberships and sessions. A handler gets one org's connection and has no other, so a wrong-tenant query has nothing to run against.
-- Local only, no Fly. Network delay = one measured RTT from here to a London host, applied with `tc netem` or added to the server time.
-- Litestream replicates to S3 in eu-west-2 (`keep-` prefix, keep-dev account), with a narrow IAM user and one timed restore drill.
+- Local only, no Fly. Network delay = the same RTT Convex sees to Dublin (eu-west-1), taken from the QC runs' `platform/qcProbe:rtt` median (~30 ms), applied with `tc netem` on both directions (human, 2026-10-24).
+- Litestream: **deferred** (human, 2026-10-24). The spike runs without it; Q7 is answered later once the human has run the AWS commands below.
 - Auth is stubbed: a dev session cookie.
 - Scope in: contacts (details, emails, phones, addresses), dropdown fields with the list filter, search, revisions, a 10k seed. Scope out: gifts, Gift Aid, source-code admin, real auth, email.
 - The SPA gets a data-layer switch (env) so the contacts pages run on either backend.
@@ -108,11 +108,11 @@ Branch `spike/rust` off `main`; one worktree per builder (`factory/spawn.sh buil
 
 ### Step 3 — measurement (tester-rs)
 
-- Measure the RTT here → London once (TCP connect to an eu-west-2 endpoint, 50 samples, median).
+- RTT: use the Convex RTT to Dublin from QC history (`platform/qcProbe:rtt` median over the latest runs; ~30 ms), not a London measurement (human, 2026-10-24).
 - Q1/Q2: run `measure.mjs` on the Rust server, both FTS variants, with and without the RTT; LOC counts (tokei) of both stacks' equivalent code.
 - Q5: the chosen QC flows against `VITE_BACKEND=rust`, delay applied, against the latest Convex QC numbers for the same flows. QC seeds through a Rust `POST /api/dev/qc-seed` (step 2a adds it, refused unless `KEEP_QC_SEED=1`).
 - Q6: two-tab conflict flow in a browser, recorded.
-- Q7: Litestream to S3 (human has run the AWS commands below), then the restore drill: delete the local org file, `litestream restore`, time it, run the search cases again on the restored file.
+- Q7 (deferred, not in this spike run): Litestream to S3 (human has run the AWS commands below), then the restore drill: delete the local org file, `litestream restore`, time it, run the search cases again on the restored file.
 - Writes `docs/spikes/10-rust-sqlite.md`: per question, Convex vs spike, numbers, LOC, then the revised parity estimate and a recommendation.
 
 ### Step 4 — review (reviewer-rs)
