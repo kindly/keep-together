@@ -146,9 +146,14 @@ test.describe('the cache and tenancy', { annotation: CONTACT_ROUTE }, () => {
     await expect(page.getByRole('heading', { name: 'Details' })).toBeVisible()
     await toList(page)
 
-    // Sign out in the app (no reload), then in as B.
+    // Sign out in the app (no reload: Settings holds Sign out), then in
+    // as B.
     await page
       .getByRole('navigation', { name: 'Main' })
+      .getByRole('link', { name: 'Settings', exact: true })
+      .click()
+    await page
+      .getByRole('navigation', { name: 'Settings sections' })
       .getByRole('button', { name: 'Sign out' })
       .click()
     await expect(page.getByPlaceholder('Email')).toBeVisible()

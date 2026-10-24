@@ -131,8 +131,9 @@ export const budgets = {
   'contact.field.set': repeatable,
   'contact.field.clear': repeatable,
   'settings.staffFields.toggle': port('B1'),
-  'settings.nav': port('A3'),
-  'settings.tab': port('A3'),
+  // Both open the Fields tab, the first (A3 ported the layout around it).
+  'settings.nav': port('B1'),
+  'settings.tab': port('B1'),
   'settings.staffIdentifierTypes.toggle': port('A1'),
   'settings.identifierTypes.create': port('A1'),
   'settings.identifierTypes.rename': port('A1'),

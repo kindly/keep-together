@@ -20,6 +20,11 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/contacts/',
   '/t/$slug/contacts/new',
   '/t/$slug/contacts/$contactId',
+  // A3: Settings' layout (its list tabs come with their slices) and
+  // Switch group.
+  '/t/$slug/settings',
+  '/t/$slug/settings/',
+  '/t/$slug/settings/groups',
 ]
 
 const ported = new Set<string>(PORTED)

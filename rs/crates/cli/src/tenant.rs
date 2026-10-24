@@ -67,6 +67,7 @@ pub fn create_in(
         admin = Some(user);
         Ok::<_, CreateError>(())
     })?;
+    // TODO(A4): replace with auth::operator_invite (the emailed invite).
     let invite = invite_stub(email, &tenant);
     Ok(Created {
         admin: admin.expect("set by a successful create"),

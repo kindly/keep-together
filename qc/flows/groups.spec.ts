@@ -88,9 +88,13 @@ test('the Donations menu offers Record a gift', async ({ page, users }) => {
 })
 
 test('Switch group lists your one group', async ({ page, users }) => {
-  route('/t/$slug/settings/groups')
-  await page.goto(`/t/${users.a.slug}/settings/tags`)
+  route('/t/$slug/settings', '/t/$slug/settings/', '/t/$slug/settings/groups')
+  await page.goto(`/t/${users.a.slug}/settings`)
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
   // One group: no tab for it.
+  await expect(
+    page.getByRole('navigation', { name: 'Settings sections' }),
+  ).toContainText('Sign out')
   await expect(page.getByRole('link', { name: 'Switch group' })).toHaveCount(0)
   await page.goto(`/t/${users.a.slug}/settings/groups`)
   await expect(

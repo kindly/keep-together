@@ -5,6 +5,8 @@
  */
 export const keys = {
   me: ['me'] as const,
+  /** The caller's groups (`GET /api/groups`): across tenants, so not under `t`. */
+  groups: ['groups'] as const,
   fields: (slug: string) => ['t', slug, 'fields'] as const,
   contacts: (slug: string) => ['t', slug, 'contacts'] as const,
   list: (slug: string, filters?: { q?: string }) =>
