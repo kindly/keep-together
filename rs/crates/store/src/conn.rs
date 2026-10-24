@@ -22,7 +22,7 @@ pub(crate) fn open(path: &Path, create: bool, read_only: bool) -> rusqlite::Resu
     }
     let conn = Connection::open_with_flags(path, flags)?;
     conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
-    conn.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS.into()))?;
+    conn.busy_handler(Some(busy_poll))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -31,6 +31,19 @@ pub(crate) fn open(path: &Path, create: bool, read_only: bool) -> rusqlite::Resu
         conn.authorizer(Some(reader_authorizer))?;
     }
     Ok(conn)
+}
+
+/// Wait for a lock another connection holds by polling every millisecond,
+/// for up to `BUSY_TIMEOUT_MS`. SQLite's own busy timeout sleeps 1, 2, 5,
+/// 10, … 100 ms between tries, so a writer kept waiting by Litestream's
+/// checkpoint (its write lock, 150–250 ms) slept on to the next step:
+/// waits measured 53, 178, 228, 328 ms, the steps' running totals.
+fn busy_poll(tries: i32) -> bool {
+    if tries as u32 >= BUSY_TIMEOUT_MS {
+        return false;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1));
+    true
 }
 
 /// Reader connections may not switch `query_only` (or the schema-trust
