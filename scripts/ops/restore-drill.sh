@@ -24,10 +24,11 @@
 # 2. Record counts: tenants, and per org contacts, revisions and a set of
 #    search matches (FTS), read straight from the files with sqlite3.
 # 3. Per source:
-#    a. litestream only: start a loop that commits one row a time to
-#       drill/marks.db, then crash: `drill.sh hard-stop` SIGKILLs
-#       Litestream, the api and the loop at once and deletes the data, so
-#       no graceful flush and no restart can ship what wasn't replicated;
+#    a. litestream only: set the machine to `--restart no`, start a loop
+#       that commits one row a time to drill/marks.db, then crash:
+#       `drill.sh hard-stop` prints the kill time, SIGKILLs Litestream, the
+#       api and the loop at once and deletes the data, so no graceful flush
+#       and no restart can ship what wasn't replicated;
 #    b. destroy the machine and its volume, create an empty volume;
 #    c. redeploy the same image: the entrypoint sees an empty volume and
 #       restores (restore.sh), from Litestream, or from the snapshots
@@ -122,6 +123,7 @@ SOURCES=${1:-both}
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/keep-drill.XXXXXX")
 RESULTS=$WORK/results.md
 SET_SECRETS=() # secrets this run set, unset again on any exit
+NO_RESTART="" # a machine this run set to --restart no, if it still exists
 
 say() { printf '\n== %s\n' "$*"; }
 run() { printf '+ %s\n' "$*" >&2; "$@"; }
@@ -136,6 +138,11 @@ confirm "This destroys $APP's machine and volume (twice for both sources). Go on
 # Leave no drill secret behind, even when a step dies: unset at once (not
 # --stage), so the next boot of a lost volume restores normally.
 cleanup() {
+  if [[ -n $NO_RESTART ]] && fly machine status "$NO_RESTART" -a "$APP" >/dev/null 2>&1; then
+    run fly machine update "$NO_RESTART" -a "$APP" --restart on-failure --yes >/dev/null ||
+      echo "WARNING: put the restart policy back: fly machine update $NO_RESTART -a $APP --restart on-failure" >&2
+  fi
+  NO_RESTART=""
   ((${#SET_SECRETS[@]})) || return 0
   printf '+ fly secrets unset -a %s %s\n' "$APP" "${SET_SECRETS[*]}" >&2
   fly secrets unset -a "$APP" "${SET_SECRETS[@]}" >/dev/null 2>&1 ||
@@ -196,6 +203,12 @@ for source in $SOURCES; do
   marks=$WORK/marks-$source.log
   loop_pid=""
   if [[ $source == litestream ]]; then
+    # No restart after the kill: a restarted machine would boot on the
+    # old data and ship what Litestream hadn't. The update itself
+    # restarts the machine, so it comes first.
+    NO_RESTART=$(machine)
+    run fly machine update "$NO_RESTART" -a "$APP" --restart no --yes >/dev/null
+    wait_healthy
     # One committed row per line printed; runs until the hard stop.
     fly ssh console -a "$APP" -q -C "drill.sh marks" >"$marks" 2>/dev/null &
     loop_pid=$!
@@ -208,11 +221,14 @@ for source in $SOURCES; do
   v=$(volume)
   killed_ms=""
   if [[ $source == litestream ]]; then
-    killed_ms=$(drill hard-stop | grep -E '^[0-9]+$' | tail -1)
+    # The session may end with the VM (non-zero exit): the time was
+    # printed before the kill, so only the line matters.
+    killed_ms=$( (drill hard-stop 2>/dev/null || true) | grep -E '^[0-9]+$' | tail -1 || true)
     [[ -n $killed_ms ]] || die "hard-stop didn't report a kill time"
     kill "$loop_pid" 2>/dev/null || true
   fi
   run fly machine destroy "$m" -a "$APP" --force
+  NO_RESTART="" # gone; the redeploy makes a machine with the default policy
   run fly volumes destroy "$v" -a "$APP" --yes
   run fly volumes create keep_data -a "$APP" --region "$REGION" --size 1 --yes >/dev/null
 

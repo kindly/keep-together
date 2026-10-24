@@ -14,10 +14,9 @@
 #   - in keep-backup: the snapshot bucket keep-snapshots-<account> with
 #     Object Lock (governance mode, 2 days by default), SSE-S3, public
 #     access blocked, lifecycle by tier prefix (hourly/ 2 days, daily/ 30
-#     days, monthly/ 365 days, and an overwritten version is kept as long
-#     as its tier), and a bucket policy that refuses any PUT from the app
-#     users without `If-None-Match: *`: the app can add a snapshot, never
-#     replace one;
+#     days, monthly/ 365 days; a noncurrent version goes a day later), and
+#     a bucket policy that refuses any PUT from the app users without
+#     `If-None-Match: *`: the app can add a snapshot, never replace one;
 #   - per env, an IAM user in each account, limited to that env's prefix:
 #     keep-litestream-<env> (Litestream needs delete, for its own retention)
 #     and keep-snapshots-<env> (put, get, list; never delete);
@@ -93,8 +92,10 @@ fi
 # version (with bypass), nobody else can, and the app's key can't delete
 # at all. 2 days = the hourly tier, the shortest one. Longer tiers are
 # protected by the app having no delete, no retention change and no
-# overwrite (the bucket policy below), and by an overwritten version
-# living as long as its tier.
+# overwrite (the bucket policy below). With overwrites impossible, the
+# only noncurrent versions are the lifecycle's own expiries, so they go
+# after a day: retention stays at the plan's 48 h / 30 d / 12 months
+# rather than doubling.
 run aws s3api put-object-lock-configuration --bucket "$SNAPSHOT_BUCKET" "${backup[@]}" \
   --object-lock-configuration \
   '{"ObjectLockEnabled":"Enabled","Rule":{"DefaultRetention":{"Mode":"GOVERNANCE","Days":2}}}'
@@ -102,11 +103,11 @@ secure_bucket "$SNAPSHOT_BUCKET" "${backup[@]}"
 run aws s3api put-bucket-lifecycle-configuration --bucket "$SNAPSHOT_BUCKET" "${backup[@]}" \
   --lifecycle-configuration '{"Rules":[
     {"ID":"hourly","Status":"Enabled","Filter":{"Prefix":"hourly/"},
-     "Expiration":{"Days":2},"NoncurrentVersionExpiration":{"NoncurrentDays":2}},
+     "Expiration":{"Days":2},"NoncurrentVersionExpiration":{"NoncurrentDays":1}},
     {"ID":"daily","Status":"Enabled","Filter":{"Prefix":"daily/"},
-     "Expiration":{"Days":30},"NoncurrentVersionExpiration":{"NoncurrentDays":30}},
+     "Expiration":{"Days":30},"NoncurrentVersionExpiration":{"NoncurrentDays":1}},
     {"ID":"monthly","Status":"Enabled","Filter":{"Prefix":"monthly/"},
-     "Expiration":{"Days":365},"NoncurrentVersionExpiration":{"NoncurrentDays":365}},
+     "Expiration":{"Days":365},"NoncurrentVersionExpiration":{"NoncurrentDays":1}},
     {"ID":"multipart","Status":"Enabled","Filter":{"Prefix":""},
      "AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
 

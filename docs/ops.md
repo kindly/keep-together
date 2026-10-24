@@ -39,7 +39,7 @@ Data on the volume (`/data`):
 | `snapshots-tmp/` | the snapshot job's scratch copies, removed after each file |
 | `drill/` | the restore drill's write-loss probe, only during a drill |
 | `.image` | the image the data belongs to (staging's reset compares it) |
-| `.restored` | how the volume was last restored; reported until a human deletes it |
+| `.restored` | how the volume was last restored; reported until a human deletes it and restarts the machine |
 | `restore.log` | the last empty-volume restore's output |
 
 ## Settings
@@ -150,12 +150,15 @@ days, then daily, then monthly.
   env's prefixes. Both its policy and the bucket policy deny delete,
   retention changes, legal holds, governance bypass, and bucket policy
   or lifecycle changes.
-- An overwritten version (only an admin can make one) lives as long as
-  its tier: 2, 30 or 365 days.
+- Each tier's lifecycle expiry leaves a noncurrent version, which goes a
+  day later, so retention stays at 48 h, 30 days and 12 months. No
+  other noncurrent versions arise, since the app can't overwrite.
 - A restore ignores keys stamped in the future and falls back past a
   copy that fails its check, so planted junk can't block one.
 
-Nobody who owns `keep-prod` can reach the bucket either. The ledger of what was uploaded is the `snapshots` table in
+Nobody who owns `keep-prod` can reach the bucket either.
+
+The ledger of what was uploaded is the `snapshots` table in
 `platform.db`. Fly's daily volume snapshots are a third copy we don't
 rely on.
 
@@ -182,8 +185,9 @@ What the entrypoint does, by case:
   snapshots. Up to an hour of writes may be gone, so the fallback is
   loud: a `FALLBACK` log line, a Sentry error at every boot, and
   `backup.restore` in `/healthz`, which `health.yml` turns into an
-  issue. All of these last until you check the data and delete
-  `/data/.restored`. Staging never falls back: its fresh per-deploy
+  issue. All of these last until you check the data, delete
+  `/data/.restored`, and restart the machine (the api reads the file at
+  boot). Staging never falls back: its fresh per-deploy
   prefix is always empty, and its snapshots belong to the previous
   deploy.
 - **Orgs that `platform.db` lists have no backup** (exit 4, e.g. an org
@@ -197,6 +201,12 @@ What the entrypoint does, by case:
 
 Set the secret `KEEP_RESTORE_SOURCE=snapshot` before the deploy to
 restore from the snapshots on purpose, and unset it after.
+
+Follow-up (not built): `keep-snapshot restore --before <stamp>`, to take
+the newest copies older than a given time. That would allow rolling back
+past a bad import or an app bug, or past a tampered copy a compromised
+app added (it can add a key, never replace one). Until it exists, pick an
+older copy by hand (below).
 
 **Point in time** (an app bug or a bad import, data still there). Restore
 next to the live data, look, then swap by hand. Inside the machine:
@@ -231,17 +241,20 @@ human against `keep-staging`. It:
    revisions and the matches of five search terms;
 3. per source, destroys the machine and its volume, creates an empty
    volume and redeploys the same image, so the entrypoint restores. For
-   Litestream it first starts a loop committing one row at a time to
+   Litestream it first sets the machine to `--restart no` (an update that
+   restarts it), starts a loop committing one row at a time to
    `drill/marks.db`, then crashes the machine with `drill.sh hard-stop`.
-   That SIGKILLs Litestream, the api and the loop together and deletes
-   the data, so neither a graceful flush nor a restart ships anything
-   that wasn't replicated;
+   That prints the kill time, SIGKILLs Litestream, the api and the loop
+   together, and deletes the data if the VM is still up. Neither a
+   graceful flush nor a restart ships anything that wasn't replicated;
 4. waits for `/healthz`, reads `restore: all files Ns` from the logs,
    recounts and diffs. The loss is the kill time minus the newest
    restored mark, both by the machine's clock: an upper bound on the
    window of committed writes lost;
 5. prints the table below and exits 1 if anything misses. On any exit it
-   unsets the secrets it set (`KEEP_RESTORE_SOURCE`, `RESTORE_DRILL`).
+   unsets the secrets it set (`KEEP_RESTORE_SOURCE`, `RESTORE_DRILL`)
+   and puts back the restart policy of a machine it changed that still
+   exists.
 
 **Pass:** a 10k org back in under 60 s from either source, counts and
 search matches equal, and at most 1 s of committed writes lost on

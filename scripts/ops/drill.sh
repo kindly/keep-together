@@ -12,11 +12,13 @@
 #                 drill/marks.db (Litestream replicates drill/ like orgs/;
 #                 the api and the snapshot job never look there) and prints
 #                 "<n> <epoch ms>" after each commit, until killed.
-#   hard-stop     the crash: SIGKILL Litestream, the api and the marks loop
-#                 at once, then delete the data (the volume is lost anyway),
-#                 so nothing unreplicated can be shipped by a restart. Prints
-#                 the kill time in epoch ms, by this machine's clock (the
-#                 same clock as the marks).
+#   hard-stop     the crash: print the kill time (epoch ms, this machine's
+#                 clock, the same as the marks), then SIGKILL Litestream,
+#                 the api and the marks loop at once, then delete the data
+#                 if still alive (best effort: init may take the VM, and
+#                 this session, down first). The drill sets the machine to
+#                 `--restart no` beforehand, so nothing comes back up to
+#                 ship what wasn't replicated.
 #   marks-max     "<n> <ms>" of the last restored mark.
 #   cleanup       removes drill/marks.db and the uploaded JSONL.
 set -eu
@@ -65,11 +67,11 @@ hard-stop)
     esac
   done
   [ -n "$pids" ] || { echo "hard-stop: nothing to kill" >&2; exit 1; }
-  ms=$(date +%s%3N)
+  # The time goes out first: the kill may end this session with the VM.
+  date +%s%3N
   # shellcheck disable=SC2086
   kill -9 $pids
-  rm -rf "$DATA"/platform.db* "$DATA/orgs" "$DATA/drill"
-  echo "$ms"
+  rm -rf "$DATA"/platform.db* "$DATA/orgs" "$DATA/drill" 2>/dev/null || true
   ;;
 marks-max)
   q -separator ' ' "$MARKS" 'SELECT coalesce(max(i), 0), coalesce(max(at_ms), 0) FROM marks'
