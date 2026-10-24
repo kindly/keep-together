@@ -7,7 +7,7 @@
 //! becomes a per-migration judgement: a step that adds a constraint must
 //! backfill (or refuse) in the same step.
 
-use store::{M, Migrations};
+use store::{M, Migrations, PlatformSchema};
 
 pub fn org_migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -17,5 +17,11 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(contacts::MIGRATION),
         // 3: drop the trigram FTS variant
         M::up(contacts::DROP_TRIGRAM),
+        // 4: tenant preferences (the three "staff can manage" switches)
+        M::up(platform::preferences::MIGRATION),
     ])
 }
+
+/// `platform.db`'s per-crate schemas, run in this order after its base
+/// schema. Each crate appends only to its own list.
+pub const PLATFORM_SCHEMAS: &[PlatformSchema] = &[platform::SCHEMA];

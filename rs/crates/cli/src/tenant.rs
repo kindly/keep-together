@@ -13,12 +13,15 @@ pub fn create(
     name: &str,
     admin_email: &str,
 ) -> Result<Tenant, StoreError> {
-    let store = Store::open(StoreConfig {
-        dir: data.to_path_buf(),
-        org_migrations: api::schema::org_migrations(),
-        readers: 1,
-        max_open: 1,
-    })?;
+    let store = Store::open_with(
+        StoreConfig {
+            dir: data.to_path_buf(),
+            org_migrations: api::schema::org_migrations(),
+            readers: 1,
+            max_open: 1,
+        },
+        api::schema::PLATFORM_SCHEMAS,
+    )?;
     let tenant = store.create_tenant(slug, name)?;
     let user = store.platform().upsert_user(admin_email)?;
     store

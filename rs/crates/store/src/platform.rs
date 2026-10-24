@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use rusqlite_migration::{M, Migrations};
 
 use crate::conn::{self, ReaderPool};
@@ -44,9 +44,84 @@ const MIGRATIONS: &[M<'static>] = &[
     ),
 ];
 
-/// `platform.db`'s schema (copied first at boot when steps are pending).
+/// `platform.db`'s base schema (copied first at boot when steps are
+/// pending). Frozen: new tables go in a crate's [`PlatformSchema`].
 pub(crate) fn migrations() -> Migrations<'static> {
     Migrations::from_slice(MIGRATIONS)
+}
+
+/// One crate's own migration list on `platform.db` (`platform`, `auth`):
+/// append-only steps, each run in its own transaction, its version kept
+/// in `platform_schema` under `name`, so crates never share a list.
+#[derive(Clone, Copy, Debug)]
+pub struct PlatformSchema {
+    pub name: &'static str,
+    pub steps: &'static [&'static str],
+}
+
+const SCHEMA_TABLE: &str = "CREATE TABLE IF NOT EXISTS platform_schema (name TEXT PRIMARY KEY, version INTEGER NOT NULL) STRICT;";
+
+fn schema_version(conn: &Connection, name: &str) -> rusqlite::Result<usize> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'platform_schema')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(0);
+    }
+    let v: Option<i64> = conn
+        .query_row(
+            "SELECT version FROM platform_schema WHERE name = ?1",
+            [name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(v.unwrap_or(0) as usize)
+}
+
+/// Whether any schema has steps to run. A schema newer than this code
+/// fails closed.
+pub(crate) fn schemas_pending(
+    conn: &Connection,
+    schemas: &[PlatformSchema],
+) -> Result<bool, StoreError> {
+    let mut pending = false;
+    for s in schemas {
+        let v = schema_version(conn, s.name)?;
+        if v > s.steps.len() {
+            return Err(StoreError::NewerSchema {
+                name: s.name,
+                stored: v,
+                code: s.steps.len(),
+            });
+        }
+        pending |= v < s.steps.len();
+    }
+    Ok(pending)
+}
+
+fn migrate_schemas(conn: &mut Connection, schemas: &[PlatformSchema]) -> Result<(), StoreError> {
+    schemas_pending(conn, schemas)?;
+    for s in schemas {
+        for (i, step) in s
+            .steps
+            .iter()
+            .enumerate()
+            .skip(schema_version(conn, s.name)?)
+        {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute_batch(SCHEMA_TABLE)?;
+            tx.execute_batch(step)?;
+            tx.execute(
+                "INSERT INTO platform_schema (name, version) VALUES (?1, ?2)
+                 ON CONFLICT (name) DO UPDATE SET version = excluded.version",
+                params![s.name, (i + 1) as i64],
+            )?;
+            tx.commit()?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -65,7 +140,7 @@ impl Role {
         }
     }
 
-    fn parse(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "viewer" => Some(Role::Viewer),
             "staff" => Some(Role::Staff),
@@ -120,9 +195,14 @@ fn tenant_row(id: String, slug: String, name: String) -> rusqlite::Result<Tenant
 }
 
 impl Platform {
-    pub(crate) fn open(path: &Path, readers: usize) -> Result<Self, StoreError> {
+    pub(crate) fn open(
+        path: &Path,
+        readers: usize,
+        schemas: &[PlatformSchema],
+    ) -> Result<Self, StoreError> {
         let mut writer = conn::open(path, true, false)?;
         migrations().to_latest(&mut writer)?;
+        migrate_schemas(&mut writer, schemas)?;
         Ok(Self {
             writer: Mutex::new(writer),
             readers: ReaderPool::open(path, readers)?,
@@ -133,6 +213,21 @@ impl Platform {
         &self,
         f: impl FnOnce(&Connection) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
+        self.with_write(|tx| f(tx))
+    }
+
+    fn read<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, StoreError> {
+        Ok(self.readers.with(|conn| f(conn))?)
+    }
+
+    /// Run `f` in one `BEGIN IMMEDIATE` transaction on `platform.db`'s
+    /// single writer: commit on `Ok`, roll back on `Err`. Blocking. For the
+    /// control-plane crates (`platform`, `auth`), whose functions take the
+    /// transaction so several compose into one.
+    pub fn with_write<T, E>(&self, f: impl FnOnce(&Transaction) -> Result<T, E>) -> Result<T, E>
+    where
+        E: From<rusqlite::Error>,
+    {
         let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let out = f(&tx)?;
@@ -140,8 +235,12 @@ impl Platform {
         Ok(out)
     }
 
-    fn read<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, StoreError> {
-        Ok(self.readers.with(|conn| f(conn))?)
+    /// Run `f` on a read-only `platform.db` connection. Blocking.
+    pub fn with_read<T, E>(&self, f: impl FnOnce(&Connection) -> Result<T, E>) -> Result<T, E>
+    where
+        E: From<rusqlite::Error>,
+    {
+        self.readers.with(|conn| f(conn))
     }
 
     /// Insert the tenant row, run `make_file`, commit only if it succeeded.

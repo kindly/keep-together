@@ -47,6 +47,14 @@ const FIXTURES: &[&str] = &[
      INSERT INTO contact_search_trigram (rowid, text) VALUES (10001, 'ann smith ann@x.org');",
     // 3: drop the trigram FTS variant (no new tables)
     "",
+    // 4: tenant preferences
+    "INSERT INTO tenant_preferences (id, staff_can_manage_identifier_types, identifier_types_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6', 1, 1);
+     INSERT INTO revisions (id, entity, entity_id, contract, version, counter, payload, actor,
+         source, at)
+     VALUES (2, 'tenant_preferences', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6',
+         'tenantPreferences.identifierTypes', 1, 1,
+         '{\"staffCanManageIdentifierTypes\":true}', 1, 'ui', 2000);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
@@ -219,9 +227,11 @@ fn domain_crates_cannot_reach_the_store_or_the_platform() {
 fn every_contract_has_its_own_counter_column_and_its_upcasters() {
     let mut conn = Connection::open_in_memory().unwrap();
     org_migrations().to_latest(&mut conn).unwrap();
-    let registry = &*contacts::REGISTRY;
     let mut owners = BTreeMap::new();
-    for c in registry.contracts() {
+    for c in [&*contacts::REGISTRY, &*platform::REGISTRY]
+        .into_iter()
+        .flat_map(|r| r.contracts())
+    {
         let (ty, notnull, default): (String, bool, Option<String>) = conn
             .query_row(
                 "SELECT type, \"notnull\", dflt_value FROM pragma_table_info(?1) WHERE name = ?2",
@@ -244,7 +254,8 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
             );
         }
     }
-    assert!(registry.missing_upcasters().is_empty());
+    assert!(contacts::REGISTRY.missing_upcasters().is_empty());
+    assert!(platform::REGISTRY.missing_upcasters().is_empty());
 }
 
 /// Rule 6 / M3, the part the compiler can't see: `ctx.tx.read()` is a

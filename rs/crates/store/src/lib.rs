@@ -22,7 +22,9 @@ pub use conn::read_only_authorizer;
 pub use events::OrgEvent;
 pub use migrate::MigrationFailed;
 pub use org::{OrgDb, OrgRead, RawTx};
-pub use platform::{Member, Platform, Role, SESSION_TTL_MS, Session, Tenant, UserId};
+pub use platform::{
+    Member, Platform, PlatformSchema, Role, SESSION_TTL_MS, Session, Tenant, UserId,
+};
 pub use rusqlite_migration::{M, Migrations};
 
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +47,12 @@ pub enum StoreError {
     },
     #[error("organisation file {0} is missing")]
     MissingFile(PathBuf),
+    #[error("platform schema {name}: stored version {stored} is newer than code version {code}")]
+    NewerSchema {
+        name: &'static str,
+        stored: usize,
+        code: usize,
+    },
 }
 
 /// An organisation's id: 32 lowercase hex characters (a UUIDv7, simple
@@ -123,17 +131,28 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open the data directory. `platform.db` migrates here, copied first
-    /// (into this boot's `premigrate/` directory) if it has steps pending.
+    /// Open the data directory with only `platform.db`'s base schema (no
+    /// crate's [`PlatformSchema`]): for tests and tools that need no more.
     pub fn open(config: StoreConfig) -> Result<Self, StoreError> {
+        Self::open_with(config, &[])
+    }
+
+    /// Open the data directory. `platform.db` migrates here (its base
+    /// schema, then each of `schemas` in order), copied first (into this
+    /// boot's `premigrate/` directory) if any step is pending.
+    pub fn open_with(config: StoreConfig, schemas: &[PlatformSchema]) -> Result<Self, StoreError> {
         std::fs::create_dir_all(config.dir.join("orgs"))?;
         let boot = migrate::BootCopies::new(&config.dir);
         let platform_path = config.dir.join("platform.db");
         if platform_path.exists() {
             let conn = conn::open(&platform_path, false, false)?;
-            migrate::copy_if_pending(&boot, &conn, &platform::migrations(), "platform")?;
+            let copied =
+                migrate::copy_if_pending(&boot, &conn, &platform::migrations(), "platform")?;
+            if !copied && platform::schemas_pending(&conn, schemas)? {
+                migrate::copy_platform(&boot, &conn)?;
+            }
         }
-        let platform = Platform::open(&platform_path, config.readers)?;
+        let platform = Platform::open(&platform_path, config.readers, schemas)?;
         Ok(Self {
             dir: config.dir,
             platform,
