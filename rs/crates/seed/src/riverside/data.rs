@@ -16,7 +16,9 @@
 //! from a second generator after the first is done, so the people above
 //! stay exactly the Convex ones.
 
-use contacts::types::{AddressRow, Addresses, ChannelLabel, Details, EmailRow, Kind, Methods, PhoneRow};
+use contacts::types::{
+    AddressRow, Addresses, ChannelLabel, Details, EmailRow, Kind, Methods, PhoneRow,
+};
 use serde::Serialize;
 use unicode_normalization::UnicodeNormalization;
 
@@ -99,7 +101,12 @@ pub const SOURCE_DETAILS: &[SourceDetail] = &[
         end_date: Some("2026-01-31"),
         versions: &[
             ("Warm", Some("Gave in the last two years"), None, None),
-            ("Lapsed", Some("Last gift more than two years ago"), None, None),
+            (
+                "Lapsed",
+                Some("Last gift more than two years ago"),
+                None,
+                None,
+            ),
         ],
         archived: false,
     },
@@ -219,12 +226,58 @@ impl Rng {
 }
 
 const FIRST_NAMES: &[&str] = &[
-    "Oliver", "Amelia", "Mohammed", "Priya", "Aisha", "Chidi", "Siobhan", "Rhys", "Eilidh", "Wei",
-    "Tomasz", "Agnieszka", "Kwame", "Fatima", "Hamza", "Niamh", "Callum", "Zara", "Arjun",
-    "Leila", "Dylan", "Grace", "Yusuf", "Mei", "Ifeoma", "Gareth", "Bronwen", "Ravi", "Hannah",
-    "Jamal", "Sofia", "Declan", "Ama", "Anjali", "Ewan", "Nkechi", "Ben", "Ruth", "Kofi",
-    "Aleksandra", "Seren", "Imran", "Chloé", "Darius", "Margaret", "Harjit", "Tendai", "Róisín",
-    "Ahmed", "Eleanor", "Oluwaseun", "Jack",
+    "Oliver",
+    "Amelia",
+    "Mohammed",
+    "Priya",
+    "Aisha",
+    "Chidi",
+    "Siobhan",
+    "Rhys",
+    "Eilidh",
+    "Wei",
+    "Tomasz",
+    "Agnieszka",
+    "Kwame",
+    "Fatima",
+    "Hamza",
+    "Niamh",
+    "Callum",
+    "Zara",
+    "Arjun",
+    "Leila",
+    "Dylan",
+    "Grace",
+    "Yusuf",
+    "Mei",
+    "Ifeoma",
+    "Gareth",
+    "Bronwen",
+    "Ravi",
+    "Hannah",
+    "Jamal",
+    "Sofia",
+    "Declan",
+    "Ama",
+    "Anjali",
+    "Ewan",
+    "Nkechi",
+    "Ben",
+    "Ruth",
+    "Kofi",
+    "Aleksandra",
+    "Seren",
+    "Imran",
+    "Chloé",
+    "Darius",
+    "Margaret",
+    "Harjit",
+    "Tendai",
+    "Róisín",
+    "Ahmed",
+    "Eleanor",
+    "Oluwaseun",
+    "Jack",
 ];
 
 const LAST_NAMES: &[&str] = &[
@@ -676,9 +729,8 @@ pub fn generate() -> World {
         let roll = g.r.float();
         if roll < 0.15 {
             let b = g.r.pick(&orgs);
-            let description = g
-                .r
-                .pick(&["Manager", "Volunteer coordinator", "Pharmacist", ""]);
+            let description =
+                g.r.pick(&["Manager", "Volunteer coordinator", "Pharmacist", ""]);
             g.relationships.push(RelationshipSpec {
                 a: i,
                 b,

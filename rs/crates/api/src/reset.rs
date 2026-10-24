@@ -121,11 +121,18 @@ mod tests {
             ));
         }
         // Staging never makes credentials up.
-        let partial = |n: &str| (!n.starts_with("KEEP_RIVERSIDE_VIEWER")).then(|| staging_env(n)).flatten();
+        let partial = |n: &str| {
+            (!n.starts_with("KEEP_RIVERSIDE_VIEWER"))
+                .then(|| staging_env(n))
+                .flatten()
+        };
         match seed(&store, Some("staging"), partial) {
             Err(SeedError::MissingCredentials(m)) => assert_eq!(
                 m,
-                ["KEEP_RIVERSIDE_VIEWER_PASSWORD", "KEEP_RIVERSIDE_VIEWER_TOTP"]
+                [
+                    "KEEP_RIVERSIDE_VIEWER_PASSWORD",
+                    "KEEP_RIVERSIDE_VIEWER_TOTP"
+                ]
             ),
             other => panic!("{other:?}"),
         }

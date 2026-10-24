@@ -154,11 +154,7 @@ fn the_generator_is_deterministic_and_varied() {
         .flat_map(|d| d.methods.emails.iter().map(|e| &e.address))
         .collect();
     assert!(emails.iter().collect::<BTreeSet<_>>().len() < emails.len()); // some shared
-    assert!(
-        emails
-            .iter()
-            .any(|e| !contacts::rules::looks_like_email(e))
-    );
+    assert!(emails.iter().any(|e| !contacts::rules::looks_like_email(e)));
     let addresses: Vec<_> = donors.iter().flat_map(|d| &d.addresses.addresses).collect();
     assert!(addresses.iter().any(|a| a.postcode.is_empty()));
     assert!(addresses.iter().any(|a| a.country != "GB"));
@@ -256,14 +252,14 @@ fn a_hundred_donors_land_in_riverside_only_through_contracts() {
     let after: Vec<_> = others.iter().map(|t| counts(&store, t)).collect();
     assert_eq!(after, before);
 
-    let admin = store
-        .platform()
-        .upsert_user(USERS[0].1)
-        .unwrap();
+    let admin = store.platform().upsert_user(USERS[0].1).unwrap();
     // The seeded admin is a member of riverside and of nothing else.
     let theirs = store.platform().memberships(admin).unwrap();
     assert_eq!(
-        theirs.iter().map(|m| m.tenant.slug.as_str()).collect::<Vec<_>>(),
+        theirs
+            .iter()
+            .map(|m| m.tenant.slug.as_str())
+            .collect::<Vec<_>>(),
         [SLUG]
     );
 
@@ -417,9 +413,15 @@ fn demo_source_codes_land_under_the_seeded_categories_in_riverside_only() {
         parts.iter().filter(|p| level(p) == "detail").count(),
         SOURCE_DETAILS.len()
     );
-    let bath = parts.iter().find(|p| p.code == "Event-BathHalf25-001").unwrap();
+    let bath = parts
+        .iter()
+        .find(|p| p.code == "Event-BathHalf25-001")
+        .unwrap();
     assert!(bath.is_active && !bath.visible);
-    let spring = parts.iter().find(|p| p.code == "Street-Wesser-001").unwrap();
+    let spring = parts
+        .iter()
+        .find(|p| p.code == "Street-Wesser-001")
+        .unwrap();
     assert_eq!(spring.description.as_deref(), Some("Spring run"));
     assert_eq!(spring.end_date.as_deref(), Some("2026-05-31"));
     for t in &others {
@@ -458,7 +460,8 @@ fn a_changed_password_replaces_the_stored_one_the_same_one_keeps_it() {
 
 #[test]
 fn missing_credentials_are_refused_before_anything_is_written() {
-    let env = |name: &str| (name == "KEEP_RIVERSIDE_ADMIN_PASSWORD").then(|| "admin-password-123".into());
+    let env =
+        |name: &str| (name == "KEEP_RIVERSIDE_ADMIN_PASSWORD").then(|| "admin-password-123".into());
     match riverside::credentials_from_env(env, false) {
         Err(SeedError::MissingCredentials(missing)) => assert_eq!(
             missing,
@@ -479,10 +482,16 @@ fn missing_credentials_are_refused_before_anything_is_written() {
     // A bad one is refused, naming the var.
     let short = |n: &str| (n == "KEEP_RIVERSIDE_STAFF_PASSWORD").then(|| "short".into());
     let err = riverside::credentials_from_env(short, true).unwrap_err();
-    assert!(err.to_string().contains("KEEP_RIVERSIDE_STAFF_PASSWORD"), "{err}");
+    assert!(
+        err.to_string().contains("KEEP_RIVERSIDE_STAFF_PASSWORD"),
+        "{err}"
+    );
     let bad_totp = |n: &str| (n == "KEEP_RIVERSIDE_VIEWER_TOTP").then(|| "not base32!".into());
     let err = riverside::credentials_from_env(bad_totp, true).unwrap_err();
-    assert!(err.to_string().contains("KEEP_RIVERSIDE_VIEWER_TOTP"), "{err}");
+    assert!(
+        err.to_string().contains("KEEP_RIVERSIDE_VIEWER_TOTP"),
+        "{err}"
+    );
 
     // `seed` itself refuses a set without every role, writing nothing.
     let tmp = tempfile::tempdir().unwrap();

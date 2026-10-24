@@ -32,13 +32,20 @@ fn refused_unless_keep_env_is_dev_or_staging_then_prints_the_sign_ins() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("KEEP_RIVERSIDE_ADMIN_PASSWORD"));
 
     let out = keep(tmp.path(), Some("dev"));
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.starts_with("created riverside"), "{text}");
     assert!(text.contains("100 donors created"), "{text}");
     for email in ["admin@", "staff@", "viewer@"] {
         let line = text.lines().find(|l| l.contains(email)).unwrap();
-        assert!(line.contains("password ") && line.contains("totp "), "{line}");
+        assert!(
+            line.contains("password ") && line.contains("totp "),
+            "{line}"
+        );
     }
     let again = keep(tmp.path(), Some("dev"));
     assert!(String::from_utf8_lossy(&again.stdout).starts_with("updated riverside"));

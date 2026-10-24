@@ -19,7 +19,9 @@ pub mod data;
 
 use contacts::acquisition::{ACQUISITION, Acquisition};
 use contacts::fields::{FIELD, FIELD_OPTION};
-use contacts::identifiers::{IDENTIFIER_TYPE, IDENTIFIERS, IdentifierRow, IdentifierTypePayload, Identifiers};
+use contacts::identifiers::{
+    IDENTIFIER_TYPE, IDENTIFIERS, IdentifierRow, IdentifierTypePayload, Identifiers,
+};
 use contacts::notes::{NOTE, NOTE_FLAGS, NoteBody, NoteFlags};
 use contacts::relationships::{RELATIONSHIP, RelationshipPayload};
 use contacts::types::{Archive, FieldOptionPayload, FieldPayload, FieldValue, FieldValues, Kind};
@@ -421,7 +423,10 @@ fn donor(
         .identifiers
         .iter()
         .filter_map(|x| {
-            let (_, type_id) = refs.identifier_types.iter().find(|(n, _)| *n == x.type_name)?;
+            let (_, type_id) = refs
+                .identifier_types
+                .iter()
+                .find(|(n, _)| *n == x.type_name)?;
             Some(IdentifierRow {
                 key: None,
                 type_id: type_id.clone(),
