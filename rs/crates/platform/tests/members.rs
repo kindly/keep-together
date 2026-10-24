@@ -160,3 +160,48 @@ fn memberships_compose_in_one_transaction() {
         Some(Role::Admin)
     );
 }
+
+/// `lib/tenancy.test.ts` "requireMember returns the caller's role in that
+/// tenant only", as the request path resolves it: a membership names one
+/// organisation's file, and a slug the user isn't in resolves to nothing,
+/// the same as a slug that doesn't exist.
+#[test]
+fn a_membership_resolves_one_organisation_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open_with(config(tmp.path()), &[SCHEMA]).unwrap();
+    let a = store.create_tenant("alpha", "Alpha").unwrap();
+    let b = store.create_tenant("beta", "Beta").unwrap();
+    let p = store.platform();
+    let ann = p.upsert_user("ann@alpha.org").unwrap();
+    p.with_write(|tx| add_membership(tx, ann, &a.id, Role::Staff))
+        .unwrap();
+    let m = p.member(ann, "alpha").unwrap().unwrap();
+    assert_eq!((m.tenant.id, m.role), (a.id.clone(), Role::Staff));
+    assert!(p.member(ann, "beta").unwrap().is_none());
+    assert!(p.member(ann, "gamma").unwrap().is_none());
+    p.with_write(|tx| add_membership(tx, ann, &b.id, Role::Viewer))
+        .unwrap();
+    assert_eq!(p.member(ann, "beta").unwrap().unwrap().role, Role::Viewer);
+    assert_eq!(p.member(ann, "alpha").unwrap().unwrap().role, Role::Staff);
+}
+
+/// A schema this code doesn't list (a later crate's, met by a rolled-back
+/// release) fails closed, as a newer version does.
+#[test]
+fn a_schema_this_code_does_not_know_fails_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+    const LATER: PlatformSchema = PlatformSchema {
+        name: "auth",
+        steps: &["CREATE TABLE later (id INTEGER PRIMARY KEY) STRICT;"],
+    };
+    drop(Store::open_with(config(tmp.path()), &[SCHEMA, LATER]).unwrap());
+    match Store::open_with(config(tmp.path()), &[SCHEMA]) {
+        Err(StoreError::UnknownSchema(name)) => assert_eq!(name, "auth"),
+        other => panic!("{:?}", other.err()),
+    }
+    // Store::open (no crate schemas) refuses it too: tests only.
+    assert!(matches!(
+        Store::open(config(tmp.path())),
+        Err(StoreError::UnknownSchema(_))
+    ));
+}

@@ -87,7 +87,11 @@ vi.mock('../lib/data', async (original) => {
   return {
     ...real,
     get FEATURES() {
-      return { ...real.FEATURES, gifts: port.all, settings: port.all }
+      return {
+        ...real.FEATURES,
+        gifts: port.all || real.FEATURES.gifts,
+        settings: port.all || real.FEATURES.settings,
+      }
     },
     isPorted: (id: string) => port.all || real.isPorted(id),
     SignedIn: ({ children }: { children: ReactNode }) => children,
@@ -95,6 +99,7 @@ vi.mock('../lib/data', async (original) => {
     SessionLoading: () => null,
     useMyTenants: () => tenants,
     useSignOut: () => signOut,
+    useOpened: () => opened,
     useOrgEvents: () => {},
   }
 })
@@ -200,7 +205,7 @@ test('a single group never records which group was opened', async () => {
 test('several groups: opening one that was not last used records it, once', async () => {
   tenants = [group('alpha'), group('beta', { lastUsedAt: 5 })]
   await page(import('./t.$slug'))
-  expect(opened).toHaveBeenCalledExactlyOnceWith({ tenantId: 'id-alpha' })
+  expect(opened).toHaveBeenCalledExactlyOnceWith('alpha')
 
   opened.mockClear()
   tenants = [
@@ -220,8 +225,8 @@ test('two tabs on different groups each record their group once, then stay quiet
     Object.entries(used).map(([slug, lastUsedAt]) =>
       group(slug, { lastUsedAt }),
     )
-  opened.mockImplementation(({ tenantId }: { tenantId: string }) => {
-    used[tenantId.replace('id-', '')] = ++clock
+  opened.mockImplementation((slug: string) => {
+    used[slug] = ++clock
     return Promise.resolve(null)
   })
   const { Route } = await import('./t.$slug')
@@ -246,10 +251,7 @@ test('two tabs on different groups each record their group once, then stay quiet
       second.render(tab('beta'))
     })
   }
-  expect(opened.mock.calls).toEqual([
-    [{ tenantId: 'id-alpha' }],
-    [{ tenantId: 'id-beta' }],
-  ])
+  expect(opened.mock.calls).toEqual([['alpha'], ['beta']])
   act(() => second.unmount())
 })
 
@@ -405,7 +407,7 @@ test('Switch group lists every group by name, each opening at its home', async (
   ])
 })
 
-test('being ported: the header has Contacts and Sign out, nothing unported', async () => {
+test('being ported: the header has Contacts and Settings, nothing unported', async () => {
   port.all = false
   tenants = [group('alpha'), group('beta', { lastUsedAt: 5 })]
   await page(import('./t.$slug'))
@@ -413,17 +415,39 @@ test('being ported: the header has Contacts and Sign out, nothing unported', asy
   expect(links(nav)).toEqual([
     ['Alpha', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
+    // A3: Settings (it holds Sign out) and "last used".
+    ['Settings', '/t/alpha/settings'],
   ])
   expect(nav.textContent).not.toContain('Donations')
-  // "Last used" is Settings' (A3): nothing recorded meanwhile.
-  expect(opened).not.toHaveBeenCalled()
-  const button = [...nav.querySelectorAll('button')].find(
-    (b) => b.textContent === 'Sign out',
-  )!
-  await act(async () => button.click())
-  expect(signOut).toHaveBeenCalledOnce()
-  expect(navigate).toHaveBeenCalledWith({ to: '/' })
+  expect(opened).toHaveBeenCalledExactlyOnceWith('alpha')
   expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
+})
+
+test('being ported: Settings shows only the list tabs this build serves', async () => {
+  port.all = false
+  tenants = [group('alpha'), group('beta')]
+  await page(import('./t.$slug.settings'))
+  expect(links()).toEqual([
+    ['Members', '/t/alpha/settings/members'],
+    ['Switch group', '/t/alpha/settings/groups'],
+    ['Your account', '/account'],
+  ])
+  // No list tab yet: Members, which every member sees, comes first.
+  await page(import('./t.$slug.settings.index'))
+  expect(navigated).toEqual(['/t/alpha/settings/members'])
+})
+
+test('settings: the first tab is Fields once every list is ported', async () => {
+  await page(import('./t.$slug.settings'))
+  expect(links()).toEqual([
+    ['Fields', '/t/alpha/settings/fields'],
+    ['Identifier types', '/t/alpha/settings/identifiers'],
+    ['Source codes', '/t/alpha/settings/sources'],
+    ['Members', '/t/alpha/settings/members'],
+    ['Your account', '/account'],
+  ])
+  await page(import('./t.$slug.settings.index'))
+  expect(navigated).toEqual(['/t/alpha/settings/fields'])
 })
 
 test('being ported: an unported route shows the placeholder, not the page', async () => {

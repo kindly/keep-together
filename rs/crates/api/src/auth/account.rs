@@ -2,14 +2,14 @@
 //! recovery codes. (Changing the second factor is `enrol/*` within the
 //! step-up window.)
 
-use auth::{accounts, sessions};
+use auth::{Stage, accounts, sessions};
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::flows::{Method, check_password, password_limits};
+use super::flows::{Method, check_password, password_limits, reread};
 use super::{ClientIp, Revoked, fresh, session};
 use crate::error::{ApiError, Body};
 use crate::timing::Timing;
@@ -84,6 +84,7 @@ pub async fn change_password(
         }
         let now = contracts::now_ms();
         st.store.platform().with_write(|tx| {
+            let s = reread(tx, &s, now, |s| s.stage == Stage::Full)?;
             accounts::set_password(tx, s.user, &req.new, now).map_err(ApiError::internal)?;
             sessions::revoke_others(tx, s.user, &s.id)?;
             accounts::log(tx, now, "password_changed", Some(s.user), "self", None, "")?;
@@ -118,6 +119,7 @@ pub async fn recovery_codes(
     let st = state.clone();
     let codes = blocking(move || {
         st.store.platform().with_write(|tx| {
+            let s = reread(tx, &s, now, |s| s.stage == Stage::Full && fresh(s, now))?;
             if accounts::credentials(tx, s.user)?
                 .and_then(|c| c.second_factor)
                 .is_none()

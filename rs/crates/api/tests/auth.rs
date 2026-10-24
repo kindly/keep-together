@@ -957,3 +957,149 @@ fn dev_auth_is_refused_where_deployed() {
     assert!(!api::auth::dev_auth_refused(Some("dev")));
     assert!(!api::auth::dev_auth_refused(None));
 }
+
+// ── a session read before a change commits (review F1) ────────────────────
+
+fn full_sessions(w: &World, email: &str) -> i64 {
+    let user = w.user_id(email);
+    w.store
+        .platform()
+        .with_read(|c| {
+            c.query_row(
+                "SELECT count(*) FROM auth_sessions WHERE user_id = ?1 AND stage = 'full'",
+                [user],
+                |r| r.get(0),
+            )
+        })
+        .unwrap()
+}
+
+/// Two submits of one emailed code at once: one signs in, the other is
+/// refused, and only one full session exists.
+#[tokio::test]
+async fn a_double_submitted_emailed_code_signs_in_once() {
+    let w = world();
+    let r = sign_in_password(&w, "val@alpha.org", &password_of("val@alpha.org")).await;
+    let partial = r.cookie().unwrap();
+    let code = w.emailed_code("val@alpha.org").await;
+    let body = json!({ "code": code });
+    let (a, b) = tokio::join!(
+        w.post("/api/auth/second-factor", Some(&partial), body.clone()),
+        w.post("/api/auth/second-factor", Some(&partial), body),
+    );
+    let ok = [&a, &b]
+        .iter()
+        .filter(|r| r.status == StatusCode::OK)
+        .count();
+    assert_eq!(ok, 1, "{} {} / {} {}", a.status, a.body, b.status, b.body);
+    assert_eq!(full_sessions(&w, "val@alpha.org"), 1);
+}
+
+/// Two enrolment confirms at once: one answers the recovery codes, the
+/// other is refused, and the codes it answered are the ones that work.
+#[tokio::test]
+async fn a_double_enrol_confirm_issues_recovery_codes_once() {
+    let w = world();
+    let ann = w.sign_in("ann@alpha.org").await;
+    w.post(
+        "/api/t/alpha/members/invite",
+        Some(&ann),
+        json!({ "email": "dd@alpha.org", "role": "staff" }),
+    )
+    .await;
+    let token = w.emailed_token("dd@alpha.org").await;
+    let r = w
+        .post(
+            "/api/auth/invite/accept",
+            None,
+            json!({ "token": token, "password": "dd's password" }),
+        )
+        .await;
+    let enrol = r.cookie().unwrap();
+    let r = w
+        .post("/api/auth/enrol/totp", Some(&enrol), json!({}))
+        .await;
+    let secret = r.body["secret"].as_str().unwrap().to_owned();
+    let code = auth::totp::code_at(&secret, authworld::now_secs()).unwrap();
+    let body = json!({ "method": "totp", "code": code });
+    let (a, b) = tokio::join!(
+        w.post("/api/auth/enrol/confirm", Some(&enrol), body.clone()),
+        w.post("/api/auth/enrol/confirm", Some(&enrol), body),
+    );
+    let oks: Vec<_> = [&a, &b]
+        .into_iter()
+        .filter(|r| r.status == StatusCode::OK)
+        .collect();
+    assert_eq!(
+        oks.len(),
+        1,
+        "{} {} / {} {}",
+        a.status,
+        a.body,
+        b.status,
+        b.body
+    );
+    assert_eq!(full_sessions(&w, "dd@alpha.org"), 1);
+    // The answered codes are live.
+    let first = oks[0].body["recoveryCodes"][0].as_str().unwrap().to_owned();
+    let r = sign_in_password(&w, "dd@alpha.org", "dd's password").await;
+    let r = w
+        .post(
+            "/api/auth/second-factor",
+            Some(&r.cookie().unwrap()),
+            json!({ "code": first }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+}
+
+#[tokio::test]
+async fn an_invite_lasts_seven_days() {
+    let w = world();
+    let ann = w.sign_in("ann@alpha.org").await;
+    w.post(
+        "/api/t/alpha/members/invite",
+        Some(&ann),
+        json!({ "email": "late@alpha.org", "role": "staff" }),
+    )
+    .await;
+    let token = w.emailed_token("late@alpha.org").await;
+    let ttl: i64 = w
+        .store
+        .platform()
+        .with_read(|c| {
+            c.query_row(
+                "SELECT expires_at - created_at FROM auth_invites",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(ttl, 7 * 24 * 60 * 60 * 1000);
+    w.store
+        .platform()
+        .with_write(|tx| {
+            tx.execute(
+                "UPDATE auth_invites SET expires_at = ?1",
+                [contracts::now_ms()],
+            )
+        })
+        .unwrap();
+    let r = w
+        .post("/api/auth/invite/check", None, json!({ "token": token }))
+        .await;
+    assert_eq!(r.reason(), "link_expired");
+    let r = w
+        .post(
+            "/api/auth/invite/accept",
+            None,
+            json!({ "token": token, "password": "too late now" }),
+        )
+        .await;
+    assert_eq!(r.reason(), "link_expired");
+    // Still listed (expired), so an admin can send it again.
+    let r = w
+        .call("GET", "/api/t/alpha/members", Some(&ann), None)
+        .await;
+    assert_eq!(r.body["invites"][0]["email"], "late@alpha.org");
+}

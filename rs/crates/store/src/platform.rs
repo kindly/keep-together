@@ -77,12 +77,29 @@ fn schema_version(conn: &Connection, name: &str) -> rusqlite::Result<usize> {
     Ok(v.unwrap_or(0) as usize)
 }
 
-/// Whether any schema has steps to run. A schema newer than this code
-/// fails closed.
+/// Whether any schema has steps to run. Fails closed on a file newer than
+/// this code: a schema at a version past its steps, or one this code
+/// doesn't list at all (a rolled-back release meeting a later crate's
+/// tables).
 pub(crate) fn schemas_pending(
     conn: &Connection,
     schemas: &[PlatformSchema],
 ) -> Result<bool, StoreError> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'platform_schema')",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists {
+        let mut stmt = conn.prepare("SELECT name FROM platform_schema ORDER BY name")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for name in names {
+            let name = name?;
+            if !schemas.iter().any(|s| s.name == name) {
+                return Err(StoreError::UnknownSchema(name));
+            }
+        }
+    }
     let mut pending = false;
     for s in schemas {
         let v = schema_version(conn, s.name)?;
@@ -234,13 +251,14 @@ impl Platform {
         self.readers.with(|conn| f(conn))
     }
 
-    /// Insert the tenant row, run `make_file`, commit only if it succeeded.
+    /// Insert the tenant row, run `make_file` (in the same transaction),
+    /// commit only if it succeeded.
     pub(crate) fn insert_tenant(
         &self,
         id: &TenantId,
         slug: &str,
         name: &str,
-        make_file: impl FnOnce() -> Result<(), StoreError>,
+        make_file: impl FnOnce(&Connection) -> Result<(), StoreError>,
     ) -> Result<Tenant, StoreError> {
         if !valid_slug(slug) {
             return Err(StoreError::InvalidSlug(slug.into()));
@@ -258,7 +276,7 @@ impl Platform {
                 "INSERT INTO tenants (id, slug, name) VALUES (?1, ?2, ?3)",
                 params![id.as_str(), slug, name],
             )?;
-            make_file()?;
+            make_file(tx)?;
             Ok(Tenant {
                 id: id.clone(),
                 slug: slug.into(),
@@ -291,18 +309,21 @@ impl Platform {
     /// The user with this email, created if new. Emails are compared
     /// case-insensitively (stored lower-cased).
     pub fn upsert_user(&self, email: &str) -> Result<UserId, StoreError> {
+        self.write(|tx| Ok(Self::upsert_user_in(tx, email)?))
+    }
+
+    /// [`Platform::upsert_user`] inside a transaction the caller holds.
+    pub fn upsert_user_in(conn: &Connection, email: &str) -> rusqlite::Result<UserId> {
         let email = email.trim().to_lowercase();
-        self.write(|tx| {
-            tx.execute(
-                "INSERT INTO users (email) VALUES (?1) ON CONFLICT (email) DO NOTHING",
-                [&email],
-            )?;
-            Ok(UserId(tx.query_row(
-                "SELECT id FROM users WHERE email = ?1",
-                [&email],
-                |r| r.get(0),
-            )?))
-        })
+        conn.execute(
+            "INSERT INTO users (email) VALUES (?1) ON CONFLICT (email) DO NOTHING",
+            [&email],
+        )?;
+        Ok(UserId(conn.query_row(
+            "SELECT id FROM users WHERE email = ?1",
+            [&email],
+            |r| r.get(0),
+        )?))
     }
 
     pub fn set_membership(

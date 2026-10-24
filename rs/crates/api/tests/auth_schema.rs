@@ -93,6 +93,23 @@ fn a_release_adding_auth_is_copied_first_and_rolls_back() {
         "the copy predates auth"
     );
 
+    // The previous release's code on the migrated file, without the
+    // rollback script: it refuses to open it (fails closed), naming auth.
+    let refused = Store::open_with(
+        StoreConfig {
+            dir: dir.to_path_buf(),
+            org_migrations: schema::org_migrations(),
+            readers: 1,
+            max_open: 4,
+        },
+        &before,
+    );
+    assert!(
+        matches!(refused, Err(store::StoreError::UnknownSchema(ref n)) if n == "auth"),
+        "{:?}",
+        refused.err()
+    );
+
     // Rolling back restores the copy: no auth tables, no auth version.
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/ops/rollback-migration.sh");

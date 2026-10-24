@@ -5,7 +5,7 @@ import type { QcUser } from '../fixtures'
 
 // Auth flows (A4): sign in with a password and a TOTP code (the seeded
 // secret) into the group's home, the two error messages, sign out (from
-// the account page), a group URL while signed out, the reset request, and
+// Settings), your account, a group URL while signed out, the reset request, and
 // a dead invite link. The timed sign-in (`auth.signIn`) is the worker
 // fixture's; these check behaviour. Invites and resets past the request
 // need the emailed link, which QC can't read (KEEP_MAIL=log): the Rust
@@ -87,17 +87,33 @@ test('sign out returns to the sign-in form and stays out', async ({
   page,
   users,
 }) => {
-  route('/account', '/sign-in')
+  route('/t/$slug/settings', '/sign-in')
   await signIn(page, users.viewer)
-  await page.goto('/account')
-  await expect(page.getByText(users.viewer.email)).toBeVisible()
-  await page.getByRole('button', { name: 'Sign out' }).click()
+  // Sign out lives in Settings.
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .getByRole('link', { name: 'Settings', exact: true })
+    .click()
+  await page
+    .getByRole('navigation', { name: 'Settings sections' })
+    .getByRole('button', { name: 'Sign out' })
+    .click()
   await expect(page).toHaveURL('/sign-in')
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
   await page.reload()
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
   await page.goto(`/t/${users.viewer.slug}/contacts`)
   await expect(page.getByText('to open this group.')).toBeVisible()
+})
+
+test('your account shows how you sign in', async ({ page, users }) => {
+  route('/account')
+  await signIn(page, users.staff)
+  await page.goto(`/t/${users.staff.slug}/settings`)
+  await page.getByRole('link', { name: 'Your account' }).click()
+  await expect(page).toHaveURL('/account')
+  await expect(page.getByText(users.staff.email)).toBeVisible()
+  await expect(page.getByText('authenticator app', { exact: false })).toBeVisible()
 })
 
 test('a group URL while signed out asks you to sign in', async ({ page }) => {

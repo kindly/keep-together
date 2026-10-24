@@ -5,9 +5,7 @@ import {
   useMatches,
   useNavigate,
 } from '@tanstack/react-router'
-import { useMutation } from 'convex/react'
 import { useEffect, useRef } from 'react'
-import { api } from '../../convex/_generated/api'
 import { TenantContext } from '../lib/tenant'
 import type { Tenant } from '../lib/tenant'
 import {
@@ -16,6 +14,7 @@ import {
   SignedOut,
   isPorted,
   useMyTenants,
+  useOpened,
   useOrgEvents,
   useSignOut,
 } from '../lib/data'
@@ -63,7 +62,6 @@ function Resolved({ slug }: { slug: string }) {
   return (
     <TenantContext.Provider value={tenant}>
       <Events slug={slug} />
-      {/* Not ported yet (A3): the "last used" group. */}
       {FEATURES.settings && (
         <RememberOpened tenant={tenant} tenants={tenants} />
       )}
@@ -162,7 +160,7 @@ function RememberOpened({
   tenant: Tenant
   tenants: Array<Tenant>
 }) {
-  const opened = useMutation(api.platform.tenants.opened)
+  const opened = useOpened()
   const several = tenants.length > 1
   const latest = Math.max(...tenants.map((t) => t.lastUsedAt ?? 0))
   const isLatest = tenant.lastUsedAt !== null && tenant.lastUsedAt === latest
@@ -173,7 +171,7 @@ function RememberOpened({
     if (judged.current === tenant._id) return
     judged.current = tenant._id
     if (!several || isLatest) return
-    opened({ tenantId: tenant._id }).catch(console.error)
-  }, [opened, several, isLatest, tenant._id])
+    opened(tenant.slug).catch(console.error)
+  }, [opened, several, isLatest, tenant._id, tenant.slug])
   return null
 }

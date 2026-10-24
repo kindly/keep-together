@@ -1,8 +1,7 @@
 import { expect, test } from '../fixtures'
 
 // Settings › Members (A4): the list, an invite, a viewer's read-only
-// view, and B's members not being A's. Pending until A3's settings layout
-// is on the Rust backend (qc/pending.ts). Tests start signed in as A's
+// view, and B's members not being A's. Tests start signed in as A's
 // admin (a dev session, so within the step-up hour).
 
 function route(...ids: Array<string>) {

@@ -27,3 +27,4 @@ export {
 } from './rust/hooks'
 export * from './rust/auth'
 export { useOrgEvents } from './events'
+export { useOpened, useSetStaffCanManage } from './rust/platform'

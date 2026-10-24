@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures'
+import { devLogin, expect, test } from '../fixtures'
 import { runId } from '../timing'
 import {
   contactForm,
@@ -35,12 +35,73 @@ test.describe('isolation', () => {
   })
 
   test("B's settings are not A's to open", async ({ page, users }) => {
-    route('/t/$slug', '/t/$slug/settings/identifiers')
-    await page.goto(`/t/${users.b.slug}/settings/identifiers`)
-    await expect(
-      page.getByText(`No group called “${users.b.slug}” that you belong to.`),
-    ).toBeVisible()
-    await expect(page.getByLabel('New identifier type')).toHaveCount(0)
+    route('/t/$slug', '/t/$slug/settings', '/t/$slug/settings/groups')
+    for (const tab of ['settings', 'settings/groups']) {
+      await page.goto(`/t/${users.b.slug}/${tab}`)
+      await expect(
+        page.getByText(`No group called “${users.b.slug}” that you belong to.`),
+      ).toBeVisible()
+      await expect(page.getByRole('heading', { name: 'Settings' })).toHaveCount(
+        0,
+      )
+    }
+  })
+
+  // The groups API answers about the caller across their groups, outside
+  // the per-slug middleware: it must show A nothing of B's, and B's slug
+  // must be as unknown there as anywhere. The switches are per group.
+  test("A's groups and switches show none of B's, nor B's A's", async ({
+    instance,
+    users,
+  }) => {
+    const call = async (
+      email: string,
+      method: 'GET' | 'POST',
+      path: string,
+      body?: unknown,
+    ) => {
+      const token = await devLogin(instance, email)
+      const res = await fetch(`${instance.api}${path}`, {
+        method,
+        headers: {
+          cookie: `kt_session=${token}`,
+          ...(body !== undefined && { 'content-type': 'application/json' }),
+        },
+        ...(body !== undefined && { body: JSON.stringify(body) }),
+      })
+      return { status: res.status, json: (await res.json()) as unknown }
+    }
+    const mine = await call(users.a.email, 'GET', '/api/groups')
+    expect(mine.status).toBe(200)
+    expect((mine.json as Array<{ slug: string }>).map((g) => g.slug)).toEqual([
+      users.a.slug,
+    ])
+    // B's slug: unknown to A's "opened", and A's to B's.
+    for (const [email, slug] of [
+      [users.a.email, users.b.slug],
+      [users.b.email, users.a.slug],
+    ]) {
+      const res = await call(email, 'POST', `/api/groups/${slug}/opened`)
+      expect([res.status, res.json]).toEqual([404, { kind: 'not_found' }])
+    }
+    // B's switches: refused to A whether read or written.
+    for (const [method, path, body] of [
+      ['GET', `/api/t/${users.b.slug}/preferences`, undefined],
+      [
+        'POST',
+        `/api/t/${users.b.slug}/preferences/fields`,
+        { staffCanManage: true },
+      ],
+    ] as const) {
+      const res = await call(users.a.email, method, path, body)
+      expect([res.status, res.json]).toEqual([403, { kind: 'forbidden' }])
+    }
+    const bPrefs = await call(
+      users.b.email,
+      'GET',
+      `/api/t/${users.b.slug}/preferences`,
+    )
+    expect(bPrefs.json).toMatchObject({ fields: { staffCanManage: false } })
   })
 
   // A's field flows are fields.spec.ts. A has a seeded field and B none,

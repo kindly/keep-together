@@ -4,8 +4,8 @@ import {
   createFileRoute,
   useNavigate,
 } from '@tanstack/react-router'
-import { useAuthActions } from '@convex-dev/auth/react'
-import { useMyTenants } from '../lib/tenant'
+import { useMyTenants, useSignOut } from '../lib/data'
+import { portedListTabs } from '../lib/settings-tabs'
 
 export const Route = createFileRoute('/t/$slug/settings')({
   component: SettingsLayout,
@@ -27,7 +27,7 @@ const activeTab = 'border-neutral-900 font-medium text-neutral-900'
  */
 function SettingsLayout() {
   const { slug } = Route.useParams()
-  const { signOut } = useAuthActions()
+  const signOut = useSignOut()
   const navigate = useNavigate()
   const several = (useMyTenants()?.length ?? 0) > 1
   return (
@@ -40,29 +40,24 @@ function SettingsLayout() {
           aria-label="Settings sections"
           className="-mx-3 flex shrink-0 overflow-x-auto border-b border-neutral-200 md:mx-0 md:w-44 md:flex-col md:self-start md:overflow-visible md:border-r md:border-b-0"
         >
+          {portedListTabs().map((t) => (
+            <Link
+              key={t.to}
+              to={t.to}
+              params={{ slug }}
+              className={tab}
+              activeProps={{ className: activeTab }}
+            >
+              {t.label}
+            </Link>
+          ))}
           <Link
-            to="/t/$slug/settings/fields"
+            to="/t/$slug/settings/members"
             params={{ slug }}
             className={tab}
             activeProps={{ className: activeTab }}
           >
-            Fields
-          </Link>
-          <Link
-            to="/t/$slug/settings/identifiers"
-            params={{ slug }}
-            className={tab}
-            activeProps={{ className: activeTab }}
-          >
-            Identifier types
-          </Link>
-          <Link
-            to="/t/$slug/settings/sources"
-            params={{ slug }}
-            className={tab}
-            activeProps={{ className: activeTab }}
-          >
-            Source codes
+            Members
           </Link>
           {several && (
             <Link
@@ -74,6 +69,9 @@ function SettingsLayout() {
               Switch group
             </Link>
           )}
+          <Link to="/account" className={tab}>
+            Your account
+          </Link>
           <button
             type="button"
             onClick={() => void signOut().then(() => navigate({ to: '/' }))}

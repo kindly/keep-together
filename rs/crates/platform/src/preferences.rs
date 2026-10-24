@@ -117,6 +117,15 @@ pub struct Preferences {
 }
 
 impl Preferences {
+    /// [`may_manage_list`] on preferences already read.
+    pub fn may_manage(&self, role: Role, kind: ListKind) -> bool {
+        match role {
+            Role::Admin => true,
+            Role::Staff => self.get(kind).staff_can_manage,
+            Role::Viewer => false,
+        }
+    }
+
     pub fn get(&self, kind: ListKind) -> &Switch {
         match kind {
             ListKind::IdentifierTypes => &self.identifier_types,
@@ -181,7 +190,11 @@ pub fn set(
     let opts = match (&id, expected) {
         (None, _) => Exec::create(source),
         (Some(id), Some(expected)) => Exec::update(id, Some(expected), source),
-        // A row the caller didn't see: stale, whatever it holds.
+        // A row the caller didn't see: stale, whatever it holds. As on
+        // Convex (`staleIfUnseen`). It means one false conflict: on a
+        // fresh organisation, a second admin's first save of *another*
+        // switch is stale too (a created row's untouched counters read 0,
+        // like a never-saved one), and costs that admin one retry.
         (Some(id), None) => Exec::update(id, Some(-1), source),
     };
     match kind {

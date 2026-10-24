@@ -24,7 +24,11 @@
 //!    completes (the row is replaced or the column nulled), unusable once
 //!    expired, and nulled by the sweep. It is never logged or returned
 //!    after the enrol response.
-//! 8. A dev-login session (`dev`) counts only while the server runs with
+//! 8. Handlers that act on a session re-read it inside their write
+//!    transaction ([`by_id`]) and act on that row, never on the read
+//!    that found it: a session revoked, or a code spent, in between is
+//!    seen. [`complete`] and the rotations refuse a row that is gone.
+//! 9. A dev-login session (`dev`) counts only while the server runs with
 //!    dev auth; the API ignores it otherwise.
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -141,8 +145,14 @@ pub fn by_id(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Option<S
 }
 
 /// The sign-in is complete: replace the partial session with a full one.
+/// Refused (`QueryReturnedNoRows`) if the partial row is gone (revoked,
+/// or a double submit already completed it): never a full session from a
+/// stale read.
 pub fn complete(conn: &Connection, s: &Session, now: i64) -> rusqlite::Result<String> {
-    revoke(conn, &s.id)?;
+    let n = conn.execute("DELETE FROM auth_sessions WHERE token_hash = ?1", [&s.id])?;
+    if n == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
     create(conn, s.user, Stage::Full, now)
 }
 
@@ -265,4 +275,49 @@ pub fn sweep(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
         [now],
     )?;
     conn.execute("DELETE FROM auth_sessions WHERE expires_at <= ?1", [now])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE);
+             CREATE TABLE tenants (id TEXT PRIMARY KEY);
+             INSERT INTO users (id, email) VALUES (1, 'ann@alpha.org');",
+        )
+        .unwrap();
+        c.execute_batch(crate::SCHEMA.steps[0]).unwrap();
+        c
+    }
+
+    /// Invariant 8: a partial session read before a revoke-all (or before
+    /// a double submit completed it) never becomes a full one.
+    #[test]
+    fn complete_refuses_a_session_gone_since_it_was_read() {
+        let c = db();
+        let token = create(&c, 1, Stage::SecondFactor, 0).unwrap();
+        let read = get(&c, &token, 1).unwrap().unwrap();
+        // Someone resets the password meanwhile: every session goes.
+        revoke_user(&c, 1).unwrap();
+        assert!(matches!(
+            complete(&c, &read, 2),
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        ));
+        let full: i64 = c
+            .query_row("SELECT count(*) FROM auth_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(full, 0);
+        // And a double submit: the second completion of one read fails.
+        let token = create(&c, 1, Stage::SecondFactor, 0).unwrap();
+        let read = get(&c, &token, 1).unwrap().unwrap();
+        complete(&c, &read, 2).unwrap();
+        assert!(complete(&c, &read, 3).is_err());
+        assert!(
+            step_up(&c, &read, 3).is_err(),
+            "a rotation of a gone row too"
+        );
+    }
 }

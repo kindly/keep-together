@@ -3,6 +3,8 @@
 
 mod contacts;
 mod fields;
+pub mod groups;
+mod preferences;
 pub mod qc_seed;
 
 use axum::Router;
@@ -18,6 +20,7 @@ pub fn router() -> Router {
     Router::new()
         .merge(contacts::router())
         .merge(fields::router())
+        .merge(preferences::router())
 }
 
 /// A query string whose rejection is an [`ApiError::Invalid`], like

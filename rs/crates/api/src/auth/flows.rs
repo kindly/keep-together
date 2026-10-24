@@ -99,6 +99,20 @@ fn wrong_credentials() -> ApiError {
     }
 }
 
+/// `s` as it is now, inside the write transaction: the request's own read
+/// may be stale (a double submit, a revoke-all in between). Gone, or no
+/// longer at a stage `ok` accepts: `401`.
+pub(crate) fn reread(
+    tx: &Connection,
+    s: &Session,
+    now: i64,
+    ok: impl Fn(&Session) -> bool,
+) -> Result<Session, ApiError> {
+    sessions::by_id(tx, &s.id, now)?
+        .filter(|fresh| ok(fresh))
+        .ok_or(ApiError::Unauthenticated)
+}
+
 pub(crate) fn wrong_code() -> ApiError {
     ApiError::Rejected {
         reason: "wrong_code".into(),
@@ -312,6 +326,7 @@ pub async fn second_factor(
     let done = blocking(move || {
         let now = contracts::now_ms();
         st.store.platform().with_write(|tx| {
+            let s = reread(tx, &s, now, |s| s.stage == Stage::SecondFactor)?;
             if !check_second_factor(tx, &s, &req.code, now)? {
                 accounts::log(
                     tx,
@@ -483,6 +498,9 @@ pub async fn enrol_confirm(
     let done = blocking(move || {
         let now = contracts::now_ms();
         st.store.platform().with_write(|tx| {
+            let s = reread(tx, &s, now, |s| {
+                s.stage == Stage::Enrol || (s.stage == Stage::Full && fresh(s, now))
+            })?;
             let ok = match req.method {
                 Method::Totp => match s.pending_secret.as_deref() {
                     Some(pending) => totp::verify(pending, &req.code, (now / 1000) as u64, 0)
@@ -570,6 +588,7 @@ pub async fn step_up(
             return Err(wrong_credentials());
         }
         st.store.platform().with_write(|tx| {
+            let s = reread(tx, &s, now, |s| s.stage == Stage::Full)?;
             if !check_second_factor(tx, &s, &req.code, now)? {
                 return Ok::<_, ApiError>(None);
             }

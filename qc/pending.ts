@@ -32,12 +32,15 @@ export const PENDING: ReadonlyArray<Pending> = [
   { step: 'A2', file: 'contact-acquisition.spec.ts' },
   { step: 'A2', file: 'sources.spec.ts' },
   { step: 'A2', title: /source codes show none of B's/ },
-  // A3: settings, groups, Switch group.
-  { step: 'A3', file: 'settings.spec.ts' },
-  { step: 'A3', title: /Switch group/ },
-  { step: 'A3', title: /B's settings are not A's/ },
-  // A4's members page, under A3's settings layout.
-  { step: 'A3', file: 'members.spec.ts' },
+  // Settings' list tabs (A3 ported the layout and Switch group): the
+  // Identifier types tab and its switch are A1's, the Fields tab (the
+  // first tab, which the tab-switching flows open) and the staff/viewer
+  // read-only pass over it are B1's.
+  { step: 'A1', title: /^identifier types ›/ },
+  { step: 'A1', title: /^staff can manage lists, per list ›/ },
+  { step: 'B1', title: /^settings tabs ›/ },
+  { step: 'B1', title: /^old tags URLs ›/ },
+  { step: 'B1', title: /^settings for staff and viewers ›/ },
   // B1: the Fields tab, bulk set, history with moments.
   { step: 'B1', title: /fields tab/ },
   { step: 'B1', title: /B's fields are not A's/ },

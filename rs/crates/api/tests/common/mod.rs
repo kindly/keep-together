@@ -1,5 +1,5 @@
 //! A two-organisation world on the real org schema, for route tests.
-//! alpha: ann (admin), val (viewer); beta: bob (admin).
+//! alpha: ann (admin), sam (staff), val (viewer); beta: bob (admin).
 
 #![allow(dead_code)]
 
@@ -41,6 +41,7 @@ pub fn world() -> World {
     let beta = store.create_tenant("beta", "Beta").unwrap();
     for (email, tenant, role) in [
         ("ann@alpha.org", &alpha, Role::Admin),
+        ("sam@alpha.org", &alpha, Role::Staff),
         ("val@alpha.org", &alpha, Role::Viewer),
         ("bob@beta.org", &beta, Role::Admin),
     ] {

@@ -148,6 +148,7 @@ async fn invite(
         let id = tenant_id(&a, &slug)?;
         let now = contracts::now_ms();
         a.store.platform().with_write(|tx| {
+            still_admin(tx, &a, &id, now)?;
             if let Some(user) = users::by_email(tx, &email)?
                 && members::role_of(tx, UserId(user), &id)?.is_some()
             {
@@ -198,6 +199,7 @@ async fn revoke_invite(
         let tenant = tenant_id(&a, &t.slug)?;
         let now = contracts::now_ms();
         a.store.platform().with_write(|tx| {
+            still_admin(tx, &a, &tenant, now)?;
             if !accounts::revoke_invite(tx, tenant.as_str(), &id, now)? {
                 return Err(ApiError::NotFound);
             }
@@ -215,6 +217,22 @@ async fn revoke_invite(
     })
     .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Inside the write transaction: the actor is still signed in and still
+/// an admin here. The middleware's read may be stale (removed, demoted or
+/// signed out by someone else while this request was on its way).
+fn still_admin(
+    tx: &rusqlite::Connection,
+    a: &Account,
+    tenant: &TenantId,
+    now: i64,
+) -> Result<(), ApiError> {
+    sessions::by_id(tx, &a.session.id, now)?.ok_or(ApiError::Unauthenticated)?;
+    if members::role_of(tx, UserId(a.session.user), tenant)? != Some(Role::Admin) {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(())
 }
 
 fn user_param(id: &str) -> Result<i64, ApiError> {
@@ -252,6 +270,7 @@ async fn set_role(
         let tenant = tenant_id(&a, &t.slug)?;
         let now = contracts::now_ms();
         a.store.platform().with_write(|tx| {
+            still_admin(tx, &a, &tenant, now)?;
             let current =
                 members::role_of(tx, UserId(target), &tenant)?.ok_or(ApiError::NotFound)?;
             if current == Role::Admin
@@ -308,6 +327,7 @@ async fn remove(
         let tenant = tenant_id(&a, &t.slug)?;
         let now = contracts::now_ms();
         a.store.platform().with_write(|tx| {
+            still_admin(tx, &a, &tenant, now)?;
             let current =
                 members::role_of(tx, UserId(target), &tenant)?.ok_or(ApiError::NotFound)?;
             if current == Role::Admin && members::admin_count(tx, &tenant)? <= 1 {
@@ -349,6 +369,7 @@ async fn reset_2fa(
         let tenant = tenant_id(&a, &t.slug)?;
         let now = contracts::now_ms();
         a.store.platform().with_write(|tx| {
+            still_admin(tx, &a, &tenant, now)?;
             members::role_of(tx, UserId(target), &tenant)?.ok_or(ApiError::NotFound)?;
             if users::membership_count(tx, target)? > 1 {
                 return Err(ApiError::Rejected {
@@ -365,4 +386,64 @@ async fn reset_2fa(
     .await?;
     account.runtime.revoked(Revoked::User(target));
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use store::{Store, StoreConfig};
+
+    use super::*;
+    use crate::auth::Runtime;
+
+    /// Review F2: the middleware's read of the actor can be stale by the
+    /// time a member mutation's transaction runs; the check inside it sees
+    /// a demotion or a sign-out that committed in between.
+    #[test]
+    fn a_member_mutation_rechecks_the_actor_inside_its_transaction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            Store::open_with(
+                StoreConfig {
+                    dir: tmp.path().to_path_buf(),
+                    org_migrations: crate::schema::org_migrations(),
+                    readers: 1,
+                    max_open: 4,
+                },
+                crate::schema::PLATFORM_SCHEMAS,
+            )
+            .unwrap(),
+        );
+        let t = store.create_tenant("alpha", "Alpha").unwrap();
+        let p = store.platform();
+        let ann = p.upsert_user("ann@alpha.org").unwrap();
+        let bob = p.upsert_user("bob@alpha.org").unwrap();
+        p.set_membership(ann, &t.id, Role::Admin).unwrap();
+        p.set_membership(bob, &t.id, Role::Admin).unwrap();
+        let now = contracts::now_ms();
+        let token = p
+            .with_write(|tx| sessions::create(tx, ann.0, auth::Stage::Full, now))
+            .unwrap();
+        let session = p
+            .with_read(|c| sessions::get(c, &token, now))
+            .unwrap()
+            .unwrap();
+        let a = Account {
+            store: store.clone(),
+            runtime: Arc::new(Runtime::default()),
+            session,
+        };
+        let check = || p.with_write(|tx| still_admin(tx, &a, &t.id, now));
+        assert!(check().is_ok());
+        // Demoted by bob meanwhile.
+        p.with_write(|tx| members::set_role(tx, ann, &t.id, Role::Staff))
+            .unwrap();
+        assert!(matches!(check(), Err(ApiError::Forbidden)));
+        // Admin again, but signed out everywhere meanwhile.
+        p.with_write(|tx| members::set_role(tx, ann, &t.id, Role::Admin))
+            .unwrap();
+        p.with_write(|tx| sessions::revoke_user(tx, ann.0)).unwrap();
+        assert!(matches!(check(), Err(ApiError::Unauthenticated)));
+    }
 }

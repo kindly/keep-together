@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{OriginalUri, Request, State};
+use axum::http::Method;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
@@ -120,6 +121,10 @@ pub(crate) async fn middleware(
     next: Next,
 ) -> Response {
     let headers = req.headers().clone();
+    // Writes need staff or above, whatever the route: a viewer's command
+    // is refused here, before its body is read or its ids looked up, so no
+    // write route can forget (the roles meta-test in `tests/roles.rs`).
+    let reads = matches!(*req.method(), Method::GET | Method::HEAD);
     let resolved = async {
         let req = &mut req;
         let session = auth::session(&state, &headers, &timing).await?;
@@ -140,6 +145,9 @@ pub(crate) async fn middleware(
         .await;
         timing.add_platform(start.elapsed());
         let (member, db) = found?;
+        if !reads && member.role < Role::Staff {
+            return Err(ApiError::Forbidden);
+        }
         req.extensions_mut()
             .insert(auth::Account::new(&state, &session));
         Ok::<_, ApiError>(Tenant {

@@ -50,6 +50,10 @@ const INVALIDATES: Partial<
   // Definitions: the filters, the form's dropdowns, every value's label.
   contact_fields: (slug) => [keys.fields(slug), keys.contacts(slug)],
   contact_field_options: (slug) => [keys.fields(slug), keys.contacts(slug)],
+  // A Settings switch: the groups carry it (and what it means for whom).
+  tenant_preferences: () => [keys.groups],
+  // Secrets: nothing on screen shows them.
+  tenant_settings: () => [],
 }
 
 /**

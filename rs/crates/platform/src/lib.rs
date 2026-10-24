@@ -4,8 +4,10 @@
 //! written through contracts like any slice; tenants and memberships live
 //! in `platform.db`.
 
+pub mod groups;
 pub mod members;
 pub mod preferences;
+pub mod settings;
 
 use std::sync::LazyLock;
 
@@ -31,5 +33,6 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &preferences::IDENTIFIER_TYPES,
         &preferences::SOURCE_CODES,
         &preferences::FIELDS,
+        &settings::SETTING,
     ])
 });

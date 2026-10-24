@@ -2,5 +2,6 @@
 //! call them directly; `main.rs` only parses arguments.
 
 pub mod auth;
+pub mod dev;
 pub mod sql;
 pub mod tenant;

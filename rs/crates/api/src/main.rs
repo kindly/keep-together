@@ -45,6 +45,9 @@ async fn main() {
     if requested && !dev_auth {
         eprintln!("KEEP_DEV_AUTH ignored: the server binds {bind}, not a loopback address");
     }
+    // Before the store opens: a refused setting stops the boot before it
+    // migrates or copies anything.
+    let auth = auth_runtime(dev_auth);
 
     let store = Store::open_with(
         StoreConfig {
@@ -93,7 +96,7 @@ async fn main() {
         // A minute after boot (`first_after`), then hourly.
         jobs.register(SnapshotJob::new(config));
     }
-    let state = AppState::new(store, dev_auth).with_auth(auth_runtime(dev_auth));
+    let state = AppState::new(store, dev_auth).with_auth(auth);
     jobs.register(api::auth::LimitSweep(state.auth.clone()));
     jobs.spawn();
 

@@ -1,8 +1,18 @@
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import { Navigate, createFileRoute } from '@tanstack/react-router'
+import { portedListTabs } from '../lib/settings-tabs'
 
-// The first tab every member may see; Fields is visible to all roles.
 export const Route = createFileRoute('/t/$slug/settings/')({
-  beforeLoad: ({ params }) => {
-    throw redirect({ to: '/t/$slug/settings/fields', params, replace: true })
-  },
+  component: FirstTab,
 })
+
+/**
+ * The first tab every member may see: Fields (visible to all roles), or
+ * the first list tab this build serves; with none, Members (every member
+ * sees it).
+ */
+function FirstTab() {
+  const { slug } = Route.useParams()
+  const first = portedListTabs().at(0)
+  if (first) return <Navigate to={first.to} params={{ slug }} replace />
+  return <Navigate to="/t/$slug/settings/members" params={{ slug }} replace />
+}
