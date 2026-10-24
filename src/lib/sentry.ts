@@ -1,18 +1,15 @@
 /**
- * Browser error reporting (plan migration-rust.sv, F2): Sentry's CDN
- * bundle, loaded only when the build sets `VITE_SENTRY_DSN`, pinned to one
- * version with subresource integrity, so no npm dependency and nothing at
- * all in dev or tests. index.html loads this module beside the app, so it
- * starts before the app does.
+ * Browser error reporting (plan migration-rust.sv, F2): `@sentry/browser`,
+ * imported only when the build sets `VITE_SENTRY_DSN`, so it's a separate
+ * chunk that dev, tests and DSN-less builds never load, and nothing talks
+ * to Sentry until there's an error to send (to the EU ingest the DSN
+ * names). index.html loads this module beside the app, so it starts
+ * before the app does.
  *
  * Nothing personal leaves the browser: no user, cookies, headers, request
  * bodies or query strings, URLs without their query, email-shaped words
  * redacted, and breadcrumbs keep only their category and path.
  */
-
-const BUNDLE = 'https://browser.sentry-cdn.com/11.5.0/bundle.min.js'
-const INTEGRITY =
-  'sha384-hz6acjqDJyH+W4e5eBe7yycs+gVPltrjQnZ05EYDSYGV2fVFkqg3bR2tFiOq8DjQ'
 
 /** The parts of a Sentry event this file touches. */
 export interface SentryEvent {
@@ -36,10 +33,6 @@ export interface SentryBreadcrumb {
   data?: Record<string, unknown>
 }
 
-interface SentryGlobal {
-  init: (options: Record<string, unknown>) => void
-}
-
 const EMAIL = /[^\s"'<>,()@]+@[^\s"'<>,()@]+/g
 
 export function redactEmails(text: string): string {
@@ -51,7 +44,9 @@ function withoutQuery(url: string): string {
   return cut === -1 ? url : url.slice(0, cut)
 }
 
-export function scrubEvent(event: SentryEvent): SentryEvent {
+/** Scrubs `event` in place and returns it, typed as it came in. */
+export function scrubEvent<TEvent extends SentryEvent>(input: TEvent): TEvent {
+  const event: SentryEvent = input
   delete event.user
   delete event.extra
   if (event.request) {
@@ -65,7 +60,7 @@ export function scrubEvent(event: SentryEvent): SentryEvent {
   if (event.breadcrumbs) {
     event.breadcrumbs = event.breadcrumbs.map((b) => scrubBreadcrumb(b))
   }
-  return event
+  return input
 }
 
 /** Category plus the request path (fetch, navigation), nothing else. */
@@ -84,25 +79,28 @@ export function environment(hostname: string): string {
   return hostname
 }
 
-function start(dsn: string) {
-  const script = document.createElement('script')
-  script.src = BUNDLE
-  script.integrity = INTEGRITY
-  script.crossOrigin = 'anonymous'
-  script.onload = () => {
-    const sentry = (window as unknown as { Sentry?: SentryGlobal }).Sentry
-    sentry?.init({
-      dsn,
-      environment: environment(window.location.hostname),
-      release: (import.meta.env.VITE_RELEASE as string | undefined) || undefined,
-      sendDefaultPii: false,
-      beforeSend: scrubEvent,
-      beforeBreadcrumb: (crumb: SentryBreadcrumb) =>
-        crumb.category === 'console' ? null : scrubBreadcrumb(crumb),
-    })
-  }
-  document.head.appendChild(script)
+async function start(dsn: string) {
+  const Sentry = await import('@sentry/browser')
+  Sentry.init({
+    dsn,
+    environment: environment(window.location.hostname),
+    release: (import.meta.env.VITE_RELEASE as string | undefined) || undefined,
+    // v11's defaults collect user info, cookies, headers, bodies and
+    // query strings: all off. beforeSend scrubs what's left.
+    dataCollection: {
+      userInfo: false,
+      cookies: false,
+      httpHeaders: false,
+      httpBodies: [],
+      urlQueryParams: false,
+    },
+    beforeSend: (event) => scrubEvent(event),
+    beforeBreadcrumb: (crumb) =>
+      crumb.category === 'console' ? null : scrubBreadcrumb(crumb),
+  })
 }
 
 const dsn = import.meta.env.VITE_SENTRY_DSN as string | undefined
-if (dsn && typeof document !== 'undefined') start(dsn)
+if (dsn && typeof document !== 'undefined') {
+  start(dsn).catch((err: unknown) => console.error('sentry failed to start', err))
+}
