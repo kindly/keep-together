@@ -302,7 +302,10 @@ export function RecoveryCodesNotice({
   )
 }
 
-/** Password and a code again, for an admin action after an hour. */
+/**
+ * Password and a code again, for a change that needs a recent sign-in
+ * (an admin's, or a staff list manager's retiring a field) after an hour.
+ */
 export function StepUpForm({
   method,
   onDone,
@@ -322,7 +325,8 @@ export function StepUpForm({
     >
       <h2 className="font-medium">Confirm it's you</h2>
       <p className="text-sm text-neutral-600">
-        Admin changes need a recent sign-in. Enter your password and a code.
+        This change needs you to confirm it's you. Enter your password and a
+        code.
       </p>
       {method === 'email' && (
         <button
