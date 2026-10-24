@@ -28,8 +28,8 @@ export const PENDING: ReadonlyArray<Pending> = [
   { step: 'A1', title: /identifiers? (are|is) not found/ },
   { step: 'A1', title: /a value B holds saves in A/ },
   { step: 'A1', title: /shared email/ },
-  // A2: source codes and acquisition.
-  { step: 'A2', file: 'contact-acquisition.spec.ts' },
+  // A2: the Source codes tab, ported, but inside A3's Settings layout:
+  // these run once A3's is on the Rust API.
   { step: 'A2', file: 'sources.spec.ts' },
   { step: 'A2', title: /source codes show none of B's/ },
   // A3: settings, groups, Switch group.

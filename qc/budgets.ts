@@ -117,10 +117,10 @@ export const budgets = {
   'contact.identifier.add': port('A1'),
   'contact.identifier.remove': port('A1'),
   'contact.hold.release': port('A1'),
-  'contact.acquisition.set': port('A2'),
-  'contacts.createWithCode': { ...infrequent, pendingPort: 'A2' },
-  'contacts.filter.sourceCategory': port('A2'),
-  'contacts.filter.sourceVersion': port('A2'),
+  'contact.acquisition.set': repeatable,
+  'contacts.createWithCode': infrequent,
+  'contacts.filter.sourceCategory': repeatable,
+  'contacts.filter.sourceVersion': repeatable,
   'contacts.loadMore': repeatable,
   // Dropdown fields (plan step 6): the classes of the tag flows they
   // replaced (human, g1q14, 2026-10-21; the tag flows left in step 7).

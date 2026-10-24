@@ -151,7 +151,15 @@ const ada: ContactView = {
   methods: { emails: [], phones: [] },
   addresses: { addresses: [] },
   fields: { values: [] },
-  counters: { details: 3, methods: 0, addresses: 0, fields: 0, archive: 0 },
+  acquisition: null,
+  counters: {
+    details: 3,
+    methods: 0,
+    addresses: 0,
+    fields: 0,
+    archive: 0,
+    acquisition: 0,
+  },
   warnings: [],
 }
 

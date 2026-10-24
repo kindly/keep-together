@@ -17,7 +17,10 @@ import type { ContactView as WireContact } from '../rust-types/ContactView'
 import type { FieldDefinition as WireField } from '../rust-types/FieldDefinition'
 import type { SearchResult as WireSearch } from '../rust-types/SearchResult'
 
-/** The slices the Rust backend has (no identifiers, no acquisition). */
+/**
+ * The slices the form saves on the Rust backend (no identifiers yet;
+ * the acquisition code saves on its own, `useSetAcquisition`).
+ */
 export type RustSlice = Exclude<SliceName, 'identifiers'>
 export const RUST_SLICES: Array<RustSlice> = [
   'details',
@@ -28,15 +31,16 @@ export const RUST_SLICES: Array<RustSlice> = [
 
 /**
  * The list's and search's filters as query parameters (`ListQuery`,
- * `SearchQuery`): every filter `list` takes but `source` (no source codes
- * on Rust). `fields` is `fieldId:optionId|none`, comma-separated.
+ * `SearchQuery`). `fields` is `fieldId:optionId|none`, comma-separated;
+ * `source` is `level:id`.
  */
 export function filterParams(
-  f: Pick<ListFilters, 'includeArchived' | 'kind' | 'fields'>,
+  f: Pick<ListFilters, 'includeArchived' | 'kind' | 'fields' | 'source'>,
 ): URLSearchParams {
   const q = new URLSearchParams()
   if (f.includeArchived) q.set('includeArchived', 'true')
   if (f.kind) q.set('kind', f.kind)
+  if (f.source) q.set('source', `${f.source.level}:${f.source.id}`)
   if (f.fields?.length)
     q.set(
       'fields',
@@ -99,7 +103,7 @@ export function searchFromWire(s: WireSearch): SearchResult {
 
 /**
  * The contact in the Convex view's shape (what the form renders), with
- * what Rust doesn't have left empty: no identifiers, no acquisition. The
+ * what Rust doesn't have left empty (no identifiers yet). The
  * root carries the fields the pages read; the cast covers the rest of
  * `Doc<'contacts'>` (tenantId, field slots), which no page reads.
  */
@@ -123,7 +127,8 @@ export function contactFromWire(
     fieldsVersion: c.counters.fields,
     archiveVersion: c.counters.archive,
     identifiersVersion: 0,
-    acquisitionVersion: 0,
+    acquisitionVersion: c.counters.acquisition,
+    acquisitionCodeId: c.acquisition?.versionId,
   }
   return {
     contact,
@@ -131,7 +136,7 @@ export function contactFromWire(
     phones: c.methods.phones,
     addresses: c.addresses.addresses,
     identifiers: [],
-    acquisition: null,
+    acquisition: c.acquisition,
     fields: c.fields.values.flatMap((v) => {
       const f = field.get(v.fieldId)
       if (!f) return []

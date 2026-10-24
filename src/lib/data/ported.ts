@@ -20,6 +20,8 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/contacts/',
   '/t/$slug/contacts/new',
   '/t/$slug/contacts/$contactId',
+  // A2. Its layout (Settings) is A3's: reachable once that is ported.
+  '/t/$slug/settings/sources',
 ]
 
 const ported = new Set<string>(PORTED)
@@ -31,7 +33,7 @@ export function isPorted(routeId: string): boolean {
 /** Sections of ported pages whose module isn't ported yet. */
 export const FEATURES = {
   /** A2: the acquisition picker, the list's source filter. */
-  sourceCodes: false,
+  sourceCodes: true,
   /** A1: the form's identifiers. */
   identifiers: false,
   /** A1: the contact page's notes. */

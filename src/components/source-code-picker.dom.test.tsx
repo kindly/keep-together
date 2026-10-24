@@ -25,11 +25,10 @@ const CODES = [
   },
 ] as unknown as Array<PickerEntry>
 
-const useQuery = vi.fn()
-vi.mock('convex/react', () => ({
-  useQuery: (...args: Array<unknown>) => useQuery(...args),
+const useSourcePicker = vi.fn()
+vi.mock('../lib/data', () => ({
+  useSourcePicker: (...args: Array<unknown>) => useSourcePicker(...args),
 }))
-vi.mock('../lib/tenant', () => ({ useTenant: () => ({ _id: 'tenantA' }) }))
 
 let root: Root
 let el: HTMLDivElement
@@ -38,8 +37,8 @@ const onClear = vi.fn()
 const onSubmit = vi.fn((e: Event) => e.preventDefault())
 
 beforeEach(() => {
-  useQuery.mockReset()
-  useQuery.mockImplementation((_q: unknown, args: unknown) =>
+  useSourcePicker.mockReset()
+  useSourcePicker.mockImplementation((args: unknown) =>
     args === 'skip' ? undefined : { codes: CODES, truncated: false },
   )
   onPick.mockReset()
@@ -84,13 +83,12 @@ test('a carried code shows with its archived and date marks, and clears', async 
 
 test('the search runs only while open, and lists codes with their hints', async () => {
   render(null)
-  expect(useQuery).toHaveBeenLastCalledWith(expect.anything(), 'skip')
+  expect(useSourcePicker).toHaveBeenLastCalledWith('skip')
   expect(el.querySelector('[role="listbox"]')).toBeNull()
 
   await act(async () => input().focus())
-  expect(useQuery).toHaveBeenLastCalledWith(
-    expect.anything(),
-    expect.objectContaining({ tenantId: 'tenantA', search: '' }),
+  expect(useSourcePicker).toHaveBeenLastCalledWith(
+    expect.objectContaining({ search: '' }),
   )
   expect(options()).toEqual([
     'Online-Website-001',

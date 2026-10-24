@@ -1,33 +1,27 @@
-import { useConvex, useMutation } from 'convex/react'
-import { ConvexError } from 'convex/values'
 import { useEffect, useRef, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
-import type { SourceCodeDescription } from '../../convex/sources/code'
-import { useTenant } from '../lib/tenant'
+import { useSetAcquisition } from '../lib/data'
+import type { SourceCodeDescription } from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
 import { ConfirmDialog } from './confirm-dialog'
-import { useHistoryHold } from './contact-history'
 import { SourceCodePicker } from './source-code-picker'
 import type { ShownCode } from './source-code-picker'
 
 /** A user-facing line for a refused `setAcquisition`. */
 function failure(err: unknown): string {
-  if (!(err instanceof ConvexError)) return 'Could not save the source code'
-  const d = err.data as {
-    kind?: string
-    message?: string
-    problems?: Array<{ message: string }>
-  }
+  if (!(err instanceof RustApiError)) return 'Could not save the source code'
+  const d = err.error
   if (d.kind === 'stale')
     return 'Someone else changed the source code just now: check it, then try again'
-  if (d.kind === 'invalid' && d.problems?.length)
+  if (d.kind === 'invalid' && d.problems.length)
     return d.problems.map((p) => p.message).join('; ')
-  return d.message ?? d.kind ?? 'Could not save the source code'
+  if (d.kind === 'rejected') return d.message
+  return err.message
 }
 
 /**
  * The contact's acquisition code (source codes plan, step 5): how they
- * were recruited. Saved on pick or clear through `setAcquisition`, outside
+ * were recruited. Saved on pick or clear (`POST contacts/{id}/acquisition`), outside
  * the form's autosave: it is one choice, never typed into, and its own
  * named action in history. A code archived since still shows, marked.
  * A set code is changed by removing it (after a confirm), then picking.
@@ -45,14 +39,11 @@ export function ContactAcquisition({
   counter: number
   /** The code the contact's root carries now. */
   codeId: Id<'sourceCodes'> | undefined
-  /** Its description, which may lag the root by a moment after a save. */
+  /** Its description (the same view as the root on Rust: no lag). */
   acquisition: SourceCodeDescription | null
   disabled: boolean
 }) {
-  const tenant = useTenant()
-  const convex = useConvex()
-  const setAcquisition = useMutation(api.contacts.mutations.setAcquisition)
-  const history = useHistoryHold(id)
+  const setAcquisition = useSetAcquisition(id)
   // The pick being saved, shown until the save has landed and the code's
   // description has caught up with the root: the page holds the last
   // description while the new one loads, and showing that would flip
@@ -83,24 +74,8 @@ export function ContactAcquisition({
   ) {
     setError(null)
     setPending({ shown, savedAt: null })
-    // The page reads the new code's description by its id once the root
-    // carries it: subscribe now, so it is there when the save lands.
-    if (codeId) {
-      convex.prewarmQuery({
-        query: api.contacts.queries.getAcquisition,
-        args: { tenantId: tenant._id, codeId },
-      })
-    }
-    // No history fetch may be subscribed when the save commits (see
-    // ContactForm's save).
-    history.hold()
     try {
-      const result = await setAcquisition({
-        tenantId: tenant._id,
-        id,
-        expected,
-        codeId,
-      })
+      const result = await setAcquisition(codeId, expected)
       // An unchanged code bumps nothing: there is nothing to wait for.
       setPending(
         result.counter === counter ? null : { shown, savedAt: result.counter },
@@ -109,8 +84,6 @@ export function ContactAcquisition({
       setError(failure(err))
       setPending(null)
       setFocusSearch(false)
-    } finally {
-      history.release()
     }
   }
 

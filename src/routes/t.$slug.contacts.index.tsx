@@ -1,9 +1,6 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { useQuery } from 'convex/react'
-import type { FunctionReturnType } from 'convex/server'
 import { memo, useCallback, useMemo, useState } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
 import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
 import { formatNumber } from '../../convex/contacts/number'
 import { fieldArgs, fieldShown } from '../lib/field-filters'
@@ -17,7 +14,9 @@ import {
   useContactSearch,
   useBulkSetField,
   useFields,
+  useSourceFilterOptions,
 } from '../lib/data'
+import type { FilterOption as Part } from '../lib/data'
 import {
   BulkFieldControls,
   BulkFieldResult,
@@ -28,8 +27,6 @@ export const Route = createFileRoute('/t/$slug/contacts/')({
   // Subscribe as the navigation starts, not once the list has mounted.
   loader: ({ context, params }) => preloadContactList(context, params.slug),
 })
-
-type Part = FunctionReturnType<typeof api.sources.queries.filterOptions>[number]
 
 /** The source filter's choice per level; '' is "all". */
 type SourcePick = {
@@ -459,10 +456,7 @@ function SourceFilter({
   value: SourcePick
   onChange: (pick: SourcePick) => void
 }) {
-  const tenant = useTenant()
-  const parts = useQuery(api.sources.queries.filterOptions, {
-    tenantId: tenant._id,
-  })
+  const parts = useSourceFilterOptions()
   const under = (level: Part['level'], parentId: Id<'sourceCodes'> | '') =>
     (parts ?? []).filter(
       (p) => p.level === level && (p.parentId ?? '') === parentId,

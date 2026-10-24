@@ -50,6 +50,10 @@ const INVALIDATES: Partial<
   // Definitions: the filters, the form's dropdowns, every value's label.
   contact_fields: (slug) => [keys.fields(slug), keys.contacts(slug)],
   contact_field_options: (slug) => [keys.fields(slug), keys.contacts(slug)],
+  // A2: a part's name is in every code under it, shown on contacts too.
+  // A delete is its own entity (no part left to carry a counter).
+  source_codes: (slug) => [keys.sources(slug), keys.contacts(slug)],
+  source_code_deletions: (slug) => [keys.sources(slug)],
 }
 
 /**
@@ -115,6 +119,8 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
     return
   }
   for (const queryKey of invalidates(slug, e)) invalidate(qc, queryKey)
+  // A code's first use marks it used: the tree offers archive, not delete.
+  if (e.contract === 'contacts.acquisition') invalidate(qc, keys.sources(slug))
   if (e.entity === 'contacts') {
     // The view only if this is newer than the counter it holds (an echo
     // of a refetch already made changes nothing); its history always. A

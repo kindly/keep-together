@@ -19,4 +19,12 @@ export const keys = {
     ['t', slug, 'contacts', 'one', id] as const,
   history: (slug: string, id: string) =>
     ['t', slug, 'contacts', 'one', id, 'history'] as const,
+  /** Every source-code read: the tree, the filter options, the picker. */
+  sources: (slug: string) => ['t', slug, 'sources'] as const,
+  sourceTree: (slug: string) => ['t', slug, 'sources', 'tree'] as const,
+  sourceOptions: (slug: string) => ['t', slug, 'sources', 'options'] as const,
+  sourcePicker: (slug: string, args?: { today: string; search: string }) =>
+    args
+      ? (['t', slug, 'sources', 'picker', args] as const)
+      : (['t', slug, 'sources', 'picker'] as const),
 }

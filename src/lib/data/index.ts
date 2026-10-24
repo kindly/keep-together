@@ -27,3 +27,18 @@ export {
   useSignOut,
 } from './rust/hooks'
 export { useOrgEvents } from './events'
+export {
+  preloadSourceTree,
+  useSetAcquisition,
+  useSourceFilterOptions,
+  useSourcePicker,
+  useSourceTree,
+  useSourceWrites,
+} from './rust/sources'
+export type {
+  FilterOption,
+  Part,
+  PickerEntry,
+  SourceCodeDescription,
+  SourceCodePayload,
+} from './rust/sources'

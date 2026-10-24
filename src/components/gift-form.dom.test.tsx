@@ -45,6 +45,23 @@ vi.mock('convex/react', () => ({
     return undefined
   },
 }))
+// The source code picker is on the Rust data layer (A2).
+vi.mock('../lib/data', async (original) => ({
+  ...(await original<object>()),
+  useSourcePicker: (args: unknown) =>
+    args === 'skip'
+      ? undefined
+      : {
+          codes: [
+            {
+              versionId: 'online',
+              code: 'Online-Spring-001',
+              status: 'current',
+            },
+          ],
+          truncated: false,
+        },
+}))
 vi.mock('../lib/tenant', () => ({
   useTenant: () => ({ _id: 'tenantA', slug: 'alpha' }),
 }))
