@@ -80,12 +80,29 @@ fn schema_version(conn: &Connection, name: &str) -> rusqlite::Result<usize> {
     Ok(v.unwrap_or(0) as usize)
 }
 
-/// Whether any schema has steps to run. A schema newer than this code
-/// fails closed.
+/// Whether any schema has steps to run. Fails closed on a file newer than
+/// this code: a schema at a version past its steps, or one this code
+/// doesn't list at all (a rolled-back release meeting a later crate's
+/// tables).
 pub(crate) fn schemas_pending(
     conn: &Connection,
     schemas: &[PlatformSchema],
 ) -> Result<bool, StoreError> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'platform_schema')",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists {
+        let mut stmt = conn.prepare("SELECT name FROM platform_schema ORDER BY name")?;
+        let names = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for name in names {
+            let name = name?;
+            if !schemas.iter().any(|s| s.name == name) {
+                return Err(StoreError::UnknownSchema(name));
+            }
+        }
+    }
     let mut pending = false;
     for s in schemas {
         let v = schema_version(conn, s.name)?;

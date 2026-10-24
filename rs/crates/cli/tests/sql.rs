@@ -9,13 +9,7 @@ use cli::sql::{Format, SqlError, open, run, run_within};
 fn setup(dir: &Path) {
     let alpha = cli::tenant::create(dir, "alpha", "Alpha", "ann@alpha.org").unwrap();
     cli::tenant::create(dir, "beta", "Beta", "bob@beta.org").unwrap();
-    let store = store::Store::open(store::StoreConfig {
-        dir: dir.to_path_buf(),
-        org_migrations: api::schema::org_migrations(),
-        readers: 1,
-        max_open: 4,
-    })
-    .unwrap();
+    let store = cli::tenant::open(dir).unwrap();
     store
         .org(&alpha.tenant.id)
         .unwrap()

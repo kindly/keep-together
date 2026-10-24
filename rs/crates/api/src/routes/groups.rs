@@ -58,8 +58,23 @@ pub async fn mine(
         let last = p.with_read(|c| groups::last_used(c, session.user))?;
         let mut out = Vec::with_capacity(members.len());
         for m in members {
-            // Each group's switches live in its own file.
-            let prefs = store.org(&m.tenant.id)?.read(|r| preferences::read(r))?;
+            // Each group's switches live in its own file. One that won't
+            // open (set aside by a rollback, stamped wrong) is left out and
+            // logged, so the user can still reach their other groups.
+            let prefs = match store
+                .org(&m.tenant.id)
+                .map_err(ApiError::from)
+                .and_then(|db| Ok(db.read(|r| preferences::read(r))?))
+            {
+                Ok(prefs) => prefs,
+                Err(e) => {
+                    eprintln!(
+                        "groups: left out {} ({}): its file won't open: {e:?}",
+                        m.tenant.slug, m.tenant.id
+                    );
+                    continue;
+                }
+            };
             let switch = |k| prefs.get(k);
             out.push(Group {
                 last_used_at: last.get(&m.tenant.slug).copied().flatten(),

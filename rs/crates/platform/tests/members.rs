@@ -184,3 +184,24 @@ fn a_membership_resolves_one_organisation_only() {
     assert_eq!(p.member(ann, "beta").unwrap().unwrap().role, Role::Viewer);
     assert_eq!(p.member(ann, "alpha").unwrap().unwrap().role, Role::Staff);
 }
+
+/// A schema this code doesn't list (a later crate's, met by a rolled-back
+/// release) fails closed, as a newer version does.
+#[test]
+fn a_schema_this_code_does_not_know_fails_closed() {
+    let tmp = tempfile::tempdir().unwrap();
+    const LATER: PlatformSchema = PlatformSchema {
+        name: "auth",
+        steps: &["CREATE TABLE later (id INTEGER PRIMARY KEY) STRICT;"],
+    };
+    drop(Store::open_with(config(tmp.path()), &[SCHEMA, LATER]).unwrap());
+    match Store::open_with(config(tmp.path()), &[SCHEMA]) {
+        Err(StoreError::UnknownSchema(name)) => assert_eq!(name, "auth"),
+        other => panic!("{:?}", other.err()),
+    }
+    // Store::open (no crate schemas) refuses it too: tests only.
+    assert!(matches!(
+        Store::open(config(tmp.path())),
+        Err(StoreError::UnknownSchema(_))
+    ));
+}

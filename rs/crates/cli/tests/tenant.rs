@@ -179,3 +179,59 @@ fn seed_demo_defaults_its_admin_and_refuses_a_taken_slug() {
     let mine = seed_demo(&store, "mine", Some("me@example.org")).unwrap();
     assert_eq!(mine.created.admin, me);
 }
+
+#[test]
+fn dev_seeds_are_refused_on_prod_and_staging() {
+    use cli::dev::dev_only;
+    for env in ["prod", "staging"] {
+        assert!(matches!(dev_only(Some(env)), Err(CreateError::NotDev(e)) if e == env));
+    }
+    for env in [None, Some("dev"), Some("")] {
+        assert!(dev_only(env).is_ok(), "{env:?}");
+    }
+    // The binary, as an operator would run it: refused, nothing made.
+    for env in ["prod", "staging"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_keep"))
+            .args(["--data", tmp.path().to_str().unwrap(), "dev", "seed-demo"])
+            .env("KEEP_ENV", env)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{env}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("refused when KEEP_ENV="),
+            "{env}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(org_files(tmp.path()), 0, "{env}");
+    }
+}
+
+#[test]
+fn seed_demo_is_one_go_so_a_failure_leaves_nothing_and_it_can_run_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(tmp.path()).unwrap();
+    // The demo's contacts run where a failing step would: after the seeds,
+    // in the new file's first transaction.
+    let failed = cli::tenant::create_in_with(&store, "demo", "Demo", "d@x.org", |ctx, _| {
+        contacts::form::create(
+            ctx,
+            contacts::types::CreateContact {
+                id: None,
+                details: serde_json::from_value(serde_json::json!({
+                    "kind": "individual", "title": "", "firstName": "Half", "lastName": "Made",
+                    "nickname": "", "name": "", "isDeceased": false
+                }))
+                .unwrap(),
+            },
+            contracts::Source::Seed,
+        )?;
+        Err(CreateError::NoEmail)
+    });
+    assert!(matches!(failed, Err(CreateError::NoEmail)));
+    assert_eq!(org_files(tmp.path()), 0);
+    assert!(store.platform().tenants().unwrap().is_empty());
+    // Nothing to clear up: the same slug simply works now.
+    let demo = seed_demo(&store, "demo", None).unwrap();
+    assert_eq!(demo.contact_ids.len(), 3);
+}

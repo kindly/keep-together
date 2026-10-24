@@ -345,3 +345,27 @@ async fn a_switch_save_is_one_revision_on_its_own_entity() {
         )]
     );
 }
+
+/// One group's file that won't open leaves that group out of `mine`, not
+/// every group: the user still reaches the others.
+#[tokio::test]
+async fn mine_leaves_out_a_group_whose_file_wont_open() {
+    let w = world();
+    let ann = two_groups(&w).await;
+    // Beta's file goes missing (set aside by a rollback, say).
+    w.store.close_idle(std::time::Duration::ZERO);
+    let path = w
+        .store
+        .dir()
+        .join(format!("orgs/{}.db", w.beta.id.as_str()));
+    std::fs::rename(&path, path.with_extension("db.gone")).unwrap();
+    let (s, groups) = w.call("GET", "/api/groups", &ann, None).await;
+    assert_eq!(s, StatusCode::OK);
+    let slugs: Vec<&str> = groups
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["slug"].as_str().unwrap())
+        .collect();
+    assert_eq!(slugs, ["alpha"]);
+}

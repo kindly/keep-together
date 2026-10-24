@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use contracts::{ContractError, transact};
+use contracts::{ContractError, Ctx, transact};
 use store::{Platform, Role, Store, StoreConfig, StoreError, Tenant, UserId};
 
 #[derive(Debug, thiserror::Error)]
@@ -18,6 +18,8 @@ pub enum CreateError {
     Seed(#[from] ContractError),
     #[error("an admin email address is required")]
     NoEmail,
+    #[error("refused when KEEP_ENV={0}: dev only")]
+    NotDev(String),
 }
 
 impl From<rusqlite::Error> for CreateError {
@@ -55,6 +57,19 @@ pub fn create_in(
     name: &str,
     admin_email: &str,
 ) -> Result<Created, CreateError> {
+    create_in_with(store, slug, name, admin_email, |_, _| Ok(()))
+}
+
+/// [`create_in`], with `then` run in the new file's first transaction
+/// after the seeds, as the admin: its writes commit with the organisation
+/// or not at all (`keep dev seed-demo`'s contacts).
+pub fn create_in_with(
+    store: &Store,
+    slug: &str,
+    name: &str,
+    admin_email: &str,
+    then: impl FnOnce(&Ctx, UserId) -> Result<(), CreateError>,
+) -> Result<Created, CreateError> {
     let email = admin_email.trim();
     if !email.contains('@') {
         return Err(CreateError::NoEmail);
@@ -63,7 +78,10 @@ pub fn create_in(
     let tenant = store.create_tenant_with(slug, name.trim(), |tx, tenant, db| {
         let user = Platform::upsert_user_in(tx, email)?;
         platform::members::add_membership(tx, user, &tenant.id, Role::Admin)?;
-        transact(db, None, api::schema::seed_new_org)?;
+        transact(db, Some(user.0), |ctx| {
+            api::schema::seed_new_org(ctx)?;
+            then(ctx, user)
+        })?;
         admin = Some(user);
         Ok::<_, CreateError>(())
     })?;

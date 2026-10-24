@@ -190,7 +190,11 @@ pub fn set(
     let opts = match (&id, expected) {
         (None, _) => Exec::create(source),
         (Some(id), Some(expected)) => Exec::update(id, Some(expected), source),
-        // A row the caller didn't see: stale, whatever it holds.
+        // A row the caller didn't see: stale, whatever it holds. As on
+        // Convex (`staleIfUnseen`). It means one false conflict: on a
+        // fresh organisation, a second admin's first save of *another*
+        // switch is stale too (a created row's untouched counters read 0,
+        // like a never-saved one), and costs that admin one retry.
         (Some(id), None) => Exec::update(id, Some(-1), source),
     };
     match kind {

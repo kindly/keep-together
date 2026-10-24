@@ -1,20 +1,21 @@
 //! Roles as a route-table meta-test (`convex/lib/roles.test.ts`, "every
 //! public mutation and action rejects a viewer"): every write route under
 //! `/api/t/{slug}` refuses a viewer with 403 `forbidden`, whatever its
-//! body. The route table is read from `src/routes/*.rs`, so a route added
-//! later is covered without editing this file.
+//! body. The route table is read from `src/routes/` (subdirectories
+//! included), so a route added later is covered without editing the
+//! viewer test; the table itself is pinned, so a new GET is looked at.
 
 mod common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use axum::http::StatusCode;
 use common::world;
 use serde_json::json;
 
-/// `(method, path)` of every `.route("…", …)` in a routes file whose
-/// handler chain has a non-GET method.
-fn write_routes(text: &str) -> Vec<(&'static str, String)> {
+/// `(method, path)` of every method a `.route("…", …)` registers in a
+/// routes file.
+fn routes_in(text: &str) -> Vec<(&'static str, String)> {
     let mut out = vec![];
     let mut rest = text;
     while let Some(i) = rest.find(".route(") {
@@ -40,6 +41,7 @@ fn write_routes(text: &str) -> Vec<(&'static str, String)> {
             continue;
         };
         for (method, word) in [
+            ("GET", "get("),
             ("POST", "post("),
             ("PUT", "put("),
             ("PATCH", "patch("),
@@ -53,19 +55,47 @@ fn write_routes(text: &str) -> Vec<(&'static str, String)> {
     out
 }
 
-fn table() -> Vec<(&'static str, String)> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes");
-    let mut all = vec![];
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .collect();
-    files.sort();
-    for file in files {
-        all.extend(write_routes(&std::fs::read_to_string(file).unwrap()));
+/// The write routes (non-GET) in a routes file.
+fn write_routes(text: &str) -> Vec<(&'static str, String)> {
+    routes_in(text)
+        .into_iter()
+        .filter(|(m, _)| *m != "GET")
+        .collect()
+}
+
+/// Every `.rs` under `dir`, subdirectories included.
+fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            sources(&path, out);
+        } else if path.extension().is_some_and(|x| x == "rs") {
+            out.push(path);
+        }
     }
-    all
+}
+
+fn route_files() -> Vec<(PathBuf, String)> {
+    let mut files = vec![];
+    sources(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes"),
+        &mut files,
+    );
+    files.sort();
+    files
+        .into_iter()
+        .map(|f| {
+            let text = std::fs::read_to_string(&f).unwrap();
+            (f, text)
+        })
+        .collect()
+}
+
+fn table() -> Vec<(&'static str, String)> {
+    route_files()
+        .iter()
+        .flat_map(|(_, text)| write_routes(text))
+        .collect()
 }
 
 /// A path parameter's stand-in: a well-formed id, or a known list kind.
@@ -95,42 +125,86 @@ fn the_route_table_parser_finds_chained_and_single_writes() {
             ("POST", "/fields/options".to_owned())
         ]
     );
+    assert_eq!(routes_in(src).len(), 4);
+}
+
+/// The viewer guard is method-based (a viewer's GET passes), so a GET
+/// must never write. The route table is pinned here: a new route, or a
+/// method changing, fails this test until it is added below, which is the
+/// moment to check that a new GET only reads (rs/README.md, "no writes on
+/// GET"). Routes are only ever registered as `.route(…, get/post…)` in
+/// `src/routes/`, the form the table is read from.
+#[test]
+fn the_route_table_is_pinned_and_read_only_on_get() {
+    let mut all: Vec<String> = route_files()
+        .iter()
+        .flat_map(|(_, text)| routes_in(text))
+        .map(|(m, p)| format!("{m} {p}"))
+        .collect();
+    all.sort();
+    assert_eq!(
+        all,
+        [
+            "GET /contacts",
+            "GET /contacts/search",
+            "GET /contacts/{id}",
+            "GET /contacts/{id}/history",
+            "GET /fields",
+            "GET /preferences",
+            "POST /contacts",
+            "POST /contacts/{id}/archive",
+            "POST /contacts/{id}/restore",
+            "POST /contacts/{id}/save",
+            "POST /fields",
+            "POST /fields/options",
+            "POST /preferences/{kind}",
+        ],
+        "the route table changed: check any new GET only reads, then update this list"
+    );
+    for (file, text) in route_files() {
+        for word in [
+            ".nest(",
+            ".route_service(",
+            ".fallback(",
+            "any(",
+            "on(MethodFilter",
+        ] {
+            assert!(
+                !text.contains(word),
+                "{}: a route registered with {word} escapes the route table",
+                file.display()
+            );
+        }
+    }
 }
 
 #[tokio::test]
 async fn every_write_route_refuses_a_viewer_and_the_role_is_the_reason() {
     let routes = table();
-    // The ones that exist today, so the parser can't silently find none.
-    for known in [
-        "/contacts",
-        "/contacts/{id}/save",
-        "/fields",
-        "/preferences/{kind}",
-    ] {
-        assert!(
-            routes.iter().any(|(_, p)| p == known),
-            "{known} not in {routes:?}"
-        );
-    }
+    assert!(!routes.is_empty());
     let w = world();
     let val = w.login("val@alpha.org").await;
     let ann = w.login("ann@alpha.org").await;
     for (method, path) in &routes {
         let url = format!("/api/t/alpha{}", fill(path));
-        // Any body: an empty one, and one that would be well-formed for
-        // nothing in particular. The viewer is refused before either is read.
+        // Any body: none, and one that is well-formed for nothing in
+        // particular. The viewer is refused before either is read.
         for body in [None, Some(json!({}))] {
-            let (s, out) = w.call(method, &url, &val, body.clone()).await;
+            let (s, out) = w.call(method, &url, &val, body).await;
             assert_eq!(
                 (s, &out["kind"]),
                 (StatusCode::FORBIDDEN, &json!("forbidden")),
                 "viewer {method} {url}"
             );
-            // The same request from an admin isn't refused for the role:
-            // whatever else it answers, it isn't 403.
-            let (s, _) = w.call(method, &url, &ann, body).await;
-            assert_ne!(s, StatusCode::FORBIDDEN, "admin {method} {url}");
         }
+        // The same request from an admin reaches the handler: not refused
+        // for the role (403), and the path exists (no 404). With no body,
+        // every write answers 422 before it looks anything up.
+        let (s, out) = w.call(method, &url, &ann, None).await;
+        assert!(
+            s != StatusCode::FORBIDDEN && s != StatusCode::NOT_FOUND,
+            "admin {method} {url}: {s} {out}"
+        );
     }
 }
 

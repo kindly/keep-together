@@ -287,7 +287,9 @@ and its revisions.
 
 The tenant middleware refuses any non-`GET` from a viewer before the
 handler runs; `api/tests/roles.rs` reads the route table from
-`src/routes/*.rs` and proves it for every write route.
+`src/routes/` and proves it for every write route. **No writes on GET**:
+the guard lets a viewer's GET through, so a handler that writes must be
+a `POST`. The same test pins the route table, so a new route is looked at.
 
 ## Contracts
 

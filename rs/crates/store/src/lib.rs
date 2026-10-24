@@ -49,6 +49,8 @@ pub enum StoreError {
     InitFailed,
     #[error("organisation file {0} is missing")]
     MissingFile(PathBuf),
+    #[error("platform schema {0:?} is in platform.db but not in this code: a newer release's")]
+    UnknownSchema(String),
     #[error("platform schema {name}: stored version {stored} is newer than code version {code}")]
     NewerSchema {
         name: &'static str,
@@ -134,7 +136,9 @@ pub struct Store {
 
 impl Store {
     /// Open the data directory with only `platform.db`'s base schema (no
-    /// crate's [`PlatformSchema`]): for tests and tools that need no more.
+    /// crate's [`PlatformSchema`]). For tests on fresh directories: a data
+    /// dir the app has opened carries crate schemas, which this refuses as
+    /// unknown. Binaries use [`Store::open_with`].
     pub fn open(config: StoreConfig) -> Result<Self, StoreError> {
         Self::open_with(config, &[])
     }
