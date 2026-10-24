@@ -1,15 +1,20 @@
-//! Auth's tables in `platform.db`: its own append-only step list,
-//! versioned in `schema_sets` (not `user_version`, which is the platform
-//! list's), run by `Store::migrate_platform_set` inside the boot
-//! migration, so the boot's pre-migration copy covers it. Never edit a
+//! Auth's tables in `platform.db`: its own append-only step list
+//! ([`store::PlatformSchema`], versioned under `auth` in
+//! `platform_schema`), run when the store opens, after the boot's
+//! pre-migration copy (`api::schema::PLATFORM_SCHEMAS`). Never edit a
 //! shipped step.
 //!
 //! `users` (id, email) and `memberships` belong to the platform list; auth
 //! adds rows keyed by `users.id`.
 
-pub const SET: &str = "auth";
+use store::PlatformSchema;
 
-pub const STEPS: &[&str] = &[
+pub const SCHEMA: PlatformSchema = PlatformSchema {
+    name: "auth",
+    steps: STEPS,
+};
+
+const STEPS: &[&str] = &[
     // 1: credentials, second factors, sessions, invites, resets, log.
     "CREATE TABLE auth_credentials (
         user_id INTEGER PRIMARY KEY REFERENCES users(id),
@@ -37,6 +42,7 @@ pub const STEPS: &[&str] = &[
         email_code_hash TEXT,
         email_code_expires INTEGER,
         email_code_attempts INTEGER NOT NULL DEFAULT 0,
+        dev INTEGER NOT NULL DEFAULT 0 CHECK (dev IN (0, 1)),
         CHECK ((stage = 'full') = (authenticated_at IS NOT NULL))
     ) STRICT;
     CREATE INDEX auth_sessions_user ON auth_sessions (user_id);

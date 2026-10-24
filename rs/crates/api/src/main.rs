@@ -9,6 +9,9 @@
 //! - `KEEP_SNAPSHOT_*`, `KEEP_ENV`: hourly snapshots (`backup`)
 //! - `KEEP_LITESTREAM_SOCKET`: Litestream's control socket, for `/healthz`
 //! - `SENTRY_DSN`: error reporting (`observe`)
+//! - auth (`auth_runtime`): `KEEP_APP_ORIGIN`, `KEEP_CLIENT_IP_HEADER`,
+//!   `KEEP_MAIL`/`KEEP_SMTP_URL`/`KEEP_MAIL_FROM`; with `KEEP_ENV=prod` or
+//!   `staging`, `KEEP_DEV_AUTH` stops the boot
 //!
 //! Every org file is migrated before the server listens; a file that
 //! won't migrate stops the boot, naming the org.
@@ -92,7 +95,7 @@ async fn main() {
     }
     jobs.spawn();
 
-    let state = AppState { store, dev_auth };
+    let state = AppState::new(store, dev_auth).with_auth(auth_runtime(dev_auth));
     let mut router = app(state, api::routes::router());
     if let Some(static_dir) = api::static_files::dir_from_env() {
         router = api::static_files::with_static(router, static_dir);
@@ -104,10 +107,51 @@ async fn main() {
             std::process::exit(1)
         });
     eprintln!("keep-api on http://{bind}:{port} (data {dir}, dev auth {dev_auth})");
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown())
+    // The peer address feeds the auth rate limits (unless
+    // KEEP_CLIENT_IP_HEADER names the proxy's header).
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
         .await
         .expect("serve");
+}
+
+/// Auth's settings from the env; refuses (exits) what a deployed
+/// environment must never run with.
+fn auth_runtime(dev_auth: bool) -> api::auth::Runtime {
+    let deployed = matches!(
+        std::env::var("KEEP_ENV").as_deref(),
+        Ok("prod" | "staging")
+    );
+    if deployed && std::env::var("KEEP_DEV_AUTH").is_ok_and(|v| v == "1") {
+        eprintln!("KEEP_DEV_AUTH=1 is refused with KEEP_ENV=prod|staging");
+        std::process::exit(2)
+    }
+    debug_assert!(!(deployed && dev_auth));
+    let mailer = comms::mail::Mailer::from_env().unwrap_or_else(|e| {
+        eprintln!("mail settings: {e}");
+        std::process::exit(2)
+    });
+    if mailer.is_log() && std::env::var("KEEP_ENV").as_deref() == Ok("prod") {
+        eprintln!("KEEP_MAIL=log is refused with KEEP_ENV=prod: set KEEP_MAIL=smtp");
+        std::process::exit(2)
+    }
+    let mut config = api::auth::Config::default();
+    if let Ok(origin) = std::env::var("KEEP_APP_ORIGIN") {
+        config.app_origin = origin.trim_end_matches('/').to_owned();
+    } else if deployed {
+        eprintln!("KEEP_APP_ORIGIN is required with KEEP_ENV=prod|staging (links in emails)");
+        std::process::exit(2)
+    }
+    if let Ok(name) = std::env::var("KEEP_CLIENT_IP_HEADER") {
+        config.client_ip_header = Some(name.parse().unwrap_or_else(|_| {
+            eprintln!("KEEP_CLIENT_IP_HEADER={name:?} is not a header name");
+            std::process::exit(2)
+        }));
+    }
+    api::auth::Runtime::new(config, mailer)
 }
 
 /// Ctrl-C, or SIGTERM (Litestream forwards it to the app it runs).

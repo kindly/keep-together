@@ -22,6 +22,9 @@ pub enum ApiError {
     /// 403: not a member of this organisation (or unknown slug: the two
     /// look the same), or the role can't do this.
     Forbidden,
+    /// 403: an admin-only action needs a sign-in within the last hour;
+    /// step up (`POST /api/auth/step-up`) and retry.
+    StepUpRequired,
     /// 404
     NotFound,
     /// 409: the slice changed since the caller read `expected`. `current`
@@ -39,6 +42,8 @@ pub enum ApiError {
     Invalid { problems: Vec<Problem> },
     /// 422: the handler refused the command (e.g. identity_immutable).
     Rejected { reason: String, message: String },
+    /// 429: too many attempts; try again later.
+    RateLimited,
     /// 500. Details go to the server log, not the client.
     Internal,
 }
@@ -47,12 +52,13 @@ impl ApiError {
     fn status(&self) -> StatusCode {
         match self {
             ApiError::Unauthenticated => StatusCode::UNAUTHORIZED,
-            ApiError::Forbidden => StatusCode::FORBIDDEN,
+            ApiError::Forbidden | ApiError::StepUpRequired => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Stale { .. } | ApiError::Duplicate { .. } => StatusCode::CONFLICT,
             ApiError::Invalid { .. } | ApiError::Rejected { .. } => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
+            ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

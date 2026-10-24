@@ -6,7 +6,6 @@
 
 use std::sync::OnceLock;
 
-use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 
@@ -29,7 +28,9 @@ pub fn problem(password: &str) -> Option<&'static str> {
 }
 
 pub fn hash(password: &str) -> Result<String, AuthError> {
-    let salt = SaltString::generate(&mut OsRng);
+    // 128-bit salt from the OS RNG.
+    let salt = SaltString::encode_b64(&crate::secret::random_bytes(16))
+        .map_err(|e| AuthError::Hash(e.to_string()))?;
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())

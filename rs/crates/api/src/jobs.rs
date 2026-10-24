@@ -117,7 +117,8 @@ impl Job for IdleClose {
     }
 }
 
-/// Forget expired sessions (L2).
+/// Forget expired sessions (L2; `auth::sessions` invariant 5), spent or
+/// expired reset links and long-dead invites.
 pub struct SessionPurge(pub Arc<Store>);
 
 impl Job for SessionPurge {
@@ -131,10 +132,13 @@ impl Job for SessionPurge {
         Box::pin(async move {
             let store = self.0.clone();
             tokio::task::spawn_blocking(move || {
+                let now = contracts::now_ms();
                 store
                     .platform()
-                    .delete_expired_sessions(contracts::now_ms())
-                    .map(|_| ())
+                    .with_write(|tx| {
+                        ::auth::sessions::sweep(tx, now)?;
+                        ::auth::accounts::sweep(tx, now)
+                    })
                     .map_err(|e| e.to_string())
             })
             .await

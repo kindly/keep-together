@@ -27,12 +27,13 @@ use axum::extract::Query;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::Stream;
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use rusqlite::{Connection, params};
 use serde::Deserialize;
 use store::{OrgDb, OrgEvent};
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::auth::Account;
 use crate::{ApiError, Tenant, blocking};
 
 /// The most revisions a reconnect replays before it resets instead.
@@ -177,6 +178,7 @@ pub struct EventsQuery {
 /// `GET /api/t/{slug}/events[?after=n]` (viewer and above).
 pub async fn events(
     Extension(tenant): Extension<Tenant>,
+    Extension(account): Extension<Account>,
     headers: HeaderMap,
     Query(q): Query<EventsQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
@@ -184,7 +186,11 @@ pub async fn events(
         .get("last-event-id")
         .map(|v| v.to_str().unwrap_or("?").to_owned())
         .or(q.after);
-    let stream = tenant.events(last.as_deref()).await?;
+    // Ends when the session is revoked (sign-out, revoke-all) or the
+    // membership is removed; the client's reconnect then gets a 401/403.
+    let slug = tenant.slug.clone();
+    let ended = Box::pin(async move { account.ended(slug).await });
+    let stream = tenant.events(last.as_deref()).await?.take_until(ended);
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
 }
 

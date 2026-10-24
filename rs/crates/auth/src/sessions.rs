@@ -19,6 +19,8 @@
 //!    API then signals live streams to close.
 //! 5. An expired row reads as no session; a job sweeps them.
 //! 6. A row holds no role: each request re-reads the membership.
+//! 7. A dev-login session (`dev`) counts only while the server runs with
+//!    dev auth; the API ignores it otherwise.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -67,6 +69,8 @@ pub struct Session {
     pub email_code_hash: Option<String>,
     pub email_code_expires: Option<i64>,
     pub email_code_attempts: i64,
+    /// Made by the dev login (`KEEP_DEV_AUTH`).
+    pub dev: bool,
 }
 
 /// A new session for `user`: the cookie token (only its hash is kept).
@@ -84,6 +88,16 @@ pub fn create(conn: &Connection, user: i64, stage: Stage, now: i64) -> rusqlite:
     Ok(token)
 }
 
+/// A full session from the dev login (no password, no second factor).
+pub fn create_dev(conn: &Connection, user: i64, now: i64) -> rusqlite::Result<String> {
+    let token = create(conn, user, Stage::Full, now)?;
+    conn.execute(
+        "UPDATE auth_sessions SET dev = 1 WHERE token_hash = ?1",
+        [secret::hash(&token)],
+    )?;
+    Ok(token)
+}
+
 /// The live session for a cookie token. Unknown, malformed and expired
 /// read the same.
 pub fn get(conn: &Connection, token: &str, now: i64) -> rusqlite::Result<Option<Session>> {
@@ -97,7 +111,8 @@ pub fn get(conn: &Connection, token: &str, now: i64) -> rusqlite::Result<Option<
 pub fn by_id(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Option<Session>> {
     conn.query_row(
         "SELECT s.token_hash, s.user_id, u.email, s.stage, s.expires_at, s.authenticated_at,
-                s.pending_secret, s.email_code_hash, s.email_code_expires, s.email_code_attempts
+                s.pending_secret, s.email_code_hash, s.email_code_expires, s.email_code_attempts,
+                s.dev
          FROM auth_sessions s JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = ?1 AND s.expires_at > ?2",
         params![id, now],
@@ -113,6 +128,7 @@ pub fn by_id(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Option<S
                 email_code_hash: r.get(7)?,
                 email_code_expires: r.get(8)?,
                 email_code_attempts: r.get(9)?,
+                dev: r.get(10)?,
             })
         },
     )

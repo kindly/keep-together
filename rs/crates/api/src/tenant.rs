@@ -30,6 +30,8 @@ pub struct Tenant {
     pub role: Role,
     /// The platform user id: revisions' `actor`.
     pub user: i64,
+    /// When this session last proved password + second factor.
+    authenticated_at: i64,
     timing: Timing,
 }
 
@@ -75,6 +77,18 @@ impl Tenant {
 }
 
 impl Tenant {
+    /// Admin-only routes: role `admin`, and a sign-in (or step-up) within
+    /// the last hour (ADR 0020), else `403 step_up_required`.
+    pub fn require_admin(&self) -> Result<(), ApiError> {
+        if self.role < Role::Admin {
+            return Err(ApiError::Forbidden);
+        }
+        if contracts::now_ms() - self.authenticated_at >= ::auth::STEP_UP_MS {
+            return Err(ApiError::StepUpRequired);
+        }
+        Ok(())
+    }
+
     /// This organisation's committed changes as SSE, resuming after
     /// `Last-Event-ID` if given (see [`crate::events`]).
     pub async fn events(
@@ -114,7 +128,7 @@ pub(crate) async fn middleware(
         let start = Instant::now();
         let found = blocking(move || {
             // Unknown slug and someone else's organisation read the same.
-            let Some(member) = store.platform().member(session.user, &slug)? else {
+            let Some(member) = store.platform().member(store::UserId(session.user), &slug)? else {
                 return Err(ApiError::Forbidden);
             };
             let db = store.org(&member.tenant.id)?;
@@ -130,7 +144,8 @@ pub(crate) async fn middleware(
             slug: member.tenant.slug,
             name: member.tenant.name,
             role: member.role,
-            user: session.user.0,
+            user: session.user,
+            authenticated_at: session.authenticated_at.unwrap_or(0),
             timing: timing.clone(),
         })
     }

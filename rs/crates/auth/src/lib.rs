@@ -25,6 +25,7 @@ pub mod sessions;
 pub mod totp;
 
 pub use accounts::SecondFactor;
+pub use schema::SCHEMA;
 pub use sessions::{Session, Stage};
 
 /// Partial sign-ins (password checked, second factor or enrolment

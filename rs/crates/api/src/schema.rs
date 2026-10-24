@@ -24,4 +24,4 @@ pub fn org_migrations() -> Migrations<'static> {
 
 /// `platform.db`'s per-crate schemas, run in this order after its base
 /// schema. Each crate appends only to its own list.
-pub const PLATFORM_SCHEMAS: &[PlatformSchema] = &[platform::SCHEMA];
+pub const PLATFORM_SCHEMAS: &[PlatformSchema] = &[platform::SCHEMA, auth::SCHEMA];

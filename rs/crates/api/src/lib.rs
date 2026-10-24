@@ -30,11 +30,30 @@ pub use tenant::Tenant;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
-    /// `KEEP_DEV_AUTH=1`: dev login allowed and sessions honoured.
+    /// `KEEP_DEV_AUTH=1` (loopback only): the dev login is allowed.
     pub dev_auth: bool,
+    /// Auth's config, mailer, rate limits and revocations.
+    pub auth: Arc<auth::Runtime>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, TS)]
+impl AppState {
+    /// With auth's defaults: links to `http://localhost:3000`, mail to
+    /// the log. [`AppState::with_auth`] for anything else.
+    pub fn new(store: Arc<Store>, dev_auth: bool) -> Self {
+        Self {
+            store,
+            dev_auth,
+            auth: Arc::new(auth::Runtime::default()),
+        }
+    }
+
+    pub fn with_auth(mut self, runtime: auth::Runtime) -> Self {
+        self.auth = Arc::new(runtime);
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, rename = "Role")]
 pub enum RoleName {
@@ -50,6 +69,22 @@ impl From<Role> for RoleName {
             Role::Staff => RoleName::Staff,
             Role::Viewer => RoleName::Viewer,
         }
+    }
+}
+
+impl From<RoleName> for Role {
+    fn from(role: RoleName) -> Self {
+        match role {
+            RoleName::Admin => Role::Admin,
+            RoleName::Staff => Role::Staff,
+            RoleName::Viewer => Role::Viewer,
+        }
+    }
+}
+
+impl std::fmt::Display for RoleName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(Role::from(*self).as_str())
     }
 }
 
@@ -89,6 +124,7 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .route("/", get(tenant::info))
         .route("/events", get(events::events))
         .route("/boot", get(boot::boot))
+        .merge(auth::member_routes())
         .merge(domain)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -98,13 +134,15 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .with_state::<AppState>(());
     Router::new()
         .route("/api/dev/login", post(auth::login))
-        .route("/api/dev/logout", post(auth::logout))
         .route("/api/dev/tenants", post(auth::create_tenant))
         .route("/api/dev/qc-seed", post(routes::qc_seed::fixture))
         .route("/api/dev/qc-crowd", post(routes::qc_seed::crowd))
         .route("/api/me", get(auth::me))
         .route("/healthz", get(health::healthz))
+        .merge(auth::routes())
         .nest("/api/t/{slug}", tenant_routes)
+        .layer(middleware::from_fn(auth::guard::dev_host))
+        .layer(middleware::from_fn_with_state(state.clone(), auth::guard::csrf))
         .with_state(state)
         .layer(middleware::from_fn(timing::middleware))
 }

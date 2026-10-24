@@ -45,7 +45,9 @@ dependencies = [
 name = "api"
 version = "0.1.0"
 dependencies = [
+ "auth",
  "axum",
+ "comms",
  "contacts",
  "contracts",
  "futures-util",
@@ -110,6 +112,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "sha2",
+ "store",
  "subtle",
  "thiserror",
  "totp-rs",
@@ -365,6 +368,7 @@ name = "comms"
 version = "0.1.0"
 dependencies = [
  "lettre",
+ "thiserror",
  "tokio",
 ]
 
