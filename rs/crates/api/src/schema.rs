@@ -13,5 +13,7 @@ pub fn org_migrations() -> Migrations<'static> {
     Migrations::new(vec![
         // 1: revisions + command groups
         M::up(contracts::MIGRATION),
+        // 2: contacts, children, dropdown fields, both FTS variants
+        M::up(contacts::MIGRATION),
     ])
 }

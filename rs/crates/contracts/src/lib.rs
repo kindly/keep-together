@@ -31,7 +31,7 @@ use store::OrgTx;
 use ts_rs::TS;
 
 pub use children::{ChildRow, Reconciled, mint_ids, reconcile};
-pub use restore::{canonical, history, restore, restore_entity_to};
+pub use restore::{Revision, canonical, history, restore, restore_entity_to};
 
 /// The org-schema migration this crate owns. Composed into the org
 /// migration list (`api::schema`) before any domain table.
@@ -444,7 +444,12 @@ pub trait DynContract: Sync {
     fn version(&self) -> u32;
     fn entity(&self) -> &'static str;
     fn upcast_step(&self, from: u32, payload: Value) -> Option<Value>;
-    fn execute_value(&self, ctx: &Ctx, payload: Value, opts: Exec) -> Result<Executed, ContractError>;
+    fn execute_value(
+        &self,
+        ctx: &Ctx,
+        payload: Value,
+        opts: Exec,
+    ) -> Result<Executed, ContractError>;
 }
 
 impl<C: Contract> DynContract for C {
@@ -460,7 +465,12 @@ impl<C: Contract> DynContract for C {
     fn upcast_step(&self, from: u32, payload: Value) -> Option<Value> {
         self.upcast(from, payload)
     }
-    fn execute_value(&self, ctx: &Ctx, payload: Value, opts: Exec) -> Result<Executed, ContractError> {
+    fn execute_value(
+        &self,
+        ctx: &Ctx,
+        payload: Value,
+        opts: Exec,
+    ) -> Result<Executed, ContractError> {
         let payload = serde_json::from_value(payload)
             .map_err(|e| ContractError::invalid("", format!("{}: {e}", C::NAME)))?;
         execute(ctx, self, payload, opts)
@@ -489,7 +499,11 @@ impl Registry {
 }
 
 /// Bring a stored payload forward to the code's version.
-pub fn upcast(contract: &dyn DynContract, mut payload: Value, from: u32) -> Result<Value, ContractError> {
+pub fn upcast(
+    contract: &dyn DynContract,
+    mut payload: Value,
+    from: u32,
+) -> Result<Value, ContractError> {
     if from > contract.version() {
         return Err(ContractError::NewerThanCode {
             contract: contract.name().into(),
@@ -498,12 +512,12 @@ pub fn upcast(contract: &dyn DynContract, mut payload: Value, from: u32) -> Resu
         });
     }
     for version in from..contract.version() {
-        payload = contract
-            .upcast_step(version, payload)
-            .ok_or_else(|| ContractError::MissingUpcaster {
+        payload = contract.upcast_step(version, payload).ok_or_else(|| {
+            ContractError::MissingUpcaster {
                 contract: contract.name().into(),
                 from: version,
-            })?;
+            }
+        })?;
     }
     Ok(payload)
 }

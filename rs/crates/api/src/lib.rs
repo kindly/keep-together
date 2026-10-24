@@ -3,6 +3,7 @@
 
 pub mod auth;
 pub mod error;
+pub mod routes;
 pub mod schema;
 pub mod tenant;
 pub mod timing;
@@ -53,7 +54,9 @@ pub struct IdParam {
 }
 
 /// Run blocking SQLite work off the async runtime.
-pub async fn blocking<T, E>(f: impl FnOnce() -> Result<T, E> + Send + 'static) -> Result<T, ApiError>
+pub async fn blocking<T, E>(
+    f: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, ApiError>
 where
     T: Send + 'static,
     E: Into<ApiError> + Send + 'static,
@@ -70,7 +73,10 @@ pub fn app(state: AppState, domain: Router) -> Router {
     let tenant_routes = Router::new()
         .route("/", get(tenant::info))
         .merge(domain)
-        .layer(middleware::from_fn_with_state(state.clone(), tenant::middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            tenant::middleware,
+        ))
         // Stateless: tenant handlers can't extract `AppState`.
         .with_state::<AppState>(());
     Router::new()

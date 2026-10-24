@@ -100,7 +100,10 @@ impl From<StoreError> for ApiError {
     fn from(err: StoreError) -> Self {
         match err {
             StoreError::InvalidSlug(_) => ApiError::Invalid {
-                problems: vec![Problem::new("slug", "lower-case letters, digits and hyphens")],
+                problems: vec![Problem::new(
+                    "slug",
+                    "lower-case letters, digits and hyphens",
+                )],
             },
             StoreError::SlugTaken(_) => ApiError::Invalid {
                 problems: vec![Problem::new("slug", "taken")],

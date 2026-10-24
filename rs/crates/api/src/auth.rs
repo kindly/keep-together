@@ -37,7 +37,9 @@ pub(crate) async fn session(
     if !state.dev_auth {
         return Err(ApiError::Unauthenticated);
     }
-    let token = session_token(headers).ok_or(ApiError::Unauthenticated)?.to_owned();
+    let token = session_token(headers)
+        .ok_or(ApiError::Unauthenticated)?
+        .to_owned();
     let store = state.store.clone();
     let start = Instant::now();
     let session = blocking(move || store.platform().session(&token)).await?;
@@ -74,13 +76,18 @@ pub async fn login(
     .await?;
     let cookie = format!("{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax");
     let mut res = Json(serde_json::json!({ "ok": true })).into_response();
-    res.headers_mut()
-        .insert(SET_COOKIE, HeaderValue::from_str(&cookie).map_err(ApiError::internal)?);
+    res.headers_mut().insert(
+        SET_COOKIE,
+        HeaderValue::from_str(&cookie).map_err(ApiError::internal)?,
+    );
     Ok(res)
 }
 
 /// `POST /api/dev/logout`
-pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     if let Some(token) = session_token(&headers).map(str::to_owned) {
         let store = state.store.clone();
         blocking(move || store.platform().delete_session(&token)).await?;

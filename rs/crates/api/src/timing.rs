@@ -23,11 +23,15 @@ struct Counters {
 
 impl Timing {
     pub fn add_platform(&self, d: Duration) {
-        self.0.platform_ns.fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
+        self.0
+            .platform_ns
+            .fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
     }
 
     pub fn add_db(&self, d: Duration) {
-        self.0.db_ns.fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
+        self.0
+            .db_ns
+            .fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
     }
 
     fn header(&self, total: Duration) -> String {
