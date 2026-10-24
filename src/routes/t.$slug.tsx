@@ -1,10 +1,17 @@
 import { Link, Outlet, createFileRoute } from '@tanstack/react-router'
-import { Authenticated, Unauthenticated, useMutation } from 'convex/react'
+import { useMutation } from 'convex/react'
 import { useEffect, useRef } from 'react'
 import { api } from '../../convex/_generated/api'
-import { TenantContext, useMyTenants } from '../lib/tenant'
+import { TenantContext } from '../lib/tenant'
 import type { Tenant } from '../lib/tenant'
 import { ContactQueryCache } from '../lib/query-cache'
+import {
+  BACKEND,
+  FEATURES,
+  SignedIn,
+  SignedOut,
+  useMyTenants,
+} from '../lib/data'
 import { DonationsMenu } from '../components/gift-nav'
 
 export const Route = createFileRoute('/t/$slug')({ component: TenantLayout })
@@ -13,7 +20,7 @@ function TenantLayout() {
   const { slug } = Route.useParams()
   return (
     <>
-      <Unauthenticated>
+      <SignedOut>
         <main className="mx-auto max-w-lg p-6">
           <p>
             <Link to="/" className="underline">
@@ -22,10 +29,10 @@ function TenantLayout() {
             to open this group.
           </p>
         </main>
-      </Unauthenticated>
-      <Authenticated>
+      </SignedOut>
+      <SignedIn>
         <Resolved slug={slug} />
-      </Authenticated>
+      </SignedIn>
     </>
   )
 }
@@ -48,7 +55,10 @@ function Resolved({ slug }: { slug: string }) {
   }
   return (
     <TenantContext.Provider value={tenant}>
-      <RememberOpened tenant={tenant} tenants={tenants} />
+      {/* Convex only: the Rust stub has no "last used" group. */}
+      {FEATURES.settings && (
+        <RememberOpened tenant={tenant} tenants={tenants} />
+      )}
       <div className="min-h-screen bg-neutral-50 text-neutral-900">
         <header className="border-b border-neutral-200 bg-white">
           <nav
@@ -71,20 +81,27 @@ function Resolved({ slug }: { slug: string }) {
             >
               Contacts
             </Link>
-            <DonationsMenu tenantId={tenant._id} />
-            <Link
-              to="/t/$slug/settings"
-              params={{ slug }}
-              className="text-sm hover:underline"
-              activeProps={{ className: 'text-sm font-medium underline' }}
-            >
-              Settings
-            </Link>
+            {FEATURES.gifts && <DonationsMenu tenantId={tenant._id} />}
+            {FEATURES.settings && (
+              <Link
+                to="/t/$slug/settings"
+                params={{ slug }}
+                className="text-sm hover:underline"
+                activeProps={{ className: 'text-sm font-medium underline' }}
+              >
+                Settings
+              </Link>
+            )}
           </nav>
         </header>
-        <ContactQueryCache>
+        {/* Convex's keep-alive cache; TanStack Query is Rust's own. */}
+        {BACKEND === 'rust' ? (
           <Outlet />
-        </ContactQueryCache>
+        ) : (
+          <ContactQueryCache>
+            <Outlet />
+          </ContactQueryCache>
+        )}
       </div>
     </TenantContext.Provider>
   )

@@ -6,10 +6,10 @@ import { tokenSubject } from './query-cache'
 // The keep-alive cache is for the contact page only (perf-storage step 2):
 // a held `list` would re-run on every contact save and join its wait.
 const ALLOWED = [
-  'components/contact-form.tsx',
   'components/contact-history.tsx',
   'components/contact-notes.tsx',
-  'routes/t.$slug.contacts.$contactId.tsx',
+  // The contact page's and form's Convex reads (the data layer, rust spike).
+  'lib/data/convex-contact.tsx',
 ]
 
 function sources(dir: string): Array<string> {
@@ -46,14 +46,17 @@ describe('contact query cache', () => {
   })
 
   test('the list keeps convex/react’s useQuery', () => {
-    const list = readFileSync(
-      path.resolve(__dirname, '../routes/t.$slug.contacts.index.tsx'),
-      'utf8',
-    )
-    expect(list).toMatch(
-      /import \{[^}]*\buseQuery\b[^}]*\} from 'convex\/react'/,
-    )
-    expect(list).not.toMatch(/query-cache/)
+    // The route, and the data layer's Convex reads for it.
+    for (const file of [
+      '../routes/t.$slug.contacts.index.tsx',
+      './data/convex-list.ts',
+    ]) {
+      const list = readFileSync(path.resolve(__dirname, file), 'utf8')
+      expect(list).toMatch(
+        /import \{[^}]*\buseQuery\b[^}]*\} from 'convex\/react'/,
+      )
+      expect(list).not.toMatch(/query-cache/)
+    }
   })
 
   test('keys on the token subject, stable across a refresh', () => {

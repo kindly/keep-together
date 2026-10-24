@@ -28,6 +28,8 @@ todos.json
 
 # QC suite output (pnpm qc)
 dist-qc/
+dist-qc-rs/
+qc-rs/.flows/
 qc-results/
 qc-report/
 test-results/
@@ -46,3 +48,7 @@ factory/out/
 
 # sideview page locks
 *.sv.lock
+
+# Rust spike (rs/): build output and local org databases
+/rs/target/
+/rs/data/

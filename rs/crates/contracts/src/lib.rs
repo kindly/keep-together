@@ -1,0 +1,527 @@
+//! Contracts: the single write path for domain state (ADR 0013 / 0017),
+//! the SQLite counterpart of `convex/lib/contracts.ts`.
+//!
+//! A contract owns a disjoint slice of an aggregate root and one integer
+//! counter column on it. [`execute`] runs, inside the caller's
+//! `BEGIN IMMEDIATE` transaction on one org file:
+//!
+//!   prepare (normalise + invariant checks)
+//!     → read the root's counter (fresh, in-transaction)
+//!     → check `expected` (stale ⇒ `Stale` carrying the slice's current
+//!       state, nothing written)
+//!     → load the slice; on restore, the contract's `restore_payload`
+//!     → run the pure `apply(current, payload) -> next`
+//!     → `write` the next state, bump the counter
+//!     → append a revision (prepared payload + contract name + version)
+//!     → run the `project` hook (derived rows, same transaction)
+//!
+//! Restore re-executes a stored payload as a NEW command, chaining
+//! upcasters by declared version. Nothing is ever rewound.
+
+mod children;
+mod restore;
+
+use std::collections::HashMap;
+
+use rusqlite::{OptionalExtension, params};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use store::OrgTx;
+use ts_rs::TS;
+
+pub use children::{ChildRow, Reconciled, mint_ids, reconcile};
+pub use restore::{Revision, canonical, history, restore, restore_entity_to};
+
+/// The org-schema migration this crate owns. Composed into the org
+/// migration list (`api::schema`) before any domain table.
+pub const MIGRATION: &str = "
+CREATE TABLE command_groups (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    actor INTEGER,
+    at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE revisions (
+    id INTEGER PRIMARY KEY,
+    entity TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    contract TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    counter INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    actor INTEGER,
+    source TEXT NOT NULL,
+    group_id INTEGER REFERENCES command_groups(id),
+    group_name TEXT,
+    restored_from INTEGER REFERENCES revisions(id),
+    at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX revisions_by_entity ON revisions (entity, entity_id, id);
+CREATE INDEX revisions_by_entity_contract ON revisions (entity, entity_id, contract, id);
+";
+
+/// Where a command came from (the same values as Convex's `revisionSource`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum Source {
+    Ui,
+    Autosave,
+    Import,
+    Restore,
+    Seed,
+    System,
+    Test,
+}
+
+impl Source {
+    fn as_str(self) -> &'static str {
+        match self {
+            Source::Ui => "ui",
+            Source::Autosave => "autosave",
+            Source::Import => "import",
+            Source::Restore => "restore",
+            Source::Seed => "seed",
+            Source::System => "system",
+            Source::Test => "test",
+        }
+    }
+
+    fn parse(s: &str) -> Self {
+        serde_json::from_value(Value::String(s.into())).unwrap_or(Source::System)
+    }
+}
+
+/// A blocking validation failure on one field (ADR 0015 tier 1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Problem {
+    pub field: String,
+    pub message: String,
+}
+
+impl Problem {
+    pub fn new(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ContractError {
+    /// `expected` didn't match. `current` is the slice's state now, so the
+    /// caller can merge without another read.
+    #[error("{contract}: stale (counter is {counter})")]
+    Stale {
+        contract: &'static str,
+        counter: i64,
+        current: Value,
+    },
+    #[error("not found")]
+    NotFound,
+    /// A create with a pre-generated id that already exists (ADR 0014:
+    /// idempotent creates).
+    #[error("{id} already exists")]
+    Duplicate { id: String },
+    #[error("invalid: {0:?}")]
+    Invalid(Vec<Problem>),
+    /// The handler refused the command (kind change, immutable child …).
+    #[error("rejected ({reason}): {message}")]
+    Rejected { reason: String, message: String },
+    #[error("unknown contract {0}")]
+    UnknownContract(String),
+    #[error("{contract}: stored version {stored} is newer than code version {code}")]
+    NewerThanCode {
+        contract: String,
+        stored: u32,
+        code: u32,
+    },
+    #[error("{contract}: no upcaster from version {from}")]
+    MissingUpcaster { contract: String, from: u32 },
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+
+impl ContractError {
+    pub fn invalid(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Invalid(vec![Problem::new(field, message)])
+    }
+
+    pub fn rejected(reason: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Rejected {
+            reason: reason.into(),
+            message: message.into(),
+        }
+    }
+}
+
+/// Who and when, fixed once per command (so apply stays pure: restore
+/// re-runs it with the restore's own time).
+#[derive(Clone, Debug)]
+pub struct Command {
+    pub at: i64,
+    pub actor: Option<i64>,
+    pub source: Source,
+}
+
+/// The transaction a set of commands runs in, and who runs them.
+/// `at` is ms since the epoch.
+pub struct Ctx<'t, 'c> {
+    pub tx: &'t OrgTx<'c>,
+    pub actor: Option<i64>,
+    pub at: i64,
+}
+
+impl<'t, 'c> Ctx<'t, 'c> {
+    pub fn new(tx: &'t OrgTx<'c>, actor: Option<i64>) -> Self {
+        Self {
+            tx,
+            actor,
+            at: now_ms(),
+        }
+    }
+}
+
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// A fresh entity or child-row id: UUIDv7, simple form.
+pub fn new_id() -> String {
+    uuid::Uuid::now_v7().simple().to_string()
+}
+
+pub trait Contract: Sync + 'static {
+    /// Stable dotted name, e.g. "contacts.details".
+    const NAME: &'static str;
+    /// Bump whenever the payload shape or semantics change; add an upcaster.
+    const VERSION: u32;
+    /// The root table. Its `id` column is TEXT; every counter column on it
+    /// is `INTEGER NOT NULL DEFAULT 0`.
+    const ENTITY: &'static str;
+    /// The counter column this contract owns on the root.
+    const COUNTER: &'static str;
+
+    /// The full state of the slice, as the client sends it.
+    type Payload: Serialize + DeserializeOwned;
+    /// The slice as stored; also what a stale refusal returns.
+    type State: Serialize;
+
+    /// Pure normalisation + blocking checks. Returns the payload that is
+    /// applied AND stored in the revision (minted child ids, trimmed
+    /// strings are what history replays).
+    fn prepare(&self, payload: Self::Payload) -> Result<Self::Payload, ContractError> {
+        Ok(payload)
+    }
+
+    /// The slice's current state. Called only when the root exists.
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<Self::State, ContractError>;
+
+    /// Pure state application: nothing time-dependent beyond `command.at`.
+    /// `current` is `None` on create.
+    fn apply(
+        &self,
+        current: Option<&Self::State>,
+        payload: &Self::Payload,
+        command: &Command,
+    ) -> Result<Self::State, ContractError>;
+
+    /// Persist `next`. On create (`before` is `None`) this inserts the root
+    /// row; it must touch only this slice's columns and child tables, and
+    /// preserve system-owned fields no payload carries.
+    fn write(
+        &self,
+        tx: &OrgTx,
+        id: &str,
+        before: Option<&Self::State>,
+        next: &Self::State,
+    ) -> Result<(), ContractError>;
+
+    /// Rebuild derived rows (search) from the root's new state.
+    fn project(&self, _tx: &OrgTx, _id: &str) -> Result<(), ContractError> {
+        Ok(())
+    }
+
+    /// One upcast step: a payload at `from` to `from + 1`. `None` = no
+    /// upcaster registered for that step.
+    fn upcast(&self, _from: u32, _payload: Value) -> Option<Value> {
+        None
+    }
+
+    /// Restore only: what can be written back now (e.g. a retired dropdown
+    /// option dropped), which is applied *and* recorded.
+    fn restore_payload(
+        &self,
+        _tx: &OrgTx,
+        payload: Self::Payload,
+        _current: &Self::State,
+    ) -> Result<Self::Payload, ContractError> {
+        Ok(payload)
+    }
+}
+
+/// A named group of commands ("contact form save", "restore to …").
+#[derive(Clone, Debug)]
+pub struct CommandGroup {
+    pub id: i64,
+    pub name: String,
+}
+
+pub fn command_group(ctx: &Ctx, name: &str) -> Result<CommandGroup, ContractError> {
+    ctx.tx.execute(
+        "INSERT INTO command_groups (name, actor, at) VALUES (?1, ?2, ?3)",
+        params![name, ctx.actor, ctx.at],
+    )?;
+    Ok(CommandGroup {
+        id: ctx.tx.last_insert_rowid(),
+        name: name.into(),
+    })
+}
+
+#[derive(Clone, Debug)]
+enum Target<'a> {
+    Create(Option<&'a str>),
+    Update(&'a str),
+}
+
+/// How to execute one command.
+#[derive(Clone, Debug)]
+pub struct Exec<'a> {
+    target: Target<'a>,
+    expected: Option<i64>,
+    source: Source,
+    group: Option<&'a CommandGroup>,
+    restored_from: Option<i64>,
+}
+
+impl<'a> Exec<'a> {
+    /// Create a new root, with a fresh id.
+    pub fn create(source: Source) -> Self {
+        Self {
+            target: Target::Create(None),
+            expected: None,
+            source,
+            group: None,
+            restored_from: None,
+        }
+    }
+
+    /// Create a new root with a pre-generated id (form render, import);
+    /// an existing id is `Duplicate`.
+    pub fn create_with_id(id: &'a str, source: Source) -> Self {
+        Self {
+            target: Target::Create(Some(id)),
+            ..Self::create(source)
+        }
+    }
+
+    /// Update an existing root. Forms always pass `expected`; `None` is
+    /// for trusted internal callers (seeds, migrations) only.
+    pub fn update(id: &'a str, expected: Option<i64>, source: Source) -> Self {
+        Self {
+            target: Target::Update(id),
+            expected,
+            ..Self::create(source)
+        }
+    }
+
+    pub fn in_group(mut self, group: &'a CommandGroup) -> Self {
+        self.group = Some(group);
+        self
+    }
+}
+
+/// What a command produced: the root id and this slice's new counter.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Executed {
+    pub id: String,
+    #[ts(type = "number")]
+    pub counter: i64,
+}
+
+fn read_counter<C: Contract>(tx: &OrgTx, id: &str) -> rusqlite::Result<Option<i64>> {
+    tx.query_row(
+        &format!("SELECT {} FROM {} WHERE id = ?1", C::COUNTER, C::ENTITY),
+        [id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+pub fn execute<C: Contract>(
+    ctx: &Ctx,
+    contract: &C,
+    payload: C::Payload,
+    opts: Exec,
+) -> Result<Executed, ContractError> {
+    let tx = ctx.tx;
+    let mut payload = contract.prepare(payload)?;
+    let command = Command {
+        at: ctx.at,
+        actor: ctx.actor,
+        source: opts.source,
+    };
+
+    let (id, before, counter) = match opts.target {
+        Target::Create(id) => {
+            let id = id.map(str::to_owned).unwrap_or_else(new_id);
+            let exists: bool = tx.query_row(
+                &format!("SELECT EXISTS (SELECT 1 FROM {} WHERE id = ?1)", C::ENTITY),
+                [&id],
+                |r| r.get(0),
+            )?;
+            if exists {
+                return Err(ContractError::Duplicate { id });
+            }
+            (id, None, 0)
+        }
+        Target::Update(id) => {
+            let current = read_counter::<C>(tx, id)?.ok_or(ContractError::NotFound)?;
+            let state = contract.load(tx, id)?;
+            if let Some(expected) = opts.expected
+                && expected != current
+            {
+                return Err(ContractError::Stale {
+                    contract: C::NAME,
+                    counter: current,
+                    current: serde_json::to_value(&state)?,
+                });
+            }
+            if opts.source == Source::Restore {
+                payload = contract.restore_payload(tx, payload, &state)?;
+            }
+            (id.to_owned(), Some(state), current + 1)
+        }
+    };
+
+    let next = contract.apply(before.as_ref(), &payload, &command)?;
+    contract.write(tx, &id, before.as_ref(), &next)?;
+    let bumped = tx.execute(
+        &format!("UPDATE {} SET {} = ?1 WHERE id = ?2", C::ENTITY, C::COUNTER),
+        params![counter, id],
+    )?;
+    if bumped != 1 {
+        // A create whose `write` didn't insert the root.
+        return Err(ContractError::NotFound);
+    }
+
+    tx.execute(
+        "INSERT INTO revisions (entity, entity_id, contract, version, counter, payload,
+             actor, source, group_id, group_name, restored_from, at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            C::ENTITY,
+            id,
+            C::NAME,
+            C::VERSION,
+            counter,
+            serde_json::to_string(&payload)?,
+            command.actor,
+            command.source.as_str(),
+            opts.group.map(|g| g.id),
+            opts.group.map(|g| g.name.as_str()),
+            opts.restored_from,
+            command.at,
+        ],
+    )?;
+    contract.project(tx, &id)?;
+    Ok(Executed { id, counter })
+}
+
+/// A contract with its types erased, for restore (which finds the
+/// contract by the name stored on a revision).
+pub trait DynContract: Sync {
+    fn name(&self) -> &'static str;
+    fn version(&self) -> u32;
+    fn entity(&self) -> &'static str;
+    fn upcast_step(&self, from: u32, payload: Value) -> Option<Value>;
+    fn execute_value(
+        &self,
+        ctx: &Ctx,
+        payload: Value,
+        opts: Exec,
+    ) -> Result<Executed, ContractError>;
+}
+
+impl<C: Contract> DynContract for C {
+    fn name(&self) -> &'static str {
+        C::NAME
+    }
+    fn version(&self) -> u32 {
+        C::VERSION
+    }
+    fn entity(&self) -> &'static str {
+        C::ENTITY
+    }
+    fn upcast_step(&self, from: u32, payload: Value) -> Option<Value> {
+        self.upcast(from, payload)
+    }
+    fn execute_value(
+        &self,
+        ctx: &Ctx,
+        payload: Value,
+        opts: Exec,
+    ) -> Result<Executed, ContractError> {
+        let payload = serde_json::from_value(payload)
+            .map_err(|e| ContractError::invalid("", format!("{}: {e}", C::NAME)))?;
+        execute(ctx, self, payload, opts)
+    }
+}
+
+/// Every contract restore may meet, by name.
+pub struct Registry(HashMap<&'static str, &'static dyn DynContract>);
+
+impl Registry {
+    pub fn new(contracts: &[&'static dyn DynContract]) -> Self {
+        let mut map = HashMap::new();
+        for c in contracts {
+            assert!(
+                map.insert(c.name(), *c).is_none(),
+                "duplicate contract {}",
+                c.name()
+            );
+        }
+        Self(map)
+    }
+
+    pub fn get(&self, name: &str) -> Option<&'static dyn DynContract> {
+        self.0.get(name).copied()
+    }
+}
+
+/// Bring a stored payload forward to the code's version.
+pub fn upcast(
+    contract: &dyn DynContract,
+    mut payload: Value,
+    from: u32,
+) -> Result<Value, ContractError> {
+    if from > contract.version() {
+        return Err(ContractError::NewerThanCode {
+            contract: contract.name().into(),
+            stored: from,
+            code: contract.version(),
+        });
+    }
+    for version in from..contract.version() {
+        payload = contract.upcast_step(version, payload).ok_or_else(|| {
+            ContractError::MissingUpcaster {
+                contract: contract.name().into(),
+                from: version,
+            }
+        })?;
+    }
+    Ok(payload)
+}
+
+pub(crate) fn source_from_db(s: &str) -> Source {
+    Source::parse(s)
+}

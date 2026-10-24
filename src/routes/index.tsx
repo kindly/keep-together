@@ -1,11 +1,19 @@
 import { Navigate, createFileRoute } from '@tanstack/react-router'
 import { useAuthActions } from '@convex-dev/auth/react'
-import { AuthLoading, Authenticated, Unauthenticated } from 'convex/react'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { PASSWORD_MIN_LENGTH } from '../../convex/lib/password'
 import { authErrorMessage } from '../lib/auth-errors'
-import { landingTenant, useMyTenants } from '../lib/tenant'
+import { landingTenant } from '../lib/tenant'
+import {
+  BACKEND,
+  SessionLoading,
+  SignedIn,
+  SignedOut,
+  useMyTenants,
+  useSignOut,
+} from '../lib/data'
+import { DevSignIn } from '../components/dev-sign-in'
 
 export const Route = createFileRoute('/')({ component: Home })
 
@@ -16,15 +24,13 @@ function Home() {
   return (
     <main className="mx-auto max-w-lg p-6">
       <h1 className="text-2xl font-semibold">keep-together</h1>
-      <AuthLoading>
+      <SessionLoading>
         <p className="mt-6 text-sm text-neutral-500">Loading…</p>
-      </AuthLoading>
-      <Unauthenticated>
-        <SignIn />
-      </Unauthenticated>
-      <Authenticated>
+      </SessionLoading>
+      <SignedOut>{BACKEND === 'rust' ? <DevSignIn /> : <SignIn />}</SignedOut>
+      <SignedIn>
         <Landing />
-      </Authenticated>
+      </SignedIn>
     </main>
   )
 }
@@ -96,7 +102,7 @@ function SignIn() {
 
 /** Into the group last used (else the first by name), or "no group yet". */
 function Landing() {
-  const { signOut } = useAuthActions()
+  const signOut = useSignOut()
   const tenants = useMyTenants()
   if (tenants === undefined)
     return <p className="mt-6 text-sm text-neutral-500">Loading…</p>

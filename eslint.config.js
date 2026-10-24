@@ -64,6 +64,9 @@ export default [
       'src/routeTree.gen.ts',
       'dist/**',
       'dist-qc/**',
+      'dist-qc-rs/**',
+      // Copies of qc/flows/*.spec.ts made by qc-rs/playwright.config.ts.
+      'qc-rs/.flows/**',
       'dist-preview*/**',
       'qc-report/**',
       'test-results/**',

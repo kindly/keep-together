@@ -8,32 +8,26 @@ import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
 import { formatNumber } from '../../convex/contacts/number'
 import { fieldArgs, fieldShown } from '../lib/field-filters'
 import type { FieldPick } from '../lib/field-filters'
-import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
-import { holdList, releaseList } from '../lib/list-hold'
-import { usePagedList } from '../lib/paged-list'
+import { useCanWrite, useTenant } from '../lib/tenant'
 import type { ListRow } from '../lib/paged-list'
+import {
+  FEATURES,
+  preloadContactList,
+  releaseListHold,
+  useContactList,
+  useContactSearch,
+  useBulkSetField,
+  useFields,
+} from '../lib/data'
 import {
   BulkFieldControls,
   BulkFieldResult,
-  useBulkSetField,
 } from '../components/bulk-set-field'
 
 export const Route = createFileRoute('/t/$slug/contacts/')({
   component: ContactList,
   // Subscribe as the navigation starts, not once the list has mounted.
-  loader: ({ context: { convex }, params }) => {
-    const tenant = cachedTenant(convex, params.slug)
-    if (!tenant) return
-    holdList(convex, { tenantId: tenant._id, includeArchived: false })
-    convex.prewarmQuery({
-      query: api.sources.queries.filterOptions,
-      args: { tenantId: tenant._id },
-    })
-    convex.prewarmQuery({
-      query: api.contacts.fields.list,
-      args: { tenantId: tenant._id },
-    })
-  },
+  loader: ({ context, params }) => preloadContactList(context, params.slug),
 })
 
 type Part = FunctionReturnType<typeof api.sources.queries.filterOptions>[number]
@@ -70,20 +64,21 @@ const NOT_SET = 'none'
 function ContactList() {
   const tenant = useTenant()
   const canWrite = useCanWrite()
+  // Selecting rows is for a bulk set, which only Convex has.
+  const canSelect = canWrite && FEATURES.bulkSetField
   const [search, setSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
   const [kind, setKind] = useState<Kind | ''>('')
   const [sourcePick, setSourcePick] = useState<SourcePick>(NO_SOURCE)
   const source = sourceArg(sourcePick)
-  const fields = useQuery(api.contacts.fields.list, { tenantId: tenant._id })
+  const fields = useFields()
   const [fieldPicks, setFieldPicks] = useState<Array<FieldPick>>([])
   const fieldFilters = fieldArgs(fieldPicks, fields, kind)
   const bulkField = useBulkSetField()
   // Search text: one window (`search`). Otherwise browse a page at a time
   // (`list`).
   const searching = search.trim() !== ''
-  const listed = useQuery(
-    api.contacts.queries.search,
+  const listed = useContactSearch(
     searching
       ? {
           tenantId: tenant._id,
@@ -95,7 +90,7 @@ function ContactList() {
         }
       : 'skip',
   )
-  const paged = usePagedList(
+  const paged = useContactList(
     searching
       ? 'skip'
       : {
@@ -109,7 +104,7 @@ function ContactList() {
   // After the queries above: their subscriptions are in place by now. After
   // every render, not just the first: navigating to the list from the list
   // runs the loader (a new hold) without remounting the page.
-  useEffect(releaseList)
+  useEffect(releaseListHold)
   const contacts = searching ? listed?.rows : paged.rows
   // More may match than the rows on screen: beyond the window, or not
   // loaded yet.
@@ -184,7 +179,9 @@ function ContactList() {
             </button>
           ))}
         </div>
-        <SourceFilter value={sourcePick} onChange={setSourcePick} />
+        {FEATURES.sourceCodes && (
+          <SourceFilter value={sourcePick} onChange={setSourcePick} />
+        )}
         {(fields ?? [])
           .filter((f) => fieldShown(f, kind))
           .sort((a, b) => a.slot - b.slot)
@@ -227,7 +224,7 @@ function ContactList() {
       <p id="search-hint" className="mt-1 text-xs text-neutral-500">
         Search by name, email, phone, postcode, street or reference
       </p>
-      {canWrite && contacts !== undefined && contacts.length > 0 && (
+      {canSelect && contacts !== undefined && contacts.length > 0 && (
         <BulkBar
           chosen={chosen.map((c) => c._id)}
           allChosen={allChosen}
@@ -289,7 +286,7 @@ function ContactList() {
               key={c._id}
               row={c}
               slug={tenant.slug}
-              canWrite={canWrite}
+              canWrite={canSelect}
               checked={selected.has(c._id)}
               onToggle={toggle}
               chipOf={chipOf}
