@@ -72,7 +72,9 @@ impl SettingsKey {
         B64.encode(Aes256Gcm::generate_key(&mut OsRng))
     }
 
-    fn seal(&self, name: &str, plaintext: &str) -> Sealed {
+    /// `plaintext` under this key with `name` as associated data (a fresh
+    /// random nonce each time). Also auth's TOTP secrets (`auth::keys`).
+    pub fn seal(&self, name: &str, plaintext: &str) -> Sealed {
         let cipher = Aes256Gcm::new(&self.0);
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ciphertext = cipher
@@ -91,7 +93,8 @@ impl SettingsKey {
         }
     }
 
-    fn open(&self, sealed: &Sealed) -> Result<String, SettingsError> {
+    /// The plaintext of `sealed`, checked against its `name`.
+    pub fn open(&self, sealed: &Sealed) -> Result<String, SettingsError> {
         let fail = || SettingsError::Undecryptable(sealed.name.clone());
         let nonce = B64.decode(&sealed.nonce).map_err(|_| fail())?;
         let ciphertext = B64.decode(&sealed.ciphertext).map_err(|_| fail())?;

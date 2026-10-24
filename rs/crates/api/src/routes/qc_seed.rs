@@ -334,6 +334,7 @@ pub async fn fixture(
 ) -> Result<Json<QcWorld>, ApiError> {
     enabled(&state)?;
     let store = state.store.clone();
+    let keys = state.auth.keys.clone();
     blocking(move || {
         let p = store.platform();
         let base = format!("r{}w{}", req.run_id, req.worker);
@@ -356,6 +357,7 @@ pub async fn fixture(
                     .map_err(ApiError::internal)?;
                 ::auth::accounts::set_second_factor(
                     tx,
+                    &keys,
                     user.0,
                     ::auth::SecondFactor::Totp,
                     Some((&secret, 0)),

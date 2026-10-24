@@ -4,6 +4,7 @@
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::keys::{Keys, totp_aad};
 use crate::{INVITE_TTL_MS, RECOVERY_CODES, RESET_TTL_MS, codes, password, secret};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,13 +34,25 @@ impl SecondFactor {
 pub struct Credentials {
     pub password_hash: String,
     pub second_factor: Option<SecondFactor>,
-    pub totp_secret: Option<String>,
+    /// Sealed ([`Keys::seal`]); [`Credentials::totp_secret`] opens it.
+    pub totp_sealed: Option<String>,
     pub totp_last_step: i64,
+    /// The second factor was reset (by an admin or the operator): enrolling
+    /// a new one needs an emailed code as well as the password (S1 M7).
+    pub must_prove_email: bool,
+}
+
+impl Credentials {
+    /// The TOTP secret, base32. `None` if there is none or it doesn't
+    /// open under these keys (fail closed: no code matches).
+    pub fn totp_secret(&self, keys: &Keys, user: i64) -> Option<String> {
+        keys.open(&totp_aad(user), self.totp_sealed.as_deref()?)
+    }
 }
 
 pub fn credentials(conn: &Connection, user: i64) -> rusqlite::Result<Option<Credentials>> {
     conn.query_row(
-        "SELECT password_hash, second_factor, totp_secret, totp_last_step
+        "SELECT password_hash, second_factor, totp_secret, totp_last_step, must_prove_email
          FROM auth_credentials WHERE user_id = ?1",
         [user],
         |r| {
@@ -49,8 +62,9 @@ pub fn credentials(conn: &Connection, user: i64) -> rusqlite::Result<Option<Cred
                     .get::<_, Option<String>>(1)?
                     .as_deref()
                     .and_then(SecondFactor::parse),
-                totp_secret: r.get(2)?,
+                totp_sealed: r.get(2)?,
                 totp_last_step: r.get(3)?,
+                must_prove_email: r.get(4)?,
             })
         },
     )
@@ -74,23 +88,24 @@ pub fn set_password(
     Ok(())
 }
 
-/// The second factor is now `factor` (with its TOTP secret and the step
-/// its confirming code used).
+/// The second factor is now `factor` (with its TOTP secret, base32, and
+/// the step its confirming code used). The secret is stored sealed.
 pub fn set_second_factor(
     conn: &Connection,
+    keys: &Keys,
     user: i64,
     factor: SecondFactor,
     totp: Option<(&str, i64)>,
     now: i64,
 ) -> rusqlite::Result<()> {
-    let (secret_b32, step) = match (factor, totp) {
-        (SecondFactor::Totp, Some((s, step))) => (Some(s), step),
+    let (sealed, step) = match (factor, totp) {
+        (SecondFactor::Totp, Some((s, step))) => (Some(keys.seal(&totp_aad(user), s)), step),
         _ => (None, 0),
     };
     conn.execute(
         "UPDATE auth_credentials SET second_factor = ?2, totp_secret = ?3, totp_last_step = ?4,
-             updated_at = ?5 WHERE user_id = ?1",
-        params![user, factor.as_str(), secret_b32, step, now],
+             must_prove_email = 0, updated_at = ?5 WHERE user_id = ?1",
+        params![user, factor.as_str(), sealed, step, now],
     )?;
     Ok(())
 }
@@ -104,24 +119,36 @@ pub fn set_totp_step(conn: &Connection, user: i64, step: i64) -> rusqlite::Resul
 }
 
 /// 2FA reset: no second factor and no recovery codes, so the next
-/// sign-in enrols again.
+/// sign-in enrols again, and that enrolment needs an emailed code too
+/// (`must_prove_email`): the password alone, perhaps phished, isn't
+/// enough to take the account over (S1 M7).
 pub fn clear_second_factor(conn: &Connection, user: i64, now: i64) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE auth_credentials SET second_factor = NULL, totp_secret = NULL, totp_last_step = 0,
-             updated_at = ?2 WHERE user_id = ?1",
+             must_prove_email = 1, updated_at = ?2 WHERE user_id = ?1",
         params![user, now],
     )?;
     conn.execute("DELETE FROM auth_recovery_codes WHERE user_id = ?1", [user])?;
+    crate::failures::clear(conn, user)?;
     Ok(())
 }
 
-/// New recovery codes, replacing all earlier ones. Shown once.
-pub fn new_recovery_codes(conn: &Connection, user: i64) -> rusqlite::Result<Vec<String>> {
+fn recovery_mac(keys: &Keys, user: i64, code: &str) -> String {
+    keys.mac(&format!("recovery:{user}"), code)
+}
+
+/// New recovery codes, replacing all earlier ones. Shown once; stored as
+/// HMAC under the pepper.
+pub fn new_recovery_codes(
+    conn: &Connection,
+    keys: &Keys,
+    user: i64,
+) -> rusqlite::Result<Vec<String>> {
     conn.execute("DELETE FROM auth_recovery_codes WHERE user_id = ?1", [user])?;
     let mut out = Vec::with_capacity(RECOVERY_CODES);
     while out.len() < RECOVERY_CODES {
         let code = codes::recovery_code();
-        let stored = secret::hash(&code.replace('-', ""));
+        let stored = recovery_mac(keys, user, &code.replace('-', ""));
         let n = conn.execute(
             "INSERT OR IGNORE INTO auth_recovery_codes (user_id, code_hash) VALUES (?1, ?2)",
             params![user, stored],
@@ -136,6 +163,7 @@ pub fn new_recovery_codes(conn: &Connection, user: i64) -> rusqlite::Result<Vec<
 /// Spend a recovery code. True if it was unused and is now used.
 pub fn use_recovery_code(
     conn: &Connection,
+    keys: &Keys,
     user: i64,
     input: &str,
     now: i64,
@@ -146,7 +174,7 @@ pub fn use_recovery_code(
     let n = conn.execute(
         "UPDATE auth_recovery_codes SET used_at = ?3
          WHERE user_id = ?1 AND code_hash = ?2 AND used_at IS NULL",
-        params![user, secret::hash(&code), now],
+        params![user, recovery_mac(keys, user, &code), now],
     )?;
     Ok(n == 1)
 }
@@ -299,11 +327,18 @@ pub fn redeem_reset(conn: &Connection, token: &str, now: i64) -> rusqlite::Resul
     let Some(user) = reset_user(conn, token, now)? else {
         return Ok(None);
     };
+    void_resets(conn, user, now)?;
+    Ok(Some(user))
+}
+
+/// Spend every live reset link of `user` (their password just changed:
+/// a link asked for before it mustn't undo it; S1 L7).
+pub fn void_resets(conn: &Connection, user: i64, now: i64) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE auth_resets SET used_at = ?2 WHERE user_id = ?1 AND used_at IS NULL",
         params![user, now],
     )?;
-    Ok(Some(user))
+    Ok(())
 }
 
 /// Forget spent and expired links and old invites (the sweep job).
@@ -318,6 +353,8 @@ pub fn sweep(conn: &Connection, now: i64) -> rusqlite::Result<()> {
         "DELETE FROM auth_invites WHERE coalesce(accepted_at, revoked_at, expires_at) <= ?1",
         [now - 30 * 24 * 60 * 60 * 1000],
     )?;
+    crate::failures::sweep(conn, now)?;
+    crate::gate::sweep(conn, now)?;
     Ok(())
 }
 

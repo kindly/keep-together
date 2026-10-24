@@ -3,6 +3,7 @@
 //! tenant always keeps at least one admin; the check runs in the same
 //! transaction as the change.
 
+use auth::notices::Notice;
 use auth::{accounts, sessions};
 use axum::extract::Path;
 use axum::http::HeaderMap;
@@ -354,7 +355,8 @@ async fn remove(
 
 /// `POST members/{id}/reset-2fa` (admin, step-up): the member's second
 /// factor and recovery codes are cleared and their sessions end; their
-/// next sign-in enrols again. Refused for someone who also belongs to
+/// next sign-in enrols again, which needs an emailed code as well as the
+/// password (S1 M7), and they are emailed a notice now (S1 M3). Refused for someone who also belongs to
 /// another organisation: one group's admin can't weaken an account other
 /// groups rely on (the operator can, `keep auth reset-2fa`).
 async fn reset_2fa(
@@ -365,7 +367,7 @@ async fn reset_2fa(
     require_admin(&t, &account)?;
     let target = user_param(&id)?;
     let a = account.clone();
-    blocking(move || {
+    let email = blocking(move || {
         let tenant = tenant_id(&a, &t.slug)?;
         let now = contracts::now_ms();
         a.store.platform().with_write(|tx| {
@@ -380,11 +382,14 @@ async fn reset_2fa(
             accounts::clear_second_factor(tx, target, now)?;
             sessions::revoke_user(tx, target)?;
             accounts::log(tx, now, "second_factor_reset", Some(target), &a.session.user.to_string(), Some(tenant.as_str()), "")?;
-            Ok(())
+            let email: String =
+                tx.query_row("SELECT email FROM users WHERE id = ?1", [target], |r| r.get(0))?;
+            Ok(email)
         })
     })
     .await?;
     account.runtime.revoked(Revoked::User(target));
+    account.runtime.notify(&email, Notice::FactorReset);
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

@@ -29,20 +29,35 @@ fn reset_2fa_clears_the_factor_ends_sessions_and_logs_the_operator() {
         .platform()
         .with_write(|tx| {
             auth::accounts::set_password(tx, user.0, "password-ann", now).unwrap();
-            auth::accounts::set_second_factor(tx, user.0, auth::SecondFactor::Email, None, now)?;
-            auth::accounts::new_recovery_codes(tx, user.0)?;
+            let keys = auth::Keys::dev();
+            auth::accounts::set_second_factor(
+                tx,
+                &keys,
+                user.0,
+                auth::SecondFactor::Email,
+                None,
+                now,
+            )?;
+            auth::accounts::new_recovery_codes(tx, &keys, user.0)?;
             auth::sessions::create(tx, user.0, auth::Stage::Full, now)
         })
         .unwrap();
     drop(store);
 
+    // The user is told (S1 M3).
+    let notice = cli::auth::reset_2fa(tmp.path(), "ANN@alpha.org", "lost phone, called 24 Oct")
+        .unwrap()
+        .expect("a user");
+    assert_eq!(notice.to, "ann@alpha.org");
+    assert!(notice.subject.contains("second factor was reset"));
     assert!(
-        cli::auth::reset_2fa(tmp.path(), "ANN@alpha.org", "lost phone, called 24 Oct").unwrap()
+        cli::auth::reset_2fa(tmp.path(), "nobody@alpha.org", "")
+            .unwrap()
+            .is_none()
     );
-    assert!(!cli::auth::reset_2fa(tmp.path(), "nobody@alpha.org", "").unwrap());
 
     let store = open();
-    let (factor, codes, sessions, log): (Option<String>, i64, i64, String) = store
+    let (factor, codes, sessions, log, prove): (Option<String>, i64, i64, String, i64) = store
         .platform()
         .with_read(|c| {
             Ok::<_, rusqlite::Error>((
@@ -54,10 +69,14 @@ fn reset_2fa_clears_the_factor_ends_sessions_and_logs_the_operator() {
                     [],
                     |r| r.get(0),
                 )?,
+                c.query_row("SELECT must_prove_email FROM auth_credentials", [], |r| {
+                    r.get(0)
+                })?,
             ))
         })
         .unwrap();
     assert_eq!((factor, codes, sessions), (None, 0, 0));
+    assert_eq!(prove, 1, "the next enrolment needs an emailed code (S1 M7)");
     assert_eq!(log, "operator:lost phone, called 24 Oct");
 }
 

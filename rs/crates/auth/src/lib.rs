@@ -17,7 +17,11 @@
 
 pub mod accounts;
 pub mod codes;
+pub mod failures;
+pub mod gate;
+pub mod keys;
 pub mod limits;
+pub mod notices;
 mod operator;
 pub mod password;
 pub mod schema;
@@ -29,14 +33,28 @@ pub mod users;
 pub use operator::{operator_invite, operator_reset_2fa};
 
 pub use accounts::SecondFactor;
+pub use keys::Keys;
 pub use schema::SCHEMA;
 pub use sessions::{Session, Stage};
 
 /// Partial sign-ins (password checked, second factor or enrolment
-/// pending) and emailed codes last this long.
+/// pending) last this long.
 pub const PARTIAL_TTL_MS: i64 = 15 * 60 * 1000;
+/// Emailed codes last this long (ASVS 2.7.2: at most 10 minutes).
+pub const EMAIL_CODE_TTL_MS: i64 = 10 * 60 * 1000;
 /// A full session lasts this long from sign-in (ADR 0020: 7 days).
 pub const SESSION_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// ...and ends sooner after this long without a request (ASVS 3.3.2).
+pub const IDLE_MS: i64 = 12 * 60 * 60 * 1000;
+/// A session's `last_seen` is written at most this often.
+pub const TOUCH_MS: i64 = 5 * 60 * 1000;
+/// Wrong codes one partial sign-in may enter before it ends (sign in
+/// again).
+pub const SESSION_FACTOR_FAILURES: i64 = 5;
+/// Wrong codes per user within [`FACTOR_WINDOW_MS`] before the second
+/// factor is locked for the rest of that window (S1 review M1).
+pub const USER_FACTOR_FAILURES: i64 = 10;
+pub const FACTOR_WINDOW_MS: i64 = 60 * 60 * 1000;
 /// Admin-only routes need a sign-in (or step-up) this recent.
 pub const STEP_UP_MS: i64 = 60 * 60 * 1000;
 /// Reset links: 15 minutes, single use.

@@ -90,20 +90,24 @@ impl Mailer {
 
     /// From `KEEP_MAIL`, `KEEP_SMTP_URL`, `KEEP_MAIL_FROM` (module docs).
     pub fn from_env() -> Result<Self, MailError> {
-        let from = std::env::var("KEEP_MAIL_FROM").unwrap_or_else(|_| DEFAULT_FROM.into());
-        match std::env::var("KEEP_MAIL").as_deref() {
-            Ok("smtp") => {
-                let url =
-                    std::env::var("KEEP_SMTP_URL").unwrap_or_else(|_| DEFAULT_SMTP_URL.into());
+        Self::from_vars(|name| std::env::var(name).ok())
+    }
+
+    /// As [`Mailer::from_env`], reading variables through `var`.
+    pub fn from_vars(var: impl Fn(&str) -> Option<String>) -> Result<Self, MailError> {
+        let from = var("KEEP_MAIL_FROM").unwrap_or_else(|| DEFAULT_FROM.into());
+        match var("KEEP_MAIL").as_deref() {
+            Some("smtp") => {
+                let url = var("KEEP_SMTP_URL").unwrap_or_else(|| DEFAULT_SMTP_URL.into());
                 Self::smtp(&url, &from)
             }
-            Ok("log") | Err(_) => Ok(Self {
+            Some("log") | None => Ok(Self {
                 from: from.parse().map_err(|e: lettre::address::AddressError| {
                     MailError::Address(from.clone(), e.to_string())
                 })?,
                 transport: Transport::Log,
             }),
-            Ok(other) => Err(MailError::Smtp(format!(
+            Some(other) => Err(MailError::Smtp(format!(
                 "KEEP_MAIL={other:?}: expected log or smtp"
             ))),
         }

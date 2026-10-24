@@ -14,7 +14,7 @@ use http_body_util::BodyExt;
 use serde_json::json;
 
 fn token(cookie: &str) -> &str {
-    cookie.trim_start_matches("kt_session=")
+    cookie.split_once('=').unwrap().1
 }
 
 #[tokio::test]
