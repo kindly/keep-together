@@ -436,7 +436,7 @@ Each one ports backend, routes, SPA and QC flows, and adds its routes to `PORTED
 
 **C1, readiness gate (controller, plus a codex review of all of `rs/`).** Cutover may start when every one of these holds:
 - every row of the parity table on this page is ported, and every parity table reviewed;
-- QC full suite green locally, and 3 nightly runs on staging in a row;
+- QC full suite green locally, and 3 nightly runs on staging in a row; (human, 2026-10-24: no local netem timed run needed for the gate, since staging nightly is the real network; `scripts/qc-netem.sh` stays for diagnosing an odd staging number)
 - the restore drill has passed from both sources;
 - S1 is closed;
 - codex findings are fixed or waived by the human;
