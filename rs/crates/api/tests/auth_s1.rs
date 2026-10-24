@@ -1293,3 +1293,32 @@ async fn with_mail_off_what_needs_email_is_refused() {
     assert_eq!(r.reason(), "mail_off");
     assert!(w.outbox.lock().unwrap().is_empty());
 }
+
+/// Re-review R3: an anonymous request to a tenant route is refused before
+/// its body is read: a body that never finishes doesn't hold it open.
+#[tokio::test]
+async fn an_anonymous_tenant_request_is_refused_before_its_body() {
+    let w = world();
+    let (_keep_open, never) = tokio::sync::oneshot::channel::<()>();
+    let body = HttpBody::from_stream(futures_util::stream::once(async move {
+        let _ = never.await;
+        Ok::<_, std::convert::Infallible>(String::new())
+    }));
+    let req = World::request(
+        "POST",
+        "/api/t/alpha/contacts",
+        Some("__Host-kt_session=nope"),
+        None,
+    )
+    .header(header::CONTENT_TYPE, "application/json")
+    .body(body)
+    .unwrap();
+    let res = tokio::time::timeout(
+        Duration::from_secs(2),
+        tower::ServiceExt::oneshot(w.app.clone(), req),
+    )
+    .await
+    .expect("answered without the body")
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}

@@ -1,13 +1,15 @@
 //! Auth's settings from the environment, and what a deployed environment
-//! (`KEEP_ENV=prod|staging`) refuses to boot without (S1 review H1, M2,
-//! L3). A refusal is the message the boot stops with.
+//! (`KEEP_ENV=prod|staging`, or a non-loopback bind unless `KEEP_ENV=dev`)
+//! refuses to boot without (S1 review H1, M2, L3, re-review R1). Any other
+//! `KEEP_ENV` value is refused. A refusal is the message the boot stops
+//! with.
 //!
 //! | var | |
 //! |---|---|
 //! | `KEEP_APP_ORIGIN` | the SPA's origin; required (https) when deployed |
 //! | `KEEP_CLIENT_IP_HEADER` | the proxy's client-address header (`Fly-Client-IP`); required when deployed, or every client shares the proxy's rate-limit bucket. Its value counts only when it is one IP address; `X-Forwarded-For` and `Forwarded` (lists a client can prepend to) are refused |
-//! | `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER` | 32 bytes, base64 ([`auth::keys`]); required when deployed, else the published dev keys |
-//! | `KEEP_MAIL=log` | prints codes and links: only for dev (`KEEP_ENV=dev`, or unset) on a loopback bind. `KEEP_MAIL=off`: no mail, and the api refuses what needs it (staging until SES) |
+//! | `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER` | 32 bytes, base64 ([`auth::keys`]); required when deployed, and on any non-loopback bind; else the published dev keys |
+//! | `KEEP_MAIL=log` | prints codes and links: only for dev (`KEEP_ENV=dev`, or unset) on a loopback bind. `KEEP_MAIL=off`: no mail, and the api refuses what needs it (staging until SES; refused in prod) |
 //! | `KEEP_DEV_AUTH=1` | refused when deployed |
 
 use std::net::IpAddr;
@@ -21,12 +23,27 @@ use super::{Config, Runtime, dev_auth_refused};
 /// `var`, for a server bound to `bind`. `Err` names what to fix.
 pub fn runtime(var: impl Fn(&str) -> Option<String>, bind: IpAddr) -> Result<Runtime, String> {
     let keep_env = var("KEEP_ENV");
-    let deployed = dev_auth_refused(keep_env.as_deref());
+    if !matches!(keep_env.as_deref(), None | Some("dev" | "staging" | "prod")) {
+        return Err(format!(
+            "KEEP_ENV={:?}: expected dev, staging or prod",
+            keep_env.unwrap_or_default()
+        ));
+    }
+    // Deployed: staging or prod, or any reachable bind not explicitly dev,
+    // so a machine missing KEEP_ENV gets every deployed rule (re-review R1).
+    let deployed = dev_auth_refused(keep_env.as_deref())
+        || (!bind.is_loopback() && keep_env.as_deref() != Some("dev"));
     if deployed && var("KEEP_DEV_AUTH").as_deref() == Some("1") {
-        return Err("KEEP_DEV_AUTH=1 is refused with KEEP_ENV=prod|staging".into());
+        return Err(
+            "KEEP_DEV_AUTH=1 is refused when deployed (KEEP_ENV=prod|staging, or a reachable bind)"
+                .into(),
+        );
     }
 
     let mailer = Mailer::from_vars(&var).map_err(|e| format!("mail settings: {e}"))?;
+    if mailer.is_off() && keep_env.as_deref() == Some("prod") {
+        return Err("KEEP_MAIL=off is refused with KEEP_ENV=prod: resets, notices and invites need mail. Set KEEP_MAIL=smtp".into());
+    }
     // Dev is KEEP_ENV=dev, or unset (a local `cargo run`); a deployed
     // machine also binds a reachable address.
     let dev = matches!(keep_env.as_deref(), None | Some("dev"));
@@ -44,15 +61,13 @@ pub fn runtime(var: impl Fn(&str) -> Option<String>, bind: IpAddr) -> Result<Run
             let origin = origin.trim_end_matches('/').to_owned();
             if deployed && !origin.starts_with("https://") {
                 return Err(format!(
-                    "KEEP_APP_ORIGIN={origin:?} must be https with KEEP_ENV=prod|staging"
+                    "KEEP_APP_ORIGIN={origin:?} must be https when deployed"
                 ));
             }
             config.app_origin = origin;
         }
         None if deployed => {
-            return Err(
-                "KEEP_APP_ORIGIN is required with KEEP_ENV=prod|staging (links in emails)".into(),
-            );
+            return Err("KEEP_APP_ORIGIN is required when deployed (links in emails)".into());
         }
         None => {}
     }
@@ -70,23 +85,22 @@ pub fn runtime(var: impl Fn(&str) -> Option<String>, bind: IpAddr) -> Result<Run
             config.client_ip_header = Some(header);
         }
         None if deployed => {
-            return Err(
-                "KEEP_CLIENT_IP_HEADER is required with KEEP_ENV=prod|staging \
+            return Err("KEEP_CLIENT_IP_HEADER is required when deployed \
                  (Fly-Client-IP on Fly): without it every client shares the proxy's \
                  rate-limit bucket"
-                    .into(),
-            );
+                .into());
         }
         None => {}
     }
 
     let keys = match (var("KEEP_SETTINGS_KEY"), var("KEEP_AUTH_PEPPER")) {
         (Some(key), Some(pepper)) => Keys::parse(&key, &pepper).map_err(|e| e.to_string())?,
-        (None, None) if !deployed => Keys::dev(),
+        // The published dev keys: never on a reachable bind.
+        (None, None) if !deployed && bind.is_loopback() => Keys::dev(),
         _ => {
             return Err(
-                "KEEP_SETTINGS_KEY and KEEP_AUTH_PEPPER are both required with \
-                 KEEP_ENV=prod|staging (and never one without the other)"
+                "KEEP_SETTINGS_KEY and KEEP_AUTH_PEPPER are both required when deployed \
+                 (KEEP_ENV=prod|staging, or a reachable bind) and never one without the other"
                     .into(),
             );
         }
@@ -244,6 +258,53 @@ mod tests {
             let err = boot_owned(&st, ANY).err().unwrap();
             assert!(err.contains("Fly-Client-IP"), "{name}: {err}");
         }
+    }
+
+    /// R1: a reachable bind is deployed unless KEEP_ENV=dev says so, an
+    /// unknown KEEP_ENV is refused, and the dev keys never leave loopback.
+    #[test]
+    fn a_reachable_bind_is_deployed_unless_dev() {
+        let mut st = staging();
+        st.remove(0);
+        let err = boot_owned(&without(&st, "KEEP_CLIENT_IP_HEADER"), ANY)
+            .err()
+            .unwrap();
+        assert!(err.contains("KEEP_CLIENT_IP_HEADER"), "{err}");
+        let err = boot_owned(&without(&st, "KEEP_SETTINGS_KEY"), ANY)
+            .err()
+            .unwrap();
+        assert!(err.contains("KEEP_SETTINGS_KEY"), "{err}");
+        assert!(boot_owned(&st, ANY).is_ok(), "unset KEEP_ENV, all set");
+        for bad in ["production", "Prod", "test"] {
+            let mut v = staging();
+            v[0].1 = bad.into();
+            assert!(
+                boot_owned(&v, ANY).err().unwrap().contains("KEEP_ENV"),
+                "{bad}"
+            );
+        }
+        // Dev in a container: no deployed rules, but no dev keys either.
+        let dev = [("KEEP_ENV", "dev"), ("KEEP_MAIL", "smtp")];
+        assert!(boot(&dev, ANY).err().unwrap().contains("KEEP_SETTINGS_KEY"));
+        let (k, p) = (Keys::generate(), Keys::generate());
+        let mut keyed = dev.to_vec();
+        keyed.push(("KEEP_SETTINGS_KEY", &k));
+        keyed.push(("KEEP_AUTH_PEPPER", &p));
+        assert!(boot(&keyed, ANY).is_ok());
+    }
+
+    /// R2: no mail is for staging, never prod.
+    #[test]
+    fn mail_off_is_refused_in_prod() {
+        let mut prod = staging();
+        prod[0].1 = "prod".into();
+        prod[1].1 = "off".into();
+        assert!(
+            boot_owned(&prod, ANY)
+                .err()
+                .unwrap()
+                .contains("KEEP_MAIL=off")
+        );
     }
 
     /// Local dev runs with the published dev keys; half a pair is refused.

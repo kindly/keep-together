@@ -27,7 +27,7 @@ Env (`api`):
 | `KEEP_PORT` | `8787` | |
 | `KEEP_MAX_OPEN_ORGS` | `64` | org files kept open beyond those in use |
 | `KEEP_DEV_AUTH=1` | off | the dev login (below). **Dev auth is no auth**: anyone who can reach the port signs in as anyone. It is honoured only on a loopback bind; on any other address it is ignored with a warning. Loopback is not the whole story: Vite's `/api` proxy is reachable wherever Vite is (`tailscale serve` puts it on the tailnet, `allowedHosts: ['.ts.net']`), and a DNS-rebinding page in your browser can reach `127.0.0.1`. Fine for seed data; never put real data behind dev auth |
-| `KEEP_ENV` | unset (= `dev`) | `prod` / `staging`: refuses `KEEP_DEV_AUTH` and `KEEP_MAIL=log`, needs `KEEP_APP_ORIGIN` (https), `KEEP_CLIENT_IP_HEADER`, `KEEP_SETTINGS_KEY` and `KEEP_AUTH_PEPPER` (`api::auth::boot`) |
+| `KEEP_ENV` | unset | `dev`, `staging` or `prod` (anything else stops the boot). Deployed = `prod`/`staging`, or a non-loopback bind unless `dev`: refuses `KEEP_DEV_AUTH` and `KEEP_MAIL=log`, needs `KEEP_APP_ORIGIN` (https), `KEEP_CLIENT_IP_HEADER`, `KEEP_SETTINGS_KEY` and `KEEP_AUTH_PEPPER` (`api::auth::boot`); the dev keys only on loopback; `prod` refuses `KEEP_MAIL=off` |
 | `KEEP_APP_ORIGIN` | `http://localhost:3000` | the SPA's origin: links in emails, the trusted `Origin` for writes |
 | `KEEP_CLIENT_IP_HEADER` | unset (peer address) | the proxy's client-address header for rate limits (`Fly-Client-IP` on Fly); never where clients reach the api directly. Its value counts only if it is one IP (IPv6 by /64); `X-Forwarded-For`/`Forwarded` are refused |
 | `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER` | published dev keys | 32 bytes, base64: TOTP secrets sealed (AES-GCM), codes HMAC (`auth::keys`) |

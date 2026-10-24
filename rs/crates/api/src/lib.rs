@@ -145,7 +145,7 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .route("/healthz", get(health::healthz))
         .merge(auth::routes())
         .nest("/api/t/{slug}", tenant_routes)
-        .layer(middleware::from_fn(body::buffer))
+        .layer(middleware::from_fn_with_state(state.clone(), body::buffer))
         .layer(middleware::from_fn(auth::guard::dev_host))
         .layer(middleware::from_fn_with_state(
             state.clone(),

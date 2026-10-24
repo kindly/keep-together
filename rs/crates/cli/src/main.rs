@@ -148,6 +148,11 @@ fn main() -> ExitCode {
                     eprintln!(
                         "2FA reset for {email} (logged); their sessions ended, next sign-in enrols again (with an emailed code)"
                     );
+                    if comms::mail::Mailer::from_env().is_ok_and(|m| m.is_off()) {
+                        eprintln!(
+                            "warning: KEEP_MAIL=off: re-enrolling needs an emailed code, so {email} can't sign in again until mail is on (docs/ops.md)"
+                        );
+                    }
                     match send(notice, "notice") {
                         Ok(()) => ExitCode::SUCCESS,
                         Err(e) => fail(format!(
