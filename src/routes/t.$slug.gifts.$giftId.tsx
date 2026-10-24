@@ -29,18 +29,12 @@ import {
 } from '../lib/giftaid'
 import { threeWayMerge } from '../lib/merge'
 import { AMOUNT_MESSAGES, amountPence } from '../lib/gift-form'
-import { cachedTenant, useCanWrite, useTenant } from '../lib/tenant'
+import { useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/gifts/$giftId')({
   component: GiftPage,
-  loader: ({ context: { convex }, params }) => {
-    const tenant = cachedTenant(convex, params.slug)
-    if (!tenant) return
-    convex.prewarmQuery({
-      query: api.giving.queries.get,
-      args: { tenantId: tenant._id, id: params.giftId as Id<'contributions'> },
-    })
-  },
+  // Not ported yet: renders "being ported" (lib/data/ported.ts). Its
+  // loader prewarmed Convex queries; the porting step writes a new one.
 })
 
 type Gift = NonNullable<FunctionReturnType<typeof api.giving.queries.get>>

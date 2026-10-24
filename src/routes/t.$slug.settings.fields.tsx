@@ -34,18 +34,12 @@ import type {
   Option,
   OptionFields,
 } from '../lib/field-settings'
-import { cachedTenant, useCanManageList, useTenant } from '../lib/tenant'
+import { useCanManageList, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/fields')({
   component: FieldsPage,
-  loader: ({ context: { convex }, params }) => {
-    const tenant = cachedTenant(convex, params.slug)
-    if (!tenant) return
-    convex.prewarmQuery({
-      query: api.contacts.fields.list,
-      args: { tenantId: tenant._id },
-    })
-  },
+  // Not ported yet: renders "being ported" (lib/data/ported.ts). Its
+  // loader prewarmed Convex queries; the porting step writes a new one.
 })
 
 type MarkOpen = (id: string, isOpen: boolean) => void

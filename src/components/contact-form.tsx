@@ -170,8 +170,12 @@ export function ContactForm({
       return
     }
     dispatch({ type: 'saving' })
-    for (const action of await saveContactForm(submitted, () => latest.current))
-      dispatch(action)
+    const actions = await saveContactForm(submitted, () => latest.current)
+    // A stale slice came back merged (`server` after `saved`): the queued
+    // retry is a whole edit already made, so it goes now, not after the
+    // autosave pause.
+    if (actions.some((a) => a.type === 'server')) saveNow.current = true
+    for (const action of actions) dispatch(action)
   }
 
   useEffect(() => {

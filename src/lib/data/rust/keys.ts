@@ -1,0 +1,22 @@
+/**
+ * The TanStack Query keys. Everything a tenant shows is under
+ * `['t', slug]`, so a `reset` (events.ts) or a sign-out can drop it in
+ * one go; a key without its last part is the prefix for all of them.
+ */
+export const keys = {
+  me: ['me'] as const,
+  fields: (slug: string) => ['t', slug, 'fields'] as const,
+  contacts: (slug: string) => ['t', slug, 'contacts'] as const,
+  list: (slug: string, filters?: { q?: string }) =>
+    filters
+      ? (['t', slug, 'contacts', 'list', filters] as const)
+      : (['t', slug, 'contacts', 'list'] as const),
+  search: (slug: string, args?: { q?: string }) =>
+    args
+      ? (['t', slug, 'contacts', 'search', args] as const)
+      : (['t', slug, 'contacts', 'search'] as const),
+  contact: (slug: string, id: string) =>
+    ['t', slug, 'contacts', 'one', id] as const,
+  history: (slug: string, id: string) =>
+    ['t', slug, 'contacts', 'one', id, 'history'] as const,
+}

@@ -7,18 +7,12 @@ import type { Doc } from '../../convex/_generated/dataModel'
 import { api } from '../../convex/_generated/api'
 import { IDENTIFIER_TYPE_LIMIT } from '../../convex/contacts/rules'
 import { StaffListSwitch } from '../components/staff-list-switch'
-import { cachedTenant, useCanManageList, useTenant } from '../lib/tenant'
+import { useCanManageList, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/identifiers')({
   component: IdentifierTypesPage,
-  loader: ({ context: { convex }, params }) => {
-    const tenant = cachedTenant(convex, params.slug)
-    if (!tenant) return
-    convex.prewarmQuery({
-      query: api.contacts.queries.listIdentifierTypes,
-      args: { tenantId: tenant._id, includeInactive: true },
-    })
-  },
+  // Not ported yet: renders "being ported" (lib/data/ported.ts). Its
+  // loader prewarmed Convex queries; the porting step writes a new one.
 })
 
 /** From how many types the page says how close the group is to the cap. */

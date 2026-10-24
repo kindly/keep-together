@@ -25,18 +25,12 @@ import {
   shownParts,
 } from '../lib/source-codes'
 import type { Draft, Fields, Part } from '../lib/source-codes'
-import { cachedTenant, useCanManageList, useTenant } from '../lib/tenant'
+import { useCanManageList, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/sources')({
   component: SourceCodesPage,
-  loader: ({ context: { convex }, params }) => {
-    const tenant = cachedTenant(convex, params.slug)
-    if (!tenant) return
-    convex.prewarmQuery({
-      query: api.sources.queries.tree,
-      args: { tenantId: tenant._id },
-    })
-  },
+  // Not ported yet: renders "being ported" (lib/data/ported.ts). Its
+  // loader prewarmed Convex queries; the porting step writes a new one.
 })
 
 const INDENT = { category: '', detail: 'pl-6', version: 'pl-12' } as const

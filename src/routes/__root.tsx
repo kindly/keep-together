@@ -7,11 +7,7 @@ import { TanStackDevtools } from '@tanstack/react-devtools'
 import { MyTenantsProvider } from '../lib/data'
 import '../styles.css'
 
-/**
- * Route loaders' clients. Only the build's backend (`VITE_BACKEND`) is
- * constructed; on Rust, `convex` is absent and no route that reads it is
- * reachable from the navigation.
- */
+/** What route loaders get: the query client, to start their reads. */
 export type RouterContext = Loaders
 
 export const Route = createRootRouteWithContext<RouterContext>()({

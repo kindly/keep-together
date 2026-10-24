@@ -1,8 +1,9 @@
 /**
- * The contacts pages on the Rust API, through TanStack Query: no live
- * queries. A read is fetched, refetched when the window regains focus, and
- * invalidated after every write this tab makes; another tab's change shows
- * on focus, or as a stale slice the form merges at save time (`save.ts`).
+ * The contacts pages on the Rust API, through TanStack Query. A read is
+ * fetched once and kept until something invalidates it: this tab's own
+ * writes (each hook below), and every other change through the tenant's
+ * event stream (`../events.ts`). A save against a change not yet seen
+ * merges the stale slice at once (`save.ts`).
  */
 import {
   QueryClient,
@@ -18,14 +19,17 @@ import { LIST_PAGE_SIZE } from '../../paged-list'
 import type { ListFilters, PagedList } from '../../paged-list'
 import type { Tenant } from '../../tenant'
 import { useTenant } from '../../tenant'
+import { ownWrite } from '../events'
 import type { ContactPage } from '../rust-types/ContactPage'
 import type { ContactView as WireContact } from '../rust-types/ContactView'
 import type { Created } from '../rust-types/Created'
+import type { Executed } from '../rust-types/Executed'
 import type { FieldDefinition as WireField } from '../rust-types/FieldDefinition'
 import type { HistoryPage } from '../rust-types/HistoryPage'
 import type { Me } from '../rust-types/Me'
 import type { SaveFormResult } from '../rust-types/SaveFormResult'
 import type { SearchResult as WireSearch } from '../rust-types/SearchResult'
+import type { TenantInfo } from '../rust-types/TenantInfo'
 import type {
   ContactView,
   CreateContact,
@@ -39,6 +43,7 @@ import type {
   SearchResult,
 } from '../types'
 import { RustApiError, get, post, tenantPath } from './client'
+import { keys } from './keys'
 import { saveActions, saveRequest } from './save'
 import {
   contactFromWire,
@@ -55,39 +60,32 @@ export const queryClient = new QueryClient({
       // Refused requests (403, 404 …) won't change on a retry.
       retry: (failures, error) =>
         !(error instanceof RustApiError && error.status >= 400) && failures < 2,
-      refetchOnWindowFocus: true,
+      // Fresh until invalidated: the event stream says when a tenant's
+      // data changed, so a remount or a refocus needn't ask again.
+      staleTime: Infinity,
     },
   },
 })
 
-const keys = {
-  me: ['me'] as const,
-  fields: (slug: string) => ['t', slug, 'fields'] as const,
-  contacts: (slug: string) => ['t', slug, 'contacts'] as const,
-  list: (slug: string, filters: object) =>
-    ['t', slug, 'contacts', 'list', filters] as const,
-  search: (slug: string, args: object) =>
-    ['t', slug, 'contacts', 'search', args] as const,
-  contact: (slug: string, id: string) =>
-    ['t', slug, 'contacts', 'one', id] as const,
-  history: (slug: string, id: string) =>
-    ['t', slug, 'contacts', 'one', id, 'history'] as const,
-}
-
 // ── session ────────────────────────────────────────────────────────────────
+
+async function fetchMe(): Promise<Me | null> {
+  try {
+    return await get<Me>('me')
+  } catch (e) {
+    if (e instanceof RustApiError && e.status === 401) return null
+    throw e
+  }
+}
 
 /** The signed-in user; null when signed out, undefined while loading. */
 function useMe(): Me | null | undefined {
   const me = useQuery({
     queryKey: keys.me,
-    queryFn: async () => {
-      try {
-        return await get<Me>('me')
-      } catch (e) {
-        if (e instanceof RustApiError && e.status === 401) return null
-        throw e
-      }
-    },
+    queryFn: fetchMe,
+    // Memberships change without a tenant event (an invite elsewhere).
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
   })
   return me.data
 }
@@ -153,6 +151,43 @@ export function useSignOut() {
     // Everything read was the last user's: drop it, refetch what's shown.
     await qc.resetQueries()
   }
+}
+
+// ── cold load ──────────────────────────────────────────────────────────────
+
+/** `GET /api/t/{slug}/boot` (F1): what a tenant page needs first. */
+export type Boot = {
+  me: Me
+  org: TenantInfo
+  fields: Array<WireField>
+  firstPage: ContactPage
+}
+
+/** The list's key with no filters: the page the boot carries. */
+const unfiltered = (slug: string) => keys.list(slug, { q: '' })
+
+/**
+ * A cold load of a tenant page: one request answers the session, the
+ * field definitions and the unfiltered list's first page, and seeds each
+ * one's query, so the hooks that ask for them as the page mounts join it
+ * instead of asking themselves. Called once, before the first render
+ * (`main.tsx`). If it fails, each query asks on its own.
+ */
+export function boot(qc: QueryClient, slug: string) {
+  const answer = get<Boot>(tenantPath(slug, 'boot'))
+  void qc.prefetchQuery({
+    queryKey: keys.me,
+    queryFn: () => answer.then((b) => b.me, fetchMe),
+  })
+  void qc.prefetchQuery({
+    ...fieldsQuery(slug),
+    queryFn: () => answer.then((b) => fieldsFromWire(b.fields)),
+  })
+  void qc.prefetchInfiniteQuery({
+    queryKey: unfiltered(slug),
+    initialPageParam: null as string | null,
+    queryFn: () => answer.then((b) => b.firstPage),
+  })
 }
 
 // ── reads ──────────────────────────────────────────────────────────────────
@@ -269,10 +304,7 @@ export function useBulkSetField(): ReturnType<typeof convexBulkSetField> {
 }
 const IDLE = { state: 'idle' } as const
 
-/** Nothing held: no live list to hold on Rust. */
-export function releaseListHold() {}
-
-// Not in the Rust spike: nobody to name, no holds or shared-address
+// Not ported yet (A1, A3): nobody to name, no holds or shared-address
 // lookups, no identifier types.
 const NO_MEMBERS: Array<Member> = []
 export const useMembers = (): Array<Member> | undefined => NO_MEMBERS
@@ -283,7 +315,9 @@ export const useEmailContext = (
   alsoUsedBy: undefined,
   held: undefined,
 })
-export const useIdentifierTypes = (): Array<IdentifierType> => []
+const NO_TYPES: Array<IdentifierType> = []
+export const useIdentifierTypes = (): Array<IdentifierType> | undefined =>
+  NO_TYPES
 
 // ── writes ─────────────────────────────────────────────────────────────────
 
@@ -296,6 +330,13 @@ export function useSaveContactForm(id: Id<'contacts'>): SaveContactForm {
         tenantPath(slug, 'contacts', id, 'save'),
         saveRequest(submitted, current().counters),
       )
+      for (const slice of answer.saved)
+        ownWrite(
+          slug,
+          id,
+          `contacts.${slice}`,
+          answer.counters[slice as keyof SaveFormResult['counters']],
+        )
       return saveActions(submitted, current(), answer, Date.now())
     } catch (e) {
       return [
@@ -367,10 +408,11 @@ export function useContactHistory(id: Id<'contacts'>) {
     // refetch after it brings the new state, and the switch with it.
     setArchived: async (archived: boolean, expected: number) => {
       try {
-        await post(tenantPath(slug, 'contacts', id, 'archive'), {
-          expected,
-          archived,
-        })
+        const done = await post<Executed>(
+          tenantPath(slug, 'contacts', id, 'archive'),
+          { expected, archived },
+        )
+        ownWrite(slug, id, 'contacts.archive', done.counter)
       } finally {
         await after()
       }

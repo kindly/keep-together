@@ -1,11 +1,10 @@
 /**
- * The contacts pages' data interface (rust spike, step 2b): what each hook
- * in `src/lib/data` answers, whichever backend is behind it. The shapes are
- * the ones the pages rendered from Convex before the seam; the Rust side
- * adapts its JSON into them (`rust/wire.ts`).
+ * The contacts pages' data interface: what each hook in `src/lib/data`
+ * answers. The shapes are the ones the pages rendered from Convex before
+ * the port (its types are read-only reference until cutover); the Rust
+ * API's JSON is adapted into them (`rust/wire.ts`).
  */
 import type { QueryClient } from '@tanstack/react-query'
-import type { ConvexReactClient } from 'convex/react'
 import type { FunctionArgs, FunctionReturnType } from 'convex/server'
 import type { api } from '../../../convex/_generated/api'
 import type { Id } from '../../../convex/_generated/dataModel'
@@ -31,10 +30,9 @@ export type Member = { userId: Id<'users'>; name: string }
 /**
  * The form's save: submits `submitted` (the dirty slices, against the
  * counters the form holds) and answers the reducer actions to dispatch,
- * in order. `current` reads the form's state as it is now. Convex answers
- * one `saved` or `failed`; Rust turns a 409 `stale` into `saved` +
- * `server`, so the reducer merges the slice's current state and queues
- * the retry itself (rust/save.ts).
+ * in order. `current` reads the form's state as it is now. A stale slice
+ * answers `saved` + `server`, so the reducer merges the slice's current
+ * state and queues the retry itself (rust/save.ts).
  */
 export type SaveContactForm = (
   submitted: Partial<Slices>,
@@ -49,23 +47,20 @@ export type CreateOutcome =
 
 export type CreateContact = (
   details: Payloads['details'],
-  /** A source code version, Convex only. */
+  /** A source code version (not ported yet: A2). */
   acquisitionCodeId?: Id<'sourceCodes'>,
 ) => Promise<CreateOutcome>
 
-/** The saved addresses' "also used by" and holds (Convex only). */
+/** The saved addresses' "also used by" and holds (not ported yet: A1). */
 export type EmailContext = {
   alsoUsedBy: Parameters<typeof contactWarnings>[1]
   held: Held | undefined
 }
 
-/** An identifier type, archived ones included (Convex only). */
+/** An identifier type, archived ones included (not ported yet: A1). */
 export type IdentifierType = FunctionReturnType<
   typeof api.contacts.queries.listIdentifierTypes
 >[number]
 
-/**
- * The router context route loaders get (`__root.tsx`): each backend uses
- * its own client. The other one is never constructed in that build.
- */
-export type Loaders = { convex: ConvexReactClient; queryClient: QueryClient }
+/** The router context route loaders get (`__root.tsx`). */
+export type Loaders = { queryClient: QueryClient }

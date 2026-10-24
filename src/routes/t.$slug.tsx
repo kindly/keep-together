@@ -1,16 +1,22 @@
-import { Link, Outlet, createFileRoute } from '@tanstack/react-router'
+import {
+  Link,
+  Outlet,
+  createFileRoute,
+  useMatches,
+} from '@tanstack/react-router'
 import { useMutation } from 'convex/react'
 import { useEffect, useRef } from 'react'
 import { api } from '../../convex/_generated/api'
 import { TenantContext } from '../lib/tenant'
 import type { Tenant } from '../lib/tenant'
-import { ContactQueryCache } from '../lib/query-cache'
 import {
-  BACKEND,
   FEATURES,
   SignedIn,
   SignedOut,
+  isPorted,
   useMyTenants,
+  useOrgEvents,
+  useSignOut,
 } from '../lib/data'
 import { DonationsMenu } from '../components/gift-nav'
 
@@ -55,7 +61,8 @@ function Resolved({ slug }: { slug: string }) {
   }
   return (
     <TenantContext.Provider value={tenant}>
-      {/* Convex only: the Rust stub has no "last used" group. */}
+      <Events slug={slug} />
+      {/* Not ported yet (A3): the "last used" group. */}
       {FEATURES.settings && (
         <RememberOpened tenant={tenant} tenants={tenants} />
       )}
@@ -82,7 +89,7 @@ function Resolved({ slug }: { slug: string }) {
               Contacts
             </Link>
             {FEATURES.gifts && <DonationsMenu tenantId={tenant._id} />}
-            {FEATURES.settings && (
+            {FEATURES.settings ? (
               <Link
                 to="/t/$slug/settings"
                 params={{ slug }}
@@ -91,19 +98,49 @@ function Resolved({ slug }: { slug: string }) {
               >
                 Settings
               </Link>
+            ) : (
+              // Settings holds Sign out; until it is ported, the header does.
+              <SignOut />
             )}
           </nav>
         </header>
-        {/* Convex's keep-alive cache; TanStack Query is Rust's own. */}
-        {BACKEND === 'rust' ? (
-          <Outlet />
-        ) : (
-          <ContactQueryCache>
-            <Outlet />
-          </ContactQueryCache>
-        )}
+        <PortedOutlet />
       </div>
     </TenantContext.Provider>
+  )
+}
+
+/** The tenant's change stream, while one of its pages is open. */
+function Events({ slug }: { slug: string }) {
+  useOrgEvents(slug)
+  return null
+}
+
+/**
+ * The page, or "being ported" for a route the Rust backend doesn't serve
+ * yet (`lib/data/ported.ts`): its links are hidden, but a bookmark or a
+ * typed URL still lands here.
+ */
+function PortedOutlet() {
+  const leaf = useMatches({ select: (m) => m.at(-1)?.routeId })
+  if (leaf === undefined || isPorted(leaf)) return <Outlet />
+  return (
+    <main className="mx-auto max-w-lg p-6">
+      <p>This page is being ported to the new backend.</p>
+    </main>
+  )
+}
+
+function SignOut() {
+  const signOut = useSignOut()
+  return (
+    <button
+      type="button"
+      onClick={() => void signOut()}
+      className="ml-auto text-sm text-neutral-600 hover:underline"
+    >
+      Sign out
+    </button>
   )
 }
 

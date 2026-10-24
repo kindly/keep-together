@@ -8,10 +8,13 @@ import type { RecentGift } from '../lib/gifts'
 import type { Tenant } from '../lib/tenant'
 import type * as TenantLib from '../lib/tenant'
 import type * as GiftsLib from '../lib/gifts'
+import type * as DataLib from '../lib/data'
 
 // The navigation (cash-gifts step 4): header, group home, landing on "/",
 // and Settings → Switch group. The router is reduced to plain links with
-// their params filled in, so each test reads the hrefs it renders.
+// their params filled in, so each test reads the hrefs it renders. Most
+// tests run as if every route were ported (migration-rust F3); the
+// "being ported" ones at the end run with today's PORTED list.
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -23,6 +26,8 @@ let params: Record<string, string> = {}
 const TabParams = createContext<Record<string, string> | null>(null)
 const navigated: Array<string> = []
 const navigate = vi.fn()
+// Whether every route counts as ported, and the route the layout shows.
+const port = vi.hoisted(() => ({ all: true, leaf: '/t/$slug/' }))
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (options: object) => ({
     options,
@@ -55,6 +60,8 @@ vi.mock('@tanstack/react-router', () => ({
   },
   Outlet: () => <div data-testid="outlet" />,
   useNavigate: () => navigate,
+  useMatches: ({ select }: { select: (m: Array<object>) => unknown }) =>
+    select([{ routeId: '__root__' }, { routeId: port.leaf }]),
 }))
 
 const opened = vi.fn()
@@ -75,6 +82,22 @@ vi.mock('../lib/query-cache', () => ({
 }))
 
 let tenants: Array<Tenant> | undefined
+vi.mock('../lib/data', async (original) => {
+  const real = await original<typeof DataLib>()
+  return {
+    ...real,
+    get FEATURES() {
+      return { ...real.FEATURES, gifts: port.all, settings: port.all }
+    },
+    isPorted: (id: string) => port.all || real.isPorted(id),
+    SignedIn: ({ children }: { children: ReactNode }) => children,
+    SignedOut: () => null,
+    SessionLoading: () => null,
+    useMyTenants: () => tenants,
+    useSignOut: () => signOut,
+    useOrgEvents: () => {},
+  }
+})
 vi.mock('../lib/tenant', async (original) => ({
   ...(await original<typeof TenantLib>()),
   useMyTenants: () => tenants,
@@ -113,6 +136,8 @@ const gift = (over: Partial<RecentGift>) =>
 let root: Root
 let el: HTMLDivElement
 beforeEach(() => {
+  port.all = true
+  port.leaf = '/t/$slug/'
   params = { slug: 'alpha' }
   tenants = [group('alpha')]
   gifts = []
@@ -378,4 +403,46 @@ test('Switch group lists every group by name, each opening at its home', async (
     'Betabeta · admin',
     'Gammagamma · viewer',
   ])
+})
+
+test('being ported: the header has Contacts and Sign out, nothing unported', async () => {
+  port.all = false
+  tenants = [group('alpha'), group('beta', { lastUsedAt: 5 })]
+  await page(import('./t.$slug'))
+  const nav = el.querySelector('nav[aria-label="Main"]')!
+  expect(links(nav)).toEqual([
+    ['Alpha', '/t/alpha'],
+    ['Contacts', '/t/alpha/contacts'],
+  ])
+  expect(nav.textContent).not.toContain('Donations')
+  // "Last used" is Settings' (A3): nothing recorded meanwhile.
+  expect(opened).not.toHaveBeenCalled()
+  const button = [...nav.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Sign out',
+  )!
+  act(() => button.click())
+  expect(signOut).toHaveBeenCalledOnce()
+  expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
+})
+
+test('being ported: an unported route shows the placeholder, not the page', async () => {
+  port.all = false
+  port.leaf = '/t/$slug/settings/fields'
+  await page(import('./t.$slug'))
+  expect(text()).toContain('This page is being ported')
+  expect(el.querySelector('[data-testid="outlet"]')).toBeNull()
+  port.leaf = '/t/$slug/contacts/$contactId'
+  await page(import('./t.$slug'))
+  expect(text()).not.toContain('being ported')
+  expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
+})
+
+test('being ported: home has no gift actions', async () => {
+  port.all = false
+  await home(group('alpha', { role: 'staff' }))
+  expect(links()).toEqual([
+    ['Find a contact', '/t/alpha/contacts'],
+    ['New contact', '/t/alpha/contacts/new'],
+  ])
+  expect(text()).not.toContain('My recent gifts')
 })
