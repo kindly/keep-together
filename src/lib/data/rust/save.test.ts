@@ -259,4 +259,111 @@ describe('rust save', () => {
     expect(s.dirty.details).toBe(true)
     expect(s.needsSave).toBe(false)
   })
+
+  test('codex C1 #1: a save never adopts the counter of a slice it did not send', () => {
+    // B adds a phone (methods 5 → 6); A, still showing no phone, saves a
+    // nickname. The answer carries every counter, methods' at 6.
+    const { state, submitted } = saving({
+      details: { ...slices.details, nickname: 'Countess' },
+    })
+    const s = run(
+      state,
+      saveActions(
+        submitted,
+        state,
+        answer({
+          saved: ['details'],
+          counters: {
+            details: 4,
+            methods: 6,
+            addresses: 0,
+            archive: 0,
+            fields: 0,
+            identifiers: 0,
+            acquisition: 0,
+          },
+        }),
+        1,
+      ),
+    )
+    expect(s.counters.details).toBe(4)
+    expect(s.counters.methods).toBe(5)
+    // A edits methods before the refetch lands: the save is checked
+    // against 5, so the server reports it stale instead of deleting B's
+    // phone.
+    const ownEmail = {
+      key: 'e2',
+      label: 'work' as const,
+      address: 'ada@work',
+      isPrimary: false,
+    }
+    const edited = reduce(
+      reduce(s, {
+        type: 'edit',
+        slice: 'methods',
+        value: {
+          ...slices.methods,
+          emails: [...slices.methods.emails, ownEmail],
+        },
+      }),
+      { type: 'commit' },
+    )
+    expect(saveRequest(submission(edited), edited.counters)).toMatchObject({
+      methods: { expected: 5 },
+    })
+    // The refetch (B's phone at 6) is not mistaken for an echo: merged in.
+    const phone = {
+      key: 'p1',
+      label: 'mobile' as const,
+      number: '07700 900000',
+      isPrimary: true,
+    }
+    const fetched = { ...slices.methods, phones: [phone] }
+    const merged = reduce(edited, {
+      type: 'server',
+      slices: { ...s.base, methods: fetched },
+      counters: { ...s.counters, methods: 6 },
+    })
+    expect(merged.counters.methods).toBe(6)
+    expect(merged.local.methods.phones).toEqual([phone])
+    expect(saveRequest(submission(merged), merged.counters)).toEqual({
+      source: 'autosave',
+      methods: {
+        expected: 6,
+        emails: [...slices.methods.emails, ownEmail],
+        phones: [phone],
+      },
+    })
+  })
+
+  test('codex C1 #1: a refused slice keeps its counter too', () => {
+    // Validity is checked before staleness: a refused slice's counter may
+    // be another tab's.
+    const { state, submitted } = saving({
+      details: { ...slices.details, firstName: '' },
+    })
+    const s = run(
+      state,
+      saveActions(
+        submitted,
+        state,
+        answer({
+          problems: {
+            details: [{ field: 'firstName', message: 'A name is needed' }],
+          },
+          counters: {
+            details: 9,
+            methods: 5,
+            addresses: 0,
+            archive: 0,
+            fields: 0,
+            identifiers: 0,
+            acquisition: 0,
+          },
+        }),
+        1,
+      ),
+    )
+    expect(s.counters.details).toBe(3)
+  })
 })

@@ -33,7 +33,9 @@ export function saveRequest(
  * The save's answer as actions: `saved`, then (if any slice was stale) a
  * `server` with those slices' current state. `state` is the form's state
  * as the answer arrives; the `server` action carries every other slice at
- * the counter the form will hold after `saved`, so it changes nothing else.
+ * the counter the form will hold after `saved` (a slice not submitted or
+ * refused keeps its own: its rows are not in the answer), so it changes
+ * nothing else.
  */
 export function saveActions(
   submitted: Partial<Slices>,
@@ -54,7 +56,8 @@ export function saveActions(
   const slices = { ...state.base }
   const after = { ...state.counters }
   for (const s of SLICES)
-    after[s] = s in answer.stale ? answer.stale[s] : counters[s]
+    if (s in answer.stale) after[s] = answer.stale[s]
+    else if (s in submitted && !(s in answer.problems)) after[s] = counters[s]
   for (const s of stale)
     (slices as Record<string, unknown>)[s] = answer.current[s]
   actions.push({ type: 'server', slices, counters: after })
