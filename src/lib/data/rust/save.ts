@@ -1,147 +1,66 @@
 /**
  * The contact form's save on the Rust API, as reducer actions (pure; the
- * request itself is in `hooks.tsx`). The Convex `saveForm` saves what it
- * can and reports the rest per slice; the Rust save is one transaction,
- * so a refusal refuses all of it. These turn its answers back into the
- * `SaveResult` the reducer (spike 04, unchanged) already understands:
- *
- * - **409 stale** carries the slice's state now, so there is no read to
- *   wait for: a `saved` that marks every submitted slice not yet saved
- *   (`stale` at the counter it holds, which clears at once; the stale one
- *   at the server's), then a `server` delivering the stale slice, which
- *   merges it three-way and queues the retry against the new counter.
- * - **422 invalid** names fields as `<slice>.<field>`: the refused slices
- *   become `problems` and the rest are sent again on their own, which is
- *   what Convex's per-slice save would have done.
+ * request itself is in `hooks.tsx`). `POST contacts/{id}/save` answers
+ * Convex's `SaveResult` plus `current`, each stale slice's state now: stale
+ * slices are skipped and the rest saved, as on Convex. With no live query
+ * to deliver the newer state, `current` is dispatched as the `server`
+ * update that a subscription would have brought, so the reducer (spike
+ * 04, unchanged) merges it three-way and queues the retry against the new
+ * counter, with no extra read.
  */
 import type {
   Action,
   Counters,
   FormState,
-  Problem,
   SaveResult,
-  SliceName,
   Slices,
 } from '../../contact-form-state'
 import { SLICES } from '../../contact-form-state'
-import type { Problem as WireProblem } from '../rust-types/Problem'
-import type { RustSlice, WireSave, WireSaved } from './wire'
-import { sliceFromWire, sliceOfContract, sliceToWire } from './wire'
+import type { SaveForm } from '../rust-types/SaveForm'
+import type { SaveFormResult } from '../rust-types/SaveFormResult'
 
 export function saveRequest(
   submitted: Partial<Slices>,
   counters: Counters,
-): WireSave {
-  const slices: WireSave['slices'] = {}
-  for (const [slice, payload] of Object.entries(submitted) as Array<
-    [RustSlice, Slices[RustSlice]]
-  >)
-    slices[slice] = { expected: counters[slice], ...sliceToWire(payload) }
-  return { source: 'autosave', slices }
-}
-
-type Refused = Partial<Record<SliceName, Array<Problem>>>
-
-function result(
-  state: FormState,
-  parts: Partial<Omit<SaveResult, 'counters'>> & {
-    counters?: Partial<Counters>
-  },
-): SaveResult {
-  return {
-    saved: parts.saved ?? [],
-    problems: parts.problems ?? {},
-    stale: parts.stale ?? {},
-    counters: { ...state.counters, ...parts.counters, archive: 0 },
-  }
-}
-
-/** A 2xx: every slice sent is saved at its new counter. */
-export function savedActions(
-  submitted: Partial<Slices>,
-  state: FormState,
-  response: WireSaved,
-  at: number,
-  problems: Refused = {},
-): Array<Action> {
-  const counters: Partial<Counters> = {}
-  for (const [slice, executed] of Object.entries(response.slices))
-    counters[slice as RustSlice] = executed.counter
-  return [
-    {
-      type: 'saved',
-      submitted,
-      result: result(state, {
-        saved: Object.keys(counters) as Array<SliceName>,
-        problems,
-        counters,
-      }),
-      at,
-    },
-  ]
+): SaveForm {
+  const body: Record<string, unknown> = { source: 'autosave' }
+  for (const [slice, payload] of Object.entries(submitted))
+    body[slice] = { expected: counters[slice as keyof Counters], ...payload }
+  return body
 }
 
 /**
- * A 409 stale. `state` must be the form's state as the answer arrives
- * (not as the save left): the `server` action carries every other slice
- * at the counter the form holds now, so it changes nothing else.
+ * The save's answer as actions: `saved`, then (if any slice was stale) a
+ * `server` with those slices' current state. `state` is the form's state
+ * as the answer arrives; the `server` action carries every other slice at
+ * the counter the form will hold after `saved`, so it changes nothing else.
  */
-export function staleActions(
+export function saveActions(
   submitted: Partial<Slices>,
   state: FormState,
-  refusal: { contract: string; counter: number; current: unknown },
+  answer: SaveFormResult,
   at: number,
-  problems: Refused = {},
 ): Array<Action> {
-  const slice = sliceOfContract(refusal.contract)
-  if (!slice)
-    return [
-      { type: 'failed', message: `Changed elsewhere (${refusal.contract})` },
-    ]
-  const stale: SaveResult['stale'] = {}
-  for (const s of SLICES)
-    if (submitted[s] !== undefined && !problems[s]) stale[s] = state.counters[s]
-  stale[slice] = refusal.counter
-  return [
-    {
-      type: 'saved',
-      submitted,
-      result: result(state, { problems, stale }),
-      at,
-    },
-    {
-      type: 'server',
-      slices: {
-        ...state.base,
-        [slice]: sliceFromWire(slice, refusal.current),
-      },
-      counters: { ...state.counters, [slice]: refusal.counter },
-    },
-  ]
-}
-
-/**
- * A 422 invalid, split by slice: the problems for the reducer, and what
- * is left to send. Null when a problem names no submitted slice (nothing
- * to blame it on: the whole save fails).
- */
-export function splitInvalid(
-  submitted: Partial<Slices>,
-  problems: Array<WireProblem>,
-): { problems: Refused; rest: Partial<Slices> } | null {
-  const refused: Refused = {}
-  for (const p of problems) {
-    const at = p.field.indexOf('.')
-    const slice = (at === -1 ? p.field : p.field.slice(0, at)) as SliceName
-    if (submitted[slice] === undefined) return null
-    ;(refused[slice] ??= []).push({
-      field: at === -1 ? '' : p.field.slice(at + 1),
-      message: p.message,
-    })
+  // The API has no identifiers slice: the form's counter for it stands.
+  const counters = {
+    ...answer.counters,
+    identifiers: state.counters.identifiers,
   }
-  const rest: Partial<Slices> = {}
+  const result = {
+    saved: answer.saved,
+    problems: answer.problems,
+    stale: answer.stale,
+    counters,
+  } as SaveResult
+  const actions: Array<Action> = [{ type: 'saved', submitted, result, at }]
+  const stale = SLICES.filter((s) => s in answer.stale && s in answer.current)
+  if (stale.length === 0) return actions
+  const slices = { ...state.base }
+  const after = { ...state.counters }
   for (const s of SLICES)
-    if (submitted[s] !== undefined && !refused[s])
-      (rest as Record<SliceName, unknown>)[s] = submitted[s]
-  return { problems: refused, rest }
+    after[s] = s in answer.stale ? answer.stale[s] : counters[s]
+  for (const s of stale)
+    (slices as Record<string, unknown>)[s] = answer.current[s]
+  actions.push({ type: 'server', slices, counters: after })
+  return actions
 }

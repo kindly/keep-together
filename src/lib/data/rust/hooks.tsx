@@ -2,7 +2,7 @@
  * The contacts pages on the Rust API, through TanStack Query: no live
  * queries. A read is fetched, refetched when the window regains focus, and
  * invalidated after every write this tab makes; another tab's change shows
- * on focus, or as a 409 the form merges at save time (`save.ts`).
+ * on focus, or as a stale slice the form merges at save time (`save.ts`).
  */
 import {
   QueryClient,
@@ -18,9 +18,14 @@ import { LIST_PAGE_SIZE } from '../../paged-list'
 import type { ListFilters, PagedList } from '../../paged-list'
 import type { Tenant } from '../../tenant'
 import { useTenant } from '../../tenant'
+import type { ContactPage } from '../rust-types/ContactPage'
+import type { ContactView as WireContact } from '../rust-types/ContactView'
+import type { Created } from '../rust-types/Created'
+import type { FieldDefinition as WireField } from '../rust-types/FieldDefinition'
+import type { HistoryPage } from '../rust-types/HistoryPage'
 import type { Me } from '../rust-types/Me'
-import type { Executed } from '../rust-types/Executed'
-import type { Revision } from '../rust-types/Revision'
+import type { SaveFormResult } from '../rust-types/SaveFormResult'
+import type { SearchResult as WireSearch } from '../rust-types/SearchResult'
 import type {
   ContactView,
   CreateContact,
@@ -34,19 +39,14 @@ import type {
   SearchResult,
 } from '../types'
 import { RustApiError, get, post, tenantPath } from './client'
-import { saveRequest, savedActions, splitInvalid, staleActions } from './save'
-import type {
-  WireContact,
-  WireField,
-  WireListPage,
-  WireSaved,
-  WireSearch,
-} from './wire'
+import { saveActions, saveRequest } from './save'
 import {
   contactFromWire,
   fieldsFromWire,
+  filterParams,
   rowFromWire,
   searchFromWire,
+  searchParams,
 } from './wire'
 
 export const queryClient = new QueryClient({
@@ -141,8 +141,8 @@ export function useDevLogin() {
   const qc = useQueryClient()
   return async (email: string) => {
     await post('dev/login', { email })
-    qc.clear()
-    await qc.invalidateQueries({ queryKey: keys.me })
+    // Everything read was the last user's: drop it, refetch what's shown.
+    await qc.resetQueries()
   }
 }
 
@@ -150,8 +150,8 @@ export function useSignOut() {
   const qc = useQueryClient()
   return async () => {
     await post('dev/logout')
-    qc.clear()
-    await qc.invalidateQueries({ queryKey: keys.me })
+    // Everything read was the last user's: drop it, refetch what's shown.
+    await qc.resetQueries()
   }
 }
 
@@ -169,18 +169,6 @@ export function useFields(): Array<FieldDefinition> | undefined {
   return useQuery(fieldsQuery(useTenant().slug)).data
 }
 
-/** The list's filters as query parameters (every filter `list` takes). */
-export function filterParams(
-  f: Omit<ListFilters, 'tenantId'> & { source?: unknown },
-): URLSearchParams {
-  const q = new URLSearchParams()
-  if (f.includeArchived) q.set('archived', '1')
-  if (f.kind) q.set('kind', f.kind)
-  for (const x of f.fields ?? [])
-    q.append('field', `${x.fieldId}:${x.optionId ?? 'none'}`)
-  return q
-}
-
 export function useContactList(filters: ListFilters | 'skip'): PagedList {
   const { slug } = useTenant()
   const params = filters === 'skip' ? null : filterParams(filters)
@@ -191,10 +179,10 @@ export function useContactList(filters: ListFilters | 'skip'): PagedList {
     queryFn: ({ pageParam }) => {
       const q = new URLSearchParams(params ?? undefined)
       q.set('limit', String(LIST_PAGE_SIZE))
-      if (pageParam) q.set('after', pageParam)
-      return get<WireListPage>(tenantPath(slug, 'contacts'), q)
+      if (pageParam) q.set('cursor', pageParam)
+      return get<ContactPage>(tenantPath(slug, 'contacts'), q)
     },
-    getNextPageParam: (page) => page.next,
+    getNextPageParam: (page) => (page.isDone ? null : page.nextCursor),
   })
   const rows = useMemo(
     () => list.data?.pages.flatMap((p) => p.rows.map(rowFromWire)),
@@ -216,8 +204,7 @@ export function useContactSearch(
   args: SearchArgs | 'skip',
 ): SearchResult | undefined {
   const { slug } = useTenant()
-  const q = args === 'skip' ? null : filterParams(args)
-  if (q && args !== 'skip') q.set('q', args.search ?? '')
+  const q = args === 'skip' ? null : searchParams(args)
   return useQuery({
     queryKey: keys.search(slug, { q: q?.toString() }),
     enabled: q !== null,
@@ -304,41 +291,19 @@ export function useSaveContactForm(id: Id<'contacts'>): SaveContactForm {
   const { slug } = useTenant()
   const qc = useQueryClient()
   return async (submitted, current) => {
-    const path = tenantPath(slug, 'contacts', id, 'save')
-    let problems = {}
-    let sending = submitted
     try {
-      for (;;) {
-        try {
-          const saved =
-            Object.keys(sending).length === 0
-              ? { slices: {} }
-              : await post<WireSaved>(
-                  path,
-                  saveRequest(sending, current().counters),
-                )
-          return savedActions(submitted, current(), saved, Date.now(), problems)
-        } catch (e) {
-          if (!(e instanceof RustApiError))
-            return [{ type: 'failed', message: 'Could not save' }]
-          if (e.error.kind === 'invalid') {
-            const split = splitInvalid(sending, e.error.problems)
-            if (!split) return [{ type: 'failed', message: e.message }]
-            problems = { ...problems, ...split.problems }
-            sending = split.rest
-            continue
-          }
-          if (e.error.kind === 'stale')
-            return staleActions(
-              submitted,
-              current(),
-              e.error,
-              Date.now(),
-              problems,
-            )
-          return [{ type: 'failed', message: e.message }]
-        }
-      }
+      const answer = await post<SaveFormResult>(
+        tenantPath(slug, 'contacts', id, 'save'),
+        saveRequest(submitted, current().counters),
+      )
+      return saveActions(submitted, current(), answer, Date.now())
+    } catch (e) {
+      return [
+        {
+          type: 'failed',
+          message: e instanceof RustApiError ? e.message : 'Could not save',
+        },
+      ]
     } finally {
       // The list, search and this contact (its history too) are out of date.
       void qc.invalidateQueries({ queryKey: keys.contacts(slug) })
@@ -346,34 +311,21 @@ export function useSaveContactForm(id: Id<'contacts'>): SaveContactForm {
   }
 }
 
-/** A UUIDv7 as 32 hex chars, the API's id format. */
-export function mintId(now = Date.now()): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16))
-  for (let i = 0; i < 6; i++)
-    bytes[i] = Math.floor(now / 2 ** (8 * (5 - i))) & 0xff
-  bytes[6] = 0x70 | (bytes[6] & 0x0f)
-  bytes[8] = 0x80 | (bytes[8] & 0x3f)
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 export function useCreateContact(): CreateContact {
   const { slug } = useTenant()
   const qc = useQueryClient()
   // Minted once per form: a double submit lands on the existing contact.
-  const id = useMemo(() => mintId(), [])
+  const clientKey = useMemo(() => crypto.randomUUID(), [])
   return async (details) => {
     try {
-      await post<Executed>(tenantPath(slug, 'contacts'), {
-        id,
-        source: 'ui',
-        details,
+      const created = await post<Created>(tenantPath(slug, 'contacts'), {
+        clientKey,
+        ...details,
       })
-      return { type: 'created', id: id as Id<'contacts'> }
+      return { type: 'created', id: created.id as Id<'contacts'> }
     } catch (e) {
       if (!(e instanceof RustApiError))
         return { type: 'failed', message: 'Could not save' }
-      if (e.error.kind === 'duplicate')
-        return { type: 'created', id: e.error.id as Id<'contacts'> }
       if (e.error.kind === 'invalid')
         return {
           type: 'invalid',
@@ -391,24 +343,28 @@ export function useCreateContact(): CreateContact {
 
 // ── history ────────────────────────────────────────────────────────────────
 
+/** The latest revisions (one page, newest first), restore and archive. */
 export function useContactHistory(id: Id<'contacts'>) {
   const { slug } = useTenant()
   const qc = useQueryClient()
   const revisions = useQuery({
     queryKey: keys.history(slug, id),
-    queryFn: () =>
-      get<Array<Revision>>(tenantPath(slug, 'contacts', id, 'history')),
+    queryFn: async () =>
+      (await get<HistoryPage>(tenantPath(slug, 'contacts', id, 'history')))
+        .revisions,
   }).data
   const after = () => qc.invalidateQueries({ queryKey: keys.contacts(slug) })
   return {
     revisions,
-    restore: async (revision: number) => {
+    restore: async (revisionId: number) => {
       try {
-        await post(tenantPath(slug, 'contacts', id, 'restore'), { revision })
+        await post(tenantPath(slug, 'contacts', id, 'restore'), { revisionId })
       } finally {
         await after()
       }
     },
+    // A 409 here (archived elsewhere meanwhile) shows as an error; the
+    // refetch after it brings the new state, and the switch with it.
     setArchived: async (archived: boolean, expected: number) => {
       try {
         await post(tenantPath(slug, 'contacts', id, 'archive'), {

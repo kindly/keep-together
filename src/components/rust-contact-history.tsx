@@ -53,7 +53,7 @@ export function RustContactHistory({
         <p className="text-neutral-500">Loading…</p>
       ) : (
         <ol className="flex flex-col gap-2">
-          {[...revisions].reverse().map((r, i) => (
+          {revisions.map((r, i) => (
             <li
               key={r.id}
               data-revision={r.id}

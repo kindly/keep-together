@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'vitest'
 import type { Action, FormState, Slices } from '../../contact-form-state'
 import { initialState, reduce, submission } from '../../contact-form-state'
-import { saveRequest, savedActions, splitInvalid, staleActions } from './save'
-import { sliceFromWire, sliceToWire } from './wire'
+import { saveActions, saveRequest } from './save'
+import type { SaveFormResult } from '../rust-types/SaveFormResult'
 
 // The Rust save's answers, run through the real form reducer (spike 04,
 // unchanged): what the user sees after each.
@@ -50,41 +50,25 @@ function saving(edits: Partial<Slices>) {
   return { state: reduce(s, { type: 'saving' }), submitted }
 }
 
+/** An answer from `POST contacts/{id}/save`, Convex's shape plus `current`. */
+const answer = (a: Partial<SaveFormResult>): SaveFormResult => ({
+  saved: [],
+  problems: {},
+  stale: {},
+  current: {},
+  counters: { details: 3, methods: 5, addresses: 0, archive: 0, fields: 0 },
+  ...a,
+})
+
 describe('rust save', () => {
-  test('the request carries each slice with its expected counter, rows by id', () => {
+  test('the request carries each slice with its expected counter, as Convex’s saveForm', () => {
     const { submitted, state } = saving({
       details: { ...slices.details, nickname: 'Countess' },
-      methods: {
-        ...slices.methods,
-        phones: [
-          {
-            key: '0190f1d2-3c4b-7a00-8000-000000000001',
-            label: 'work',
-            number: '01632 960000',
-            isPrimary: false,
-          },
-        ],
-      },
+      methods: { ...slices.methods, phones: [] },
     })
     expect(saveRequest(submitted, state.counters)).toEqual({
       source: 'autosave',
-      slices: {
-        details: { expected: 3, ...slices.details, nickname: 'Countess' },
-        methods: {
-          expected: 5,
-          emails: [
-            { id: 'e1', label: 'home', address: 'a@x.com', isPrimary: true },
-          ],
-          phones: [
-            {
-              id: '0190f1d23c4b7a008000000000000001',
-              label: 'work',
-              number: '01632 960000',
-              isPrimary: false,
-            },
-          ],
-        },
-      },
+      details: { expected: 3, ...slices.details, nickname: 'Countess' },
     })
   })
 
@@ -94,20 +78,30 @@ describe('rust save', () => {
     })
     const s = run(
       state,
-      savedActions(
+      saveActions(
         submitted,
         state,
-        { slices: { details: { id: 'c', counter: 4 } } },
+        answer({
+          saved: ['details'],
+          counters: {
+            details: 4,
+            methods: 5,
+            addresses: 0,
+            archive: 0,
+            fields: 0,
+          },
+        }),
         1,
       ),
     )
     expect(s.status).toBe('saved')
     expect(s.counters.details).toBe(4)
+    expect(s.counters.identifiers).toBe(0)
     expect(s.dirty.details).toBe(false)
     expect(s.needsSave).toBe(false)
   })
 
-  test('409 stale: the other tab’s change is merged and the save retried against its counter', () => {
+  test('stale: the other tab’s change is merged and the save retried against its counter', () => {
     // We changed the nickname; the other tab changed the last name.
     const { state, submitted } = saving({
       details: { ...slices.details, nickname: 'Countess' },
@@ -115,10 +109,10 @@ describe('rust save', () => {
     const theirs = { ...slices.details, lastName: 'King' }
     const s = run(
       state,
-      staleActions(
+      saveActions(
         submitted,
         state,
-        { contract: 'contacts.details', counter: 4, current: theirs },
+        answer({ stale: { details: 4 }, current: { details: theirs } }),
         1,
       ),
     )
@@ -128,52 +122,58 @@ describe('rust save', () => {
     expect(s.conflicts).toEqual([])
     // Merged, so no notice left, and the retry is queued.
     expect(s.stale).toEqual({})
-    expect(s.status).toBe('saved')
     expect(s.needsSave).toBe(true)
-    expect(saveRequest(submission(s), s.counters).slices.details).toEqual({
-      expected: 4,
-      ...theirs,
-      nickname: 'Countess',
+    expect(saveRequest(submission(s), s.counters)).toEqual({
+      source: 'autosave',
+      details: { expected: 4, ...theirs, nickname: 'Countess' },
     })
   })
 
-  test('409 stale on one slice keeps the other slices dirty (nothing was saved)', () => {
+  test('one slice stale, another saved: only the stale one is retried', () => {
     const { state, submitted } = saving({
       details: { ...slices.details, nickname: 'Countess' },
-      methods: { ...slices.methods, phones: [], emails: [] },
+      methods: { ...slices.methods, emails: [] },
     })
     const s = run(
       state,
-      staleActions(
+      saveActions(
         submitted,
         state,
-        {
-          contract: 'contacts.details',
-          counter: 4,
-          current: slices.details,
-        },
+        answer({
+          saved: ['methods'],
+          stale: { details: 4 },
+          current: { details: slices.details },
+          counters: {
+            details: 3,
+            methods: 6,
+            addresses: 0,
+            archive: 0,
+            fields: 0,
+          },
+        }),
         1,
       ),
     )
-    expect(s.dirty.methods).toBe(true)
-    expect(s.counters.methods).toBe(5)
-    expect(Object.keys(submission(s)).sort()).toEqual(['details', 'methods'])
+    expect(s.dirty.methods).toBe(false)
+    expect(s.counters.methods).toBe(6)
+    expect(s.local.methods.emails).toEqual([])
+    expect(Object.keys(submission(s))).toEqual(['details'])
+    expect(s.counters.details).toBe(4)
   })
 
-  test('409 stale with the same field changed on both sides: ours kept, flagged', () => {
+  test('stale with the same field changed on both sides: ours kept, flagged', () => {
     const { state, submitted } = saving({
       details: { ...slices.details, lastName: 'Byron' },
     })
     const s = run(
       state,
-      staleActions(
+      saveActions(
         submitted,
         state,
-        {
-          contract: 'contacts.details',
-          counter: 4,
-          current: { ...slices.details, lastName: 'King' },
-        },
+        answer({
+          stale: { details: 4 },
+          current: { details: { ...slices.details, lastName: 'King' } },
+        }),
         1,
       ),
     )
@@ -182,103 +182,69 @@ describe('rust save', () => {
     expect(s.needsSave).toBe(true)
   })
 
-  test('409 stale on child rows: their rows arrive by id and merge by key', () => {
-    const { state, submitted } = saving({
-      details: { ...slices.details, nickname: 'Countess' },
-    })
-    const current = {
+  test('stale child rows merge by key: ours added, theirs kept', () => {
+    const ours = {
+      ...slices.methods,
+      phones: [
+        {
+          key: 'p1',
+          label: 'work' as const,
+          number: '01632 960000',
+          isPrimary: false,
+        },
+      ],
+    }
+    const { state, submitted } = saving({ methods: ours })
+    const theirs = {
       emails: [
-        { id: 'e1', label: 'home', address: 'a@x.com', isPrimary: true },
-        { id: 'e2', label: 'work', address: 'ada@work', isPrimary: false },
+        ...slices.methods.emails,
+        {
+          key: 'e2',
+          label: 'work' as const,
+          address: 'ada@work',
+          isPrimary: false,
+        },
       ],
       phones: [],
     }
-    expect(sliceFromWire('methods', current).emails.map((e) => e.key)).toEqual([
-      'e1',
-      'e2',
-    ])
     const s = run(
       state,
-      staleActions(
+      saveActions(
         submitted,
         state,
-        { contract: 'contacts.methods', counter: 6, current },
+        answer({ stale: { methods: 6 }, current: { methods: theirs } }),
         1,
       ),
     )
-    // Methods was clean here: it follows the server.
-    expect(s.local.methods.emails).toHaveLength(2)
+    expect(s.local.methods).toEqual({
+      emails: theirs.emails,
+      phones: ours.phones,
+    })
     expect(s.counters.methods).toBe(6)
     expect(s.needsSave).toBe(true)
   })
 
-  test('422 invalid: the refused slice shows its problem, the rest is sent alone', () => {
+  test('problems: the refused slice shows them and waits for an edit', () => {
     const { state, submitted } = saving({
       details: { ...slices.details, firstName: '' },
-      methods: { ...slices.methods, emails: [] },
     })
-    const split = splitInvalid(submitted, [
-      { field: 'details.firstName', message: 'A name is needed' },
-    ])!
-    expect(Object.keys(split.rest)).toEqual(['methods'])
     const s = run(
       state,
-      savedActions(
+      saveActions(
         submitted,
         state,
-        { slices: { methods: { id: 'c', counter: 6 } } },
+        answer({
+          problems: {
+            details: [{ field: 'firstName', message: 'A name is needed' }],
+          },
+        }),
         1,
-        split.problems,
       ),
     )
     expect(s.problems.details).toEqual([
       { field: 'firstName', message: 'A name is needed' },
     ])
-    expect(s.dirty.methods).toBe(false)
     expect(s.dirty.details).toBe(true)
-    // The refused value waits for an edit: no retry loop.
     expect(s.needsSave).toBe(false)
-  })
-
-  test('a problem naming no submitted slice fails the whole save', () => {
-    const { submitted } = saving({
-      details: { ...slices.details, nickname: 'X' },
-    })
-    expect(splitInvalid(submitted, [{ field: 'body', message: '?' }])).toBe(
-      null,
-    )
-  })
-
-  test('a stale contract the form has no slice for is a failure', () => {
-    const { state, submitted } = saving({
-      details: { ...slices.details, nickname: 'X' },
-    })
-    const s = run(
-      state,
-      staleActions(
-        submitted,
-        state,
-        { contract: 'contacts.archive', counter: 2, current: {} },
-        1,
-      ),
-    )
-    expect(s.status).toBe('error')
-  })
-
-  test('rows round-trip: key ↔ id, a new row has neither', () => {
-    const wire = sliceToWire({
-      emails: [
-        { key: '', label: 'home', address: 'n@x', isPrimary: false },
-        { key: 'ab-cd', label: 'home', address: 'o@x', isPrimary: true },
-      ],
-      phones: [],
-    })
-    expect(wire).toEqual({
-      emails: [
-        { label: 'home', address: 'n@x', isPrimary: false },
-        { id: 'abcd', label: 'home', address: 'o@x', isPrimary: true },
-      ],
-      phones: [],
-    })
   })
 })

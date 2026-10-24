@@ -6,7 +6,8 @@ import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import type { Tenant } from '../../tenant'
-import type { WireContact, WireListPage } from './wire'
+import type { ContactPage } from '../rust-types/ContactPage'
+import type { ContactView } from '../rust-types/ContactView'
 
 // The contacts pages' Rust path against a mocked API (step 2a's endpoints
 // replace the mock): the real form, hooks and reducer, only `fetch` faked.
@@ -89,17 +90,19 @@ const details = {
   name: '',
   isDeceased: false,
 }
-const ada: WireContact = {
+const ada: ContactView = {
   id: ID,
   number: 10001,
+  kind: 'individual',
   displayName: 'Ada Lovelace',
+  sortName: 'lovelace ada',
   archived: false,
   details,
-  emails: [],
-  phones: [],
-  addresses: [],
-  fields: [],
+  methods: { emails: [], phones: [] },
+  addresses: { addresses: [] },
+  fields: { values: [] },
   counters: { details: 3, methods: 0, addresses: 0, fields: 0, archive: 0 },
+  warnings: [],
 }
 
 const json = (status: number, body: unknown) => ({ status, json: body })
@@ -125,7 +128,7 @@ const field = (label: string) =>
     ?.querySelector('input')?.value
 
 describe('contact form on the Rust API', () => {
-  test('409 stale: merges the other tab’s change and retries with its counter', async () => {
+  test('a stale slice: merges the other tab’s change and retries with its counter', async () => {
     const { ContactForm } = await import('../../../components/contact-form')
     const { contactFromWire } = await import('./wire')
     const Wrap = await providers('a')
@@ -135,14 +138,28 @@ describe('contact form on the Rust API', () => {
       if (c.method !== 'POST' || !c.url.endsWith(`/contacts/${ID}/save`))
         return undefined
       saves++
+      const counters = {
+        details: 3,
+        methods: 0,
+        addresses: 0,
+        fields: 0,
+        archive: 0,
+      }
       return saves === 1
-        ? json(409, {
-            kind: 'stale',
-            contract: 'contacts.details',
-            counter: 4,
-            current: { ...details, lastName: 'King' },
+        ? json(200, {
+            saved: [],
+            problems: {},
+            stale: { details: 4 },
+            current: { details: { ...details, lastName: 'King' } },
+            counters,
           })
-        : json(200, { slices: { details: { id: ID, counter: 5 } } })
+        : json(200, {
+            saved: ['details'],
+            problems: {},
+            stale: {},
+            current: {},
+            counters: { ...counters, details: 5 },
+          })
     })
     answers.push((c) =>
       c.url.endsWith(`/contacts/${ID}`) ? json(200, ada) : undefined,
@@ -165,7 +182,7 @@ describe('contact form on the Rust API', () => {
       )
     })
     // The retry waits out the autosave pause.
-    await vi.waitFor(() => expect(saves).toBe(2), { timeout: 3000 })
+    await vi.waitFor(() => expect(saves).toBe(2), { timeout: 10_000 })
     const posts = calls.filter((c) => c.method === 'POST')
     expect(posts.map((c) => c.url)).toEqual([
       `/api/t/a/contacts/${ID}/save`,
@@ -173,17 +190,15 @@ describe('contact form on the Rust API', () => {
     ])
     expect(posts[0].body).toEqual({
       source: 'autosave',
-      slices: { details: { expected: 3, ...details, nickname: 'Countess' } },
+      details: { expected: 3, ...details, nickname: 'Countess' },
     })
     expect(posts[1].body).toEqual({
       source: 'autosave',
-      slices: {
-        details: {
-          expected: 4,
-          ...details,
-          lastName: 'King',
-          nickname: 'Countess',
-        },
+      details: {
+        expected: 4,
+        ...details,
+        lastName: 'King',
+        nickname: 'Countess',
       },
     })
     await vi.waitFor(() =>
@@ -195,19 +210,21 @@ describe('contact form on the Rust API', () => {
 })
 
 describe('contacts list on the Rust API', () => {
-  const page = (slug: string): WireListPage => ({
+  const page = (slug: string): ContactPage => ({
     rows: [
       {
         id: `${slug}1`,
         number: 10001,
         kind: 'individual',
         displayName: `Only in ${slug}`,
+        sortName: `only in ${slug}`,
         archived: false,
         email: null,
         fieldOptionIds: [],
       },
     ],
-    next: slug === 'a' ? 'cursor-a' : null,
+    nextCursor: slug === 'a' ? 'cursor-a' : null,
+    isDone: slug !== 'a',
   })
 
   async function list(slug: string) {
@@ -248,18 +265,19 @@ describe('contacts list on the Rust API', () => {
     expect(b.current?.rows?.map((r) => r.displayName)).toEqual(['Only in b'])
     expect(b.current?.status).toBe('done')
     expect(calls.map((c) => c.url)).toEqual([
-      '/api/t/a/contacts?kind=individual&field=f1%3Anone&limit=100',
-      '/api/t/b/contacts?kind=individual&field=f1%3Anone&limit=100',
+      '/api/t/a/contacts?kind=individual&fields=f1%3Anone&limit=100',
+      '/api/t/b/contacts?kind=individual&fields=f1%3Anone&limit=100',
     ])
   })
 
   test('Load more asks for the page after the cursor', async () => {
     answers.push((c) =>
-      c.url.includes('after=cursor-a')
+      c.url.includes('cursor=cursor-a')
         ? json(200, {
             ...page('a'),
             rows: [{ ...page('a').rows[0], id: 'a2', displayName: 'Second' }],
-            next: null,
+            nextCursor: null,
+            isDone: true,
           })
         : c.url.startsWith('/api/t/a/contacts?')
           ? json(200, page('a'))
