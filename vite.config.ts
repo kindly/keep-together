@@ -10,8 +10,17 @@ const config = defineConfig({
   // GitHub Pages serves the SPA under /<repo>/; the workflow sets BASE_PATH.
   // Locally and on any root-hosted static host this stays '/'.
   base: process.env.BASE_PATH ?? '/',
-  // `tailscale serve` fronts the dev server with HTTPS on the tailnet name.
-  server: { allowedHosts: ['.ts.net'] },
+  server: {
+    // `tailscale serve` fronts the dev server with HTTPS on the tailnet name.
+    allowedHosts: ['.ts.net'],
+    // The Rust API (rs/, VITE_BACKEND=rust): same origin, so its session
+    // cookie needs no CORS. `KEEP_API` points it at another port.
+    proxy: { '/api': process.env.KEEP_API ?? 'http://127.0.0.1:8787' },
+  },
+  // `vite preview` serves a build the same way (QC on the Rust backend).
+  preview: {
+    proxy: { '/api': process.env.KEEP_API ?? 'http://127.0.0.1:8787' },
+  },
   resolve: { tsconfigPaths: true },
   plugins: [
     devtools(),

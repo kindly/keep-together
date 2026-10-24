@@ -1,11 +1,8 @@
 import { createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
-import { useConvex, useMutation, useQuery } from 'convex/react'
-import { ConvexError } from 'convex/values'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api } from '../../convex/_generated/api'
 import { useCanWrite, useTenant } from '../lib/tenant'
-import { seedContact } from '../lib/contact-seed'
+import { FEATURES, useCreateContact } from '../lib/data'
 import { DetailsFields } from '../components/contact-form'
 import { SourceCodePicker } from '../components/source-code-picker'
 import type { PickerEntry } from '../components/source-code-picker'
@@ -29,12 +26,8 @@ function NewContact() {
   const tenant = useTenant()
   const canWrite = useCanWrite()
   const navigate = useNavigate()
-  const create = useMutation(api.contacts.mutations.create)
-  // Minted once per form: a double submit lands on the existing contact.
-  const clientKey = useMemo(() => crypto.randomUUID(), [])
-  // Watch for the contact this form creates: it arrives with the create's
-  // result, so the contact page can render without a second round trip.
-  const convex = useConvex()
+  // Idempotent per form: a double submit lands on the existing contact.
+  const create = useCreateContact()
   // Where a create lands: fetch the contact page's code now, while the form
   // is filled in, not after the create (its first visit costs 30–70 ms).
   const router = useRouter()
@@ -43,13 +36,7 @@ function NewContact() {
       router.routesById['/t/$slug/contacts/$contactId'],
     )
   }, [router])
-  const watchArgs = { tenantId: tenant._id, clientKey }
-  useQuery(api.contacts.queries.byClientKey, watchArgs)
   const toContact = async (id: string) => {
-    const view = convex
-      .watchQuery(api.contacts.queries.byClientKey, watchArgs)
-      .localQueryResult()
-    if (view?.contact._id === id) seedContact(id, view)
     await navigate({
       to: '/t/$slug/contacts/$contactId',
       params: { slug: tenant.slug, contactId: id },
@@ -65,28 +52,10 @@ function NewContact() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
-    try {
-      await toContact(
-        await create({
-          tenantId: tenant._id,
-          clientKey,
-          ...details,
-          ...(code && { acquisitionCodeId: code.versionId }),
-        }),
-      )
-    } catch (err) {
-      const data =
-        err instanceof ConvexError
-          ? (err.data as Record<string, unknown>)
-          : null
-      if (data?.kind === 'invalid') {
-        setProblems(data.problems as Array<{ field: string; message: string }>)
-      } else if (data?.kind === 'rejected' && data.reason === 'duplicate') {
-        await toContact(String(data.message))
-      } else {
-        setError(data ? String(data.message ?? data.kind) : 'Could not save')
-      }
-    }
+    const outcome = await create(details, code?.versionId)
+    if (outcome.type === 'created') await toContact(outcome.id)
+    else if (outcome.type === 'invalid') setProblems(outcome.problems)
+    else setError(outcome.message)
   }
 
   if (!canWrite) {
@@ -120,26 +89,28 @@ function NewContact() {
           problems={problems}
           conflicts={[]}
         />
-        <section className="flex flex-col gap-1">
-          <h2 className="text-sm text-neutral-600">
-            Source code{' '}
-            <span className="text-xs text-neutral-500">
-              (how they were recruited)
-            </span>
-          </h2>
-          <SourceCodePicker
-            value={code && { ...code, isActive: true }}
-            onPick={setCode}
-            onClear={() => setCode(null)}
-          />
-          {problems
-            .filter((p) => p.field === 'sourceCode')
-            .map((p) => (
-              <span key={p.message} className="text-xs text-red-700">
-                {p.message}
+        {FEATURES.sourceCodes && (
+          <section className="flex flex-col gap-1">
+            <h2 className="text-sm text-neutral-600">
+              Source code{' '}
+              <span className="text-xs text-neutral-500">
+                (how they were recruited)
               </span>
-            ))}
-        </section>
+            </h2>
+            <SourceCodePicker
+              value={code && { ...code, isActive: true }}
+              onPick={setCode}
+              onClear={() => setCode(null)}
+            />
+            {problems
+              .filter((p) => p.field === 'sourceCode')
+              .map((p) => (
+                <span key={p.message} className="text-xs text-red-700">
+                  {p.message}
+                </span>
+              ))}
+          </section>
+        )}
         {error && <p className="text-sm text-red-700">{error}</p>}
         <button
           type="submit"

@@ -1,10 +1,6 @@
 import { Link } from '@tanstack/react-router'
-import { useMutation, useQuery as useLiveQuery } from 'convex/react'
-import type { FunctionReturnType } from 'convex/server'
-import { ConvexError } from 'convex/values'
 import { useEffect, useMemo, useReducer, useRef } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
 import type { Payloads } from '../../convex/contacts/validators'
 import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
 import { sortValues } from '../../convex/contacts/fieldValues'
@@ -14,7 +10,6 @@ import type {
   Counters,
   FormState,
   Problem,
-  SaveResult,
   SliceName,
   Slices,
 } from '../lib/contact-form-state'
@@ -26,16 +21,22 @@ import {
   unsavedWork,
 } from '../lib/contact-form-state'
 import { useCanWrite, useTenant } from '../lib/tenant'
-import { useQuery } from '../lib/query-cache'
 import { useReportUnsaved } from '../lib/unsaved'
 import { holdOn } from '../lib/email-hold'
 import type { Held } from '../lib/email-hold'
-import { useHistoryHold } from './contact-history'
+import {
+  FEATURES,
+  useEmailContext,
+  useIdentifierTypes,
+  useMembers,
+  useSaveContactForm,
+} from '../lib/data'
+import type { ContactView } from '../lib/data'
 import { EmailHold } from './email-hold'
 import { ContactAcquisition } from './contact-acquisition'
 import { ContactNumber } from './contact-number'
 
-type Data = NonNullable<FunctionReturnType<typeof api.contacts.queries.get>>
+type Data = ContactView
 type Label = 'home' | 'work' | 'other'
 
 const LABELS: Array<Label> = ['home', 'work', 'other']
@@ -124,57 +125,16 @@ export function ContactForm({
 }) {
   const tenant = useTenant()
   const canWrite = useCanWrite()
-  const saveForm = useMutation(api.contacts.mutations.saveForm)
-  const history = useHistoryHold(id)
-  const members = useQuery(api.platform.tenants.members, {
-    tenantId: tenant._id,
-  })
-  // "Also used by" lookups for the saved addresses: their own query, so a
-  // save never waits on them; a new address's warning lands one round trip
-  // after the save. Until the new answer comes, the last one stands: an
-  // email row's address never changes under its key (ADR 0014). Not
-  // cached: its args change with every email edit, so each edit would
-  // leave an idle entry behind and fill the cache with stale address lists.
-  const sharedNow = useLiveQuery(
-    api.contacts.queries.sharedAddresses,
-    data.emails.length === 0
-      ? 'skip'
-      : {
-          tenantId: tenant._id,
-          id,
-          emails: data.emails.map((e) => ({ key: e.key, address: e.address })),
-        },
-  )
-  const sharedLast = useRef(sharedNow)
-  if (sharedNow !== undefined) sharedLast.current = sharedNow
-  const alsoUsedBy = sharedNow ?? sharedLast.current
-  // Holds on the saved addresses (comms suppressions, ADR 0021), not
-  // cached for the same reason. Keyed by address, so a row shows its hold
-  // whichever contact it is on; the last answer stands meanwhile, so
-  // removing and re-adding a held address still shows it held.
-  const heldNow = useLiveQuery(
-    api.comms.suppressions.held,
-    data.emails.length === 0
-      ? 'skip'
-      : {
-          tenantId: tenant._id,
-          addresses: data.emails.map((e) => e.address),
-        },
-  )
-  const heldLast = useRef(heldNow)
-  if (heldNow !== undefined) heldLast.current = heldNow
-  const held = heldNow ?? heldLast.current
+  const saveContactForm = useSaveContactForm(id)
+  const members = useMembers()
+  const { alsoUsedBy, held } = useEmailContext(id, data.emails)
   const warnings = useMemo(
     () => contactWarnings(data, alsoUsedBy),
     [data, alsoUsedBy],
   )
-  // Archived types too: the page names the contact's rows from the same
-  // subscription. The picker offers active ones only, and a row of an
-  // archived one names its type from `data.identifiers`.
-  const allIdentifierTypes = useQuery(
-    api.contacts.queries.listIdentifierTypes,
-    { tenantId: tenant._id, includeInactive: true },
-  )
+  // The picker offers active types only; a row of an archived one names
+  // its type from `data.identifiers`.
+  const allIdentifierTypes = useIdentifierTypes()
   const identifierTypes = useMemo(
     () => allIdentifierTypes?.filter((t) => t.isActive),
     [allIdentifierTypes],
@@ -210,37 +170,8 @@ export function ContactForm({
       return
     }
     dispatch({ type: 'saving' })
-    const args: Record<string, unknown> = {
-      tenantId: tenant._id,
-      id,
-      source: 'autosave',
-    }
-    for (const [slice, payload] of Object.entries(submitted)) {
-      args[slice] = {
-        expected: current.counters[slice as SliceName],
-        ...payload,
-      }
-    }
-    // No history fetch may be subscribed when the save commits, or "saved"
-    // would wait on its run too.
-    history.hold()
-    try {
-      const result: SaveResult = await saveForm(args as never)
-      dispatch({ type: 'saved', submitted, result, at: Date.now() })
-    } catch (err) {
-      const detail =
-        err instanceof ConvexError
-          ? (err.data as Record<string, unknown>)
-          : null
-      dispatch({
-        type: 'failed',
-        message: detail
-          ? String(detail.message ?? detail.kind)
-          : 'Could not save',
-      })
-    } finally {
-      history.release()
-    }
+    for (const action of await saveContactForm(submitted, () => latest.current))
+      dispatch(action)
   }
 
   useEffect(() => {
@@ -363,13 +294,15 @@ export function ContactForm({
           />
         </section>
 
-        <ContactAcquisition
-          id={id}
-          counter={data.contact.acquisitionVersion}
-          codeId={data.contact.acquisitionCodeId}
-          acquisition={data.acquisition}
-          disabled={!canWrite}
-        />
+        {FEATURES.sourceCodes && (
+          <ContactAcquisition
+            id={id}
+            counter={data.contact.acquisitionVersion}
+            codeId={data.contact.acquisitionCodeId}
+            acquisition={data.acquisition}
+            disabled={!canWrite}
+          />
+        )}
 
         <MethodsFields
           value={state.local.methods}
