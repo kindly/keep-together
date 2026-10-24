@@ -92,7 +92,13 @@ const FIXTURES: &[&str] = &[
     // 9: a contact's acquisition code
     "UPDATE contacts SET acquisition_code_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3',
          acquisition_version = 1;",
-    // 10: gifts, allocations, the allocation projection
+    // 10: a field's retire phase, the field and option delete logs
+    "UPDATE contact_fields SET retiring = 1, retire_version = 1;
+     INSERT INTO contact_field_deletions (id, deleted, delete_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', 3, 0);
+     INSERT INTO contact_field_option_deletions (id, delete_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b2', 0);",
+    // 11: gifts, allocations, the allocation projection
     "INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, status, entered_by,
          entered_at, client_key, gift_version, status_version)
      VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
@@ -106,7 +112,7 @@ const FIXTURES: &[&str] = &[
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3',
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1', '2026-10-20',
          2000, 'completed');",
-    // 11: Gift Aid declarations
+    // 12: Gift Aid declarations
     "INSERT INTO gift_aid_declarations (id, contact_id, scope, gift_id, made_on, method,
          wording_version, first_name, last_name, address_line1, postcode, cancelled_from,
          entered_by, entered_at)

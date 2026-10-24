@@ -18,19 +18,17 @@ import {
   giftCoverage,
   useDeclarations,
 } from '../lib/giftaid'
-import { useGift, useGiftHistory, useGiftWrites, useMembers } from '../lib/data'
-import type { GiftStatus, GiftView as Gift, Moment } from '../lib/data'
+import { MomentList, useHistoryMoments } from '../components/contact-history'
+import { useGift, useGiftWrites, useMembers } from '../lib/data'
+import type { GiftStatus, GiftView as Gift, Member } from '../lib/data'
+import { tenantPath } from '../lib/data/rust/client'
+import { keys } from '../lib/data/rust/keys'
 import { threeWayMerge } from '../lib/merge'
 import { AMOUNT_MESSAGES, amountPence } from '../lib/gift-form'
 import { useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/gifts/$giftId')({
   component: GiftPage,
-})
-
-const AT = new Intl.DateTimeFormat([], {
-  dateStyle: 'short',
-  timeStyle: 'short',
 })
 
 const field = 'rounded border border-neutral-300 px-2 py-1 text-sm'
@@ -273,7 +271,7 @@ function GiftView({ gift }: { gift: Gift }) {
           onCancel={() => setConfirming(null)}
         />
       </div>
-      <GiftHistory id={gift._id} name={name} />
+      <GiftHistory id={gift._id} members={members} />
     </main>
   )
 }
@@ -591,17 +589,24 @@ function GiftEdit({ gift, onDone }: { gift: Gift; onDone: () => void }) {
 }
 
 /**
- * The gift's history, newest first: who changed what, when. Refetched when
- * the gift changes (its write, or the event stream).
+ * The gift's history, newest first: who changed what, when (B1's shared
+ * moments). Refetched when the gift changes: its write, or the event
+ * stream. No "Restore to here": a gift is corrected, voided or recorded
+ * again.
  */
 function GiftHistory({
   id,
-  name,
+  members,
 }: {
   id: Id<'contributions'>
-  name: (userId: number | null) => string
+  members: Array<Member> | undefined
 }) {
-  const { moments, loading, loadOlder, error, retry } = useGiftHistory(id)
+  const { slug } = useTenant()
+  const { moments, loading, loadOlder, error, retry, olderError, retryOlder } =
+    useHistoryMoments(
+      keys.giftHistory(slug, id),
+      tenantPath(slug, 'gifts', id, 'history'),
+    )
   return (
     <aside className="flex flex-col gap-4 text-sm">
       <h2 className="text-lg font-medium">History</h2>
@@ -616,34 +621,17 @@ function GiftHistory({
       {moments === undefined ? (
         !error && <p className="text-neutral-500">Loading…</p>
       ) : (
-        <ol className="flex flex-col gap-2">
-          {moments.map((m: Moment, i) => (
-            <li
-              key={m.key}
-              data-revision={m.revisionId}
-              className="rounded border border-neutral-200 bg-white p-2"
-            >
-              <div className="flex items-baseline justify-between gap-2">
-                <time className="text-neutral-600">{AT.format(m.at)}</time>
-                {i === 0 && (
-                  <span className="rounded bg-neutral-200 px-1 text-xs">
-                    current
-                  </span>
-                )}
-              </div>
-              <div className="text-neutral-700">
-                {m.groupName ?? m.slices.join(', ')} · {name(m.actor)}
-              </div>
-              {m.groupName && (
-                <div className="text-xs text-neutral-500">
-                  {m.slices.join(', ')}
-                </div>
-              )}
-            </li>
-          ))}
-        </ol>
+        <MomentList moments={moments} members={members} />
       )}
       {loading && <p className="text-neutral-500">Loading…</p>}
+      {olderError && (
+        <p role="alert" className="text-red-700">
+          Older history couldn’t load.{' '}
+          <button type="button" onClick={retryOlder} className="underline">
+            Retry
+          </button>
+        </p>
+      )}
       {loadOlder && (
         <button
           type="button"

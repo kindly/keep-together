@@ -1,7 +1,7 @@
 /**
  * Gifts and Gift Aid on the Rust API (`/api/t/{slug}/gifts…`,
  * `…/giftaid…`), through TanStack Query: my recent gifts, a gift, a
- * contact's gifts, the record-gift page's donor, the gift's history, the
+ * contact's gifts, the record-gift page's donor, the
  * Gift Aid panel, and their writes.
  *
  * **Never optimistic** (gifts are financial records, human 2026-10-23):
@@ -32,8 +32,6 @@ import type { DeclarationSummary } from '../rust-types/DeclarationSummary'
 import type { Declarations as WireDeclarations } from '../rust-types/Declarations'
 import type { DonorView } from '../rust-types/DonorView'
 import type { Executed } from '../rust-types/Executed'
-import type { GiftMoment } from '../rust-types/GiftMoment'
-import type { GiftMomentPage } from '../rust-types/GiftMomentPage'
 import type { GiftPage } from '../rust-types/GiftPage'
 import type { GiftRow } from '../rust-types/GiftRow'
 import type { GiftSaved } from '../rust-types/GiftSaved'
@@ -133,9 +131,6 @@ export type ContactDeclarations = {
 }
 
 export type { DeclarationSummary }
-
-/** One history entry: revisions of one action, the slices it touched. */
-export type Moment = GiftMoment
 
 /** The record-gift page's one save, amounts in pence as `bigint`. */
 export type RecordGiftArgs = Omit<RecordGift, 'amount' | 'allocations'> & {
@@ -410,65 +405,6 @@ export function useDeclarations(
         ),
       ),
   }).data
-}
-
-/** Revisions one history page reads (the API's cap). */
-const HISTORY_PAGE = 10
-
-/**
- * A gift's history, newest first, "Load older" a page at a time. A
- * command group cut by a page boundary is joined back into one moment.
- */
-export function useGiftHistory(id: string): {
-  moments: Array<Moment> | undefined
-  loading: boolean
-  loadOlder: (() => void) | undefined
-  error: boolean
-  retry: () => void
-} {
-  const { slug } = useTenant()
-  const pages = useInfiniteQuery({
-    queryKey: keys.giftHistory(slug, id),
-    initialPageParam: null as number | null,
-    queryFn: ({ pageParam }) => {
-      const q = new URLSearchParams({ limit: String(HISTORY_PAGE) })
-      if (pageParam !== null) q.set('before', String(pageParam))
-      return get<GiftMomentPage>(tenantPath(slug, 'gifts', id, 'history'), q)
-    },
-    getNextPageParam: (page) => page.nextBefore,
-  })
-  const moments = useMemo(
-    () => pages.data && joinMoments(pages.data.pages.flatMap((p) => p.moments)),
-    [pages.data],
-  )
-  return {
-    moments,
-    loading: pages.isFetching && moments !== undefined,
-    loadOlder:
-      pages.hasNextPage && !pages.isFetchingNextPage
-        ? () => void pages.fetchNextPage()
-        : undefined,
-    error: pages.isError,
-    retry: () => void pages.refetch(),
-  }
-}
-
-/** Adjacent moments with the same key are one command group, split by a page. */
-export function joinMoments(moments: Array<Moment>): Array<Moment> {
-  const out: Array<Moment> = []
-  for (const m of moments) {
-    const prev = out.at(-1)
-    if (prev && prev.key === m.key) {
-      out[out.length - 1] = {
-        ...prev,
-        slices: [
-          ...prev.slices,
-          ...m.slices.filter((s) => !prev.slices.includes(s)),
-        ],
-      }
-    } else out.push(m)
-  }
-  return out
 }
 
 // ── writes ─────────────────────────────────────────────────────────────────

@@ -71,8 +71,6 @@ export interface Budget {
 const repeatable = { kind: 'repeatable', maxMs: 150, targetMs: 100 } as const
 const infrequent = { kind: 'infrequent', maxMs: 200, targetMs: 150 } as const
 const rare = { kind: 'rare', maxMs: 250, targetMs: 200 } as const
-/** A repeatable flow a wave step still has to port (qc/pending.ts). */
-const port = (step: string) => ({ ...repeatable, pendingPort: step })
 
 export const budgets = {
   // Step 9b, recorded 2026-10-18 in runs tn357fbu, tn35ew84, tn35t6tx
@@ -124,18 +122,18 @@ export const budgets = {
   'contacts.loadMore': repeatable,
   // Dropdown fields (plan step 6): the classes of the tag flows they
   // replaced (human, g1q14, 2026-10-21; the tag flows left in step 7).
-  'fields.create': port('B1'),
-  'fields.option.add': port('B1'),
-  'fields.archive': port('B1'),
+  'fields.create': repeatable,
+  'fields.option.add': repeatable,
+  'fields.archive': repeatable,
   'fields.filter': repeatable,
   'contact.field.set': repeatable,
   'contact.field.clear': repeatable,
-  'settings.staffFields.toggle': port('B1'),
+  'settings.staffFields.toggle': repeatable,
   // Both open the Fields tab, the first (A3 ported the layout around it).
-  'settings.nav': port('B1'),
-  'settings.tab': port('B1'),
+  'settings.nav': repeatable,
+  'settings.tab': repeatable,
   // Timed in the per-list switch test, which also opens the Fields tab.
-  'settings.staffIdentifierTypes.toggle': port('B1'),
+  'settings.staffIdentifierTypes.toggle': repeatable,
   'settings.identifierTypes.create': repeatable,
   'settings.identifierTypes.rename': repeatable,
   'settings.identifierTypes.archive': repeatable,
@@ -160,7 +158,7 @@ export const budgets = {
   'contact.giftaid.void': repeatable,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
-  'contacts.bulkSetField': { kind: 'bulk', maxMs: 500, pendingPort: 'B1' },
+  'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },
 
   // qc/harness.spec.ts: proves the timing path can fail and pass.
   'harness.impossible': { kind: 'repeatable', maxMs: 1, selfTest: true },
@@ -181,8 +179,9 @@ export function budgetFor(name: FlowName): Budget {
  * an action over many records at once. Exempt from the 100 ms server rule
  * like their flows (human, 2026-10-18), each with its own limit in ms,
  * recorded like the `bulk` flow budgets. None on the Rust backend yet:
- * B1 ports bulkSetField, whose Convex limit was 370 ms (bulkTag's worst,
- * 242.6 ms over runs tn357fbu, tn35ew84, tn35t6tx, × 1.5, rounded up).
+ * B1's bulk set (`POST /t/:slug/contacts/bulk-set-field`) is held to the
+ * ordinary 100 ms; its Convex limit was 370 ms (bulkTag's worst, 242.6 ms
+ * over runs tn357fbu, tn35ew84, tn35t6tx, × 1.5, rounded up).
  * Convex's server exception (a list re-run reading a grown pinned page)
  * went with Convex's paged list.
  */

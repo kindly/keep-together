@@ -13,12 +13,11 @@ import type { GiftView as WireGift } from '../rust-types/GiftView'
 import {
   declarationFromWire,
   giftViewFromWire,
-  joinMoments,
   useGift,
   useGiftWrites,
   useRecordGift,
 } from './gifts'
-import type { GiftView, Moment } from './gifts'
+import type { GiftView } from './gifts'
 import { keys } from './keys'
 
 // Gifts on the Rust data layer: the wire's integers become the pages'
@@ -312,25 +311,4 @@ test('events: a gift, a declaration, a contact or a code refetch what shows them
   ])
   expect(stale('e3', 'contacts', 'contacts.details')[0]).toBe(true)
   expect(stale('e4', 'source_codes', 'sources.code')[0]).toBe(true)
-})
-
-test('a command group cut by a page boundary is one moment', () => {
-  const m = (key: string, slices: Array<string>, revisionId: number) =>
-    ({
-      key,
-      revisionId,
-      at: 0,
-      actor: 1,
-      source: 'ui',
-      groupName: null,
-      slices,
-      restored: false,
-    }) as Moment
-  expect(
-    joinMoments([
-      m('g1', ['status'], 3),
-      m('g1', ['gift', 'status'], 2),
-      m('r1', ['gift'], 1),
-    ]),
-  ).toEqual([m('g1', ['status', 'gift'], 3), m('r1', ['gift'], 1)])
 })

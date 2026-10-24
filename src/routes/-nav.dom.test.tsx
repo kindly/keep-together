@@ -423,13 +423,13 @@ test('being ported: the header has Contacts, Donations and Settings, nothing unp
   expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
 })
 
-test('being ported: Settings shows only the list tabs this build serves', async () => {
+test('this build serves every list tab: Settings opens on Fields', async () => {
   port.all = false
   tenants = [group('alpha'), group('beta')]
   await page(import('./t.$slug.settings'))
-  // Identifier types (A1) and Source codes (A2) are served; Fields (B1)
-  // not yet.
+  // Identifier types (A1), Source codes (A2) and Fields (B1) are served.
   expect(links()).toEqual([
+    ['Fields', '/t/alpha/settings/fields'],
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
     ['Members', '/t/alpha/settings/members'],
@@ -439,11 +439,11 @@ test('being ported: Settings shows only the list tabs this build serves', async 
   // The first list tab served, in nav order, opens: in one group as in
   // several.
   await page(import('./t.$slug.settings.index'))
-  expect(navigated).toEqual(['/t/alpha/settings/identifiers'])
+  expect(navigated).toEqual(['/t/alpha/settings/fields'])
   tenants = [group('alpha')]
   navigated.length = 0
   await page(import('./t.$slug.settings.index'))
-  expect(navigated).toEqual(['/t/alpha/settings/identifiers'])
+  expect(navigated).toEqual(['/t/alpha/settings/fields'])
 })
 
 test('settings: the first tab is Fields once every list is ported', async () => {
@@ -461,7 +461,8 @@ test('settings: the first tab is Fields once every list is ported', async () => 
 
 test('being ported: an unported route shows the placeholder, not the page', async () => {
   port.all = false
-  port.leaf = '/t/$slug/settings/fields'
+  // Every route is ported (B1, B2): a made-up one stands in.
+  port.leaf = '/t/$slug/not-yet'
   await page(import('./t.$slug'))
   expect(text()).toContain('This page is being ported')
   expect(el.querySelector('[data-testid="outlet"]')).toBeNull()

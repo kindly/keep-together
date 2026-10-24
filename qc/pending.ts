@@ -19,25 +19,7 @@ export interface Pending {
   title?: RegExp
 }
 
-export const PENDING: ReadonlyArray<Pending> = [
-  // Settings' list tabs (A3 ported the layout and Switch group): the Fields
-  // tab (the first tab, which the tab-switching flows open), the
-  // staff/viewer read-only pass over it, and the per-list switch test
-  // (it checks Fields stays read-only) are B1's.
-  { step: 'B1', title: /^staff can manage lists, per list ›/ },
-  { step: 'B1', title: /^settings tabs ›/ },
-  { step: 'B1', title: /^old tags URLs ›/ },
-  { step: 'B1', title: /^settings for staff and viewers ›/ },
-  // B1: the Fields tab, bulk set, history with moments.
-  { step: 'B1', title: /fields tab/ },
-  { step: 'B1', title: /B's fields are not A's/ },
-  { step: 'B1', title: /filter the list by a field$/ },
-  { step: 'B1', title: /set and clear a field in bulk/ },
-  { step: 'B1', title: /history and Restore to here/ },
-  { step: 'B1', title: /history pages/ },
-  { step: 'B1', title: /Restore to here on a moment/ },
-  { step: 'B1', title: /history re-anchors/ },
-]
+export const PENDING: ReadonlyArray<Pending> = []
 
 /** The step a test waits for, or null when it runs now. */
 export function pendingStep(

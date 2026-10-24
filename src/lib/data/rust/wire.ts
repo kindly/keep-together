@@ -50,7 +50,7 @@ export function fieldsFromWire(
     label: f.label,
     appliesTo: f.appliesTo,
     isActive: f.isActive,
-    retiring: false,
+    retiring: f.retiring,
     // The API has no slots; the pages only order by it (filters, form).
     slot: (i + 1) as FieldSlot,
     saveVersion: f.saveVersion,
@@ -63,7 +63,7 @@ export function fieldsFromWire(
       used: o.used,
       saveVersion: o.saveVersion,
     })),
-    deletable: false,
+    deletable: f.deletable,
   }))
 }
 

@@ -12,8 +12,8 @@ export {
   SignedOut,
   preloadContact,
   preloadContactList,
+  preloadFields,
   queryClient,
-  useBulkSetField,
   useContact,
   useContactList,
   useContactSearch,
@@ -51,6 +51,14 @@ export type {
   SourceCodePayload,
 } from './rust/sources'
 export {
+  BULK_FIELD_LIMIT,
+  bulkFailure,
+  useBulkSetField,
+  useFieldWrites,
+  useFollowRetires,
+} from './rust/fields'
+export type { BulkFieldState, FieldPayload, OptionPayload } from './rust/fields'
+export {
   GIFTS_PAGE_SIZE,
   fetchGift,
   useContactGifts,
@@ -58,7 +66,6 @@ export {
   useDonor,
   useGift,
   useGiftAidWrites,
-  useGiftHistory,
   useGiftWrites,
   useMyRecentGifts,
   useRecordGift,
@@ -72,7 +79,6 @@ export type {
   GiftMethod,
   GiftStatus,
   GiftView,
-  Moment,
   RecentGift,
   RecordGiftArgs,
 } from './rust/gifts'

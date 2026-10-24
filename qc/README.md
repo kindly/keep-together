@@ -91,9 +91,7 @@ lists them by step in a banner, with the routes still being ported, and
 none of them fails the run. A step that ports a module deletes its lines
 from `qc/pending.ts`, re-points the specs at the Rust api, and drops the
 flows' marks. Helpers the Convex specs called are stubs in
-`qc/convex-pending.ts` until then; B3 deletes it. Two interim flows stand
-in for B1's meanwhile (`qc/flows/interim.spec.ts`: the seeded field's
-filter, the plain history panel's "Restore this").
+`qc/convex-pending.ts` until then; B3 deletes it.
 
 ## Reading the output
 

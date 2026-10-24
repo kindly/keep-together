@@ -33,13 +33,10 @@ vi.mock('../lib/data', () => ({
   useMembers: () => members,
   useDeclarations: () => ({ declarations: [], currentId: null }),
   useGiftWrites: () => mutations,
-  useGiftHistory: () => ({
-    moments: [],
-    loading: false,
-    loadOlder: undefined,
-    error: false,
-    retry: () => {},
-  }),
+}))
+vi.mock('../components/contact-history', () => ({
+  useHistoryMoments: () => ({ moments: [], loading: false, error: null }),
+  MomentList: () => null,
 }))
 vi.mock('../components/source-code-picker', () => ({
   SourceCodePicker: ({ value }: { value: { code: string } | null }) => (

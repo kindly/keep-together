@@ -1,17 +1,29 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useAction, useMutation, useQuery } from 'convex/react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import type { FormEvent } from 'react'
-import { api } from '../../convex/_generated/api'
+import {
+  preloadFields,
+  useAuthState,
+  useFieldWrites,
+  useFields,
+  useFollowRetires,
+} from '../lib/data'
+import type { ContactKind } from '../lib/data/rust-types/ContactKind'
+import { StepUpForm } from '../components/auth-steps'
+import { ConfirmDialog } from '../components/confirm-dialog'
+import { needsStepUp } from '../lib/auth-errors'
+import { StaffListSwitch } from '../components/staff-list-switch'
 import {
   CONTACT_KINDS,
   FIELD_LABEL_MAX,
-} from '../../convex/contacts/fieldTypes'
-import type { ContactKind } from '../../convex/contacts/fieldTypes'
-import { FIELD_SLOTS } from '../../convex/lib/fieldSlots'
-import { ConfirmDialog } from '../components/confirm-dialog'
-import { StaffListSwitch } from '../components/staff-list-switch'
-import {
+  FIELD_LIMIT,
   KIND_LABEL,
   conflictsOf,
   failureMessage,
@@ -34,15 +46,22 @@ import type {
   Option,
   OptionFields,
 } from '../lib/field-settings'
-import { useCanManageList, useTenant } from '../lib/tenant'
+import { useCanManageList } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/fields')({
   component: FieldsPage,
-  // Not ported yet: renders "being ported" (lib/data/ported.ts). Its
-  // loader prewarmed Convex queries; the porting step writes a new one.
+  loader: ({ context, params }) => preloadFields(context, params.slug),
 })
 
 type MarkOpen = (id: string, isOpen: boolean) => void
+
+/**
+ * Ask the page to confirm it's you (password and a code), then run
+ * `retry`: retire and delete are irreversible, so they need a sign-in
+ * within the hour (`step_up_required` otherwise), for staff list
+ * managers as for admins.
+ */
+const AskStepUp = createContext<(retry: () => Promise<void>) => void>(() => {})
 
 /** Rows with an editor open, which stay shown when archived meanwhile. */
 function useOpenRows(): [ReadonlySet<string>, MarkOpen] {
@@ -72,25 +91,28 @@ const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 /**
  * The tenant's dropdown fields (dropdown fields plan, step 3): at most
- * FIELD_SLOTS, each applying to the kinds of contact chosen for it, with
+ * FIELD_LIMIT, each applying to the kinds of contact chosen for it, with
  * options in the admin's order. Admins, and staff when the group allows
  * it, add and edit fields and options, archive them, delete them while
  * never used, and retire a field (a background clear of every value that
- * frees its slot); everyone else reads. Archived fields and options are
+ * frees its place); everyone else reads. Archived fields and options are
  * hidden unless "Show archived" is on; a row with an open editor stays
  * until it closes, whatever is archived meanwhile.
  */
 function FieldsPage() {
-  const tenant = useTenant()
   const canManage = useCanManageList('fields')
-  const fields = useQuery(api.contacts.fields.list, { tenantId: tenant._id })
+  const fields = useFields()
   const [showArchived, setShowArchived] = useState(false)
   const [open, markOpen] = useOpenRows()
-  // What a finished retire did: one this tab ran, or one that ended
-  // elsewhere while this tab showed the field.
+  // A retire that ended while this tab showed the field: one this tab
+  // started or one started elsewhere. The server answers a retire once it
+  // has started; the field leaving the list (an event, or the poll while
+  // one is retiring) is its end.
   const [retired, setRetired] = useState<string | null>(null)
-  // Fields this tab is retiring: their own message says how it went.
+  // Fields this tab started retiring: announced even if they leave the
+  // list before a refetch ever showed them retiring (a small retire).
   const retiringHere = useRef(new Set<string>())
+  useFollowRetires(fields)
   const seen = useRef<ReadonlyArray<Field> | undefined>(undefined)
   useEffect(() => {
     if (!fields) return
@@ -99,7 +121,7 @@ function FieldsPage() {
     if (!before) return
     const now = new Set<string>(fields.map((f) => f._id))
     const gone = before.filter(
-      (f) => f.retiring && !now.has(f._id) && !retiringHere.current.has(f._id),
+      (f) => (f.retiring || retiringHere.current.has(f._id)) && !now.has(f._id),
     )
     if (gone.length) {
       setRetired(
@@ -121,83 +143,102 @@ function FieldsPage() {
     (fields?.length ?? 0) -
     shown.length +
     shown.reduce((n, f) => n + f.options.filter((o) => !o.isActive).length, 0)
-  const full = (fields?.length ?? 0) >= FIELD_SLOTS
+  const full = (fields?.length ?? 0) >= FIELD_LIMIT
+  const auth = useAuthState()
+  // The irreversible action waiting for a step-up, retried once it's done.
+  const [stepUp, setStepUp] = useState<(() => Promise<void>) | null>(null)
+  const askStepUp = useCallback(
+    (retry: () => Promise<void>) => setStepUp(() => retry),
+    [],
+  )
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h2 className="text-lg font-semibold">Fields</h2>
-        <p className="mt-1 text-sm text-neutral-600">
-          Dropdowns your group defines for its contacts, such as “Volunteer
-          status: Active / Lapsed”. Each contact holds one option per field, or
-          none, and the contacts list can be filtered by any field. A group can
-          have up to {FIELD_SLOTS}.
-        </p>
-        <p className="mt-1 text-sm text-neutral-600">
-          A field is not consent: whether someone wants the newsletter belongs
-          in their communication preferences, not here.
-        </p>
-      </div>
-      <StaffListSwitch kind="fields" />
-      {retired && (
-        <p
-          role="status"
-          className="flex items-baseline gap-3 rounded border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-900"
-        >
-          <span className="flex-1">{retired}</span>
-          <button
-            type="button"
-            onClick={() => setRetired(null)}
-            className="text-xs underline"
+    <AskStepUp.Provider value={askStepUp}>
+      <div className="flex flex-col gap-6">
+        {stepUp && (
+          <StepUpForm
+            method={auth?.method ?? null}
+            onCancel={() => setStepUp(null)}
+            onDone={async () => {
+              const retry = stepUp
+              setStepUp(null)
+              await retry()
+            }}
+          />
+        )}
+        <div>
+          <h2 className="text-lg font-semibold">Fields</h2>
+          <p className="mt-1 text-sm text-neutral-600">
+            Dropdowns your group defines for its contacts, such as “Volunteer
+            status: Active / Lapsed”. Each contact holds one option per field,
+            or none, and the contacts list can be filtered by any field. A group
+            can have up to {FIELD_LIMIT}.
+          </p>
+          <p className="mt-1 text-sm text-neutral-600">
+            A field is not consent: whether someone wants the newsletter belongs
+            in their communication preferences, not here.
+          </p>
+        </div>
+        <StaffListSwitch kind="fields" />
+        {retired && (
+          <p
+            role="status"
+            className="flex items-baseline gap-3 rounded border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-900"
           >
-            dismiss
-          </button>
-        </p>
-      )}
-      {canManage && fields !== undefined && <AddField full={full} />}
-      {fields === undefined ? (
-        <p className="text-sm text-neutral-500">Loading…</p>
-      ) : (
-        <section className="flex flex-col gap-3">
-          <div className="flex items-center gap-3">
-            <h3 className="flex-1 font-medium">
-              Fields{' '}
-              <span className="text-sm font-normal text-neutral-500">
-                ({fields.length} of {FIELD_SLOTS} in use)
-              </span>
-            </h3>
-            <label className="flex items-center gap-2 text-sm text-neutral-600">
-              <input
-                type="checkbox"
-                checked={showArchived}
-                onChange={(e) => setShowArchived(e.target.checked)}
-              />
-              Show archived
-              {!showArchived && hidden > 0 && ` (${hidden})`}
-            </label>
-          </div>
-          {shown.length === 0 ? (
-            <p className="text-sm text-neutral-500">
-              {fields.length === 0 ? 'No fields yet.' : 'No active fields.'}
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-3">
-              {shown.map((f) => (
-                <FieldCard
-                  key={f._id}
-                  field={f}
-                  showArchived={showArchived}
-                  kept={!showArchived && !f.isActive && !f.retiring}
-                  markOpen={markOpen}
-                  onRetireStart={onRetireStart}
-                  onRetired={setRetired}
+            <span className="flex-1">{retired}</span>
+            <button
+              type="button"
+              onClick={() => setRetired(null)}
+              className="text-xs underline"
+            >
+              dismiss
+            </button>
+          </p>
+        )}
+        {canManage && fields !== undefined && <AddField full={full} />}
+        {fields === undefined ? (
+          <p className="text-sm text-neutral-500">Loading…</p>
+        ) : (
+          <section className="flex flex-col gap-3">
+            <div className="flex items-center gap-3">
+              <h3 className="flex-1 font-medium">
+                Fields{' '}
+                <span className="text-sm font-normal text-neutral-500">
+                  ({fields.length} of {FIELD_LIMIT} in use)
+                </span>
+              </h3>
+              <label className="flex items-center gap-2 text-sm text-neutral-600">
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
                 />
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
-    </div>
+                Show archived
+                {!showArchived && hidden > 0 && ` (${hidden})`}
+              </label>
+            </div>
+            {shown.length === 0 ? (
+              <p className="text-sm text-neutral-500">
+                {fields.length === 0 ? 'No fields yet.' : 'No active fields.'}
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {shown.map((f) => (
+                  <FieldCard
+                    key={f._id}
+                    field={f}
+                    showArchived={showArchived}
+                    kept={!showArchived && !f.isActive && !f.retiring}
+                    markOpen={markOpen}
+                    onRetireStart={onRetireStart}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+      </div>
+    </AskStepUp.Provider>
   )
 }
 
@@ -236,8 +277,7 @@ function KindsChooser({
 
 /** A label, the kinds it applies to, and an Add button. */
 function AddField({ full }: { full: boolean }) {
-  const tenant = useTenant()
-  const create = useMutation(api.contacts.fields.createField)
+  const { createField: create } = useFieldWrites()
   const [label, setLabel] = useState('')
   const [appliesTo, setAppliesTo] = useState<Array<ContactKind>>([
     ...CONTACT_KINDS,
@@ -250,7 +290,7 @@ function AddField({ full }: { full: boolean }) {
     setError(null)
     setBusy(true)
     try {
-      await create({ tenantId: tenant._id, label, appliesTo, isActive: true })
+      await create({ label, appliesTo, isActive: true })
       setLabel('')
       setAppliesTo([...CONTACT_KINDS])
     } catch (err) {
@@ -263,7 +303,7 @@ function AddField({ full }: { full: boolean }) {
   if (full) {
     return (
       <p className="rounded border border-neutral-200 bg-neutral-50 px-4 py-2 text-sm text-neutral-600">
-        All {FIELD_SLOTS} fields are in use. Retire one to free its place for a
+        All {FIELD_LIMIT} fields are in use. Retire one to free its place for a
         new field.
       </p>
     )
@@ -311,7 +351,6 @@ function FieldCard({
   kept,
   markOpen,
   onRetireStart,
-  onRetired,
 }: {
   field: Field
   showArchived: boolean
@@ -319,14 +358,15 @@ function FieldCard({
   kept: boolean
   markOpen: MarkOpen
   onRetireStart: (id: string) => void
-  onRetired: (message: string) => void
 }) {
-  const tenant = useTenant()
   const canManage = useCanManageList('fields')
-  const save = useMutation(api.contacts.fields.saveField)
-  const remove = useMutation(api.contacts.fields.deleteField)
-  const reorder = useMutation(api.contacts.fields.reorderOptions)
-  const retire = useAction(api.contacts.fields.retireField)
+  const {
+    saveField: save,
+    deleteField: remove,
+    reorder,
+    retire,
+  } = useFieldWrites()
+  const askStepUp = useContext(AskStepUp)
   const [editing, setEditing] = useState(false)
   // The counter each confirm opened on; null while it is closed. Confirming
   // acts against it, so a change made meanwhile refuses as stale.
@@ -377,13 +417,7 @@ function FieldCard({
     setError(null)
     setBusy(true)
     try {
-      await save({
-        tenantId: tenant._id,
-        id: field._id,
-        expected,
-        ...fieldFieldsOf(field),
-        isActive,
-      })
+      await save(field._id, expected, { ...fieldFieldsOf(field), isActive })
     } catch (err) {
       setError(failureMessage(err, 'row'))
     } finally {
@@ -396,10 +430,11 @@ function FieldCard({
     setError(null)
     setBusy(true)
     try {
-      await remove({ tenantId: tenant._id, id: field._id, expected })
+      await remove(field._id, expected)
     } catch (err) {
-      setError(failureMessage(err, 'row'))
       setBusy(false)
+      if (needsStepUp(err)) askStepUp(() => confirmDelete(expected))
+      else setError(failureMessage(err, 'row'))
     }
   }
 
@@ -409,15 +444,14 @@ function FieldCard({
     setRunning(true)
     onRetireStart(field._id)
     try {
-      const { cleared } = await retire({ tenantId: tenant._id, id: field._id })
-      // The field has left the list (its slot is free), so this card is
-      // about to go: the page says what happened.
-      onRetired(
-        `Retired ${field.label}: cleared from ${plural(cleared, 'contact')}. Its place is free for a new field.`,
-      )
+      // Started: the values clear in the background. The card shows the
+      // retire running until the field leaves the list, and the page then
+      // says it has been retired.
+      await retire(field._id)
     } catch (err) {
-      setError(failureMessage(err, 'row'))
       setRunning(false)
+      if (needsStepUp(err)) askStepUp(runRetire)
+      else setError(failureMessage(err, 'row'))
     }
   }
 
@@ -432,7 +466,7 @@ function FieldCard({
     setError(null)
     setMoved({ id, by, from: options.findIndex((o) => o._id === id) })
     try {
-      await reorder({ tenantId: tenant._id, fieldId: field._id, order })
+      await reorder(field._id, order)
     } catch (err) {
       setMoved(null)
       setError(failureMessage(err, 'row'))
@@ -682,8 +716,7 @@ function conflictNote(changedTo: string) {
  * meanwhile is merged in (`rebase`), and the next save goes against it.
  */
 function EditField({ field, onDone }: { field: Field; onDone: () => void }) {
-  const tenant = useTenant()
-  const save = useMutation(api.contacts.fields.saveField)
+  const { saveField: save } = useFieldWrites()
   const [draft, setDraft] = useState<Draft<FieldFields>>(() =>
     openDraft(fieldFieldsOf(field), field.saveVersion),
   )
@@ -707,10 +740,7 @@ function EditField({ field, onDone }: { field: Field; onDone: () => void }) {
     setError(null)
     setBusy(true)
     try {
-      await save({
-        tenantId: tenant._id,
-        id: field._id,
-        expected: draft.baseVersion,
+      await save(field._id, draft.baseVersion, {
         ...draft.fields,
         isActive: field.isActive,
       })
@@ -814,9 +844,8 @@ function OptionRow({
   refocus: -1 | 1 | null
   onRefocused: () => void
 }) {
-  const tenant = useTenant()
-  const save = useMutation(api.contacts.fields.saveOption)
-  const remove = useMutation(api.contacts.fields.deleteOption)
+  const { saveOption: save, deleteOption: remove } = useFieldWrites()
+  const askStepUp = useContext(AskStepUp)
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState<number | null>(null)
   // The counter the archive confirm opened on; null while it is closed.
@@ -849,11 +878,10 @@ function OptionRow({
     setError(null)
     setBusy(true)
     try {
-      await save({
-        tenantId: tenant._id,
-        id: option._id,
-        expected,
+      await save(option._id, expected, {
+        fieldId: option.fieldId,
         label: option.label,
+        position: option.position,
         isActive,
       })
     } catch (err) {
@@ -868,10 +896,11 @@ function OptionRow({
     setError(null)
     setBusy(true)
     try {
-      await remove({ tenantId: tenant._id, id: option._id, expected })
+      await remove(option._id, expected)
     } catch (err) {
-      setError(failureMessage(err, 'row'))
       setBusy(false)
+      if (needsStepUp(err)) askStepUp(() => confirmDelete(expected))
+      else setError(failureMessage(err, 'row'))
     }
   }
 
@@ -998,8 +1027,7 @@ function EditOption({
   option: Option
   onDone: () => void
 }) {
-  const tenant = useTenant()
-  const save = useMutation(api.contacts.fields.saveOption)
+  const { saveOption: save } = useFieldWrites()
   const [draft, setDraft] = useState<Draft<OptionFields>>(() =>
     openDraft(optionFieldsOf(option), option.saveVersion),
   )
@@ -1015,11 +1043,10 @@ function EditOption({
     setError(null)
     setBusy(true)
     try {
-      await save({
-        tenantId: tenant._id,
-        id: option._id,
-        expected: draft.baseVersion,
+      await save(option._id, draft.baseVersion, {
+        fieldId: option.fieldId,
         label: draft.fields.label,
+        position: option.position,
         isActive: option.isActive,
       })
       onDone()
@@ -1076,8 +1103,7 @@ function EditOption({
 
 /** A new option at the end of the field's list. */
 function AddOption({ field }: { field: Field }) {
-  const tenant = useTenant()
-  const add = useMutation(api.contacts.fields.addOption)
+  const { addOption: add } = useFieldWrites()
   const [label, setLabel] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -1088,7 +1114,7 @@ function AddOption({ field }: { field: Field }) {
     setError(null)
     setBusy(true)
     try {
-      await add({ tenantId: tenant._id, fieldId: field._id, label })
+      await add(field._id, label)
       setLabel('')
     } catch (err) {
       setError(failureMessage(err))

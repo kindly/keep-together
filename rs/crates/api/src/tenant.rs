@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use contracts::Ctx;
 use serde::Serialize;
-use store::{OrgDb, OrgRead, Role};
+use store::{OrgDb, OrgRead, Role, Store, TenantId};
 use ts_rs::TS;
 
 use crate::error::ApiError;
@@ -34,6 +34,10 @@ pub struct Tenant {
     /// When this session last proved password + second factor.
     authenticated_at: i64,
     timing: Timing,
+    /// For [`Tenant::run_job`]'s `platform.db` marker only: handlers never
+    /// see the store.
+    tenant_id: TenantId,
+    store: Arc<Store>,
 }
 
 impl Tenant {
@@ -84,9 +88,59 @@ impl Tenant {
         if self.role < Role::Admin {
             return Err(ApiError::Forbidden);
         }
+        self.require_step_up()
+    }
+
+    /// Irreversible commands (retiring or deleting a field), whoever may
+    /// run them: a sign-in (or step-up) within the last hour, else `403
+    /// step_up_required`.
+    pub fn require_step_up(&self) -> Result<(), ApiError> {
         if contracts::now_ms() - self.authenticated_at >= ::auth::STEP_UP_MS {
             return Err(ApiError::StepUpRequired);
         }
+        Ok(())
+    }
+
+    /// Mark `job`'s work on `key` pending in `platform.db`, before the
+    /// work's first commit (write-ahead), so a server stopping anywhere
+    /// after it leaves the work to the job. Idempotent.
+    pub async fn mark_job(&self, job: &'static str, key: String) -> Result<(), ApiError> {
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        blocking(move || crate::jobs::mark_pending(&store, &id, job, &key)).await
+    }
+
+    /// Run `step` again and again, each run its own transaction as this
+    /// user, until it answers `true`: in the background, after this
+    /// returns. `job`/`key` are marked pending in `platform.db` first (a
+    /// no-op after [`Tenant::mark_job`]) and cleared at the end, so a server stopping part way leaves the work
+    /// to the job of that name ([`crate::jobs::each_pending_org`]). A
+    /// failure is logged and sent to Sentry, and leaves the marker.
+    pub async fn run_job<F>(&self, job: &'static str, key: String, step: F) -> Result<(), ApiError>
+    where
+        F: Fn(&Ctx) -> Result<bool, ApiError> + Send + 'static,
+    {
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        {
+            let (store, id, key) = (store.clone(), id.clone(), key.clone());
+            blocking(move || crate::jobs::mark_pending(&store, &id, job, &key)).await?;
+        }
+        let db = self.db.clone();
+        let user = self.user;
+        tokio::task::spawn_blocking(move || {
+            let done = loop {
+                match contracts::transact(&db, Some(user), &step) {
+                    Ok(true) => break Ok(()),
+                    Ok(false) => continue,
+                    Err(e) => break Err(e),
+                }
+            };
+            let done = done.and_then(|()| {
+                crate::jobs::clear_pending(&store, &id, job, &key).map_err(ApiError::from)
+            });
+            if let Err(e) = done {
+                crate::observe::error(&format!("{job} {id} {key}: {e:?}"));
+            }
+        });
         Ok(())
     }
 
@@ -158,6 +212,8 @@ pub(crate) async fn middleware(
             user: session.user,
             authenticated_at: session.authenticated_at.unwrap_or(0),
             timing: timing.clone(),
+            tenant_id: member.tenant.id.clone(),
+            store: state.store.clone(),
         })
     }
     .await;

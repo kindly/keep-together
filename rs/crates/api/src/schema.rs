@@ -30,16 +30,19 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(sources::MIGRATION),
         // 9: a contact's acquisition code (A2)
         M::up(contacts::acquisition::MIGRATION),
-        // 10: gifts, their allocations and the allocation projection (B2)
+        // 10: a field's retire phase, field and option delete logs (B1)
+        M::up(contacts::fields::MIGRATION_RETIRE),
+        // 11: gifts, their allocations and the allocation projection (B2)
         M::up(giving::MIGRATION),
-        // 11: Gift Aid declarations (B2)
+        // 12: Gift Aid declarations (B2)
         M::up(giftaid::MIGRATION),
     ])
 }
 
 /// `platform.db`'s per-crate schemas, run in this order after its base
 /// schema. Each crate appends only to its own list.
-pub const PLATFORM_SCHEMAS: &[PlatformSchema] = &[platform::SCHEMA, auth::SCHEMA];
+pub const PLATFORM_SCHEMAS: &[PlatformSchema] =
+    &[platform::SCHEMA, auth::SCHEMA, crate::jobs::SCHEMA];
 
 /// A new organisation's reference data, in its file's first transaction
 /// (`keep tenant create`, the dev seeds): each crate's `seed_new_org`, in

@@ -17,7 +17,7 @@ use giving::types::{
     AllocationRow, GiftPage, GiftPayload, GiftSaved, GiftView, Method, RecentGift,
     SaveGift, SetGiftStatus,
 };
-use giving::queries::GiftMomentPage;
+use contracts::history::MomentPage;
 use serde::{Deserialize, Serialize};
 use sources::CodeDescription;
 use ts_rs::TS;
@@ -68,7 +68,7 @@ async fn history(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Params(q): Params<HistoryQuery>,
-) -> Result<Json<GiftMomentPage>, ApiError> {
+) -> Result<Json<MomentPage>, ApiError> {
     t.read(move |r| {
         if giving::describe_gift(r, &id)?.is_none() {
             return Err(ApiError::NotFound);

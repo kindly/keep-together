@@ -4,11 +4,8 @@
 
 use contracts::{
     Contract, ContractError, Ctx, Exec, Executed, Source, canonical, command_group, execute,
-    restore, restore_entity_to,
 };
-use rusqlite::OptionalExtension;
 
-use crate::REGISTRY;
 use crate::identifiers::{IDENTIFIERS, identifier_problems, load_identifiers};
 use crate::queries::counters;
 use crate::slices::{
@@ -16,8 +13,8 @@ use crate::slices::{
     load_details, load_field_values, load_methods,
 };
 use crate::types::{
-    Archive, Counters, CreateContact, Created, Expected, FormProblem, RestoreRequest, Restored,
-    SaveForm, SaveFormResult, SaveSource,
+    Archive, Counters, CreateContact, Created, Expected, FormProblem, SaveForm, SaveFormResult,
+    SaveSource,
 };
 
 /// Create a contact from its details. A `clientKey` or pre-generated `id`
@@ -255,46 +252,4 @@ pub fn set_archived(
     )
 }
 
-/// Restore one of this contact's revisions, or the whole contact (archive
-/// excluded) to its state at `at`, as new commands.
-pub fn restore_contact(
-    ctx: &Ctx,
-    id: &str,
-    req: RestoreRequest,
-) -> Result<Restored, ContractError> {
-    match req {
-        RestoreRequest::Revision { revision_id } => {
-            let owner: Option<(String, String)> = ctx
-                .tx
-                .read()
-                .query_row(
-                    "SELECT entity, entity_id FROM revisions WHERE id = ?1",
-                    [revision_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            if owner != Some(("contacts".into(), id.to_owned())) {
-                return Err(ContractError::NotFound);
-            }
-            let contract: String = ctx.tx.read().query_row(
-                "SELECT contract FROM revisions WHERE id = ?1",
-                [revision_id],
-                |r| r.get(0),
-            )?;
-            restore(ctx, &REGISTRY, revision_id, None)?;
-            Ok(Restored {
-                restored: vec![contract],
-            })
-        }
-        RestoreRequest::At { at } => {
-            if counters(ctx.tx.read(), id)?.is_none() {
-                return Err(ContractError::NotFound);
-            }
-            let restored =
-                restore_entity_to(ctx, &REGISTRY, "contacts", id, at, &[ARCHIVE_NAME], None)?;
-            Ok(Restored { restored })
-        }
-    }
-}
-
-const ARCHIVE_NAME: &str = <crate::slices::ContactArchive as Contract>::NAME;
+pub use crate::history::restore_contact;
