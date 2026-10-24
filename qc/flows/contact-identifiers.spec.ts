@@ -1,4 +1,5 @@
-import { expect, test } from '../fixtures'
+import { apiPost, expect, test } from '../fixtures'
+import type { Instance, QcUser } from '../fixtures'
 import {
   CONTACT_ROUTE,
   contactForm,
@@ -14,25 +15,38 @@ import type { Page } from '@playwright/test'
 
 // External identifiers on the contact form (external-ids X4b): add and
 // remove, a duplicate value "to fix" naming the contact that holds it, and
-// the section hidden in a group with no active type. Types are made on the
-// settings page (X4a); none are seeded, and tenant B never gets one.
-
-const IDENTIFIERS_ROUTE = {
-  type: 'route',
-  description: '/t/$slug/settings/identifiers',
-}
+// the section hidden in a group with no active type. Types are made
+// through the api here: the settings page that makes them (X4a) is timed
+// in settings.spec.ts, which waits for A3's Settings layout. Tenant B's
+// only type is archived (the QC seed).
 
 const identifiers = (page: Page) => section(page, 'Identifiers')
 const idRows = (page: Page) => identifiers(page).locator('ul > li')
 
-/** Create an identifier type on the settings page (user A is an admin). */
-async function createType(page: Page, slug: string, name: string) {
-  await page.goto(`/t/${slug}/settings/identifiers`)
-  await page.getByLabel('New identifier type').fill(name)
-  await page.getByRole('button', { name: 'Create type' }).click()
-  await expect(
-    page.locator('main li').getByText(name, { exact: true }),
-  ).toBeVisible()
+/** Create an identifier type as `user` (an admin): its id. */
+async function createType(inst: Instance, user: QcUser, name: string) {
+  const made = await apiPost<{ id: string }>(
+    inst,
+    user,
+    `/api/t/${user.slug}/identifier-types`,
+    { name, isActive: true },
+  )
+  return made.id
+}
+
+/** Archive a type made by `createType` (still at version 0). */
+async function archiveType(
+  inst: Instance,
+  user: QcUser,
+  id: string,
+  name: string,
+) {
+  await apiPost(inst, user, `/api/t/${user.slug}/identifier-types`, {
+    id,
+    expected: 0,
+    name,
+    isActive: false,
+  })
 }
 
 /** Fill a new identifier row: type, then value. Doesn't leave the field. */
@@ -76,10 +90,9 @@ function identifierSaved(present: boolean) {
 test.describe('identifiers on a contact', { annotation: CONTACT_ROUTE }, () => {
   test(
     'add and remove an identifier',
-    { annotation: [CONTACT_ROUTE, IDENTIFIERS_ROUTE] },
-    async ({ page, flow, users }) => {
+    async ({ page, flow, users, instance }) => {
       const type = uniqueName('idtype')
-      await createType(page, users.a.slug, type)
+      await createType(instance, users.a, type)
       const last = uniqueName('identified')
       await createContact(page, users.a.slug, last)
       await expect(identifiers(page).getByText('No identifiers.')).toBeVisible()
@@ -133,10 +146,9 @@ test.describe('identifiers on a contact', { annotation: CONTACT_ROUTE }, () => {
 
   test(
     'a duplicate is "to fix", naming the other contact, while other sections save',
-    { annotation: [CONTACT_ROUTE, IDENTIFIERS_ROUTE] },
-    async ({ page, users }) => {
+    async ({ page, users, instance }) => {
       const type = uniqueName('idtype')
-      await createType(page, users.a.slug, type)
+      await createType(instance, users.a, type)
       const holder = uniqueName('holder')
       const holderUrl = await createContact(page, users.a.slug, holder)
       const value = `${holder}-ID`
@@ -173,12 +185,11 @@ test.describe('identifiers on a contact', { annotation: CONTACT_ROUTE }, () => {
 
   test(
     'an archived type stays on its rows, marked, and is not offered',
-    { annotation: [CONTACT_ROUTE, IDENTIFIERS_ROUTE] },
-    async ({ page, users }) => {
+    async ({ page, users, instance }) => {
       const type = uniqueName('idretired')
-      await createType(page, users.a.slug, type)
+      const typeId = await createType(instance, users.a, type)
       // So "add" stays offered whatever else this worker's tenant holds.
-      await createType(page, users.a.slug, uniqueName('idactive'))
+      await createType(instance, users.a, uniqueName('idactive'))
       const url = await createContact(page, users.a.slug, uniqueName('kept'))
       const value = `${type}-1`
       await addIdentifier(page, type, value)
@@ -195,16 +206,7 @@ test.describe('identifiers on a contact', { annotation: CONTACT_ROUTE }, () => {
         .getByRole('button', { name: 'remove identifier later' })
         .click()
 
-      await page.goto(`/t/${users.a.slug}/settings/identifiers`)
-      await page
-        .locator('main li')
-        .filter({ has: page.getByText(type, { exact: true }) })
-        .getByRole('button', { name: 'archive' })
-        .click()
-      await expect(
-        section(page, 'Archived').getByText(type, { exact: true }),
-      ).toBeVisible()
-
+      await archiveType(instance, users.a, typeId, type)
       await page.goto(url)
       const row = idRows(page).filter({ hasText: value })
       await expect(row).toContainText('(archived type)')

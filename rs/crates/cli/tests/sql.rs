@@ -42,7 +42,8 @@ fn selects_come_back_as_csv_or_json() {
     let tmp = tempfile::tempdir().unwrap();
     setup(tmp.path());
     let conn = open(tmp.path(), "alpha").unwrap();
-    let sql = "SELECT name, actor FROM command_groups ORDER BY at";
+    // The rows inserted above (at 10 and 20), not `tenant create`'s seeds.
+    let sql = "SELECT name, actor FROM command_groups WHERE at < 100 ORDER BY at";
     assert_eq!(
         run(&conn, sql, Format::Csv).unwrap(),
         "name,actor\n\"first, \"\"quoted\"\"\",1\nsecond,\n"
@@ -58,7 +59,7 @@ fn selects_come_back_as_csv_or_json() {
     assert_eq!(
         run(
             &beta,
-            "SELECT count(*) AS n FROM command_groups",
+            "SELECT count(*) AS n FROM command_groups WHERE at < 100",
             Format::Csv
         )
         .unwrap(),

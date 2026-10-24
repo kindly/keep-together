@@ -25,6 +25,8 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/settings',
   '/t/$slug/settings/',
   '/t/$slug/settings/groups',
+  // A1: inside A3's Settings layout.
+  '/t/$slug/settings/identifiers',
 ]
 
 const ported = new Set<string>(PORTED)
@@ -38,11 +40,11 @@ export const FEATURES = {
   /** A2: the acquisition picker, the list's source filter. */
   sourceCodes: false,
   /** A1: the form's identifiers. */
-  identifiers: false,
+  identifiers: true,
   /** A1: the contact page's notes. */
-  notes: false,
+  notes: true,
   /** A1: the email hold notice and Release. */
-  emailHolds: false,
+  emailHolds: true,
   /** B1: the list's bulk set. */
   bulkSetField: false,
   /** B2: the contact's gifts and Gift Aid, home's recent gifts. */

@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation } from 'convex/react'
-import type { Doc, Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
-import { useCanWrite, useTenant } from '../lib/tenant'
-import { useQuery } from '../lib/query-cache'
+import type { Id } from '../../convex/_generated/dataModel'
+import { useMembers, useNoteActions, useNotes } from '../lib/data'
+import type { Note } from '../lib/data'
+import { useCanWrite } from '../lib/tenant'
 import type { Draft, Gone } from '../lib/notes'
 import {
   budget,
@@ -21,33 +20,24 @@ import {
 import { useReportUnsaved } from '../lib/unsaved'
 import { ConfirmDialog } from './confirm-dialog'
 
-type Note = Doc<'contactNotes'>
 type NameOf = (userId: Id<'users'> | undefined) => string
 type Entry = { note: Note; gone: Gone | null }
 
 /** Live notes (pinned first, then newest), plus the archived ones on demand. */
 export function ContactNotes({ contactId }: { contactId: Id<'contacts'> }) {
-  const tenant = useTenant()
   const canWrite = useCanWrite()
   const [showArchived, setShowArchived] = useState(false)
   // Open editors, by note id, with the note as it was when opened. Held
   // here so an editor outlives its note leaving the live list.
   const [open, setOpen] = useState<Record<string, Note>>({})
-  const live = useQuery(api.contacts.notes.forContact, {
-    tenantId: tenant._id,
-    id: contactId,
-  })
+  const live = useNotes(contactId, 'live')
   const liveIds = new Set(live?.notes.map((n) => n._id))
   const orphaned = Object.keys(open).some((id) => !liveIds.has(id as never))
-  const archived = useQuery(
-    api.contacts.notes.archivedForContact,
-    showArchived || (live && orphaned)
-      ? { tenantId: tenant._id, id: contactId }
-      : 'skip',
+  const archived = useNotes(
+    contactId,
+    showArchived || (live && orphaned) ? 'archived' : 'skip',
   )
-  const members = useQuery(api.platform.tenants.members, {
-    tenantId: tenant._id,
-  })
+  const members = useMembers()
   const nameOf: NameOf = (userId) =>
     userId === undefined
       ? 'system'
@@ -151,8 +141,7 @@ function NoteList({
  * own controls is not leaving it.
  */
 function Composer({ contactId }: { contactId: Id<'contacts'> }) {
-  const tenant = useTenant()
-  const create = useMutation(api.contacts.notes.create)
+  const { create } = useNoteActions()
   const [text, setText] = useState('')
   const [pinned, setPinned] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -168,7 +157,7 @@ function Composer({ contactId }: { contactId: Id<'contacts'> }) {
     setSaving(true)
     setError(null)
     try {
-      await create({ tenantId: tenant._id, contactId, body: text, pinned })
+      await create({ contactId, body: text, pinned })
       setText('')
       setPinned(false)
     } catch (err) {
@@ -238,10 +227,8 @@ function NoteItem({
   editing: boolean
   setEditing: (on: boolean) => void
 }) {
-  const tenant = useTenant()
   const canWrite = useCanWrite()
-  const setPinned = useMutation(api.contacts.notes.setPinned)
-  const setArchived = useMutation(api.contacts.notes.setArchived)
+  const { setPinned, setArchived } = useNoteActions()
   const [error, setError] = useState<string | null>(null)
 
   const run = async (op: Promise<unknown>) => {
@@ -283,7 +270,6 @@ function NoteItem({
                   onClick={() =>
                     void run(
                       setPinned({
-                        tenantId: tenant._id,
                         id: note._id,
                         pinned: !note.pinned,
                       }),
@@ -298,7 +284,6 @@ function NoteItem({
               onClick={() =>
                 void run(
                   setArchived({
-                    tenantId: tenant._id,
                     id: note._id,
                     archived: !note.archived,
                   }),
@@ -347,9 +332,7 @@ function Editor({
   nameOf: NameOf
   onDone: () => void
 }) {
-  const tenant = useTenant()
-  const save = useMutation(api.contacts.notes.save)
-  const setArchived = useMutation(api.contacts.notes.setArchived)
+  const { save, setArchived } = useNoteActions()
   const [copied, setCopied] = useState(false)
   const [draft, setDraft] = useState<Draft>(() => openDraft(note))
   const [saving, setSaving] = useState(false)
@@ -384,13 +367,11 @@ function Editor({
       // body can't have changed while archived, so the draft's base holds.
       if (gone === 'archived')
         await setArchived({
-          tenantId: tenant._id,
           id: note._id,
           archived: false,
         })
       const saved = edited(draft)
         ? await save({
-            tenantId: tenant._id,
             id: note._id,
             expected: draft.baseVersion,
             body: draft.text,

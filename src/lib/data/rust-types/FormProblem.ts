@@ -3,4 +3,8 @@
 /**
  * A form problem; `key` names the row or field it is about.
  */
-export type FormProblem = { field: string, message: string, key?: string, };
+export type FormProblem = { field: string, message: string, key?: string, 
+/**
+ * The other contact a problem names (an identifier it holds).
+ */
+contactId?: string, };

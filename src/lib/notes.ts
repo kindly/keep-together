@@ -2,8 +2,8 @@
  * Pure state for the contact notes panel: the byte budget a note body is
  * held to, and how an open editor follows a note someone else edits.
  */
-import { ConvexError } from 'convex/values'
 import { NOTE_MAX_BYTES } from '../../convex/contacts/rules'
+import { RustApiError } from './data/rust/client'
 import type { Unsaved } from './unsaved'
 
 /** From this share of the cap on, the editor shows what is left. */
@@ -78,8 +78,8 @@ export function rebase(
 
 /** A user-facing line for a failed note mutation. */
 export function failureMessage(err: unknown): string {
-  if (!(err instanceof ConvexError)) return 'Could not save the note'
-  const d = err.data as {
+  if (!(err instanceof RustApiError)) return 'Could not save the note'
+  const d = err.error as {
     kind?: string
     message?: string
     problems?: Array<{ message: string }>

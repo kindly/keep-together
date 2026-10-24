@@ -20,6 +20,7 @@ pub fn router() -> Router {
     Router::new()
         .route("/contacts", get(list).post(create))
         .route("/contacts/search", get(search))
+        .route("/contacts/by-client-key/{key}", get(by_client_key))
         .route("/contacts/{id}", get(contact))
         .route("/contacts/{id}/history", get(history))
         .route("/contacts/{id}/save", post(save))
@@ -90,6 +91,25 @@ async fn contact(
     t.read(move |r| queries::get(r, &id)?.ok_or(ApiError::NotFound))
         .await
         .map(Json)
+}
+
+#[derive(Deserialize)]
+struct KeyParam {
+    key: String,
+}
+
+/// `GET contacts/by-client-key/{key}`: the contact a new-contact form
+/// created with this `clientKey`; 404 until it exists.
+async fn by_client_key(
+    Extension(t): Extension<Tenant>,
+    Path(KeyParam { key }): Path<KeyParam>,
+) -> Result<Json<ContactView>, ApiError> {
+    t.read(move |r| {
+        let id = queries::by_client_key(r, &key)?.ok_or(ApiError::NotFound)?;
+        view(r, &id)
+    })
+    .await
+    .map(Json)
 }
 
 #[derive(Deserialize)]

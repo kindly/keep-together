@@ -58,6 +58,29 @@ const FIXTURES: &[&str] = &[
     // 5: tenant settings
     "INSERT INTO tenant_settings (id, name, nonce, ciphertext, version)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f7', 'webhook', 'AAAAAAAAAAAAAAAA', 'AAAA', 0);",
+    // 6: identifiers and their types, notes, relationships and their types
+    "UPDATE contacts SET identifiers_version = 1;
+     INSERT INTO identifier_types (id, name, name_normalized, is_active)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6', 'Member no', 'member no', 1);
+     INSERT INTO contact_identifiers (id, contact_id, position, type_id, value, value_normalized)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f7', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f6', 'M123', 'm123');
+     INSERT INTO contact_notes (id, contact_id, body, created_by, created_at, edited_by, edited_at)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f8', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         'Met at the fair', 1, 1000, 1, 1000);
+     INSERT INTO contacts (number, id, kind, title, first_name, last_name, nickname, name,
+         is_deceased, display_name, sort_name, sort_key)
+     VALUES (10002, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0fa', 'organization', '', '', '', '',
+         'Leeds Trust', 0, 'Leeds Trust', 'Leeds Trust', 'leeds trust');
+     INSERT INTO relationship_types (id, label_ab, label_ba, kind_a, kind_b, is_active)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f9', 'Employee of', 'Employer of', 'individual',
+         'organization', 1);
+     INSERT INTO relationships (id, contact_a, contact_b, type_id, is_active, description)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0fb', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0fa', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f9', 1, '');",
+    // 7: email suppressions
+    "INSERT INTO email_suppressions (id, address_normalized, suppressed, reason, since)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0fc', 'ann@x.org', 1, 'bounce', 1000);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
@@ -231,9 +254,13 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
     let mut conn = Connection::open_in_memory().unwrap();
     org_migrations().to_latest(&mut conn).unwrap();
     let mut owners = BTreeMap::new();
-    for c in [&*contacts::REGISTRY, &*platform::REGISTRY]
-        .into_iter()
-        .flat_map(|r| r.contracts())
+    for c in [
+        &*contacts::REGISTRY,
+        &*platform::REGISTRY,
+        &*comms::REGISTRY,
+    ]
+    .into_iter()
+    .flat_map(|r| r.contracts())
     {
         let (ty, notnull, default): (String, bool, Option<String>) = conn
             .query_row(
@@ -259,6 +286,7 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
     }
     assert!(contacts::REGISTRY.missing_upcasters().is_empty());
     assert!(platform::REGISTRY.missing_upcasters().is_empty());
+    assert!(comms::REGISTRY.missing_upcasters().is_empty());
 }
 
 /// Rule 6 / M3, the part the compiler can't see: `ctx.tx.read()` is a

@@ -41,11 +41,7 @@ export function saveActions(
   answer: SaveFormResult,
   at: number,
 ): Array<Action> {
-  // The API has no identifiers slice: the form's counter for it stands.
-  const counters = {
-    ...answer.counters,
-    identifiers: state.counters.identifiers,
-  }
+  const counters = answer.counters
   const result = {
     saved: answer.saved,
     problems: answer.problems,

@@ -27,6 +27,8 @@ fn world() -> World {
         org_migrations: Migrations::new(vec![
             M::up(contracts::MIGRATION),
             M::up(contacts::MIGRATION),
+            M::up(contacts::DROP_TRIGRAM),
+            M::up(contacts::MIGRATION_IDENTIFIERS_NOTES),
         ]),
         readers: 2,
         max_open: StoreConfig::DEFAULT_MAX_OPEN,

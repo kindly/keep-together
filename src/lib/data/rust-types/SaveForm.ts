@@ -2,6 +2,7 @@
 import type { ContactAddresses } from "./ContactAddresses";
 import type { ContactDetails } from "./ContactDetails";
 import type { ContactFieldValues } from "./ContactFieldValues";
+import type { ContactIdentifiers } from "./ContactIdentifiers";
 import type { ContactMethods } from "./ContactMethods";
 import type { Expected } from "./Expected";
 import type { SaveSource } from "./SaveSource";
@@ -10,4 +11,4 @@ import type { SaveSource } from "./SaveSource";
  * `POST contacts/{id}/save`: the contact form. Every slice provided is
  * diffed against the stored state; only changed ones execute.
  */
-export type SaveForm = { source?: SaveSource, details?: Expected<ContactDetails>, methods?: Expected<ContactMethods>, addresses?: Expected<ContactAddresses>, fields?: Expected<ContactFieldValues>, };
+export type SaveForm = { source?: SaveSource, details?: Expected<ContactDetails>, methods?: Expected<ContactMethods>, addresses?: Expected<ContactAddresses>, fields?: Expected<ContactFieldValues>, identifiers?: Expected<ContactIdentifiers>, };
