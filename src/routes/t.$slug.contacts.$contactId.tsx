@@ -1,126 +1,26 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
-import { assembleView } from '../../convex/contacts/view'
-import { cachedTenant, useTenant } from '../lib/tenant'
-import { useQuery } from '../lib/query-cache'
+import { useTenant } from '../lib/tenant'
 import { contactSeed, dropContactSeed } from '../lib/contact-seed'
 import type { ContactView } from '../lib/contact-seed'
-import type { SourceCodeDescription } from '../../convex/sources/code'
-import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
+import { BACKEND, FEATURES, preloadContact, useContact } from '../lib/data'
 import { ContactForm } from '../components/contact-form'
 import { ContactGiftAid } from '../components/contact-giftaid'
 import { ContactGifts } from '../components/contact-gifts'
 import { ContactHistory } from '../components/contact-history'
+import { RustContactHistory } from '../components/rust-contact-history'
 import { ContactNotes } from '../components/contact-notes'
 import { LeaveGuard } from '../components/leave-guard'
 import { UnsavedWorkProvider, useUnsavedWork } from '../lib/unsaved'
 
 export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
   component: ContactPage,
-  // Every query the page subscribes to, at once, as the navigation starts
-  // (or on hover), not one waterfall step per component as they mount.
-  // Not `history`: it is fetched, never subscribed (ContactHistory), and a
-  // prewarm would hold a subscription that every save then waits on.
-  loader: ({ context: { convex }, params }) => {
-    const tenant = cachedTenant(convex, params.slug)
-    if (!tenant) return
-    const args = {
-      tenantId: tenant._id,
-      id: params.contactId as Id<'contacts'>,
-    }
-    for (const query of SLICE_QUERIES) convex.prewarmQuery({ query, args })
-    convex.prewarmQuery({
-      query: api.contacts.queries.listIdentifierTypes,
-      args: { tenantId: tenant._id, includeInactive: true },
-    })
-    convex.prewarmQuery({ query: api.contacts.notes.forContact, args })
-    convex.prewarmQuery({
-      query: api.platform.tenants.members,
-      args: { tenantId: tenant._id },
-    })
-    convex.prewarmQuery({
-      query: api.contacts.fields.list,
-      args: { tenantId: tenant._id },
-    })
-  },
+  // Every read the page makes, at once, as the navigation starts (or on
+  // hover), not one waterfall step per component as they mount.
+  loader: ({ context, params }) =>
+    preloadContact(context, params.slug, params.contactId),
 })
-
-const SLICE_QUERIES = [
-  api.contacts.queries.getRoot,
-  api.contacts.queries.getChannels,
-  api.contacts.queries.getIdentifiers,
-] as const
-
-/**
- * `get`'s view, assembled from one query per slice, so a save re-runs (and
- * waits for) only the slices it wrote plus the root, not the whole view.
- * The parts come from one consistent snapshot: Convex applies a save's
- * re-runs in a single transition. The form doesn't rely on that alone: a
- * slice's rows arriving apart from its counter are still merged (`server`
- * in contact-form-state). Undefined until every part has answered, null
- * when there is no such contact (in this tenant).
- */
-function useContactView(
-  tenantId: Id<'tenants'>,
-  id: Id<'contacts'>,
-  fields: Array<FieldDefinition> | undefined,
-): ContactView | null | undefined {
-  const args = { tenantId, id }
-  const root = useQuery(api.contacts.queries.getRoot, args)
-  const channels = useQuery(api.contacts.queries.getChannels, args)
-  const identifiers = useQuery(api.contacts.queries.getIdentifiers, args)
-  // By the code's id, not the contact's, so a contact save doesn't re-run
-  // it; an uncoded contact subscribes to nothing.
-  const codeId = root?.acquisitionCodeId
-  const described = useQuery(
-    api.contacts.queries.getAcquisition,
-    codeId ? { tenantId, codeId } : 'skip',
-  )
-  // The code's description last shown on this contact. A save that
-  // changes the code moves the root a moment before the new description
-  // may answer (the picker subscribes to it before saving, so usually
-  // not): meanwhile the page keeps the last one rather than dropping to
-  // "Loading…". Only the description is held, never the root or other
-  // slices, so counters stay current; the picker shows its pending code
-  // until the description catches up with the root (ContactAcquisition).
-  const lastAcquisition = useRef<{
-    id: Id<'contacts'>
-    acquisition: SourceCodeDescription | null
-  } | null>(null)
-  const live = codeId ? described : null
-  if (live !== undefined) lastAcquisition.current = { id, acquisition: live }
-  const acquisition =
-    live === undefined && lastAcquisition.current?.id === id
-      ? lastAcquisition.current.acquisition
-      : live
-  // Shared with the form's type picker (archived types included).
-  const types = useQuery(api.contacts.queries.listIdentifierTypes, {
-    tenantId,
-    includeInactive: true,
-  })
-  return useMemo(() => {
-    if (root === null) return null
-    if (
-      root === undefined ||
-      channels === undefined ||
-      identifiers === undefined ||
-      acquisition === undefined ||
-      types === undefined ||
-      fields === undefined
-    )
-      return undefined
-    return assembleView({
-      root,
-      channels,
-      identifiers,
-      types,
-      acquisition,
-      fields,
-    })
-  }, [root, channels, identifiers, acquisition, types, fields])
-}
 
 /**
  * Changes whenever the root does: every contract on the contact bumps its
@@ -140,10 +40,7 @@ function ContactPage() {
   const id = contactId as Id<'contacts'>
   // The form, note editors and composer report here; the guard reads it.
   const work = useUnsavedWork()
-  // The field definitions name the contact's values and are the form's
-  // dropdowns: one subscription for both.
-  const fields = useQuery(api.contacts.fields.list, { tenantId: tenant._id })
-  const live = useContactView(tenant._id, id, fields)
+  const { view: live, fields } = useContact(id)
   // Straight from the new-contact form: its view until the queries answer.
   const data = live === undefined ? contactSeed(id) : live
   useEffect(() => {
@@ -167,24 +64,35 @@ function ContactPage() {
             // values stand, the dropdowns appear a moment later.
             fields={fields ?? []}
           />
-          <ContactNotes contactId={id} />
-          <ContactGifts
-            contactId={id}
-            individual={data.contact.kind === 'individual'}
-          />
+          {FEATURES.notes && <ContactNotes contactId={id} />}
+          {FEATURES.gifts && (
+            <ContactGifts
+              contactId={id}
+              individual={data.contact.kind === 'individual'}
+            />
+          )}
           {/* Only a person can make a Gift Aid declaration (HMRC 3.6.7). */}
-          {data.contact.kind === 'individual' && (
+          {FEATURES.gifts && data.contact.kind === 'individual' && (
             <ContactGiftAid contactId={id} />
           )}
         </div>
         {/* Keyed like the form: a restore notice belongs to its contact. */}
-        <ContactHistory
-          key={`${tenant._id}:${id}`}
-          id={id}
-          version={rootVersion(data.contact)}
-          archived={data.contact.archived}
-          archiveVersion={data.contact.archiveVersion}
-        />
+        {BACKEND === 'rust' ? (
+          <RustContactHistory
+            key={`${tenant._id}:${id}`}
+            id={id}
+            archived={data.contact.archived}
+            archiveVersion={data.contact.archiveVersion}
+          />
+        ) : (
+          <ContactHistory
+            key={`${tenant._id}:${id}`}
+            id={id}
+            version={rootVersion(data.contact)}
+            archived={data.contact.archived}
+            archiveVersion={data.contact.archiveVersion}
+          />
+        )}
       </main>
       <LeaveGuard work={work} />
     </UnsavedWorkProvider>

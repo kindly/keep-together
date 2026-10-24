@@ -1,6 +1,7 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { RecentGifts, RecordGiftAction } from '../components/gift-nav'
 import { useCanWrite, useTenant } from '../lib/tenant'
+import { FEATURES } from '../lib/data'
 
 export const Route = createFileRoute('/t/$slug/')({ component: GroupHome })
 
@@ -18,9 +19,7 @@ function GroupHome() {
     <main className="mx-auto flex max-w-3xl flex-col gap-8 p-6">
       <h1 className="text-xl font-semibold">{tenant.name}</h1>
       <nav aria-label="Actions" className="grid gap-3 sm:grid-cols-3">
-        {canWrite && (
-          <RecordGiftAction className={action} />
-        )}
+        {canWrite && FEATURES.gifts && <RecordGiftAction className={action} />}
         <Link
           to="/t/$slug/contacts"
           params={{ slug: tenant.slug }}
@@ -38,10 +37,12 @@ function GroupHome() {
           </Link>
         )}
       </nav>
-      <section className="flex flex-col gap-2">
-        <h2 className="text-lg font-medium">My recent gifts</h2>
-        <RecentGifts tenantId={tenant._id} />
-      </section>
+      {FEATURES.gifts && (
+        <section className="flex flex-col gap-2">
+          <h2 className="text-lg font-medium">My recent gifts</h2>
+          <RecentGifts tenantId={tenant._id} />
+        </section>
+      )}
     </main>
   )
 }
