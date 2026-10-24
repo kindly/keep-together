@@ -65,8 +65,8 @@ samples: the Convex era's quiet holds are gone.
 
 QC times the app at the round trip a user has to the hosted app: the
 median TCP connect from this machine to `keep-staging`, in
-`qc/rtt.json` (30 ms, the Convex era's RTT to Dublin, until staging is
-up; then `pnpm qc:rtt --write`). `scripts/qc-netem.sh on N` adds half of
+`qc/rtt.json` (13 ms, measured 2026-10-24; re-measure with
+`pnpm qc:rtt --write`). `scripts/qc-netem.sh on N` adds half of
 it each way on loopback, on the api ports only, so serve.mjs, Chromium
 and Playwright aren't delayed. It needs root, so the human runs it; it
 lasts until `off` or a reboot. An assert run fails if the apis answer

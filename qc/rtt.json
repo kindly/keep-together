@@ -1,4 +1,4 @@
 {
-  "rttMs": 30,
-  "source": "assumed until keep-staging is up: then the median RTT from this machine to it (scripts/qc-rtt.mjs --write), migration-rust F3"
+  "rttMs": 13,
+  "source": "median of 50 TCP connects to staging.keep-together.org.uk:443, 2026-10-24 (scripts/qc-rtt.mjs)"
 }
