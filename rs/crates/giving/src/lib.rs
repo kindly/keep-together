@@ -22,7 +22,7 @@ pub use gift::{GIFT, STATUS};
 pub use queries::{
     BY_CONTACT_LIMIT, HISTORY_PAGE_LIMIT, RECENT_LIMIT, by_contact, get, history, my_recent,
 };
-pub use rules::{ALLOCATION_LIMIT, format_pence};
+pub use rules::{ALLOCATION_LIMIT, PENCE_MAX, format_pence};
 pub use types::{GiftPayload, Status, StatusPayload};
 
 /// The org-schema step this crate owns, after `sources::MIGRATION` and
