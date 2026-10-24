@@ -4,7 +4,14 @@
 # riverside seed on each deploy (KEEP_RESET_SEED, scripts/ops/entrypoint.sh).
 # Secrets (fly secrets list): LITESTREAM_BUCKET, LITESTREAM_ACCESS_KEY_ID,
 # LITESTREAM_SECRET_ACCESS_KEY, KEEP_SNAPSHOT_BUCKET,
-# KEEP_SNAPSHOT_ACCESS_KEY_ID, KEEP_SNAPSHOT_SECRET_ACCESS_KEY, SENTRY_DSN.
+# KEEP_SNAPSHOT_ACCESS_KEY_ID, KEEP_SNAPSHOT_SECRET_ACCESS_KEY, SENTRY_DSN,
+# KEEP_SETTINGS_KEY and KEEP_AUTH_PEPPER (auth's keys: generated once by
+# scripts/fly/staging.sh, never rotated casually: a new KEEP_SETTINGS_KEY
+# makes every enrolled authenticator app unreadable); KEEP_SMTP_URL once
+# SES is set up (docs/ops.md), with KEEP_MAIL = "smtp".
+# With KEEP_ENV=staging the api refuses to boot without KEEP_APP_ORIGIN,
+# KEEP_CLIENT_IP_HEADER and both keys, and refuses KEEP_MAIL=log
+# (api/src/auth/boot.rs).
 
 app = "keep-staging"
 primary_region = "lhr"
@@ -20,6 +27,15 @@ kill_timeout = 30
   KEEP_ENV = "staging"
   KEEP_RESET_SEED = "riverside"
   KEEP_SNAPSHOT_REGION = "eu-west-2"
+  # Links in emails, and the trusted Origin for writes.
+  KEEP_APP_ORIGIN = "https://staging.keep-together.org.uk"
+  # fly-proxy's client address: without it every client shares the
+  # proxy's rate-limit bucket (S1 review H1).
+  KEEP_CLIENT_IP_HEADER = "Fly-Client-IP"
+  # No mail until SES is set up (docs/ops.md): what needs email is refused,
+  # so staging signs in with authenticator apps; operator invite links come
+  # from `keep auth invite` in `fly ssh console`, never the app's logs.
+  KEEP_MAIL = "off"
 
 [mounts]
   source = "keep_data"

@@ -1,4 +1,4 @@
-import { QueryClient } from '@tanstack/react-query'
+import { QueryClient, QueryObserver } from '@tanstack/react-query'
 import type { QueryKey } from '@tanstack/react-query'
 import { describe, expect, test } from 'vitest'
 import { applyEvent } from './events'
@@ -88,4 +88,38 @@ describe('A1 events', () => {
     )
     expect(stale(qc)).toEqual([])
   })
+})
+
+// The contact-hold QC flake: a query with no data yet (a contact's email
+// context for a just-saved address) was fetching when the hold's event
+// came. TanStack Query's refetch joins such a fetch rather than restarting
+// it, so the answer read before the hold was the last word. The event now
+// cancels the fetch in flight, and the refetch reads after the change.
+test('an event refetches a query whose first fetch began before the change', async () => {
+  const qc = new QueryClient()
+  const key = [...keys.emailContext(SLUG, 'c1'), 'a@x.org']
+  let held = false
+  const answers: Array<(v: { held: boolean }) => void> = []
+  const observer = new QueryObserver(qc, {
+    queryKey: key,
+    queryFn: ({ signal }) =>
+      new Promise<{ held: boolean }>((resolve, reject) => {
+        const seen = held
+        answers.push(() => resolve({ held: seen }))
+        signal.addEventListener('abort', () => reject(new Error('aborted')))
+      }),
+  })
+  const unsubscribe = observer.subscribe(() => {})
+  await Promise.resolve()
+  expect(answers).toHaveLength(1) // the first fetch: in flight, no data
+
+  held = true // the hold commits; its event arrives
+  applyEvent(qc, SLUG, event('email_suppressions', 'comms.suppression'))
+  await new Promise((done) => setTimeout(done))
+  expect(answers).toHaveLength(2) // a new fetch, after the change
+  answers[0]({ held: false }) // the stale answer lands late: ignored
+  answers[1]({ held: true })
+  await new Promise((done) => setTimeout(done))
+  expect(qc.getQueryData(key)).toEqual({ held: true })
+  unsubscribe()
 })

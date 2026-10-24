@@ -56,10 +56,16 @@ export function AuthForm({
 export const field = (data: FormData, name: string) =>
   String(data.get(name) ?? '')
 
-export function CodeInput({ label }: { label: string }) {
+export function CodeInput({
+  label,
+  name = 'code',
+}: {
+  label: string
+  name?: string
+}) {
   return (
     <input
-      name="code"
+      name={name}
       required
       autoComplete="one-time-code"
       inputMode="text"
@@ -119,11 +125,19 @@ export function SecondFactorForm({
  * Set up a second factor: an authenticator app (QR code) or emailed
  * codes. `onEnrolled` gets the recovery codes and a `done` that moves the
  * session on (signed in): call it once they've been seen.
+ * `needsEmailCode`: after a 2FA reset, the code we emailed at sign-in goes
+ * with the app's code (the emailed method's own code is that proof).
+ * `changing`: signed in and replacing the current factor (whose method is
+ * given), which needs the password and a code from that factor.
  */
 export function EnrolForm({
   onEnrolled,
+  needsEmailCode = false,
+  changing,
 }: {
   onEnrolled: (codes: Array<string>, done: () => Promise<void>) => void
+  needsEmailCode?: boolean
+  changing?: { current: Method | null }
 }) {
   const steps = useSignInSteps()
   const [method, setMethod] = useState<Method | null>(null)
@@ -143,12 +157,21 @@ export function EnrolForm({
     }
   }
 
+  // The app's code and, after a reset, the one emailed at sign-in.
+  const proof = needsEmailCode && method === 'totp'
+
   if (!method) {
     return (
       <section className="flex flex-col gap-3">
         <p className="text-sm text-neutral-600">
           Set up a second step for signing in. You'll need it every time.
         </p>
+        {needsEmailCode && (
+          <p className="text-sm text-neutral-600">
+            Your second step was reset, so we've also emailed you a code to
+            confirm it's you.
+          </p>
+        )}
         <button
           type="button"
           className={primary}
@@ -194,12 +217,50 @@ export function EnrolForm({
       <AuthForm
         submit="Confirm"
         onSubmit={async (d) => {
-          const out = await steps.confirmEnrolment(method, field(d, 'code'))
+          const out = await steps.confirmEnrolment(
+            method,
+            field(d, 'code'),
+            changing
+              ? {
+                  password: field(d, 'password'),
+                  currentCode: field(d, 'currentCode'),
+                }
+              : proof
+                ? { emailCode: field(d, 'emailCode') }
+                : {},
+          )
           onEnrolled(out.recoveryCodes, out.done)
         }}
       >
-        <CodeInput label="Code" />
+        <CodeInput label={proof || changing ? 'The new code' : 'Code'} />
+        {proof && <CodeInput name="emailCode" label="The emailed code" />}
+        {changing && (
+          <>
+            <p className="text-sm text-neutral-600">
+              To change it, confirm it's you: your password and a code from your
+              current second step (or a recovery code).
+            </p>
+            <input
+              name="password"
+              type="password"
+              required
+              autoComplete="current-password"
+              placeholder="Password"
+              className={input}
+            />
+            <CodeInput name="currentCode" label="Current code" />
+          </>
+        )}
       </AuthForm>
+      {changing?.current === 'email' && method === 'totp' && (
+        <button
+          type="button"
+          className={`self-start ${linkButton}`}
+          onClick={() => void steps.sendCode()}
+        >
+          Email me a current code
+        </button>
+      )}
       <button
         type="button"
         className={`self-start ${linkButton}`}
@@ -241,7 +302,10 @@ export function RecoveryCodesNotice({
   )
 }
 
-/** Password and a code again, for an admin action after an hour. */
+/**
+ * Password and a code again, for a change that needs a recent sign-in
+ * (an admin's, or a staff list manager's retiring a field) after an hour.
+ */
 export function StepUpForm({
   method,
   onDone,
@@ -261,7 +325,8 @@ export function StepUpForm({
     >
       <h2 className="font-medium">Confirm it's you</h2>
       <p className="text-sm text-neutral-600">
-        Admin changes need a recent sign-in. Enter your password and a code.
+        This change needs you to confirm it's you. Enter your password and a
+        code.
       </p>
       {method === 'email' && (
         <button

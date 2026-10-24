@@ -2,19 +2,21 @@
 //! bodies (the SPA reads them from the link's `#fragment`), never in a
 //! URL the server logs.
 
-use auth::accounts::{self, SecondFactor};
+use auth::accounts;
 use auth::limits::allow;
-use auth::{Stage, codes, password, secret, sessions};
+use auth::notices::Notice;
+use auth::{failures, password, secret, sessions};
 use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use comms::mail::Mail;
+use platform::members;
 use serde::{Deserialize, Serialize};
-use store::UserId;
+use store::{Role, UserId};
 use ts_rs::TS;
 
-use super::flows::{AuthState, check_password, code_mail, password_limits, state_of};
+use super::flows::{code_mail, start_partial, user_agent, user_password_limits, verify_password};
 use super::{ClientIp, Revoked, session_token, users, with_session};
 use crate::error::{ApiError, Body};
 use crate::{AppState, RoleName, blocking};
@@ -52,45 +54,56 @@ pub struct ResetRequest {
 /// `POST /api/auth/reset/request {email}` → `{ok: true}` whatever the
 /// address: a known one with a password gets a link (15 minutes, single
 /// use), an unknown one gets nothing, and the answer can't tell them
-/// apart (the mail goes out in the background).
+/// apart: the lookup, the link and the mail all happen after the response
+/// (S1 codex C7), and an address that can't be one is answered without
+/// becoming a limiter key (C6). With mail off: `mail_off`, for any address.
 pub async fn reset_request(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     Body(req): Body<ResetRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     link_limit(&state, &ip)?;
-    let email =
-        users::normalise_email(&req.email).unwrap_or_else(|| req.email.trim().to_lowercase());
+    state.auth.require_mail()?;
+    let ok = Json(serde_json::json!({ "ok": true }));
+    let Some(email) = users::normalise_email(&req.email) else {
+        return Ok(ok);
+    };
     if !allow(&state.auth.limits.email, &email) {
         return Err(ApiError::RateLimited);
     }
-    let st = state.clone();
-    let to = email.clone();
-    let token = blocking(move || {
-        let now = contracts::now_ms();
-        st.store.platform().with_write(|tx| {
-            let Some(user) = users::by_email(tx, &to)? else {
-                return Ok::<_, ApiError>(None);
-            };
-            if accounts::credentials(tx, user)?.is_none() {
-                return Ok(None);
-            }
-            accounts::log(tx, now, "reset_requested", Some(user), "self", None, "")?;
-            Ok(Some(accounts::create_reset(tx, user, now)?))
+    tokio::spawn(async move {
+        let st = state.clone();
+        let to = email.clone();
+        let token = blocking(move || {
+            let now = contracts::now_ms();
+            st.store.platform().with_write(|tx| {
+                let Some(user) = users::by_email(tx, &to)? else {
+                    return Ok::<_, ApiError>(None);
+                };
+                if accounts::credentials(tx, user)?.is_none() {
+                    return Ok(None);
+                }
+                accounts::log(tx, now, "reset_requested", Some(user), "self", None, "")?;
+                Ok(Some(accounts::create_reset(tx, user, now)?))
+            })
         })
-    })
-    .await?;
-    if let Some(token) = token {
-        let origin = &state.auth.config.app_origin;
-        state.auth.send(Mail {
-            to: email,
-            subject: "Reset your keep-together password".into(),
-            text: format!(
-                "Someone asked to reset the password for this address.\n\nSet a new one here (the link works once, for 15 minutes):\n{origin}/reset#{token}\n\nIf it wasn't you, ignore this email: your password hasn't changed.\n"
-            ),
-        });
-    }
-    Ok(Json(serde_json::json!({ "ok": true })))
+        .await;
+        match token {
+            Ok(Some(token)) => {
+                let origin = &state.auth.config.app_origin;
+                state.auth.send(Mail {
+                    to: email,
+                    subject: "Reset your keep-together password".into(),
+                    text: format!(
+                        "Someone asked to reset the password for this address.\n\nSet a new one here (the link works once, for 15 minutes):\n{origin}/reset#{token}\n\nIf it wasn't you, ignore this email: your password hasn't changed.\n"
+                    ),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("reset request: {e:?}"),
+        }
+    });
+    Ok(ok)
 }
 
 #[derive(Deserialize, TS)]
@@ -132,7 +145,8 @@ pub struct ResetComplete {
 
 /// `POST /api/auth/reset/complete {token, password}`: the new password is
 /// set, every link and every session of the user ends (signed out
-/// everywhere). The second factor is kept: sign in as usual.
+/// everywhere), and a second-factor lock is lifted. The second factor is
+/// kept: sign in as usual. The user is emailed a notice.
 pub async fn reset_complete(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -141,18 +155,24 @@ pub async fn reset_complete(
     link_limit(&state, &ip)?;
     password_problem(&req.password)?;
     let st = state.clone();
-    let user = blocking(move || {
+    let (user, email) = blocking(move || {
         let now = contracts::now_ms();
         st.store.platform().with_write(|tx| {
             let user = accounts::redeem_reset(tx, &req.token, now)?.ok_or_else(link_expired)?;
             accounts::set_password(tx, user, &req.password, now).map_err(ApiError::internal)?;
             sessions::revoke_user(tx, user)?;
+            failures::clear(tx, user)?;
             accounts::log(tx, now, "password_reset", Some(user), "self", None, "")?;
-            Ok::<_, ApiError>(user)
+            let email: String =
+                tx.query_row("SELECT email FROM users WHERE id = ?1", [user], |r| {
+                    r.get(0)
+                })?;
+            Ok::<_, ApiError>((user, email))
         })
     })
     .await?;
     state.auth.revoked(Revoked::User(user));
+    state.auth.notify(&email, Notice::PasswordReset);
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -236,7 +256,9 @@ pub struct AcceptInvite {
 /// becomes a member with the invited role. New to keep-together: the
 /// password is set and the session goes on to enrol a second factor. An
 /// existing account: the password must be theirs, and the session goes
-/// on to the second factor as in a sign-in.
+/// on to the second factor as in a sign-in. Whether the account exists is
+/// decided again inside the write (S1 L2), and an invite can't take away
+/// a group's last admin (S1 L8).
 pub async fn invite_accept(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -245,37 +267,68 @@ pub async fn invite_accept(
 ) -> Result<Response, ApiError> {
     link_limit(&state, &ip)?;
     let old = session_token(&headers).map(secret::hash);
+    let ua = user_agent(&headers);
     let st = state.clone();
-    let (token, stage, out, code) = blocking(move || {
+    let (partial, ended) = blocking(move || {
         let now = contracts::now_ms();
         let open = open_invite(&st, &req.token)?;
         let email = open.invite.email.clone();
-        if open.has_account {
-            password_limits(&st, &ip, &email)?;
-            if check_password(&st, &email, &req.password)? != open.user {
-                return Err(ApiError::Rejected {
-                    reason: "invalid_credentials".into(),
-                    message: "Wrong password for this address.".into(),
-                });
+        let wrong_password = || ApiError::Rejected {
+            reason: "invalid_credentials".into(),
+            message: "Wrong password for this address.".into(),
+        };
+        let verified = if open.has_account {
+            if let Some(user) = open.user {
+                user_password_limits(&st, &ip, user)?;
+            }
+            match verify_password(&st, &email, &req.password)? {
+                Some(v) if Some(v.user) == open.user => Some(v),
+                _ => return Err(wrong_password()),
             }
         } else {
             password_problem(&req.password)?;
-        }
+            None
+        };
         let tenant = st
             .store
             .platform()
             .tenant_by_slug(&open.slug)?
             .ok_or_else(link_expired)?;
-        let role = store::Role::parse(&open.invite.role).unwrap_or(store::Role::Viewer);
+        let role = Role::parse(&open.invite.role).unwrap_or(Role::Viewer);
         st.store.platform().with_write(|tx| {
             if !accounts::accept_invite(tx, &open.invite.id, now)? {
                 return Err(link_expired());
             }
             let user = users::upsert(tx, &email)?;
-            if !open.has_account {
-                accounts::set_password(tx, user, &req.password, now).map_err(ApiError::internal)?;
+            // L2: the password was checked (or not) on a read before this
+            // transaction; an account that appeared since, or vanished,
+            // means that check was of the wrong kind. Nothing is written.
+            let has_account = accounts::credentials(tx, user)?.is_some();
+            if has_account != open.has_account || open.user.is_some_and(|u| u != user) {
+                return Err(ApiError::Rejected {
+                    reason: "try_again".into(),
+                    message: "This address's account changed while you were accepting. Open the link again.".into(),
+                });
             }
-            platform::members::add_membership(tx, UserId(user), &tenant.id, role)?;
+            match &verified {
+                // C3: the password checked is still the account's.
+                Some(v) if !v.still(tx)? => return Err(wrong_password()),
+                Some(_) => {}
+                None => accounts::set_password(tx, user, &req.password, now)
+                    .map_err(ApiError::internal)?,
+            }
+            // L8: re-inviting a member (the operator's `keep auth invite`)
+            // changes their role; the group keeps an admin.
+            if members::role_of(tx, UserId(user), &tenant.id)? == Some(Role::Admin)
+                && role != Role::Admin
+                && members::admin_count(tx, &tenant.id)? <= 1
+            {
+                return Err(ApiError::Rejected {
+                    reason: "last_admin".into(),
+                    message: "You're this group's only admin, so this invite can't change your role. Make someone else admin first.".into(),
+                });
+            }
+            members::add_membership(tx, UserId(user), &tenant.id, role)?;
             accounts::log(
                 tx,
                 now,
@@ -288,33 +341,22 @@ pub async fn invite_accept(
             if let Some(old) = &old {
                 sessions::revoke(tx, old)?;
             }
-            let factor = accounts::credentials(tx, user)?.and_then(|c| c.second_factor);
-            let stage = if factor.is_some() {
-                Stage::SecondFactor
-            } else {
-                Stage::Enrol
-            };
-            let token = sessions::create(tx, user, stage, now)?;
-            let id = secret::hash(&token);
-            let code = if factor == Some(SecondFactor::Email) {
-                let code = codes::email_code();
-                sessions::set_email_code(tx, &id, &code, now)?;
-                Some(code)
-            } else {
-                None
-            };
-            let s = sessions::by_id(tx, &id, now)?.ok_or(ApiError::Internal)?;
-            Ok::<(String, Stage, AuthState, Option<String>), ApiError>((
-                token,
-                stage,
-                state_of(tx, &s)?,
-                code,
-            ))
+            let partial = start_partial(tx, &st.auth.keys, user, ua.as_deref(), false, now)?;
+            Ok::<_, ApiError>((partial, old.clone()))
         })
     })
     .await?;
-    if let (Some(code), Some(to)) = (code, out.email.as_deref()) {
+    // L6: the browser's previous session's streams close now.
+    if let Some(old) = ended {
+        state.auth.revoked(Revoked::Session(old));
+    }
+    if let (Some(code), Some(to)) = (partial.code, partial.state.email.as_deref()) {
         state.auth.send(code_mail(to, &code));
     }
-    with_session(Json(out).into_response(), &headers, &token, stage)
+    with_session(
+        Json(partial.state).into_response(),
+        &headers,
+        &partial.token,
+        partial.stage,
+    )
 }

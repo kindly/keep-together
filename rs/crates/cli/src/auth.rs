@@ -53,10 +53,19 @@ pub fn invite(data: &Path, slug: &str, email: &str, role: &str) -> Result<Mail, 
         .map_err(|e| e.to_string())
 }
 
-pub fn reset_2fa(data: &Path, email: &str, reason: &str) -> Result<bool, String> {
+/// Reset `email`'s 2FA: the notice to mail them (`None`: no such user).
+pub fn reset_2fa(data: &Path, email: &str, reason: &str) -> Result<Option<Mail>, String> {
     let store = open(data)?;
     store
         .platform()
-        .with_write(|tx| ::auth::operator_reset_2fa(tx, email, reason, contracts::now_ms()))
+        .with_write(|tx| {
+            ::auth::operator_reset_2fa(
+                tx,
+                email,
+                reason,
+                &crate::tenant::app_origin(),
+                contracts::now_ms(),
+            )
+        })
         .map_err(|e| e.to_string())
 }

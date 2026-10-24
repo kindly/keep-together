@@ -36,8 +36,14 @@ fn quota(burst: u32, one_per: Duration) -> Quota {
 pub struct Limits {
     /// Password checks (sign-in, step-up, password change) per client IP.
     pub password_ip: Limiter,
-    /// Password checks per email (lower-cased), known or not.
+    /// Password checks at sign-in per email (lower-cased), known or not.
+    /// Spent, a sign-in needs an emailed code as well ([`crate::gate`]):
+    /// it slows guessing but can't lock the owner out (S1 M5).
     pub password_email: Limiter,
+    /// Password checks by a signed-in user (step-up, password change) and
+    /// by an invite's existing account, per user: keyed so that nobody
+    /// else can spend them.
+    pub password_user: Limiter,
     /// Second-factor attempts per user.
     pub second_factor: Limiter,
     /// Emails sent per recipient (codes, reset links).
@@ -51,6 +57,7 @@ impl Default for Limits {
         Self {
             password_ip: limiter(20, Duration::from_secs(3)),
             password_email: limiter(5, Duration::from_secs(60)),
+            password_user: limiter(5, Duration::from_secs(60)),
             second_factor: limiter(5, Duration::from_secs(60)),
             email: limiter(3, Duration::from_secs(120)),
             links_ip: limiter(20, Duration::from_secs(3)),
@@ -63,6 +70,7 @@ impl Limits {
     pub fn sweep(&self) {
         self.password_ip.retain_recent();
         self.password_email.retain_recent();
+        self.password_user.retain_recent();
         self.second_factor.retain_recent();
         self.email.retain_recent();
         self.links_ip.retain_recent();

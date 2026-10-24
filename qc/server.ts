@@ -71,7 +71,10 @@ export function serverSummary(records: Array<FlowRecord>): ServerSummary {
         if (c.endMs === null) continue
         const route = routeOf(c)
         if (c.serverMs === null) {
-          untimed.add(route)
+          // /api/auth/* answers without Server-Timing on purpose (S1
+          // review C7: the time would tell a known address from an
+          // unknown one), so its calls are untimed, not missing.
+          if (!route.split(' ')[1].startsWith('/auth/')) untimed.add(route)
           continue
         }
         byRoute.set(route, [...(byRoute.get(route) ?? []), c.serverMs])

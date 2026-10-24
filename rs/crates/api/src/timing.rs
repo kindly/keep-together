@@ -45,11 +45,17 @@ impl Timing {
     }
 }
 
+/// Not on `/api/auth/*`: there the time a request took could tell a known
+/// address from an unknown one (S1 codex C7).
 pub async fn middleware(mut req: Request, next: Next) -> Response {
     let start = Instant::now();
     let timing = Timing::default();
+    let auth = req.uri().path().starts_with("/api/auth/");
     req.extensions_mut().insert(timing.clone());
     let mut res = next.run(req).await;
+    if auth {
+        return res;
+    }
     if let Ok(value) = HeaderValue::from_str(&timing.header(start.elapsed())) {
         res.headers_mut().insert("server-timing", value);
     }

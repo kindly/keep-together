@@ -54,6 +54,17 @@ machines=$(fly machines list -a "$APP" --json | jq 'length' 2>/dev/null || echo 
 
 say "Secrets"
 have=$(fly secrets list -a "$APP" --json | names || true)
+# Auth's keys (api/src/auth/boot.rs): 32 random bytes each, made here once.
+# Never replace KEEP_SETTINGS_KEY on a live app: enrolled authenticator
+# apps are sealed under it.
+generated=()
+for s in KEEP_SETTINGS_KEY KEEP_AUTH_PEPPER; do
+  grep -qx "$s" <<<"$have" || generated+=("$s=$(openssl rand -base64 32)")
+done
+if ((${#generated[@]})); then
+  printf '+ fly secrets set -a %s --stage <%d generated keys>\n' "$APP" "${#generated[@]}" >&2
+  fly secrets set -a "$APP" --stage "${generated[@]}"
+fi
 missing=()
 for s in LITESTREAM_BUCKET LITESTREAM_ACCESS_KEY_ID LITESTREAM_SECRET_ACCESS_KEY \
   KEEP_SNAPSHOT_BUCKET KEEP_SNAPSHOT_ACCESS_KEY_ID KEEP_SNAPSHOT_SECRET_ACCESS_KEY SENTRY_DSN; do
@@ -62,7 +73,9 @@ done
 if ((${#missing[@]})); then
   echo "missing: ${missing[*]}"
   echo "(the bucket and key values come from scripts/aws/backup.sh staging; SENTRY_DSN"
-  echo " from the Sentry project's Client Keys page, EU region; empty skips it)"
+  echo " from the Sentry project's Client Keys page, EU region; empty skips it."
+  echo " KEEP_APP_ORIGIN, KEEP_CLIENT_IP_HEADER and KEEP_MAIL=off are in fly.staging.toml;"
+  echo " mail stays off until SES is set up: docs/ops.md)"
   pairs=()
   for s in "${missing[@]}"; do
     read -r -s -p "$s: " v
