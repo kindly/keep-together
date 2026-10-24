@@ -12,6 +12,10 @@ pub async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>)
     let store = state.store.clone();
     let db_ok = blocking(move || store.each_org().map(|_| ())).await.is_ok();
     let mut body = json!({ "db": if db_ok { "ok" } else { "error" } });
+    // Reported, never judged, like backups: the open org file with the
+    // most WAL not yet checkpointed (`store::checkpoint`). Normally a few
+    // hundred KB; `jobs::WalWatch` warns past `WAL_WARN_BYTES`.
+    body["walBacklogBytes"] = json!(state.store.wal_backlog_worst());
     // Backups are reported, never judged here: a stale snapshot must not
     // take the only machine out of Fly's rotation. The 15-minute monitor
     // (`.github/workflows/health.yml`) judges these fields.

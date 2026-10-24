@@ -1,6 +1,6 @@
 //! One organisation's file: a writer connection behind a mutex, a reader
-//! pool, migrations on open, and the channel its committed changes are
-//! published on.
+//! pool, a checkpointer, migrations on open, and the channel its committed
+//! changes are published on.
 
 use std::cell::RefCell;
 use std::ops::Deref;
@@ -12,6 +12,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use rusqlite_migration::Migrations;
 use tokio::sync::broadcast;
 
+use crate::checkpoint::{self, Checkpointer};
 use crate::conn::{self, ReaderPool};
 use crate::events::OrgEvent;
 use crate::{StoreError, TenantId};
@@ -29,10 +30,13 @@ type Scope = Arc<Mutex<Option<Vec<String>>>>;
 
 pub struct OrgDb {
     path: PathBuf,
-    writer: Mutex<Connection>,
+    /// Fair on release ([`Writer`]): a write waiting here runs before the
+    /// releasing thread's next one.
+    writer: parking_lot::Mutex<Connection>,
     scope: Scope,
     readers: ReaderPool,
     events: broadcast::Sender<OrgEvent>,
+    checkpointer: Checkpointer,
 }
 
 /// Check the stamp on an open connection.
@@ -57,6 +61,7 @@ impl OrgDb {
         id: &TenantId,
         migrations: &Migrations<'static>,
         readers: usize,
+        checkpointer: bool,
     ) -> Result<Self, StoreError> {
         if path.exists() {
             return Err(StoreError::WrongFile {
@@ -69,17 +74,19 @@ impl OrgDb {
         conn.execute_batch(STAMP_TABLE)?;
         conn.execute("INSERT INTO _org (tenant_id) VALUES (?1)", [id.as_str()])?;
         drop(conn);
-        Self::open(path, id, migrations, readers)
+        Self::open(path, id, migrations, readers, checkpointer)
     }
 
     /// Open a stamped file. Pending migrations run here too (a file that
     /// appeared after boot); at boot `Store::migrate_all` has already run
-    /// them, with a copy first.
+    /// them, with a copy first. `checkpointer`: start this file's
+    /// checkpointer thread (`store::checkpoint`).
     pub(crate) fn open(
         path: &Path,
         id: &TenantId,
         migrations: &Migrations<'static>,
         readers: usize,
+        checkpointer: bool,
     ) -> Result<Self, StoreError> {
         if !path.exists() {
             return Err(StoreError::MissingFile(path.to_path_buf()));
@@ -87,6 +94,8 @@ impl OrgDb {
         let mut writer = conn::open(path, false, false)?;
         check_stamp(&writer, path, id)?;
         migrations.to_latest(&mut writer)?;
+        checkpoint::writer_setup(&writer)?;
+        let page_size: i64 = writer.pragma_query_value(None, "page_size", |r| r.get(0))?;
         let scope = Scope::default();
         let checked = scope.clone();
         writer.authorizer(Some(move |ctx: AuthContext<'_>| {
@@ -98,10 +107,11 @@ impl OrgDb {
         }))?;
         Ok(Self {
             path: path.to_path_buf(),
-            writer: Mutex::new(writer),
+            writer: parking_lot::Mutex::new(writer),
             scope,
             readers: ReaderPool::open(path, readers)?,
             events: broadcast::channel(EVENT_BUFFER).0,
+            checkpointer: Checkpointer::start(path, page_size, checkpointer)?,
         })
     }
 
@@ -125,16 +135,16 @@ impl OrgDb {
         // included, the transaction is rolled back first and then the
         // connection made ready for the next one.
         let mut writer = Writer {
-            conn: self.writer.lock().unwrap_or_else(|e| e.into_inner()),
+            conn: Some(self.writer.lock()),
             scope: &self.scope,
         };
-        // A panic that got past an earlier guard (or a poisoned lock) must
-        // not stop this transaction from beginning: `BEGIN IMMEDIATE` fails
-        // under `query_only`.
+        // A panic that got past an earlier guard must not stop this
+        // transaction from beginning: `BEGIN IMMEDIATE` fails under
+        // `query_only`.
         writer.ready();
         let raw = RawTx {
             tx: writer
-                .conn
+                .conn()
                 .transaction_with_behavior(TransactionBehavior::Immediate)?,
             events: RefCell::new(Vec::new()),
             scope: &self.scope,
@@ -148,6 +158,9 @@ impl OrgDb {
         reset?;
         let RawTx { tx, events, .. } = raw;
         tx.commit()?;
+        if let Some(pages) = checkpoint::take_committed_pages() {
+            self.checkpointer.committed(pages);
+        }
         for event in events.into_inner() {
             // No subscribers is fine.
             let _ = self.events.send(event);
@@ -170,26 +183,51 @@ impl OrgDb {
         })
     }
 
+    /// Bytes of this file's WAL not yet checkpointed (copied back into the
+    /// file): a few hundred KB normally; growing means the checkpointer is
+    /// stuck or a long read pins the WAL.
+    pub fn wal_backlog_bytes(&self) -> i64 {
+        self.checkpointer.backlog_bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_checkpoints(&self, paused: bool) {
+        self.checkpointer.set_paused(paused);
+    }
+
     /// Committed changes from now on, in commit order.
     pub fn subscribe(&self) -> broadcast::Receiver<OrgEvent> {
         self.events.subscribe()
     }
 }
 
-/// The locked writer connection, made ready again when dropped.
+/// The locked writer connection, made ready again and released fairly
+/// when dropped.
+///
+/// Fair: a thread waiting for the writer gets it before the releasing
+/// thread can take it back. A loop of writes (a job's steps,
+/// `Tenant::run_job`) would otherwise re-take an unfair mutex within a
+/// microsecond, every time, and requests queued behind it would wait for
+/// the whole loop (0.7–1.7 s for a 10k-contact field retire).
 struct Writer<'a> {
-    conn: std::sync::MutexGuard<'a, Connection>,
+    /// `Some` until dropped.
+    conn: Option<parking_lot::MutexGuard<'a, Connection>>,
     scope: &'a Scope,
 }
 
 impl Writer<'_> {
+    fn conn(&mut self) -> &mut Connection {
+        self.conn.as_mut().expect("held until dropped")
+    }
+
     /// No open transaction, writable, unscoped: the state every write
     /// begins from. Best effort; a failure shows at the next `BEGIN`.
     fn ready(&mut self) {
-        if !self.conn.is_autocommit() {
-            let _ = self.conn.execute_batch("ROLLBACK");
+        let conn = self.conn();
+        if !conn.is_autocommit() {
+            let _ = conn.execute_batch("ROLLBACK");
         }
-        let _ = self.conn.pragma_update(None, "query_only", "OFF");
+        let _ = conn.pragma_update(None, "query_only", "OFF");
         *self.scope.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }
@@ -197,6 +235,9 @@ impl Writer<'_> {
 impl Drop for Writer<'_> {
     fn drop(&mut self) {
         self.ready();
+        if let Some(conn) = self.conn.take() {
+            parking_lot::MutexGuard::unlock_fair(conn);
+        }
     }
 }
 

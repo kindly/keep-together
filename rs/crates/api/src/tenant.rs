@@ -151,6 +151,10 @@ impl Tenant {
     /// no-op after [`Tenant::mark_job`]) and cleared at the end, so a server stopping part way leaves the work
     /// to the job of that name ([`crate::jobs::each_pending_org`]). A
     /// failure is logged and sent to Sentry, and leaves the marker.
+    ///
+    /// Steps run back to back: the org writer is released fairly
+    /// (`store::OrgDb::write_raw`), so a request's write waiting for it
+    /// runs between two steps rather than after the whole job.
     pub async fn run_job<F>(&self, job: &'static str, key: String, step: F) -> Result<(), ApiError>
     where
         F: Fn(&Ctx) -> Result<bool, ApiError> + Send + 'static,

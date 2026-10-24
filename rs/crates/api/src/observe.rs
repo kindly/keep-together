@@ -25,6 +25,12 @@ pub fn error(message: &str) {
     sentry::capture_message(message, sentry::Level::Error);
 }
 
+/// Log a warning and send it to Sentry.
+pub fn warning(message: &str) {
+    eprintln!("warning: {message}");
+    sentry::capture_message(message, sentry::Level::Warning);
+}
+
 fn scrub(mut event: Event<'static>) -> Event<'static> {
     event.user = None;
     if let Some(req) = event.request.as_mut() {

@@ -6,6 +6,7 @@
 //! from a `platform.db` row (or from creating a tenant), so a request can't
 //! choose a file by spelling its name.
 
+mod checkpoint;
 mod conn;
 mod events;
 mod migrate;
@@ -130,6 +131,9 @@ pub struct Store {
     max_open: usize,
     orgs: Mutex<HashMap<TenantId, Entry>>,
     boot: migrate::BootCopies,
+    /// Org files get a checkpointer thread (`checkpoint`); off when
+    /// Litestream owns checkpoints.
+    checkpointer: bool,
 }
 
 impl Store {
@@ -165,7 +169,17 @@ impl Store {
             max_open: config.max_open.max(1),
             orgs: Mutex::new(HashMap::new()),
             boot,
+            checkpointer: true,
         })
+    }
+
+    /// Leave org files' checkpoints to Litestream: no checkpointer
+    /// threads. Under Litestream they can't checkpoint anyway (its read
+    /// lock stops any other process copying the WAL back), and their tries
+    /// only contend with its own. Call before any org file is opened.
+    pub fn without_checkpointer(mut self) -> Self {
+        self.checkpointer = false;
+        self
     }
 
     pub fn platform(&self) -> &Platform {
@@ -203,7 +217,13 @@ impl Store {
         let mut made = None;
         let mut failed = None;
         let tenant = self.platform.insert_tenant(&id, slug, name, |tx| {
-            let db = OrgDb::create(&path, &id, &self.org_migrations, self.readers)?;
+            let db = OrgDb::create(
+                &path,
+                &id,
+                &self.org_migrations,
+                self.readers,
+                self.checkpointer,
+            )?;
             let tenant = Tenant {
                 id: id.clone(),
                 slug: slug.into(),
@@ -265,6 +285,7 @@ impl Store {
             id,
             &self.org_migrations,
             self.readers,
+            self.checkpointer,
         )?);
         *guard = Some(db.clone());
         drop(guard);
@@ -287,19 +308,26 @@ impl Store {
         }
         open.sort();
         let mut excess = open.len() - self.max_open;
+        let mut closed = Vec::new();
         for (_, id) in open {
             if excess == 0 {
                 break;
             }
-            if close_if_unused(&orgs[&id].slot) {
+            if close_if_unused(&orgs[&id].slot, &mut closed) {
                 orgs.remove(&id);
                 excess -= 1;
             }
         }
+        // Closed with the map unlocked: closing joins the file's
+        // checkpointer and may checkpoint, and every org's requests need
+        // the map.
+        drop(orgs);
+        drop(closed);
     }
 
     /// Close handles nobody has used for `idle` (the API runs this as a
-    /// job). Returns how many were closed.
+    /// job). Returns how many were closed. Blocking: closing a file may
+    /// checkpoint it.
     pub fn close_idle(&self, idle: Duration) -> usize {
         let mut orgs = self.orgs.lock().unwrap_or_else(|e| e.into_inner());
         let stale: Vec<TenantId> = orgs
@@ -307,14 +335,18 @@ impl Store {
             .filter(|(_, e)| e.last_used.elapsed() >= idle)
             .map(|(id, _)| id.clone())
             .collect();
-        let mut closed = 0;
+        let mut closed = Vec::new();
+        let mut count = 0;
         for id in stale {
-            if close_if_unused(&orgs[&id].slot) {
+            if close_if_unused(&orgs[&id].slot, &mut closed) {
                 orgs.remove(&id);
-                closed += 1;
+                count += 1;
             }
         }
-        closed
+        // As in `evict`: closed with the map unlocked.
+        drop(orgs);
+        drop(closed);
+        count
     }
 
     /// How many org files are open now.
@@ -325,6 +357,28 @@ impl Store {
             .values()
             .filter(|e| e.slot.try_lock().map_or(true, |s| s.is_some()))
             .count()
+    }
+
+    /// The largest un-checkpointed WAL among the open org files, in bytes
+    /// (`/healthz`). Skips a handle being opened or closed; opens nothing.
+    pub fn wal_backlog_worst(&self) -> i64 {
+        let slots: Vec<Slot> = self
+            .orgs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .map(|e| e.slot.clone())
+            .collect();
+        slots
+            .iter()
+            .filter_map(|slot| {
+                slot.try_lock()
+                    .ok()?
+                    .as_ref()
+                    .map(|db| db.wal_backlog_bytes())
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// Every organisation's id, from `platform.db`. Jobs loop over these
@@ -360,10 +414,11 @@ impl Store {
     }
 }
 
-/// Drop the cache's handle if nobody else holds it and nobody is about to
-/// open or use it (holds the slot). Called with the map locked, so no new
-/// slot clone can appear meanwhile. True if the slot is now empty.
-fn close_if_unused(slot: &Slot) -> bool {
+/// Take the cache's handle out if nobody else holds it and nobody is
+/// about to open or use it (holds the slot), into `closed`: the caller
+/// drops it once the map is unlocked. Called with the map locked, so no
+/// new slot clone can appear meanwhile. True if the slot is now empty.
+fn close_if_unused(slot: &Slot, closed: &mut Vec<Arc<OrgDb>>) -> bool {
     if Arc::strong_count(slot) > 1 {
         return false;
     }
@@ -373,7 +428,7 @@ fn close_if_unused(slot: &Slot) -> bool {
     match guard.as_ref() {
         Some(db) if Arc::strong_count(db) > 1 => false,
         _ => {
-            *guard = None;
+            closed.extend(guard.take());
             true
         }
     }
@@ -485,6 +540,178 @@ mod tests {
             db.read(|r| r.execute("INSERT INTO things (name) VALUES ('x')", []))
                 .is_err()
         );
+    }
+
+    fn wal_len(path: &Path) -> u64 {
+        let mut p = path.as_os_str().to_owned();
+        p.push("-wal");
+        std::fs::metadata(PathBuf::from(p)).map_or(0, |m| m.len())
+    }
+
+    #[test]
+    fn commits_never_checkpoint_the_checkpointer_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let a = store.create_tenant("alpha", "Alpha").unwrap();
+        let b = store.create_tenant("beta", "Beta").unwrap();
+        let db = store.org(&a.id).unwrap();
+        let page = 4096;
+        db.pause_checkpoints(true);
+        // Each commit writes a page or two, well past SQLite's default
+        // auto-checkpoint at 1000. Only a checkpoint writes the main file:
+        // its size must not change.
+        let file_len = || std::fs::metadata(db.path()).unwrap().len();
+        let before = file_len();
+        for i in 0..1500 {
+            db.write_raw(|tx| {
+                tx.conn().execute(
+                    "INSERT INTO things (name) VALUES (?1)",
+                    [format!("{i:04}{}", "x".repeat(3000))],
+                )
+            })
+            .unwrap();
+            assert_eq!(file_len(), before, "commit {i} checkpointed");
+        }
+        assert!(db.wal_backlog_bytes() > 1000 * page);
+        assert!(wal_len(db.path()) as i64 > 1000 * page);
+        assert_eq!(store.wal_backlog_worst(), db.wal_backlog_bytes());
+        // Another org's file is untouched by it.
+        assert_eq!(store.org(&b.id).unwrap().wal_backlog_bytes(), 0);
+
+        // Let the checkpointer go: it copies the WAL back, off the writer.
+        db.pause_checkpoints(false);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while db.wal_backlog_bytes() > 0 {
+            assert!(Instant::now() < deadline, "the checkpointer never ran");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(file_len() > before + 1000 * page as u64);
+        // Idle, and the file is past 4 MB: it is truncated next.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while wal_len(db.path()) > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the idle WAL was never truncated"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let rows = db
+            .read(|r| r.query_row("SELECT count(*) FROM things", [], |r| r.get::<_, i64>(0)))
+            .unwrap();
+        assert_eq!(rows, 1500);
+    }
+
+    #[test]
+    fn without_a_checkpointer_nothing_checkpoints_but_the_backlog_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Under Litestream: it does the checkpoints.
+        let store = store(tmp.path()).without_checkpointer();
+        let a = store.create_tenant("alpha", "Alpha").unwrap();
+        let db = store.org(&a.id).unwrap();
+        let file_len = || std::fs::metadata(db.path()).unwrap().len();
+        let before = file_len();
+        for i in 0..300 {
+            db.write_raw(|tx| {
+                tx.conn().execute(
+                    "INSERT INTO things (name) VALUES (?1)",
+                    [format!("{i:04}{}", "x".repeat(3000))],
+                )
+            })
+            .unwrap();
+        }
+        let backlog = db.wal_backlog_bytes();
+        assert!(backlog > 300 * 4096, "{backlog}");
+        std::thread::sleep(checkpoint::INTERVAL * 2);
+        assert_eq!(file_len(), before, "something checkpointed");
+        assert_eq!(db.wal_backlog_bytes(), backlog);
+    }
+
+    #[test]
+    fn closing_an_org_still_checkpoints_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let a = store.create_tenant("alpha", "Alpha").unwrap();
+        let db = store.org(&a.id).unwrap();
+        db.pause_checkpoints(true);
+        for _ in 0..50 {
+            db.write_raw(|tx| {
+                tx.conn()
+                    .execute("INSERT INTO things (name) VALUES ('x')", [])
+            })
+            .unwrap();
+        }
+        let path = db.path().to_path_buf();
+        assert!(wal_len(&path) > 0);
+        drop(db);
+        drop(store);
+        // The last connection to close checkpointed and removed the WAL.
+        assert_eq!(wal_len(&path), 0);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM things", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 50);
+    }
+
+    #[test]
+    fn a_queued_write_runs_between_two_steps_of_a_loop() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let a = store.create_tenant("alpha", "Alpha").unwrap();
+        let db = store.org(&a.id).unwrap();
+        let steps = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        // A job: short steps back to back, each its own transaction, as
+        // `Tenant::run_job` runs them; each holds the writer ~0.1 ms.
+        let job = {
+            let (db, steps, stop) = (db.clone(), steps.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    db.write_raw(|tx| {
+                        tx.conn()
+                            .execute("INSERT INTO things (name) VALUES ('step')", [])?;
+                        let t = Instant::now();
+                        while t.elapsed() < Duration::from_micros(100) {
+                            std::hint::spin_loop();
+                        }
+                        Ok::<_, rusqlite::Error>(())
+                    })
+                    .unwrap();
+                    steps.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        };
+        while steps.load(Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+        // Request writes, one at a time: how many job steps commit between
+        // a request asking for the writer and getting it? Handed off, the
+        // one the request was queued behind (plus one if it hadn't parked
+        // yet); with std's mutex the job keeps it, thousands of steps.
+        // (parking_lot's plain unlock hands off here too in practice;
+        // `unlock_fair` makes it a guarantee, which no timing test can
+        // tell apart.) The median, so a request a loaded machine
+        // deschedules before it queues can't fail the test.
+        let mut passed: Vec<u64> = (0..21)
+            .map(|_| {
+                let asked = steps.load(Ordering::SeqCst);
+                let got = db
+                    .write_raw(|tx| {
+                        tx.conn()
+                            .execute("INSERT INTO things (name) VALUES ('request')", [])?;
+                        Ok::<_, rusqlite::Error>(steps.load(Ordering::SeqCst))
+                    })
+                    .unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+                got - asked
+            })
+            .collect();
+        stop.store(true, Ordering::SeqCst);
+        job.join().unwrap();
+        passed.sort();
+        assert!(passed[passed.len() / 2] <= 2, "steps passed: {passed:?}");
     }
 
     #[test]

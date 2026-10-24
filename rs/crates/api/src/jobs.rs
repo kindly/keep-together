@@ -5,6 +5,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use store::{OrgDb, PlatformSchema, Store, StoreError, TenantId};
@@ -288,8 +289,12 @@ impl Job for IdleClose {
     }
     fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
         Box::pin(async move {
-            self.0.close_idle(IDLE_CLOSE_AFTER);
-            Ok(())
+            // Off the async runtime: closing a file may checkpoint it.
+            let store = self.0.clone();
+            tokio::task::spawn_blocking(move || store.close_idle(IDLE_CLOSE_AFTER))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         })
     }
 }
@@ -324,11 +329,61 @@ impl Job for SessionPurge {
     }
 }
 
+/// Un-checkpointed WAL in one org file that `WalWatch` warns about: the
+/// checkpointer is stuck, or a long read has pinned the WAL for minutes.
+pub const WAL_WARN_BYTES: i64 = 64 << 20;
+
+/// Warn (log and Sentry) when an open org file's WAL backlog passes
+/// [`WAL_WARN_BYTES`]: once per crossing, not every minute.
+pub struct WalWatch {
+    store: Arc<Store>,
+    over: AtomicBool,
+}
+
+impl WalWatch {
+    pub fn new(store: Arc<Store>) -> Self {
+        Self {
+            store,
+            over: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether `worst` bytes is news to warn about: over the line, and
+    /// wasn't at the last check.
+    pub fn crossed(&self, worst: i64) -> bool {
+        let over = worst > WAL_WARN_BYTES;
+        let was = self.over.swap(over, Ordering::SeqCst);
+        over && !was
+    }
+}
+
+impl Job for WalWatch {
+    fn name(&self) -> &'static str {
+        "wal-watch"
+    }
+    fn every(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+    fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            let worst = self.store.wal_backlog_worst();
+            if self.crossed(worst) {
+                crate::observe::warning(&format!(
+                    "an org file has {} MB of WAL not checkpointed",
+                    worst >> 20
+                ));
+            }
+            Ok(())
+        })
+    }
+}
+
 /// The jobs every server runs. F2's backup job registers here too.
 pub fn standard(store: &Arc<Store>) -> Jobs {
     let mut jobs = Jobs::new();
     jobs.register(IdleClose(store.clone()))
         .register(SessionPurge(store.clone()))
+        .register(WalWatch::new(store.clone()))
         // B1: retires left part way.
         .register(crate::routes::fields::FieldRetire(store.clone()));
     jobs

@@ -55,7 +55,7 @@ parameter is ignored and both columns measure the words index.)
 
 | crate | owns |
 |---|---|
-| `store` | `platform.db` (tenants, users, memberships, sessions, snapshots) and `orgs/<tenant-id>.db`; pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`, no `ATTACH`); per file one writer behind a mutex + a read-only reader pool; the handle LRU; boot migration; each file's event channel |
+| `store` | `platform.db` (tenants, users, memberships, sessions, snapshots) and `orgs/<tenant-id>.db`; pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`, no `ATTACH`); per file one writer behind a fair mutex + a read-only reader pool + a checkpointer thread, none under Litestream (no checkpoint in a commit: `docs/ops.md`); locks waited for by 1 ms polls; the handle LRU; boot migration; each file's event channel |
 | `contracts` | the **only write path**: `transact`, `Contract`, `execute`, revisions, command groups, restore through upcasters, child-row reconcile, events |
 | `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history |
 | `sources`, `giving`, `giftaid`, `comms` | domain crates, empty until wave A/B |
