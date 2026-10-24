@@ -15,6 +15,7 @@ import { createContext, useContext, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import type { Id } from '../../../../convex/_generated/dataModel'
 import type { useBulkSetField as convexBulkSetField } from '../../../components/bulk-set-field'
+import { newKey } from '../../contact-form-state'
 import { LIST_PAGE_SIZE } from '../../paged-list'
 import type { ListFilters, PagedList } from '../../paged-list'
 import type { Tenant } from '../../tenant'
@@ -349,7 +350,7 @@ export function useCreateContact(): CreateContact {
   const { slug } = useTenant()
   const qc = useQueryClient()
   // Minted once per form: a double submit lands on the existing contact.
-  const clientKey = useMemo(() => crypto.randomUUID(), [])
+  const clientKey = useMemo(newKey, [])
   return async (details) => {
     try {
       const created = await post<CreatedContact>(tenantPath(slug, 'contacts'), {

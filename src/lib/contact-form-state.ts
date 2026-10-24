@@ -14,6 +14,15 @@ import type { Payloads } from '../../convex/contacts/validators'
 import { same, threeWayMerge } from './merge'
 import type { Unsaved } from './unsaved'
 
+/**
+ * A new child row's key, or a create's client key: 32 lower-case hex
+ * characters, the only shape the api takes for an id the client chooses
+ * (rs/README.md; F1 L5). A v4 UUID without its dashes.
+ */
+export function newKey(): string {
+  return crypto.randomUUID().replaceAll('-', '')
+}
+
 export type SliceName =
   'details' | 'methods' | 'addresses' | 'identifiers' | 'fields'
 export type Slices = {
@@ -416,9 +425,7 @@ export function reduce(state: FormState, action: Action): FormState {
       }
     }
     case 'commit': {
-      const methods = rekey(state.base.methods, state.local.methods, () =>
-        crypto.randomUUID(),
-      )
+      const methods = rekey(state.base.methods, state.local.methods, newKey)
       const local = { ...state.local, methods }
       const dirty = {
         ...state.dirty,

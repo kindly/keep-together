@@ -325,18 +325,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
           tracePath: testInfo.outputPath(`trace-${name}.zip`),
         },
         name,
-        step.server
-          ? {
-              ...step,
-              // A result meant to come from the server: drop what no
-              // component shows, as Convex dropped an unsubscribed query,
-              // so the sample asks rather than drawing TanStack's cache.
-              before: async () => {
-                await step.before?.()
-                await page.evaluate(dropInactiveQueries)
-              },
-            }
-          : step,
+        step,
       )
       await testInfo.attach(`flow ${name}`, {
         body: JSON.stringify(record, null, 2),
@@ -353,41 +342,5 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     })
   },
 })
-
-/**
- * In the page: remove every cached query no component observes, from the
- * app's TanStack QueryClient, found through React's fiber tree (the app
- * doesn't expose it, and QC mustn't need it to). Serialised: no closures.
- */
-function dropInactiveQueries() {
-  interface Client {
-    removeQueries: (f: {
-      predicate: (q: { getObserversCount: () => number }) => boolean
-    }) => void
-    getQueryCache: () => unknown
-  }
-  interface Fiber {
-    memoizedProps?: { client?: Client } | null
-    child: Fiber | null
-    sibling: Fiber | null
-  }
-  const root = document.getElementById('app')
-  const key =
-    root && Object.keys(root).find((k) => k.startsWith('__reactContainer$'))
-  // No app on the page (a cold load's about:blank): nothing cached.
-  if (!root || !key) return
-  const stack: Array<Fiber> = [(root as unknown as Record<string, Fiber>)[key]]
-  while (stack.length) {
-    const f = stack.pop()!
-    const client = f.memoizedProps?.client
-    if (client && typeof client.getQueryCache === 'function') {
-      client.removeQueries({ predicate: (q) => q.getObserversCount() === 0 })
-      return
-    }
-    if (f.child) stack.push(f.child)
-    if (f.sibling) stack.push(f.sibling)
-  }
-  throw new Error('dropInactiveQueries: no QueryClientProvider')
-}
 
 export { expect }

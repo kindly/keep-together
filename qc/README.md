@@ -184,12 +184,13 @@ errors (`console`), not a trace; to trace one, rerun it with
 **Held results.** Every timed sample must do the work it claims to
 measure. TanStack Query keeps what it fetched until something invalidates
 it (the change stream, or this tab's own write), so a flow whose result
-comes from the server says `server: true`: before each of its samples the
-fixture drops every cached query no component observes (as Convex dropped
-an unsubscribed query), and a sample in which the watched page got no
-`/api` answer before `until` held fails with `HeldResultError`. After
-every `before` the harness waits until the page has no `/api` request in
-flight (`settle`). `contact.revisit` times the cache on purpose and isn't
+comes from the server says `server: true`. After every `before` the
+harness waits until the page has no `/api` request in flight for three
+frames (`settle`); then, for a `server: true` sample, it drops every
+cached query no component observes (as Convex dropped an unsubscribed
+query; after the settle, since a query a `before` left loses its observer
+only in an effect), and a sample in which the watched page got no `/api`
+answer before `until` held fails with `HeldResultError`. `contact.revisit` times the cache on purpose and isn't
 `server: true`.
 
 ## Budgets

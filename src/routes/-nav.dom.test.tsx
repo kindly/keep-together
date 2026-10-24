@@ -420,8 +420,9 @@ test('being ported: the header has Contacts and Sign out, nothing unported', asy
   const button = [...nav.querySelectorAll('button')].find(
     (b) => b.textContent === 'Sign out',
   )!
-  act(() => button.click())
+  await act(async () => button.click())
   expect(signOut).toHaveBeenCalledOnce()
+  expect(navigate).toHaveBeenCalledWith({ to: '/' })
   expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
 })
 

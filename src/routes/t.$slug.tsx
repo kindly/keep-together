@@ -3,6 +3,7 @@ import {
   Outlet,
   createFileRoute,
   useMatches,
+  useNavigate,
 } from '@tanstack/react-router'
 import { useMutation } from 'convex/react'
 import { useEffect, useRef } from 'react'
@@ -131,12 +132,14 @@ function PortedOutlet() {
   )
 }
 
+/** As Settings' Sign out: back to the sign-in form. */
 function SignOut() {
   const signOut = useSignOut()
+  const navigate = useNavigate()
   return (
     <button
       type="button"
-      onClick={() => void signOut()}
+      onClick={() => void signOut().then(() => navigate({ to: '/' }))}
       className="ml-auto text-sm text-neutral-600 hover:underline"
     >
       Sign out

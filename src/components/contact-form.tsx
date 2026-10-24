@@ -15,6 +15,7 @@ import type {
 } from '../lib/contact-form-state'
 import {
   initialState,
+  newKey,
   reduce,
   submission,
   tornSlices,
@@ -477,7 +478,7 @@ function MethodsFields({
                 emails: [
                   ...value.emails,
                   {
-                    key: crypto.randomUUID(),
+                    key: newKey(),
                     label: 'home',
                     address: '',
                     isPrimary: value.emails.length === 0,
@@ -560,7 +561,7 @@ function MethodsFields({
                 phones: [
                   ...value.phones,
                   {
-                    key: crypto.randomUUID(),
+                    key: newKey(),
                     label: 'home',
                     number: '',
                     isPrimary: value.phones.length === 0,
@@ -673,7 +674,7 @@ function AddressFields({
               addresses: [
                 ...value.addresses,
                 {
-                  key: crypto.randomUUID(),
+                  key: newKey(),
                   label: 'home',
                   line1: '',
                   line2: '',
@@ -898,7 +899,7 @@ function IdentifierFields({
                 identifiers: [
                   ...value.identifiers,
                   {
-                    key: crypto.randomUUID(),
+                    key: newKey(),
                     typeId: '' as Id<'identifierTypes'>,
                     value: '',
                   },

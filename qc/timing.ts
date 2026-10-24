@@ -475,6 +475,42 @@ export async function settle(page: Page, timeoutMs = 15_000) {
   })
 }
 
+/**
+ * In the page, for a `server: true` sample (measureOnce): remove every cached query no component observes, from the
+ * app's TanStack QueryClient, found through React's fiber tree (the app
+ * doesn't expose it, and QC mustn't need it to). Serialised: no closures.
+ */
+function dropInactiveQueries() {
+  interface Client {
+    removeQueries: (f: {
+      predicate: (q: { getObserversCount: () => number }) => boolean
+    }) => void
+    getQueryCache: () => unknown
+  }
+  interface Fiber {
+    memoizedProps?: { client?: Client } | null
+    child: Fiber | null
+    sibling: Fiber | null
+  }
+  const root = document.getElementById('app')
+  const key =
+    root && Object.keys(root).find((k) => k.startsWith('__reactContainer$'))
+  // No app on the page (a cold load's about:blank): nothing cached.
+  if (!root || !key) return
+  const stack: Array<Fiber> = [(root as unknown as Record<string, Fiber>)[key]]
+  while (stack.length) {
+    const f = stack.pop()!
+    const client = f.memoizedProps?.client
+    if (client && typeof client.getQueryCache === 'function') {
+      client.removeQueries({ predicate: (q) => q.getObserversCount() === 0 })
+      return
+    }
+    if (f.child) stack.push(f.child)
+    if (f.sibling) stack.push(f.sibling)
+  }
+  throw new Error('dropInactiveQueries: no QueryClientProvider')
+}
+
 /** A `server: true` sample that drew a result the client already held. */
 export class HeldResultError extends Error {}
 
@@ -487,6 +523,11 @@ async function measureOnce<TArg>(
   await step.before?.()
   await settle(page)
   if (step.inputPage && step.inputPage !== page) await settle(step.inputPage)
+  // A result meant to come from the server: drop what no component shows,
+  // as Convex dropped an unsubscribed query, so the sample asks rather
+  // than drawing TanStack's cache. After settle: a query a `before` left
+  // has lost its observer only once the page's effects have run.
+  if (step.server) await page.evaluate(dropInactiveQueries)
   const pred = `(${step.until.toString()})(${JSON.stringify(step.arg ?? null)})`
   if (await page.evaluate(pred)) {
     throw new Error(

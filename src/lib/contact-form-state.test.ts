@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import type { Id } from '../../convex/_generated/dataModel'
 import type { Counters, FormState, Slices } from './contact-form-state'
 import {
+  newKey,
   clean,
   initialState,
   reduce,
@@ -1162,5 +1163,13 @@ describe('the fields slice', () => {
     expect(s.dirty.fields).toBe(false)
     expect(s.counters.fields).toBe(1)
     expect(unsavedWork(s)).toBe('clean')
+  })
+})
+
+describe('newKey', () => {
+  test('32 lower-case hex characters, never the same twice', () => {
+    const keys = Array.from({ length: 100 }, newKey)
+    for (const k of keys) expect(k).toMatch(/^[0-9a-f]{32}$/)
+    expect(new Set(keys).size).toBe(100)
   })
 })

@@ -51,6 +51,8 @@ export const PENDING: ReadonlyArray<Pending> = [
   { step: 'B2', file: 'gift-record.spec.ts' },
   { step: 'B2', file: 'gifts.spec.ts' },
   { step: 'B2', title: /gift/i },
+  // Its header check includes the Donations menu.
+  { step: 'B2', title: /goes straight to your group’s home/ },
 ]
 
 /** The step a test waits for, or null when it runs now. */
