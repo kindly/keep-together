@@ -72,7 +72,8 @@ fn parts(value: &str) -> Option<(i64, i64, i64)> {
 
 /// A real calendar date written `YYYY-MM-DD`.
 pub fn is_iso_date(value: &str) -> bool {
-    parts(value).is_some_and(|(y, m, d)| (1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m))
+    parts(value)
+        .is_some_and(|(y, m, d)| (1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m))
 }
 
 /// The same day `years` years earlier. 29 February with no such day that
@@ -281,9 +282,7 @@ pub fn prepare_declaration(p: DeclarationPayload) -> Result<DeclarationPayload, 
 }
 
 fn blank_none(value: Option<String>) -> Option<String> {
-    value
-        .map(|v| v.trim().to_owned())
-        .filter(|v| !v.is_empty())
+    value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
 }
 
 /// Date a real date when present; a note only with a date; blanks → absent.
@@ -293,7 +292,11 @@ pub fn prepare_cancellation(p: CancellationPayload) -> Result<CancellationPayloa
         note: blank_none(p.note),
     };
     let mut problems = Vec::new();
-    if out.cancelled_from.as_deref().is_some_and(|d| !is_iso_date(d)) {
+    if out
+        .cancelled_from
+        .as_deref()
+        .is_some_and(|d| !is_iso_date(d))
+    {
         problems.push(Problem::new("cancelledFrom", "Enter a date (YYYY-MM-DD)"));
     }
     if out.note.is_some() && out.cancelled_from.is_none() {
@@ -448,7 +451,11 @@ mod tests {
             (Scope::Future, MADE, true),
             (Scope::Future, "2030-01-01", true),
         ] {
-            assert_eq!(covers(&decl(scope), at(date, None)), covered, "{scope:?} {date}");
+            assert_eq!(
+                covers(&decl(scope), at(date, None)),
+                covered,
+                "{scope:?} {date}"
+            );
         }
     }
 
@@ -460,10 +467,7 @@ mod tests {
         assert!(!covers(&d, at(MADE, Some(OTHER_GIFT))));
         assert!(!covers(&d, at(MADE, None)));
         // A thisGift declaration without its gift (never stored) covers nothing.
-        let bare = D {
-            gift_id: None,
-            ..d
-        };
+        let bare = D { gift_id: None, ..d };
         assert!(!covers(&bare, at(MADE, None)));
     }
 
@@ -536,9 +540,15 @@ mod tests {
             },
             made(Scope::Future, "2024-01-01"),
         ];
-        assert_eq!(covering_declaration(&chain, at("2021-06-01", None)), Some(&chain[0]));
+        assert_eq!(
+            covering_declaration(&chain, at("2021-06-01", None)),
+            Some(&chain[0])
+        );
         assert_eq!(covering_declaration(&chain, at("2023-06-01", None)), None);
-        assert_eq!(covering_declaration(&chain, at("2025-06-01", None)), Some(&chain[1]));
+        assert_eq!(
+            covering_declaration(&chain, at("2025-06-01", None)),
+            Some(&chain[1])
+        );
     }
 
     #[test]
@@ -547,9 +557,18 @@ mod tests {
             made(Scope::Future, "2020-01-01"),
             made(Scope::FutureAndPast4y, "2024-01-01"),
         ];
-        assert_eq!(covering_declaration(&chain, at("2025-01-01", None)), Some(&chain[1]));
-        assert_eq!(covering_declaration(&chain, at("2020-06-01", None)), Some(&chain[1]));
-        assert_eq!(covering_declaration(&chain, at("2020-01-01", None)), Some(&chain[1]));
+        assert_eq!(
+            covering_declaration(&chain, at("2025-01-01", None)),
+            Some(&chain[1])
+        );
+        assert_eq!(
+            covering_declaration(&chain, at("2020-06-01", None)),
+            Some(&chain[1])
+        );
+        assert_eq!(
+            covering_declaration(&chain, at("2020-01-01", None)),
+            Some(&chain[1])
+        );
         assert_eq!(covering_declaration(&chain, at("2019-12-31", None)), None);
     }
 
@@ -659,7 +678,12 @@ mod tests {
             .reason,
             "wrong Jo"
         );
-        assert!(prepare_void(VoidPayload { reason: "  ".into() }).is_err());
+        assert!(
+            prepare_void(VoidPayload {
+                reason: "  ".into()
+            })
+            .is_err()
+        );
     }
 
     #[test]

@@ -10,7 +10,9 @@ use rusqlite::{Connection, params};
 use sources::CodeDescription;
 
 use crate::gift::load_allocations;
-use crate::types::{AllocationView, GiftDonor, GiftPage, GiftRow, GiftView, Method, RecentGift, Status};
+use crate::types::{
+    AllocationView, GiftDonor, GiftPage, GiftRow, GiftView, Method, RecentGift, Status,
+};
 
 /// Gifts in "my recent gifts" (the menu and the group home page).
 pub const RECENT_LIMIT: usize = 10;
@@ -25,7 +27,11 @@ pub const HISTORY_PAGE_LIMIT: usize = 10;
 struct Codes(HashMap<String, Option<CodeDescription>>);
 
 impl Codes {
-    fn describe(&mut self, conn: &Connection, id: &str) -> rusqlite::Result<Option<&CodeDescription>> {
+    fn describe(
+        &mut self,
+        conn: &Connection,
+        id: &str,
+    ) -> rusqlite::Result<Option<&CodeDescription>> {
         if !self.0.contains_key(id) {
             let found = sources::describe(conn, id)?;
             self.0.insert(id.to_owned(), found);
@@ -58,7 +64,11 @@ fn gift_row(r: &rusqlite::Row) -> rusqlite::Result<(GiftRow, i64)> {
 }
 
 /// Fill a row's allocations, each with its code as it reads now.
-fn describe_allocations(conn: &Connection, codes: &mut Codes, row: &mut GiftRow) -> rusqlite::Result<()> {
+fn describe_allocations(
+    conn: &Connection,
+    codes: &mut Codes,
+    row: &mut GiftRow,
+) -> rusqlite::Result<()> {
     row.allocations = load_allocations(conn, &row.id)?
         .into_iter()
         .map(|a| {
@@ -139,7 +149,10 @@ pub fn by_contact(
     let more = rows.len() > limit;
     rows.truncate(limit);
     let next_cursor = more
-        .then(|| rows.last().map(|(g, seq)| format!("{}|{seq}", g.received_on)))
+        .then(|| {
+            rows.last()
+                .map(|(g, seq)| format!("{}|{seq}", g.received_on))
+        })
         .flatten();
     let mut codes = Codes::default();
     let rows = rows
@@ -168,11 +181,12 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftView>> {
         Err(e) => return Err(e),
     };
     describe_allocations(conn, &mut Codes::default(), &mut gift)?;
-    let contact = contacts::donors::name_of(conn, &gift.contact_id)?.map(|(display_name, kind)| GiftDonor {
-        id: gift.contact_id.clone(),
-        display_name,
-        kind,
-    });
+    let contact =
+        contacts::donors::name_of(conn, &gift.contact_id)?.map(|(display_name, kind)| GiftDonor {
+            id: gift.contact_id.clone(),
+            display_name,
+            kind,
+        });
     Ok(Some(GiftView { gift, contact }))
 }
 
@@ -183,7 +197,10 @@ struct GiftSlices;
 
 impl SliceLabel for GiftSlices {
     fn label(&self, contract: &str) -> String {
-        contract.strip_prefix("giving.").unwrap_or(contract).to_owned()
+        contract
+            .strip_prefix("giving.")
+            .unwrap_or(contract)
+            .to_owned()
     }
 
     fn retired(&self, _: &str) -> bool {

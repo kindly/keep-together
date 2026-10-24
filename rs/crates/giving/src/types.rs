@@ -25,7 +25,11 @@ impl Method {
     }
 
     pub fn parse(s: &str) -> Self {
-        if s == "card" { Method::Card } else { Method::Cash }
+        if s == "card" {
+            Method::Card
+        } else {
+            Method::Cash
+        }
     }
 }
 
@@ -48,7 +52,11 @@ impl Status {
     }
 
     pub fn parse(s: &str) -> Self {
-        if s == "void" { Status::Void } else { Status::Completed }
+        if s == "void" {
+            Status::Void
+        } else {
+            Status::Completed
+        }
     }
 }
 
@@ -118,7 +126,12 @@ pub struct AllocationView {
 }
 
 impl AllocationView {
-    pub(crate) fn new(key: String, source_code_id: String, amount: i64, code: Option<&CodeDescription>) -> Self {
+    pub(crate) fn new(
+        key: String,
+        source_code_id: String,
+        amount: i64,
+        code: Option<&CodeDescription>,
+    ) -> Self {
         Self {
             key,
             source_code_id,

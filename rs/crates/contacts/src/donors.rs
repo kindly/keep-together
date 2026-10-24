@@ -11,7 +11,9 @@ use ts_rs::TS;
 
 use crate::acquisition::{ACQUISITION, Acquisition};
 use crate::slices::{ADDRESSES, METHODS, load_addresses};
-use crate::types::{AddressRow, ChannelLabel, Created, CreateContact, Details, EmailRow, Kind, Methods};
+use crate::types::{
+    AddressRow, ChannelLabel, CreateContact, Created, Details, EmailRow, Kind, Methods,
+};
 
 /// The primary (else first) address's line 1 and postcode, or empty
 /// strings; `completable` when typing a postcode for it completes that row
@@ -104,9 +106,7 @@ pub fn kind_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<Kind>> {
 /// The contact's display name and kind as they read now, or `None`.
 pub fn name_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, Kind)>> {
     conn.prepare_cached("SELECT display_name, kind FROM contacts WHERE id = ?1")?
-        .query_row([id], |r| {
-            Ok((r.get(0)?, kind(&r.get::<_, String>(1)?)))
-        })
+        .query_row([id], |r| Ok((r.get(0)?, kind(&r.get::<_, String>(1)?))))
         .optional()
 }
 
@@ -259,7 +259,10 @@ pub fn fill_acquisition(
         )
         .optional()?;
     let Some((held, counter)) = held else {
-        return Err(ContractError::rejected("unknown_contact", "Contact must exist"));
+        return Err(ContractError::rejected(
+            "unknown_contact",
+            "Contact must exist",
+        ));
     };
     if held.is_some() {
         return Ok(false);

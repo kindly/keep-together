@@ -57,19 +57,17 @@ async fn category(w: &World, slug: &str, cookie: &str, name: &str) -> String {
 async fn code(w: &World, slug: &str, cookie: &str, cat: &str, detail: &str) -> Codes {
     let category = match category_or_none(w, slug, cookie, cat).await {
         Some(c) => c,
-        None => {
-            ok(
-                w,
-                "POST",
-                &format!("/api/t/{slug}/sources"),
-                cookie,
-                Some(json!({ "name": cat, "isActive": true })),
-            )
-            .await["id"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        }
+        None => ok(
+            w,
+            "POST",
+            &format!("/api/t/{slug}/sources"),
+            cookie,
+            Some(json!({ "name": cat, "isActive": true })),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
     };
     let made = ok(
         w,
@@ -169,7 +167,12 @@ impl G {
 
     async fn record_as(&self, slug: &str, cookie: &str, args: Value) -> (StatusCode, Value) {
         self.w
-            .call("POST", &format!("/api/t/{slug}/gifts/record"), cookie, Some(args))
+            .call(
+                "POST",
+                &format!("/api/t/{slug}/gifts/record"),
+                cookie,
+                Some(args),
+            )
             .await
     }
 
@@ -186,7 +189,13 @@ impl G {
     }
 
     /// An existing contact, made the usual way.
-    async fn existing(&self, slug: &str, cookie: &str, details: Value, code: Option<&str>) -> String {
+    async fn existing(
+        &self,
+        slug: &str,
+        cookie: &str,
+        details: Value,
+        code: Option<&str>,
+    ) -> String {
         let mut body = json!({
             "kind": "individual", "title": "", "firstName": "Jo", "lastName": "Bloggs",
             "nickname": "", "name": "", "isDeceased": false,
@@ -197,18 +206,39 @@ impl G {
         if let Some(code) = code {
             body["acquisitionCodeId"] = json!(code);
         }
-        ok(&self.w, "POST", &format!("/api/t/{slug}/contacts"), cookie, Some(body)).await["id"]
+        ok(
+            &self.w,
+            "POST",
+            &format!("/api/t/{slug}/contacts"),
+            cookie,
+            Some(body),
+        )
+        .await["id"]
             .as_str()
             .unwrap()
             .to_owned()
     }
 
     async fn contact(&self, id: &str) -> Value {
-        ok(&self.w, "GET", &format!("/api/t/alpha/contacts/{id}"), &self.ann, None).await
+        ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/alpha/contacts/{id}"),
+            &self.ann,
+            None,
+        )
+        .await
     }
 
     async fn gift(&self, id: &str) -> Value {
-        ok(&self.w, "GET", &format!("/api/t/alpha/gifts/{id}"), &self.ann, None).await
+        ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/alpha/gifts/{id}"),
+            &self.ann,
+            None,
+        )
+        .await
     }
 
     async fn declarations(&self, contact: &str) -> Value {
@@ -257,8 +287,16 @@ impl G {
             .await
     }
 
-    fn sql<T>(&self, slug: &str, f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>) -> T {
-        let t = if slug == "alpha" { &self.w.alpha } else { &self.w.beta };
+    fn sql<T>(
+        &self,
+        slug: &str,
+        f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>,
+    ) -> T {
+        let t = if slug == "alpha" {
+            &self.w.alpha
+        } else {
+            &self.w.beta
+        };
         self.w.store.org(&t.id).unwrap().read(|r| f(r)).unwrap()
     }
 
@@ -275,7 +313,8 @@ impl G {
                 .collect::<rusqlite::Result<_>>()?;
             let mut out = BTreeMap::new();
             for t in tables {
-                let n: i64 = c.query_row(&format!("SELECT count(*) FROM \"{t}\""), [], |r| r.get(0))?;
+                let n: i64 =
+                    c.query_row(&format!("SELECT count(*) FROM \"{t}\""), [], |r| r.get(0))?;
                 out.insert(t, n);
             }
             let next: Option<i64> = c
@@ -288,7 +327,9 @@ impl G {
 
     fn used(&self, id: &str) -> bool {
         self.sql("alpha", |c| {
-            c.query_row("SELECT used FROM source_codes WHERE id = ?1", [id], |r| r.get(0))
+            c.query_row("SELECT used FROM source_codes WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
         })
     }
 
@@ -354,7 +395,11 @@ async fn a_new_contact_has_a_number_the_gifts_code_its_email_and_address() {
     let contact_id = str_of(&out["contactId"]);
     let c = g.contact(&contact_id).await;
     assert_eq!(
-        (&c["kind"], &c["details"]["firstName"], &c["details"]["lastName"]),
+        (
+            &c["kind"],
+            &c["details"]["firstName"],
+            &c["details"]["lastName"]
+        ),
         (&json!("individual"), &json!("Jo"), &json!("Bloggs"))
     );
     assert_eq!(c["acquisition"]["versionId"], json!(g.street.version));
@@ -381,9 +426,15 @@ async fn an_organisation_needs_only_its_name() {
     let g = setup().await;
     let out = g.record(json!({ "contact": organisation() })).await;
     let c = g.contact(&str_of(&out["contactId"])).await;
-    assert_eq!((&c["kind"], &c["details"]["name"]), (&json!("organization"), &json!("Acme Ltd")));
+    assert_eq!(
+        (&c["kind"], &c["details"]["name"]),
+        (&json!("organization"), &json!("Acme Ltd"))
+    );
     assert_eq!(c["acquisition"]["versionId"], json!(g.street.version));
-    assert_eq!(g.gift(&str_of(&out["giftId"])).await["contactId"], out["contactId"]);
+    assert_eq!(
+        g.gift(&str_of(&out["giftId"])).await["contactId"],
+        out["contactId"]
+    );
 }
 
 /// "marks the code used"
@@ -451,7 +502,9 @@ async fn an_empty_acquisition_code_is_filled_with_the_gifts_in_its_group() {
 #[tokio::test]
 async fn a_set_acquisition_code_is_kept() {
     let g = setup().await;
-    let jo = g.existing("alpha", &g.ann, json!({}), Some(&g.online.version)).await;
+    let jo = g
+        .existing("alpha", &g.ann, json!({}), Some(&g.online.version))
+        .await;
     let before = g.contact(&jo).await["counters"]["acquisition"].clone();
     g.record(json!({ "contact": jo })).await;
     let c = g.contact(&jo).await;
@@ -463,10 +516,15 @@ async fn a_set_acquisition_code_is_kept() {
 #[tokio::test]
 async fn a_set_acquisition_code_archived_since_is_still_kept() {
     let g = setup().await;
-    let jo = g.existing("alpha", &g.ann, json!({}), Some(&g.online.version)).await;
+    let jo = g
+        .existing("alpha", &g.ann, json!({}), Some(&g.online.version))
+        .await;
     archive(&g, &g.online.version).await;
     g.record(json!({ "contact": jo })).await;
-    assert_eq!(g.contact(&jo).await["acquisition"]["versionId"], json!(g.online.version));
+    assert_eq!(
+        g.contact(&jo).await["acquisition"]["versionId"],
+        json!(g.online.version)
+    );
 }
 
 /// "a second gift doesn't change the code the first one filled"
@@ -480,7 +538,10 @@ async fn a_second_gift_doesnt_change_the_filled_code() {
         "allocations": [{ "sourceCodeId": g.online.version, "amount": 2000 }],
     }))
     .await;
-    assert_eq!(g.contact(&jo).await["acquisition"]["versionId"], json!(g.street.version));
+    assert_eq!(
+        g.contact(&jo).await["acquisition"]["versionId"],
+        json!(g.street.version)
+    );
 }
 
 // ── Gift Aid ───────────────────────────────────────────────────────────────
@@ -493,11 +554,20 @@ async fn gift_aid_defaults() {
         .record(json!({ "home": { "line1": "12 High St", "postcode": "ab1 2cd" }, "giftAid": {} }))
         .await;
     let contact = str_of(&out["contactId"]);
-    let d = g.declaration(&contact, &str_of(&out["declarationId"])).await;
+    let d = g
+        .declaration(&contact, &str_of(&out["declarationId"]))
+        .await;
     assert_eq!(
         (
-            &d["contactId"], &d["scope"], &d["method"], &d["madeOn"], &d["contributionId"],
-            &d["wordingVersion"], &d["firstName"], &d["lastName"], &d["addressLine1"],
+            &d["contactId"],
+            &d["scope"],
+            &d["method"],
+            &d["madeOn"],
+            &d["contributionId"],
+            &d["wordingVersion"],
+            &d["firstName"],
+            &d["lastName"],
+            &d["addressLine1"],
             &d["postcode"],
         ),
         (
@@ -531,8 +601,18 @@ async fn a_this_gift_only_declaration_names_the_new_gift() {
         .declaration(&str_of(&out["contactId"]), &str_of(&out["declarationId"]))
         .await;
     assert_eq!(
-        (&d["scope"], &d["contributionId"], &d["method"], &d["madeOn"]),
-        (&json!("thisGift"), &out["giftId"], &json!("paperForm"), &json!("2026-10-21"))
+        (
+            &d["scope"],
+            &d["contributionId"],
+            &d["method"],
+            &d["madeOn"]
+        ),
+        (
+            &json!("thisGift"),
+            &out["giftId"],
+            &json!("paperForm"),
+            &json!("2026-10-21")
+        )
     );
 }
 
@@ -551,7 +631,10 @@ async fn an_existing_persons_primary_address_is_the_snapshot() {
     .await;
     let out = g.record(json!({ "contact": jo, "giftAid": {} })).await;
     let d = g.declaration(&jo, &str_of(&out["declarationId"])).await;
-    assert_eq!((&d["addressLine1"], &d["postcode"]), (&json!("7 Elm Row"), &json!("EH1 1AA")));
+    assert_eq!(
+        (&d["addressLine1"], &d["postcode"]),
+        (&json!("7 Elm Row"), &json!("EH1 1AA"))
+    );
     assert_eq!(g.address_rows(&jo).len(), 2);
 }
 
@@ -570,11 +653,24 @@ async fn an_existing_person_with_no_address_gets_the_one_entered() {
     let rows = g.address_rows(&jo);
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        (&rows[0]["line1"], &rows[0]["postcode"], &rows[0]["isPrimary"], &rows[0]["country"]),
-        (&json!("3 Mill Lane"), &json!("M1 1AA"), &json!(true), &json!("GB"))
+        (
+            &rows[0]["line1"],
+            &rows[0]["postcode"],
+            &rows[0]["isPrimary"],
+            &rows[0]["country"]
+        ),
+        (
+            &json!("3 Mill Lane"),
+            &json!("M1 1AA"),
+            &json!(true),
+            &json!("GB")
+        )
     );
     let d = g.declaration(&jo, &str_of(&out["declarationId"])).await;
-    assert_eq!((&d["addressLine1"], &d["postcode"]), (&json!("3 Mill Lane"), &json!("M1 1AA")));
+    assert_eq!(
+        (&d["addressLine1"], &d["postcode"]),
+        (&json!("3 Mill Lane"), &json!("M1 1AA"))
+    );
 }
 
 /// "an added address keeps the ones the contact has, and becomes the primary"
@@ -598,7 +694,10 @@ async fn an_added_address_keeps_the_others_and_becomes_the_primary() {
         .collect();
     assert_eq!(
         rows,
-        [(json!("1 Office Rd"), json!(false)), (json!("3 Mill Lane"), json!(true))]
+        [
+            (json!("1 Office Rd"), json!(false)),
+            (json!("3 Mill Lane"), json!(true))
+        ]
     );
 }
 
@@ -610,8 +709,16 @@ async fn left_without_an_address_it_saves_with_a_warning() {
     let d = g
         .declaration(&str_of(&out["contactId"]), &str_of(&out["declarationId"]))
         .await;
-    assert_eq!((&d["addressLine1"], &d["postcode"]), (&json!(""), &json!("")));
-    let labels: Vec<_> = d["warnings"].as_array().unwrap().iter().map(|w| w["label"].clone()).collect();
+    assert_eq!(
+        (&d["addressLine1"], &d["postcode"]),
+        (&json!(""), &json!(""))
+    );
+    let labels: Vec<_> = d["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["label"].clone())
+        .collect();
     assert!(labels.contains(&json!("Home address")), "{labels:?}");
 }
 
@@ -620,7 +727,9 @@ async fn left_without_an_address_it_saves_with_a_warning() {
 #[tokio::test]
 async fn a_gift_dated_after_today_with_gift_aid_saves() {
     let g = setup().await;
-    let out = g.record(json!({ "receivedOn": tomorrow(), "giftAid": {} })).await;
+    let out = g
+        .record(json!({ "receivedOn": tomorrow(), "giftAid": {} }))
+        .await;
     let d = g
         .declaration(&str_of(&out["contactId"]), &str_of(&out["declarationId"]))
         .await;
@@ -641,7 +750,9 @@ async fn a_back_dated_gift_is_covered_by_the_declaration_made_with_it() {
             .record(json!({ "contact": contact, "receivedOn": "2021-06-01" }))
             .await;
         let covering = |gift: String| {
-            g.sql("alpha", |c| giftaid::coverage(c, &contact, "2021-06-01", Some(&gift)))
+            g.sql("alpha", |c| {
+                giftaid::coverage(c, &contact, "2021-06-01", Some(&gift))
+            })
         };
         assert_eq!(
             covering(str_of(&out["giftId"])).map(|d| d.id),
@@ -658,7 +769,11 @@ async fn a_back_dated_gift_is_covered_by_the_declaration_made_with_it() {
 async fn the_typed_address_completes_an_incomplete_primary_in_place() {
     let g = setup().await;
     let jo = g.existing("alpha", &g.ann, json!({}), None).await;
-    g.addresses(&jo, json!([address(json!({ "town": "Leeds", "isPrimary": true }))])).await;
+    g.addresses(
+        &jo,
+        json!([address(json!({ "town": "Leeds", "isPrimary": true }))]),
+    )
+    .await;
     let key = g.address_rows(&jo)[0]["key"].clone();
     let out = g
         .record(json!({
@@ -668,13 +783,28 @@ async fn the_typed_address_completes_an_incomplete_primary_in_place() {
         }))
         .await;
     let d = g.declaration(&jo, &str_of(&out["declarationId"])).await;
-    assert_eq!((&d["addressLine1"], &d["postcode"]), (&json!("3 Mill Lane"), &json!("LS1 1AA")));
+    assert_eq!(
+        (&d["addressLine1"], &d["postcode"]),
+        (&json!("3 Mill Lane"), &json!("LS1 1AA"))
+    );
     let rows = g.address_rows(&jo);
     // The address contract trims; only the snapshot collapses spaces.
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        (&rows[0]["line1"], &rows[0]["postcode"], &rows[0]["town"], &rows[0]["isPrimary"], &rows[0]["key"]),
-        (&json!("3  Mill Lane"), &json!("LS1 1AA"), &json!("Leeds"), &json!(true), &key)
+        (
+            &rows[0]["line1"],
+            &rows[0]["postcode"],
+            &rows[0]["town"],
+            &rows[0]["isPrimary"],
+            &rows[0]["key"]
+        ),
+        (
+            &json!("3  Mill Lane"),
+            &json!("LS1 1AA"),
+            &json!("Leeds"),
+            &json!(true),
+            &key
+        )
     );
 }
 
@@ -701,7 +831,13 @@ async fn a_primary_with_no_postcode_gets_one_and_a_complete_one_elsewhere_is_kep
     let rows = g.address_rows(&jo);
     let seen: Vec<_> = rows
         .iter()
-        .map(|r| (r["line1"].clone(), r["postcode"].clone(), r["isPrimary"].clone()))
+        .map(|r| {
+            (
+                r["line1"].clone(),
+                r["postcode"].clone(),
+                r["isPrimary"].clone(),
+            )
+        })
         .collect();
     assert_eq!(
         seen,
@@ -739,18 +875,38 @@ async fn an_overseas_or_work_address_is_left_alone_and_the_typed_one_added() {
         let seen: Vec<_> = g
             .address_rows(&jo)
             .iter()
-            .map(|r| (r["line1"].clone(), r["postcode"].clone(), r["country"].clone(), r["isPrimary"].clone()))
+            .map(|r| {
+                (
+                    r["line1"].clone(),
+                    r["postcode"].clone(),
+                    r["country"].clone(),
+                    r["isPrimary"].clone(),
+                )
+            })
             .collect();
         assert_eq!(
             seen,
             [
-                (json!("9 Rue Haute"), json!(""), json!(country), json!(false)),
-                (json!("3 Mill Lane"), json!("M1 1AA"), json!("GB"), json!(true)),
+                (
+                    json!("9 Rue Haute"),
+                    json!(""),
+                    json!(country),
+                    json!(false)
+                ),
+                (
+                    json!("3 Mill Lane"),
+                    json!("M1 1AA"),
+                    json!("GB"),
+                    json!(true)
+                ),
             ],
             "{label} {country}"
         );
         let d = g.declaration(&jo, &str_of(&out["declarationId"])).await;
-        assert_eq!((&d["addressLine1"], &d["postcode"]), (&json!("3 Mill Lane"), &json!("M1 1AA")));
+        assert_eq!(
+            (&d["addressLine1"], &d["postcode"]),
+            (&json!("3 Mill Lane"), &json!("M1 1AA"))
+        );
     }
 }
 
@@ -758,7 +914,9 @@ async fn an_overseas_or_work_address_is_left_alone_and_the_typed_one_added() {
 #[tokio::test]
 async fn blank_address_fields_add_no_address() {
     let g = setup().await;
-    let out = g.record(json!({ "home": { "line1": " ", "postcode": "" } })).await;
+    let out = g
+        .record(json!({ "home": { "line1": " ", "postcode": "" } }))
+        .await;
     assert!(g.address_rows(&str_of(&out["contactId"])).is_empty());
 }
 
@@ -796,7 +954,11 @@ async fn any_refusal_leaves_nothing_behind() {
             json!({ "allocations": [{ "sourceCodeId": g.street.version, "amount": 1999 }] }),
             "invalid",
         ),
-        ("a reference on a cash gift", json!({ "reference": "TX1" }), "invalid"),
+        (
+            "a reference on a cash gift",
+            json!({ "reference": "TX1" }),
+            "invalid",
+        ),
         (
             "a new person with no last name",
             json!({ "contact": { "kind": "individual", "firstName": "Jo", "lastName": " ", "name": "" } }),
@@ -834,12 +996,19 @@ async fn any_refusal_leaves_nothing_behind() {
             }),
             "invalid",
         ),
-        ("an unknown contact", json!({ "contact": "0".repeat(32) }), "unknown_contact"),
+        (
+            "an unknown contact",
+            json!({ "contact": "0".repeat(32) }),
+            "unknown_contact",
+        ),
     ];
     for (name, over, want) in cases {
         let before = g.fingerprint("alpha");
         let out = g.refused(over).await;
-        let got = out["reason"].as_str().or(out["kind"].as_str()).unwrap_or_default();
+        let got = out["reason"]
+            .as_str()
+            .or(out["kind"].as_str())
+            .unwrap_or_default();
         assert_eq!(got, want, "{name}: {out}");
         assert_eq!(g.fingerprint("alpha"), before, "{name}");
     }
@@ -867,13 +1036,27 @@ async fn a_double_submit_is_refused_naming_the_gift() {
     let g = setup().await;
     let out = g.record(json!({ "clientKey": "form-1" })).await;
     // The new contact carries the form's key too.
-    let by_key = ok(&g.w, "GET", "/api/t/alpha/contacts/by-client-key/form-1", &g.ann, None).await;
+    let by_key = ok(
+        &g.w,
+        "GET",
+        "/api/t/alpha/contacts/by-client-key/form-1",
+        &g.ann,
+        None,
+    )
+    .await;
     assert_eq!(by_key["id"], out["contactId"], "{by_key}");
     let before = g.fingerprint("alpha");
     let (s, e) = g
-        .record_as("alpha", &g.ann, g.args(json!({ "clientKey": "form-1", "giftAid": {} })))
+        .record_as(
+            "alpha",
+            &g.ann,
+            g.args(json!({ "clientKey": "form-1", "giftAid": {} })),
+        )
         .await;
-    assert_eq!((s, &e["kind"], &e["id"]), (StatusCode::CONFLICT, &json!("duplicate"), &out["giftId"]));
+    assert_eq!(
+        (s, &e["kind"], &e["id"]),
+        (StatusCode::CONFLICT, &json!("duplicate"), &out["giftId"])
+    );
     assert_eq!(g.fingerprint("alpha"), before);
 
     let jo = g.existing("alpha", &g.ann, json!({}), None).await;
@@ -895,7 +1078,10 @@ async fn a_viewer_is_refused_and_staff_may_record() {
     let val = g.w.login("val@alpha.org").await;
     let before = g.fingerprint("alpha");
     let (s, e) = g.record_as("alpha", &val, g.args(json!({}))).await;
-    assert_eq!((s, &e["kind"]), (StatusCode::FORBIDDEN, &json!("forbidden")));
+    assert_eq!(
+        (s, &e["kind"]),
+        (StatusCode::FORBIDDEN, &json!("forbidden"))
+    );
     assert_eq!(g.fingerprint("alpha"), before);
     let sam = g.w.login("sam@alpha.org").await;
     let (s, out) = g.record_as("alpha", &sam, g.args(json!({}))).await;
@@ -924,7 +1110,9 @@ async fn bs_contact_and_code_are_unknown_in_a() {
     assert_eq!(g.fingerprint("alpha"), before);
     let jo = g.existing("alpha", &g.ann, json!({}), None).await;
     let before = g.fingerprint("alpha");
-    let e = g.refused(json!({ "contact": jo, "allocations": allocations })).await;
+    let e = g
+        .refused(json!({ "contact": jo, "allocations": allocations }))
+        .await;
     assert_eq!(e["reason"], "unknown_source_code");
     assert_eq!(g.fingerprint("alpha"), before);
 }
@@ -934,7 +1122,9 @@ async fn bs_contact_and_code_are_unknown_in_a() {
 async fn the_same_save_in_both_organisations_stays_in_each() {
     let g = setup().await;
     let b_street = code(&g.w, "beta", &g.bob, "Street", "Wesser").await;
-    let in_a = g.record(json!({ "clientKey": "same", "giftAid": {} })).await;
+    let in_a = g
+        .record(json!({ "clientKey": "same", "giftAid": {} }))
+        .await;
     let (s, in_b) = g
         .record_as(
             "beta",
@@ -959,7 +1149,12 @@ async fn the_same_save_in_both_organisations_stays_in_each() {
     assert_eq!(a["number"], b["number"]);
     let recent = ok(&g.w, "GET", "/api/t/alpha/gifts/recent", &g.ann, None).await;
     assert_eq!(
-        recent.as_array().unwrap().iter().map(|r| r["id"].clone()).collect::<Vec<_>>(),
+        recent
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].clone())
+            .collect::<Vec<_>>(),
         [in_a["giftId"].clone()]
     );
 }
@@ -1000,8 +1195,18 @@ async fn the_donor_after_a_gift_with_gift_aid() {
         (&json!("Street-Wesser-001"), &json!(true))
     );
     assert_eq!(
-        (&d["covering"]["id"], &d["covering"]["scope"], &d["covering"]["method"], &d["covering"]["madeOn"]),
-        (&out["declarationId"], &json!("futureAndPast4y"), &json!("staffTickedNoEvidence"), &json!(today()))
+        (
+            &d["covering"]["id"],
+            &d["covering"]["scope"],
+            &d["covering"]["method"],
+            &d["covering"]["madeOn"]
+        ),
+        (
+            &out["declarationId"],
+            &json!("futureAndPast4y"),
+            &json!("staffTickedNoEvidence"),
+            &json!(today())
+        )
     );
 }
 
@@ -1009,7 +1214,9 @@ async fn the_donor_after_a_gift_with_gift_aid() {
 #[tokio::test]
 async fn a_this_gift_only_declaration_covers_no_other_gift() {
     let g = setup().await;
-    let out = g.record(json!({ "giftAid": { "scope": "thisGift" } })).await;
+    let out = g
+        .record(json!({ "giftAid": { "scope": "thisGift" } }))
+        .await;
     let (_, d) = g.donor(&str_of(&out["contactId"]), "2026-10-23").await;
     assert_eq!(d["covering"], Value::Null);
 }
@@ -1022,8 +1229,14 @@ async fn the_donor_is_judged_on_the_gifts_date() {
         .record(json!({ "giftAid": { "scope": "future", "madeOn": "2026-10-01" } }))
         .await;
     let contact = str_of(&out["contactId"]);
-    assert_eq!(g.donor(&contact, "2026-10-01").await.1["covering"]["id"], out["declarationId"]);
-    assert_eq!(g.donor(&contact, "2026-09-15").await.1["covering"], Value::Null);
+    assert_eq!(
+        g.donor(&contact, "2026-10-01").await.1["covering"]["id"],
+        out["declarationId"]
+    );
+    assert_eq!(
+        g.donor(&contact, "2026-09-15").await.1["covering"],
+        Value::Null
+    );
     let cancelled = ok(
         &g.w,
         "POST",
@@ -1033,15 +1246,23 @@ async fn the_donor_is_judged_on_the_gifts_date() {
     )
     .await;
     assert_eq!(cancelled["cancelled"], json!([out["declarationId"]]));
-    assert_eq!(g.donor(&contact, "2026-10-10").await.1["covering"]["id"], out["declarationId"]);
-    assert_eq!(g.donor(&contact, "2026-10-21").await.1["covering"], Value::Null);
+    assert_eq!(
+        g.donor(&contact, "2026-10-10").await.1["covering"]["id"],
+        out["declarationId"]
+    );
+    assert_eq!(
+        g.donor(&contact, "2026-10-21").await.1["covering"],
+        Value::Null
+    );
 }
 
 /// "an archived acquisition code reads as archived"
 #[tokio::test]
 async fn an_archived_acquisition_code_reads_as_archived() {
     let g = setup().await;
-    let id = g.existing("alpha", &g.ann, json!({}), Some(&g.online.version)).await;
+    let id = g
+        .existing("alpha", &g.ann, json!({}), Some(&g.online.version))
+        .await;
     archive(&g, &g.online.version).await;
     let (_, d) = g.donor(&id, "2026-10-23").await;
     assert_eq!(
@@ -1057,11 +1278,17 @@ async fn an_archived_acquisition_code_reads_as_archived() {
 #[tokio::test]
 async fn the_gift_pages_writes_answer_the_gift_as_it_now_is() {
     let g = setup().await;
-    let out = g.record(json!({ "method": "card", "reference": "R-1" })).await;
+    let out = g
+        .record(json!({ "method": "card", "reference": "R-1" }))
+        .await;
     let id = str_of(&out["giftId"]);
     let gift = g.gift(&id).await;
     assert_eq!(
-        (&gift["giftVersion"], &gift["statusVersion"], &gift["contact"]["displayName"]),
+        (
+            &gift["giftVersion"],
+            &gift["statusVersion"],
+            &gift["contact"]["displayName"]
+        ),
         (&json!(0), &json!(1), &json!("Jo Bloggs"))
     );
     let key = gift["allocations"][0]["key"].clone();
@@ -1072,15 +1299,34 @@ async fn the_gift_pages_writes_answer_the_gift_as_it_now_is() {
             "allocations": [{ "key": key, "sourceCodeId": g.street.version, "amount": amount }],
         })
     };
-    let saved = ok(&g.w, "POST", &format!("/api/t/alpha/gifts/{id}/save"), &g.ann, Some(body(0, 2500))).await;
-    assert_eq!((&saved["counter"], &saved["view"]["amount"]), (&json!(1), &json!(2500)));
-    let (s, e) = g
-        .w
-        .call("POST", &format!("/api/t/alpha/gifts/{id}/save"), &g.ann, Some(body(0, 3000)))
+    let saved = ok(
+        &g.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{id}/save"),
+        &g.ann,
+        Some(body(0, 2500)),
+    )
+    .await;
+    assert_eq!(
+        (&saved["counter"], &saved["view"]["amount"]),
+        (&json!(1), &json!(2500))
+    );
+    let (s, e) =
+        g.w.call(
+            "POST",
+            &format!("/api/t/alpha/gifts/{id}/save"),
+            &g.ann,
+            Some(body(0, 3000)),
+        )
         .await;
     assert_eq!(
         (s, &e["kind"], &e["counter"], &e["current"]["amount"]),
-        (StatusCode::CONFLICT, &json!("stale"), &json!(1), &json!(2500))
+        (
+            StatusCode::CONFLICT,
+            &json!("stale"),
+            &json!(1),
+            &json!(2500)
+        )
     );
     let voided = ok(
         &g.w,
@@ -1090,7 +1336,10 @@ async fn the_gift_pages_writes_answer_the_gift_as_it_now_is() {
         Some(json!({ "expected": 1, "status": "void" })),
     )
     .await;
-    assert_eq!((&voided["counter"], &voided["view"]["status"]), (&json!(2), &json!("void")));
+    assert_eq!(
+        (&voided["counter"], &voided["view"]["status"]),
+        (&json!(2), &json!("void"))
+    );
     let again = ok(
         &g.w,
         "POST",
@@ -1100,9 +1349,8 @@ async fn the_gift_pages_writes_answer_the_gift_as_it_now_is() {
     )
     .await;
     assert_eq!(again["counter"], 2, "re-sending the status changes nothing");
-    let (s, e) = g
-        .w
-        .call(
+    let (s, e) =
+        g.w.call(
             "POST",
             &format!("/api/t/alpha/gifts/{id}/status"),
             &g.ann,
@@ -1120,7 +1368,14 @@ async fn the_gift_pages_writes_answer_the_gift_as_it_now_is() {
     .await;
     assert_eq!(unvoided["view"]["status"], "completed");
 
-    let page = ok(&g.w, "GET", &format!("/api/t/alpha/gifts/{id}/history?limit=10"), &g.ann, None).await;
+    let page = ok(
+        &g.w,
+        "GET",
+        &format!("/api/t/alpha/gifts/{id}/history?limit=10"),
+        &g.ann,
+        None,
+    )
+    .await;
     let moments: Vec<_> = page["moments"]
         .as_array()
         .unwrap()
@@ -1133,7 +1388,10 @@ async fn the_gift_pages_writes_answer_the_gift_as_it_now_is() {
             (Value::Null, json!(["status"])),
             (Value::Null, json!(["status"])),
             (Value::Null, json!(["gift"])),
-            (json!("gift £20 card, Street-Wesser-001"), json!(["status", "gift"])),
+            (
+                json!("gift £20 card, Street-Wesser-001"),
+                json!(["status", "gift"])
+            ),
         ]
     );
     assert_eq!(page["nextBefore"], Value::Null);
@@ -1141,13 +1399,20 @@ async fn the_gift_pages_writes_answer_the_gift_as_it_now_is() {
     let panel = ok(
         &g.w,
         "GET",
-        &format!("/api/t/alpha/contacts/{}/gifts?limit=1", str_of(&out["contactId"])),
+        &format!(
+            "/api/t/alpha/contacts/{}/gifts?limit=1",
+            str_of(&out["contactId"])
+        ),
         &g.ann,
         None,
     )
     .await;
     assert_eq!(
-        (&panel["rows"][0]["id"], &panel["isDone"], &panel["rows"][0]["allocations"][0]["code"]),
+        (
+            &panel["rows"][0]["id"],
+            &panel["isDone"],
+            &panel["rows"][0]["allocations"][0]["code"]
+        ),
         (&json!(id), &json!(true), &json!("Street-Wesser-001"))
     );
 }
@@ -1159,16 +1424,18 @@ async fn the_gift_aid_panel_cancels_and_voids() {
     let out = g.record(json!({ "giftAid": {} })).await;
     let contact = str_of(&out["contactId"]);
     let declaration = str_of(&out["declarationId"]);
-    let (s, e) = g
-        .w
-        .call(
+    let (s, e) =
+        g.w.call(
             "POST",
             &format!("/api/t/alpha/contacts/{contact}/giftaid/cancel"),
             &g.ann,
             Some(json!({ "cancelledFrom": "2026-02-30" })),
         )
         .await;
-    assert_eq!((s, &e["kind"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid")));
+    assert_eq!(
+        (s, &e["kind"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid"))
+    );
     let voided = ok(
         &g.w,
         "POST",
@@ -1178,16 +1445,18 @@ async fn the_gift_aid_panel_cancels_and_voids() {
     )
     .await;
     assert_eq!(voided, json!({ "id": declaration, "counter": 1 }));
-    let (s, e) = g
-        .w
-        .call(
+    let (s, e) =
+        g.w.call(
             "POST",
             &format!("/api/t/alpha/giftaid/{declaration}/void"),
             &g.ann,
             Some(json!({ "reason": "again" })),
         )
         .await;
-    assert_eq!((s, &e["reason"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!("immutable")));
+    assert_eq!(
+        (s, &e["reason"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("immutable"))
+    );
     let panel = g.declarations(&contact).await;
     assert_eq!(panel["currentId"], Value::Null);
     assert_eq!(panel["declarations"][0]["voidReason"], "wrong Jo");
@@ -1207,15 +1476,29 @@ async fn a_declaration_on_its_own() {
             "lastName": "Bloggs", "addressLine1": "1", "postcode": "AB1 2CD",
         })
     };
-    let made = ok(&g.w, "POST", &format!("/api/t/alpha/contacts/{jo}/giftaid"), &g.ann, Some(body(&jo))).await;
+    let made = ok(
+        &g.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{jo}/giftaid"),
+        &g.ann,
+        Some(body(&jo)),
+    )
+    .await;
     assert_eq!(made["counter"], 0);
     assert_eq!(g.declarations(&jo).await["currentId"], made["id"]);
     let other = g.existing("alpha", &g.ann, json!({}), None).await;
-    let (s, e) = g
-        .w
-        .call("POST", &format!("/api/t/alpha/contacts/{jo}/giftaid"), &g.ann, Some(body(&other)))
+    let (s, e) =
+        g.w.call(
+            "POST",
+            &format!("/api/t/alpha/contacts/{jo}/giftaid"),
+            &g.ann,
+            Some(body(&other)),
+        )
         .await;
-    assert_eq!((s, &e["kind"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid")));
+    assert_eq!(
+        (s, &e["kind"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid"))
+    );
     let acme = g
         .existing(
             "alpha",
@@ -1224,21 +1507,36 @@ async fn a_declaration_on_its_own() {
             None,
         )
         .await;
-    let (s, e) = g
-        .w
-        .call("POST", &format!("/api/t/alpha/contacts/{acme}/giftaid"), &g.ann, Some(body(&acme)))
+    let (s, e) =
+        g.w.call(
+            "POST",
+            &format!("/api/t/alpha/contacts/{acme}/giftaid"),
+            &g.ann,
+            Some(body(&acme)),
+        )
         .await;
-    assert_eq!((s, &e["reason"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!("not_individual")));
+    assert_eq!(
+        (s, &e["reason"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("not_individual"))
+    );
     // A's contact under B's slug: 404; a viewer: 403.
-    let (s, _) = g
-        .w
-        .call("POST", &format!("/api/t/beta/contacts/{jo}/giftaid"), &g.bob, Some(body(&jo)))
+    let (s, _) =
+        g.w.call(
+            "POST",
+            &format!("/api/t/beta/contacts/{jo}/giftaid"),
+            &g.bob,
+            Some(body(&jo)),
+        )
         .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     let val = g.w.login("val@alpha.org").await;
-    let (s, _) = g
-        .w
-        .call("POST", &format!("/api/t/alpha/contacts/{jo}/giftaid"), &val, Some(body(&jo)))
+    let (s, _) =
+        g.w.call(
+            "POST",
+            &format!("/api/t/alpha/contacts/{jo}/giftaid"),
+            &val,
+            Some(body(&jo)),
+        )
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
@@ -1256,7 +1554,11 @@ async fn query_dates_must_be_iso_dates() {
             format!("/api/t/alpha/contacts/{contact}/donor?date={bad}"),
         ] {
             let (s, e) = g.w.call("GET", &path, &g.ann, None).await;
-            assert_eq!((s, &e["kind"]), (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid")), "{path}");
+            assert_eq!(
+                (s, &e["kind"]),
+                (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid")),
+                "{path}"
+            );
         }
     }
 }
@@ -1274,14 +1576,25 @@ async fn every_gift_route_keeps_two_orgs_apart() {
         str_of(&out["declarationId"]),
     );
     // B's own reads show none of A's.
-    assert_eq!(ok(&g.w, "GET", "/api/t/beta/gifts/recent", &g.bob, None).await, json!([]));
+    assert_eq!(
+        ok(&g.w, "GET", "/api/t/beta/gifts/recent", &g.bob, None).await,
+        json!([])
+    );
 
     let not_found = [
         ("GET", format!("/api/t/beta/gifts/{gift}"), None),
         ("GET", format!("/api/t/beta/gifts/{gift}/history"), None),
         ("GET", format!("/api/t/beta/contacts/{contact}/gifts"), None),
-        ("GET", format!("/api/t/beta/contacts/{contact}/donor?date=2026-10-23"), None),
-        ("GET", format!("/api/t/beta/contacts/{contact}/giftaid?today=2026-10-23"), None),
+        (
+            "GET",
+            format!("/api/t/beta/contacts/{contact}/donor?date=2026-10-23"),
+            None,
+        ),
+        (
+            "GET",
+            format!("/api/t/beta/contacts/{contact}/giftaid?today=2026-10-23"),
+            None,
+        ),
         (
             "POST",
             format!("/api/t/beta/gifts/{gift}/save"),
@@ -1308,17 +1621,27 @@ async fn every_gift_route_keeps_two_orgs_apart() {
     ];
     for (method, path, body) in &not_found {
         let (s, e) = g.w.call(method, path, &g.bob, body.clone()).await;
-        assert_eq!((s, &e["kind"]), (StatusCode::NOT_FOUND, &json!("not_found")), "{method} {path}");
+        assert_eq!(
+            (s, &e["kind"]),
+            (StatusCode::NOT_FOUND, &json!("not_found")),
+            "{method} {path}"
+        );
     }
     // B under A's slug: refused before any lookup.
-    let (s, _) = g.w.call("GET", &format!("/api/t/alpha/gifts/{gift}"), &g.bob, None).await;
+    let (s, _) =
+        g.w.call("GET", &format!("/api/t/alpha/gifts/{gift}"), &g.bob, None)
+            .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     // A viewer reads every one of them in A, and is refused every write.
     let val = g.w.login("val@alpha.org").await;
     for (method, path, body) in not_found {
         let path = path.replace("/t/beta/", "/t/alpha/");
         let (s, e) = g.w.call(method, &path, &val, body).await;
-        let want = if method == "GET" { StatusCode::OK } else { StatusCode::FORBIDDEN };
+        let want = if method == "GET" {
+            StatusCode::OK
+        } else {
+            StatusCode::FORBIDDEN
+        };
         assert_eq!(s, want, "viewer {method} {path}: {e}");
     }
     // Nothing of A's reached B's file.
@@ -1331,5 +1654,8 @@ async fn every_gift_route_keeps_two_orgs_apart() {
         0
     );
     // And A's declaration is untouched.
-    assert_eq!(g.declaration(&contact, &declaration).await["voidedAt"], Value::Null);
+    assert_eq!(
+        g.declaration(&contact, &declaration).await["voidedAt"],
+        Value::Null
+    );
 }

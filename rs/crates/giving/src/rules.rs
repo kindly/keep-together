@@ -61,8 +61,7 @@ pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
             "Only a card payment has a reference",
         ));
     }
-    if p
-        .reference
+    if p.reference
         .as_deref()
         .is_some_and(|r| r.chars().count() > REFERENCE_MAX)
     {
@@ -184,7 +183,9 @@ mod tests {
         })
         .unwrap();
         assert_eq!(p.reference.as_deref(), Some("SUMUP-123"));
-        assert!(contracts::is_client_id(p.allocations[0].key.as_deref().unwrap()));
+        assert!(contracts::is_client_id(
+            p.allocations[0].key.as_deref().unwrap()
+        ));
         let blank = prepare_gift(GiftPayload {
             method: Method::Card,
             reference: Some(" ".into()),

@@ -8,7 +8,9 @@ use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contracts::{Executed, Source};
-use giftaid::types::{Cancelled, DeclarationPayload, Declarations, RecordCancellation, VoidPayload};
+use giftaid::types::{
+    Cancelled, DeclarationPayload, Declarations, RecordCancellation, VoidPayload,
+};
 use serde::Deserialize;
 
 use super::Params;

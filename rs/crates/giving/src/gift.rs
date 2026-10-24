@@ -48,7 +48,10 @@ pub struct GiftState {
     restoring: bool,
 }
 
-pub(crate) fn load_allocations(conn: &Connection, id: &str) -> rusqlite::Result<Vec<AllocationRow>> {
+pub(crate) fn load_allocations(
+    conn: &Connection,
+    id: &str,
+) -> rusqlite::Result<Vec<AllocationRow>> {
     conn.prepare_cached(
         "SELECT id, source_code_id, amount FROM gift_allocations
          WHERE gift_id = ?1 ORDER BY position",
@@ -201,7 +204,10 @@ impl Contract for Gift {
                 }
             }
             if contacts::donors::kind_of(tx, &g.contact_id)?.is_none() {
-                return Err(ContractError::rejected("unknown_contact", "Contact must exist"));
+                return Err(ContractError::rejected(
+                    "unknown_contact",
+                    "Contact must exist",
+                ));
             }
             check_new_codes(tx, next, &HashSet::new())?;
             tx.prepare_cached(
