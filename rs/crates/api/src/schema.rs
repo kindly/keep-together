@@ -30,6 +30,10 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(sources::MIGRATION),
         // 9: a contact's acquisition code (A2)
         M::up(contacts::acquisition::MIGRATION),
+        // 10: gifts, their allocations and the allocation projection (B2)
+        M::up(giving::MIGRATION),
+        // 11: Gift Aid declarations (B2)
+        M::up(giftaid::MIGRATION),
     ])
 }
 

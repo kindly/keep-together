@@ -4,6 +4,8 @@
 mod comms;
 mod contacts;
 mod fields;
+pub mod gifts;
+mod giftaid;
 pub mod groups;
 mod identifiers;
 mod notes;
@@ -31,6 +33,8 @@ pub fn router() -> Router {
         .merge(relationships::router())
         .merge(comms::router())
         .merge(sources::router())
+        .merge(gifts::router())
+        .merge(giftaid::router())
 }
 
 /// A query string whose rejection is an [`ApiError::Invalid`], like

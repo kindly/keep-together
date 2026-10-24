@@ -5,4 +5,20 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# No dependency on store or platform: domain code takes a `Ctx` / a
+# `Connection` on one org file and can't name an organisation.
 [dependencies]
+contracts.workspace = true
+contacts.workspace = true
+giving.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1 = "0.10"
+thiserror.workspace = true
+ts-rs.workspace = true
+
+[dev-dependencies]
+sources.workspace = true
+store.workspace = true
+tempfile.workspace = true
