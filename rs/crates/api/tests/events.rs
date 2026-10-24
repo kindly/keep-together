@@ -128,6 +128,14 @@ fn cursor(w: &World, seq: i64) -> String {
     format!("{generation}.{seq}")
 }
 
+/// Alpha's legacy id at `seq`, for a tab on the bundle from before
+/// generations: `tag << 32 | seq`, tag = the generation's first 20 bits + 1.
+fn legacy(w: &World, seq: i64) -> String {
+    let generation = cursor(w, 0);
+    let tag = i64::from_str_radix(&generation[..5], 16).unwrap() + 1;
+    ((tag << 32) | seq).to_string()
+}
+
 async fn create(w: &World, slug: &str, cookie: &str, last: &str) -> Value {
     let (s, body) = w
         .call(
@@ -377,11 +385,14 @@ async fn a_cursor_from_before_a_restore_resets_though_its_seq_is_in_range() {
         .read(|r| r.query_row("SELECT max(id) FROM revisions", [], |row| row.get(0)))
         .unwrap();
     assert!(head > 3);
-    for last in [before, "3".to_owned()] {
+    for (last, id) in [
+        (before, cursor(&w, head)),
+        ("3".to_owned(), legacy(&w, head)),
+    ] {
         let (_, s) = Stream::open(&w, "alpha", &ann, Some(&last)).await;
         let msg = s.unwrap().next(Duration::from_secs(2)).await.unwrap();
         assert_eq!(msg.event.as_deref(), Some("reset"), "{last}");
-        assert_eq!(msg.id, Some(cursor(&w, head)), "{last}");
+        assert_eq!(msg.id, Some(id), "{last}");
     }
     // The same generation still replays.
     let (_, s) = Stream::open(&w, "alpha", &ann, Some(&cursor(&w, head - 1))).await;
@@ -444,4 +455,56 @@ fn a_rollback_rotates_the_recovery_generation() {
     let after = store.read_org_file(&t.id, api::events::generation).unwrap();
     assert_ne!(after, before);
     assert_eq!(after.len(), 32);
+}
+
+/// Review L2 (C1 #5): a tab still running the bundle from before
+/// generations keeps only an id that is a safe integer, and reopens with
+/// it. Its old number resets once, with an id it can keep; reopened with
+/// that id it resumes (no second reset); after a restore it resets again.
+#[tokio::test]
+async fn an_old_bundle_tab_resets_once_then_resumes() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    create(&w, "alpha", &ann, "One").await;
+    create(&w, "alpha", &ann, "Two").await;
+    // Its number from before the deploy: one reset, to a legacy id.
+    let (_, s) = Stream::open(&w, "alpha", &ann, Some("1")).await;
+    let mut s = s.unwrap();
+    let msg = s.next(Duration::from_secs(2)).await.unwrap();
+    assert_eq!(msg.event.as_deref(), Some("reset"));
+    let id = msg.id.unwrap();
+    assert_eq!(id, legacy(&w, 2));
+    let n: i64 = id.parse().unwrap();
+    assert!(n < 1 << 53, "a JavaScript safe integer");
+    // Live events carry legacy ids too.
+    create(&w, "alpha", &ann, "Three").await;
+    let msg = s.next(Duration::from_secs(2)).await.unwrap();
+    assert_eq!(msg.id, Some(legacy(&w, 3)));
+    // Reopened (`?after=`) with the id it kept: a replay, not a reset.
+    create(&w, "alpha", &ann, "Four").await;
+    let (_, s) = Stream::open_at(
+        &w,
+        &format!("/api/t/alpha/events?after={}", legacy(&w, 3)),
+        &ann,
+        None,
+    )
+    .await;
+    let msg = s.unwrap().next(Duration::from_secs(2)).await.unwrap();
+    assert_eq!(msg.event, None);
+    assert_eq!(msg.id, Some(legacy(&w, 4)));
+    // A restore since (the generation rotated): reset.
+    let kept = legacy(&w, 4);
+    w.store
+        .org(&w.alpha.id)
+        .unwrap()
+        .write_raw(|raw| {
+            raw.conn().execute_batch(
+                "UPDATE recovery SET generation = CASE WHEN generation LIKE 'fffff%'
+                 THEN '00000' ELSE 'fffff' END || substr(generation, 6)",
+            )
+        })
+        .unwrap();
+    let (_, s) = Stream::open(&w, "alpha", &ann, Some(&kept)).await;
+    let msg = s.unwrap().next(Duration::from_secs(2)).await.unwrap();
+    assert_eq!(msg.event.as_deref(), Some("reset"));
 }

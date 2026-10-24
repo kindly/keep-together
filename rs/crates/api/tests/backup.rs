@@ -549,3 +549,33 @@ async fn a_restore_from_a_snapshot_taken_mid_retire_finishes_the_retire() {
     assert!(state(&a, &fa).1, "A's retire finished");
     assert_eq!(state(&b, &fb), (false, false), "B's field untouched");
 }
+
+/// codex C1 #5 (delta a): `keep-snapshot restore` (restore_latest) gives
+/// every org it restores a new recovery generation, so a tab's event
+/// cursor from the history it replaces resets instead of replaying from
+/// reused revision ids.
+#[tokio::test]
+async fn a_snapshot_restore_rotates_each_orgs_recovery_generation() {
+    let w = world();
+    let generation =
+        |store: &Store, t: &Tenant| store.read_org_file(&t.id, api::events::generation).unwrap();
+    let (ga, gb) = (generation(&w.store, &w.a), generation(&w.store, &w.b));
+    assert_ne!(ga, gb);
+    w.job.run_once(NOON).await.unwrap();
+    let target = tempfile::tempdir().unwrap();
+    api::backup::restore_latest(w.bucket.as_ref(), "test", target.path(), LATER)
+        .await
+        .unwrap();
+    let restored = open(target.path());
+    for (t, before) in [(&w.a, ga), (&w.b, gb)] {
+        let after = generation(&restored, t);
+        assert_ne!(after, before);
+        assert_eq!(after.len(), 32);
+    }
+    // The rows came back all the same.
+    let a = restored.org(&w.a.id).unwrap();
+    let n: i64 = a
+        .read(|r| r.query_row("SELECT count(*) FROM contacts", [], |row| row.get(0)))
+        .unwrap();
+    assert_eq!(n, 3);
+}
