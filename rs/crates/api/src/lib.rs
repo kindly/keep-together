@@ -2,9 +2,13 @@
 //! for reads. Conventions are in `rs/README.md`.
 
 pub mod auth;
+pub mod backup;
 pub mod error;
+pub mod observe;
+pub mod reset;
 pub mod routes;
 pub mod schema;
+pub mod static_files;
 pub mod tenant;
 pub mod timing;
 
