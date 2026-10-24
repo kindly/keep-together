@@ -22,9 +22,7 @@ pub use conn::read_only_authorizer;
 pub use events::OrgEvent;
 pub use migrate::MigrationFailed;
 pub use org::{OrgDb, OrgRead, RawTx};
-pub use platform::{
-    Member, Platform, PlatformSchema, Role, SESSION_TTL_MS, Session, Tenant, UserId,
-};
+pub use platform::{Member, Platform, PlatformSchema, Role, Tenant, UserId};
 pub use rusqlite_migration::{M, Migrations};
 
 #[derive(Debug, thiserror::Error)]

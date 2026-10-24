@@ -32,21 +32,18 @@ async fn post(app: &axum::Router, path: &str, body: Value) -> (StatusCode, Value
 async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(
-        Store::open(StoreConfig {
-            dir: tmp.path().to_path_buf(),
-            org_migrations: schema::org_migrations(),
-            readers: 1,
-            max_open: StoreConfig::DEFAULT_MAX_OPEN,
-        })
+        Store::open_with(
+            StoreConfig {
+                dir: tmp.path().to_path_buf(),
+                org_migrations: schema::org_migrations(),
+                readers: 1,
+                max_open: StoreConfig::DEFAULT_MAX_OPEN,
+            },
+            schema::PLATFORM_SCHEMAS,
+        )
         .unwrap(),
     );
-    let app = app(
-        AppState {
-            store: store.clone(),
-            dev_auth: true,
-        },
-        routes::router(),
-    );
+    let app = app(AppState::new(store.clone(), true), routes::router());
     let req = json!({ "runId": "7", "worker": 0 });
 
     let (s, _) = post(&app, "/api/dev/qc-seed", req.clone()).await;

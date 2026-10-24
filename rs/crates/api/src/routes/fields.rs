@@ -6,7 +6,6 @@ use axum::{Extension, Json, Router};
 use contacts::fields::{FIELD, FIELD_OPTION, definitions};
 use contacts::types::{FieldDefinition, SaveField, SaveFieldOption};
 use contracts::{Exec, Executed, Source, execute};
-use store::Role;
 
 use crate::{ApiError, Body, Tenant};
 
@@ -33,9 +32,7 @@ async fn save_field(
     Extension(t): Extension<Tenant>,
     Body(req): Body<SaveField>,
 ) -> Result<Json<Executed>, ApiError> {
-    if t.role < Role::Admin {
-        return Err(ApiError::Forbidden);
-    }
+    t.require_admin()?;
     t.write(move |ctx| {
         Ok(execute(
             ctx,
@@ -53,9 +50,7 @@ async fn save_option(
     Extension(t): Extension<Tenant>,
     Body(req): Body<SaveFieldOption>,
 ) -> Result<Json<Executed>, ApiError> {
-    if t.role < Role::Admin {
-        return Err(ApiError::Forbidden);
-    }
+    t.require_admin()?;
     t.write(move |ctx| {
         Ok(execute(
             ctx,

@@ -1,5 +1,5 @@
-//! `platform.db`: tenants, users, memberships, sessions. The control plane;
-//! no domain data lives here.
+//! `platform.db`: tenants, users, memberships (sessions are `auth`'s). The
+//! control plane; no domain data lives here.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -9,9 +9,6 @@ use rusqlite_migration::{M, Migrations};
 
 use crate::conn::{self, ReaderPool};
 use crate::{StoreError, TenantId};
-
-/// How long a session lasts from sign-in (L2; auth replaces the store).
-pub const SESSION_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 const MIGRATIONS: &[M<'static>] = &[
     M::up(
@@ -175,12 +172,6 @@ pub struct Tenant {
     pub id: TenantId,
     pub slug: String,
     pub name: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct Session {
-    pub user: UserId,
-    pub email: String,
 }
 
 /// A user's membership of one tenant: the only way the API gets a
@@ -348,58 +339,6 @@ impl Platform {
                 params![user.0, tenant.as_str(), role.as_str()],
             )?;
             Ok(())
-        })
-    }
-
-    /// A new session token for `user`: 244 random bits.
-    pub fn create_session(&self, user: UserId, now_ms: i64) -> Result<String, StoreError> {
-        let token = format!(
-            "{}{}",
-            uuid::Uuid::new_v4().simple(),
-            uuid::Uuid::new_v4().simple()
-        );
-        self.write(|tx| {
-            tx.execute(
-                "INSERT INTO sessions (token, user_id, created_at) VALUES (?1, ?2, ?3)",
-                params![token, user.0, now_ms],
-            )?;
-            Ok(())
-        })?;
-        Ok(token)
-    }
-
-    /// Forget expired sessions. Returns how many.
-    pub fn delete_expired_sessions(&self, now_ms: i64) -> Result<usize, StoreError> {
-        self.write(|tx| {
-            Ok(tx.execute(
-                "DELETE FROM sessions WHERE created_at <= ?1",
-                [now_ms - SESSION_TTL_MS],
-            )?)
-        })
-    }
-
-    pub fn delete_session(&self, token: &str) -> Result<(), StoreError> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM sessions WHERE token = ?1", [token])?;
-            Ok(())
-        })
-    }
-
-    /// The live session for `token`: unknown and expired read the same.
-    pub fn session(&self, token: &str, now_ms: i64) -> Result<Option<Session>, StoreError> {
-        self.read(|c| {
-            c.query_row(
-                "SELECT u.id, u.email FROM sessions s JOIN users u ON u.id = s.user_id
-                 WHERE s.token = ?1 AND s.created_at > ?2",
-                params![token, now_ms - SESSION_TTL_MS],
-                |r| {
-                    Ok(Session {
-                        user: UserId(r.get(0)?),
-                        email: r.get(1)?,
-                    })
-                },
-            )
-            .optional()
         })
     }
 

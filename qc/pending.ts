@@ -28,8 +28,6 @@ export const PENDING: ReadonlyArray<Pending> = [
   { step: 'B1', title: /^settings tabs ›/ },
   { step: 'B1', title: /^old tags URLs ›/ },
   { step: 'B1', title: /^settings for staff and viewers ›/ },
-  // A4: real auth (sign-up, passwords, sign-out flows).
-  { step: 'A4', file: 'auth.spec.ts' },
   // B1: the Fields tab, bulk set, history with moments.
   { step: 'B1', title: /fields tab/ },
   { step: 'B1', title: /B's fields are not A's/ },

@@ -1,7 +1,8 @@
 //! Suppression (rule 5: centralised here) and the mail transport. A domain
 //! crate: depends on `contracts` (and `contacts`' public rules), never on
-//! `store` or `platform`. A4 adds `mail.rs`.
+//! `store` or `platform`. `mail` is the transport (A4).
 
+pub mod mail;
 pub mod suppressions;
 
 use std::sync::LazyLock;

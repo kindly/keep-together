@@ -6,3 +6,16 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+comms.workspace = true
+store.workspace = true
+argon2 = "0.5.3"
+base32 = "0.5"
+getrandom = "0.3"
+governor = "0.10"
+qrcodegen = "1.8"
+sha2 = "0.10"
+subtle = "2"
+totp-rs = "5"
+rusqlite.workspace = true
+serde.workspace = true
+thiserror.workspace = true

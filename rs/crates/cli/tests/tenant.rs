@@ -41,7 +41,15 @@ fn create_makes_the_admin_and_a_migrated_file_and_invites() {
         ("jo@example.org", Role::Admin)
     );
     assert_eq!(members[0].user, made.admin);
-    assert!(made.invite.contains("jo@example.org") || made.invite.contains("Jo@Example.org"));
+    assert_eq!(made.invite.to, "jo@example.org");
+    let at = made.invite.text.find("/invite#").expect("a link") + "/invite#".len();
+    let token = &made.invite.text[at..at + 64];
+    let invite = store
+        .platform()
+        .with_read(|c| auth::accounts::invite_by_token(c, token, contracts::now_ms()))
+        .unwrap()
+        .expect("a live invite");
+    assert_eq!(invite.role, "admin");
     // The file is at the head schema (preferences table there, empty).
     let db = store.org(&made.tenant.id).unwrap();
     let rows: i64 = db

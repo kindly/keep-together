@@ -1,4 +1,5 @@
 import { expect, test } from '../fixtures'
+import { nextTotp } from '../totp'
 import {
   CONTACT_ROUTE,
   LIST_ROUTE,
@@ -158,7 +159,10 @@ test.describe('the cache and tenancy', { annotation: CONTACT_ROUTE }, () => {
       .click()
     await expect(page.getByPlaceholder('Email')).toBeVisible()
     await page.getByPlaceholder('Email').fill(users.b.email)
+    await page.getByPlaceholder('Password').fill(users.b.password)
     await page.getByRole('button', { name: 'Sign in' }).click()
+    await page.getByPlaceholder('Code').fill(await nextTotp(users.b.totpSecret))
+    await page.getByRole('button', { name: 'Verify' }).click()
     await expect(page).toHaveURL(`/t/${users.b.slug}`)
 
     // Client-side navigation, so the same client and its cache carry on.

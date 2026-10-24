@@ -9,6 +9,7 @@ publish.workspace = true
 store.workspace = true
 contracts.workspace = true
 contacts.workspace = true
+auth.workspace = true
 comms.workspace = true
 platform.workspace = true
 sources.workspace = true
@@ -33,3 +34,4 @@ tower.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 http-body-util.workspace = true
+base32 = "0.5"

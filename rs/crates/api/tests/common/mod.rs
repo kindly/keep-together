@@ -50,13 +50,7 @@ pub fn world() -> World {
     }
     World {
         _tmp: tmp,
-        app: app(
-            AppState {
-                store: store.clone(),
-                dev_auth: true,
-            },
-            routes::router(),
-        ),
+        app: app(AppState::new(store.clone(), true), routes::router()),
         store,
         alpha,
         beta,

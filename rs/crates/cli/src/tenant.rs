@@ -1,9 +1,10 @@
 //! `keep tenant create --slug --name --admin-email`: a new organisation in
 //! one go. Its `platform.db` row, its migrated file with every crate's
 //! reference data (`api::schema::seed_new_org`), and the admin's
-//! membership commit together or not at all; then the admin is invited.
-//! The invite is a stub until auth (A4): it prints what it would email,
-//! and the admin signs in with dev auth meanwhile.
+//! membership commit together or not at all, with the admin's invite
+//! (`auth::operator_invite`: 7 days, single use). `main` sends the invite
+//! (`KEEP_MAIL=smtp`) or prints it, link included (`KEEP_MAIL=log`).
+//! Links start at `KEEP_APP_ORIGIN` (default `http://localhost:3000`).
 
 use std::path::Path;
 
@@ -16,6 +17,8 @@ pub enum CreateError {
     Store(#[from] StoreError),
     #[error("seeding the new organisation: {0}")]
     Seed(#[from] ContractError),
+    #[error(transparent)]
+    Auth(#[from] auth::AuthError),
     #[error("an admin email address is required")]
     NoEmail,
     #[error("refused when KEEP_ENV={0}: dev only")]
@@ -33,8 +36,8 @@ impl From<rusqlite::Error> for CreateError {
 pub struct Created {
     pub tenant: Tenant,
     pub admin: UserId,
-    /// The invite's text (stub: printed, not sent).
-    pub invite: String,
+    /// The admin's invite, to send (its text holds the link).
+    pub invite: comms::mail::Mail,
 }
 
 pub fn open(data: &Path) -> Result<Store, StoreError> {
@@ -75,6 +78,7 @@ pub fn create_in_with(
         return Err(CreateError::NoEmail);
     }
     let mut admin = None;
+    let mut invite = None;
     let tenant = store.create_tenant_with(slug, name.trim(), |tx, tenant, db| {
         let user = Platform::upsert_user_in(tx, email)?;
         platform::members::add_membership(tx, user, &tenant.id, Role::Admin)?;
@@ -82,15 +86,22 @@ pub fn create_in_with(
             api::schema::seed_new_org(ctx)?;
             then(ctx, user)
         })?;
+        invite = Some(auth::operator_invite(
+            tx,
+            tenant.id.as_str(),
+            &tenant.name,
+            email,
+            Role::Admin.as_str(),
+            &app_origin(),
+            contracts::now_ms(),
+        )?);
         admin = Some(user);
         Ok::<_, CreateError>(())
     })?;
-    // TODO(A4): replace with auth::operator_invite (the emailed invite).
-    let invite = invite_stub(email, &tenant);
     Ok(Created {
         admin: admin.expect("set by a successful create"),
+        invite: invite.expect("set by a successful create"),
         tenant,
-        invite,
     })
 }
 
@@ -103,11 +114,9 @@ pub fn create(
     create_in(&open(data)?, slug, name, admin_email)
 }
 
-/// The admin's invitation: until auth (A4) sends it, its text.
-fn invite_stub(email: &str, tenant: &Tenant) -> String {
-    format!(
-        "invite (not sent: email arrives with auth): {email} is the admin of {} ({}); \
-         until then sign in with dev auth",
-        tenant.name, tenant.slug
-    )
+/// Where links in emails point: `KEEP_APP_ORIGIN`, as the api reads it.
+pub fn app_origin() -> String {
+    std::env::var("KEEP_APP_ORIGIN")
+        .map(|o| o.trim_end_matches('/').to_owned())
+        .unwrap_or_else(|_| "http://localhost:3000".into())
 }

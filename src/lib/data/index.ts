@@ -22,8 +22,8 @@ export {
   useMembers,
   useMyTenants,
   useSaveContactForm,
-  useSignOut,
 } from './rust/hooks'
+export * from './rust/auth'
 export { useOrgEvents } from './events'
 export { useOpened, useSetStaffCanManage } from './rust/platform'
 export {

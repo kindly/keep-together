@@ -34,3 +34,10 @@ uuid = { version = "1.29", features = ["v4", "v7"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
+
+# Password hashing is deliberately slow; unoptimised it makes every test
+# that signs in take seconds.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

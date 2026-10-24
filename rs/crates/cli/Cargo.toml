@@ -10,6 +10,9 @@ name = "keep"
 path = "src/main.rs"
 
 [dependencies]
+auth.workspace = true
+comms.workspace = true
+tokio.workspace = true
 store.workspace = true
 api.workspace = true
 contracts.workspace = true

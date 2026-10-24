@@ -7,7 +7,6 @@ import {
   useMyTenants,
   useSignOut,
 } from '../lib/data'
-import { DevSignIn } from '../components/dev-sign-in'
 
 export const Route = createFileRoute('/')({ component: Home })
 
@@ -21,9 +20,8 @@ function Home() {
       <SessionLoading>
         <p className="mt-6 text-sm text-neutral-500">Loading…</p>
       </SessionLoading>
-      {/* The dev stub's sign-in until auth is ported (A4). */}
       <SignedOut>
-        <DevSignIn />
+        <Navigate to="/sign-in" replace />
       </SignedOut>
       <SignedIn>
         <Landing />

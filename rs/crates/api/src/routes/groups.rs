@@ -11,6 +11,7 @@ use axum::{Extension, Json};
 use platform::groups::{self, Opened};
 use platform::preferences::{self, ListKind};
 use serde::{Deserialize, Serialize};
+use store::UserId;
 use ts_rs::TS;
 
 use crate::timing::Timing;
@@ -54,8 +55,8 @@ pub async fn mine(
     let start = Instant::now();
     let out = blocking(move || {
         let p = store.platform();
-        let members = p.memberships(session.user)?;
-        let last = p.with_read(|c| groups::last_used(c, session.user))?;
+        let members = p.memberships(UserId(session.user))?;
+        let last = p.with_read(|c| groups::last_used(c, UserId(session.user)))?;
         let mut out = Vec::with_capacity(members.len());
         for m in members {
             // Each group's switches live in its own file. One that won't
@@ -128,7 +129,8 @@ pub async fn opened(
     let start = Instant::now();
     let out = blocking(move || {
         store.platform().with_write(|tx| {
-            groups::opened(tx, session.user, &slug, contracts::now_ms()).map_err(ApiError::from)
+            groups::opened(tx, UserId(session.user), &slug, contracts::now_ms())
+                .map_err(ApiError::from)
         })
     })
     .await;

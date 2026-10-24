@@ -51,6 +51,14 @@ function SettingsLayout() {
               {t.label}
             </Link>
           ))}
+          <Link
+            to="/t/$slug/settings/members"
+            params={{ slug }}
+            className={tab}
+            activeProps={{ className: activeTab }}
+          >
+            Members
+          </Link>
           {several && (
             <Link
               to="/t/$slug/settings/groups"
@@ -61,6 +69,9 @@ function SettingsLayout() {
               Switch group
             </Link>
           )}
+          <Link to="/account" className={tab}>
+            Your account
+          </Link>
           <button
             type="button"
             onClick={() => void signOut().then(() => navigate({ to: '/' }))}

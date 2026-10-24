@@ -27,6 +27,10 @@ Env (`api`):
 | `KEEP_PORT` | `8787` | |
 | `KEEP_MAX_OPEN_ORGS` | `64` | org files kept open beyond those in use |
 | `KEEP_DEV_AUTH=1` | off | the dev login (below). **Dev auth is no auth**: anyone who can reach the port signs in as anyone. It is honoured only on a loopback bind; on any other address it is ignored with a warning. Loopback is not the whole story: Vite's `/api` proxy is reachable wherever Vite is (`tailscale serve` puts it on the tailnet, `allowedHosts: ['.ts.net']`), and a DNS-rebinding page in your browser can reach `127.0.0.1`. Fine for seed data; never put real data behind dev auth |
+| `KEEP_ENV` | unset | `prod` / `staging`: refuses `KEEP_DEV_AUTH`, needs `KEEP_APP_ORIGIN`; `prod` refuses `KEEP_MAIL=log` |
+| `KEEP_APP_ORIGIN` | `http://localhost:3000` | the SPA's origin: links in emails, the trusted `Origin` for writes |
+| `KEEP_CLIENT_IP_HEADER` | unset (peer address) | the proxy's client-address header for rate limits (`Fly-Client-IP` on Fly); never where clients reach the api directly |
+| `KEEP_MAIL` | `log` | `smtp`: send via `KEEP_SMTP_URL` (`smtp://localhost:1025`, Mailpit) as `KEEP_MAIL_FROM` (`comms::mail`) |
 | `KEEP_QC_SEED=1` | off | with dev auth: `POST /api/dev/qc-seed` and `qc-crowd` (≤ 10k) |
 
 The 10k measurement (`scripts/perf-search10k-rs/`):
@@ -53,7 +57,7 @@ parameter is ignored and both columns measure the words index.)
 | `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history |
 | `sources`, `giving`, `giftaid`, `comms` | domain crates, empty until wave A/B |
 | `platform` | control plane: preferences (the three "staff can manage" contracts, `may_manage_list`), encrypted tenant settings, memberships and "last used" group as functions on a `platform.db` transaction, its own `platform.db` schema list |
-| `auth` | staff auth, empty until A4 |
+| `auth` | staff auth: credentials, second factors, sessions, invites, resets, rate limits, the auth log, in `platform.db` (its own `PlatformSchema`); `api::auth` is its HTTP |
 | `api` | axum app: dev session cookie, `/api/t/{slug}` → one `OrgDb`, SSE, `/boot`, jobs, `/healthz`, `Server-Timing`, JSON errors; `schema.rs` is the org migration list; `routes/` the domain routes and the QC seed. Commands spanning modules live here, in one transaction |
 | `cli` | bin `keep`: `keep sql`, `keep tenant create` |
 | `seed` | bin: the perf generator's JSONL into one organisation, through the same contract functions the API calls |
@@ -119,15 +123,14 @@ request, an SSE stream) is never closed.
 
   Tier-2 warnings (ADR 0015) aren't errors: they ride along in read
   responses.
-- **Auth (stub; dev auth is no auth).** `POST /api/dev/login {email}`
-  signs in as that email, no password, and sets the `kt_session` cookie
-  (HttpOnly, SameSite=Lax); sessions expire after 7 days. `POST
-  /api/dev/logout`; `GET /api/me` → `Me {email, memberships: [{slug,
-  name, role}]}`; `POST /api/dev/tenants {slug, name}` makes an org with
-  the caller as admin; `GET /api/t/{slug}` → `TenantInfo`. All dev
-  endpoints, and every session, are refused unless `KEEP_DEV_AUTH=1` and
-  the server binds a loopback address (M1). A4 replaces this with real
-  auth.
+- **Auth** (A4; next section). `GET /api/me` → `Me {email, memberships:
+  [{slug, name, role}]}` for a signed-in session; `GET /api/t/{slug}` →
+  `TenantInfo`. The dev login stays for local QC: `POST /api/dev/login
+  {email}` signs in as that email, no password, and `POST /api/dev/tenants
+  {slug, name}` makes an org with the caller as admin. Both, and every
+  dev-login session, are refused unless `KEEP_DEV_AUTH=1`, the server binds
+  a loopback address (M1) and the request's `Host` is loopback; the api
+  won't start with `KEEP_DEV_AUTH=1` and `KEEP_ENV=prod|staging`.
 - **Cold load.** `GET /api/t/{slug}/boot` → `Boot {me, org, fields,
   firstPage, seq}`: one request seeds the SPA's cache; `seq` (the newest
   revision id in the same snapshot) is where its event stream resumes.
@@ -147,6 +150,55 @@ request, an SSE stream) is never closed.
   `cargo test` writes them to `src/lib/data/rust-types/` (committed, like
   `convex/_generated`; never edit by hand). Payload JSON with no fixed shape
   is typed `unknown`.
+
+## Auth (ADR 0020 §3, without Google)
+
+Staff only, invite-only. A sign-in is two requests: `POST
+/api/auth/sign-in {email, password}` makes a partial session
+(`second_factor`, or `enrol` when no second factor is set up yet), and
+`POST /api/auth/second-factor {code}` completes it with a new token. The
+code is from an authenticator app (TOTP), emailed (sent at sign-in;
+`send-code` for another), or one of 10 recovery codes. A partial session
+reaches nothing but `/api/auth/*` (`/api/me` is 401).
+
+| route | |
+|---|---|
+| `GET auth/state` | `AuthState {stage, email, method, stepUpUntil}`, signed out included |
+| `POST auth/sign-in`, `auth/second-factor`, `auth/send-code` | the steps |
+| `POST auth/enrol/totp` → `TotpEnrolment {secret, url, qrSvg}`; `auth/enrol/email`; `auth/enrol/confirm {method, code}` → `Enrolled {recoveryCodes, state}` | set up (or, within the step-up hour, change) the second factor |
+| `POST auth/step-up {password, code}` | admin actions work for an hour after a sign-in or step-up; else `403 step_up_required` |
+| `POST auth/sign-out` | ends the session and its live streams |
+| `POST auth/reset/request {email}` · `reset/check {token}` · `reset/complete {token, password}` | 15-minute single-use link to `/reset#<token>`; completing it ends every session of the user |
+| `POST auth/invite/check {token}` · `invite/accept {token, password}` | 7-day single-use link to `/invite#<token>`; a new address sets a password and enrols, an existing account gives its password |
+| `GET auth/account` · `POST auth/account/password {current, new}` · `auth/account/recovery-codes` | your own account |
+| `GET /api/t/{slug}/members` | `MembersPage {members, invites}`, any member |
+| `POST …/members/invite {email, role}` · `members/invites/{id}/revoke` · `members/{userId}/role {role}` · `members/{userId}/remove` · `members/{userId}/reset-2fa` | admin within the step-up hour; a group always keeps an admin; 2FA reset only for someone in no other group |
+
+Rules: argon2id (min 8, max 256 characters); an unknown email is verified
+against a dummy hash and answers exactly like a wrong password; reset
+requests answer `{ok: true}` for any address, the mail going out in the
+background; TOTP codes are accepted once (the step is stored); rate limits
+(`auth::limits`, in memory) per client IP and per email on password
+checks, per user on codes, per address on emails. `Tenant::require_admin`
+is role admin plus the step-up hour, for admin-only domain routes too.
+
+Sessions (`auth::sessions`, invariants in its docs): the cookie
+`kt_session` is a 256-bit token, only its SHA-256 stored; `HttpOnly;
+SameSite=Lax; Path=/`, `Secure` unless the `Host` is loopback; the token
+rotates on sign-in completion, step-up and your own role change;
+revoke-all on password reset, 2FA reset, removal and someone else
+changing your role; streams end within a moment of a revocation in this
+process (30 s for one from `keep`). Every non-`GET` `/api` request must
+come from the app's origin (`Sec-Fetch-Site`, else `Origin` against
+`KEEP_APP_ORIGIN` or the request's host); a request with neither header
+isn't a browser and passes. Mail is plain text through `comms::mail`
+(transactional: never suppressed).
+
+Operator (logged in `auth_log` as `operator`): `keep auth reset-2fa
+<email> [--reason …]`; `keep tenant create` invites its first admin
+(`auth::operator_invite`, sent with `KEEP_MAIL=smtp`, else printed); `keep
+auth invite <slug> <email> [--role …]` sends a new link, also to an
+existing member without credentials (that admin, if theirs expired).
 
 ## Writing a domain route
 
@@ -241,7 +293,8 @@ own `INTEGER NOT NULL DEFAULT 0` counter and has its upcasters.
 `standard(&store)`). A job touching organisations uses
 `each_org(&store, |id, db| …)`: one file at a time, never two in one
 transaction; one org's failure doesn't stop the others. Running now:
-`idle-close` (1 min) and `session-purge` (1 h); F2's hourly snapshot
+`idle-close` (1 min) and `session-purge` (1 h: expired sessions, spent
+reset links, old invites); F2's hourly snapshot
 registers the same way. A job's first run is `first_after()` after boot
 (default: one period), so the snapshot needn't wait an hour after every
 deploy.
@@ -251,6 +304,8 @@ deploy.
 ```
 keep [--data <dir>] sql <slug> "<select…>" [--json]
 keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <email>
+keep [--data <dir>] auth reset-2fa <email> [--reason <text>]
+keep [--data <dir>] auth invite <slug> <email> [--role admin|staff|viewer]
 keep [--data <dir>] dev seed-demo [--slug demo] [--admin-email <email>]
 ```
 

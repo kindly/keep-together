@@ -80,10 +80,15 @@ pub struct QcSeedRequest {
 }
 
 #[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct QcUser {
     pub email: String,
     pub role: RoleName,
+    /// Signs in for real (A4): this password, then a code from this TOTP
+    /// secret (base32). Both new on every seed.
+    pub password: String,
+    pub totp_secret: String,
 }
 
 #[derive(Serialize, TS)]
@@ -339,9 +344,27 @@ pub async fn fixture(
             ("a-viewer", Role::Viewer),
         ];
         let mut users = vec![];
+        let mut credentials = vec![];
         for (suffix, role) in accounts {
             let email = format!("qc-{base}-{suffix}@example.com");
-            users.push((p.upsert_user(&email)?, email, role));
+            let user = p.upsert_user(&email)?;
+            let password = format!("qc-{base}-{suffix}-password");
+            let secret = ::auth::totp::new_secret();
+            let now = contracts::now_ms();
+            p.with_write(|tx| {
+                ::auth::accounts::set_password(tx, user.0, &password, now)
+                    .map_err(ApiError::internal)?;
+                ::auth::accounts::set_second_factor(
+                    tx,
+                    user.0,
+                    ::auth::SecondFactor::Totp,
+                    Some((&secret, 0)),
+                    now,
+                )?;
+                Ok::<_, ApiError>(())
+            })?;
+            credentials.push((password, secret));
+            users.push((user, email, role));
         }
         let mut tenants = vec![];
         for (i, (suffix, label)) in [("a", "Alpha"), ("b", "Bravo")].into_iter().enumerate() {
@@ -370,9 +393,12 @@ pub async fn fixture(
         Ok::<_, ApiError>(QcWorld {
             users: users
                 .into_iter()
-                .map(|(_, email, role)| QcUser {
+                .zip(credentials)
+                .map(|((_, email, role), (password, totp_secret))| QcUser {
                     email,
                     role: role.into(),
+                    password,
+                    totp_secret,
                 })
                 .collect(),
             tenants,

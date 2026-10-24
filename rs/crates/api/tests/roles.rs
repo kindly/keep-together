@@ -81,6 +81,8 @@ fn route_files() -> Vec<(PathBuf, String)> {
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes"),
         &mut files,
     );
+    // The members page's routes are tenant routes too (auth owns them).
+    files.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth/members.rs"));
     files.sort();
     files
         .into_iter()
@@ -133,7 +135,8 @@ fn the_route_table_parser_finds_chained_and_single_writes() {
 /// method changing, fails this test until it is added below, which is the
 /// moment to check that a new GET only reads (rs/README.md, "no writes on
 /// GET"). Routes are only ever registered as `.route(…, get/post…)` in
-/// `src/routes/`, the form the table is read from.
+/// `src/routes/` (and the members page's in `src/auth/members.rs`), the
+/// form the table is read from.
 #[test]
 fn the_route_table_is_pinned_and_read_only_on_get() {
     let mut all: Vec<String> = route_files()
@@ -156,6 +159,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /contacts/{id}/relationships",
             "GET /fields",
             "GET /identifier-types",
+            "GET /members",
             "GET /preferences",
             "GET /relationship-types",
             "GET /sources",
@@ -171,6 +175,11 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /fields",
             "POST /fields/options",
             "POST /identifier-types",
+            "POST /members/invite",
+            "POST /members/invites/{id}/revoke",
+            "POST /members/{id}/remove",
+            "POST /members/{id}/reset-2fa",
+            "POST /members/{id}/role",
             "POST /notes",
             "POST /notes/{id}/archive",
             "POST /notes/{id}/pin",
@@ -222,11 +231,16 @@ async fn every_write_route_refuses_a_viewer_and_the_role_is_the_reason() {
             );
         }
         // The same request from an admin reaches the handler: not refused
-        // for the role (403), and the path exists (no 404). With no body,
-        // every write answers 422 before it looks anything up.
+        // for the role (403), and the path exists. With no body, a write
+        // that takes one answers 422 before it looks anything up; one that
+        // takes none (a member's remove) looks up the placeholder id and
+        // answers the handler's JSON `not_found`, never axum's bodiless
+        // no-such-route 404.
         let (s, out) = w.call(method, &url, &ann, None).await;
+        let looks_up_an_id = path.contains('{');
         assert!(
-            s != StatusCode::FORBIDDEN && s != StatusCode::NOT_FOUND,
+            s != StatusCode::FORBIDDEN
+                && (s != StatusCode::NOT_FOUND || (looks_up_an_id && out["kind"] == "not_found")),
             "admin {method} {url}: {s} {out}"
         );
     }

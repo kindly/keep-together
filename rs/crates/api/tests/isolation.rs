@@ -160,12 +160,15 @@ fn world(dev_auth: bool) -> World {
     steps.push(M::up(TOY_SCHEMA));
     let _ = schema::org_migrations(); // the real list builds
     let store = Arc::new(
-        Store::open(StoreConfig {
-            dir: tmp.path().to_path_buf(),
-            org_migrations: store::Migrations::new(steps),
-            readers: 2,
-            max_open: StoreConfig::DEFAULT_MAX_OPEN,
-        })
+        Store::open_with(
+            StoreConfig {
+                dir: tmp.path().to_path_buf(),
+                org_migrations: store::Migrations::new(steps),
+                readers: 2,
+                max_open: StoreConfig::DEFAULT_MAX_OPEN,
+            },
+            schema::PLATFORM_SCHEMAS,
+        )
         .unwrap(),
     );
     let p = store.platform();
@@ -189,13 +192,7 @@ fn world(dev_auth: bool) -> World {
         Role::Viewer,
     )
     .unwrap();
-    let app = app(
-        AppState {
-            store: store.clone(),
-            dev_auth,
-        },
-        toy_routes(),
-    );
+    let app = app(AppState::new(store.clone(), dev_auth), toy_routes());
     World {
         _tmp: tmp,
         store,
@@ -433,13 +430,7 @@ async fn dev_auth_off_refuses_login_and_every_session() {
     let ann = on.login("ann@alpha.org").await;
     // …is worthless once the flag is off (same data, new server).
     let off = World {
-        app: app(
-            AppState {
-                store: on.store.clone(),
-                dev_auth: false,
-            },
-            toy_routes(),
-        ),
+        app: app(AppState::new(on.store.clone(), false), toy_routes()),
         ..on
     };
     let res = off

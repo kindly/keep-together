@@ -4,6 +4,8 @@
 //! ```text
 //! keep sql <slug> "<select…>" [--json]
 //! keep tenant create --slug <slug> --name <name> --admin-email <email>
+//! keep auth reset-2fa <email> [--reason <text>]
+//! keep auth invite <slug> <email> [--role admin|staff|viewer]
 //! keep dev seed-demo [--slug <slug>] [--admin-email <email>]
 //! ```
 
@@ -15,11 +17,35 @@ use cli::sql::{self, Format};
 const USAGE: &str = "usage:
   keep [--data <dir>] sql <slug> \"<select…>\" [--json]
   keep [--data <dir>] tenant create --slug <slug> --name <name> --admin-email <email>
+  keep [--data <dir>] auth reset-2fa <email> [--reason <text>]
+  keep [--data <dir>] auth invite <slug> <email> [--role admin|staff|viewer]
   keep [--data <dir>] dev seed-demo [--slug <slug>] [--admin-email <email>]";
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
     eprintln!("{msg}");
     ExitCode::from(1)
+}
+
+/// Send the admin's invite as the api would (`KEEP_MAIL`), or, with the
+/// log mailer, print it for the operator to pass on.
+fn send_invite(mail: comms::mail::Mail) -> Result<(), String> {
+    let mailer = comms::mail::Mailer::from_env().map_err(|e| e.to_string())?;
+    if mailer.is_log() {
+        println!(
+            "invite for {} (KEEP_MAIL=log, not sent):\n{}",
+            mail.to, mail.text
+        );
+        return Ok(());
+    }
+    let to = mail.to.clone();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?
+        .block_on(mailer.send(mail))
+        .map_err(|e| e.to_string())?;
+    println!("invite emailed to {to}");
+    Ok(())
 }
 
 /// The value after `--flag`, removed from `args`.
@@ -69,8 +95,13 @@ fn main() -> ExitCode {
             match cli::tenant::create(&data, &slug, &name, &email) {
                 Ok(c) => {
                     println!("created {} ({}), admin {email}", c.tenant.slug, c.tenant.id);
-                    println!("{}", c.invite);
-                    ExitCode::SUCCESS
+                    match send_invite(c.invite) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        // The organisation and the admin's membership exist;
+                        // `keep auth invite <slug> <email> --role admin`
+                        // sends a new link.
+                        Err(e) => fail(format!("the invite wasn't sent: {e}")),
+                    }
                 }
                 Err(e) => fail(e),
             }
@@ -94,9 +125,40 @@ fn main() -> ExitCode {
                         t.id,
                         d.contact_ids.len()
                     );
-                    println!("{}", d.created.invite);
+                    println!("{}", d.created.invite.text);
                     ExitCode::SUCCESS
                 }
+                Err(e) => fail(e),
+            }
+        }
+        ["auth", "reset-2fa", ..] => {
+            let mut rest = args[2..].to_vec();
+            let reason = take(&mut rest, "--reason").unwrap_or_default();
+            let [email] = rest.as_slice() else {
+                return fail(USAGE);
+            };
+            match cli::auth::reset_2fa(&data, email, &reason) {
+                Ok(true) => {
+                    eprintln!(
+                        "2FA reset for {email} (logged); their sessions ended, next sign-in enrols again"
+                    );
+                    ExitCode::SUCCESS
+                }
+                Ok(false) => fail(format!("no user {email}")),
+                Err(e) => fail(e),
+            }
+        }
+        ["auth", "invite", ..] => {
+            let mut rest = args[2..].to_vec();
+            let role = take(&mut rest, "--role").unwrap_or_else(|| "staff".into());
+            let [slug, email] = rest.as_slice() else {
+                return fail(USAGE);
+            };
+            match cli::auth::invite(&data, slug, email, &role) {
+                Ok(mail) => match send_invite(mail) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => fail(format!("the invite wasn't sent: {e}")),
+                },
                 Err(e) => fail(e),
             }
         }

@@ -15,6 +15,11 @@ export type RouteId = FileRouteTypes['id']
 export const PORTED: ReadonlyArray<RouteId> = [
   '__root__',
   '/',
+  // A4: auth, and Settings › Members.
+  '/sign-in',
+  '/reset',
+  '/invite',
+  '/account',
   '/t/$slug',
   '/t/$slug/',
   '/t/$slug/contacts/',
@@ -25,6 +30,7 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/settings',
   '/t/$slug/settings/',
   '/t/$slug/settings/groups',
+  '/t/$slug/settings/members',
   // A1: inside A3's Settings layout.
   '/t/$slug/settings/identifiers',
   // A2: Settings › Source codes.

@@ -8,7 +8,6 @@ use axum::{Extension, Json, Router};
 use contracts::{Executed, Source};
 use platform::preferences::{self, ListKind, Preferences};
 use serde::Deserialize;
-use store::Role;
 use ts_rs::TS;
 
 use crate::{ApiError, Body, Tenant};
@@ -51,9 +50,7 @@ async fn set(
 ) -> Result<Json<Executed>, ApiError> {
     let kind: ListKind =
         serde_json::from_value(serde_json::Value::String(kind)).map_err(|_| ApiError::NotFound)?;
-    if t.role < Role::Admin {
-        return Err(ApiError::Forbidden);
-    }
+    t.require_admin()?;
     t.write(move |ctx| {
         Ok(preferences::set(
             ctx,
