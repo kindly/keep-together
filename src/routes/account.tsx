@@ -178,7 +178,11 @@ function Signed() {
         <Link to="/" className={linkButton}>
           Back to your group
         </Link>
-        <button type="button" className={linkButton} onClick={() => void signOut()}>
+        <button
+          type="button"
+          className={linkButton}
+          onClick={() => void signOut()}
+        >
           Sign out
         </button>
       </section>

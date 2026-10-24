@@ -30,8 +30,8 @@ function Request() {
   if (sent)
     return (
       <p className="text-sm text-neutral-600">
-        If that address has an account, we've emailed it a link. It works
-        once, for 15 minutes.
+        If that address has an account, we've emailed it a link. It works once,
+        for 15 minutes.
       </p>
     )
   return (
@@ -69,8 +69,8 @@ function NewPassword({ token }: { token: string }) {
   if (done)
     return (
       <p className="text-sm text-neutral-600">
-        Password changed, and you're signed out everywhere. Sign in with the
-        new one.
+        Password changed, and you're signed out everywhere. Sign in with the new
+        one.
       </p>
     )
   return (

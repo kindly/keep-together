@@ -149,10 +149,18 @@ export function EnrolForm({
         <p className="text-sm text-neutral-600">
           Set up a second step for signing in. You'll need it every time.
         </p>
-        <button type="button" className={primary} onClick={() => void choose('totp')}>
+        <button
+          type="button"
+          className={primary}
+          onClick={() => void choose('totp')}
+        >
           Use an authenticator app
         </button>
-        <button type="button" className={primary} onClick={() => void choose('email')}>
+        <button
+          type="button"
+          className={primary}
+          onClick={() => void choose('email')}
+        >
           Email me a code each time
         </button>
         {error && <p className="text-sm text-red-700">{error}</p>}
@@ -164,8 +172,7 @@ export function EnrolForm({
       {method === 'totp' && totp ? (
         <>
           <p className="text-sm text-neutral-600">
-            Scan this with your authenticator app, then enter the code it
-            shows.
+            Scan this with your authenticator app, then enter the code it shows.
           </p>
           <img
             alt="QR code for your authenticator app"
@@ -282,7 +289,11 @@ export function StepUpForm({
         />
         <CodeInput label="Code" />
       </AuthForm>
-      <button type="button" className={`self-start ${linkButton}`} onClick={onCancel}>
+      <button
+        type="button"
+        className={`self-start ${linkButton}`}
+        onClick={onCancel}
+      >
         Cancel
       </button>
     </section>

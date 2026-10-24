@@ -3,8 +3,9 @@ import { createHmac } from 'node:crypto'
 // TOTP codes for the QC users' seeded secrets (RFC 6238: SHA-1, 6
 // digits, 30 s), so QC signs in the way people do. The server accepts each
 // code once (a step at or before the last one used is refused) and only
-// within one step of now, so `nextTotp` hands out the next unused step in
-// that window and waits for the clock when this minute's are spent.
+// within one step of now, so `nextTotp` hands out the next unused step from
+// the current one (never the previous: the server's clock may cross a step
+// boundary before the code arrives) and waits when those are spent.
 
 const STEP_MS = 30_000
 
@@ -39,11 +40,13 @@ const used = new Map<string, number>()
 export async function nextTotp(secret: string): Promise<string> {
   for (;;) {
     const now = Math.floor(Date.now() / STEP_MS)
-    const step = Math.max((used.get(secret) ?? 0) + 1, now - 1)
+    const step = Math.max((used.get(secret) ?? 0) + 1, now)
     if (step <= now + 1) {
       used.set(secret, step)
       return totpAt(secret, step)
     }
-    await new Promise((r) => setTimeout(r, (now + 1) * STEP_MS - Date.now() + 50))
+    await new Promise((r) =>
+      setTimeout(r, (now + 1) * STEP_MS - Date.now() + 50),
+    )
   }
 }

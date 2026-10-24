@@ -213,7 +213,8 @@ impl World {
     }
 
     /// The next TOTP code `email` hasn't used: the earliest step after
-    /// their last that is still within one step of now.
+    /// their last, from the current one (not the previous: the clock may
+    /// cross a step boundary before the server checks it).
     pub fn totp(&self, email: &str) -> String {
         let user = self.user_id(email);
         let last = self
@@ -224,7 +225,7 @@ impl World {
             .unwrap()
             .totp_last_step;
         let now = (now_secs() / 30) as i64;
-        let step = (last + 1).max(now - 1);
+        let step = (last + 1).max(now);
         assert!(step <= now + 1, "used up this minute's TOTP codes");
         auth::totp::code_at(
             &secret_of(email.split('@').next().unwrap()),

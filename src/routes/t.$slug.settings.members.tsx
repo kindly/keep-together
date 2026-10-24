@@ -1,13 +1,14 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { StepUpForm, input, linkButton, primary } from '../components/auth-steps'
-import { authErrorMessage, needsStepUp } from '../lib/auth-errors'
 import {
-  useAuthState,
-  useMemberActions,
-  useMembersPage,
-} from '../lib/data'
+  StepUpForm,
+  input,
+  linkButton,
+  primary,
+} from '../components/auth-steps'
+import { authErrorMessage, needsStepUp } from '../lib/auth-errors'
+import { useAuthState, useMemberActions, useMembersPage } from '../lib/data'
 import type { Role } from '../lib/data'
 import { useTenant } from '../lib/tenant'
 
@@ -111,7 +112,9 @@ function Members() {
                     type="button"
                     className={linkButton}
                     onClick={() =>
-                      window.confirm(`Remove ${m.email} from ${tenant.name}?`) &&
+                      window.confirm(
+                        `Remove ${m.email} from ${tenant.name}?`,
+                      ) &&
                       void guarded(
                         () => actions.remove(m.userId),
                         `${m.email} removed.`,

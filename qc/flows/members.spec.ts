@@ -45,6 +45,8 @@ test('a viewer sees the members and changes nothing', async ({
 test("B's members are not A's", async ({ page, users }) => {
   route('/t/$slug/settings/members')
   await page.goto(`/t/${users.b.slug}/settings/members`)
-  await expect(page.getByText('No group called', { exact: false })).toBeVisible()
+  await expect(
+    page.getByText('No group called', { exact: false }),
+  ).toBeVisible()
   await expect(page.getByText(users.b.email)).toHaveCount(0)
 })

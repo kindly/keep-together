@@ -41,9 +41,7 @@ function SignIn() {
   } else if (state.stage === 'second_factor') {
     body = <SecondFactorForm method={state.method} email={state.email} />
   } else if (state.stage === 'enrol') {
-    body = (
-      <EnrolForm onEnrolled={(c, done) => setCodes({ codes: c, done })} />
-    )
+    body = <EnrolForm onEnrolled={(c, done) => setCodes({ codes: c, done })} />
   } else {
     body = <PasswordForm />
   }

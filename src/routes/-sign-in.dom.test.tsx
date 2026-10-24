@@ -25,7 +25,9 @@ vi.mock('@tanstack/react-router', () => ({
   },
 }))
 
-const state = vi.hoisted(() => ({ current: undefined as AuthState | undefined }))
+const state = vi.hoisted(() => ({
+  current: undefined as AuthState | undefined,
+}))
 const steps = vi.hoisted(() => ({
   signIn: vi.fn(),
   secondFactor: vi.fn(),
@@ -121,7 +123,9 @@ test('signed out: the password form, and our message for a wrong one', async () 
 test('the second step names where the code went', () => {
   as('second_factor', { method: 'email' })
   render()
-  expect(el.textContent).toContain("We've emailed a 6-digit code to ann@example.org")
+  expect(el.textContent).toContain(
+    "We've emailed a 6-digit code to ann@example.org",
+  )
   expect(button('Send a new code')).toBeTruthy()
   as('second_factor', { method: 'totp' })
   render()

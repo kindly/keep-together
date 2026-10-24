@@ -254,7 +254,9 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
               await page.getByPlaceholder('Code').waitFor()
             },
             action: async () => {
-              await page.getByPlaceholder('Code').fill(await nextTotp(totpSecret))
+              await page
+                .getByPlaceholder('Code')
+                .fill(await nextTotp(totpSecret))
               await page.getByRole('button', { name: 'Verify' }).click()
             },
             // Signing in lands on the group's home: its header drawn.
