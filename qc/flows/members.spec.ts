@@ -2,7 +2,7 @@ import { expect, test } from '../fixtures'
 
 // Settings › Members (A4): the list, an invite, a viewer's read-only
 // view, and B's members not being A's. Tests start signed in as A's
-// admin (a dev session, so within the step-up hour).
+// admin (a fresh session, so within the step-up hour).
 
 function route(...ids: Array<string>) {
   test
@@ -16,7 +16,8 @@ test('an admin invites someone', async ({ page, users, world }) => {
   route('/t/$slug/settings/members')
   await page.goto(`/t/${users.a.slug}/settings/members`)
   await expect(page.getByText(users.a.email)).toBeVisible()
-  const email = `qc-invitee-${world.tenants[0].slug}-${Date.now().toString(36)}@example.com`
+  // A reserved domain: on staging the invite really goes out.
+  const email = `invitee-${world.tenants[0].slug}-${Date.now().toString(36)}@qc.keep-together.invalid`
   await page.getByLabel('Email to invite').fill(email)
   await page.getByLabel('Role', { exact: true }).selectOption('viewer')
   await page.getByRole('button', { name: 'Send invite' }).click()

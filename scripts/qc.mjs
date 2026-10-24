@@ -25,8 +25,9 @@
 //
 // --target staging (the nightly): no build, no pool, no netem; one
 // instance, the hosted `keep-staging` (QC_STAGING_URL), history lines
-// marked `env: staging`. Staging must run with dev auth and the QC seed
-// until A4 and B3 (it resets to the seed on every deploy).
+// marked `env: staging`. Set-up goes through staging's token surface
+// (`/api/qc/*`): KEEP_QC_TOKEN must be in the env (scripts/fly/staging.sh
+// makes it); it stays in the env, never in qc/.instances.json.
 //
 // Runs outside the Claude sandbox: it binds ports and writes to the main
 // checkout (the lock).
@@ -277,7 +278,11 @@ async function main() {
   const total = performance.now()
   let pool
   if (opts.target === 'staging') {
-    pool = [{ name: 'staging', api: STAGING, baseURL: STAGING }]
+    if (!process.env.KEEP_QC_TOKEN)
+      throw new Error(
+        '--target staging needs KEEP_QC_TOKEN (the Fly secret; scripts/fly/staging.sh)',
+      )
+    pool = [{ name: 'staging', api: STAGING, baseURL: STAGING, surface: 'qc' }]
     console.log(`▸ target: staging, ${STAGING} (no netem, no local pool)`)
   } else {
     await acquireLock(opts.wait)

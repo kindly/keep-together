@@ -14,8 +14,8 @@ import type { ApiCall, FlowRecord } from './timing'
 // Bulk routes (BULK_ROUTES in ./budgets, exempt like their `bulk` flows)
 // are held to their own limit instead.
 //
-// Not asserted: `/api/dev/*` (the stub sign-in and the QC seed, which no
-// user waits on in production), and calls that never answered within the
+// Not asserted: `/api/dev/*` and `/api/qc/*` (the stub sign-in and the
+// QC seed, which no user waits on in production), and calls that never answered within the
 // sample. A call that answered with no `Server-Timing` is listed: the api
 // sets it on every response, so its absence is a bug.
 
@@ -83,7 +83,8 @@ export function serverSummary(records: Array<FlowRecord>): ServerSummary {
   const routes = [...byRoute.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([route, ms]): RouteStats => {
-      const asserted = !route.split(' ')[1].startsWith('/dev/')
+      const path = route.split(' ')[1]
+      const asserted = !path.startsWith('/dev/') && !path.startsWith('/qc/')
       const budgetMs = BULK_ROUTES[route] ?? SERVER_BUDGET_MS
       const over = ms.filter((x) => x >= budgetMs).length
       const maxMs = Math.max(...ms)

@@ -1,4 +1,4 @@
-import { devLogin, expect, test } from '../fixtures'
+import { sessionToken, expect, test } from '../fixtures'
 import type { Instance } from '../fixtures'
 
 // Tenancy against id and slug manipulation (rust spike step 3, folded in
@@ -72,8 +72,8 @@ test.describe('tenancy against id and slug manipulation', () => {
     world,
   }) => {
     const [a, b] = world.tenants
-    const tokA = await devLogin(instance, users.a.email)
-    const tokB = await devLogin(instance, users.b.email)
+    const tokA = await sessionToken(instance, users.a.email)
+    const tokB = await sessionToken(instance, users.b.email)
     const apiAs = api(instance)
     const bId = b.contactIds[0]
     const aId = a.contactIds[0]
