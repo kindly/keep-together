@@ -87,7 +87,7 @@ function Resolved({ slug }: { slug: string }) {
             >
               Contacts
             </Link>
-            {FEATURES.gifts && <DonationsMenu tenantId={tenant._id} />}
+            {FEATURES.gifts && <DonationsMenu />}
             {FEATURES.settings ? (
               <Link
                 to="/t/$slug/settings"

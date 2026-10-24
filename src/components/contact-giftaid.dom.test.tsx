@@ -2,12 +2,11 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
-import { getFunctionName } from 'convex/server'
-import type { FunctionReference } from 'convex/server'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import type { Doc, Id } from '../../convex/_generated/dataModel'
+import type { Id } from '../../convex/_generated/dataModel'
 import { declarationWarnings } from '../../convex/giftaid/warnings'
-import type { ContactDeclarations } from '../lib/giftaid'
+import { RustApiError } from '../lib/data/rust/client'
+import type { ContactDeclarations, Declaration } from '../lib/giftaid'
 import { ContactGiftAid } from './contact-giftaid'
 
 // The contact page's Gift Aid panel (cash gifts step 5): declarations as
@@ -17,29 +16,23 @@ import { ContactGiftAid } from './contact-giftaid'
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const mutations: Record<string, ReturnType<typeof vi.fn>> = {
-  'giftaid/mutations:recordCancellation': vi.fn(),
-  'giftaid/mutations:voidDeclaration': vi.fn(),
+  cancel: vi.fn(),
+  voidDeclaration: vi.fn(),
 }
 let declarations: ContactDeclarations | undefined
 let canWrite = true
-vi.mock('convex/react', () => ({
-  useQuery: (q: FunctionReference<'query'>) =>
-    getFunctionName(q) === 'giftaid/queries:byContact'
-      ? declarations
-      : [{ userId: 'u1', role: 'admin', name: 'Jo Staff' }],
-  useMutation: (m: FunctionReference<'mutation'>) =>
-    mutations[getFunctionName(m)],
+vi.mock('../lib/data', () => ({
+  useDeclarations: () => declarations,
+  useMembers: () => [{ userId: '1', name: 'Jo Staff' }],
+  useGiftAidWrites: () => mutations,
 }))
 vi.mock('../lib/tenant', () => ({
   useTenant: () => ({ _id: 'tenantA' }),
   useCanWrite: () => canWrite,
 }))
 
-type Row = Omit<
-  Doc<'giftAidDeclarations'>,
-  '_creationTime' | 'tenantId' | 'contactId'
->
-function declaration(over: Partial<Row>) {
+type Row = Omit<Declaration, 'contactId' | 'warnings'>
+function declaration(over: Partial<Row>): Declaration {
   const d = {
     _id: 'd1' as Id<'giftAidDeclarations'>,
     scope: 'futureAndPast4y',
@@ -50,7 +43,8 @@ function declaration(over: Partial<Row>) {
     lastName: 'Bloggs',
     addressLine1: '1 High St',
     postcode: 'AB1 2CD',
-    enteredBy: 'u1' as Id<'users'>,
+    enteredBy: 1,
+    enteredAt: 0,
     declarationVersion: 0,
     cancellationVersion: 0,
     voidVersion: 0,
@@ -58,8 +52,6 @@ function declaration(over: Partial<Row>) {
   } as Row
   return {
     ...d,
-    _creationTime: 0,
-    tenantId: 'tenantA' as Id<'tenants'>,
     contactId: 'c1' as Id<'contacts'>,
     warnings: d.voidedAt === undefined ? declarationWarnings(d) : [],
   }
@@ -118,7 +110,7 @@ test('each declaration with its method, wording, snapshot and warnings', () => {
       }),
       declaration({
         voidedAt: Date.UTC(2026, 9, 1),
-        voidedBy: 'u1' as Id<'users'>,
+        voidedBy: 1,
         voidReason: 'wrong person',
       }),
     ],
@@ -181,14 +173,10 @@ test('Mark made in error needs a reason, then a confirm', async () => {
   await submit(form)
   const dialog = document.querySelector('[role="alertdialog"]')!
   expect(dialog.textContent).toContain("This can't be undone")
-  const run = mutations['giftaid/mutations:voidDeclaration']
+  const run = mutations.voidDeclaration
   expect(run).not.toHaveBeenCalled()
   await click(buttons(dialog, 'Mark made in error')[0])
-  expect(run).toHaveBeenCalledWith({
-    tenantId: 'tenantA',
-    id: 'd1',
-    reason: 'wrong person',
-  })
+  expect(run).toHaveBeenCalledWith('d1', 'wrong person')
 })
 
 test('each Mark made in error says which declaration it is for', () => {
@@ -253,9 +241,7 @@ test('a date no declaration was in force on is refused before any confirm', asyn
     'No declaration was in force on that date',
   )
   expect(document.querySelector('[role="alertdialog"]')).toBeNull()
-  expect(
-    mutations['giftaid/mutations:recordCancellation'],
-  ).not.toHaveBeenCalled()
+  expect(mutations.cancel).not.toHaveBeenCalled()
 })
 
 test('Record cancellation confirms, sends the date and note, and shows a refusal', async () => {
@@ -277,16 +263,15 @@ test('Record cancellation confirms, sends the date and note, and shows a refusal
   const [date, note] = [...form.querySelectorAll('input')]
   await type(date, '2026-09-01')
   await type(note, ' donor phoned ')
-  const run = mutations['giftaid/mutations:recordCancellation']
+  const run = mutations.cancel
   const confirmed = async () => {
     await submit(form)
     const dialog = document.querySelector('[role="alertdialog"]')!
     expect(run).not.toHaveBeenCalledTimes(2)
     await click(buttons(dialog, 'Record cancellation')[0])
   }
-  const { ConvexError } = await import('convex/values')
   run.mockRejectedValueOnce(
-    new ConvexError({
+    new RustApiError(422, {
       kind: 'invalid',
       problems: [
         {
@@ -305,12 +290,7 @@ test('Record cancellation confirms, sends the date and note, and shows a refusal
   expect(dialog.textContent).toContain("This can't be undone")
   expect(run).not.toHaveBeenCalled()
   await click(buttons(dialog, 'Record cancellation')[0])
-  expect(run).toHaveBeenCalledWith({
-    tenantId: 'tenantA',
-    contactId: 'c1',
-    cancelledFrom: '2026-09-01',
-    note: 'donor phoned',
-  })
+  expect(run).toHaveBeenCalledWith('2026-09-01', 'donor phoned')
   expect(form.querySelector('[role="alert"]')?.textContent).toBe(
     'No declaration was in force on that date',
   )

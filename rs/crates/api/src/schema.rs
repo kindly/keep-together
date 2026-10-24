@@ -32,6 +32,10 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(contacts::acquisition::MIGRATION),
         // 10: a field's retire phase, field and option delete logs (B1)
         M::up(contacts::fields::MIGRATION_RETIRE),
+        // 11: gifts, their allocations and the allocation projection (B2)
+        M::up(giving::MIGRATION),
+        // 12: Gift Aid declarations (B2)
+        M::up(giftaid::MIGRATION),
     ])
 }
 

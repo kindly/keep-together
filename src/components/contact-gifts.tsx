@@ -1,13 +1,9 @@
 import { Link } from '@tanstack/react-router'
 import type { Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
+import { useContactGifts } from '../lib/data'
 import { METHOD_LABELS, formatDay, formatPence } from '../lib/gifts'
 import { giftCoverage, useDeclarations } from '../lib/giftaid'
-import { usePagedQuery } from '../lib/paged-list'
 import { useTenant } from '../lib/tenant'
-
-/** Gifts a page of the panel asks for (`byContact` caps it at 50). */
-export const GIFTS_PAGE_SIZE = 20
 
 /**
  * A contact's gifts, newest date first, a page at a time like the
@@ -25,17 +21,8 @@ export function ContactGifts({
   individual: boolean
 }) {
   const tenant = useTenant()
-  // In a fixed key order: page 0's args must be the same every render.
-  const gifts = usePagedQuery(
-    api.giving.queries.byContact,
-    { tenantId: tenant._id, contactId },
-    GIFTS_PAGE_SIZE,
-    'contact gifts',
-  )
-  const declarations = useDeclarations(
-    tenant._id,
-    individual ? contactId : undefined,
-  )
+  const gifts = useContactGifts(contactId)
+  const declarations = useDeclarations(individual ? contactId : undefined)
   return (
     <section aria-labelledby="contact-gifts">
       <h2 id="contact-gifts" className="mb-3 text-lg font-medium">

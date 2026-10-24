@@ -1,6 +1,5 @@
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
 import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
 import type { RecentGift } from '../lib/gifts'
 import { useCanWrite, useTenant } from '../lib/tenant'
@@ -49,9 +48,9 @@ export function RecordGiftAction({ className }: { className?: string }) {
 }
 
 /** The caller's recent gifts inline, for the home page. */
-export function RecentGifts({ tenantId }: { tenantId: Id<'tenants'> }) {
+export function RecentGifts() {
   const tenant = useTenant()
-  const gifts = useMyRecentGifts(tenantId)
+  const gifts = useMyRecentGifts()
   if (gifts === undefined)
     return <p className="text-sm text-neutral-500">Loading…</p>
   if (gifts.length === 0)
@@ -79,13 +78,13 @@ export function RecentGifts({ tenantId }: { tenantId: Id<'tenants'> }) {
 
 /**
  * The header's Donations ▾: "Record a gift" (staff and admins), then the
- * caller's last 10 gifts. Subscribed only while open.
+ * caller's last 10 gifts. Fetched only while open.
  */
-export function DonationsMenu({ tenantId }: { tenantId: Id<'tenants'> }) {
+export function DonationsMenu() {
   const [open, setOpen] = useState(false)
   const tenant = useTenant()
   const canWrite = useCanWrite()
-  const gifts = useMyRecentGifts(tenantId, open)
+  const gifts = useMyRecentGifts(open)
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger className="text-sm whitespace-nowrap hover:underline data-[state=open]:underline">

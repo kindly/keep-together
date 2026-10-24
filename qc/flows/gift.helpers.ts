@@ -1,46 +1,63 @@
-import { ConvexHttpClient } from 'convex/browser'
+import { randomUUID } from 'node:crypto'
+import { devLogin } from '../fixtures'
 import type { Instance, QcUser } from '../fixtures'
-import { api } from '../../convex/_generated/api'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Created } from '../../src/lib/data/rust-types/Created'
+import type { Executed } from '../../src/lib/data/rust-types/Executed'
+import type { RecordedGift } from '../../src/lib/data/rust-types/RecordedGift'
+import type { SourcePicker } from '../../src/lib/data/rust-types/SourcePicker'
 
 // Gifts and declarations for the gift page and contact panel specs (cash
-// gifts step 5). The record-gift page (step 3) isn't built yet, so they are
-// made through the API, as the signed-in user, outside any timed window.
+// gifts step 5), made through the Rust API as the signed-in user (a dev
+// session), outside any timed window.
 
 export const GIFT_ROUTE = {
   type: 'route',
   description: '/t/$slug/gifts/$giftId',
 }
 
-/** Who records: a signed-in client for one tenant. */
+/** Who records: a session on one tenant. */
 export type Recorder = {
-  client: ConvexHttpClient
-  tenantId: Id<'tenants'>
+  inst: Instance
+  /** The `kt_session` cookie's value. */
+  token: string
+  slug: string
   /** A source code of the tenant, for every gift. */
-  codeId: Id<'sourceCodes'>
+  codeId: string
+}
+
+async function call<T>(
+  r: Pick<Recorder, 'inst' | 'token' | 'slug'>,
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const res = await fetch(`${r.inst.api}/api/t/${r.slug}/${path}`, {
+    method,
+    headers: {
+      cookie: `kt_session=${r.token}`,
+      ...(body !== undefined && { 'content-type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!res.ok)
+    throw new Error(`${method} ${path}: ${res.status} ${await res.text()}`)
+  return (await res.json()) as T
 }
 
 export async function recorder(
   inst: Instance,
   user: QcUser,
-  tenantId: string,
+  slug: string,
 ): Promise<Recorder> {
-  // Pending B2 (qc/pending.ts): Convex's URL is gone from the pool.
-  const client = new ConvexHttpClient(inst.api)
-  const { tokens } = await client.action(api.auth.signIn, {
-    provider: 'password',
-    params: { email: user.email, password: user.password, flow: 'signIn' },
-  })
-  if (!tokens) throw new Error(`no session for ${user.email}`)
-  client.setAuth(tokens.token)
-  const tid = tenantId as Id<'tenants'>
-  const { codes } = await client.query(api.sources.queries.picker, {
-    tenantId: tid,
-    today: today(),
-    search: 'Event-Gala-001',
-  })
+  const token = await devLogin(inst, user.email)
+  const q = new URLSearchParams({ today: today(), search: 'Event-Gala-001' })
+  const { codes } = await call<SourcePicker>(
+    { inst, token, slug },
+    'GET',
+    `sources/picker?${q.toString()}`,
+  )
   if (!codes.length) throw new Error('no Event-Gala-001 code to give under')
-  return { client, tenantId: tid, codeId: codes[0].versionId }
+  return { inst, token, slug, codeId: codes[0].versionId }
 }
 
 /** Today, YYYY-MM-DD, as the SPA's `localToday`. */
@@ -50,21 +67,26 @@ export function today(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-/** A cash gift of `pence` from `contactId`. */
-export function recordGift(
+/**
+ * A cash gift of `pence` from `contactId`: the record-gift save, so a
+ * contact with no acquisition code gets the gift's.
+ */
+export async function recordGift(
   r: Recorder,
   contactId: string,
   pence: bigint,
   receivedOn = today(),
-): Promise<Id<'contributions'>> {
-  return r.client.mutation(api.giving.mutations.create, {
-    tenantId: r.tenantId,
-    contactId: contactId as Id<'contacts'>,
+): Promise<string> {
+  const amount = Number(pence)
+  const { giftId } = await call<RecordedGift>(r, 'POST', 'gifts/record', {
+    clientKey: randomUUID(),
+    contact: contactId,
     receivedOn,
-    amount: pence,
+    amount,
     method: 'cash',
-    allocations: [{ sourceCodeId: r.codeId, amount: pence }],
+    allocations: [{ sourceCodeId: r.codeId, amount }],
   })
+  return giftId
 }
 
 /** An enduring declaration by `contactId`, made on `madeOn`. */
@@ -73,20 +95,45 @@ export async function declare(
   contactId: string,
   madeOn: string,
   method: 'paperForm' | 'oral' | 'staffTickedNoEvidence' = 'paperForm',
-): Promise<Id<'giftAidDeclarations'>> {
-  const { id } = await r.client.mutation(api.giftaid.mutations.declare, {
-    tenantId: r.tenantId,
-    contactId: contactId as Id<'contacts'>,
-    scope: 'futureAndPast4y',
-    madeOn,
-    method,
-    wordingVersion: 'hmrc-2016-04',
-    firstName: 'Qc',
-    lastName: 'Donor',
-    addressLine1: '1 High Street',
-    postcode: 'AB1 2CD',
-  })
+): Promise<string> {
+  const { id } = await call<Executed>(
+    r,
+    'POST',
+    `contacts/${contactId}/giftaid`,
+    {
+      contactId,
+      scope: 'futureAndPast4y',
+      madeOn,
+      method,
+      wordingVersion: 'hmrc-2016-04',
+      firstName: 'Qc',
+      lastName: 'Donor',
+      addressLine1: '1 High Street',
+      postcode: 'AB1 2CD',
+    },
+  )
   return id
+}
+
+/** Void or un-void a gift, as another user's page would. */
+export async function setGiftStatus(
+  r: Recorder,
+  id: string,
+  expected: number,
+  status: 'void' | 'completed',
+): Promise<void> {
+  await call(r, 'POST', `gifts/${id}/status`, { expected, status })
+}
+
+/** Cancel every declaration of `contactId` open on `from`. */
+export async function cancelDeclarations(
+  r: Recorder,
+  contactId: string,
+  from: string,
+): Promise<void> {
+  await call(r, 'POST', `contacts/${contactId}/giftaid/cancel`, {
+    cancelledFrom: from,
+  })
 }
 
 /**
@@ -94,9 +141,8 @@ export async function declare(
  * flow would otherwise pile rows onto one contact (a real donor has one or
  * two declarations, not dozens).
  */
-export function newDonor(r: Recorder, lastName: string): Promise<string> {
-  return r.client.mutation(api.contacts.mutations.create, {
-    tenantId: r.tenantId,
+export async function newDonor(r: Recorder, lastName: string): Promise<string> {
+  const { id } = await call<Created>(r, 'POST', 'contacts', {
     kind: 'individual',
     title: '',
     firstName: 'Qc',
@@ -105,6 +151,7 @@ export function newDonor(r: Recorder, lastName: string): Promise<string> {
     name: '',
     isDeceased: false,
   })
+  return id
 }
 
 /** The contact id at the end of a contact page's URL. */

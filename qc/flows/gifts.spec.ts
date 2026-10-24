@@ -1,5 +1,4 @@
 import { expect, test } from '../fixtures'
-import { holdQuiet } from '../convex-pending'
 import {
   CONTACT_ROUTE,
   createContact,
@@ -9,21 +8,21 @@ import {
 } from './contact.helpers'
 import {
   GIFT_ROUTE,
+  cancelDeclarations,
   contactIdOf,
   declare,
   newDonor,
   recordGift,
   recorder,
+  setGiftStatus,
   today,
 } from './gift.helpers'
-import { api } from '../../convex/_generated/api'
-import type { Id } from '../../convex/_generated/dataModel'
 import type { Page } from '@playwright/test'
 
 // Cash gifts step 5: the gift page (view, edit, void / unvoid, history)
-// and the contact page's Gifts and Gift Aid panels. Gifts and declarations
-// are made through the API (gift.helpers.ts) until the record-gift page
-// exists; each test makes its own contact.
+// and the contact page's Gifts and Gift Aid panels. Set-up gifts and
+// declarations are made through the API (gift.helpers.ts), untimed; each
+// test makes its own contact.
 
 const gifts = (page: Page) => section(page, 'Gifts')
 const giftAid = (page: Page) => section(page, 'Gift Aid')
@@ -183,12 +182,7 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
     await expect(page.getByRole('alertdialog')).toBeVisible()
     const before = await statusVersion()
     for (const status of ['void', 'completed'] as const)
-      await r.client.mutation(api.giving.mutations.setStatus, {
-        tenantId: r.tenantId,
-        id,
-        expected: before + (status === 'void' ? 0 : 1),
-        status,
-      })
+      await setGiftStatus(r, id, before + (status === 'void' ? 0 : 1), status)
     await expect(counter).toHaveAttribute(
       'data-status-version',
       String(before + 2),
@@ -261,18 +255,11 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
       uniqueName('gifts'),
     )
     const contactId = contactIdOf(contactUrl)
-    // More than a page (20): a bulk write, so other workers' samples
-    // don't wait behind it.
-    await holdQuiet(
-      instance.name,
-      'contact.gifts.loadMore gifts 25',
-      async () => {
-        for (let i = 0; i < 25; i++) {
-          const day = String(1 + i).padStart(2, '0')
-          await recordGift(r, contactId, BigInt(100 + i), `2026-01-${day}`)
-        }
-      },
-    )
+    // More than a page (20), untimed.
+    for (let i = 0; i < 25; i++) {
+      const day = String(1 + i).padStart(2, '0')
+      await recordGift(r, contactId, BigInt(100 + i), `2026-01-${day}`)
+    }
     const rowsOf = gifts(page).locator('li')
     await flow(page, 'contact.gifts.loadMore', {
       before: async () => {
@@ -375,11 +362,7 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
     )
     // A cancellation leaves a gift before it covered: the first donor's,
     // cancelled untimed.
-    await r.client.mutation(api.giftaid.mutations.recordCancellation, {
-      tenantId: r.tenantId,
-      contactId: contactId as Id<'contacts'>,
-      cancelledFrom: today(),
-    })
+    await cancelDeclarations(r, contactId, today())
     await page.goto(contactUrl)
     await expect(giftAid(page).getByTestId('giftaid-coverage')).toHaveText(
       'No declaration covers a gift made today.',

@@ -1,23 +1,10 @@
-import { useQuery } from 'convex/react'
-import { ConvexError } from 'convex/values'
-import type { Doc, Id } from '../../convex/_generated/dataModel'
-import { api } from '../../convex/_generated/api'
-import type { RecentGift } from '../../convex/giving/types'
+import { RustApiError } from './data/rust/client'
+import type { GiftMethod } from './data'
 
-export type { RecentGift }
+export { useMyRecentGifts } from './data'
+export type { RecentGift } from './data'
 
-/**
- * The caller's last 10 gifts in this group; undefined while loading or
- * when `enabled` is false.
- */
-export function useMyRecentGifts(
-  tenantId: Id<'tenants'>,
-  enabled = true,
-): Array<RecentGift> | undefined {
-  return useQuery(api.giving.queries.myRecent, enabled ? { tenantId } : 'skip')
-}
-
-export const METHOD_LABELS: Record<Doc<'contributions'>['method'], string> = {
+export const METHOD_LABELS: Record<GiftMethod, string> = {
   cash: 'Cash',
   card: 'Card (separate reader)',
 }
@@ -81,14 +68,11 @@ export function parsePounds(text: string): bigint | null {
  * change since the page loaded.
  */
 export function refusal(err: unknown, fallback: string, stale: string): string {
-  if (!(err instanceof ConvexError)) return fallback
-  const d = err.data as {
-    kind?: string
-    message?: string
-    problems?: Array<{ message: string }>
-  }
-  if (d.kind === 'stale') return stale
-  if (d.kind === 'invalid' && d.problems?.length)
-    return d.problems.map((p) => p.message).join('; ')
-  return d.message ?? fallback
+  if (!(err instanceof RustApiError)) return fallback
+  const e = err.error
+  if (e.kind === 'stale') return stale
+  if (e.kind === 'invalid' && e.problems.length)
+    return e.problems.map((p) => p.message).join('; ')
+  if (e.kind === 'rejected') return e.message
+  return fallback
 }

@@ -7,6 +7,7 @@
 //! the org file is the scope.
 
 pub mod acquisition;
+pub mod donors;
 pub mod fields;
 pub mod form;
 pub mod history;

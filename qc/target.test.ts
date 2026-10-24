@@ -48,10 +48,8 @@ describe('budgets: lines and targets', () => {
       .map(([name]) => name)
     expect(marked).toEqual([])
     expect(budgets['contact.addEmail']).toEqual(budgets['contact.save'])
-    expect(budgets['gift.save']).toEqual({
-      ...budgets['contact.save'],
-      pendingPort: 'B2',
-    })
+    // Ported (B2): no pendingPort mark left.
+    expect(budgets['gift.save']).toEqual(budgets['contact.save'])
   })
 })
 

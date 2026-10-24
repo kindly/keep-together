@@ -98,6 +98,28 @@ const FIXTURES: &[&str] = &[
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', 3, 0);
      INSERT INTO contact_field_option_deletions (id, delete_version)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b2', 0);",
+    // 11: gifts, allocations, the allocation projection
+    "INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, status, entered_by,
+         entered_at, client_key, gift_version, status_version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '2026-10-20', 2000, 'cash', 'completed', 1, 1000, 'k1', 0, 1);
+     INSERT INTO gift_allocations (id, gift_id, position, source_code_id, amount)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 2000);
+     INSERT INTO gift_allocation_index (allocation_id, gift_id, contact_id, source_code_id,
+         detail_id, category_id, received_on, amount, status)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1', '2026-10-20',
+         2000, 'completed');",
+    // 12: Gift Aid declarations
+    "INSERT INTO gift_aid_declarations (id, contact_id, scope, gift_id, made_on, method,
+         wording_version, first_name, last_name, address_line1, postcode, cancelled_from,
+         entered_by, entered_at)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0c1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         'futureAndPast4y', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', '2026-10-20',
+         'staffTickedNoEvidence', 'hmrc-2016-04', 'Ann', 'Smith', '1 Road', 'LS1 1AA',
+         NULL, 1, 1000);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
@@ -276,6 +298,8 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
         &*platform::REGISTRY,
         &*comms::REGISTRY,
         &*sources::REGISTRY,
+        &*giving::REGISTRY,
+        &*giftaid::REGISTRY,
     ];
     for c in registries.iter().flat_map(|r| r.contracts()) {
         let (ty, notnull, default): (String, bool, Option<String>) = conn
