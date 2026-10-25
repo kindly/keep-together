@@ -15,7 +15,10 @@ import { SOURCE_CODE_LIMIT } from './rules'
 // 30–90 ms here and say nothing about a deployment's, so they are left
 // out; the query runs end to end once, for its answer only. Measured alone
 // this pass takes ~5 ms; the budget leaves room for `pnpm check` running
-// every test file at once, and still breaks on a quadratic slip.
+// every test file at once, and still breaks on a quadratic slip. The best
+// of 5 is judged, not the worst: a quadratic slip makes every sample slow,
+// while a busy CI runner stalls only some (the worst hit 52 and 68 ms on
+// GitHub's runners, 2026-10-24, blocking deploys).
 const BUDGET_MS = 50
 
 const TODAY = '2026-10-19'
@@ -85,7 +88,7 @@ test(`the picker at ${SOURCE_CODE_LIMIT} parts: its own work stays under ${BUDGE
       run()
       samples.push(performance.now() - t0)
     }
-    return { worst: Math.max(...samples), result }
+    return { best: Math.min(...samples), result }
   }
 
   const all = timed('')
@@ -105,9 +108,9 @@ test(`the picker at ${SOURCE_CODE_LIMIT} parts: its own work stays under ${BUDGE
   expect(none.result.codes).toEqual([])
 
   console.info(
-    `picker pass at ${SOURCE_CODE_LIMIT} parts, worst of 5: all ${all.worst.toFixed(1)} ms, narrow ${narrow.worst.toFixed(1)} ms, none ${none.worst.toFixed(1)} ms`,
+    `picker pass at ${SOURCE_CODE_LIMIT} parts, best of 5: all ${all.best.toFixed(1)} ms, narrow ${narrow.best.toFixed(1)} ms, none ${none.best.toFixed(1)} ms`,
   )
   for (const run of [all, narrow, none]) {
-    expect(run.worst).toBeLessThan(BUDGET_MS)
+    expect(run.best).toBeLessThan(BUDGET_MS)
   }
 })
