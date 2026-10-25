@@ -76,22 +76,33 @@ pub fn now_secs() -> u64 {
 }
 
 pub fn world() -> World {
-    build(false, config(), false)
+    build(false, config(), MailSetup::On)
 }
 
 /// As [`world`], with `KEEP_DEV_AUTH` on.
 pub fn world_dev() -> World {
-    build(true, config(), false)
+    build(true, config(), MailSetup::On)
 }
 
 /// As [`world`], with `config` (e.g. a client-IP header).
 pub fn world_with(config: Config) -> World {
-    build(false, config, false)
+    build(false, config, MailSetup::On)
 }
 
 /// As [`world`], with `KEEP_MAIL=off` (staging until SES).
 pub fn world_mail_off() -> World {
-    build(false, config(), true)
+    build(false, config(), MailSetup::Off)
+}
+
+/// As [`world`], mailing only `list` (`KEEP_MAIL_ONLY_TO`, staging).
+pub fn world_mail_only_to(list: &'static str) -> World {
+    build(false, config(), MailSetup::OnlyTo(list))
+}
+
+enum MailSetup {
+    On,
+    Off,
+    OnlyTo(&'static str),
 }
 
 /// The test worlds' auth config: links start at [`ORIGIN`].
@@ -102,7 +113,7 @@ pub fn config() -> Config {
     }
 }
 
-fn build(dev_auth: bool, config: Config, mail_off: bool) -> World {
+fn build(dev_auth: bool, config: Config, mail: MailSetup) -> World {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(
         Store::open_with(
@@ -158,8 +169,12 @@ fn build(dev_auth: bool, config: Config, mail_off: bool) -> World {
         .unwrap();
     }
     let (mut mailer, outbox) = Mailer::memory();
-    if mail_off {
-        mailer = Mailer::from_vars(|k| (k == "KEEP_MAIL").then(|| "off".to_owned())).unwrap();
+    match mail {
+        MailSetup::On => {}
+        MailSetup::Off => {
+            mailer = Mailer::from_vars(|k| (k == "KEEP_MAIL").then(|| "off".to_owned())).unwrap();
+        }
+        MailSetup::OnlyTo(list) => mailer = mailer.only_to(list).unwrap(),
     }
     let state = AppState::new(store.clone(), dev_auth).with_auth(Runtime::new(config, mailer));
     World {

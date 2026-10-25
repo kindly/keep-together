@@ -270,8 +270,8 @@ export async function qcCrowd(
 export const MAIL_OFF_MESSAGE = "Email isn't set up here"
 
 /**
- * Whether `world`'s api runs with mail off (`KEEP_MAIL=off`: staging
- * until SES), as the seed reports it. If so, the test is annotated
+ * Whether `world`'s api has mail off for QC's users (`KEEP_MAIL=off`, or
+ * staging's `KEEP_MAIL_ONLY_TO` not listing them), as the seed reports it. If so, the test is annotated
  * `mailOff`, which the run's MAIL OFF banner and history list, and it
  * checks the `mail_off` refusal instead of the path that sends email.
  */

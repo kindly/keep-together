@@ -10,8 +10,9 @@ export type QcWorld = {
  */
 users: Array<QcUser>, tenants: Array<QcTenant>, field: QcField, identifierType: string, identifiers: QcIdentifiers, 
 /**
- * The api runs `KEEP_MAIL=off` (staging until SES): what needs email
- * is refused (`mail_off`), so the flows that send some check that
- * refusal instead, and the run says so.
+ * Mail is off for [`QC_DOMAIN`] (`KEEP_MAIL=off`, or staging's
+ * `KEEP_MAIL_ONLY_TO` not listing it): what needs email is refused
+ * (`mail_off`), so the flows that send some check that refusal
+ * instead, and the run says so.
  */
 mailOff: boolean, };

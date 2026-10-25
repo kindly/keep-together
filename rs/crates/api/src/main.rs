@@ -16,7 +16,7 @@
 //! - `SENTRY_DSN`: error reporting (`observe`)
 //! - auth (`api::auth::boot`): `KEEP_APP_ORIGIN`, `KEEP_CLIENT_IP_HEADER`,
 //!   `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER`,
-//!   `KEEP_MAIL`/`KEEP_SMTP_URL`/`KEEP_MAIL_FROM`; with `KEEP_ENV=prod` or
+//!   `KEEP_MAIL`/`KEEP_SMTP_URL`/`KEEP_MAIL_FROM`/`KEEP_MAIL_ONLY_TO`; with `KEEP_ENV=prod` or
 //!   `staging` the first four are required and `KEEP_DEV_AUTH` stops the
 //!   boot; `KEEP_MAIL=log` only for dev
 //!

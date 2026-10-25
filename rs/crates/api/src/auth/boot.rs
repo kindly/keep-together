@@ -9,7 +9,7 @@
 //! | `KEEP_APP_ORIGIN` | the SPA's origin; required (https) when deployed |
 //! | `KEEP_CLIENT_IP_HEADER` | the proxy's client-address header (`Fly-Client-IP`); required when deployed, or every client shares the proxy's rate-limit bucket. Its value counts only when it is one IP address; `X-Forwarded-For` and `Forwarded` (lists a client can prepend to) are refused |
 //! | `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER` | 32 bytes, base64 ([`auth::keys`]); required when deployed, and on any non-loopback bind; else the published dev keys |
-//! | `KEEP_MAIL=log` | prints codes and links: only for dev (`KEEP_ENV=dev`, or unset) on a loopback bind. `KEEP_MAIL=off`: no mail, and the api refuses what needs it (staging until SES; refused in prod) |
+//! | `KEEP_MAIL=log` | prints codes and links: only for dev (`KEEP_ENV=dev`, or unset) on a loopback bind. `KEEP_MAIL=off`: no mail, and the api refuses what needs it (refused in prod). `KEEP_MAIL_ONLY_TO`: mail only those recipients, anyone else as if off (staging; refused in prod) |
 //! | `KEEP_DEV_AUTH=1` | refused when deployed |
 
 use std::net::IpAddr;
@@ -43,6 +43,12 @@ pub fn runtime(var: impl Fn(&str) -> Option<String>, bind: IpAddr) -> Result<Run
     let mailer = Mailer::from_vars(&var).map_err(|e| format!("mail settings: {e}"))?;
     if mailer.is_off() && keep_env.as_deref() == Some("prod") {
         return Err("KEEP_MAIL=off is refused with KEEP_ENV=prod: resets, notices and invites need mail. Set KEEP_MAIL=smtp".into());
+    }
+    if mailer.is_restricted() && keep_env.as_deref() == Some("prod") {
+        return Err(
+            "KEEP_MAIL_ONLY_TO is refused with KEEP_ENV=prod: production mails everyone. Unset it"
+                .into(),
+        );
     }
     // Dev is KEEP_ENV=dev, or unset (a local `cargo run`); a deployed
     // machine also binds a reachable address.
@@ -304,6 +310,31 @@ mod tests {
                 .err()
                 .unwrap()
                 .contains("KEEP_MAIL=off")
+        );
+    }
+
+    /// Only staging mails a short list; prod mails everyone.
+    #[test]
+    fn mail_only_to_is_refused_in_prod() {
+        let mut st = staging();
+        st.push(("KEEP_MAIL_ONLY_TO", "@example.org".into()));
+        assert!(boot_owned(&st, ANY).is_ok_and(|rt| rt.mailer.is_restricted()));
+        let mut prod = st.clone();
+        prod[0].1 = "prod".into();
+        assert!(
+            boot_owned(&prod, ANY)
+                .err()
+                .unwrap()
+                .contains("KEEP_MAIL_ONLY_TO")
+        );
+        // A malformed list stops any boot.
+        let mut bad = st;
+        bad.last_mut().unwrap().1 = "@example.org,".into();
+        assert!(
+            boot_owned(&bad, ANY)
+                .err()
+                .unwrap()
+                .contains("KEEP_MAIL_ONLY_TO")
         );
     }
 

@@ -311,7 +311,7 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     })
     expect(r.status).toBeUndefined()
     expect(r.out).toMatch(
-      /MAIL OFF on the target \(KEEP_MAIL=off\): 2 tests checked the mail_off refusal instead; the email they send was NOT tested:\n!! flows\/auth\.spec\.ts › a reset request answers the same\n!! flows\/members\.spec\.ts › an admin invites/,
+      /MAIL OFF for QC's users on the target: 2 tests checked the mail_off refusal instead; the email they send was NOT tested:\n!! flows\/auth\.spec\.ts › a reset request answers the same\n!! flows\/members\.spec\.ts › an admin invites/,
     )
     expect(r.history.length).toBeGreaterThan(0)
     for (const l of r.history)

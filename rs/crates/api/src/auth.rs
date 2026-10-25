@@ -119,15 +119,17 @@ impl Runtime {
     }
 
     /// Mail `to` a security notice (S1 M3), in the background. Dropped
-    /// when mail is off.
+    /// when mail is off for `to`.
     pub(crate) fn notify(&self, to: &str, notice: Notice) {
         self.send(notices::mail(to, notice, &self.config.app_origin));
     }
 
-    /// `Ok` if mail can be sent; with `KEEP_MAIL=off` (staging until SES
-    /// is set up), what needs it is refused: `422 rejected mail_off`.
-    pub(crate) fn require_mail(&self) -> Result<(), ApiError> {
-        if self.mailer.is_off() {
+    /// `Ok` if mail can be sent to `to`; with `KEEP_MAIL=off`, or `to` not
+    /// in `KEEP_MAIL_ONLY_TO` (staging), what needs it is refused: `422
+    /// rejected mail_off`. Depends only on `to`, never on who has an
+    /// account.
+    pub(crate) fn require_mail(&self, to: &str) -> Result<(), ApiError> {
+        if self.mailer.is_off_for(to) {
             Err(ApiError::Rejected {
                 reason: "mail_off".into(),
                 message: "Email isn't set up here, so this can't be done. Use an authenticator app, or ask the operator.".into(),
@@ -145,7 +147,7 @@ impl Runtime {
     /// mail server, so a reset for an unknown address answers as fast as
     /// one for a known address.
     pub(crate) fn send(&self, mail: Mail) {
-        if self.mailer.is_off() {
+        if self.mailer.is_off_for(&mail.to) {
             return;
         }
         let mailer = self.mailer.clone();

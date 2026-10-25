@@ -101,14 +101,24 @@ writes it from `staging.sh`), and the prod path of `deploy.yml`.
 
 ### Mail on staging (later, human-run)
 
-Staging runs `KEEP_MAIL=off` until SES is set up: whatever needs an email
-is refused (reset links, admins' invites, emailed codes, admin 2FA
-resets), so staging signs in with authenticator apps only. Invite links
-come from the operator: `fly ssh console -a keep-staging`, then
-`keep auth invite <slug> <email> --role …`, which prints the mail to that
-terminal, never to the app's logs. A 2FA reset there is `keep auth
-reset-2fa`, but the person then can't re-enrol (that needs an emailed
-code) until mail is on. To turn mail on:
+Staging sends through SES (`KEEP_MAIL=smtp`) but only to the recipients
+in `KEEP_MAIL_ONLY_TO` (`fly.staging.toml`: full addresses or `@domain`,
+exact, case-insensitive). For any other address it is exactly
+`KEEP_MAIL=off`: whatever needs an email to it is refused (`mail_off`:
+reset links, admins' invites, emailed codes, admin 2FA resets), and a
+reset request answers `mail_off` for an unlisted address whether or not it
+has an account, so the list leaks nothing about who does. QC's users
+(`@qc.keep-together.invalid`) are never listed, so nightly QC runs as it
+did with mail off and nothing bounces off the new SES account; keep it
+that way. `KEEP_ENV=prod` refuses `KEEP_MAIL_ONLY_TO`: production mails
+everyone.
+
+For an unlisted person, invite links come from the operator: `fly ssh
+console -a keep-staging`, then `keep auth invite <slug> <email> --role …`,
+which prints the mail to that terminal, never to the app's logs. A 2FA
+reset there is `keep auth reset-2fa`, but the person then can't re-enrol
+(that needs an emailed code) unless they're listed. To list someone, add
+them to `KEEP_MAIL_ONLY_TO` and deploy. Setting SES up (done once):
 
 1. `scripts/aws/ses.sh`: in SES (`keep-mail-tx`, eu-west-2), verify
    `auth.keep-together.org.uk`, with Easy DKIM CNAMEs, a custom MAIL FROM
@@ -121,8 +131,8 @@ code) until mail is on. To turn mail on:
    SMTP password staged on Fly as `KEEP_SMTP_URL`, never printed.
 4. `fly secrets set -a keep-staging --stage
    KEEP_SMTP_URL='smtp://USER:PASS@email-smtp.eu-west-2.amazonaws.com:587?tls=required'`,
-   set `KEEP_MAIL = "smtp"` in `fly.staging.toml`, deploy, and send one
-   test (a reset request for your own address): lettre's TLS against SES
+   `KEEP_MAIL = "smtp"` with `KEEP_MAIL_ONLY_TO` in `fly.staging.toml`,
+   deploy, and send one test (a reset request for your own address): lettre's TLS against SES
    is untested so far.
 
 ## Backups

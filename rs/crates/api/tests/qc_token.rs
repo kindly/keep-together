@@ -153,6 +153,14 @@ async fn the_world_says_whether_mail_is_off() {
     let off = Mailer::from_vars(|k| (k == "KEEP_MAIL").then(|| "off".to_owned())).unwrap();
     let qc = staging_with(Some(QcAccess::new(TOKEN).unwrap()), off);
     assert_eq!(qc.seed("m2").await["mailOff"], true);
+    // Staging mails only its listed recipients: never QC's domain, so
+    // QC runs exactly as with mail off.
+    let only = Mailer::log().only_to("@example.org").unwrap();
+    let qc = staging_with(Some(QcAccess::new(TOKEN).unwrap()), only);
+    assert_eq!(qc.seed("m3").await["mailOff"], true);
+    let listed = Mailer::log().only_to(&format!("@{QC_DOMAIN}")).unwrap();
+    let qc = staging_with(Some(QcAccess::new(TOKEN).unwrap()), listed);
+    assert_eq!(qc.seed("m4").await["mailOff"], false);
 }
 
 #[test]
