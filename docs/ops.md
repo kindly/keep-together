@@ -115,8 +115,10 @@ code) until mail is on. To turn mail on:
    (`bounce.auth…` MX and SPF TXT) and DMARC TXT on `_dmarc.auth…`, all
    written to keep-prod's Route 53 zone. Re-run it to see the status.
 2. Request SES production access (out of the sandbox).
-3. An IAM user limited to `ses:SendRawEmail` from
-   `no-reply@auth.keep-together.org.uk`; derive its SMTP password.
+3. `scripts/aws/ses-sender.sh staging`: the configuration set
+   `keep-transactional` (the identity's default), an IAM user limited to
+   `ses:SendRawEmail` from `no-reply@auth.keep-together.org.uk`, and its
+   SMTP password staged on Fly as `KEEP_SMTP_URL`, never printed.
 4. `fly secrets set -a keep-staging --stage
    KEEP_SMTP_URL='smtp://USER:PASS@email-smtp.eu-west-2.amazonaws.com:587?tls=required'`,
    set `KEEP_MAIL = "smtp"` in `fly.staging.toml`, deploy, and send one
