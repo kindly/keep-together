@@ -23,7 +23,7 @@
 //! [`current_declaration`], never the table; this module reads gifts only
 //! through giving's `describe_gift`.
 
-use contracts::{Command, Contract, ContractError, OrgTx, WriteTx};
+use contracts::{Command, Contract, ContractError, DynContract, OrgTx, WriteTx, upcast};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::Value;
@@ -566,12 +566,16 @@ impl Contract for DetailsContract {
 /// The most snapshot changes one history read lists.
 pub const DETAILS_HISTORY_LIMIT: usize = 100;
 
-/// The snapshot in a revision's payload: both contracts carry the four
-/// fields under the same names, and no upcaster of either changes them.
-fn snapshot_of(payload: &str) -> rusqlite::Result<DetailsPayload> {
-    serde_json::from_str(payload).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
-    })
+/// The snapshot in a revision's payload, read at the code's version of
+/// its contract (the upcaster chain restore uses): both contracts carry
+/// the four fields under the same names at their current versions.
+fn snapshot_of(
+    contract: &dyn DynContract,
+    version: u32,
+    payload: &str,
+) -> Result<DetailsPayload, ContractError> {
+    let payload = upcast(contract, serde_json::from_str(payload)?, version)?;
+    Ok(serde_json::from_value(payload)?)
 }
 
 /// A declaration's snapshot changes, newest first: each
@@ -579,15 +583,18 @@ fn snapshot_of(payload: &str) -> rusqlite::Result<DetailsPayload> {
 /// first against the snapshot the declaration was made with), with who
 /// and when. A save that changed nothing isn't listed. `None` for an
 /// unknown declaration.
-pub fn details_history(conn: &Connection, id: &str) -> rusqlite::Result<Option<DetailsHistory>> {
+pub fn details_history(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<DetailsHistory>, ContractError> {
     if load(conn, id)?.is_none() {
         return Ok(None);
     }
     // The newest LIMIT + 1 details revisions, and the declaration's own
     // (one, at create): the baseline when every details one is read.
-    let rows: Vec<(i64, String, Option<i64>, String, i64)> = conn
+    let rows: Vec<(i64, u32, String, Option<i64>, String, i64)> = conn
         .prepare_cached(
-            "SELECT id, payload, actor, source, at FROM revisions
+            "SELECT id, version, payload, actor, source, at FROM revisions
              WHERE entity = ?1 AND entity_id = ?2 AND contract = ?3
              ORDER BY id DESC LIMIT ?4",
         )?
@@ -598,7 +605,16 @@ pub fn details_history(conn: &Connection, id: &str) -> rusqlite::Result<Option<D
                 DetailsContract::NAME,
                 DETAILS_HISTORY_LIMIT as i64 + 1
             ],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )?
         .collect::<rusqlite::Result<_>>()?;
     let more = rows.len() > DETAILS_HISTORY_LIMIT;
@@ -607,25 +623,27 @@ pub fn details_history(conn: &Connection, id: &str) -> rusqlite::Result<Option<D
         None
     } else {
         conn.prepare_cached(
-            "SELECT payload FROM revisions
+            "SELECT version, payload FROM revisions
              WHERE entity = ?1 AND entity_id = ?2 AND contract = ?3
              ORDER BY id LIMIT 1",
         )?
         .query_row(params![TABLE, id, DeclarationContract::NAME], |r| {
-            snapshot_of(&r.get::<_, String>(0)?)
+            Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?))
         })
         .optional()?
+        .map(|(version, payload)| snapshot_of(&DECLARATION, version, &payload))
+        .transpose()?
     };
     let mut snapshots = rows
         .iter()
-        .map(|(_, payload, ..)| snapshot_of(payload))
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .map(|(_, version, payload, ..)| snapshot_of(&DETAILS, *version, payload))
+        .collect::<Result<Vec<_>, _>>()?;
     snapshots.extend(baseline);
     let edits = rows
         .iter()
         .take(DETAILS_HISTORY_LIMIT)
         .enumerate()
-        .filter_map(|(i, (revision_id, _, actor, source, at))| {
+        .filter_map(|(i, (revision_id, _, _, actor, source, at))| {
             let before = snapshots.get(i + 1)?;
             let changes = diff(before, &snapshots[i]);
             (!changes.is_empty()).then(|| DetailsEdit {

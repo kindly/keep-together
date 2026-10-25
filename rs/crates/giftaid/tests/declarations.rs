@@ -1025,7 +1025,7 @@ impl World {
     }
 
     fn history(&self, id: &str) -> giftaid::DetailsHistory {
-        read(&self.a, |c| Ok(giftaid::details_history(c, id)?)).unwrap()
+        read(&self.a, |c| giftaid::details_history(c, id)).unwrap()
     }
 }
 
@@ -1302,7 +1302,54 @@ fn another_organisation_cant_change_or_read_the_details() {
     })
     .unwrap_err();
     assert_eq!(reason(err), "not_found");
-    assert!(read(&w.b, |c| Ok(giftaid::details_history(c, &made.id)?)).is_none());
+    assert!(read(&w.b, |c| giftaid::details_history(c, &made.id)).is_none());
     assert_eq!(w.declaration(&made.id).payload.first_name, "Jo");
     w.b_untouched();
+}
+
+/// The history reads each revision at the code's version, through the
+/// upcaster chain restore uses: a declaration recorded at v1 is the
+/// baseline as it was, and one newer than the code is refused, not misread.
+#[test]
+fn the_history_reads_a_v1_declaration_through_its_upcasters() {
+    let w = world();
+    let made = w
+        .declare(DeclarationPayload {
+            postcode: String::new(),
+            ..w.payload()
+        })
+        .unwrap();
+    w.details(&made.id, 0, snapshot("Jo", "Bloggs", "12", "SW1A 1AA"))
+        .unwrap();
+    let set_version = |v: i64| {
+        w.a.write_raw(|raw| {
+            raw.conn().execute(
+                "UPDATE revisions SET version = ?2
+                 WHERE entity_id = ?1 AND contract = 'giftaid.declaration'",
+                rusqlite::params![made.id, v],
+            )
+        })
+        .unwrap()
+    };
+    assert_eq!(set_version(1), 1);
+    let h = w.history(&made.id);
+    assert_eq!(h.edits.len(), 1);
+    assert_eq!(
+        h.edits[0].changes,
+        [giftaid::types::DetailsChange {
+            field: "postcode".into(),
+            from: String::new(),
+            to: "SW1A 1AA".into(),
+        }]
+    );
+    set_version(
+        i64::from(<giftaid::declarations::DeclarationContract as contracts::Contract>::VERSION) + 1,
+    );
+    let err =
+        w.a.read(|c| giftaid::details_history(c, &made.id))
+            .unwrap_err();
+    assert!(
+        matches!(err, ContractError::NewerThanCode { .. }),
+        "{err:?}"
+    );
 }
