@@ -37,10 +37,11 @@ fn send_invite(mail: comms::mail::Mail) -> Result<(), String> {
 /// Send `mail` (`KEEP_MAIL`), or print it with the log mailer.
 fn send(mail: comms::mail::Mail, what: &str) -> Result<(), String> {
     let mailer = comms::mail::Mailer::from_env().map_err(|e| e.to_string())?;
-    // KEEP_MAIL=off (staging until SES): the operator's own terminal.
-    if mailer.is_log() || mailer.is_off() {
+    // Mail off for this address (KEEP_MAIL=off, or not in
+    // KEEP_MAIL_ONLY_TO): the operator's own terminal.
+    if mailer.is_log() || mailer.is_off_for(&mail.to) {
         println!(
-            "{what} for {} (KEEP_MAIL=log/off, not sent):\n{}",
+            "{what} for {} (KEEP_MAIL=log/off or not in KEEP_MAIL_ONLY_TO, not sent):\n{}",
             mail.to, mail.text
         );
         return Ok(());
@@ -178,9 +179,9 @@ fn main() -> ExitCode {
                     eprintln!(
                         "2FA reset for {email} (logged); their sessions ended, next sign-in enrols again (with an emailed code)"
                     );
-                    if comms::mail::Mailer::from_env().is_ok_and(|m| m.is_off()) {
+                    if comms::mail::Mailer::from_env().is_ok_and(|m| m.is_off_for(email)) {
                         eprintln!(
-                            "warning: KEEP_MAIL=off: re-enrolling needs an emailed code, so {email} can't sign in again until mail is on (docs/ops.md)"
+                            "warning: mail is off for {email} (KEEP_MAIL=off, or not in KEEP_MAIL_ONLY_TO): re-enrolling needs an emailed code, so {email} can't sign in again until mail is on (docs/ops.md)"
                         );
                     }
                     match send(notice, "notice") {

@@ -97,8 +97,9 @@ banner lists them, marking a route the run before retried too, and the
 run's history lines count them (`setupRetries`; the nightly's
 `retries=`).
 
-Staging runs `KEEP_MAIL=off` until SES is set up, and the api refuses
-what needs email (`mail_off`). The seed says so (`mailOff` in the
+Staging mails only the addresses in `KEEP_MAIL_ONLY_TO`, never QC's
+(`@qc.keep-together.invalid`), so for QC's users mail is off and the api
+refuses what needs email (`mail_off`), as with `KEEP_MAIL=off`. The seed says so (`mailOff` in the
 world), and the flows that send email (the reset request, an invite)
 then check that refusal instead: the same answer for any address, no
 invite made. They are annotated `mailOff`; a `MAIL OFF` banner lists them

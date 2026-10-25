@@ -507,7 +507,7 @@ export function pendingBanner(
 export function mailOffBanner(tests: Array<string>): Array<string> {
   if (!tests.length) return []
   return banner([
-    `MAIL OFF on the target (KEEP_MAIL=off): ${tests.length} test${tests.length === 1 ? '' : 's'} checked the mail_off refusal instead; the email they send was NOT tested:`,
+    `MAIL OFF for QC's users on the target: ${tests.length} test${tests.length === 1 ? '' : 's'} checked the mail_off refusal instead; the email they send was NOT tested:`,
     ...[...tests].sort(),
   ])
 }

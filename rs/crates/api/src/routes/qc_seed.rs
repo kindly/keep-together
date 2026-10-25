@@ -164,9 +164,10 @@ pub struct QcWorld {
     pub field: QcField,
     pub identifier_type: String,
     pub identifiers: QcIdentifiers,
-    /// The api runs `KEEP_MAIL=off` (staging until SES): what needs email
-    /// is refused (`mail_off`), so the flows that send some check that
-    /// refusal instead, and the run says so.
+    /// Mail is off for [`QC_DOMAIN`] (`KEEP_MAIL=off`, or staging's
+    /// `KEEP_MAIL_ONLY_TO` not listing it): what needs email is refused
+    /// (`mail_off`), so the flows that send some check that refusal
+    /// instead, and the run says so.
     pub mail_off: bool,
 }
 
@@ -452,6 +453,11 @@ fn side(
 
 /// QC users' addresses: reserved (RFC 2606), so no real one matches.
 pub const QC_DOMAIN: &str = "qc.keep-together.invalid";
+
+/// Whether QC's users ([`QC_DOMAIN`]) get no mail.
+fn mail_off_for_qc(state: &AppState) -> bool {
+    state.auth.mailer.is_off_for(&format!("qc@{QC_DOMAIN}"))
+}
 /// Every QC organisation's slug starts with this.
 pub const QC_SLUG_PREFIX: &str = "qc-";
 /// The most `qc-` organisations a store holds (staging wipes on deploy).
@@ -626,7 +632,7 @@ pub async fn fixture(
     enabled(&state)?;
     let store = state.store.clone();
     let keys = state.auth.keys.clone();
-    let mail_off = state.auth.mailer.is_off();
+    let mail_off = mail_off_for_qc(&state);
     blocking(move || seed_world(&store, &keys, req, mail_off))
         .await
         .map(Json)
@@ -870,7 +876,7 @@ pub async fn qc_fixture(
 ) -> Result<Json<QcWorld>, ApiError> {
     let store = state.store.clone();
     let keys = state.auth.keys.clone();
-    let mail_off = state.auth.mailer.is_off();
+    let mail_off = mail_off_for_qc(&state);
     blocking(move || seed_world(&store, &keys, req, mail_off))
         .await
         .map(Json)

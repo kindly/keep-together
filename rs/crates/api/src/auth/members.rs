@@ -139,12 +139,12 @@ async fn invite(
     Body(req): Body<InviteRequest>,
 ) -> Result<Json<InviteInfoRow>, ApiError> {
     require_admin(&t, &account)?;
-    // The link goes only by email (mail off: `keep auth invite` prints it
-    // to the operator).
-    account.runtime.require_mail()?;
     let email = users::normalise_email(&req.email).ok_or_else(|| ApiError::Invalid {
         problems: vec![contracts::Problem::new("email", "an email address")],
     })?;
+    // The link goes only by email (mail off for this address: `keep auth
+    // invite` prints it to the operator).
+    account.runtime.require_mail(&email)?;
     let role = Role::from(req.role);
     let a = account.clone();
     let slug = t.slug.clone();
@@ -368,8 +368,6 @@ async fn reset_2fa(
     Path(IdParam { id }): Path<IdParam>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_admin(&t, &account)?;
-    // Re-enrolling needs an emailed code (M7), and the member is told (M3).
-    account.runtime.require_mail()?;
     let target = user_param(&id)?;
     let a = account.clone();
     let email = blocking(move || {
@@ -378,6 +376,11 @@ async fn reset_2fa(
         a.store.platform().with_write(|tx| {
             still_admin(tx, &a, &tenant, now)?;
             members::role_of(tx, UserId(target), &tenant)?.ok_or(ApiError::NotFound)?;
+            let email: String =
+                tx.query_row("SELECT email FROM users WHERE id = ?1", [target], |r| r.get(0))?;
+            // Re-enrolling needs an emailed code (M7), and the member is
+            // told (M3).
+            a.runtime.require_mail(&email)?;
             if users::membership_count(tx, target)? > 1 {
                 return Err(ApiError::Rejected {
                     reason: "other_groups".into(),
@@ -387,8 +390,6 @@ async fn reset_2fa(
             accounts::clear_second_factor(tx, target, now)?;
             sessions::revoke_user(tx, target)?;
             accounts::log(tx, now, "second_factor_reset", Some(target), &a.session.user.to_string(), Some(tenant.as_str()), "")?;
-            let email: String =
-                tx.query_row("SELECT email FROM users WHERE id = ?1", [target], |r| r.get(0))?;
             Ok(email)
         })
     })

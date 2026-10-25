@@ -6,7 +6,9 @@ mod authworld;
 use std::time::Duration;
 
 use api::auth::{Config, ip_key};
-use authworld::{ORIGIN, World, config, password_of, world, world_mail_off, world_with};
+use authworld::{
+    ORIGIN, World, config, password_of, world, world_mail_off, world_mail_only_to, world_with,
+};
 use axum::body::Body as HttpBody;
 use axum::http::{StatusCode, header};
 use http_body_util::BodyExt;
@@ -1296,6 +1298,79 @@ async fn with_mail_off_what_needs_email_is_refused() {
     let r = w.post("/api/auth/enrol/email", Some(&ann), json!({})).await;
     assert_eq!(r.reason(), "mail_off");
     assert!(w.outbox.lock().unwrap().is_empty());
+}
+
+/// Staging's `KEEP_MAIL_ONLY_TO`: an address it doesn't list is exactly
+/// mail off for that address; a listed one is mailed as usual. A reset
+/// still answers by the address typed alone: listed gets the uniform
+/// reply whether or not it has an account, unlisted gets `mail_off`
+/// whether or not it has one.
+#[tokio::test]
+async fn mail_goes_only_to_listed_recipients() {
+    let w = world_mail_only_to("ann@alpha.org,@beta.org");
+    let ann = w.sign_in("ann@alpha.org").await;
+    for email in ["ann@alpha.org", "nobody@beta.org", "BOB@Beta.org"] {
+        let r = w
+            .post("/api/auth/reset/request", None, json!({ "email": email }))
+            .await;
+        assert_eq!(r.body, json!({ "ok": true }), "{email}");
+    }
+    for email in ["val@alpha.org", "nobody@alpha.org", "x@sub.beta.org"] {
+        let r = w
+            .post("/api/auth/reset/request", None, json!({ "email": email }))
+            .await;
+        assert_eq!(
+            (r.status, r.reason()),
+            (StatusCode::UNPROCESSABLE_ENTITY, "mail_off"),
+            "{email}"
+        );
+    }
+    w.emailed_token("ann@alpha.org").await;
+    w.emailed_token("bob@beta.org").await;
+
+    let invite = |email: &'static str| {
+        w.post(
+            "/api/t/alpha/members/invite",
+            Some(&ann),
+            json!({ "email": email, "role": "staff" }),
+        )
+    };
+    assert_eq!(invite("x@alpha.org").await.reason(), "mail_off");
+    let r = invite("x@beta.org").await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+
+    // Refused before anything changes: val keeps their second factor.
+    let val = w.user_id("val@alpha.org");
+    let r = w
+        .post(
+            &format!("/api/t/alpha/members/{val}/reset-2fa"),
+            Some(&ann),
+            json!({}),
+        )
+        .await;
+    assert_eq!(r.reason(), "mail_off");
+    let factor = w
+        .store
+        .platform()
+        .with_read(|c| auth::accounts::credentials(c, val))
+        .unwrap()
+        .and_then(|c| c.second_factor);
+    assert_eq!(factor, Some(auth::accounts::SecondFactor::Email));
+
+    let r = w.post("/api/auth/enrol/email", Some(&ann), json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let sent: Vec<String> = w
+        .outbox
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|m| m.to.clone())
+        .collect();
+    assert!(
+        sent.iter()
+            .all(|to| to == "ann@alpha.org" || to.ends_with("@beta.org")),
+        "{sent:?}"
+    );
 }
 
 /// Re-review R3: an anonymous request to a tenant route is refused before

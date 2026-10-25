@@ -396,7 +396,7 @@ pub async fn sign_in(
     }
     let gated = !allow(&l.password_email, &email);
     // Without mail the gate can't send its code: refuse, as before M5.
-    if gated && state.auth.mailer.is_off() {
+    if gated && state.auth.mailer.is_off_for(&email) {
         return Err(ApiError::RateLimited);
     }
     let old = session_token(&headers).map(secret::hash);
@@ -625,7 +625,7 @@ pub async fn send_code(
         Some(s) if matches!(s.stage, Stage::SecondFactor | Stage::Full) => s,
         _ => return Err(ApiError::Unauthenticated),
     };
-    state.auth.require_mail()?;
+    state.auth.require_mail(&s.email)?;
     if !allow(&state.auth.limits.email, &s.email) {
         return Err(ApiError::RateLimited);
     }
@@ -723,7 +723,7 @@ pub async fn enrol_email(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let s = enrolling(&state, &headers, &timing).await?;
-    state.auth.require_mail()?;
+    state.auth.require_mail(&s.email)?;
     if !allow(&state.auth.limits.email, &s.email) {
         return Err(ApiError::RateLimited);
     }

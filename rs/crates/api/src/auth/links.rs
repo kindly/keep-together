@@ -56,14 +56,16 @@ pub struct ResetRequest {
 /// use), an unknown one gets nothing, and the answer can't tell them
 /// apart: the lookup, the link and the mail all happen after the response
 /// (S1 codex C7), and an address that can't be one is answered without
-/// becoming a limiter key (C6). With mail off: `mail_off`, for any address.
+/// becoming a limiter key (C6). With mail off for the address typed
+/// (`KEEP_MAIL=off`, or not in `KEEP_MAIL_ONLY_TO`): `mail_off`, before
+/// any lookup, so it says nothing about which accounts exist.
 pub async fn reset_request(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     Body(req): Body<ResetRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     link_limit(&state, &ip)?;
-    state.auth.require_mail()?;
+    state.auth.require_mail(&req.email)?;
     let ok = Json(serde_json::json!({ "ok": true }));
     let Some(email) = users::normalise_email(&req.email) else {
         return Ok(ok);
