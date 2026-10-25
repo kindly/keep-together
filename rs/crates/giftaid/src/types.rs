@@ -72,11 +72,15 @@ impl Method {
     }
 }
 
-/// The `giftaid.declaration` slice: everything a declaration says.
-/// Create-only: a declaration is never edited (the chain is add-only).
-/// `firstName` … `postcode` are a snapshot of the name and home address
-/// it was made under (3.6.2: house number or name and postcode suffice):
-/// the audit record, kept through erasure for HMRC's 6 years (3.30).
+/// The `giftaid.declaration` slice: everything a declaration says, as
+/// made. Create-only: what was declared (scope, date, method, wording,
+/// gift) is never edited (the chain is add-only). `firstName` … `postcode`
+/// are a snapshot of the name and home address it was made under (3.6.2:
+/// house number or name and postcode suffice): the audit record, kept
+/// through erasure for HMRC's 6 years (3.30). The create sets them; after
+/// that they belong to `giftaid.declarationDetails` ([`DetailsPayload`]),
+/// so a declaration saved before staff had the address can be completed,
+/// and a typo fixed, each change a revision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, rename = "DeclarationPayload")]
@@ -97,6 +101,32 @@ pub struct DeclarationPayload {
     pub method: Method,
     /// Which wording the donor agreed to; [`crate::HMRC_MODEL_WORDING_VERSION`] today.
     pub wording_version: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub address_line1: String,
+    pub postcode: String,
+}
+
+impl DeclarationPayload {
+    /// The snapshot, as `giftaid.declarationDetails` holds it.
+    pub fn details(&self) -> DetailsPayload {
+        DetailsPayload {
+            first_name: self.first_name.clone(),
+            last_name: self.last_name.clone(),
+            address_line1: self.address_line1.clone(),
+            postcode: self.postcode.clone(),
+        }
+    }
+}
+
+/// The `giftaid.declarationDetails` slice: the declaration's snapshot of
+/// the donor's name and home address, completed or corrected after it
+/// was saved. Not the contact's details: changing the contact never
+/// changes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "DeclarationDetails")]
+pub struct DetailsPayload {
     pub first_name: String,
     pub last_name: String,
     pub address_line1: String,
@@ -164,6 +194,8 @@ pub struct Declaration {
     pub cancellation_version: i64,
     #[ts(type = "number")]
     pub void_version: i64,
+    #[ts(type = "number")]
+    pub details_version: i64,
 }
 
 /// One row of the Gift Aid panel: the declaration and its warnings (none
@@ -216,4 +248,54 @@ pub struct RecordCancellation {
 #[ts(export)]
 pub struct Cancelled {
     pub cancelled: Vec<String>,
+}
+
+/// `POST giftaid/{id}/details {expected, …details}`
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SaveDeclarationDetails {
+    #[ts(type = "number")]
+    pub expected: i64,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub details: DetailsPayload,
+}
+
+/// One snapshot field a details change changed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[ts(export, rename = "DeclarationDetailsChange")]
+pub struct DetailsChange {
+    /// `firstName`, `lastName`, `addressLine1` or `postcode`.
+    pub field: String,
+    pub from: String,
+    pub to: String,
+}
+
+/// One saved change to a declaration's snapshot: who, when, old → new.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "DeclarationDetailsEdit")]
+pub struct DetailsEdit {
+    #[ts(type = "number")]
+    pub revision_id: i64,
+    /// ms since the epoch.
+    #[ts(type = "number")]
+    pub at: i64,
+    #[ts(type = "number | null")]
+    pub actor: Option<i64>,
+    pub source: contracts::Source,
+    pub changes: Vec<DetailsChange>,
+}
+
+/// `GET giftaid/{id}/history`: the snapshot's changes since the
+/// declaration was made, newest first; a save that changed nothing isn't
+/// listed. `more`: older changes exist beyond the newest
+/// DETAILS_HISTORY_LIMIT.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "DeclarationDetailsHistory")]
+pub struct DetailsHistory {
+    pub edits: Vec<DetailsEdit>,
+    pub more: bool,
 }

@@ -2,7 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { Id } from '../../convex/_generated/dataModel'
 import { openAt } from '../../convex/giftaid/rules'
-import { useGiftAidWrites, useMembers } from '../lib/data'
+import {
+  fetchContactSnapshot,
+  useDeclarationHistory,
+  useGiftAidWrites,
+  useMembers,
+} from '../lib/data'
+import type { DeclarationDetails } from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
 import { formatDay, refusal } from '../lib/gifts'
 import {
   METHOD_LABELS,
@@ -11,7 +18,7 @@ import {
   useDeclarations,
 } from '../lib/giftaid'
 import type { Declaration } from '../lib/giftaid'
-import { useCanWrite } from '../lib/tenant'
+import { useCanWrite, useTenant } from '../lib/tenant'
 import { ConfirmDialog } from './confirm-dialog'
 import { localToday } from './source-code-picker'
 
@@ -30,8 +37,10 @@ const small =
  * the wording, and the name and address it was made under (the snapshot),
  * with its warnings. "Record cancellation" ends every declaration in force
  * on a date, after a confirm; "Mark made in error" voids one that should
- * never have been recorded, with a reason, after a confirm. Declarations
- * themselves are never edited.
+ * never have been recorded, with a reason, after a confirm. What was
+ * declared is never edited; the snapshot is ("Edit details": completed
+ * when Gift Aid was ticked before staff had the address, or a typo
+ * fixed), each change listed under the declaration.
  */
 export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
   const canWrite = useCanWrite()
@@ -141,7 +150,7 @@ function DeclarationCard({
     d.addressLine1,
     d.postcode,
   ].filter(Boolean)
-  const [voiding, setVoiding] = useState(false)
+  const [open, setOpen] = useState<'details' | 'void' | null>(null)
   return (
     <li
       data-testid="declaration"
@@ -208,25 +217,226 @@ function DeclarationCard({
           </ul>
         )}
       </div>
+      {d.detailsVersion > 0 && <DetailsChanges id={d._id} name={name} />}
       {canWrite &&
         !voided &&
-        (voiding ? (
+        (open === 'details' ? (
+          <DetailsForm declaration={d} onDone={() => setOpen(null)} />
+        ) : open === 'void' ? (
           <VoidForm
             id={d._id}
             contactId={d.contactId}
-            onDone={() => setVoiding(false)}
+            onDone={() => setOpen(null)}
           />
         ) : (
-          <button
-            type="button"
-            className={`${small} self-start`}
-            aria-label={`Mark made in error: ${label}`}
-            onClick={() => setVoiding(true)}
-          >
-            Mark made in error
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={small}
+              aria-label={`Edit details: ${label}`}
+              onClick={() => setOpen('details')}
+            >
+              Edit details
+            </button>
+            <button
+              type="button"
+              className={small}
+              aria-label={`Mark made in error: ${label}`}
+              onClick={() => setOpen('void')}
+            >
+              Mark made in error
+            </button>
+          </div>
         ))}
     </li>
+  )
+}
+
+const DETAIL_FIELDS: Array<[keyof DeclarationDetails, string]> = [
+  ['firstName', 'First name'],
+  ['lastName', 'Last name'],
+  ['addressLine1', 'House number or name'],
+  ['postcode', 'Postcode'],
+]
+
+const FIELD_LABELS: Record<string, string> = Object.fromEntries(DETAIL_FIELDS)
+
+const snapshotOf = (d: DeclarationDetails): DeclarationDetails => ({
+  firstName: d.firstName,
+  lastName: d.lastName,
+  addressLine1: d.addressLine1,
+  postcode: d.postcode,
+})
+
+/**
+ * The declaration's snapshot of the donor's name and home address,
+ * prefilled, to complete or correct; "Use the contact's current name and
+ * address" fills it as a declaration made now would. Shown as saved only
+ * once the server confirms it. When someone else saved first, fields left
+ * alone take their value and fields typed here are kept, to check and
+ * save again.
+ */
+function DetailsForm({
+  declaration: d,
+  onDone,
+}: {
+  declaration: Declaration
+  onDone: () => void
+}) {
+  const { slug } = useTenant()
+  const writes = useGiftAidWrites(d.contactId)
+  const [base, setBase] = useState(() => snapshotOf(d))
+  const [values, setValues] = useState(base)
+  const [expected, setExpected] = useState(d.detailsVersion)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [filling, setFilling] = useState(false)
+  const first = useRef<HTMLInputElement>(null)
+  useEffect(() => first.current?.focus(), [])
+  const changed = DETAIL_FIELDS.some(([f]) => values[f] !== base[f])
+  async function fill() {
+    setError(null)
+    setFilling(true)
+    try {
+      setValues(await fetchContactSnapshot(slug, d.contactId, localToday()))
+    } catch {
+      setError('Could not read the contact’s name and address')
+    } finally {
+      setFilling(false)
+    }
+  }
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setSaving(true)
+    try {
+      await writes.saveDetails(d._id, expected, values)
+      onDone()
+    } catch (err) {
+      if (err instanceof RustApiError && err.error.kind === 'stale') {
+        const now = snapshotOf(err.error.current as DeclarationDetails)
+        setValues((v) => {
+          const merged = { ...v }
+          for (const [f] of DETAIL_FIELDS)
+            if (v[f] === base[f]) merged[f] = now[f]
+          return merged
+        })
+        setBase(now)
+        setExpected(err.error.counter)
+      }
+      setError(
+        refusal(
+          err,
+          'Could not save the details',
+          'Someone changed these details just now: check them, then save again',
+        ),
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <form
+      onSubmit={(e) => void save(e)}
+      aria-label="Edit details"
+      className="flex flex-col gap-2 rounded border border-neutral-200 bg-white p-2"
+    >
+      <div className="grid grid-cols-2 gap-2">
+        {DETAIL_FIELDS.map(([f, text], i) => (
+          <label key={f} className="flex flex-col gap-1 text-xs">
+            {text}
+            <input
+              ref={i === 0 ? first : undefined}
+              value={values[f]}
+              onChange={(e) => setValues({ ...values, [f]: e.target.value })}
+              className={field}
+            />
+          </label>
+        ))}
+      </div>
+      <button
+        type="button"
+        className={`${small} self-start`}
+        disabled={filling || saving}
+        onClick={() => void fill()}
+      >
+        Use the contact’s current name and address
+      </button>
+      <p className="text-xs text-neutral-500">
+        The name and address the declaration was made under. A mistake in what
+        was declared is marked made in error and recorded again.
+      </p>
+      {error && (
+        <p role="alert" className="text-xs text-red-700">
+          {error}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button type="submit" className={small} disabled={saving || !changed}>
+          Save details
+        </button>
+        <button
+          type="button"
+          className={small}
+          disabled={saving}
+          onClick={onDone}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  )
+}
+
+/**
+ * Who changed the declaration's name and address snapshot, when, old →
+ * new: behind a toggle, read only once opened.
+ */
+function DetailsChanges({
+  id,
+  name,
+}: {
+  id: string
+  name: (userId: number | undefined) => string
+}) {
+  const [shown, setShown] = useState(false)
+  const history = useDeclarationHistory(id, shown)
+  const blank = (v: string) => v || '(blank)'
+  return (
+    <div className="flex flex-col gap-1 text-xs">
+      <button
+        type="button"
+        aria-expanded={shown}
+        className="self-start text-neutral-600 underline"
+        onClick={() => setShown(!shown)}
+      >
+        Details changes
+      </button>
+      {shown &&
+        (history === undefined ? (
+          <p className="text-neutral-500">Loading…</p>
+        ) : (
+          <ul data-testid="details-changes" className="flex flex-col gap-1">
+            {history.edits.map((e) => (
+              <li key={e.revisionId}>
+                <span className="text-neutral-500">
+                  {name(e.actor ?? undefined)}, {AT.format(e.at)}
+                  {e.source === 'restore' && ' (restored)'}:
+                </span>{' '}
+                {e.changes
+                  .map(
+                    (c) =>
+                      `${FIELD_LABELS[c.field] ?? c.field} ${blank(c.from)} → ${blank(c.to)}`,
+                  )
+                  .join('; ')}
+              </li>
+            ))}
+            {history.more && (
+              <li className="text-neutral-500">Older changes not shown.</li>
+            )}
+          </ul>
+        ))}
+    </div>
   )
 }
 

@@ -64,4 +64,7 @@ export const keys = {
     contactId === undefined
       ? (['t', slug, 'declarations'] as const)
       : (['t', slug, 'declarations', contactId, today ?? ''] as const),
+  /** A declaration's details history: under `declarations`, so their events refetch it. */
+  declarationHistory: (slug: string, id: string) =>
+    ['t', slug, 'declarations', 'history', id] as const,
 }

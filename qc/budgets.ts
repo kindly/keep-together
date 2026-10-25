@@ -156,6 +156,9 @@ export const budgets = {
   'contact.gifts.loadMore': repeatable,
   'contact.giftaid.cancel': repeatable,
   'contact.giftaid.void': repeatable,
+  // Completing a declaration's name and address after it was saved: an
+  // edit, shown only once the server confirms it.
+  'contact.giftaid.details': repeatable,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },

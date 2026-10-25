@@ -18,16 +18,22 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const mutations: Record<string, ReturnType<typeof vi.fn>> = {
   cancel: vi.fn(),
   voidDeclaration: vi.fn(),
+  saveDetails: vi.fn(),
 }
+const snapshot = vi.fn()
+const historyOf = vi.fn()
 let declarations: ContactDeclarations | undefined
 let canWrite = true
 vi.mock('../lib/data', () => ({
   useDeclarations: () => declarations,
   useMembers: () => [{ userId: '1', name: 'Jo Staff' }],
   useGiftAidWrites: () => mutations,
+  fetchContactSnapshot: (...args: Array<unknown>) => snapshot(...args),
+  useDeclarationHistory: (id: string, enabled: boolean) =>
+    enabled ? historyOf(id) : undefined,
 }))
 vi.mock('../lib/tenant', () => ({
-  useTenant: () => ({ _id: 'tenantA' }),
+  useTenant: () => ({ _id: 'tenantA', slug: 'alpha' }),
   useCanWrite: () => canWrite,
 }))
 
@@ -48,6 +54,7 @@ function declaration(over: Partial<Row>): Declaration {
     declarationVersion: 0,
     cancellationVersion: 0,
     voidVersion: 0,
+    detailsVersion: 0,
     ...over,
   } as Row
   return {
@@ -61,6 +68,8 @@ let root: Root
 let el: HTMLDivElement
 beforeEach(() => {
   for (const m of Object.values(mutations)) m.mockReset().mockResolvedValue({})
+  snapshot.mockReset()
+  historyOf.mockReset()
   canWrite = true
   el = document.createElement('div')
   document.body.append(el)
@@ -154,6 +163,7 @@ test('a viewer sees them but changes nothing', () => {
   declarations = { declarations: [declaration({})], currentId: null }
   render()
   expect(buttons(el, 'Mark made in error')).toHaveLength(0)
+  expect(buttons(el, 'Edit details')).toHaveLength(0)
   expect(buttons(el, 'Record cancellation')).toHaveLength(0)
 })
 
@@ -297,4 +307,147 @@ test('Record cancellation confirms, sends the date and note, and shows a refusal
   // Saved: the form closes.
   await confirmed()
   expect(el.querySelector('form[aria-label="Record cancellation"]')).toBeNull()
+})
+
+const detailsForm = () =>
+  el.querySelector<HTMLFormElement>('form[aria-label="Edit details"]')!
+const inputs = (form: HTMLFormElement) => [...form.querySelectorAll('input')]
+
+test('Edit details: prefilled from the snapshot, saves with its counter, closes once confirmed', async () => {
+  declarations = {
+    declarations: [
+      declaration({ addressLine1: '', postcode: '', detailsVersion: 2 }),
+    ],
+    currentId: null,
+  }
+  render()
+  const edit = buttons(cards()[0], 'Edit details')[0]
+  expect(edit.getAttribute('aria-label')).toBe(
+    'Edit details: declaration of 3 Mar 2026 (paper form)',
+  )
+  await click(edit)
+  const form = detailsForm()
+  expect(inputs(form).map((i) => i.value)).toEqual(['Jo', 'Bloggs', '', ''])
+  expect(document.activeElement).toBe(inputs(form)[0])
+  // Nothing changed: nothing to save.
+  expect(buttons(form, 'Save details')[0].disabled).toBe(true)
+  await type(inputs(form)[2], '3 Mill Lane')
+  await type(inputs(form)[3], 'LS1 1AA')
+  await submit(form)
+  expect(mutations.saveDetails).toHaveBeenCalledWith('d1', 2, {
+    firstName: 'Jo',
+    lastName: 'Bloggs',
+    addressLine1: '3 Mill Lane',
+    postcode: 'LS1 1AA',
+  })
+  expect(el.querySelector('form[aria-label="Edit details"]')).toBeNull()
+})
+
+test("Edit details fills from the contact's current name and address", async () => {
+  declarations = { declarations: [declaration({})], currentId: null }
+  snapshot.mockResolvedValue({
+    firstName: 'Joanna',
+    lastName: 'Bloggs',
+    addressLine1: '3 Mill Lane',
+    postcode: 'LS1 1AA',
+  })
+  render()
+  await click(buttons(cards()[0], 'Edit details')[0])
+  const form = detailsForm()
+  await click(buttons(form, 'Use the contact’s current name and address')[0])
+  expect(snapshot).toHaveBeenCalledWith('alpha', 'c1', expect.any(String))
+  expect(inputs(form).map((i) => i.value)).toEqual([
+    'Joanna',
+    'Bloggs',
+    '3 Mill Lane',
+    'LS1 1AA',
+  ])
+  // Not saved until Save details.
+  expect(mutations.saveDetails).not.toHaveBeenCalled()
+})
+
+test('Edit details stale: keeps what was typed, takes the rest from the server, retries from its counter', async () => {
+  declarations = {
+    declarations: [declaration({ addressLine1: '' })],
+    currentId: null,
+  }
+  render()
+  await click(buttons(cards()[0], 'Edit details')[0])
+  const form = detailsForm()
+  await type(inputs(form)[2], '3 Mill Lane')
+  mutations.saveDetails.mockRejectedValueOnce(
+    new RustApiError(409, {
+      kind: 'stale',
+      contract: 'giftaid.declarationDetails',
+      counter: 1,
+      current: {
+        firstName: 'Joe',
+        lastName: 'Bloggs',
+        addressLine1: '',
+        postcode: 'ZZ1 1ZZ',
+      },
+    }),
+  )
+  await submit(form)
+  expect(form.querySelector('[role="alert"]')?.textContent).toBe(
+    'Someone changed these details just now: check them, then save again',
+  )
+  expect(inputs(form).map((i) => i.value)).toEqual([
+    'Joe',
+    'Bloggs',
+    '3 Mill Lane',
+    'ZZ1 1ZZ',
+  ])
+  await submit(form)
+  expect(mutations.saveDetails).toHaveBeenLastCalledWith('d1', 1, {
+    firstName: 'Joe',
+    lastName: 'Bloggs',
+    addressLine1: '3 Mill Lane',
+    postcode: 'ZZ1 1ZZ',
+  })
+})
+
+test('a voided declaration has no Edit details', () => {
+  declarations = {
+    declarations: [declaration({ voidedAt: 1, voidedBy: 1, voidReason: 'x' })],
+    currentId: null,
+  }
+  render()
+  expect(buttons(el, 'Edit details')).toHaveLength(0)
+})
+
+test('details changes: who, when, old → new, read only once opened', async () => {
+  declarations = {
+    declarations: [
+      declaration({ detailsVersion: 1 }),
+      declaration({ _id: 'd0' as Id<'giftAidDeclarations'> }),
+    ],
+    currentId: null,
+  }
+  historyOf.mockReturnValue({
+    edits: [
+      {
+        revisionId: 7,
+        at: Date.UTC(2026, 9, 25, 12),
+        actor: 1,
+        source: 'ui',
+        changes: [
+          { field: 'addressLine1', from: '', to: '3 Mill Lane' },
+          { field: 'postcode', from: '', to: 'LS1 1AA' },
+        ],
+      },
+    ],
+    more: false,
+  })
+  render()
+  // Never changed: no toggle.
+  expect(buttons(cards()[1], 'Details changes')).toHaveLength(0)
+  expect(historyOf).not.toHaveBeenCalled()
+  await click(buttons(cards()[0], 'Details changes')[0])
+  expect(historyOf).toHaveBeenCalledWith('d1')
+  const text = el.querySelector('[data-testid="details-changes"]')!.textContent
+  expect(text).toContain('Jo Staff, ')
+  expect(text).toContain(
+    'House number or name (blank) → 3 Mill Lane; Postcode (blank) → LS1 1AA',
+  )
 })

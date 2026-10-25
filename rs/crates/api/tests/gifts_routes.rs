@@ -1463,6 +1463,127 @@ async fn the_gift_aid_panel_cancels_and_voids() {
     assert_eq!(panel["declarations"][0]["warnings"], json!([]));
 }
 
+/// "Edit details": a declaration saved with no address is completed, its
+/// warning clears, the change is in its history; stale, width and a
+/// voided declaration are refused.
+#[tokio::test]
+async fn the_gift_aid_panel_completes_a_declarations_details() {
+    let g = setup().await;
+    let out = g.record(json!({ "giftAid": {} })).await;
+    let contact = str_of(&out["contactId"]);
+    let declaration = str_of(&out["declarationId"]);
+    let row = g.declarations(&contact).await["declarations"][0].clone();
+    assert_eq!(row["detailsVersion"], 0);
+    let had: Vec<&str> = row["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["label"].as_str().unwrap())
+        .collect();
+    assert!(had.contains(&"Home address"), "{had:?}");
+    let details = |expected: i64, line1: &str| {
+        json!({
+            "expected": expected,
+            "firstName": row["firstName"],
+            "lastName": row["lastName"],
+            "addressLine1": line1,
+            "postcode": "ls1 1aa",
+        })
+    };
+    let path = format!("/api/t/alpha/giftaid/{declaration}/details");
+    let saved = ok(
+        &g.w,
+        "POST",
+        &path,
+        &g.ann,
+        Some(details(0, " 3  Mill Lane ")),
+    )
+    .await;
+    assert_eq!(saved, json!({ "id": declaration, "counter": 1 }));
+    let row = g.declarations(&contact).await["declarations"][0].clone();
+    assert_eq!(
+        (
+            &row["addressLine1"],
+            &row["postcode"],
+            &row["detailsVersion"]
+        ),
+        (&json!("3 Mill Lane"), &json!("LS1 1AA"), &json!(1))
+    );
+    assert!(
+        !row["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["label"] == "Home address"),
+        "{}",
+        row["warnings"]
+    );
+    let history = ok(
+        &g.w,
+        "GET",
+        &format!("/api/t/alpha/giftaid/{declaration}/history"),
+        &g.ann,
+        None,
+    )
+    .await;
+    assert_eq!(history["more"], false);
+    assert_eq!(history["edits"][0]["source"], "ui");
+    assert_eq!(
+        history["edits"][0]["changes"],
+        json!([
+            { "field": "addressLine1", "from": "", "to": "3 Mill Lane" },
+            { "field": "postcode", "from": "", "to": "LS1 1AA" },
+        ])
+    );
+    // Stale: 409 with the snapshot now.
+    let (s, e) = g.w.call("POST", &path, &g.ann, Some(details(0, "4"))).await;
+    assert_eq!(
+        (s, &e["kind"], &e["counter"], &e["current"]["addressLine1"]),
+        (
+            StatusCode::CONFLICT,
+            &json!("stale"),
+            &json!(1),
+            &json!("3 Mill Lane")
+        )
+    );
+    // One character over the width: 422 invalid.
+    let (s, e) =
+        g.w.call("POST", &path, &g.ann, Some(details(1, &"é".repeat(201))))
+            .await;
+    assert_eq!(
+        (s, &e["kind"], &e["problems"][0]["field"]),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!("invalid"),
+            &json!("addressLine1")
+        )
+    );
+    // Voided: nothing to fix.
+    ok(
+        &g.w,
+        "POST",
+        &format!("/api/t/alpha/giftaid/{declaration}/void"),
+        &g.ann,
+        Some(json!({ "reason": "wrong Jo" })),
+    )
+    .await;
+    let (s, e) = g.w.call("POST", &path, &g.ann, Some(details(1, "4"))).await;
+    assert_eq!(
+        (s, &e["reason"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("voided"))
+    );
+    // Unknown id: 404.
+    let (s, _) =
+        g.w.call(
+            "GET",
+            &format!("/api/t/alpha/giftaid/{}/history", "0".repeat(32)),
+            &g.ann,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
 /// `POST contacts/{id}/giftaid` (Convex's `declare`): a declaration on its
 /// own, refused for an organisation, the path's contact only.
 #[tokio::test]
@@ -1617,6 +1738,19 @@ async fn every_gift_route_keeps_two_orgs_apart() {
             "POST",
             format!("/api/t/beta/giftaid/{declaration}/void"),
             Some(json!({ "reason": "nope" })),
+        ),
+        (
+            "POST",
+            format!("/api/t/beta/giftaid/{declaration}/details"),
+            Some(json!({
+                "expected": 0, "firstName": "X", "lastName": "Y", "addressLine1": "1",
+                "postcode": "AB1 2CD",
+            })),
+        ),
+        (
+            "GET",
+            format!("/api/t/beta/giftaid/{declaration}/history"),
+            None,
         ),
     ];
     for (method, path, body) in &not_found {

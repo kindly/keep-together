@@ -145,6 +145,7 @@ test('wire integers become bigint pence; nulls are absent fields', () => {
     declarationVersion: 0,
     cancellationVersion: 0,
     voidVersion: 0,
+    detailsVersion: 0,
     warnings: [],
   }
   // The coverage rules test `!== undefined`: a null must not read as set.

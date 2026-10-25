@@ -27,6 +27,8 @@ import { useTenant } from '../../tenant'
 import { ownWrite } from '../events'
 import type { AllocationView } from '../rust-types/AllocationView'
 import type { Cancelled } from '../rust-types/Cancelled'
+import type { DeclarationDetails } from '../rust-types/DeclarationDetails'
+import type { DeclarationDetailsHistory } from '../rust-types/DeclarationDetailsHistory'
 import type { DeclarationRow } from '../rust-types/DeclarationRow'
 import type { DeclarationSummary } from '../rust-types/DeclarationSummary'
 import type { Declarations as WireDeclarations } from '../rust-types/Declarations'
@@ -130,7 +132,11 @@ export type ContactDeclarations = {
   currentId: DeclarationId | null
 }
 
-export type { DeclarationSummary }
+export type {
+  DeclarationDetails,
+  DeclarationDetailsHistory,
+  DeclarationSummary,
+}
 
 /** The record-gift page's one save, amounts in pence as `bigint`. */
 export type RecordGiftArgs = Omit<RecordGift, 'amount' | 'allocations'> & {
@@ -407,6 +413,48 @@ export function useDeclarations(
   }).data
 }
 
+/**
+ * A declaration's details history (who changed its name and address
+ * snapshot, when, old → new), newest first; undefined while loading or
+ * when not `enabled`. A declaration's events refetch it.
+ */
+export function useDeclarationHistory(
+  id: string,
+  enabled: boolean,
+): DeclarationDetailsHistory | undefined {
+  const { slug } = useTenant()
+  return useQuery({
+    queryKey: keys.declarationHistory(slug, id),
+    enabled,
+    queryFn: () =>
+      get<DeclarationDetailsHistory>(
+        tenantPath(slug, 'giftaid', id, 'history'),
+      ),
+  }).data
+}
+
+/**
+ * The contact's name and home address as a declaration made now would
+ * snapshot them (the record-gift tick's), read fresh: "Edit details"
+ * fills its form from it.
+ */
+export async function fetchContactSnapshot(
+  slug: string,
+  contactId: string,
+  today: string,
+): Promise<DeclarationDetails> {
+  const donor = await get<DonorView>(
+    tenantPath(slug, 'contacts', contactId, 'donor'),
+    new URLSearchParams({ date: today }),
+  )
+  return {
+    firstName: donor.firstName,
+    lastName: donor.lastName,
+    addressLine1: donor.home.line1,
+    postcode: donor.home.postcode,
+  }
+}
+
 // ── writes ─────────────────────────────────────────────────────────────────
 
 /** The gift's own view (not its history): a write's answer replaces it. */
@@ -507,8 +555,10 @@ export function useGiftWrites(id: string) {
 
 /**
  * The Gift Aid panel's writes: cancel every declaration open at a date,
- * or mark one made in error. Each resolves once committed and the panel
- * has been refetched.
+ * mark one made in error, or change one's name and address snapshot
+ * (`expected`: its `detailsVersion`; `stale` carries the snapshot now).
+ * Each resolves once committed and the panel has been refetched: never
+ * optimistic.
  */
 export function useGiftAidWrites(contactId: string) {
   const { slug } = useTenant()
@@ -534,6 +584,13 @@ export function useGiftAidWrites(contactId: string) {
     voidDeclaration: (id: string, reason: string) =>
       after(
         post<Executed>(tenantPath(slug, 'giftaid', id, 'void'), { reason }),
+      ),
+    saveDetails: (id: string, expected: number, details: DeclarationDetails) =>
+      after(
+        post<Executed>(tenantPath(slug, 'giftaid', id, 'details'), {
+          ...details,
+          expected,
+        }),
       ),
   }
 }

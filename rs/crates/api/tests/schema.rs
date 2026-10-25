@@ -122,6 +122,15 @@ const FIXTURES: &[&str] = &[
          NULL, 1, 1000);",
     // 13: the recovery generation (its row is the migration's own)
     "UPDATE recovery SET generation = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d1';",
+    // 14: a declaration's details counter; the v12 row completed once
+    "UPDATE gift_aid_declarations SET address_line1 = '2 Road', details_version = 1
+     WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c1';
+     INSERT INTO revisions (entity, entity_id, contract, version, counter, payload, actor,
+         source, at)
+     VALUES ('gift_aid_declarations', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c1',
+         'giftaid.declarationDetails', 1, 1,
+         '{\"firstName\":\"Ann\",\"lastName\":\"Smith\",\"addressLine1\":\"2 Road\",\"postcode\":\"LS1 1AA\"}',
+         1, 'ui', 2000);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";

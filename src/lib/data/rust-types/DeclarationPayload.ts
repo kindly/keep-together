@@ -3,11 +3,15 @@ import type { DeclarationMethod } from "./DeclarationMethod";
 import type { DeclarationScope } from "./DeclarationScope";
 
 /**
- * The `giftaid.declaration` slice: everything a declaration says.
- * Create-only: a declaration is never edited (the chain is add-only).
- * `firstName` … `postcode` are a snapshot of the name and home address
- * it was made under (3.6.2: house number or name and postcode suffice):
- * the audit record, kept through erasure for HMRC's 6 years (3.30).
+ * The `giftaid.declaration` slice: everything a declaration says, as
+ * made. Create-only: what was declared (scope, date, method, wording,
+ * gift) is never edited (the chain is add-only). `firstName` … `postcode`
+ * are a snapshot of the name and home address it was made under (3.6.2:
+ * house number or name and postcode suffice): the audit record, kept
+ * through erasure for HMRC's 6 years (3.30). The create sets them; after
+ * that they belong to `giftaid.declarationDetails` ([`DetailsPayload`]),
+ * so a declaration saved before staff had the address can be completed,
+ * and a typo fixed, each change a revision.
  */
 export type DeclarationPayload = { contactId: string, scope: DeclarationScope, 
 /**

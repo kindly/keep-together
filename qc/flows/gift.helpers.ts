@@ -95,6 +95,7 @@ export async function declare(
   contactId: string,
   madeOn: string,
   method: 'paperForm' | 'oral' | 'staffTickedNoEvidence' = 'paperForm',
+  snapshot: { addressLine1?: string; postcode?: string } = {},
 ): Promise<string> {
   const { id } = await call<Executed>(
     r,
@@ -110,6 +111,7 @@ export async function declare(
       lastName: 'Donor',
       addressLine1: '1 High Street',
       postcode: 'AB1 2CD',
+      ...snapshot,
     },
   )
   return id

@@ -8,7 +8,9 @@ use std::sync::Arc;
 use contacts::acquisition::{NewContact, create_contact};
 use contacts::types::{CreateContact, Details, Kind};
 use contracts::{ContractError, Ctx, Exec, Executed, Source, execute, restore, restore_entity_to};
-use giftaid::types::{CancellationPayload, Declaration, DeclarationPayload, Method, Scope};
+use giftaid::types::{
+    CancellationPayload, Declaration, DeclarationPayload, DetailsPayload, Method, Scope,
+};
 use giftaid::{CANCELLATION, HMRC_MODEL_WORDING_VERSION, REGISTRY, uk_date};
 use giving::types::{AllocationRow, GiftPayload};
 use rusqlite::Connection;
@@ -34,6 +36,7 @@ fn migrations() -> Migrations<'static> {
         M::up(contacts::acquisition::MIGRATION),
         M::up(giving::MIGRATION),
         M::up(giftaid::MIGRATION),
+        M::up(giftaid::MIGRATION_DETAILS),
     ])
 }
 
@@ -997,4 +1000,309 @@ fn a_contact_has_at_most_the_declaration_limit() {
         reason(w.declare(w.payload()).unwrap_err()),
         "declaration_limit"
     );
+}
+
+// ── giftaid.declarationDetails ─────────────────────────────────────────────
+
+impl World {
+    fn details(
+        &self,
+        id: &str,
+        expected: i64,
+        d: DetailsPayload,
+    ) -> Result<Executed, ContractError> {
+        tx(&self.a, |ctx| {
+            giftaid::save_details(ctx, id, expected, d, Source::Ui)
+        })
+    }
+
+    fn row(&self, id: &str) -> giftaid::DeclarationRow {
+        self.panel("2026-10-23")
+            .declarations
+            .into_iter()
+            .find(|d| d.declaration.id == id)
+            .unwrap()
+    }
+
+    fn history(&self, id: &str) -> giftaid::DetailsHistory {
+        read(&self.a, |c| Ok(giftaid::details_history(c, id)?)).unwrap()
+    }
+}
+
+fn snapshot(first: &str, last: &str, line1: &str, postcode: &str) -> DetailsPayload {
+    DetailsPayload {
+        first_name: first.into(),
+        last_name: last.into(),
+        address_line1: line1.into(),
+        postcode: postcode.into(),
+    }
+}
+
+fn anchors(row: &giftaid::DeclarationRow) -> Vec<&str> {
+    row.warnings.iter().map(|w| w.anchor.as_str()).collect()
+}
+
+/// The human's case (2026-10-25): Gift Aid ticked before staff had the
+/// address. Completing it later tidies as at create, clears the warning
+/// (warnings are derived) and leaves what was declared, and coverage, alone.
+#[test]
+fn completing_the_address_later_tidies_clears_the_warning_and_keeps_the_declaration() {
+    let w = world();
+    let made = w
+        .declare(DeclarationPayload {
+            address_line1: String::new(),
+            postcode: String::new(),
+            ..w.payload()
+        })
+        .unwrap();
+    assert_eq!(anchors(&w.row(&made.id)), ["addressLine1"]);
+    let covered = w.covering("2026-05-01", None);
+    let done = w
+        .details(
+            &made.id,
+            0,
+            snapshot(" Jo ", "Bloggs", " 3   Mill Lane ", "ls1  1aa"),
+        )
+        .unwrap();
+    assert_eq!(done.counter, 1);
+    let row = w.row(&made.id);
+    assert!(row.warnings.is_empty(), "{:?}", row.warnings);
+    let d = row.declaration;
+    assert_eq!(
+        d.payload,
+        DeclarationPayload {
+            address_line1: "3 Mill Lane".into(),
+            postcode: "LS1 1AA".into(),
+            ..w.payload()
+        }
+    );
+    assert_eq!(
+        (
+            d.declaration_version,
+            d.details_version,
+            d.cancellation_version,
+            d.void_version,
+            d.entered_by
+        ),
+        (0, 1, 0, 0, Some(ANN))
+    );
+    assert_eq!(w.covering("2026-05-01", None), covered);
+    // Blanking a field again is storable, and warns again.
+    w.details(&made.id, 1, snapshot("Jo", "", "3 Mill Lane", "LS1 1AA"))
+        .unwrap();
+    assert_eq!(anchors(&w.row(&made.id)), ["lastName"]);
+    w.b_untouched();
+}
+
+#[test]
+fn details_are_stale_checked_and_a_stale_refusal_carries_the_snapshot_now() {
+    let w = world();
+    let made = w.declare(w.payload()).unwrap();
+    w.details(&made.id, 0, snapshot("Jo", "Bloggs", "14", "SW1A 1AA"))
+        .unwrap();
+    let err = w
+        .details(&made.id, 0, snapshot("Jo", "Blogs", "12", "SW1A 1AA"))
+        .unwrap_err();
+    let ContractError::Stale {
+        contract,
+        counter,
+        current,
+    } = err
+    else {
+        panic!("not stale: {err:?}");
+    };
+    assert_eq!((contract, counter), ("giftaid.declarationDetails", 1));
+    assert_eq!(
+        current,
+        serde_json::json!({
+            "firstName": "Jo", "lastName": "Bloggs", "addressLine1": "14", "postcode": "SW1A 1AA"
+        })
+    );
+    assert_eq!(w.declaration(&made.id).payload.address_line1, "14");
+}
+
+#[test]
+fn details_are_refused_on_a_voided_declaration_and_allowed_on_a_cancelled_one() {
+    let w = world();
+    let voided = w.declare(w.payload()).unwrap();
+    w.void(&voided.id, "wrong donor").unwrap();
+    let err = w
+        .details(&voided.id, 0, snapshot("Jo", "Bloggs", "14", "SW1A 1AA"))
+        .unwrap_err();
+    assert_eq!(reason(err), "voided");
+    assert_eq!(w.declaration(&voided.id).payload.address_line1, "12");
+
+    let w = world();
+    let cancelled = w.declare(w.payload()).unwrap();
+    w.cancel("2026-06-01", None).unwrap();
+    w.details(&cancelled.id, 0, snapshot("Jo", "Bloggs", "14", "SW1A 1AA"))
+        .unwrap();
+    let d = w.declaration(&cancelled.id);
+    assert_eq!(
+        (
+            d.payload.address_line1.as_str(),
+            d.cancelled_from.as_deref()
+        ),
+        ("14", Some("2026-06-01"))
+    );
+}
+
+#[test]
+fn details_have_the_create_widths_and_a_refusal_writes_nothing() {
+    let w = world();
+    let made = w.declare(w.payload()).unwrap();
+    let wide = "x".repeat(giftaid::rules::SNAPSHOT_FIELD_MAX + 1);
+    let err = w
+        .details(&made.id, 0, snapshot(&wide, "Bloggs", "12", "SW1A 1AA"))
+        .unwrap_err();
+    let ContractError::Invalid(problems) = err else {
+        panic!("not invalid: {err:?}");
+    };
+    assert_eq!(problems[0].field, "firstName");
+    let d = w.declaration(&made.id);
+    assert_eq!(
+        (d.payload.first_name.as_str(), d.details_version),
+        ("Jo", 0)
+    );
+    assert!(w.history(&made.id).edits.is_empty());
+    // The create refuses the same width.
+    let err = w
+        .declare(DeclarationPayload {
+            first_name: wide,
+            ..w.payload()
+        })
+        .unwrap_err();
+    assert_eq!(reason(err), "invalid");
+}
+
+/// Every change is a revision, shown as who, when, old → new; a save
+/// that changed nothing isn't listed; a restore of an older snapshot is a
+/// change like any other.
+#[test]
+fn every_change_is_in_the_declarations_history_old_to_new() {
+    let w = world();
+    let made = w
+        .declare(DeclarationPayload {
+            address_line1: String::new(),
+            postcode: String::new(),
+            ..w.payload()
+        })
+        .unwrap();
+    assert_eq!(
+        w.history(&made.id),
+        giftaid::DetailsHistory {
+            edits: vec![],
+            more: false
+        }
+    );
+    tx_at(&w.a, 1_000, |ctx| {
+        giftaid::save_details(
+            ctx,
+            &made.id,
+            0,
+            snapshot("Jo", "Bloggs", "12", "SW1A 1AA"),
+            Source::Ui,
+        )
+    })
+    .unwrap();
+    tx_at(&w.a, 2_000, |ctx| {
+        giftaid::save_details(
+            ctx,
+            &made.id,
+            1,
+            snapshot("Joe", "Bloggs", "12", "SW1A 1AA"),
+            Source::Ui,
+        )
+    })
+    .unwrap();
+    // Nothing changed: a revision, not an entry.
+    w.details(&made.id, 2, snapshot("Joe", "Bloggs", "12", "SW1A 1AA"))
+        .unwrap();
+    let change = |field: &str, from: &str, to: &str| giftaid::types::DetailsChange {
+        field: field.into(),
+        from: from.into(),
+        to: to.into(),
+    };
+    let h = w.history(&made.id);
+    assert!(!h.more);
+    let seen: Vec<_> = h
+        .edits
+        .iter()
+        .map(|e| (e.at, e.actor, e.source, e.changes.clone()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (
+                2_000,
+                Some(ANN),
+                Source::Ui,
+                vec![change("firstName", "Jo", "Joe")]
+            ),
+            (
+                1_000,
+                Some(ANN),
+                Source::Ui,
+                vec![
+                    change("addressLine1", "", "12"),
+                    change("postcode", "", "SW1A 1AA")
+                ]
+            ),
+        ]
+    );
+    // Restore the first edit: the name goes back, as a change of its own.
+    tx(&w.a, |ctx| {
+        restore(ctx, &REGISTRY, h.edits[1].revision_id, None)
+    })
+    .unwrap();
+    assert_eq!(w.declaration(&made.id).payload.first_name, "Jo");
+    let newest = &w.history(&made.id).edits[0];
+    assert_eq!(
+        (newest.source, newest.changes.clone()),
+        (Source::Restore, vec![change("firstName", "Joe", "Jo")])
+    );
+}
+
+#[test]
+fn the_history_reads_the_newest_hundred_changes() {
+    let w = world();
+    let made = w.declare(w.payload()).unwrap();
+    let n = giftaid::declarations::DETAILS_HISTORY_LIMIT as i64 + 1;
+    tx(&w.a, |ctx| {
+        for i in 0..n {
+            giftaid::save_details(
+                ctx,
+                &made.id,
+                i,
+                snapshot("Jo", "Bloggs", &i.to_string(), "SW1A 1AA"),
+                Source::Ui,
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let h = w.history(&made.id);
+    assert!(h.more);
+    assert_eq!(h.edits.len(), giftaid::declarations::DETAILS_HISTORY_LIMIT);
+    assert_eq!(h.edits[0].changes[0].to, (n - 1).to_string());
+}
+
+#[test]
+fn another_organisation_cant_change_or_read_the_details() {
+    let w = world();
+    let made = w.declare(w.payload()).unwrap();
+    let err = tx(&w.b, |ctx| {
+        giftaid::save_details(
+            ctx,
+            &made.id,
+            0,
+            snapshot("X", "Y", "1", "AB1 2CD"),
+            Source::Ui,
+        )
+    })
+    .unwrap_err();
+    assert_eq!(reason(err), "not_found");
+    assert!(read(&w.b, |c| Ok(giftaid::details_history(c, &made.id)?)).is_none());
+    assert_eq!(w.declaration(&made.id).payload.first_name, "Jo");
+    w.b_untouched();
 }
