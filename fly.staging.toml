@@ -39,9 +39,10 @@ kill_timeout = 30
   # KEEP_MAIL=off: what needs email is refused (mail_off), and their
   # invite links come from `keep auth invite` in `fly ssh console`.
   KEEP_MAIL = "smtp"
-  # PLACEHOLDER: the controller replaces this with the human's addresses
-  # before merge. Full addresses or @domain, comma-separated.
-  KEEP_MAIL_ONLY_TO = "@keep-together.org.uk"
+  # Who may get staging's mail: full addresses or @domain,
+  # comma-separated. Each must be verified in SES while keep-mail-tx is in
+  # the sandbox.
+  KEEP_MAIL_ONLY_TO = "mr.raznick@gmail.com"
 
 [mounts]
   source = "keep_data"
