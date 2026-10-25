@@ -51,7 +51,7 @@ fi
 
 say "Route 53 records (keep-prod)"
 zone_id=$(aws route53 list-hosted-zones-by-name "${prod[@]}" --dns-name "$ZONE." \
-  --query "HostedZones[?Name=='$ZONE.' && !Config.PrivateZone].Id | [0]" --output text)
+  --query "HostedZones[?Name=='$ZONE.' && Config.PrivateZone==\`false\`].Id | [0]" --output text)
 [[ $zone_id == /hostedzone/* ]] || die "no public hosted zone $ZONE in keep-prod"
 aws route53 list-hosted-zones-by-name "${prod[@]}" --dns-name "$DOMAIN." \
   --query "HostedZones[?Name=='$DOMAIN.'].Id" --output text | grep -q . &&
