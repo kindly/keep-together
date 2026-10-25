@@ -6,6 +6,7 @@ import { assertFlow, probeRtt, runFlow, runId, tapContext } from './timing'
 import type { FlowName } from './budgets'
 import type { FlowRecord, FlowStep } from './timing'
 import { pendingStep } from './pending'
+import { recordRetry } from './retries'
 import { nextTotp } from './totp'
 import type { QcWorld } from '../src/lib/data/rust-types/QcWorld'
 
@@ -80,21 +81,38 @@ function setupHeaders(inst: Instance): Record<string, string> {
 }
 
 /**
- * How long a set-up call may take. They answer in milliseconds; one that
- * hangs (once on staging, 2026-10-25: a session call never answered and
- * the test timed out at 30 s "setting up storageState") fails or retries
- * with its route named, well inside the test's timeout.
+ * How long a set-up call may take, its body included. They answer in
+ * milliseconds; one that hangs (once on staging, 2026-10-25: a session
+ * call never answered and the test timed out at 30 s "setting up
+ * storageState") fails or retries with its route named, well inside the
+ * test's timeout.
  */
 const SETUP_TIMEOUT_MS = 10_000
+
+/** The test a set-up call is for, or `worker setup` outside one. */
+function setupWhere(): string {
+  try {
+    return base.info().titlePath.join(' › ')
+  } catch {
+    return 'worker setup'
+  }
+}
 
 async function post<T>(
   inst: Instance,
   route: string,
   body: unknown,
-  /** Safe to send twice (a session, the seed): one retry after a hang or a dropped connection. */
+  /**
+   * Safe to send twice, and nothing a late first try could undo: one
+   * retry after no answer, recorded (qc/retries.ts). A session is (each
+   * call makes its own); the seed isn't (each sets new credentials, and
+   * an abandoned first try still running on the server could overwrite
+   * the retry's), so it never retries.
+   */
   retry = false,
 ): Promise<{ data: T; res: Response }> {
   let res: Response
+  let text: string
   try {
     res = await fetch(`${inst.api}${route}`, {
       method: 'POST',
@@ -102,17 +120,26 @@ async function post<T>(
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(SETUP_TIMEOUT_MS),
     })
+    text = await res.text()
   } catch (err) {
-    // No answer: a timeout, or a network error. Never an HTTP status.
+    // No answer, or no whole body: a timeout or a network error. Never an
+    // HTTP status.
     const why = err instanceof Error ? err.name : String(err)
     if (!retry)
       throw new Error(`${route}: no answer (${why}) from ${inst.name}`)
     console.warn(`qc set-up ${route}: no answer (${why}), retrying once`)
+    recordRetry({
+      route,
+      instance: inst.name,
+      where: setupWhere(),
+      why,
+      at: Date.now(),
+    })
     return post<T>(inst, route, body, false)
   }
   // The body, never the request: it can't hold the token.
-  if (!res.ok) throw new Error(`${route}: ${res.status} ${await res.text()}`)
-  return { data: (await res.json()) as T, res }
+  if (!res.ok) throw new Error(`${route}: ${res.status} ${text}`)
+  return { data: JSON.parse(text) as T, res }
 }
 
 /**
@@ -318,12 +345,10 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   world: [
     async ({ instance }, use, workerInfo) => {
       const route = setupRoute(instance, 'qc-seed', 'seed')
-      const { data } = await post<QcWorld>(
-        instance,
-        route,
-        { runId: runId(), worker: workerInfo.parallelIndex },
-        true,
-      )
+      const { data } = await post<QcWorld>(instance, route, {
+        runId: runId(),
+        worker: workerInfo.parallelIndex,
+      })
       await use({
         ...data,
         tenants: data.tenants.map((t) => ({ ...t, tenantId: t.slug })),

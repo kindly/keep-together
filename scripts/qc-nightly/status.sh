@@ -22,6 +22,8 @@ row() { # one runs.log line, as a table row
   [ -z "$(field staging-check "$line")" ] || extra="$extra staging-check=$(field staging-check "$line")"
   [ "$(field rttover "$line")" = "" ] || [ "$(field rttover "$line")" = 0 ] ||
     extra="$extra (rttover=$(field rttover "$line"))"
+  [ "$(field retries "$line")" = "" ] || [ "$(field retries "$line")" = 0 ] ||
+    extra="$extra (set-up retries=$(field retries "$line"): see the run's SETUP RETRIES banner)"
   printf '%-25s %-12s %-6s %5s %4s %4s  %s\n' "${line%% *}" "${commit:0:12}" \
     "$(field result "$line")" "$(field flows "$line")" "$(field over "$line")" \
     "$(field rtt "$line")" "$extra"

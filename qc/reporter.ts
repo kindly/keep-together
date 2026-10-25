@@ -33,6 +33,7 @@ import type { LinkFile } from './link.setup'
 import { formatServer, serverSummary } from './server'
 import type { ServerSummary as RouteSummary } from './server'
 import { isPorted } from '../src/lib/data/ported'
+import { readRetries, retryBanner, retryCounts } from './retries'
 import type { Budget, FlowKind, FlowName } from './budgets'
 
 // QC reporter: gathers every flow record the workers wrote for this run
@@ -74,6 +75,11 @@ import type { Budget, FlowKind, FlowName } from './budgets'
 // (`mailOff` in qc/fixtures.ts). A MAIL OFF banner lists those tests on
 // every such run, and the run's history lines carry them (`mailOff`), so
 // a green run never reads as the email paths having worked.
+//
+// A set-up call that got no answer and was sent again (qc/retries.ts) is
+// listed in a SETUP RETRIES banner, marked when the run before retried
+// the same route, and counted on the run's history lines
+// (`setupRetries`). Passing, never failing: a hang that recurs shows.
 
 const HISTORY = path.join('qc-results', 'history.jsonl')
 
@@ -91,6 +97,11 @@ export interface HistoryLine {
    * a run; absent when mail was on.
    */
   mailOff?: Array<string>
+  /**
+   * Set-up calls retried after no answer, by route (qc/retries.ts). The
+   * same on every line of a run; absent when none was.
+   */
+  setupRetries?: Record<string, number>
   flow: FlowName
   kind: FlowKind
   n: number
@@ -217,7 +228,15 @@ export function summarise(
   records: Array<FlowRecord>,
   base: Pick<
     HistoryLine,
-    'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'env' | 'server' | 'mailOff'
+    | 'runId'
+    | 'at'
+    | 'sha'
+    | 'dirty'
+    | 'mode'
+    | 'env'
+    | 'server'
+    | 'mailOff'
+    | 'setupRetries'
   >,
   link: LinkFile | null,
   /** history.jsonl before this run, oldest first: the drift baseline. */
@@ -534,6 +553,11 @@ export default class QcReporter implements Reporter {
     const out = ['']
     const failures: Array<string> = []
     let summary: Array<HistoryLine> = []
+    const env = process.env.QC_TARGET === 'staging' ? 'staging' : 'local'
+    const past = existsSync(HISTORY)
+      ? parseHistory(readFileSync(HISTORY, 'utf8')).lines
+      : []
+    const retries = readRetries(runDir(id))
 
     if (records.length) {
       const selfTest = new Set(
@@ -541,9 +565,6 @@ export default class QcReporter implements Reporter {
       )
       const link = readLink(runDir(id))
       const server = serverSummary(records)
-      const past = existsSync(HISTORY)
-        ? parseHistory(readFileSync(HISTORY, 'utf8')).lines
-        : []
       const lines = summarise(
         records,
         {
@@ -552,9 +573,10 @@ export default class QcReporter implements Reporter {
           sha: git(['rev-parse', 'HEAD']),
           dirty: git(['status', '--porcelain']) !== '',
           mode: RECORD ? 'record' : 'assert',
-          env: process.env.QC_TARGET === 'staging' ? 'staging' : 'local',
+          env,
           server: historyServer(server),
           ...(this.mailOff.size && { mailOff: [...this.mailOff].sort() }),
+          ...(retries.length && { setupRetries: retryCounts(retries) }),
         },
         link,
         past,
@@ -608,6 +630,7 @@ export default class QcReporter implements Reporter {
     const routes = readRoutes()
     out.push(...pendingBanner(this.pending, routes))
     out.push(...mailOffBanner([...this.mailOff]))
+    out.push(...retryBanner(retries, past, env))
 
     const timed = new Set(records.map((r) => r.flow))
     const untimed = (Object.entries(budgets) as Array<[FlowName, Budget]>)
