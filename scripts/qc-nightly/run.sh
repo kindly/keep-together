@@ -7,6 +7,7 @@
 # 1. One run at a time (flock): a second one records `void` and exits.
 # 2. Waits up to 5 min for the network (a catch-up run at boot can start
 #    before it; user units can't order against network-online.target).
+#    No DNS by then: void. DNS but gh failing: error step=gh.
 # 3. Waits up to 45 min for a Deploy workflow still queued or running,
 #    then takes the commit staging runs: the Deploy run that finished last
 #    and got as far as its "Deploy keep-staging" step. If that step
@@ -21,24 +22,30 @@
 #    installed (waiting out a build under way), then the main checkout's
 #    .qc.lock (scripts/lockfile.mjs's format, so a local `pnpm qc` and the
 #    preview's builds wait for it, and it waits for them).
-# 6. Looks again: if a deploy started or staging moved meanwhile, back to
-#    3 (at most twice more). The lock is re-dated just before QC, so the
-#    waits never make it look stale.
+# 6. Looks again: if a deploy started or another Deploy run finished
+#    meanwhile (same commit or not), back to 3 (at most twice more). The
+#    lock is re-dated just before QC, so the waits never make it look
+#    stale.
 # 7. `pnpm qc --target staging` with KEEP_QC_TOKEN read from qc-token
 #    into that process's env only, then `pnpm qc:report`.
-# 8. One line in runs.log (fields in docs/ops.md). The result:
-#    - pass: QC passed against one commit, judged at the hosted RTT;
-#    - fail: QC failed (the suite, a budget, a gate);
+# 8. Looks again (3 tries): a deploy job started or another Deploy run
+#    finished during the run.
+# 9. One line in runs.log (fields in docs/ops.md). The result:
+#    - pass: QC passed against one deploy, judged at the hosted RTT;
+#    - fail: QC failed (the suite, a budget, a gate), or failed and
+#      staging couldn't be checked afterwards (staging-check=unknown);
 #    - error: the run broke before QC could judge anything;
 #    - void, with reason=: the result can't be trusted either way (staging
 #      redeployed or a deploy started during the run, a deploy still busy
 #      after 45 min, the commit uncertain, latency not judged because the
-#      RTT was over the ceiling, no network, another run in progress).
-#      A void neither counts toward the streak nor breaks it.
+#      RTT was over the ceiling, staging uncheckable after a pass, no
+#      network, another run in progress). It ends the streak of passing
+#      nights (status.sh) but isn't a failure.
 #    fail and error open a GitHub issue labelled qc-nightly, or comment on
-#    the open one.
+#    the open one; so do voids that keep coming (the last 2 runs, or 36 h
+#    with no pass, fail or error), since a lasting one stalls the gate.
 #
-# Exit 0: pass or void. Exit 1: fail or error.
+# Exit 0: pass, or a void that isn't lasting. Exit 1: everything else.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh source-path=SCRIPTDIR
@@ -57,11 +64,12 @@ staging_url=${QC_STAGING_URL:-https://staging.keep-together.org.uk}
 commit=""
 
 # ---- the outcome --------------------------------------------------------------
-report_issue() { # $1: the runs.log line, $2: the failing flows (or empty)
+report_issue() { # $1: the runs.log line, $2: the failing flows (or empty), $3: a note
   local title body open
   # shellcheck disable=SC2016 # backticks are markdown
   body=$(
     printf 'Nightly QC against staging: **%s**\n\n' "$(field result "$1")"
+    [ -z "${3:-}" ] || printf '%s\n\n' "$3"
     printf -- '- commit: %s\n' "${commit:-unknown}"
     printf -- '- runs.log: `%s`\n' "$1"
     [ -z "$2" ] || printf -- '- flows that failed: %s\n' "$2"
@@ -73,14 +81,30 @@ report_issue() { # $1: the runs.log line, $2: the failing flows (or empty)
   if [ -n "$open" ]; then
     run gh issue comment "$open" -R "$slug" --body "$body"
   else
-    title="Nightly QC failing ($(date -u +%Y-%m-%dT%H:%MZ))"
+    title="Nightly QC needs a look ($(date -u +%Y-%m-%dT%H:%MZ))"
     run gh issue create -R "$slug" --label qc-nightly --title "$title" --body "$body"
   fi
 }
 
-# Write the runs.log line, alert on fail or error, exit.
+# Voids that keep coming: the last 2 runs void, or no pass, fail or error
+# for 36 h (since the first run, if none yet). Prints why.
+voids_persist() {
+  local runs=$NIGHTLY/runs.log judged since
+  if [ "$(tail -n 2 "$runs" | grep -cE ' result=void( |$)')" = 2 ]; then
+    echo "The last 2 runs were void: no verdict, and the gate isn't moving."
+    return 0
+  fi
+  judged=$(grep -E ' result=(pass|fail|error)( |$)' "$runs" | tail -n 1)
+  since=${judged:-$(head -n 1 "$runs")}
+  since=${since%% *}
+  (($(date +%s) - $(date -d "$since" +%s) > 36 * 3600)) || return 1
+  echo "No pass or fail since $since (36 h): only void runs, and the gate isn't moving."
+}
+
+# Write the runs.log line, alert on fail, error and voids that keep
+# coming, exit.
 finish() { # $1: result, then key=value fields
-  local result=$1 line failed=""
+  local result=$1 line failed="" note=""
   shift
   line="$(date -Is) commit=${commit:-none} result=$result $*"
   echo "$line" >>"$NIGHTLY/runs.log"
@@ -89,11 +113,12 @@ finish() { # $1: result, then key=value fields
   local logs=("$NIGHTLY"/logs/*.log)
   ((${#logs[@]} <= 30)) || rm -f "${logs[@]:0:${#logs[@]}-30}"
   case $result in
-  pass | void) exit 0 ;;
+  pass) exit 0 ;;
+  void) note=$(voids_persist) || exit 0 ;;
   esac
   [ -z "${new_lines:-}" ] ||
     failed=$(jq -rs '[.[] | select(.pass == false) | .flow] | join(", ")' <<<"$new_lines" 2>/dev/null || true)
-  report_issue "$line" "$failed" || log "could not open or comment the qc-nightly issue"
+  report_issue "$line" "$failed" "$note" || log "could not open or comment the qc-nightly issue"
   exit 1
 }
 error() { finish error "step=$1"; }
@@ -106,13 +131,16 @@ if ! flock -n 9; then
 fi
 
 # ---- the network --------------------------------------------------------------
-online() {
-  getent hosts "$(sed -E 's#^https?://([^/:]+).*#\1#' <<<"$staging_url")" >/dev/null &&
-    gh api rate_limit >/dev/null 2>&1
-}
+# Up to 5 min. DNS never answering is no network (void); DNS answering but
+# gh failing is gh's fault (an expired token, a lost keyring): error.
+dns_ok() { getent hosts "$(sed -E 's#^https?://([^/:]+).*#\1#' <<<"$staging_url")" >/dev/null; }
+gh_ok() { gh api rate_limit >/dev/null 2>&1; }
 for ((i = 0; ; i++)); do
-  online && break
-  ((i < 30)) || void no-network
+  dns_ok && gh_ok && break
+  if ((i >= 30)); then
+    dns_ok || void no-network
+    error gh
+  fi
   ((i)) || log "waiting for the network (DNS for $staging_url, gh api)"
   sleep 10
 done
@@ -138,25 +166,28 @@ deploys_deploying() {
 }
 # The Deploy run that finished last (by updatedAt, so a re-run of an old
 # run counts when it ran) and reached its "Deploy keep-staging" step.
-# Prints its commit. Returns 0 if the step succeeded, 2 if it failed or was
-# cancelled (staging on either image), 1 if gh failed or there's none.
+# Prints `<commit> <run id> <updatedAt>`: the run and its time tell a
+# redeploy of the same commit (every deploy reseeds) from no deploy.
+# Returns 0 if the step succeeded, 2 if it failed or was cancelled
+# (staging on either image), 1 if gh failed or there's none.
 staging_commit() {
-  local id sha step
-  while read -r id sha; do
+  local id sha at step
+  while read -r id sha at; do
     step=$(gh run view "$id" -R "$slug" --json jobs \
       --jq '[.jobs[].steps[] | select(.name == "Deploy keep-staging") | .conclusion] | first // empty') ||
       return 1
     case $step in
-    success) echo "$sha"; return 0 ;;
-    failure | cancelled | timed_out) echo "$sha"; return 2 ;;
+    success) echo "$sha $id $at"; return 0 ;;
+    failure | cancelled | timed_out) echo "$sha $id $at"; return 2 ;;
     esac
   done < <(gh run list -R "$slug" --workflow deploy.yml --status completed --limit 20 \
     --json databaseId,headSha,updatedAt \
-    --jq 'sort_by(.updatedAt) | reverse | .[] | "\(.databaseId) \(.headSha)"')
+    --jq 'sort_by(.updatedAt) | reverse | .[] | "\(.databaseId) \(.headSha) \(.updatedAt)"')
   return 1
 }
 
-# Wait for deploys, then set $commit to what staging runs.
+# Wait for deploys, then set $commit to what staging runs and $deployed to
+# staging_commit's whole answer.
 resolve() {
   local waited=0 busy rc=0
   while :; do
@@ -167,7 +198,8 @@ resolve() {
     sleep 60
     waited=$((waited + 60))
   done
-  commit=$(staging_commit) || rc=$?
+  deployed=$(staging_commit) || rc=$?
+  commit=${deployed%% *}
   case $rc in
   0) log "staging runs ${commit:0:12} (the last Deploy run that deployed it)" ;;
   2) void commit-uncertain ;;
@@ -247,7 +279,7 @@ for attempt in 1 2 3; do
   now=$(staging_commit) || rc=$?
   ((rc != 2)) || void commit-uncertain
   ((rc == 0)) || error staging-commit
-  ((busy == 0)) && [ "$now" = "$commit" ] && break
+  ((busy == 0)) && [ "$now" = "$deployed" ] && break
   ((attempt < 3)) || void staging-kept-changing
   log "staging moved or a deploy started while waiting (${now:0:12}, $busy busy): preparing again"
   resolve
@@ -279,23 +311,34 @@ read -r flows over rtt rttover < <(jq -rs '
   | map(tostring) | join(" ")' <<<"${new_lines:-}") || { flows=0 over=0 rtt='' rttover=0; }
 fields="flows=$flows over=$over rtt=$rtt rttover=${rttover:-0}"
 
-# Staging as it is now: a deploy under way, or a new commit, means some of
-# the run may have hit another image (and every deploy reseeds).
-changed=""
-deploying=$(deploys_deploying) || changed=unknown
-rc=0
-after=$(staging_commit) || rc=$?
-if [ -z "$changed" ]; then
-  if ((rc != 0)); then
-    changed=unknown
-  elif [ "$after" != "$commit" ] || ((deploying > 0)); then
-    changed=$after
+# Staging as it is now: a deploy under way, or another Deploy run (even of
+# the same commit: every deploy reseeds), means some of the run may have hit
+# another image or a reset. gh gets 3 tries.
+check_staging() { # sets changed: "" (same), the new answer, or unknown
+  local deploying after rc=0
+  deploying=$(deploys_deploying) || return 1
+  after=$(staging_commit) || rc=$?
+  ((rc != 1)) || return 1
+  changed=""
+  if [ "$after" != "$deployed" ] || ((rc == 2)) || ((deploying > 0)); then
+    changed="${after%% *} ($deploying deploying)"
   fi
-fi
+}
+changed=unknown
+for attempt in 1 2 3; do
+  check_staging && break
+  changed=unknown
+  ((attempt == 3)) || sleep 20
+done
 
-if [ -n "$changed" ]; then
-  log "staging changed during the run (now ${changed:0:12}, $deploying deploying)"
-  finish void "$fields reason=staging-changed-during-run now=$changed exit=$qc_rc"
+if [ "$changed" = unknown ] && ((qc_rc != 0)); then
+  # Can't tell whether staging moved; a loud false fail beats a quiet one.
+  finish fail "$fields exit=$qc_rc staging-check=unknown"
+elif [ "$changed" = unknown ]; then
+  finish void "$fields reason=staging-check-unknown"
+elif [ -n "$changed" ]; then
+  log "staging changed during the run: now $changed"
+  finish void "$fields reason=staging-changed-during-run now=${changed%% *} exit=$qc_rc"
 elif ((qc_rc != 0)); then
   finish fail "$fields exit=$qc_rc"
 elif ((flows == 0)); then

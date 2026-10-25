@@ -538,7 +538,7 @@ local. Scripts in `scripts/qc-nightly/`:
 |---|---|
 | `install.sh [--token-stdin]` | once, re-runnable: makes `~/.local/share/keep-qc-nightly/` (`KEEP_QC_NIGHTLY_HOME`) with its own https clone in `src/` (never a working checkout or a factory worktree), its `node_modules` and Playwright's chromium, `nightly.env`, `qc-token` (0600), the `systemd --user` units `keep-qc-nightly.{service,timer}`; enables the timer and checks gh works from a unit. Re-run it to install changed scripts |
 | `run.sh` | one run: what the timer starts daily at 03:00 local (`Persistent=true`: a night the machine was off runs at the next boot) |
-| `status.sh [N]` | the last N runs, the current streak of green runs (what the gate counts) with the commit each ran, the next run, the open issue |
+| `status.sh [N]` | the last N runs, the current streak of passing nights in a row (what the gate counts) with the commit each ran, the next run, the open issue |
 
 **The token.** `pnpm qc --target staging` needs `KEEP_QC_TOKEN` (see
 Staging reset). `install.sh` fetches a missing one with `fly ssh console
@@ -554,7 +554,8 @@ records `void reason=another-run`):
 1. Waits up to 5 min for the network (DNS for staging, `gh api`). A
    night missed while the machine was off runs at the next boot, maybe
    before the network is up, and a `--user` unit can't order against
-   `network-online.target`. Still offline: `void reason=no-network`.
+   `network-online.target`. Still no DNS: `void reason=no-network`. DNS
+   but `gh` failing (an expired token, a lost keyring): `error step=gh`.
 2. Waits up to 45 min for a Deploy workflow still queued or running
    (still busy: `void reason=deploy-busy`), then takes the commit staging
    runs: of the completed Deploy runs, the one that finished last
@@ -572,15 +573,20 @@ records `void reason=another-run`):
    way, up to 1 h), then the main checkout's `.qc.lock` (the
    `scripts/lockfile.mjs` format, so a local `pnpm qc` waits for it and it
    waits for a local run; the preview's updater skips while it's held).
-5. Looks again: a deploy started or staging moved during the waits, back
-   to 2 (twice at most, else `void reason=staging-kept-changing`). Then
+5. Looks again: a deploy started, or another Deploy run finished (of
+   any commit, the same one included: every deploy reseeds), during the
+   waits: back to 2 (twice at most, else `void reason=staging-kept-changing`). Then
    re-dates `.qc.lock`, so the waits never make it look stale (2 h).
 6. `pnpm qc --target staging`, then `pnpm qc:report`
    (`src/qc-report/trend.html`; history in `src/qc-results/history.jsonl`,
    staging lines only).
-7. Looks again: a Deploy run's deploy job started, or staging's commit
-   moved, during the run: `void reason=staging-changed-during-run`
-   (every deploy also reseeds, so neither a pass nor a fail means much).
+7. Looks again, comparing the Deploy run and its `updatedAt`, not just
+   the commit: a deploy job started, or another Deploy run finished,
+   during the run: `void reason=staging-changed-during-run` (every deploy
+   reseeds, so neither a pass nor a fail means much). gh gets 3 tries;
+   still unanswered, a pass becomes `void reason=staging-check-unknown`
+   and a fail stays `fail` with `staging-check=unknown` (a loud false fail
+   beats a quiet one).
 8. Appends one line to `runs.log`: time, `commit`, `result`, and for a
    run that got to QC `flows` timed, flows `over` budget, median `rtt`,
    `rttover` (flows with a worker over the 150 ms RTT ceiling, whose
@@ -589,23 +595,27 @@ records `void reason=another-run`):
 
 Results:
 
-| result | means | streak |
+| result | means | alert |
 |---|---|---|
-| `pass` | QC passed against one commit, latency judged | counts |
-| `fail` | QC failed: a test, a budget, a gate | breaks it; issue |
-| `error` | the run broke before QC could judge (`step=`: install, token, gh …) | breaks it; issue |
-| `void` | can't be trusted either way (`reason=` above; also `rtt-over-ceiling` on an otherwise passing run) | neither |
+| `pass` | QC passed against one deploy, latency judged | none |
+| `fail` | QC failed: a test, a budget, a gate (also with `staging-check=unknown`) | issue |
+| `error` | the run broke before QC could judge (`step=`: install, token, gh …) | issue |
+| `void` | can't be trusted either way (`reason=` above; also `rtt-over-ceiling` on an otherwise passing run) | issue only when lasting |
 
 A fail or error opens a GitHub issue labelled `qc-nightly` (GitHub emails
-it), or comments on the open one; closing it is by hand. A void opens
-none: `status.sh` lists it. Voids night after night (a deploy at 03:00
-every night, a slow link) mean no progress toward the gate, so look at
-`status.sh` while waiting on one.
+it), or comments on the open one, and the unit fails (exit 1); closing the
+issue is by hand. A single void doesn't: a deploy at 03:00 is no fault.
+Voids that last do, the same way: the last 2 runs both void, or 36 h
+with no pass, fail or error. Some reasons persist (a failed `flyctl
+deploy` with no push after it, a stuck Deploy run, staging's `/api/me`
+over the RTT ceiling because the app is slow, not the link) and would
+stall the gate unnoticed.
 
-The streak in `status.sh` is the green runs since the last fail or error,
-skipping voids, and the nights they ran on, counted noon to noon (a hand
-run at 23:30 and the 03:00 run after it are one night). The gate wants
-three runs on three nights. Full output:
+**The streak** (`status.sh`, what the gate counts):
+passing nights in a row. Nights run noon to noon, so a hand run at 23:30
+and the 03:00 run after it are one night. Any run that isn't a pass ends
+the streak, a void too: that night wasn't tested, though it's no
+failure. So does a night with no run. The gate wants three. Full output:
 `~/.local/share/keep-qc-nightly/logs/` (last 30) and `journalctl --user
 -u keep-qc-nightly`.
 

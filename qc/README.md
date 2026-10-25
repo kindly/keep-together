@@ -97,7 +97,7 @@ KEEP_QC_TOKEN=… pnpm qc --target staging
 The house server runs it every night at 03:00 against the commit staging
 runs (`scripts/qc-nightly/`; docs/ops.md "Nightly QC"), with its own
 clone, history and trend report; `~/.local/share/keep-qc-nightly/bin/status.sh`
-shows the runs and the green streak the cutover gate counts.
+shows the runs and the streak of passing nights the cutover gate counts.
 
 ### Pending ports
 
