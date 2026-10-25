@@ -526,6 +526,74 @@ keep-preview-update.timer`, `tailscale serve --https=443 off`, then delete
 `~/.local/share/keep-preview` and the three units in
 `~/.config/systemd/user/`.
 
+## Nightly QC
+
+The C1 gate needs three nightly QC runs in a row against staging
+(`factory/plans/migration-rust.sv`). They run on the house server, not
+GitHub Actions: it's in the UK like the users (13 ms to staging; a GitHub
+runner is ~80 ms away and would blow the budgets), and QC history is
+local. Scripts in `scripts/qc-nightly/`:
+
+| script | |
+|---|---|
+| `install.sh [--token-stdin]` | once, re-runnable: makes `~/.local/share/keep-qc-nightly/` (`KEEP_QC_NIGHTLY_HOME`) with its own https clone in `src/` (never a working checkout or a factory worktree), its `node_modules` and Playwright's chromium, `nightly.env`, `qc-token` (0600), the `systemd --user` units `keep-qc-nightly.{service,timer}`; enables the timer and checks gh works from a unit. Re-run it to install changed scripts |
+| `run.sh` | one run: what the timer starts daily at 03:00 local (`Persistent=true`: a night the machine was off runs at the next boot) |
+| `status.sh [N]` | the last N runs, the current streak of green runs (what the gate counts) with the commit each ran, the next run, the open issue |
+
+**The token.** `pnpm qc --target staging` needs `KEEP_QC_TOKEN` (see
+Staging reset). `install.sh` fetches a missing one with `fly ssh console
+-a keep-staging -C 'printenv KEEP_QC_TOKEN'` straight into `qc-token`, or
+takes it with `--token-stdin`; it is never printed. `run.sh` reads it into
+the env of the `pnpm qc` process only: not argv, not the log, not any
+other command. When the Fly secret changes, delete `qc-token` and rerun
+`install.sh` (or pass the new one with `--token-stdin`).
+
+**A run** (`run.sh`; one at a time, under `run.lock`):
+
+1. Waits up to 45 min for a Deploy workflow still queued or running, then
+   takes the commit staging runs: the newest completed Deploy run whose
+   "Deploy keep-staging" step succeeded (`gh run list` / `gh run view`).
+   Not `origin/main`: a push may still be deploying, or have failed CI and
+   never reached staging. A deploy whose smoke test failed after `flyctl
+   deploy` still counts, since staging serves that image. A `fly deploy`
+   by hand bypasses this; the run would test the wrong commit.
+2. Checks that commit out in `src/`, `pnpm install --frozen-lockfile`,
+   `playwright install chromium` (a no-op unless Playwright moved).
+3. Holds the main checkout's `.qc.lock` (the `scripts/lockfile.mjs`
+   format, so a local `pnpm qc` waits for it and it waits for a local
+   run; the preview's updater skips while it's held) and the preview's
+   `update.lock` (waiting out a build already under way).
+4. `pnpm qc --target staging`, then `pnpm qc:report`
+   (`src/qc-report/trend.html`; history in `src/qc-results/history.jsonl`,
+   staging lines only).
+5. Appends one line to `runs.log`: time, `commit`, `result` (`pass`,
+   `fail`: QC failed, `error`: it never ran, `step=` says where),
+   `flows` timed, flows `over` budget, median `rtt`, and
+   `redeployed=<sha>` if staging changed during the run. Anything but
+   `pass` opens a GitHub issue labelled `qc-nightly` (GitHub emails it),
+   or comments on the open one; closing it is by hand.
+
+The streak in `status.sh` counts green runs since the last run that
+wasn't, and the nights they ran on: a run started by hand counts too, so
+the gate wants three on three nights. Full output:
+`~/.local/share/keep-qc-nightly/logs/` (last 30) and `journalctl --user
+-u keep-qc-nightly`.
+
+**First run** (after `install.sh`; linger is already on):
+
+```bash
+systemctl --user start --no-block keep-qc-nightly.service
+journalctl --user -fu keep-qc-nightly.service
+~/.local/share/keep-qc-nightly/bin/status.sh
+```
+
+`run.sh` uses gh from a unit with no login session: if `install.sh` says
+`gh auth status` fails there, gh's token is in a desktop keyring; store
+it in a file (`gh auth login --insecure-storage`). To remove it:
+`systemctl --user disable --now keep-qc-nightly.timer`, then delete
+`~/.local/share/keep-qc-nightly` and the two units in
+`~/.config/systemd/user/`.
+
 ## To verify on the first real run
 
 Checked locally (podman, 2026-10-24, file replicas instead of S3): the

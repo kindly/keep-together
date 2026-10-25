@@ -94,6 +94,11 @@ each test opens its own session). The token reaches nothing outside
 KEEP_QC_TOKEN=… pnpm qc --target staging
 ```
 
+The house server runs it every night at 03:00 against the commit staging
+runs (`scripts/qc-nightly/`; docs/ops.md "Nightly QC"), with its own
+clone, history and trend report; `~/.local/share/keep-qc-nightly/bin/status.sh`
+shows the runs and the green streak the cutover gate counts.
+
 ### Pending ports
 
 Until a wave step ports its module, its specs and tests are skipped
