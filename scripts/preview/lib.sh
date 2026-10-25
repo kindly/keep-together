@@ -53,22 +53,37 @@ state_get() {
 # The preview signs in with KEEP_AUTH_POLICY=relaxed (docs/ops.md): a
 # password alone, and the riverside users' password is "riverside" with
 # no TOTP (the api's seed default under relaxed). An install from before
-# that gets it here: preview.env gains the line if it has no
-# KEEP_AUTH_POLICY (one already there is the human's choice, kept), and
-# under relaxed the generated riverside sign-ins leave secrets.env so the
-# next reseed uses the simple ones. Prints what it changed.
+# that is converted here, once:
+# - preview.env gains KEEP_AUTH_POLICY=relaxed if it names no policy (one
+#   already there is the human's choice, kept);
+# - under relaxed, the riverside sign-ins install.sh generated leave
+#   secrets.env, so the next reseed uses the simple ones. Only lines of
+#   install.sh's own shape go (a _PASSWORD of 24 [A-Za-z0-9_-], a _TOTP of
+#   32 base32); anything else is the human's and stays. What goes is kept
+#   in secrets.env.pre-relaxed (0600), and the marker relaxed-converted
+#   means secrets.env is never touched again, so a sign-in the human sets
+#   later stays.
+# Prints what it changed.
 relaxed_settings() {
-  local env=$PREVIEW/preview.env secrets=$PREVIEW/secrets.env tmp
+  local env=$PREVIEW/preview.env secrets=$PREVIEW/secrets.env
+  local marker=$PREVIEW/relaxed-converted backup=$PREVIEW/secrets.env.pre-relaxed
+  local generated='^KEEP_RIVERSIDE_(ADMIN|STAFF|VIEWER)_(PASSWORD=[A-Za-z0-9_-]{24}|TOTP=[A-Z2-7]{32})$'
+  local tmp
   if ! grep -q '^KEEP_AUTH_POLICY=' "$env"; then
     printf '%s\n' KEEP_AUTH_POLICY=relaxed >>"$env"
     echo "preview.env: added KEEP_AUTH_POLICY=relaxed"
   fi
   [ "$(sed -n 's/^KEEP_AUTH_POLICY=//p' "$env" | tail -n 1)" = relaxed ] || return 0
-  if [ -f "$secrets" ] && grep -q '^KEEP_RIVERSIDE_' "$secrets"; then
-    tmp=$(mktemp "$PREVIEW/secrets.env.XXXXXX")
-    chmod 600 "$tmp"
-    grep -v '^KEEP_RIVERSIDE_' "$secrets" >"$tmp" || true
-    mv "$tmp" "$secrets"
-    echo "secrets.env: removed the generated riverside sign-ins (relaxed: password riverside, no TOTP)"
+  [ ! -e "$marker" ] || return 0
+  if [ -f "$secrets" ] && grep -Eq "$generated" "$secrets"; then
+    (
+      umask 077
+      grep -E "$generated" "$secrets" >>"$backup"
+      tmp=$(mktemp "$PREVIEW/secrets.env.XXXXXX")
+      grep -Ev "$generated" "$secrets" >"$tmp" || true
+      mv "$tmp" "$secrets"
+    )
+    echo "secrets.env: moved the generated riverside sign-ins to $backup (relaxed: password riverside, no TOTP)"
   fi
+  date -Is >"$marker"
 }

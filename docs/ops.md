@@ -509,8 +509,12 @@ refuses it (and `KEEP_MAIL=log`) on any reachable bind. The auth keys are
 made once by `install.sh` into `secrets.env` (0600). An install from before
 relaxed is converted by `relaxed_settings` (`lib.sh`, run by `install.sh`
 and by every `update.sh` before it reseeds): `preview.env` gains
-`KEEP_AUTH_POLICY=relaxed` unless it names a policy already, and the
-generated `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}` leave `secrets.env`. To
+`KEEP_AUTH_POLICY=relaxed` unless it names a policy already, and, once,
+the `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}` lines `install.sh` generated
+(recognised by their shape) move from `secrets.env` to
+`secrets.env.pre-relaxed` (0600). The marker `relaxed-converted` stops it
+touching `secrets.env` again, so a riverside sign-in you set there
+yourself is used by the seed and kept. To
 go back to strict, set `KEEP_AUTH_POLICY=strict` in `preview.env` and
 re-run `install.sh`: it makes a password and TOTP secret per role into
 `secrets.env` again, never printed or logged (add the TOTP secret to an
