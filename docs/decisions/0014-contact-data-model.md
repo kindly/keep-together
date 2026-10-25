@@ -96,3 +96,25 @@ footgun, and a GDPR liability.
   contracts plus revision scrubbing.
 - Households: relationship types are seeded (`Member of household`), UI
   deferred.
+
+## Amendment: postcode lookup fills the fields (2026-10-25)
+
+The contact form gains a "Find address" for UK postcodes
+(`factory/plans/address-lookup.sv`, confirmed by the human). It is a
+typing aid, not a new kind of address:
+
+- **The lookup fills the fields; nothing extra is stored.** A pick sets
+  line 1–3, town, postcode and country `GB` on the row, which then saves
+  through `contacts.addresses` like a typed edit. No UPRN, no
+  "verified" flag, no link to the source: the decision above against
+  geocoding and shared addresses stands, and anything filled stays
+  editable. Manual entry always works.
+- **PAF results are not cached or kept** beyond the request (the
+  provider's licence terms): not in the org file, not in `platform.db`,
+  not in logs. `platform.db` counts lookups per organisation per month
+  and per day across the platform (`rs/crates/api/src/address/`), never
+  which postcode.
+- The provider (Ideal Postcodes) sits behind an `AddressLookup` trait in
+  `api`, reached only through `GET /api/t/{slug}/address-lookup`, so the
+  key stays server-side and a group's own key or autocomplete can come
+  later without touching the data model.

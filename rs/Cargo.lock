@@ -92,6 +92,7 @@ dependencies = [
  "http-body-util",
  "object_store",
  "platform",
+ "reqwest",
  "rusqlite",
  "rusqlite_migration",
  "seed",

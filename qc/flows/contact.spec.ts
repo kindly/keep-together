@@ -153,8 +153,10 @@ test.describe('contact page', { annotation: CONTACT_ROUTE }, () => {
     await phones.nth(0).getByRole('button', { name: 'remove' }).click()
 
     const addresses = rows(page, 'Addresses')
+    // Exact: each row's "Find address" has "add" in its name too.
     const addAddress = section(page, 'Addresses').getByRole('button', {
       name: 'add',
+      exact: true,
     })
     await addAddress.click()
     await addresses.nth(0).getByPlaceholder('Address line 1').fill('1 Old Road')

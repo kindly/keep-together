@@ -45,8 +45,12 @@ pub fn org_migrations() -> Migrations<'static> {
 
 /// `platform.db`'s per-crate schemas, run in this order after its base
 /// schema. Each crate appends only to its own list.
-pub const PLATFORM_SCHEMAS: &[PlatformSchema] =
-    &[platform::SCHEMA, auth::SCHEMA, crate::jobs::SCHEMA];
+pub const PLATFORM_SCHEMAS: &[PlatformSchema] = &[
+    platform::SCHEMA,
+    auth::SCHEMA,
+    crate::jobs::SCHEMA,
+    crate::address::SCHEMA,
+];
 
 /// A new organisation's reference data, in its file's first transaction
 /// (`keep tenant create`, the dev seeds): each crate's `seed_new_org`, in

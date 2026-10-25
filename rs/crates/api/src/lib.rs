@@ -1,6 +1,7 @@
 //! The HTTP API: JSON over HTTP, one `POST` per contract command, `GET`s
 //! for reads. Conventions are in `rs/README.md`.
 
+pub mod address;
 pub mod auth;
 pub mod backup;
 pub mod body;
@@ -37,6 +38,8 @@ pub struct AppState {
     pub auth: Arc<auth::Runtime>,
     /// `/api/qc/*` (`KEEP_QC_TOKEN` on staging); off when `None`.
     pub qc: Option<Arc<routes::qc_seed::QcAccess>>,
+    /// `KEEP_ADDRESS_LOOKUP` ([`address`]); off when `None`.
+    pub address: Option<Arc<address::Lookup>>,
 }
 
 impl AppState {
@@ -48,7 +51,13 @@ impl AppState {
             dev_auth,
             auth: Arc::new(auth::Runtime::default()),
             qc: None,
+            address: None,
         }
+    }
+
+    pub fn with_address(mut self, lookup: Option<address::Lookup>) -> Self {
+        self.address = lookup.map(Arc::new);
+        self
     }
 
     pub fn with_qc(mut self, qc: Option<routes::qc_seed::QcAccess>) -> Self {

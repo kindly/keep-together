@@ -7,7 +7,9 @@
 //!   `Origin` must be the app's (`KEEP_APP_ORIGIN`) or the request's own
 //!   host. A request with neither header isn't from a browser (browsers
 //!   send `Origin` on every cross-origin `POST`), so it can't carry a
-//!   victim's cookie by itself and passes.
+//!   victim's cookie by itself and passes. The address lookup's `GET`
+//!   is held to the same rule ([`spends`]): it spends a credit, and a
+//!   cross-site navigation carries a `Lax` cookie.
 //! - [`dev_host`]: `/api/dev/*` only when `Host` is loopback (or absent),
 //!   so a DNS-rebinding page, or Vite's proxy reached over the tailnet,
 //!   can't use the dev login.
@@ -46,8 +48,15 @@ pub fn same_origin(headers: &HeaderMap, app_origin: &str) -> bool {
     origin == format!("https://{h}") || origin == format!("http://{h}")
 }
 
+/// A `GET` that spends something (an address lookup's credit, counted
+/// against the group's month), so held to [`same_origin`] like a write.
+pub fn spends(path: &str) -> bool {
+    path.starts_with("/api/t/") && path.ends_with("/address-lookup")
+}
+
 pub async fn csrf(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
+    let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
+        && !spends(req.uri().path());
     if !safe
         && req.uri().path().starts_with("/api/")
         && !same_origin(req.headers(), &state.auth.config.app_origin)

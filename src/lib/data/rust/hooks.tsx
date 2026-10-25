@@ -87,6 +87,14 @@ function useMe(): Me | null | undefined {
   return me.data
 }
 
+/**
+ * Whether the deployment offers the contact form's "Find address"
+ * (`KEEP_ADDRESS_LOOKUP` not `off`): `/api/me`'s `addressLookup`.
+ */
+export function useAddressLookupOn(): boolean {
+  return useMe()?.addressLookup === true
+}
+
 /** `GET /api/groups` (`mine`); null when signed out. */
 async function fetchGroups(): Promise<Array<Group> | null> {
   try {

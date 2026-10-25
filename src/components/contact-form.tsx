@@ -36,6 +36,7 @@ import type { ContactView } from '../lib/data'
 import { EmailHold } from './email-hold'
 import { ContactAcquisition } from './contact-acquisition'
 import { ContactNumber } from './contact-number'
+import { FindAddress } from './address-lookup'
 
 type Data = ContactView
 type Label = 'home' | 'work' | 'other'
@@ -715,6 +716,21 @@ function AddressFields({
             onLabel={(label) => update(row, { label })}
           >
             <div className="grid flex-1 gap-2 md:grid-cols-2">
+              <div className="flex md:col-span-2">
+                <FindAddress
+                  postcode={row.postcode}
+                  onPick={(a) =>
+                    update(row, {
+                      line1: a.line1,
+                      line2: a.line2,
+                      line3: a.line3,
+                      town: a.town,
+                      postcode: a.postcode,
+                      country: 'GB',
+                    })
+                  }
+                />
+              </div>
               {input(row, 'line1', 'Address line 1', 'md:col-span-2')}
               {input(row, 'line2', 'Line 2')}
               {input(row, 'line3', 'Line 3')}

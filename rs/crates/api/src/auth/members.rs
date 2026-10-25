@@ -447,6 +447,7 @@ mod tests {
             store: store.clone(),
             runtime: Arc::new(Runtime::default()),
             session,
+            address_lookup: false,
         };
         let check = || p.with_write(|tx| still_admin(tx, &a, &t.id, now));
         assert!(check().is_ok());

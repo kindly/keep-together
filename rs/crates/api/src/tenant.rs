@@ -44,6 +44,8 @@ pub struct Tenant {
     store: Arc<Store>,
     /// The session's stored hash, for [`Tenant::write`]'s re-check.
     session_id: String,
+    /// `KEEP_ADDRESS_LOOKUP`, for [`Tenant::lookup_address`].
+    address: Option<Arc<crate::address::Lookup>>,
 }
 
 impl Tenant {
@@ -188,6 +190,44 @@ impl Tenant {
         Ok(())
     }
 
+    /// The addresses at `postcode`, for the contact form (staff and
+    /// above): counted against this organisation's month in `platform.db`
+    /// ([`crate::address`]). Off: `404`. Not a postcode: `422`, before
+    /// anything is counted or sent. Nothing is stored or logged.
+    pub async fn lookup_address(
+        &self,
+        postcode: &str,
+    ) -> Result<Vec<crate::address::LookupAddress>, ApiError> {
+        use crate::address::{LookupError, normalise};
+        if self.role < Role::Staff {
+            return Err(ApiError::Forbidden);
+        }
+        let Some(lookup) = self.address.clone() else {
+            return Err(ApiError::NotFound);
+        };
+        let Some(postcode) = normalise(postcode) else {
+            return Err(ApiError::Invalid {
+                problems: vec![contracts::Problem::new(
+                    "postcode",
+                    "Enter a UK postcode, like SW1A 1AA.",
+                )],
+            });
+        };
+        let out = lookup
+            .lookup(self.store.clone(), self.tenant_id.clone(), &postcode)
+            .await;
+        match out {
+            Ok(found) => Ok(found),
+            Err(LookupError::NotFound) => Err(ApiError::NotFound),
+            Err(LookupError::CapReached) => Err(ApiError::LookupCap),
+            Err(LookupError::Unavailable(detail)) => {
+                // `detail` never holds the key, a postcode or an address.
+                eprintln!("address lookup unavailable ({}): {detail}", self.slug);
+                Err(ApiError::LookupUnavailable)
+            }
+        }
+    }
+
     /// This organisation's committed changes as SSE, resuming after
     /// `Last-Event-ID` if given (see [`crate::events`]).
     pub async fn events(
@@ -260,6 +300,7 @@ pub(crate) async fn middleware(
             tenant_id: member.tenant.id.clone(),
             store: state.store.clone(),
             session_id: session.id.clone(),
+            address: state.address.clone(),
         })
     }
     .await;
@@ -333,6 +374,7 @@ mod tests {
             timing: Timing::default(),
             store: store.clone(),
             session_id: ::auth::secret::hash(&token),
+            address: None,
         };
         let write = || tenant.write(|_ctx| Ok(()));
         assert!(write().await.is_ok());

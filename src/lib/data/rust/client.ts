@@ -40,6 +40,10 @@ export function describe(error: ApiError): string {
       return error.message
     case 'rate_limited':
       return 'Too many attempts: wait a minute'
+    case 'lookup_cap':
+      return 'Lookups used up this month: type the address'
+    case 'lookup_unavailable':
+      return 'Lookup unavailable: type the address'
     case 'internal':
       return 'Could not save'
   }

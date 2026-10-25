@@ -44,6 +44,12 @@ pub enum ApiError {
     Rejected { reason: String, message: String },
     /// 429: too many attempts; try again later.
     RateLimited,
+    /// 429: this organisation's address lookups for the month are used
+    /// up; type the address.
+    LookupCap,
+    /// 503: the address lookup provider can't answer now (down, slow, out
+    /// of credit, or the platform's daily ceiling); type the address.
+    LookupUnavailable,
     /// 500. Details go to the server log, not the client.
     Internal,
 }
@@ -58,7 +64,8 @@ impl ApiError {
             ApiError::Invalid { .. } | ApiError::Rejected { .. } => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
-            ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::RateLimited | ApiError::LookupCap => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::LookupUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
