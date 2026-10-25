@@ -121,8 +121,12 @@ if [ -n "${KEEP_RESET_SEED:-}" ]; then
   [ "${KEEP_ENV:-}" != prod ] || { log "KEEP_RESET_SEED is refused when KEEP_ENV=prod"; exit 1; }
   if [ "$(cat "$DATA/.image" 2>/dev/null || true)" != "$IMAGE" ]; then
     log "new deploy ($IMAGE): wiping $DATA for the $KEEP_RESET_SEED seed"
-    rm -rf "$PLATFORM" "$PLATFORM-wal" "$PLATFORM-shm" "$DATA/orgs" "$DATA/drill" \
-      "$DATA/snapshots-tmp" "$DATA/.restored"
+    # Litestream's own state for platform.db goes too: kept beside a new
+    # file, it points at LTX files the old one wrote and replication stops
+    # ("open ltx file … no such file"). The orgs' and drill's are inside
+    # their directories.
+    rm -rf "$PLATFORM" "$PLATFORM-wal" "$PLATFORM-shm" "$DATA/.platform.db-litestream" \
+      "$DATA/orgs" "$DATA/drill" "$DATA/snapshots-tmp" "$DATA/.restored"
     mkdir -p "$DATA/orgs" "$DATA/drill"
     echo "$IMAGE" >"$DATA/.image"
   fi
