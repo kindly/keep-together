@@ -590,8 +590,11 @@ records `void reason=another-run`):
 8. Appends one line to `runs.log`: time, `commit`, `result`, and for a
    run that got to QC `flows` timed, flows `over` budget, median `rtt`,
    `rttover` (flows with a worker over the 150 ms RTT ceiling, whose
-   latency the reporter didn't judge), `exit` (QC's, when not 0); `step=`
-   on an error, `reason=` on a void.
+   latency the reporter didn't judge), `retries` (set-up calls sent again
+   after no answer: passing, but `status.sh` flags them and the run's
+   SETUP RETRIES banner says which, and whether the run before retried
+   the same route), `exit` (QC's, when not 0); `step=` on an error,
+   `reason=` on a void.
 
 Results:
 

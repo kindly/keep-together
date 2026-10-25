@@ -18,6 +18,7 @@ import type {
 } from '@playwright/test/reporter'
 import QcReporter, { pendingBanner, summarise } from './reporter'
 import type { HistoryLine } from './reporter'
+import type { SetupRetry } from './retries'
 import { readRoutes } from './coverage'
 import { isPorted } from '../src/lib/data/ported'
 import type { ApiCall, FlowRecord, SampleDetail } from './timing'
@@ -165,6 +166,10 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     opts: {
       covered?: Array<string>
       skipped?: Array<string>
+      /** Tests that ran their mail-off variant, as title paths. */
+      mailOff?: Array<Array<string>>
+      /** Set-up calls retried this run (qc/retries.ts). */
+      retries?: Array<SetupRetry>
       filtered?: boolean
     } = {},
   ) => {
@@ -175,6 +180,11 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
       path.join(run, 'pid-1.jsonl'),
       recs.map((r) => JSON.stringify(r) + '\n').join(''),
     )
+    if (opts.retries)
+      writeFileSync(
+        path.join(run, 'retries-1.jsonl'),
+        opts.retries.map((r) => JSON.stringify(r) + '\n').join(''),
+      )
     const logged: Array<string> = []
     vi.spyOn(console, 'log').mockImplementation((m: string) => {
       logged.push(m)
@@ -203,6 +213,17 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
           annotations: [{ type: 'pendingPort', description: step }],
         } as unknown as TestCase,
         { status: 'skipped', annotations: [] } as unknown as TestResult,
+      )
+    for (const title of opts.mailOff ?? [])
+      reporter.onTestEnd(
+        {
+          annotations: [],
+          titlePath: () => ['', 'chromium', ...title],
+        } as unknown as TestCase,
+        {
+          status: 'passed',
+          annotations: [{ type: 'mailOff', description: 'x' }],
+        } as unknown as TestResult,
       )
     const res = await reporter.onEnd({ status: 'passed' } as FullResult)
     vi.restoreAllMocks()
@@ -280,6 +301,65 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     const res = await reporter.onEnd({ status: 'passed' } as FullResult)
     expect(res?.status).toBeUndefined()
     expect(logged.join('\n')).toMatch(/not judged: server POST/)
+  })
+
+  test('mail off: the tests that checked the refusal, in a banner and in history', async () => {
+    const reset = ['flows/auth.spec.ts', 'a reset request answers the same']
+    const r = await runReporter('m1', records('m1'), {
+      // A retried test is listed once.
+      mailOff: [reset, ['flows/members.spec.ts', 'an admin invites'], reset],
+    })
+    expect(r.status).toBeUndefined()
+    expect(r.out).toMatch(
+      /MAIL OFF on the target \(KEEP_MAIL=off\): 2 tests checked the mail_off refusal instead; the email they send was NOT tested:\n!! flows\/auth\.spec\.ts › a reset request answers the same\n!! flows\/members\.spec\.ts › an admin invites/,
+    )
+    expect(r.history.length).toBeGreaterThan(0)
+    for (const l of r.history)
+      expect(l.mailOff).toEqual([
+        'flows/auth.spec.ts › a reset request answers the same',
+        'flows/members.spec.ts › an admin invites',
+      ])
+    // Mail on: no banner, and no field.
+    const on = await runReporter('m2', records('m2'))
+    expect(on.out).not.toContain('MAIL OFF')
+    expect(on.history.every((l) => !('mailOff' in l))).toBe(true)
+  })
+
+  test('set-up retries: a banner, counts in history, and a repeat marked', async () => {
+    const retry = (where: string): SetupRetry => ({
+      route: '/api/qc/session',
+      instance: 'staging',
+      where,
+      why: 'TimeoutError',
+      at: Date.UTC(2026, 9, 25, 0, 51, 30),
+    })
+    const r = await runReporter('r1', records('r1'), {
+      retries: [
+        retry('flows/contact.spec.ts › a'),
+        retry('flows/fields.spec.ts › b'),
+      ],
+    })
+    expect(r.status).toBeUndefined()
+    expect(r.out).toMatch(
+      /SETUP RETRIES: 2 set-up calls got no answer in time and were sent again/,
+    )
+    expect(r.out).toMatch(
+      /!! \/api\/qc\/session: 2×\n!! {3}TimeoutError at 00:51:30\.000 UTC, staging, flows\/contact\.spec\.ts › a/,
+    )
+    expect(r.out).not.toContain('ALSO RETRIED')
+    for (const l of r.history)
+      expect(l.setupRetries).toEqual({ '/api/qc/session': 2 })
+    // The next run retries the same route: marked as a repeat.
+    const again = await runReporter('r2', records('r2'), {
+      retries: [retry('worker setup')],
+    })
+    expect(again.out).toMatch(
+      /\/api\/qc\/session: 1× · ALSO RETRIED ON THE RUN BEFORE \(r1: 2×\)/,
+    )
+    // None: no banner, no field.
+    const none = await runReporter('r3', records('r3'))
+    expect(none.out).not.toContain('SETUP RETRIES')
+    expect(none.history.every((l) => !('setupRetries' in l))).toBe(true)
   })
 
   test('pendingPort tests are counted, and unported routes need no flow', async () => {

@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures'
+import { MAIL_OFF_MESSAGE, expect, mailOff, test } from '../fixtures'
 import { nextTotp } from '../totp'
 import type { Page } from '@playwright/test'
 import type { QcUser } from '../fixtures'
@@ -9,7 +9,8 @@ import type { QcUser } from '../fixtures'
 // a dead invite link. The timed sign-in (`auth.signIn`) is the worker
 // fixture's; these check behaviour. Invites and resets past the request
 // need the emailed link, which QC can't read (KEEP_MAIL=log): the Rust
-// tests (rs/crates/api/tests/auth.rs) cover them. Every test starts signed
+// tests (rs/crates/api/tests/auth.rs) cover them. With mail off (staging
+// until SES) the reset request checks the refusal instead (`mailOff`). Every test starts signed
 // out in a fresh context, so signing out never ends the session the other
 // specs share through storageState.
 
@@ -125,18 +126,31 @@ test('a group URL while signed out asks you to sign in', async ({ page }) => {
   await expect(page.getByPlaceholder('Email')).toBeVisible()
 })
 
-test('a reset request answers the same for any address', async ({ page }) => {
+test('a reset request answers the same for any address', async ({
+  page,
+  users,
+  world,
+}) => {
   route('/reset')
-  await page.goto('/sign-in')
-  await page.getByRole('link', { name: 'Forgot your password?' }).click()
-  await expect(page).toHaveURL('/reset')
-  await page.getByPlaceholder('Email').fill('nobody-at-all@example.com')
-  await page.getByRole('button', { name: 'Email me a link' }).click()
-  await expect(
-    page.getByText("If that address has an account, we've emailed it a link.", {
-      exact: false,
-    }),
-  ).toBeVisible()
+  // With mail off the request is refused, for any address, before the
+  // address is looked up (`mail_off`): still the same answer for both.
+  const answer = mailOff(world)
+    ? MAIL_OFF_MESSAGE
+    : "If that address has an account, we've emailed it a link."
+  for (const email of ['nobody-at-all@example.com', users.a.email]) {
+    await page.goto('/sign-in')
+    await page.getByRole('link', { name: 'Forgot your password?' }).click()
+    await expect(page).toHaveURL('/reset')
+    // The address changes before the page's code has loaded; until its
+    // heading shows, "Email" is still the sign-in form's (staging,
+    // 2026-10-25: the fill landed there and the request never went).
+    await expect(
+      page.getByRole('heading', { name: 'Reset your password' }),
+    ).toBeVisible()
+    await page.getByPlaceholder('Email').fill(email)
+    await page.getByRole('button', { name: 'Email me a link' }).click()
+    await expect(page.getByText(answer, { exact: false })).toBeVisible()
+  }
 })
 
 test('a dead invite link says so', async ({ page }) => {

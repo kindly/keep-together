@@ -303,13 +303,16 @@ printf '+ %s  (KEEP_QC_TOKEN from %s)\n' "${qc[*]}" "$NIGHTLY/qc-token" >&2
 (cd "$src" && run pnpm qc:report) || log "pnpm qc:report failed (the result stands)"
 
 new_lines=$(tail -n +"$((before + 1))" "$history")
-read -r flows over rtt rttover < <(jq -rs '
+# retries: set-up calls sent again after no answer (qc/retries.ts); the
+# same on every line of a run. Passing, but status.sh shows them.
+read -r flows over rtt rttover retries < <(jq -rs '
   [length,
    (map(select(.overBudget > 0)) | length),
    (map(.rttMs) | sort | if length > 0 then .[length / 2 | floor] else "" end),
-   (map(select(.rttOver == true)) | length)]
-  | map(tostring) | join(" ")' <<<"${new_lines:-}") || { flows=0 over=0 rtt='' rttover=0; }
-fields="flows=$flows over=$over rtt=$rtt rttover=${rttover:-0}"
+   (map(select(.rttOver == true)) | length),
+   (.[0].setupRetries // {} | [.[]] | add // 0)]
+  | map(tostring) | join(" ")' <<<"${new_lines:-}") || { flows=0 over=0 rtt='' rttover=0 retries=0; }
+fields="flows=$flows over=$over rtt=$rtt rttover=${rttover:-0} retries=${retries:-0}"
 
 # Staging as it is now: a deploy under way, or another Deploy run (even of
 # the same commit: every deploy reseeds), means some of the run may have hit

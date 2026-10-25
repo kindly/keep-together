@@ -89,6 +89,21 @@ sessions from `/api/qc/session` (a TOTP code is good once per 30 s, and
 each test opens its own session). The token reaches nothing outside
 `qc-` groups; a wrong one is a 404. Locally the pool uses `/api/dev/*`
 (dev auth and `KEEP_QC_SEED=1`), the same world under the same names.
+Set-up calls give up after 10 s (body included) with their route named.
+A session call that hangs is retried once (never the seed: each seed sets
+new credentials, and an abandoned first try could overwrite the
+retry's). Every retry is recorded (`qc/retries.ts`): a `SETUP RETRIES`
+banner lists them, marking a route the run before retried too, and the
+run's history lines count them (`setupRetries`; the nightly's
+`retries=`).
+
+Staging runs `KEEP_MAIL=off` until SES is set up, and the api refuses
+what needs email (`mail_off`). The seed says so (`mailOff` in the
+world), and the flows that send email (the reset request, an invite)
+then check that refusal instead: the same answer for any address, no
+invite made. They are annotated `mailOff`; a `MAIL OFF` banner lists them
+on every such run and the run's history lines carry them (`mailOff`), so
+a green night never means the email paths worked.
 
 ```bash
 KEEP_QC_TOKEN=… pnpm qc --target staging
@@ -142,6 +157,11 @@ Banners to look for:
   every run with its samples, so none is forgotten.
 - **`pendingPort`**: what isn't on the Rust backend yet, by step (see
   Pending ports).
+- **`SETUP RETRIES`**: set-up calls that got no answer in 10 s and were
+  sent again, by route; `ALSO RETRIED ON THE RUN BEFORE` when it recurs.
+  Passing, but a recurring hang is a bug to chase.
+- **`MAIL OFF`**: the target had mail off, and these tests checked the
+  `mail_off` refusal instead of the email path (see Staging).
 - **`RTT over 150 ms`**: the link is too slow to judge latency. Behaviour
   is still checked, but latency asserts were skipped. Rerun on a better
   link.

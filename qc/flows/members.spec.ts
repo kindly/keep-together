@@ -1,8 +1,9 @@
-import { expect, test } from '../fixtures'
+import { MAIL_OFF_MESSAGE, expect, mailOff, test } from '../fixtures'
 
-// Settings › Members (A4): the list, an invite, a viewer's read-only
-// view, and B's members not being A's. Tests start signed in as A's
-// admin (a fresh session, so within the step-up hour).
+// Settings › Members (A4): the list, an invite (with mail off, its
+// refusal), a viewer's read-only view, and B's members not being A's.
+// Tests start signed in as A's admin (a fresh session, so within the
+// step-up hour).
 
 function route(...ids: Array<string>) {
   test
@@ -21,6 +22,14 @@ test('an admin invites someone', async ({ page, users, world }) => {
   await page.getByLabel('Email to invite').fill(email)
   await page.getByLabel('Role', { exact: true }).selectOption('viewer')
   await page.getByRole('button', { name: 'Send invite' }).click()
+  if (mailOff(world)) {
+    // Refused up front (`mail_off`): no invite is made that nobody hears of.
+    await expect(
+      page.getByText(MAIL_OFF_MESSAGE, { exact: false }),
+    ).toBeVisible()
+    await expect(page.getByText(`${email} as viewer`)).toHaveCount(0)
+    return
+  }
   await expect(page.getByText(`Invite sent to ${email}.`)).toBeVisible()
   await expect(page.getByText(`${email} as viewer`)).toBeVisible()
 })
