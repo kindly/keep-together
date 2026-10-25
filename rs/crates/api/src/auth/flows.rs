@@ -9,12 +9,16 @@
 //! emailed code as well (`check_email`; `auth::gate`, S1 M5). Wrong codes
 //! are counted (`auth::failures`, S1 M1): five end a partial sign-in, ten
 //! in an hour lock the user's second factor for the rest of it.
+//!
+//! Under `KEEP_AUTH_POLICY=relaxed` ([`auth::policy`]) a user with no
+//! second factor is signed in by the password alone, and may enrol one
+//! while signed in with the password only.
 
 use auth::accounts::{self, SecondFactor};
 use auth::failures::{self, Failure};
 use auth::limits::allow;
 use auth::notices::Notice;
-use auth::{Keys, Session, Stage, codes, gate, password, secret, sessions, totp};
+use auth::{Keys, Policy, Session, Stage, codes, gate, password, secret, sessions, totp};
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::header::USER_AGENT;
@@ -77,19 +81,32 @@ pub struct AuthState {
     /// `enrol` after a 2FA reset: a code has been emailed, and confirming
     /// an authenticator app needs it too (S1 M7).
     pub needs_email_code: bool,
+    /// `KEEP_AUTH_POLICY` unless `strict` (left out), signed out too:
+    /// `relaxed` signs in without a second factor unless the user enrolled
+    /// one, and has no step-up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "\"strict\" | \"relaxed\"")]
+    pub policy: Option<Policy>,
 }
 
 impl AuthState {
-    pub(crate) const SIGNED_OUT: AuthState = AuthState {
-        stage: AuthStage::SignedOut,
-        email: None,
-        method: None,
-        step_up_until: None,
-        needs_email_code: false,
-    };
+    pub(crate) fn signed_out(policy: Policy) -> AuthState {
+        AuthState {
+            stage: AuthStage::SignedOut,
+            email: None,
+            method: None,
+            step_up_until: None,
+            needs_email_code: false,
+            policy: policy.shown(),
+        }
+    }
 }
 
-pub(crate) fn state_of(conn: &Connection, s: &Session) -> Result<AuthState, ApiError> {
+pub(crate) fn state_of(
+    conn: &Connection,
+    s: &Session,
+    policy: Policy,
+) -> Result<AuthState, ApiError> {
     let creds = accounts::credentials(conn, s.user)?;
     let method = creds
         .as_ref()
@@ -105,6 +122,7 @@ pub(crate) fn state_of(conn: &Connection, s: &Session) -> Result<AuthState, ApiE
         method,
         step_up_until: s.authenticated_at.map(|at| at + auth::STEP_UP_MS),
         needs_email_code: s.stage == Stage::Enrol && creds.is_some_and(|c| c.must_prove_email),
+        policy: policy.shown(),
     })
 }
 
@@ -161,10 +179,11 @@ pub async fn state(
     headers: HeaderMap,
 ) -> Result<Json<AuthState>, ApiError> {
     let Some(s) = current(&state, &headers, &timing).await? else {
-        return Ok(Json(AuthState::SIGNED_OUT));
+        return Ok(Json(AuthState::signed_out(state.auth.policy)));
     };
     let store = state.store.clone();
-    let out = blocking(move || store.platform().with_read(|c| state_of(c, &s))).await?;
+    let policy = state.auth.policy;
+    let out = blocking(move || store.platform().with_read(|c| state_of(c, &s, policy))).await?;
     Ok(Json(out))
 }
 
@@ -249,10 +268,12 @@ pub(crate) struct Partial {
 /// out now when the user's method is email, or when enrolling after a 2FA
 /// reset (S1 M7). `mailbox_proven`: an emailed code was just entered too
 /// ([`gate`]), which is the whole second factor for the emailed method,
-/// so that user is signed in at once.
+/// so that user is signed in at once. Under the relaxed policy a user
+/// with no second factor is signed in at once too (no enrolment).
 pub(crate) fn start_partial(
     tx: &Connection,
     keys: &Keys,
+    policy: Policy,
     user: i64,
     user_agent: Option<&str>,
     mailbox_proven: bool,
@@ -263,6 +284,7 @@ pub(crate) fn start_partial(
     let stage = match factor {
         Some(SecondFactor::Email) if mailbox_proven => Stage::Full,
         Some(_) => Stage::SecondFactor,
+        None if policy.is_relaxed() => Stage::Full,
         None => Stage::Enrol,
     };
     let token = sessions::create(tx, user, stage, now)?;
@@ -270,7 +292,7 @@ pub(crate) fn start_partial(
     if let Some(ua) = user_agent {
         sessions::set_user_agent(tx, &id, ua)?;
     }
-    let proof = factor.is_none() && creds.is_some_and(|c| c.must_prove_email);
+    let proof = stage == Stage::Enrol && creds.is_some_and(|c| c.must_prove_email);
     let code = if (factor == Some(SecondFactor::Email) && stage != Stage::Full) || proof {
         let code = codes::email_code();
         sessions::set_email_code(tx, keys, &id, &code, now)?;
@@ -282,7 +304,7 @@ pub(crate) fn start_partial(
     Ok(Partial {
         token,
         stage,
-        state: state_of(tx, &s)?,
+        state: state_of(tx, &s, policy)?,
         code,
     })
 }
@@ -463,9 +485,14 @@ pub async fn sign_in(
                 sessions::revoke(tx, old)?;
             }
             accounts::log(tx, now, "sign_in_password", Some(user), "self", None, "")?;
-            let partial = start_partial(tx, keys, user, ua.as_deref(), gated, now)?;
+            let partial = start_partial(tx, keys, st.auth.policy, user, ua.as_deref(), gated, now)?;
             if partial.stage == Stage::Full {
-                accounts::log(tx, now, "sign_in", Some(user), "self", None, "emailed code")?;
+                let how = if gated {
+                    "emailed code"
+                } else {
+                    "relaxed: password only"
+                };
+                accounts::log(tx, now, "sign_in", Some(user), "self", None, how)?;
             }
             Ok::<_, ApiError>((SignedIn::Started(partial), old.clone()))
         })
@@ -493,6 +520,7 @@ pub async fn sign_in(
                 method: None,
                 step_up_until: None,
                 needs_email_code: false,
+                policy: state.auth.policy.shown(),
             })
             .into_response())
         }
@@ -603,7 +631,7 @@ pub async fn second_factor(
             let token = sessions::complete(tx, &s, now)?;
             accounts::log(tx, now, "sign_in", Some(s.user), "self", None, "")?;
             let full = sessions::get(tx, &token, now)?.ok_or(ApiError::Internal)?;
-            Ok(Ok((token, state_of(tx, &full)?)))
+            Ok(Ok((token, state_of(tx, &full, st.auth.policy)?)))
         })
     })
     .await?;
@@ -889,8 +917,12 @@ pub async fn enrol_confirm(
                 }
             }
             let must_prove = s.stage == Stage::Enrol && creds.must_prove_email;
+            // Relaxed: a signed-in user with no factor yet (none was
+            // required) sets one up with the password alone.
+            let first_factor = st.auth.policy.is_relaxed() && creds.second_factor.is_none();
             let verdict = verify_code(tx, &s, now, || {
                 if s.stage == Stage::Full
+                    && !first_factor
                     && !check_second_factor(
                         tx,
                         keys,
@@ -932,7 +964,7 @@ pub async fn enrol_confirm(
                 token,
                 Enrolled {
                     recovery_codes: recovery,
-                    state: state_of(tx, &full)?,
+                    state: state_of(tx, &full, st.auth.policy)?,
                 },
             )))
         })
@@ -997,7 +1029,7 @@ pub async fn step_up(
             let token = sessions::step_up(tx, &s, now)?;
             accounts::log(tx, now, "step_up", Some(s.user), "self", None, "")?;
             let full = sessions::get(tx, &token, now)?.ok_or(ApiError::Internal)?;
-            Ok(Ok((token, state_of(tx, &full)?)))
+            Ok(Ok((token, state_of(tx, &full, st.auth.policy)?)))
         })
     })
     .await?;
@@ -1031,5 +1063,8 @@ pub async fn sign_out(
         .await?;
         state.auth.revoked(Revoked::Session(id));
     }
-    without_session(Json(AuthState::SIGNED_OUT).into_response(), &headers)
+    without_session(
+        Json(AuthState::signed_out(state.auth.policy)).into_response(),
+        &headers,
+    )
 }

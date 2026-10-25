@@ -24,6 +24,7 @@ pub mod limits;
 pub mod notices;
 mod operator;
 pub mod password;
+pub mod policy;
 pub mod schema;
 pub mod secret;
 pub mod sessions;
@@ -34,6 +35,7 @@ pub use operator::{operator_invite, operator_reset_2fa};
 
 pub use accounts::SecondFactor;
 pub use keys::Keys;
+pub use policy::Policy;
 pub use schema::SCHEMA;
 pub use sessions::{Session, Stage};
 

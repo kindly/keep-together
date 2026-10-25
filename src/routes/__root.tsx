@@ -4,6 +4,7 @@ import type { Loaders } from '../lib/data'
 import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 
+import { RelaxedBanner } from '../components/relaxed-banner'
 import { MyTenantsProvider } from '../lib/data'
 import '../styles.css'
 
@@ -17,6 +18,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 function RootComponent() {
   return (
     <>
+      <RelaxedBanner />
       <MyTenantsProvider>
         <Outlet />
       </MyTenantsProvider>

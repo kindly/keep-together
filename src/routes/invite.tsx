@@ -2,7 +2,7 @@ import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { AuthForm, field, input, linkButton } from '../components/auth-steps'
 import { LINK_EXPIRED, authErrorMessage } from '../lib/auth-errors'
-import { inviteCheck, useSignInSteps } from '../lib/data'
+import { inviteCheck, useAuthState, useSignInSteps } from '../lib/data'
 import type { InviteInfo } from '../lib/data'
 import { useLinkToken } from '../lib/link-token'
 
@@ -17,6 +17,7 @@ function Invite() {
   const token = useLinkToken()
   const [info, setInfo] = useState<InviteInfo | string | null>(null)
   const steps = useSignInSteps()
+  const relaxed = useAuthState()?.policy === 'relaxed'
   const navigate = useNavigate()
   useEffect(() => {
     if (!token) return setInfo(LINK_EXPIRED)
@@ -46,8 +47,9 @@ function Invite() {
         >
           {!info.hasAccount && (
             <p className="text-sm text-neutral-500">
-              Choose a password: 12 to 128 characters, not one leaked in a
-              breach.
+              {relaxed
+                ? 'Choose a password.'
+                : 'Choose a password: 12 to 128 characters, not one leaked in a breach.'}
             </p>
           )}
           <input

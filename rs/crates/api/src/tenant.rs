@@ -33,6 +33,8 @@ pub struct Tenant {
     pub user: i64,
     /// When this session last proved password + second factor.
     authenticated_at: i64,
+    /// `KEEP_AUTH_POLICY=relaxed`: no step-up.
+    no_step_up: bool,
     timing: Timing,
     /// For [`Tenant::run_job`]'s `platform.db` marker only: handlers never
     /// see the store.
@@ -129,9 +131,9 @@ impl Tenant {
 
     /// Irreversible commands (retiring or deleting a field), whoever may
     /// run them: a sign-in (or step-up) within the last hour, else `403
-    /// step_up_required`.
+    /// step_up_required`. Always passes under `KEEP_AUTH_POLICY=relaxed`.
     pub fn require_step_up(&self) -> Result<(), ApiError> {
-        if contracts::now_ms() - self.authenticated_at >= ::auth::STEP_UP_MS {
+        if !self.no_step_up && contracts::now_ms() - self.authenticated_at >= ::auth::STEP_UP_MS {
             return Err(ApiError::StepUpRequired);
         }
         Ok(())
@@ -253,6 +255,7 @@ pub(crate) async fn middleware(
             role: member.role,
             user: session.user,
             authenticated_at: session.authenticated_at.unwrap_or(0),
+            no_step_up: state.auth.policy.is_relaxed(),
             timing: timing.clone(),
             tenant_id: member.tenant.id.clone(),
             store: state.store.clone(),
@@ -326,6 +329,7 @@ mod tests {
             role: Role::Staff,
             user: cat.0,
             authenticated_at: now,
+            no_step_up: false,
             timing: Timing::default(),
             store: store.clone(),
             session_id: ::auth::secret::hash(&token),

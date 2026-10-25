@@ -49,3 +49,26 @@ state_get() {
   [ -f "$PREVIEW/state" ] || return 0
   sed -n "s/^$1=//p" "$PREVIEW/state" | tail -n 1
 }
+
+# The preview signs in with KEEP_AUTH_POLICY=relaxed (docs/ops.md): a
+# password alone, and the riverside users' password is "riverside" with
+# no TOTP (the api's seed default under relaxed). An install from before
+# that gets it here: preview.env gains the line if it has no
+# KEEP_AUTH_POLICY (one already there is the human's choice, kept), and
+# under relaxed the generated riverside sign-ins leave secrets.env so the
+# next reseed uses the simple ones. Prints what it changed.
+relaxed_settings() {
+  local env=$PREVIEW/preview.env secrets=$PREVIEW/secrets.env tmp
+  if ! grep -q '^KEEP_AUTH_POLICY=' "$env"; then
+    printf '%s\n' KEEP_AUTH_POLICY=relaxed >>"$env"
+    echo "preview.env: added KEEP_AUTH_POLICY=relaxed"
+  fi
+  [ "$(sed -n 's/^KEEP_AUTH_POLICY=//p' "$env" | tail -n 1)" = relaxed ] || return 0
+  if [ -f "$secrets" ] && grep -q '^KEEP_RIVERSIDE_' "$secrets"; then
+    tmp=$(mktemp "$PREVIEW/secrets.env.XXXXXX")
+    chmod 600 "$tmp"
+    grep -v '^KEEP_RIVERSIDE_' "$secrets" >"$tmp" || true
+    mv "$tmp" "$secrets"
+    echo "secrets.env: removed the generated riverside sign-ins (relaxed: password riverside, no TOTP)"
+  fi
+}

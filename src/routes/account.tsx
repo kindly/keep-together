@@ -18,6 +18,7 @@ import {
   useAccount,
   useAccountActions,
   useSessions,
+  useAuthState,
   useSignOut,
 } from '../lib/data'
 
@@ -46,6 +47,7 @@ function Account() {
 
 function Signed() {
   const account = useAccount()
+  const relaxed = useAuthState()?.policy === 'relaxed'
   const actions = useAccountActions()
   const signOut = useSignOut()
   const [codes, setCodes] = useState<Array<string> | null>(null)
@@ -141,7 +143,9 @@ function Signed() {
             type="password"
             required
             autoComplete="new-password"
-            placeholder="New password (at least 12 characters)"
+            placeholder={
+              relaxed ? 'New password' : 'New password (at least 12 characters)'
+            }
             className={input}
           />
         </AuthForm>
@@ -149,17 +153,24 @@ function Signed() {
 
       <section className="flex flex-col gap-3">
         <h2 className="font-medium">Second step</h2>
-        <button
-          type="button"
-          className={primary}
-          onClick={() =>
-            void guarded(async () => {
-              setCodes(await actions.newRecoveryCodes())
-            })
-          }
-        >
-          New recovery codes
-        </button>
+        {relaxed && account.method === null ? (
+          <p className="text-sm text-neutral-600">
+            Signing in here needs only your password. You can still set up a
+            second step: you'll then be asked for it every time.
+          </p>
+        ) : (
+          <button
+            type="button"
+            className={primary}
+            onClick={() =>
+              void guarded(async () => {
+                setCodes(await actions.newRecoveryCodes())
+              })
+            }
+          >
+            New recovery codes
+          </button>
+        )}
         <button
           type="button"
           className={primary}
@@ -167,7 +178,9 @@ function Signed() {
           // factor (not a step-up: changing it doesn't renew one).
           onClick={() => setEnrolling(true)}
         >
-          Change how you sign in
+          {relaxed && account.method === null
+            ? 'Set up a second step'
+            : 'Change how you sign in'}
         </button>
       </section>
 

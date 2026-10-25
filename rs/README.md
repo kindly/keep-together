@@ -35,7 +35,8 @@ Env (`api`):
 | `KEEP_MAIL_ONLY_TO` | unset | staging: mail only these recipients (`a@x.org,@y.org`: full addresses or `@domain`, exact, case-insensitive); anyone else is exactly `KEEP_MAIL=off` for them (`mail_off`). QC's `@qc.keep-together.invalid` is never listed. Empty or malformed entries stop the boot; `prod` refuses it |
 | `KEEP_QC_SEED=1` | off | with dev auth: `POST /api/dev/qc-seed` and `qc-crowd` (≤ 10k) |
 | `KEEP_QC_TOKEN` | unset | with `KEEP_ENV=staging` only: `/api/qc/{seed,crowd,hold,session}` for the nightly QC run, the token in `x-keep-qc-token` (≥ 64 chars); `qc-` groups and `@qc.keep-together.invalid` users only; 404 when off or wrong; with `KEEP_ENV=prod` the boot stops (`routes::qc_seed`) |
-| `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`) |
+| `KEEP_AUTH_POLICY` | `strict` | `relaxed`: no required second factor (a user who enrolled one is still asked), no step-up, any non-empty password (≤ 128); invites, roles, rate limits, sessions and hashing unchanged (`auth::policy`, ADR 0020 amendment 2026-10-25). For the tailnet preview and local runs reached over the network. `/api/me` (`authPolicy`) and `/api/auth/state` (`policy`) say which; the SPA shows a banner unless strict. `KEEP_ENV=prod` refuses `relaxed`; any other value stops the boot |
+| `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`; on dev under `KEEP_AUTH_POLICY=relaxed` a missing password is `riverside` and a missing TOTP is none) |
 
 The 10k measurement (`scripts/perf-search10k-rs/`):
 
@@ -168,6 +169,9 @@ Staff only, invite-only. A sign-in is two requests: `POST
 code is from an authenticator app (TOTP), emailed (sent at sign-in;
 `send-code` for another), or one of 10 recovery codes. A partial session
 reaches nothing but `/api/auth/*` (`/api/me` is 401).
+Under `KEEP_AUTH_POLICY=relaxed` a user with no second factor is signed
+in by the password alone (`signed_in`, no `enrol`), and may enrol one
+from their account with the password only; step-up always passes.
 
 | route | |
 |---|---|
@@ -356,7 +360,8 @@ seed-riverside` is `seed::riverside`, staging's reset seed: the
 `riverside` org with Convex's 100 fixed-seed donors and a password +
 TOTP user per role, refused unless `KEEP_ENV` is `dev` or `staging`;
 on dev, credentials missing from `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`
-are generated and printed.
+are generated and printed (under `KEEP_AUTH_POLICY=relaxed`: the password
+`riverside` and no TOTP).
 
 ## Platform
 

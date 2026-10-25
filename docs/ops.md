@@ -481,7 +481,7 @@ the old Convex `preview` deployment. Scripts in `scripts/preview/`:
 |---|---|
 | `install.sh [--origin URL] [--port N]` | once, re-runnable: makes `~/.local/share/keep-preview/` (`KEEP_PREVIEW_HOME`) with its own https clone of the repo in `src/` (never a working checkout or a factory worktree), `preview.env`, `secrets.env`, the `systemd --user` units, the first build; prints the human's steps |
 | `update.sh [--force]` | what `keep-preview-update.timer` runs every 5 min: deploy `origin/main` if it moved |
-| `status.sh` | running commit, last update and its result, URL, health, the riverside sign-in emails and where their secrets are |
+| `status.sh` | running commit, last update and its result, URL, health, the riverside sign-ins (relaxed: email and password; strict: emails and where their secrets are) |
 
 The installed copies live in `~/.local/share/keep-preview/bin/`; each
 deploy replaces them with the new release's.
@@ -494,16 +494,27 @@ the SPA from `current/dist` (`KEEP_STATIC_DIR`), bound to
 tailnet URL (`https://<host>.<tailnet>.ts.net`). `tailscale serve`
 terminates TLS on the tailnet and proxies to the loopback port.
 
-**Auth is real.** `KEEP_DEV_AUTH` is not set, so there is no dev login at
-all; and even if it were, `/api/dev/*` is refused for any request whose
-`Host` isn't loopback, which through `tailscale serve` it never is (the
-ts.net name). Everyone signs in with a password and TOTP. `KEEP_ENV=dev`
-is allowed only because the bind is loopback; the api refuses it (and
-`KEEP_MAIL=log`) on any reachable bind. The auth keys and the three
-riverside sign-ins (`admin@`, `staff@`, `viewer@keep-together.example`,
-`KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`) are made once by `install.sh`
-into `secrets.env` (0600) and never printed or logged: add the TOTP
-secret (base32) to an authenticator app by hand. Rate limits see every
+**Auth is real, but relaxed.** `KEEP_DEV_AUTH` is not set, so there is no
+dev login at all; and even if it were, `/api/dev/*` is refused for any
+request whose `Host` isn't loopback, which through `tailscale serve` it
+never is (the ts.net name). `preview.env` sets `KEEP_AUTH_POLICY=relaxed`
+(ADR 0020's 2026-10-25 amendment): a password alone signs in, there is no
+step-up, any non-empty password is accepted, and every page says
+"Relaxed sign-in: not for real data". The three riverside sign-ins
+(`admin@`, `staff@`, `viewer@keep-together.example`) all use the password
+`riverside`, with no TOTP (the seed's default under relaxed); anyone may
+still set up a second step from their account, and is then asked for it.
+`KEEP_ENV=dev` is allowed only because the bind is loopback; the api
+refuses it (and `KEEP_MAIL=log`) on any reachable bind. The auth keys are
+made once by `install.sh` into `secrets.env` (0600). An install from before
+relaxed is converted by `relaxed_settings` (`lib.sh`, run by `install.sh`
+and by every `update.sh` before it reseeds): `preview.env` gains
+`KEEP_AUTH_POLICY=relaxed` unless it names a policy already, and the
+generated `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}` leave `secrets.env`. To
+go back to strict, set `KEEP_AUTH_POLICY=strict` in `preview.env` and
+re-run `install.sh`: it makes a password and TOTP secret per role into
+`secrets.env` again, never printed or logged (add the TOTP secret to an
+authenticator app by hand). Rate limits see every
 tailnet client as `127.0.0.1` (no `KEEP_CLIENT_IP_HEADER`: `tailscale
 serve` passes the client address in `X-Forwarded-For`, which the api
 refuses as a client-address header); fine for a household.
@@ -513,8 +524,8 @@ it builds in `src/` (`cargo build --release -p api`, `pnpm install`,
 `pnpm build` with `VITE_BACKEND=rust`) at nice 19 / ionice idle with half
 the cores, then stops the api, moves `data/` to `data.prev/`, points
 `current` at the new release and starts it: the api seeds riverside at
-boot (`KEEP_RESET_SEED`) with the same sign-ins, so an authenticator
-keeps working. Changes made in the preview last until the next deploy.
+boot (`KEEP_RESET_SEED`) with the same sign-ins (under strict, so an
+authenticator keeps working). Changes made in the preview last until the next deploy.
 It skips a run while another update holds `update.lock`, or while a QC
 run holds `.qc.lock` in the main checkout (a build would skew QC's
 timings). A failed build leaves the running release alone and is logged;

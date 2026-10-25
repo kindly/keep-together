@@ -13,19 +13,21 @@
 //! writes the donors once and applies a changed password or secret from
 //! the env. TOTP secrets are sealed with auth's keys, the api's own.
 
-use auth::Keys;
+use auth::{Keys, Policy};
 use seed::riverside::{self, Credential, Origin, SeedError, Seeded};
 use store::Store;
 
 pub const SLUG: &str = riverside::SLUG;
 
 /// Seed when `KEEP_RESET_SEED` asks for it. `true` when it made the org.
-pub fn seed_from_env(store: &Store, keys: &Keys) -> Result<bool, String> {
+/// Under `KEEP_AUTH_POLICY=relaxed` a generated sign-in is
+/// [`riverside::RELAXED_PASSWORD`] with no TOTP.
+pub fn seed_from_env(store: &Store, keys: &Keys, policy: Policy) -> Result<bool, String> {
     match std::env::var("KEEP_RESET_SEED").ok().as_deref() {
         None | Some("") => Ok(false),
         Some(SLUG) => {
             let keep_env = std::env::var("KEEP_ENV").ok();
-            seed(store, keys, keep_env.as_deref(), |name| {
+            seed_with(store, keys, keep_env.as_deref(), policy, |name| {
                 std::env::var(name).ok()
             })
             .map_err(|e| e.to_string())
@@ -43,8 +45,20 @@ pub fn riverside_with(
     keep_env: Option<&str>,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<(Seeded, Vec<Credential>), SeedError> {
+    riverside_with_policy(store, keys, keep_env, Policy::Strict, env)
+}
+
+/// [`riverside_with`] under `policy` (`KEEP_AUTH_POLICY`).
+pub fn riverside_with_policy(
+    store: &Store,
+    keys: &Keys,
+    keep_env: Option<&str>,
+    policy: Policy,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<(Seeded, Vec<Credential>), SeedError> {
     riverside::allowed(keep_env)?;
-    let mut credentials = riverside::credentials_from_env(env, keep_env == Some("dev"))?;
+    let mut credentials =
+        riverside::credentials_from_env_with(env, keep_env == Some("dev"), policy)?;
     let seeded = riverside::seed(store, keys, &mut credentials, crate::schema::seed_new_org)?;
     Ok((seeded, credentials))
 }
@@ -70,6 +84,7 @@ pub fn shown(value: &str, origin: Origin) -> &str {
         Origin::Generated => value,
         Origin::Kept => "(unchanged)",
         Origin::Env => "(from env)",
+        Origin::None => "none (relaxed sign-in)",
     }
 }
 
@@ -81,7 +96,18 @@ pub fn seed(
     keep_env: Option<&str>,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<bool, SeedError> {
-    let (seeded, credentials) = riverside_with(store, keys, keep_env, env)?;
+    seed_with(store, keys, keep_env, Policy::Strict, env)
+}
+
+/// [`seed`] under `policy` (`KEEP_AUTH_POLICY`).
+pub fn seed_with(
+    store: &Store,
+    keys: &Keys,
+    keep_env: Option<&str>,
+    policy: Policy,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<bool, SeedError> {
+    let (seeded, credentials) = riverside_with_policy(store, keys, keep_env, policy, env)?;
     for c in credentials
         .iter()
         .filter(|c| c.password_origin == Origin::Generated || c.totp_origin == Origin::Generated)

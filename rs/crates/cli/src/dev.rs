@@ -118,8 +118,8 @@ pub fn seed_demo(
     })
 }
 
-/// `keep dev seed-riverside` (`api::reset::riverside_with` with the
-/// process env).
+/// `keep dev seed-riverside` (`api::reset::riverside_with_policy` with
+/// the process env, `KEEP_AUTH_POLICY` included).
 pub fn seed_riverside(
     store: &Store,
 ) -> Result<(seed::riverside::Seeded, Vec<seed::riverside::Credential>), seed::riverside::SeedError>
@@ -129,5 +129,7 @@ pub fn seed_riverside(
     seed::riverside::allowed(keep_env.as_deref())?;
     let keys = api::reset::keys_from_env(keep_env.as_deref(), env)
         .map_err(seed::riverside::SeedError::BadCredential)?;
-    api::reset::riverside_with(store, &keys, keep_env.as_deref(), env)
+    let policy = auth::Policy::parse(env("KEEP_AUTH_POLICY").as_deref())
+        .map_err(seed::riverside::SeedError::BadCredential)?;
+    api::reset::riverside_with_policy(store, &keys, keep_env.as_deref(), policy, env)
 }

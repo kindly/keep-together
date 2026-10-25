@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # The preview at a glance (docs/ops.md, "Preview (tailnet)"): the commit
 # it runs, the last update, its URL and health, and the riverside
-# sign-ins' emails. The passwords and TOTP secrets stay in secrets.env:
-# this prints the file's path, never its values.
+# sign-ins. Under KEEP_AUTH_POLICY=relaxed those are the seed's simple
+# default (password riverside, no TOTP) unless secrets.env sets one;
+# otherwise the passwords and TOTP secrets stay in secrets.env: this
+# prints the file's path, never its values.
 #
 #   ~/.local/share/keep-preview/bin/status.sh    (or scripts/preview/status.sh)
 set -euo pipefail
@@ -31,8 +33,20 @@ failed=$(state_get failed)
 [ -z "$failed" ] || printf '%-12s %s\n' failed "${failed:0:12}: journalctl --user -u $UPDATE_UNIT"
 
 echo
-echo "riverside sign-ins (password + TOTP; values in $PREVIEW/secrets.env as"
-echo "KEEP_RIVERSIDE_<ROLE>_PASSWORD / _TOTP, the TOTP as a base32 secret):"
-for role in admin staff viewer; do
-  echo "  $role@keep-together.example"
-done
+if [ "${KEEP_AUTH_POLICY:-strict}" = relaxed ]; then
+  echo "riverside sign-ins (KEEP_AUTH_POLICY=relaxed: password only, no second step):"
+  for role in admin staff viewer; do
+    var=KEEP_RIVERSIDE_${role^^}_PASSWORD
+    if grep -q "^$var=" "$PREVIEW/secrets.env" 2>/dev/null; then
+      echo "  $role@keep-together.example  password: $var in $PREVIEW/secrets.env"
+    else
+      echo "  $role@keep-together.example  password: riverside"
+    fi
+  done
+else
+  echo "riverside sign-ins (password + TOTP; values in $PREVIEW/secrets.env as"
+  echo "KEEP_RIVERSIDE_<ROLE>_PASSWORD / _TOTP, the TOTP as a base32 secret):"
+  for role in admin staff viewer; do
+    echo "  $role@keep-together.example"
+  done
+fi

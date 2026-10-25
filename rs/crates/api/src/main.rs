@@ -116,7 +116,7 @@ async fn main() {
         Err(e) => eprintln!("pending-job reconcile: {e}"),
     }
     // After the migrations: the seed writes through the head schema.
-    match api::reset::seed_from_env(&store, &auth.keys) {
+    match api::reset::seed_from_env(&store, &auth.keys, auth.policy) {
         Ok(true) => eprintln!("seeded {}", api::reset::SLUG),
         Ok(false) => {}
         Err(e) => {

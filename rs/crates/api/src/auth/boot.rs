@@ -11,10 +11,11 @@
 //! | `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER` | 32 bytes, base64 ([`auth::keys`]); required when deployed, and on any non-loopback bind; else the published dev keys |
 //! | `KEEP_MAIL=log` | prints codes and links: only for dev (`KEEP_ENV=dev`, or unset) on a loopback bind. `KEEP_MAIL=off`: no mail, and the api refuses what needs it (refused in prod). `KEEP_MAIL_ONLY_TO`: mail only those recipients, anyone else as if off (staging; refused in prod) |
 //! | `KEEP_DEV_AUTH=1` | refused when deployed |
+//! | `KEEP_AUTH_POLICY` | `strict` (default) or `relaxed` ([`auth::policy`]: no required second factor, no step-up, any non-empty password); `relaxed` is refused with `KEEP_ENV=prod`, any other value stops the boot |
 
 use std::net::IpAddr;
 
-use auth::Keys;
+use auth::{Keys, Policy};
 use comms::mail::Mailer;
 
 use super::{Config, Runtime, dev_auth_refused};
@@ -36,6 +37,14 @@ pub fn runtime(var: impl Fn(&str) -> Option<String>, bind: IpAddr) -> Result<Run
     if deployed && var("KEEP_DEV_AUTH").as_deref() == Some("1") {
         return Err(
             "KEEP_DEV_AUTH=1 is refused when deployed (KEEP_ENV=prod|staging, or a reachable bind)"
+                .into(),
+        );
+    }
+
+    let policy = Policy::parse(var("KEEP_AUTH_POLICY").as_deref())?;
+    if policy.is_relaxed() && keep_env.as_deref() == Some("prod") {
+        return Err(
+            "KEEP_AUTH_POLICY=relaxed is refused with KEEP_ENV=prod: production requires a second factor. Unset it"
                 .into(),
         );
     }
@@ -111,7 +120,9 @@ pub fn runtime(var: impl Fn(&str) -> Option<String>, bind: IpAddr) -> Result<Run
             );
         }
     };
-    Ok(Runtime::new(config, mailer).with_keys(keys))
+    Ok(Runtime::new(config, mailer)
+        .with_keys(keys)
+        .with_policy(policy))
 }
 
 #[cfg(test)]
@@ -336,6 +347,32 @@ mod tests {
                 .unwrap()
                 .contains("KEEP_MAIL_ONLY_TO")
         );
+    }
+
+    /// Relaxed sign-in is for the preview and local runs, never prod; an
+    /// unknown policy stops any boot.
+    #[test]
+    fn relaxed_is_refused_in_prod() {
+        assert_eq!(boot(&[], LOOPBACK).unwrap().policy, Policy::Strict);
+        let relaxed = [("KEEP_AUTH_POLICY", "relaxed")];
+        assert_eq!(boot(&relaxed, LOOPBACK).unwrap().policy, Policy::Relaxed);
+        let mut st = staging();
+        st.push(("KEEP_AUTH_POLICY", "relaxed".into()));
+        assert!(boot_owned(&st, ANY).is_ok_and(|rt| rt.policy == Policy::Relaxed));
+        let mut prod = st.clone();
+        prod[0].1 = "prod".into();
+        assert!(
+            boot_owned(&prod, ANY)
+                .err()
+                .unwrap()
+                .contains("KEEP_AUTH_POLICY=relaxed")
+        );
+        prod.last_mut().unwrap().1 = "strict".into();
+        assert!(boot_owned(&prod, ANY).is_ok_and(|rt| rt.policy == Policy::Strict));
+        for bad in ["demo", "", "RELAXED"] {
+            let err = boot(&[("KEEP_AUTH_POLICY", bad)], LOOPBACK).err().unwrap();
+            assert!(err.contains("KEEP_AUTH_POLICY"), "{bad}: {err}");
+        }
     }
 
     /// Local dev runs with the published dev keys; half a pair is refused.
