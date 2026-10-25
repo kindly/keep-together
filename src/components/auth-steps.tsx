@@ -159,12 +159,17 @@ export function EnrolForm({
 
   // The app's code and, after a reset, the one emailed at sign-in.
   const proof = needsEmailCode && method === 'totp'
+  // Relaxed sign-in: signed in with no second step yet, so the first one
+  // needs only the password.
+  const first = changing !== undefined && changing.current === null
 
   if (!method) {
     return (
       <section className="flex flex-col gap-3">
         <p className="text-sm text-neutral-600">
-          Set up a second step for signing in. You'll need it every time.
+          {first
+            ? "Set up a second step for signing in (optional here). Once it's set up, you'll need it every time."
+            : "Set up a second step for signing in. You'll need it every time."}
         </p>
         {needsEmailCode && (
           <p className="text-sm text-neutral-600">
@@ -223,7 +228,7 @@ export function EnrolForm({
             changing
               ? {
                   password: field(d, 'password'),
-                  currentCode: field(d, 'currentCode'),
+                  currentCode: first ? undefined : field(d, 'currentCode'),
                 }
               : proof
                 ? { emailCode: field(d, 'emailCode') }
@@ -237,8 +242,9 @@ export function EnrolForm({
         {changing && (
           <>
             <p className="text-sm text-neutral-600">
-              To change it, confirm it's you: your password and a code from your
-              current second step (or a recovery code).
+              {first
+                ? "To set it up, confirm it's you: your password."
+                : "To change it, confirm it's you: your password and a code from your current second step (or a recovery code)."}
             </p>
             <input
               name="password"
@@ -248,7 +254,7 @@ export function EnrolForm({
               placeholder="Password"
               className={input}
             />
-            <CodeInput name="currentCode" label="Current code" />
+            {!first && <CodeInput name="currentCode" label="Current code" />}
           </>
         )}
       </AuthForm>

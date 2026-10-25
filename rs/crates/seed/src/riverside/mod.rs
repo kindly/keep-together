@@ -13,7 +13,10 @@
 //! elsewhere a missing one is generated, and the caller prints it, unless
 //! the user already holds one: a generated password or TOTP secret never
 //! replaces a stored one ([`Origin::Kept`]), so a dev riverside's
-//! authenticator survives a re-run.
+//! authenticator survives a re-run. Under `KEEP_AUTH_POLICY=relaxed`
+//! ([`credentials_from_env_with`]) a missing password is
+//! [`RELAXED_PASSWORD`] and a missing TOTP secret is none at all
+//! ([`Origin::None`]): the users sign in with the password alone.
 //!
 //! Re-runnable: the users, organisation and memberships are ensured, a
 //! changed password or TOTP secret is applied, and the donors are written
@@ -95,7 +98,14 @@ pub enum Origin {
     /// Made by this run but the user already had one, which stays; the
     /// generated value is dropped (empty).
     Kept,
+    /// No TOTP secret (relaxed policy, none in env): none is set, and one
+    /// the user already has stays. The value is empty.
+    None,
 }
+
+/// A missing password under the relaxed policy, the same for every role,
+/// so it can be passed round.
+pub const RELAXED_PASSWORD: &str = "riverside";
 
 /// A seeded user's sign-in.
 #[derive(Clone, Debug)]
@@ -123,6 +133,17 @@ pub fn credentials_from_env(
     env: impl Fn(&str) -> Option<String>,
     generate: bool,
 ) -> Result<Vec<Credential>, SeedError> {
+    credentials_from_env_with(env, generate, auth::Policy::Strict)
+}
+
+/// [`credentials_from_env`] under `policy`: relaxed, a generated password
+/// is [`RELAXED_PASSWORD`], no TOTP secret is generated, and a password
+/// from env only needs to be non-empty.
+pub fn credentials_from_env_with(
+    env: impl Fn(&str) -> Option<String>,
+    generate: bool,
+    policy: auth::Policy,
+) -> Result<Vec<Credential>, SeedError> {
     let get = |name: &str| env(name).filter(|v| !v.trim().is_empty());
     let mut missing = vec![];
     let mut out = vec![];
@@ -140,15 +161,27 @@ pub fn credentials_from_env(
                 Origin::Generated
             }
         };
-        let (password_origin, totp_origin) = (origin(&password), origin(&totp));
-        let password = password.unwrap_or_else(auth::secret::token);
-        let totp_secret = totp
-            .map(|s| s.trim().to_uppercase())
-            .unwrap_or_else(auth::totp::new_secret);
-        if let Some(p) = auth::password::problem(&password) {
+        let relaxed = policy.is_relaxed();
+        let (password_origin, mut totp_origin) = (origin(&password), origin(&totp));
+        let password = password.unwrap_or_else(|| {
+            if relaxed {
+                RELAXED_PASSWORD.into()
+            } else {
+                auth::secret::token()
+            }
+        });
+        if relaxed && totp.is_none() {
+            totp_origin = Origin::None;
+        }
+        let totp_secret = match totp {
+            Some(s) => s.trim().to_uppercase(),
+            None if relaxed => String::new(),
+            None => auth::totp::new_secret(),
+        };
+        if let Some(p) = policy.password_problem(&password) {
             return Err(SeedError::BadCredential(format!("{pw_var}: {p}")));
         }
-        if auth::totp::code_at(&totp_secret, 0).is_none() {
+        if totp_origin != Origin::None && auth::totp::code_at(&totp_secret, 0).is_none() {
             return Err(SeedError::BadCredential(format!(
                 "{totp_var}: not a base32 TOTP secret"
             )));
@@ -264,7 +297,7 @@ fn members(
                 auth::accounts::set_password(tx, user.0, &c.password, now)?;
             }
         }
-        if c.totp_origin != Origin::Kept {
+        if !matches!(c.totp_origin, Origin::Kept | Origin::None) {
             let same = has_totp
                 && stored
                     .as_ref()

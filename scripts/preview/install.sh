@@ -15,7 +15,8 @@
 #
 # Creates ~/.local/share/keep-preview (KEEP_PREVIEW_HOME), clones the repo
 # there over https (its own clone: never a working checkout), writes
-# preview.env, secrets.env (auth keys and riverside sign-ins, made once,
+# preview.env (KEEP_AUTH_POLICY=relaxed: riverside signs in with the
+# password "riverside", no TOTP), secrets.env (auth keys, made once,
 # 0600), the systemd --user units keep-preview.service and
 # keep-preview-update.{service,timer} (every 5 min), runs the first
 # update (a full release build: several minutes) and prints the one-time
@@ -58,6 +59,7 @@ say "Settings (preview.env)"
 if [ -f "$PREVIEW/preview.env" ]; then
   old_origin=$(sed -n 's/^KEEP_APP_ORIGIN=//p' "$PREVIEW/preview.env")
   old_port=$(sed -n 's/^KEEP_PORT=//p' "$PREVIEW/preview.env")
+  policy=$(sed -n 's/^KEEP_AUTH_POLICY=//p' "$PREVIEW/preview.env")
 fi
 port=${port:-${old_port:-8780}}
 if [ -z "$origin" ] && [ -n "${old_origin:-}" ]; then
@@ -92,6 +94,7 @@ KEEP_DATA_DIR=$PREVIEW/data
 KEEP_STATIC_DIR=$PREVIEW/current/dist
 KEEP_APP_ORIGIN=$origin
 KEEP_MAIL=log
+KEEP_AUTH_POLICY=${policy:-relaxed}
 KEEP_RESET_SEED=riverside
 KEEP_PREVIEW_QC_LOCK=$main_checkout/.qc.lock
 KEEP_PREVIEW_JOBS=$jobs
@@ -107,9 +110,12 @@ grep -v '^KEEP_PREVIEW_PATH=' "$PREVIEW/preview.env" | grep -v '^#'
 
 say "Secrets (secrets.env, 0600)"
 # Made once and kept: replacing KEEP_SETTINGS_KEY would unseal nothing
-# (enrolled authenticators are sealed under it), and the riverside
-# sign-ins stay the same across every reseed, so an authenticator app
-# keeps working. Never printed here: status.sh says where they are.
+# (enrolled authenticators are sealed under it). Under relaxed the
+# riverside sign-ins are the seed's simple default (password riverside,
+# no TOTP), so none are made; under strict a password and TOTP secret per
+# role are made once and stay the same across every reseed, so an
+# authenticator app keeps working. Never printed here: status.sh says
+# where they are.
 umask 077
 touch "$PREVIEW/secrets.env"
 chmod 600 "$PREVIEW/secrets.env"
@@ -122,10 +128,13 @@ add_secret() {
 b32() { head -c 20 /dev/urandom | base32 | tr -d '=\n'; }
 add_secret KEEP_SETTINGS_KEY "$(openssl rand -base64 32)"
 add_secret KEEP_AUTH_PEPPER "$(openssl rand -base64 32)"
-for role in ADMIN STAFF VIEWER; do
-  add_secret "KEEP_RIVERSIDE_${role}_PASSWORD" "$(openssl rand -base64 18 | tr '+/' '-_')"
-  add_secret "KEEP_RIVERSIDE_${role}_TOTP" "$(b32)"
-done
+if [ "$(sed -n 's/^KEEP_AUTH_POLICY=//p' "$PREVIEW/preview.env")" != relaxed ]; then
+  for role in ADMIN STAFF VIEWER; do
+    add_secret "KEEP_RIVERSIDE_${role}_PASSWORD" "$(openssl rand -base64 18 | tr '+/' '-_')"
+    add_secret "KEEP_RIVERSIDE_${role}_TOTP" "$(b32)"
+  done
+fi
+relaxed_settings
 umask 022
 echo "$added added; the file holds $(grep -c '=' "$PREVIEW/secrets.env") values"
 
@@ -208,6 +217,5 @@ cat <<EOF
    'sudo tailscale set --operator=$USER' once, if it asks for rights):
      tailscale serve --bg --https=$https_port http://127.0.0.1:$port
    Then open $origin on any tailnet device.
-3. Sign in with a riverside user: $PREVIEW/bin/status.sh says where the
-   passwords and TOTP secrets are.
+3. Sign in with a riverside user: $PREVIEW/bin/status.sh lists them.
 EOF

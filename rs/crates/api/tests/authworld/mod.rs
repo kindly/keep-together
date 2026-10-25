@@ -89,6 +89,11 @@ pub fn world_with(config: Config) -> World {
     build(false, config, MailSetup::On)
 }
 
+/// As [`world`], with `KEEP_AUTH_POLICY=relaxed`.
+pub fn world_relaxed() -> World {
+    build_with(false, config(), MailSetup::On, auth::Policy::Relaxed)
+}
+
 /// As [`world`], with `KEEP_MAIL=off` (staging until SES).
 pub fn world_mail_off() -> World {
     build(false, config(), MailSetup::Off)
@@ -114,6 +119,10 @@ pub fn config() -> Config {
 }
 
 fn build(dev_auth: bool, config: Config, mail: MailSetup) -> World {
+    build_with(dev_auth, config, mail, auth::Policy::Strict)
+}
+
+fn build_with(dev_auth: bool, config: Config, mail: MailSetup, policy: auth::Policy) -> World {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(
         Store::open_with(
@@ -176,7 +185,8 @@ fn build(dev_auth: bool, config: Config, mail: MailSetup) -> World {
         }
         MailSetup::OnlyTo(list) => mailer = mailer.only_to(list).unwrap(),
     }
-    let state = AppState::new(store.clone(), dev_auth).with_auth(Runtime::new(config, mailer));
+    let state = AppState::new(store.clone(), dev_auth)
+        .with_auth(Runtime::new(config, mailer).with_policy(policy));
     World {
         _tmp: tmp,
         app: app(state, routes::router()),
@@ -392,6 +402,18 @@ impl World {
         assert_eq!(res.status, StatusCode::OK, "{}", res.body);
         assert_eq!(res.body["stage"], "signed_in");
         res.cookie().unwrap()
+    }
+
+    /// A new user with a password and no second factor, a member of
+    /// `tenant` as `role`.
+    pub fn add_password_only(&self, email: &str, tenant: &Tenant, role: Role) {
+        let p = self.store.platform();
+        let user = p.upsert_user(email).unwrap();
+        p.set_membership(user, &tenant.id, role).unwrap();
+        p.with_write(|tx| {
+            accounts::set_password(tx, user.0, &password_of(email), contracts::now_ms())
+        })
+        .unwrap();
     }
 
     /// Move this session's last sign-in `ms` into the past.

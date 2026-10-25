@@ -103,6 +103,17 @@ The rule is structural, like rule 6:
 - No enumeration: an unknown email costs the same as a wrong password
   (dummy hash check), and reset and supporter requests answer identically
   for known and unknown addresses.
+- *Amendment (2026-10-25), relaxed sign-in:* a deployment may set
+  `KEEP_AUTH_POLICY=relaxed` (default `strict`, the rules above). Relaxed
+  drops the required second factor (a user who enrolled one is still
+  asked for it), the step-up hour and the password rules (any non-empty
+  password); invites, roles, rate limits, sessions and hashing are
+  unchanged. It exists for the tailnet preview and local runs reached
+  over the network, where shared sample sign-ins like `riverside` are the
+  point and `KEEP_DEV_AUTH` (no auth, loopback only) doesn't fit. The SPA
+  says so on every page ("Relaxed sign-in: not for real data"), and
+  `KEEP_ENV=prod` refuses to boot with it: production always requires a
+  second factor. Two tiers only, never per organisation.
 
 **4. Auth library: Better Auth if spike A0 passes; else Convex Auth.**
 

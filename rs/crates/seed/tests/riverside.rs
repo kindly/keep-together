@@ -739,3 +739,59 @@ fn generated_credentials_are_kept_on_a_rerun_env_ones_still_apply() {
     assert_eq!(after[0].1, before[0].1, "the TOTP secret stays");
     assert_eq!(after[1..], before[1..]);
 }
+
+/// `KEEP_AUTH_POLICY=relaxed` on dev (the preview): every role signs in
+/// with [`riverside::RELAXED_PASSWORD`] and no TOTP secret is made or
+/// set; one from env still applies, and staging still needs all six.
+#[test]
+fn relaxed_seeds_the_simple_password_and_no_totp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open(tmp.path());
+    let relaxed = auth::Policy::Relaxed;
+    let mut creds = riverside::credentials_from_env_with(|_| None, true, relaxed).unwrap();
+    assert!(
+        creds
+            .iter()
+            .all(|c| c.password == riverside::RELAXED_PASSWORD
+                && c.password_origin == Origin::Generated
+                && c.totp_origin == Origin::None
+                && c.totp_secret.is_empty())
+    );
+    riverside::seed(&store, &Keys::dev(), &mut creds, api::schema::seed_new_org).unwrap();
+    let rows: Vec<(String, Option<String>, Option<String>)> = store
+        .platform()
+        .with_read(|c: &Connection| {
+            c.prepare(
+                "SELECT a.password_hash, a.second_factor, a.totp_secret FROM auth_credentials a
+                 JOIN users u ON u.id = a.user_id ORDER BY u.email",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap();
+    assert_eq!(rows.len(), USERS.len());
+    for (hash, factor, secret) in rows {
+        assert!(auth::password::verify(riverside::RELAXED_PASSWORD, &hash));
+        assert_eq!((factor, secret), (None, None));
+    }
+    // A TOTP secret and a short password from env are taken under relaxed.
+    let env = |n: &str| match n {
+        "KEEP_RIVERSIDE_ADMIN_PASSWORD" => Some("pw".into()),
+        "KEEP_RIVERSIDE_ADMIN_TOTP" => Some("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP".into()),
+        _ => None,
+    };
+    let made = riverside::credentials_from_env_with(env, true, relaxed).unwrap();
+    assert_eq!(
+        (made[0].password.as_str(), made[0].totp_origin),
+        ("pw", Origin::Env)
+    );
+    // Strict refuses the short one; staging (no generating) needs all six.
+    assert!(matches!(
+        riverside::credentials_from_env_with(env, true, auth::Policy::Strict),
+        Err(SeedError::BadCredential(_))
+    ));
+    assert!(matches!(
+        riverside::credentials_from_env_with(|_| None, false, relaxed),
+        Err(SeedError::MissingCredentials(_))
+    ));
+}

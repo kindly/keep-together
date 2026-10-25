@@ -5,7 +5,7 @@
 use auth::accounts;
 use auth::limits::allow;
 use auth::notices::Notice;
-use auth::{failures, password, secret, sessions};
+use auth::{failures, secret, sessions};
 use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -36,8 +36,8 @@ fn link_limit(state: &AppState, ip: &str) -> Result<(), ApiError> {
     }
 }
 
-fn password_problem(p: &str) -> Result<(), ApiError> {
-    match password::problem(p) {
+fn password_problem(state: &AppState, p: &str) -> Result<(), ApiError> {
+    match state.auth.password_problem(p) {
         Some(message) => Err(ApiError::Invalid {
             problems: vec![contracts::Problem::new("password", message)],
         }),
@@ -155,7 +155,7 @@ pub async fn reset_complete(
     Body(req): Body<ResetComplete>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     link_limit(&state, &ip)?;
-    password_problem(&req.password)?;
+    password_problem(&state, &req.password)?;
     let st = state.clone();
     let (user, email) = blocking(move || {
         let now = contracts::now_ms();
@@ -288,7 +288,7 @@ pub async fn invite_accept(
                 _ => return Err(wrong_password()),
             }
         } else {
-            password_problem(&req.password)?;
+            password_problem(&st, &req.password)?;
             None
         };
         let tenant = st
@@ -343,7 +343,15 @@ pub async fn invite_accept(
             if let Some(old) = &old {
                 sessions::revoke(tx, old)?;
             }
-            let partial = start_partial(tx, &st.auth.keys, user, ua.as_deref(), false, now)?;
+            let partial = start_partial(
+                tx,
+                &st.auth.keys,
+                st.auth.policy,
+                user,
+                ua.as_deref(),
+                false,
+                now,
+            )?;
             Ok::<_, ApiError>((partial, old.clone()))
         })
     })

@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use auth::limits::Limits;
 use auth::notices::{self, Notice};
-use auth::{Keys, Session, Stage};
+use auth::{Keys, Policy, Session, Stage};
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{FromRequestParts, State};
 use axum::http::header::{COOKIE, HOST, SET_COOKIE};
@@ -97,6 +97,8 @@ pub struct Runtime {
     /// TOTP sealing key and code pepper ([`auth::keys`]).
     pub keys: Keys,
     pub limits: Limits,
+    /// `KEEP_AUTH_POLICY` ([`auth::policy`]): strict unless set.
+    pub policy: Policy,
     revoked: broadcast::Sender<Revoked>,
 }
 
@@ -109,6 +111,7 @@ impl Runtime {
             mailer,
             keys: Keys::dev(),
             limits: Limits::default(),
+            policy: Policy::Strict,
             revoked: broadcast::channel(256).0,
         }
     }
@@ -116,6 +119,22 @@ impl Runtime {
     pub fn with_keys(mut self, keys: Keys) -> Self {
         self.keys = keys;
         self
+    }
+
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Whether `s` may do what needs a recent sign-in ([`fresh`]); always,
+    /// under the relaxed policy (no step-up).
+    pub(crate) fn fresh(&self, s: &Session, now: i64) -> bool {
+        self.policy.is_relaxed() || fresh(s, now)
+    }
+
+    /// Why a new password is refused, under this deployment's policy.
+    pub(crate) fn password_problem(&self, password: &str) -> Option<&'static str> {
+        self.policy.password_problem(password)
     }
 
     /// Mail `to` a security notice (S1 M3), in the background. Dropped
@@ -375,9 +394,15 @@ pub struct Membership {
 
 #[derive(Serialize, TS)]
 #[ts(export)]
+#[serde(rename_all = "camelCase")]
 pub struct Me {
     pub email: String,
     pub memberships: Vec<Membership>,
+    /// `KEEP_AUTH_POLICY` unless `strict` (left out): the SPA shows a
+    /// banner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "\"strict\" | \"relaxed\"")]
+    pub auth_policy: Option<Policy>,
 }
 
 /// The signed-in user, for tenant routes that answer about them (`/boot`,
@@ -419,6 +444,7 @@ impl Account {
                     role: m.role.into(),
                 })
                 .collect(),
+            auth_policy: self.runtime.policy.shown(),
         })
     }
 

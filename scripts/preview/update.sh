@@ -12,8 +12,10 @@
 #    leaves the running preview alone.
 # 4. Reseed: stop the api, move data/ aside to data.prev/, point current
 #    at the new release and start it; the api seeds riverside at boot
-#    (KEEP_RESET_SEED) with the sign-ins in secrets.env, so they never
-#    change. Not healthy within 2 min: back to the old release and data.
+#    (KEEP_RESET_SEED): under KEEP_AUTH_POLICY=relaxed (relaxed_settings in
+#    lib.sh, applied first) with the password riverside and no TOTP, else
+#    with the sign-ins in secrets.env, so they never change. Not healthy
+#    within 2 min: back to the old release and data.
 #
 # --force: build and reseed even when origin/main is running or failed.
 # Exit 0: nothing to do, skipped, or deployed. Exit 1: the build or the
@@ -138,6 +140,7 @@ point_current() { # atomic: a new symlink renamed over the old
   mv -T "$PREVIEW/current.new" "$PREVIEW/current"
 }
 
+relaxed_settings
 run systemctl --user stop "$UNIT"
 rm -rf "$PREVIEW/data.prev"
 [ ! -d "$PREVIEW/data" ] || mv "$PREVIEW/data" "$PREVIEW/data.prev"

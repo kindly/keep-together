@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use store::{Role, TenantId, UserId};
 use ts_rs::TS;
 
-use super::{Account, Revoked, fresh, users, with_session};
+use super::{Account, Revoked, users, with_session};
 use crate::error::{ApiError, Body};
 use crate::{IdParam, RoleName, Tenant, blocking};
 
@@ -86,7 +86,10 @@ fn require_admin(t: &Tenant, account: &Account) -> Result<(), ApiError> {
     if t.role < Role::Admin {
         return Err(ApiError::Forbidden);
     }
-    if !fresh(account.session(), contracts::now_ms()) {
+    if !account
+        .runtime
+        .fresh(account.session(), contracts::now_ms())
+    {
         return Err(ApiError::StepUpRequired);
     }
     Ok(())

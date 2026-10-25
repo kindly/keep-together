@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::flows::{Method, check_password, reread, user_password_limits};
-use super::{ClientIp, Revoked, fresh, session};
+use super::{ClientIp, Revoked, session};
 use crate::error::{ApiError, Body};
 use crate::timing::Timing;
 use crate::{AppState, blocking};
@@ -71,7 +71,7 @@ pub async fn change_password(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let s = session(&state, &headers, &timing).await?;
     user_password_limits(&state, &ip, s.user)?;
-    if let Some(message) = auth::password::problem(&req.new) {
+    if let Some(message) = state.auth.password_problem(&req.new) {
         return Err(ApiError::Invalid {
             problems: vec![contracts::Problem::new("new", message)],
         });
@@ -119,14 +119,16 @@ pub async fn recovery_codes(
 ) -> Result<Json<RecoveryCodes>, ApiError> {
     let s = session(&state, &headers, &timing).await?;
     let now = contracts::now_ms();
-    if !fresh(&s, now) {
+    if !state.auth.fresh(&s, now) {
         return Err(ApiError::StepUpRequired);
     }
     let st = state.clone();
     let email = s.email.clone();
     let codes = blocking(move || {
         st.store.platform().with_write(|tx| {
-            let s = reread(tx, &s, now, |s| s.stage == Stage::Full && fresh(s, now))?;
+            let s = reread(tx, &s, now, |s| {
+                s.stage == Stage::Full && st.auth.fresh(s, now)
+            })?;
             if accounts::credentials(tx, s.user)?
                 .and_then(|c| c.second_factor)
                 .is_none()

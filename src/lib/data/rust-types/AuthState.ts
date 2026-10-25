@@ -18,4 +18,10 @@ stepUpUntil: number | null,
  * `enrol` after a 2FA reset: a code has been emailed, and confirming
  * an authenticator app needs it too (S1 M7).
  */
-needsEmailCode: boolean, };
+needsEmailCode: boolean, 
+/**
+ * `KEEP_AUTH_POLICY` unless `strict` (left out), signed out too:
+ * `relaxed` signs in without a second factor unless the user enrolled
+ * one, and has no step-up.
+ */
+policy?: "strict" | "relaxed", };
