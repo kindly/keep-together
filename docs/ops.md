@@ -110,9 +110,10 @@ terminal, never to the app's logs. A 2FA reset there is `keep auth
 reset-2fa`, but the person then can't re-enrol (that needs an emailed
 code) until mail is on. To turn mail on:
 
-1. In SES (`keep-mail-tx`, eu-west-2), verify `auth.keep-together.org.uk`:
-   Easy DKIM CNAMEs, a custom MAIL FROM (`bounce.auth…` MX and SPF TXT),
-   DMARC TXT on `_dmarc.auth…`.
+1. `scripts/aws/ses.sh`: in SES (`keep-mail-tx`, eu-west-2), verify
+   `auth.keep-together.org.uk`, with Easy DKIM CNAMEs, a custom MAIL FROM
+   (`bounce.auth…` MX and SPF TXT) and DMARC TXT on `_dmarc.auth…`, all
+   written to keep-prod's Route 53 zone. Re-run it to see the status.
 2. Request SES production access (out of the sandbox).
 3. An IAM user limited to `ses:SendRawEmail` from
    `no-reply@auth.keep-together.org.uk`; derive its SMTP password.
