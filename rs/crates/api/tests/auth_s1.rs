@@ -1264,14 +1264,18 @@ impl GetOnce for axum::Router {
 async fn with_mail_off_what_needs_email_is_refused() {
     let w = world_mail_off();
     let ann = w.sign_in("ann@alpha.org").await;
-    let r = w
-        .post(
-            "/api/auth/reset/request",
-            None,
-            json!({ "email": "ann@alpha.org" }),
-        )
-        .await;
-    assert_eq!(r.reason(), "mail_off");
+    // A reset is refused before the address is looked up: the same
+    // answer for an account and for nobody.
+    for email in ["ann@alpha.org", "nobody@alpha.org"] {
+        let r = w
+            .post("/api/auth/reset/request", None, json!({ "email": email }))
+            .await;
+        assert_eq!(
+            (r.status, r.reason()),
+            (StatusCode::UNPROCESSABLE_ENTITY, "mail_off"),
+            "{email}"
+        );
+    }
     let r = w
         .post(
             "/api/t/alpha/members/invite",

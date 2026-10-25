@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use api::auth::{Config, Runtime};
 use api::routes::qc_seed::{
     QC_CALLS, QC_DOMAIN, QC_FAILURES, QC_TENANT_CAP, QC_TOKEN_HEADER, QcAccess,
 };
@@ -11,6 +12,7 @@ use api::{AppState, app, routes, schema};
 use axum::Router;
 use axum::body::Body as HttpBody;
 use axum::http::{Request, StatusCode, header};
+use comms::mail::Mailer;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use store::{Role, Store, StoreConfig};
@@ -26,6 +28,11 @@ struct Qc {
 
 /// Staging as deployed: no dev auth, the token surface on.
 fn staging(qc: Option<QcAccess>) -> Qc {
+    staging_with(qc, Mailer::log())
+}
+
+/// As [`staging`], with `mailer`.
+fn staging_with(qc: Option<QcAccess>, mailer: Mailer) -> Qc {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(
         Store::open_with(
@@ -40,7 +47,9 @@ fn staging(qc: Option<QcAccess>) -> Qc {
         .unwrap(),
     );
     let app = app(
-        AppState::new(store.clone(), false).with_qc(qc),
+        AppState::new(store.clone(), false)
+            .with_auth(Runtime::new(Config::default(), mailer))
+            .with_qc(qc),
         routes::router(),
     );
     Qc {
@@ -133,6 +142,17 @@ async fn a_its_own_path_and_the_dev_routes_keep_their_guards() {
         let (s, _, _) = qc.send(call(path, body)).await;
         assert_eq!(s, StatusCode::FORBIDDEN, "{path}");
     }
+}
+
+/// The world says whether the api's mail is off, so the flows that send
+/// email check the `mail_off` refusal instead (qc/flows/auth.spec.ts,
+/// members.spec.ts) and the run lists them.
+#[tokio::test]
+async fn the_world_says_whether_mail_is_off() {
+    assert_eq!(on().seed("m1").await["mailOff"], false);
+    let off = Mailer::from_vars(|k| (k == "KEEP_MAIL").then(|| "off".to_owned())).unwrap();
+    let qc = staging_with(Some(QcAccess::new(TOKEN).unwrap()), off);
+    assert_eq!(qc.seed("m2").await["mailOff"], true);
 }
 
 #[test]

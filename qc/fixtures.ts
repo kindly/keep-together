@@ -79,16 +79,37 @@ function setupHeaders(inst: Instance): Record<string, string> {
   return { 'x-keep-qc-token': token }
 }
 
+/**
+ * How long a set-up call may take. They answer in milliseconds; one that
+ * hangs (once on staging, 2026-10-25: a session call never answered and
+ * the test timed out at 30 s "setting up storageState") fails or retries
+ * with its route named, well inside the test's timeout.
+ */
+const SETUP_TIMEOUT_MS = 10_000
+
 async function post<T>(
   inst: Instance,
   route: string,
   body: unknown,
+  /** Safe to send twice (a session, the seed): one retry after a hang or a dropped connection. */
+  retry = false,
 ): Promise<{ data: T; res: Response }> {
-  const res = await fetch(`${inst.api}${route}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...setupHeaders(inst) },
-    body: JSON.stringify(body),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${inst.api}${route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...setupHeaders(inst) },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(SETUP_TIMEOUT_MS),
+    })
+  } catch (err) {
+    // No answer: a timeout, or a network error. Never an HTTP status.
+    const why = err instanceof Error ? err.name : String(err)
+    if (!retry)
+      throw new Error(`${route}: no answer (${why}) from ${inst.name}`)
+    console.warn(`qc set-up ${route}: no answer (${why}), retrying once`)
+    return post<T>(inst, route, body, false)
+  }
   // The body, never the request: it can't hold the token.
   if (!res.ok) throw new Error(`${route}: ${res.status} ${await res.text()}`)
   return { data: (await res.json()) as T, res }
@@ -121,9 +142,12 @@ export async function sessionToken(
   inst: Instance,
   email: string,
 ): Promise<string> {
-  const { res } = await post(inst, setupRoute(inst, 'login', 'session'), {
-    email,
-  })
+  const { res } = await post(
+    inst,
+    setupRoute(inst, 'login', 'session'),
+    { email },
+    true,
+  )
   const value = res.headers
     .get('set-cookie')
     ?.match(/(?:^|[ ,;])(?:__Host-)?kt_session=([^;]+)/)?.[1]
@@ -215,6 +239,24 @@ export async function qcCrowd(
   return (await post(inst, setupRoute(inst, 'qc-crowd', 'crowd'), args)).data
 }
 
+/** The refusal a form shows for what needs email when mail is off. */
+export const MAIL_OFF_MESSAGE = "Email isn't set up here"
+
+/**
+ * Whether `world`'s api runs with mail off (`KEEP_MAIL=off`: staging
+ * until SES), as the seed reports it. If so, the test is annotated
+ * `mailOff`, which the run's MAIL OFF banner and history list, and it
+ * checks the `mail_off` refusal instead of the path that sends email.
+ */
+export function mailOff(world: World): boolean {
+  if (world.mailOff)
+    base.info().annotations.push({
+      type: 'mailOff',
+      description: 'checked the mail_off refusal; the email path did not run',
+    })
+  return world.mailOff
+}
+
 type Flow = <TArg = undefined>(
   page: Page,
   name: FlowName,
@@ -276,10 +318,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   world: [
     async ({ instance }, use, workerInfo) => {
       const route = setupRoute(instance, 'qc-seed', 'seed')
-      const { data } = await post<QcWorld>(instance, route, {
-        runId: runId(),
-        worker: workerInfo.parallelIndex,
-      })
+      const { data } = await post<QcWorld>(
+        instance,
+        route,
+        { runId: runId(), worker: workerInfo.parallelIndex },
+        true,
+      )
       await use({
         ...data,
         tenants: data.tenants.map((t) => ({ ...t, tenantId: t.slug })),

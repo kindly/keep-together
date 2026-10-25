@@ -68,6 +68,12 @@ import type { Budget, FlowKind, FlowName } from './budgets'
 // its own history (qc/target.ts): over target or drifting up, it's listed
 // in a TARGET banner and its history line carries `target`. Tracked only:
 // pass and fail depend on the failing line alone.
+//
+// A target with mail off (staging until SES; the seed says so) runs the
+// flows that send email as checks of the `mail_off` refusal instead
+// (`mailOff` in qc/fixtures.ts). A MAIL OFF banner lists those tests on
+// every such run, and the run's history lines carry them (`mailOff`), so
+// a green run never reads as the email paths having worked.
 
 const HISTORY = path.join('qc-results', 'history.jsonl')
 
@@ -79,6 +85,12 @@ export interface HistoryLine {
   mode: 'assert' | 'record'
   /** Where it ran: the local pool, or staging (the nightly). Absent before it. */
   env?: 'local' | 'staging'
+  /**
+   * The target had mail off: these tests checked the `mail_off` refusal,
+   * and the email they'd send was never tested. The same on every line of
+   * a run; absent when mail was on.
+   */
+  mailOff?: Array<string>
   flow: FlowName
   kind: FlowKind
   n: number
@@ -205,7 +217,7 @@ export function summarise(
   records: Array<FlowRecord>,
   base: Pick<
     HistoryLine,
-    'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'env' | 'server'
+    'runId' | 'at' | 'sha' | 'dirty' | 'mode' | 'env' | 'server' | 'mailOff'
   >,
   link: LinkFile | null,
   /** history.jsonl before this run, oldest first: the drift baseline. */
@@ -468,6 +480,19 @@ export function pendingBanner(
   ])
 }
 
+/**
+ * The tests that ran their mail-off variant (`mailOff`, qc/fixtures.ts),
+ * on every run against a target with mail off. Exported for
+ * qc/reporter.test.ts.
+ */
+export function mailOffBanner(tests: Array<string>): Array<string> {
+  if (!tests.length) return []
+  return banner([
+    `MAIL OFF on the target (KEEP_MAIL=off): ${tests.length} test${tests.length === 1 ? '' : 's'} checked the mail_off refusal instead; the email they send was NOT tested:`,
+    ...[...tests].sort(),
+  ])
+}
+
 const banner = (lines: Array<string>) => {
   const bar = '!'.repeat(72)
   return [bar, ...lines.map((l) => `!! ${l}`), bar]
@@ -478,6 +503,8 @@ export default class QcReporter implements Reporter {
   private routes = new Set<string>()
   /** pendingPort tests skipped, by step. */
   private pending = new Map<string, number>()
+  /** Tests that ran their mail-off variant, by title path. */
+  private mailOff = new Set<string>()
 
   onBegin(config: FullConfig) {
     this.filtered = isFiltered(config.argv)
@@ -489,6 +516,9 @@ export default class QcReporter implements Reporter {
     )?.description
     if (step && result.status === 'skipped')
       this.pending.set(step, (this.pending.get(step) ?? 0) + 1)
+    // Retries add the annotation again: one entry per test.
+    if (result.annotations.some((a) => a.type === 'mailOff'))
+      this.mailOff.add(test.titlePath().filter(Boolean).slice(1).join(' › '))
     // A skipped test proves nothing about its route.
     if (result.status === 'skipped') return
     for (const a of [...test.annotations, ...result.annotations]) {
@@ -524,6 +554,7 @@ export default class QcReporter implements Reporter {
           mode: RECORD ? 'record' : 'assert',
           env: process.env.QC_TARGET === 'staging' ? 'staging' : 'local',
           server: historyServer(server),
+          ...(this.mailOff.size && { mailOff: [...this.mailOff].sort() }),
         },
         link,
         past,
@@ -576,6 +607,7 @@ export default class QcReporter implements Reporter {
     out.push(...knownOverBanner(summary))
     const routes = readRoutes()
     out.push(...pendingBanner(this.pending, routes))
+    out.push(...mailOffBanner([...this.mailOff]))
 
     const timed = new Set(records.map((r) => r.flow))
     const untimed = (Object.entries(budgets) as Array<[FlowName, Budget]>)

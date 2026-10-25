@@ -8,4 +8,10 @@ export type QcWorld = {
 /**
  * a, b, then A's staff and viewer.
  */
-users: Array<QcUser>, tenants: Array<QcTenant>, field: QcField, identifierType: string, identifiers: QcIdentifiers, };
+users: Array<QcUser>, tenants: Array<QcTenant>, field: QcField, identifierType: string, identifiers: QcIdentifiers, 
+/**
+ * The api runs `KEEP_MAIL=off` (staging until SES): what needs email
+ * is refused (`mail_off`), so the flows that send some check that
+ * refusal instead, and the run says so.
+ */
+mailOff: boolean, };

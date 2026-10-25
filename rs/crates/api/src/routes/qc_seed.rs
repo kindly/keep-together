@@ -164,6 +164,10 @@ pub struct QcWorld {
     pub field: QcField,
     pub identifier_type: String,
     pub identifiers: QcIdentifiers,
+    /// The api runs `KEEP_MAIL=off` (staging until SES): what needs email
+    /// is refused (`mail_off`), so the flows that send some check that
+    /// refusal instead, and the run says so.
+    pub mail_off: bool,
 }
 
 fn person(kind: Kind, first: &str, last: &str, name: &str) -> Details {
@@ -499,7 +503,12 @@ fn only_qc_memberships(conn: &Connection, user: UserId) -> rusqlite::Result<bool
 }
 
 /// The QC world for one run and worker (both surfaces).
-fn seed_world(store: &Store, keys: &::auth::Keys, req: QcSeedRequest) -> Result<QcWorld, ApiError> {
+fn seed_world(
+    store: &Store,
+    keys: &::auth::Keys,
+    req: QcSeedRequest,
+    mail_off: bool,
+) -> Result<QcWorld, ApiError> {
     let p = store.platform();
     let base = base(&req)?;
     let accounts = [
@@ -605,6 +614,7 @@ fn seed_world(store: &Store, keys: &::auth::Keys, req: QcSeedRequest) -> Result<
         },
         identifier_type: QC_IDENTIFIER_TYPE.into(),
         identifiers: qc_identifiers(&base),
+        mail_off,
     })
 }
 
@@ -616,7 +626,8 @@ pub async fn fixture(
     enabled(&state)?;
     let store = state.store.clone();
     let keys = state.auth.keys.clone();
-    blocking(move || seed_world(&store, &keys, req))
+    let mail_off = state.auth.mailer.is_off();
+    blocking(move || seed_world(&store, &keys, req, mail_off))
         .await
         .map(Json)
 }
@@ -859,7 +870,8 @@ pub async fn qc_fixture(
 ) -> Result<Json<QcWorld>, ApiError> {
     let store = state.store.clone();
     let keys = state.auth.keys.clone();
-    blocking(move || seed_world(&store, &keys, req))
+    let mail_off = state.auth.mailer.is_off();
+    blocking(move || seed_world(&store, &keys, req, mail_off))
         .await
         .map(Json)
 }

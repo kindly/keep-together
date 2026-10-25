@@ -165,6 +165,8 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     opts: {
       covered?: Array<string>
       skipped?: Array<string>
+      /** Tests that ran their mail-off variant, as title paths. */
+      mailOff?: Array<Array<string>>
       filtered?: boolean
     } = {},
   ) => {
@@ -203,6 +205,17 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
           annotations: [{ type: 'pendingPort', description: step }],
         } as unknown as TestCase,
         { status: 'skipped', annotations: [] } as unknown as TestResult,
+      )
+    for (const title of opts.mailOff ?? [])
+      reporter.onTestEnd(
+        {
+          annotations: [],
+          titlePath: () => ['', 'chromium', ...title],
+        } as unknown as TestCase,
+        {
+          status: 'passed',
+          annotations: [{ type: 'mailOff', description: 'x' }],
+        } as unknown as TestResult,
       )
     const res = await reporter.onEnd({ status: 'passed' } as FullResult)
     vi.restoreAllMocks()
@@ -280,6 +293,28 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     const res = await reporter.onEnd({ status: 'passed' } as FullResult)
     expect(res?.status).toBeUndefined()
     expect(logged.join('\n')).toMatch(/not judged: server POST/)
+  })
+
+  test('mail off: the tests that checked the refusal, in a banner and in history', async () => {
+    const reset = ['flows/auth.spec.ts', 'a reset request answers the same']
+    const r = await runReporter('m1', records('m1'), {
+      // A retried test is listed once.
+      mailOff: [reset, ['flows/members.spec.ts', 'an admin invites'], reset],
+    })
+    expect(r.status).toBeUndefined()
+    expect(r.out).toMatch(
+      /MAIL OFF on the target \(KEEP_MAIL=off\): 2 tests checked the mail_off refusal instead; the email they send was NOT tested:\n!! flows\/auth\.spec\.ts › a reset request answers the same\n!! flows\/members\.spec\.ts › an admin invites/,
+    )
+    expect(r.history.length).toBeGreaterThan(0)
+    for (const l of r.history)
+      expect(l.mailOff).toEqual([
+        'flows/auth.spec.ts › a reset request answers the same',
+        'flows/members.spec.ts › an admin invites',
+      ])
+    // Mail on: no banner, and no field.
+    const on = await runReporter('m2', records('m2'))
+    expect(on.out).not.toContain('MAIL OFF')
+    expect(on.history.every((l) => !('mailOff' in l))).toBe(true)
   })
 
   test('pendingPort tests are counted, and unported routes need no flow', async () => {
