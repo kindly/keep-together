@@ -24,7 +24,9 @@
 
 use contracts::{ContractError, Problem};
 
-use crate::types::{CancellationPayload, DeclarationPayload, Method, Scope, VoidPayload};
+use crate::types::{
+    CancellationPayload, DeclarationPayload, DetailsPayload, Method, Scope, VoidPayload,
+};
 
 /// The most declarations one contact may have (each read on every coverage check).
 pub const DECLARATION_LIMIT: usize = 100;
@@ -217,24 +219,52 @@ fn tidy(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Snapshot fields tidied (postcode upper-cased); `madeOn` a real date; a
+/// The snapshot tidied (whitespace collapsed, postcode upper-cased), and
+/// a problem for each field over SNAPSHOT_FIELD_MAX. The same rules at
+/// create and on every later [`prepare_details`].
+fn tidy_snapshot(p: DetailsPayload, problems: &mut Vec<Problem>) -> DetailsPayload {
+    let out = DetailsPayload {
+        first_name: tidy(&p.first_name),
+        last_name: tidy(&p.last_name),
+        address_line1: tidy(&p.address_line1),
+        postcode: tidy(&p.postcode).to_uppercase(),
+    };
+    for (field, value) in [
+        ("firstName", &out.first_name),
+        ("lastName", &out.last_name),
+        ("addressLine1", &out.address_line1),
+        ("postcode", &out.postcode),
+    ] {
+        if value.chars().count() > SNAPSHOT_FIELD_MAX {
+            problems.push(Problem::new(
+                field,
+                format!("At most {SNAPSHOT_FIELD_MAX} characters"),
+            ));
+        }
+    }
+    out
+}
+
+/// Snapshot fields tidied ([`tidy_snapshot`]); `madeOn` a real date; a
 /// wording version given; a gift named when the scope is `thisGift` (any
 /// scope may name the gift it was made with); never `onScreenByDonor`
 /// while no donor-facing screen exists (staff can't make that true). A
 /// future `madeOn` is refused by the contract, which knows the time.
 /// Empty snapshot fields are storable: they warn ([`crate::warnings`]),
-/// because staff may tick before they have the address (g3q3).
+/// because staff may tick before they have the address (g3q3), and fill
+/// them in later ([`prepare_details`]).
 pub fn prepare_declaration(p: DeclarationPayload) -> Result<DeclarationPayload, ContractError> {
+    let mut problems = Vec::new();
+    let snapshot = tidy_snapshot(p.details(), &mut problems);
     let out = DeclarationPayload {
         made_on: p.made_on.trim().to_owned(),
         wording_version: p.wording_version.trim().to_owned(),
-        first_name: tidy(&p.first_name),
-        last_name: tidy(&p.last_name),
-        address_line1: tidy(&p.address_line1),
-        postcode: tidy(&p.postcode).to_uppercase(),
+        first_name: snapshot.first_name,
+        last_name: snapshot.last_name,
+        address_line1: snapshot.address_line1,
+        postcode: snapshot.postcode,
         ..p
     };
-    let mut problems = Vec::new();
     if !is_iso_date(&out.made_on) {
         problems.push(Problem::new("madeOn", "Enter a date (YYYY-MM-DD)"));
     }
@@ -261,19 +291,18 @@ pub fn prepare_declaration(p: DeclarationPayload) -> Result<DeclarationPayload, 
             "A “this gift only” declaration needs its gift",
         ));
     }
-    for (field, value) in [
-        ("firstName", &out.first_name),
-        ("lastName", &out.last_name),
-        ("addressLine1", &out.address_line1),
-        ("postcode", &out.postcode),
-    ] {
-        if value.chars().count() > SNAPSHOT_FIELD_MAX {
-            problems.push(Problem::new(
-                field,
-                format!("At most {SNAPSHOT_FIELD_MAX} characters"),
-            ));
-        }
+    if problems.is_empty() {
+        Ok(out)
+    } else {
+        Err(ContractError::Invalid(problems))
     }
+}
+
+/// The snapshot changed after the declaration was saved: the same tidying
+/// and widths as at create. Blanks stay storable (and warn).
+pub fn prepare_details(p: DetailsPayload) -> Result<DetailsPayload, ContractError> {
+    let mut problems = Vec::new();
+    let out = tidy_snapshot(p, &mut problems);
     if problems.is_empty() {
         Ok(out)
     } else {
@@ -666,6 +695,38 @@ mod tests {
         })
         .unwrap();
         assert_eq!(ticked.method, Method::StaffTickedNoEvidence);
+    }
+
+    #[test]
+    fn details_tidy_as_at_create_blanks_store_and_widths_refuse() {
+        let tidied = prepare_details(payload().details()).unwrap();
+        assert_eq!(tidied, prepare_declaration(payload()).unwrap().details());
+        let blank = DetailsPayload {
+            first_name: " ".into(),
+            last_name: String::new(),
+            address_line1: String::new(),
+            postcode: String::new(),
+        };
+        assert_eq!(prepare_details(blank).unwrap().first_name, "");
+        let wide = "x".repeat(SNAPSHOT_FIELD_MAX + 1);
+        let ContractError::Invalid(problems) = prepare_details(DetailsPayload {
+            address_line1: wide.clone(),
+            postcode: wide,
+            ..payload().details()
+        })
+        .unwrap_err() else {
+            panic!("not invalid");
+        };
+        let fields: Vec<&str> = problems.iter().map(|p| p.field.as_str()).collect();
+        assert_eq!(fields, ["addressLine1", "postcode"]);
+        let at_max = "x".repeat(SNAPSHOT_FIELD_MAX);
+        assert!(
+            prepare_details(DetailsPayload {
+                first_name: at_max,
+                ..payload().details()
+            })
+            .is_ok()
+        );
     }
 
     #[test]

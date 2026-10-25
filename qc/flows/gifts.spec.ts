@@ -414,4 +414,72 @@ test.describe('contact panels', { annotation: CONTACT_ROUTE }, () => {
     )
     await expect(page.getByRole('alertdialog')).toHaveCount(0)
   })
+
+  test('Gift Aid: complete a declaration’s address', async ({
+    page,
+    flow,
+    users,
+    world,
+    instance,
+  }) => {
+    // Each sample sets up a fresh donor and loads their page (as above).
+    test.setTimeout(120_000)
+    const r = await recorder(instance, users.a, world.tenants[0].tenantId)
+    const card = giftAid(page).getByTestId('declaration').first()
+    const form = card.getByRole('form', { name: 'Edit details' })
+    // The last sample's donor: the contact's own last name, which the
+    // declaration's snapshot ("Qc Donor") doesn't share.
+    let lastName = ''
+
+    // Gift Aid ticked before staff had the address: completed later from
+    // "Edit details". Shown once the server confirms it, warning gone.
+    await flow(page, 'contact.giftaid.details', {
+      before: async () => {
+        lastName = uniqueName('giftaid-details')
+        const donor = await newDonor(r, lastName)
+        await declare(r, donor, '2025-01-01', 'paperForm', {
+          addressLine1: '',
+          postcode: '',
+        })
+        await page.goto(`/t/${users.a.slug}/contacts/${donor}`)
+        await expect(card).toContainText('Home address:')
+        await card.getByRole('button', { name: /^Edit details/ }).click()
+        await form.getByLabel('House number or name').fill('3 Mill Lane')
+        await form.getByLabel('Postcode').fill('ls1 1aa')
+      },
+      action: () => form.getByRole('button', { name: 'Save details' }).click(),
+      until: () => {
+        const c = document.querySelector('[data-testid="declaration"]')
+        return Boolean(
+          c?.textContent.includes('3 Mill Lane, LS1 1AA') &&
+          !c.textContent.includes('Home address:') &&
+          !c.querySelector('form'),
+        )
+      },
+    })
+    await expect(card).toContainText('Qc Donor, 3 Mill Lane, LS1 1AA')
+    // The change is in the declaration's history: who, when, old → new.
+    await card.getByRole('button', { name: 'Details changes' }).click()
+    await expect(card.getByTestId('details-changes')).toContainText(
+      'House number or name (blank) → 3 Mill Lane; Postcode (blank) → LS1 1AA',
+    )
+    // Fill from the contact: its own name, and no address (it has none);
+    // then the address typed again.
+    await card.getByRole('button', { name: /^Edit details/ }).click()
+    await form
+      .getByRole('button', {
+        name: 'Use the contact’s current name and address',
+      })
+      .click()
+    await expect(form.getByLabel('House number or name')).toHaveValue('')
+    await expect(form.getByLabel('First name')).toHaveValue('Qc')
+    await expect(form.getByLabel('Last name')).toHaveValue(lastName)
+    await form.getByLabel('House number or name').fill('5 Mill Lane')
+    await form.getByLabel('Postcode').fill('LS1 1AA')
+    await form.getByRole('button', { name: 'Save details' }).click()
+    await expect(card).toContainText(`Qc ${lastName}, 5 Mill Lane, LS1 1AA`)
+    await expect(card.getByTestId('details-changes')).toContainText(
+      `Last name Donor → ${lastName}; House number or name 3 Mill Lane → 5 Mill Lane`,
+    )
+  })
 })

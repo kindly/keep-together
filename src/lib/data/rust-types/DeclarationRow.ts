@@ -15,7 +15,7 @@ voidedAt: number | null, voidedBy: number | null, enteredBy: number | null,
 /**
  * ms since the epoch.
  */
-enteredAt: number, declarationVersion: number, cancellationVersion: number, voidVersion: number, contactId: string, scope: DeclarationScope, 
+enteredAt: number, declarationVersion: number, cancellationVersion: number, voidVersion: number, detailsVersion: number, contactId: string, scope: DeclarationScope, 
 /**
  * The gift it was made with, which it always covers; required for
  * `thisGift`. Absent for a declaration made on its own.

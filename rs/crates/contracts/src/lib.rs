@@ -105,7 +105,8 @@ impl Source {
         }
     }
 
-    fn parse(s: &str) -> Self {
+    /// A stored `revisions.source`; unknown values read as `System`.
+    pub fn parse(s: &str) -> Self {
         serde_json::from_value(Value::String(s.into())).unwrap_or(Source::System)
     }
 }

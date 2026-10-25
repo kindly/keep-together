@@ -1,5 +1,6 @@
 //! `/api/t/{slug}/…giftaid…`: the contact page's Gift Aid panel. Viewers
-//! read; staff and admins record declarations, cancellations and voids.
+//! read; staff and admins record declarations, complete their details,
+//! cancellations and voids.
 //! The record-gift save (`gifts.rs`) makes the tick's declaration in its
 //! own transaction; `POST contacts/{id}/giftaid` is Convex's `declare`, a
 //! declaration on its own (imports, QC set-up).
@@ -9,7 +10,8 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contracts::{Executed, Source};
 use giftaid::types::{
-    Cancelled, DeclarationPayload, Declarations, RecordCancellation, VoidPayload,
+    Cancelled, DeclarationPayload, Declarations, DetailsHistory, RecordCancellation,
+    SaveDeclarationDetails, VoidPayload,
 };
 use serde::Deserialize;
 
@@ -21,6 +23,8 @@ pub fn router() -> Router {
         .route("/contacts/{id}/giftaid", get(by_contact).post(declare))
         .route("/contacts/{id}/giftaid/cancel", post(cancel))
         .route("/giftaid/{id}/void", post(void))
+        .route("/giftaid/{id}/details", post(details))
+        .route("/giftaid/{id}/history", get(history))
 }
 
 #[derive(Deserialize)]
@@ -115,6 +119,39 @@ async fn void(
     Body(req): Body<VoidPayload>,
 ) -> Result<Json<Executed>, ApiError> {
     t.write(move |ctx| Ok(giftaid::void_declaration(ctx, &id, req.reason, Source::Ui)?))
+        .await
+        .map(Json)
+}
+
+/// `POST giftaid/{id}/details {expected, firstName, lastName,
+/// addressLine1, postcode}`: the snapshot completed or corrected; `409
+/// stale` with the snapshot now, `422 rejected {reason: voided}` on a
+/// voided declaration.
+async fn details(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+    Body(req): Body<SaveDeclarationDetails>,
+) -> Result<Json<Executed>, ApiError> {
+    t.write(move |ctx| {
+        Ok(giftaid::save_details(
+            ctx,
+            &id,
+            req.expected,
+            req.details,
+            Source::Ui,
+        )?)
+    })
+    .await
+    .map(Json)
+}
+
+/// `GET giftaid/{id}/history`: the snapshot's changes, newest first, who
+/// and when, old → new.
+async fn history(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+) -> Result<Json<DetailsHistory>, ApiError> {
+    t.read(move |r| giftaid::details_history(r, &id)?.ok_or(ApiError::NotFound))
         .await
         .map(Json)
 }

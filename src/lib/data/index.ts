@@ -60,8 +60,10 @@ export {
 export type { BulkFieldState, FieldPayload, OptionPayload } from './rust/fields'
 export {
   GIFTS_PAGE_SIZE,
+  fetchContactSnapshot,
   fetchGift,
   useContactGifts,
+  useDeclarationHistory,
   useDeclarations,
   useDonor,
   useGift,
@@ -73,6 +75,8 @@ export {
 export type {
   ContactDeclarations,
   Declaration,
+  DeclarationDetails,
+  DeclarationDetailsHistory,
   DonorInfo,
   Gift,
   GiftFields,

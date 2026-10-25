@@ -1,32 +1,40 @@
 //! Gift Aid declarations (`convex/giftaid/declarations.ts`): one
 //! `gift_aid_declarations` root per declaration, a dated chain per contact
-//! (rule 1). Three contracts partition it:
+//! (rule 1). Four contracts partition it:
 //!
 //! ```text
-//!   giftaid.declaration  — what was declared; create-only, never edited
-//!   giftaid.cancellation — from when it no longer applies (the donor
-//!                          withdrew from a date)
-//!   giftaid.void         — it was recorded in error and never applied;
-//!                          create-only
+//!   giftaid.declaration        — what was declared (scope, date, method,
+//!                                wording, gift); create-only, never
+//!                                edited. The create also sets the
+//!                                snapshot, which is then …
+//!   giftaid.declarationDetails — … the name and home address it was made
+//!                                under: completed or corrected later
+//!   giftaid.cancellation       — from when it no longer applies (the
+//!                                donor withdrew from a date)
+//!   giftaid.void               — it was recorded in error and never
+//!                                applied; create-only
 //! ```
+//!
+//! A mistake in what was declared is still void + record again: those
+//! fields decide coverage. The snapshot doesn't, so it is editable.
 //!
 //! Coverage is derived from the chain at read time ([`crate::rules`]) and
 //! never stored on a gift. Other modules use [`coverage`] and
 //! [`current_declaration`], never the table; this module reads gifts only
 //! through giving's `describe_gift`.
 
-use contracts::{Command, Contract, ContractError, OrgTx, WriteTx};
+use contracts::{Command, Contract, ContractError, DynContract, OrgTx, WriteTx, upcast};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::rules::{
     DECLARATION_LIMIT, GiftRef, Window, covering_declaration, covers, current_of,
-    prepare_cancellation, prepare_declaration, prepare_void, uk_date,
+    prepare_cancellation, prepare_declaration, prepare_details, prepare_void, uk_date,
 };
 use crate::types::{
-    CancellationPayload, Declaration, DeclarationPayload, DeclarationSummary, Method, Scope,
-    VoidPayload,
+    CancellationPayload, Declaration, DeclarationPayload, DeclarationSummary, DetailsChange,
+    DetailsEdit, DetailsHistory, DetailsPayload, Method, Scope, VoidPayload,
 };
 
 pub const TABLE: &str = "gift_aid_declarations";
@@ -52,7 +60,7 @@ impl Window for Declaration {
 const COLUMNS: &str = "id, contact_id, scope, gift_id, made_on, method, wording_version, \
      first_name, last_name, address_line1, postcode, cancelled_from, cancellation_note, \
      void_reason, voided_at, voided_by, entered_by, entered_at, declaration_version, \
-     cancellation_version, void_version";
+     cancellation_version, void_version, details_version";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Declaration> {
     Ok(Declaration {
@@ -79,6 +87,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Declaration> {
         declaration_version: r.get(18)?,
         cancellation_version: r.get(19)?,
         void_version: r.get(20)?,
+        details_version: r.get(21)?,
     })
 }
 
@@ -157,7 +166,8 @@ pub struct DeclarationState {
 /// contact's or is void; and for a "this gift only" declaration whose gift
 /// already has one. Never updated: a declaration recorded in error is
 /// voided, a donor withdrawing is a cancellation, so restore of a
-/// revision is refused too.
+/// revision is refused too. Its snapshot fields are set here and changed
+/// only by [`DetailsContract`].
 pub struct DeclarationContract;
 pub static DECLARATION: DeclarationContract = DeclarationContract;
 
@@ -462,4 +472,205 @@ impl Contract for VoidContract {
         .execute(params![id, next.reason, next.voided_at, next.voided_by])?;
         Ok(())
     }
+}
+
+// ── giftaid.declarationDetails ─────────────────────────────────────────────
+
+/// The details slice, plus whether the declaration is voided (not
+/// serialised: a stale refusal's `current` is just the slice).
+#[derive(Clone, Debug, Serialize)]
+pub struct DetailsState {
+    #[serde(flatten)]
+    pub payload: DetailsPayload,
+    #[serde(skip)]
+    voided: bool,
+}
+
+/// The snapshot of the donor's name and home address, completed or
+/// corrected after the declaration was saved (staff ticked Gift Aid
+/// before they had the address; a typo). Any field may change, blanks
+/// included (they warn). Refused on a voided declaration: it never
+/// applied, so there is nothing to fix. A cancelled one may change: its
+/// window before the cancellation still backs claims.
+pub struct DetailsContract;
+pub static DETAILS: DetailsContract = DetailsContract;
+
+impl Contract for DetailsContract {
+    const NAME: &'static str = "giftaid.declarationDetails";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = TABLE;
+    const COUNTER: &'static str = "details_version";
+    type Payload = DetailsPayload;
+    type State = DetailsState;
+
+    fn prepare(&self, p: DetailsPayload) -> Result<DetailsPayload, ContractError> {
+        prepare_details(p)
+    }
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<DetailsState, ContractError> {
+        let d = load(tx.read(), id)?.ok_or(ContractError::NotFound)?;
+        Ok(DetailsState {
+            payload: d.payload.details(),
+            voided: d.voided_at.is_some(),
+        })
+    }
+
+    fn apply(
+        &self,
+        current: Option<&DetailsState>,
+        p: &DetailsPayload,
+        _: &Command,
+    ) -> Result<DetailsState, ContractError> {
+        let Some(current) = current else {
+            return Err(ContractError::rejected(
+                "no_root",
+                "giftaid.declarationDetails targets an existing declaration",
+            ));
+        };
+        if current.voided {
+            return Err(ContractError::rejected(
+                "voided",
+                "This declaration was made in error and voided",
+            ));
+        }
+        Ok(DetailsState {
+            payload: p.clone(),
+            voided: false,
+        })
+    }
+
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        _: Option<&DetailsState>,
+        next: &DetailsState,
+    ) -> Result<(), ContractError> {
+        let p = &next.payload;
+        tx.prepare_cached(
+            "UPDATE gift_aid_declarations
+             SET first_name = ?2, last_name = ?3, address_line1 = ?4, postcode = ?5
+             WHERE id = ?1",
+        )?
+        .execute(params![
+            id,
+            p.first_name,
+            p.last_name,
+            p.address_line1,
+            p.postcode
+        ])?;
+        Ok(())
+    }
+}
+
+/// The most snapshot changes one history read lists.
+pub const DETAILS_HISTORY_LIMIT: usize = 100;
+
+/// The snapshot in a revision's payload, read at the code's version of
+/// its contract (the upcaster chain restore uses): both contracts carry
+/// the four fields under the same names at their current versions.
+fn snapshot_of(
+    contract: &dyn DynContract,
+    version: u32,
+    payload: &str,
+) -> Result<DetailsPayload, ContractError> {
+    let payload = upcast(contract, serde_json::from_str(payload)?, version)?;
+    Ok(serde_json::from_value(payload)?)
+}
+
+/// A declaration's snapshot changes, newest first: each
+/// `giftaid.declarationDetails` revision against the one before it (the
+/// first against the snapshot the declaration was made with), with who
+/// and when. A save that changed nothing isn't listed. `None` for an
+/// unknown declaration.
+pub fn details_history(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<DetailsHistory>, ContractError> {
+    if load(conn, id)?.is_none() {
+        return Ok(None);
+    }
+    // The newest LIMIT + 1 details revisions, and the declaration's own
+    // (one, at create): the baseline when every details one is read.
+    let rows: Vec<(i64, u32, String, Option<i64>, String, i64)> = conn
+        .prepare_cached(
+            "SELECT id, version, payload, actor, source, at FROM revisions
+             WHERE entity = ?1 AND entity_id = ?2 AND contract = ?3
+             ORDER BY id DESC LIMIT ?4",
+        )?
+        .query_map(
+            params![
+                TABLE,
+                id,
+                DetailsContract::NAME,
+                DETAILS_HISTORY_LIMIT as i64 + 1
+            ],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    let more = rows.len() > DETAILS_HISTORY_LIMIT;
+    let baseline: Option<DetailsPayload> = if more {
+        // The oldest row read is only the baseline of the one after it.
+        None
+    } else {
+        conn.prepare_cached(
+            "SELECT version, payload FROM revisions
+             WHERE entity = ?1 AND entity_id = ?2 AND contract = ?3
+             ORDER BY id LIMIT 1",
+        )?
+        .query_row(params![TABLE, id, DeclarationContract::NAME], |r| {
+            Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?))
+        })
+        .optional()?
+        .map(|(version, payload)| snapshot_of(&DECLARATION, version, &payload))
+        .transpose()?
+    };
+    let mut snapshots = rows
+        .iter()
+        .map(|(_, version, payload, ..)| snapshot_of(&DETAILS, *version, payload))
+        .collect::<Result<Vec<_>, _>>()?;
+    snapshots.extend(baseline);
+    let edits = rows
+        .iter()
+        .take(DETAILS_HISTORY_LIMIT)
+        .enumerate()
+        .filter_map(|(i, (revision_id, _, _, actor, source, at))| {
+            let before = snapshots.get(i + 1)?;
+            let changes = diff(before, &snapshots[i]);
+            (!changes.is_empty()).then(|| DetailsEdit {
+                revision_id: *revision_id,
+                at: *at,
+                actor: *actor,
+                source: contracts::Source::parse(source),
+                changes,
+            })
+        })
+        .collect();
+    Ok(Some(DetailsHistory { edits, more }))
+}
+
+fn diff(before: &DetailsPayload, after: &DetailsPayload) -> Vec<DetailsChange> {
+    [
+        ("firstName", &before.first_name, &after.first_name),
+        ("lastName", &before.last_name, &after.last_name),
+        ("addressLine1", &before.address_line1, &after.address_line1),
+        ("postcode", &before.postcode, &after.postcode),
+    ]
+    .into_iter()
+    .filter(|(_, from, to)| from != to)
+    .map(|(field, from, to)| DetailsChange {
+        field: field.into(),
+        from: from.clone(),
+        to: to.clone(),
+    })
+    .collect()
 }

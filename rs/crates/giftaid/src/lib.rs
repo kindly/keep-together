@@ -4,8 +4,9 @@
 //! functions, never on `store` or `platform`; it can't name an
 //! organisation.
 //!
-//! Recording declarations, cancellations and voids is for staff and
-//! admins (the tenant middleware refuses a viewer's write); viewers read.
+//! Recording declarations, completing their details, cancellations and
+//! voids is for staff and admins (the tenant middleware refuses a
+//! viewer's write); viewers read.
 
 pub mod declarations;
 pub mod irmark;
@@ -20,11 +21,13 @@ use contracts::{
 };
 use rusqlite::Connection;
 
-pub use declarations::{CANCELLATION, DECLARATION, VOID, chain, coverage, current_declaration};
+pub use declarations::{
+    CANCELLATION, DECLARATION, DETAILS, VOID, chain, coverage, current_declaration, details_history,
+};
 pub use rules::{HMRC_MODEL_WORDING_VERSION, is_iso_date, open_at, uk_date};
 pub use types::{
     CancellationPayload, Cancelled, DeclarationPayload, DeclarationRow, DeclarationSummary,
-    Declarations, Method, Scope, VoidPayload,
+    Declarations, DetailsHistory, DetailsPayload, Method, Scope, VoidPayload,
 };
 
 /// The org-schema step this crate owns, after giving's. Prefix
@@ -57,9 +60,15 @@ CREATE TABLE gift_aid_declarations (
 CREATE INDEX gift_aid_declarations_by_contact ON gift_aid_declarations (contact_id, made_on);
 ";
 
+/// The `giftaid.declarationDetails` counter: the snapshot editable after
+/// saving. Existing declarations start at 0 (no details revision yet).
+pub const MIGRATION_DETAILS: &str = "
+ALTER TABLE gift_aid_declarations ADD COLUMN details_version INTEGER NOT NULL DEFAULT 0;
+";
+
 /// Every contract restore may meet in an org file's declaration history.
 pub static REGISTRY: LazyLock<Registry> =
-    LazyLock::new(|| Registry::new(&[&DECLARATION, &CANCELLATION, &VOID]));
+    LazyLock::new(|| Registry::new(&[&DECLARATION, &DETAILS, &CANCELLATION, &VOID]));
 
 /// A new declaration; giving's one-save command runs it inside its group.
 pub fn make_declaration(
@@ -134,6 +143,25 @@ pub fn void_declaration(
         &VOID,
         VoidPayload { reason },
         Exec::update(id, None, source),
+    )
+}
+
+/// "Edit details" on one declaration of the Gift Aid panel: its snapshot
+/// of the donor's name and home address, completed or corrected.
+/// `expected` is the details counter as last read (`409 stale` with the
+/// snapshot as it is now otherwise).
+pub fn save_details(
+    ctx: &Ctx,
+    id: &str,
+    expected: i64,
+    details: DetailsPayload,
+    source: Source,
+) -> Result<Executed, ContractError> {
+    execute(
+        ctx,
+        &DETAILS,
+        details,
+        Exec::update(id, Some(expected), source),
     )
 }
 
