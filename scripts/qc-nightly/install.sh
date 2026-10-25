@@ -133,17 +133,18 @@ write_unit() {
   fi
 }
 # Not niced: it's a timed run. TimeoutStartSec: a local QC run holding
-# .qc.lock (stale after 2 h), a deploy (45 min) and the run itself.
+# .qc.lock (stale after 2 h), deploys (45 min, up to 3 times) and the run
+# itself. No network-online.target: a --user unit can't order against it,
+# so run.sh waits for the network itself.
 write_unit "$UNIT.service" <<EOF
 [Unit]
 Description=Nightly QC against keep-staging
 Documentation=file://$NIGHTLY/src/docs/ops.md
-After=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=$NIGHTLY/bin/run.sh
-TimeoutStartSec=5h
+TimeoutStartSec=6h
 EOF
 write_unit "$UNIT.timer" <<EOF
 [Unit]

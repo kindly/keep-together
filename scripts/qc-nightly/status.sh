@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The nightly QC at a glance (docs/ops.md, "Nightly QC"): the last runs,
 # the current streak of green runs (what the C1 gate counts: 3 nightly
-# runs in a row) and the commit each ran, the next run, the open issue.
+# runs in a row, on 3 nights) and the commit each ran, the next run, the
+# open issue.
 #
 #   ~/.local/share/keep-qc-nightly/bin/status.sh [N]    (N: runs shown, default 10)
 set -euo pipefail
@@ -17,13 +18,17 @@ runs=$NIGHTLY/runs.log
 row() { # one runs.log line, as a table row
   local line=$1 commit extra
   commit=$(field commit "$line")
-  extra=$(field redeployed "$line")
-  [ -z "$extra" ] || extra="staging redeployed mid-run (${extra:0:12})"
+  extra=$(field reason "$line")
   [ -n "$extra" ] || extra=$(field step "$line")
+  [ "$(field rttover "$line")" = "" ] || [ "$(field rttover "$line")" = 0 ] ||
+    extra="$extra (rttover=$(field rttover "$line"))"
   printf '%-25s %-12s %-6s %5s %4s %4s  %s\n' "${line%% *}" "${commit:0:12}" \
     "$(field result "$line")" "$(field flows "$line")" "$(field over "$line")" \
     "$(field rtt "$line")" "$extra"
 }
+# The night a run belongs to: noon to noon, so a hand run at 23:30 and
+# the 03:00 run after it are one night.
+night() { date -d "${1%% *} 12 hours ago" +%F; }
 
 if [ ! -s "$runs" ]; then
   echo "no runs yet ($runs)"
@@ -32,15 +37,18 @@ else
   printf '%-25s %-12s %-6s %5s %4s %4s  %s\n' time commit result flows over rtt ""
   tail -n "$shown" "$runs" | while read -r line; do row "$line"; done
 
-  # The streak: green runs since the last run that wasn't.
-  mapfile -t streak < <(tac "$runs" | awk '/ result=pass( |$)/ { print; next } { exit }' | tac)
-  nights=$(printf '%s\n' "${streak[@]}" | grep -v '^$' | cut -c1-10 | sort -u | wc -l)
+  # The streak: green runs since the last fail or error. A void (see
+  # run.sh) neither counts nor breaks it.
+  mapfile -t streak < <(tac "$runs" |
+    awk '/ result=pass( |$)/ { print; next } / result=void( |$)/ { next } { exit }' | tac)
+  voids=$(tac "$runs" | awk '/ result=(pass|void)( |$)/ { if (/ result=void/) n++; next } { exit } END { print n + 0 }')
+  nights=$(for line in "${streak[@]}"; do night "$line"; done | sort -u | wc -l)
   echo
-  echo "streak: ${#streak[@]} green run(s) in a row, on $nights night(s)"
+  echo "streak: ${#streak[@]} green run(s) on $nights night(s) since the last fail or error ($voids void run(s) in between, not counted)"
   for line in "${streak[@]}"; do
     commit=$(field commit "$line")
     subject=$(git -C "$NIGHTLY/src" log -1 --format='%s' "$commit" 2>/dev/null || true)
-    printf '  %s  %s  %s\n' "${line%% *}" "${commit:0:12}" "$subject"
+    printf '  night of %s  %s  %s  %s\n' "$(night "$line")" "${line%% *}" "${commit:0:12}" "$subject"
   done
 fi
 

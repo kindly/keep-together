@@ -11,7 +11,7 @@
 #   nightly.env       the scripts' settings (KEEP_QC_NIGHTLY_*)
 #   qc-token          0600: KEEP_QC_TOKEN, read only into the env of `pnpm qc`
 #   runs.log          one line per run (see run.sh); status.sh reads it
-#   logs/<time>-<sha>.log  each run's full output; the last 30 are kept
+#   logs/<time>-<pid>.log  each run's full output; the last 30 are kept
 #   run.lock          flock: one run at a time
 
 NIGHTLY=${KEEP_QC_NIGHTLY_HOME:-$HOME/.local/share/keep-qc-nightly}
@@ -19,7 +19,8 @@ NIGHTLY=${KEEP_QC_NIGHTLY_HOME:-$HOME/.local/share/keep-qc-nightly}
 UNIT=keep-qc-nightly
 
 say() { printf '\n== %s\n' "$*"; }
-run() { printf '+ %s\n' "$*" >&2; "$@"; }
+# Children never inherit run.sh's locks (fd 9: run.lock, 8: the preview's).
+run() { printf '+ %s\n' "$*" >&2; "$@" 9>&- 8>&-; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 log() { printf '%s %s\n' "$(date -Is)" "$*"; }
 
