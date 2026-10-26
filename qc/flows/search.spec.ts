@@ -69,7 +69,10 @@ async function addRow(
   heading: 'Phones' | 'Emails' | 'Addresses',
   fill: Record<string, string>,
 ) {
-  await section(page, heading).getByRole('button', { name: 'add' }).click()
+  // Exact: an address row's "Find address" has "add" in its name too.
+  await section(page, heading)
+    .getByRole('button', { name: 'add', exact: true })
+    .click()
   const row = rows(page, heading).last()
   for (const [placeholder, value] of Object.entries(fill)) {
     await row.getByPlaceholder(placeholder).fill(value)

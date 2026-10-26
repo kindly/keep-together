@@ -141,6 +141,7 @@ point_current() { # atomic: a new symlink renamed over the old
 }
 
 relaxed_settings
+lookup_settings
 run systemctl --user stop "$UNIT"
 rm -rf "$PREVIEW/data.prev"
 [ ! -d "$PREVIEW/data" ] || mv "$PREVIEW/data" "$PREVIEW/data.prev"

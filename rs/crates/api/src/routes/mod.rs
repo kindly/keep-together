@@ -1,6 +1,7 @@
 //! The domain routes under `/api/t/{slug}`: a stateless `Router` whose
 //! handlers get a [`Tenant`](crate::Tenant) and nothing else.
 
+mod address;
 mod comms;
 mod contacts;
 pub mod fields;
@@ -25,6 +26,7 @@ use crate::ApiError;
 
 pub fn router() -> Router {
     Router::new()
+        .merge(address::router())
         .merge(contacts::router())
         .merge(fields::router())
         .merge(preferences::router())

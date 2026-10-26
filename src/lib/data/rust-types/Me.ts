@@ -6,4 +6,9 @@ export type Me = { email: string, memberships: Array<Membership>,
  * `KEEP_AUTH_POLICY` unless `strict` (left out): the SPA shows a
  * banner.
  */
-authPolicy?: "strict" | "relaxed", };
+authPolicy?: "strict" | "relaxed", 
+/**
+ * `KEEP_ADDRESS_LOOKUP` is on (`fake` or `ideal`): the contact form
+ * offers "Find address" to staff and admins. Left out when off.
+ */
+addressLookup?: true, };

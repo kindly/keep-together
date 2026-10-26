@@ -84,3 +84,22 @@ test('a fresh relaxed install has nothing to move and is marked converted', () =
   expect(existsSync(path.join(dir, 'relaxed-converted'))).toBe(true)
   expect(existsSync(path.join(dir, 'secrets.env.pre-relaxed'))).toBe(false)
 })
+
+const lookup = (dir) =>
+  execFileSync('bash', ['-c', `. "${lib}"; lookup_settings`], {
+    env: { ...process.env, KEEP_PREVIEW_HOME: dir },
+    encoding: 'utf8',
+  })
+
+test('an install from before the address lookup gains the fake one, once', () => {
+  const dir = preview('KEEP_ENV=dev\n', '')
+  expect(lookup(dir)).toContain('added KEEP_ADDRESS_LOOKUP=fake')
+  expect(lookup(dir)).toBe('')
+  expect(read(dir, 'preview.env')).toBe('KEEP_ENV=dev\nKEEP_ADDRESS_LOOKUP=fake\n')
+})
+
+test('a lookup setting the human chose is kept', () => {
+  const dir = preview('KEEP_ADDRESS_LOOKUP=off\n', '')
+  expect(lookup(dir)).toBe('')
+  expect(read(dir, 'preview.env')).toBe('KEEP_ADDRESS_LOOKUP=off\n')
+})

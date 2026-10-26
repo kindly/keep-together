@@ -87,3 +87,14 @@ relaxed_settings() {
   fi
   date -Is >"$marker"
 }
+
+# The preview's address lookup is the fake provider (fixed addresses, no
+# network, no credit spent: rs/crates/api/src/address/fake.rs). An install
+# from before it gains KEEP_ADDRESS_LOOKUP=fake once; one already there
+# is the human's choice, kept. Prints what it changed.
+lookup_settings() {
+  local env=$PREVIEW/preview.env
+  grep -q '^KEEP_ADDRESS_LOOKUP=' "$env" && return 0
+  printf '%s\n' KEEP_ADDRESS_LOOKUP=fake >>"$env"
+  echo "preview.env: added KEEP_ADDRESS_LOOKUP=fake"
+}

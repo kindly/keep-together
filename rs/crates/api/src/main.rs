@@ -14,6 +14,10 @@
 //!   when set, Litestream also owns org files' WAL checkpoints (no
 //!   checkpointer threads: `store::Store::without_checkpointer`)
 //! - `SENTRY_DSN`: error reporting (`observe`)
+//! - `KEEP_ADDRESS_LOOKUP` (`off`/`fake`/`ideal`), `KEEP_IDEAL_POSTCODES_KEY`,
+//!   `KEEP_ADDRESS_LOOKUP_CAP`, `KEEP_ADDRESS_LOOKUP_DAILY_CEILING`: the
+//!   contact form's postcode lookup (`address`); `ideal` without a key or
+//!   an unknown value stops the boot
 //! - auth (`api::auth::boot`): `KEEP_APP_ORIGIN`, `KEEP_CLIENT_IP_HEADER`,
 //!   `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER`,
 //!   `KEEP_MAIL`/`KEEP_SMTP_URL`/`KEEP_MAIL_FROM`/`KEEP_MAIL_ONLY_TO`; with `KEEP_ENV=prod` or
@@ -63,6 +67,16 @@ async fn main() {
         !(dev_auth && api::auth::dev_auth_refused(std::env::var("KEEP_ENV").ok().as_deref()))
     );
     let qc = qc_access();
+    let address = api::address::from_vars(|name| std::env::var(name).ok()).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2)
+    });
+    if let Some(lookup) = &address {
+        eprintln!(
+            "address lookup {:?}: {} a month per organisation, {} a day in all",
+            lookup.mode, lookup.cap, lookup.ceiling
+        );
+    }
 
     let store = Store::open_with(
         StoreConfig {
@@ -141,7 +155,10 @@ async fn main() {
         // A minute after boot (`first_after`), then hourly.
         jobs.register(SnapshotJob::new(config));
     }
-    let state = AppState::new(store, dev_auth).with_auth(auth).with_qc(qc);
+    let state = AppState::new(store, dev_auth)
+        .with_auth(auth)
+        .with_qc(qc)
+        .with_address(address);
     jobs.register(api::auth::LimitSweep(state.auth.clone()));
     jobs.spawn();
 

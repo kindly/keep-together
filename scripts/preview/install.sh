@@ -60,6 +60,7 @@ if [ -f "$PREVIEW/preview.env" ]; then
   old_origin=$(sed -n 's/^KEEP_APP_ORIGIN=//p' "$PREVIEW/preview.env")
   old_port=$(sed -n 's/^KEEP_PORT=//p' "$PREVIEW/preview.env")
   policy=$(sed -n 's/^KEEP_AUTH_POLICY=//p' "$PREVIEW/preview.env")
+  lookup=$(sed -n 's/^KEEP_ADDRESS_LOOKUP=//p' "$PREVIEW/preview.env")
 fi
 port=${port:-${old_port:-8780}}
 if [ -z "$origin" ] && [ -n "${old_origin:-}" ]; then
@@ -95,6 +96,7 @@ KEEP_STATIC_DIR=$PREVIEW/current/dist
 KEEP_APP_ORIGIN=$origin
 KEEP_MAIL=log
 KEEP_AUTH_POLICY=${policy:-relaxed}
+KEEP_ADDRESS_LOOKUP=${lookup:-fake}
 KEEP_RESET_SEED=riverside
 KEEP_PREVIEW_QC_LOCK=$main_checkout/.qc.lock
 KEEP_PREVIEW_JOBS=$jobs

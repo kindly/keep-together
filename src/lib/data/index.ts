@@ -10,6 +10,7 @@ export {
   SessionLoading,
   SignedIn,
   SignedOut,
+  useAddressLookupOn,
   preloadContact,
   preloadContactList,
   preloadFields,
@@ -24,6 +25,8 @@ export {
   useSaveContactForm,
 } from './rust/hooks'
 export * from './rust/auth'
+export { useAddressLookup } from './rust/address'
+export type { LookupAddress, LookupOutcome } from './rust/address'
 export { useOrgEvents } from './events'
 export { useOpened, useSetStaffCanManage } from './rust/platform'
 export {

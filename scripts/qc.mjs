@@ -206,6 +206,8 @@ async function startApi(i, bin) {
         KEEP_DATA_DIR: dataDir,
         KEEP_DEV_AUTH: '1',
         KEEP_QC_SEED: '1',
+        // Fixed addresses, no network (address-lookup.spec.ts).
+        KEEP_ADDRESS_LOOKUP: 'fake',
         RUST_LOG: process.env.RUST_LOG ?? 'warn',
       },
       stdio: ['ignore', 'inherit', 'inherit'],

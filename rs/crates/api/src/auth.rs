@@ -403,6 +403,11 @@ pub struct Me {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "\"strict\" | \"relaxed\"")]
     pub auth_policy: Option<Policy>,
+    /// `KEEP_ADDRESS_LOOKUP` is on (`fake` or `ideal`): the contact form
+    /// offers "Find address" to staff and admins. Left out when off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "true")]
+    pub address_lookup: Option<bool>,
 }
 
 /// The signed-in user, for tenant routes that answer about them (`/boot`,
@@ -412,6 +417,7 @@ pub struct Account {
     store: Arc<Store>,
     runtime: Arc<Runtime>,
     session: Session,
+    address_lookup: bool,
 }
 
 impl Account {
@@ -420,6 +426,7 @@ impl Account {
             store: state.store.clone(),
             runtime: state.auth.clone(),
             session: session.clone(),
+            address_lookup: state.address.is_some(),
         }
     }
 
@@ -445,6 +452,7 @@ impl Account {
                 })
                 .collect(),
             auth_policy: self.runtime.policy.shown(),
+            address_lookup: self.address_lookup.then_some(true),
         })
     }
 
