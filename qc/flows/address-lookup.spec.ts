@@ -14,7 +14,9 @@ import {
 // a postcode, a pick, the row filled and autosaved like a typed edit.
 // Functional, not a timed flow: on staging the lookup goes to Ideal
 // Postcodes, whose round trip is outside the 100 ms server rule, and each
-// sample would be a lookup. One lookup per run, of QC_POSTCODE only.
+// sample would be a lookup. Two lookups per run: QC_POSTCODE (Ideal's free
+// test postcode) and one not found (ZZ1 1ZZ), which Ideal says costs no
+// credit (to confirm, plan step L0).
 
 test.describe('address lookup', { annotation: CONTACT_ROUTE }, () => {
   test('find address fills the row and autosaves', async ({ page, users }) => {

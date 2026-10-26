@@ -1,12 +1,12 @@
 /**
- * The contact form's "Find address" (`GET /api/t/{slug}/address-lookup`,
+ * The contact form's "Find address" (`POST /api/t/{slug}/address-lookup`,
  * rs `api::address`). Not a cached query: every lookup is a paid credit
  * counted against the group's month, and PAF results may not be kept.
  */
 import { useTenant } from '../../tenant'
 import type { AddressLookupResult } from '../rust-types/AddressLookupResult'
 import type { LookupAddress } from '../rust-types/LookupAddress'
-import { RustApiError, get, tenantPath } from './client'
+import { RustApiError, post, tenantPath } from './client'
 
 export type { LookupAddress }
 
@@ -23,9 +23,9 @@ export async function lookupAddresses(
   postcode: string,
 ): Promise<LookupOutcome> {
   try {
-    const result = await get<AddressLookupResult>(
+    const result = await post<AddressLookupResult>(
       tenantPath(slug, 'address-lookup'),
-      new URLSearchParams({ postcode }),
+      { postcode },
     )
     return { kind: 'found', addresses: result.addresses }
   } catch (e) {

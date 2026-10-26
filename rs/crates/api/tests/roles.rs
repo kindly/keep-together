@@ -148,9 +148,6 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
     assert_eq!(
         all,
         [
-            // Reads nothing from the org file; counts usage in
-            // platform.db and refuses viewers itself (api::address).
-            "GET /address-lookup",
             "GET /contacts",
             "GET /contacts/by-client-key/{key}",
             "GET /contacts/search",
@@ -176,6 +173,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /sources/filter-options",
             "GET /sources/picker",
             "GET /sources/{id}",
+            "POST /address-lookup",
             "POST /comms/release",
             "POST /contacts",
             "POST /contacts/bulk-set-field",

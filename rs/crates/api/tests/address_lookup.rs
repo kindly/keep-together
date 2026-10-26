@@ -13,7 +13,7 @@ use api::address::ideal::Ideal;
 use api::address::{self, AddressLookup, Lookup, LookupError, Mode};
 use api::{AppState, app, routes, schema};
 use axum::extract::{Path, RawQuery};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -33,18 +33,21 @@ fn with_fake(cap: i64, ceiling: i64) -> (World, Arc<Fake>) {
     (w, fake)
 }
 
-fn path(slug: &str, postcode: &str) -> String {
-    format!(
-        "/api/t/{slug}/address-lookup?postcode={}",
-        postcode.replace(' ', "%20")
-    )
+fn url(slug: &str) -> String {
+    format!("/api/t/{slug}/address-lookup")
+}
+
+fn postcode(postcode: &str) -> Option<Value> {
+    Some(json!({ "postcode": postcode }))
 }
 
 #[tokio::test]
 async fn staff_and_admins_get_the_addresses_at_a_postcode() {
     let (w, fake) = with_fake(100, 2000);
     let sam = w.login("sam@alpha.org").await;
-    let (s, body) = w.call("GET", &path("alpha", "id1 1qd"), &sam, None).await;
+    let (s, body) = w
+        .call("POST", &url("alpha"), &sam, postcode("id1 1qd"))
+        .await;
     assert_eq!(s, StatusCode::OK, "{body}");
     let addresses = body["addresses"].as_array().unwrap();
     assert_eq!(addresses.len(), 3);
@@ -54,7 +57,9 @@ async fn staff_and_admins_get_the_addresses_at_a_postcode() {
                "town": "Fakebury", "postcode": "ID1 1QD"})
     );
     let ann = w.login("ann@alpha.org").await;
-    let (s, body) = w.call("GET", &path("alpha", "KT11AA"), &ann, None).await;
+    let (s, body) = w
+        .call("POST", &url("alpha"), &ann, postcode("KT11AA"))
+        .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(body["addresses"][0]["town"], "Kingston upon Thames");
     assert_eq!(fake.calls(), 2);
@@ -70,7 +75,7 @@ async fn a_viewer_and_another_group_are_refused_before_any_lookup() {
     let (w, fake) = with_fake(100, 2000);
     let val = w.login("val@alpha.org").await;
     let (s, body) = w
-        .call("GET", &path("alpha", fake::SEVERAL), &val, None)
+        .call("POST", &url("alpha"), &val, postcode(fake::SEVERAL))
         .await;
     assert_eq!(
         (s, body["kind"].as_str()),
@@ -79,14 +84,16 @@ async fn a_viewer_and_another_group_are_refused_before_any_lookup() {
     // B's session on A's slug: refused like any tenant route.
     let bob = w.login("bob@beta.org").await;
     let (s, body) = w
-        .call("GET", &path("alpha", fake::SEVERAL), &bob, None)
+        .call("POST", &url("alpha"), &bob, postcode(fake::SEVERAL))
         .await;
     assert_eq!(
         (s, body["kind"].as_str()),
         (StatusCode::FORBIDDEN, Some("forbidden"))
     );
     // Signed out.
-    let (s, _) = w.call("GET", &path("alpha", fake::SEVERAL), "", None).await;
+    let (s, _) = w
+        .call("POST", &url("alpha"), "", postcode(fake::SEVERAL))
+        .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     assert_eq!(fake.calls(), 0);
     let now = contracts::now_ms();
@@ -104,23 +111,16 @@ async fn a_viewer_and_another_group_are_refused_before_any_lookup() {
 async fn a_bad_postcode_is_422_and_costs_nothing() {
     let (w, fake) = with_fake(100, 2000);
     let sam = w.login("sam@alpha.org").await;
-    for bad in ["", "hello", "SW1A", "12345", "SW1A%2F1AA"] {
-        let (s, body) = w
-            .call(
-                "GET",
-                &format!("/api/t/alpha/address-lookup?postcode={bad}"),
-                &sam,
-                None,
-            )
-            .await;
+    for bad in ["", "hello", "SW1A", "12345", "SW1A/1AA", "../v1"] {
+        let (s, body) = w.call("POST", &url("alpha"), &sam, postcode(bad)).await;
         assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
         assert_eq!(body["kind"], "invalid");
     }
-    // No postcode at all.
-    let (s, _) = w
-        .call("GET", "/api/t/alpha/address-lookup", &sam, None)
-        .await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    // No postcode at all, and no body.
+    for none in [Some(json!({})), None] {
+        let (s, _) = w.call("POST", &url("alpha"), &sam, none).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    }
     assert_eq!(fake.calls(), 0);
     let now = contracts::now_ms();
     assert_eq!(
@@ -129,19 +129,18 @@ async fn a_bad_postcode_is_422_and_costs_nothing() {
     );
 }
 
-/// It spends a credit, so a cross-site navigation (which carries the
-/// `Lax` cookie) is refused like a cross-site write; the SPA's own fetch
-/// (`same-origin`) and a non-browser client pass.
+/// It spends a credit, so it is a `POST` under the write guard: a
+/// cross-site or sibling-origin request is refused before any lookup; the
+/// SPA's own fetch (`same-origin`) and a non-browser client pass.
 #[tokio::test]
 async fn a_cross_site_request_is_refused_before_any_lookup() {
-    use axum::http::header;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     let (w, fake) = with_fake(100, 2000);
     let sam = w.login("sam@alpha.org").await;
     let send = |site: Option<&'static str>, origin: Option<&'static str>| {
-        let mut req = common::request("GET", &path("alpha", fake::ONE), Some(&sam), None);
+        let mut req = common::request("POST", &url("alpha"), Some(&sam), postcode(fake::ONE));
         if let Some(site) = site {
             req.headers_mut()
                 .insert("sec-fetch-site", site.parse().unwrap());
@@ -154,6 +153,10 @@ async fn a_cross_site_request_is_refused_before_any_lookup() {
         async move {
             let res = app.oneshot(req).await.unwrap();
             let status = res.status();
+            if status == StatusCode::OK {
+                // PAF results are never kept, by a browser or a proxy either.
+                assert_eq!(res.headers()[header::CACHE_CONTROL], "no-store");
+            }
             let body = res.into_body().collect().await.unwrap().to_bytes();
             (status, serde_json::from_slice::<Value>(&body).unwrap())
         }
@@ -179,12 +182,16 @@ async fn a_cross_site_request_is_refused_before_any_lookup() {
 async fn not_found_and_unavailable() {
     let (w, _) = with_fake(100, 2000);
     let sam = w.login("sam@alpha.org").await;
-    let (s, body) = w.call("GET", &path("alpha", "SW1A 1AA"), &sam, None).await;
+    let (s, body) = w
+        .call("POST", &url("alpha"), &sam, postcode("SW1A 1AA"))
+        .await;
     assert_eq!(
         (s, body["kind"].as_str()),
         (StatusCode::NOT_FOUND, Some("not_found"))
     );
-    let (s, body) = w.call("GET", &path("alpha", fake::DOWN), &sam, None).await;
+    let (s, body) = w
+        .call("POST", &url("alpha"), &sam, postcode(fake::DOWN))
+        .await;
     assert_eq!(
         (s, body["kind"].as_str()),
         (StatusCode::SERVICE_UNAVAILABLE, Some("lookup_unavailable"))
@@ -196,10 +203,14 @@ async fn the_monthly_cap_is_per_group_and_stops_before_the_provider() {
     let (w, fake) = with_fake(2, 2000);
     let sam = w.login("sam@alpha.org").await;
     for _ in 0..2 {
-        let (s, _) = w.call("GET", &path("alpha", fake::ONE), &sam, None).await;
+        let (s, _) = w
+            .call("POST", &url("alpha"), &sam, postcode(fake::ONE))
+            .await;
         assert_eq!(s, StatusCode::OK);
     }
-    let (s, body) = w.call("GET", &path("alpha", fake::ONE), &sam, None).await;
+    let (s, body) = w
+        .call("POST", &url("alpha"), &sam, postcode(fake::ONE))
+        .await;
     assert_eq!(
         (s, body["kind"].as_str()),
         (StatusCode::TOO_MANY_REQUESTS, Some("lookup_cap"))
@@ -207,7 +218,9 @@ async fn the_monthly_cap_is_per_group_and_stops_before_the_provider() {
     assert_eq!(fake.calls(), 2);
     // Another group has its own month.
     let bob = w.login("bob@beta.org").await;
-    let (s, _) = w.call("GET", &path("beta", fake::ONE), &bob, None).await;
+    let (s, _) = w
+        .call("POST", &url("beta"), &bob, postcode(fake::ONE))
+        .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(fake.calls(), 3);
 }
@@ -218,14 +231,20 @@ async fn the_daily_ceiling_is_platform_wide() {
     let sam = w.login("sam@alpha.org").await;
     let bob = w.login("bob@beta.org").await;
     assert_eq!(
-        w.call("GET", &path("alpha", fake::ONE), &sam, None).await.0,
+        w.call("POST", &url("alpha"), &sam, postcode(fake::ONE))
+            .await
+            .0,
         StatusCode::OK
     );
     assert_eq!(
-        w.call("GET", &path("beta", fake::ONE), &bob, None).await.0,
+        w.call("POST", &url("beta"), &bob, postcode(fake::ONE))
+            .await
+            .0,
         StatusCode::OK
     );
-    let (s, body) = w.call("GET", &path("alpha", fake::ONE), &sam, None).await;
+    let (s, body) = w
+        .call("POST", &url("alpha"), &sam, postcode(fake::ONE))
+        .await;
     assert_eq!(
         (s, body["kind"].as_str()),
         (StatusCode::SERVICE_UNAVAILABLE, Some("lookup_unavailable"))
@@ -238,7 +257,7 @@ async fn off_is_404_and_me_says_whether_it_is_on() {
     let w = world();
     let sam = w.login("sam@alpha.org").await;
     let (s, body) = w
-        .call("GET", &path("alpha", fake::SEVERAL), &sam, None)
+        .call("POST", &url("alpha"), &sam, postcode(fake::SEVERAL))
         .await;
     assert_eq!(
         (s, body["kind"].as_str()),
@@ -299,16 +318,22 @@ fn usage_survives_a_restart_and_resets_with_the_month() {
 const KEY: &str = "ak_secret_test_key_0123";
 
 /// A mock of Ideal Postcodes on a loopback port: answers by postcode and
-/// records each request's path and query.
+/// records each request's path, query and `Authorization`.
 async fn mock() -> (String, Arc<Mutex<Vec<String>>>) {
     let seen = Arc::new(Mutex::new(Vec::<String>::new()));
     let log = seen.clone();
     let app = Router::new().route(
         "/v1/postcodes/{postcode}",
-        get(move |Path(pc): Path<String>, RawQuery(q): RawQuery| {
+        get(move |Path(pc): Path<String>, RawQuery(q): RawQuery, headers: HeaderMap| {
             let log = log.clone();
             async move {
-                log.lock().unwrap().push(format!("{pc}?{}", q.unwrap_or_default()));
+                let auth = headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                log.lock()
+                    .unwrap()
+                    .push(format!("{pc}?{} | {auth}", q.unwrap_or_default()));
                 match pc.as_str() {
                     "SW1A 1AA" => Json(json!({
                         "code": 2000, "message": "Success",
@@ -334,6 +359,8 @@ async fn mock() -> (String, Arc<Mutex<Vec<String>>>) {
                         Json(json!({"code": 4010, "message": format!("Invalid key {KEY}")})),
                     )
                         .into_response(),
+                    // A 404 that isn't Ideal's not-found: a wrong path.
+                    "NF4 4AA" => (StatusCode::NOT_FOUND, "<html>Not Found</html>").into_response(),
                     "SL1 1AA" => {
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         Json(json!({"code": 2000, "result": []})).into_response()
@@ -377,8 +404,8 @@ async fn ideal_maps_their_answers_and_never_shows_the_key() {
     );
     assert_eq!(
         seen.lock().unwrap()[0],
-        format!("SW1A 1AA?api_key={KEY}"),
-        "the postcode in the path, the key as api_key"
+        format!("SW1A 1AA? | api_key=\"{KEY}\""),
+        "the postcode in the path, the key only in the Authorization header"
     );
 
     assert_eq!(
@@ -389,6 +416,9 @@ async fn ideal_maps_their_answers_and_never_shows_the_key() {
         ("NC1 1AA", "status 402, code 4020"),
         ("BK1 1AA", "status 401, code 4010"),
         ("XX1 1XX", "status 500, code none"),
+        // Only 404 with code 4040 is "no addresses"; any other 404 is an
+        // outage, logged, not a silent "not found".
+        ("NF4 4AA", "status 404, code none"),
     ] {
         let (detail, reached) = unavailable(ideal.lookup(postcode).await);
         assert!(detail.contains(status), "{detail}");
@@ -443,10 +473,14 @@ async fn ideal_through_the_route() {
         routes::router(),
     );
     let sam = w.login("sam@alpha.org").await;
-    let (s, body): (StatusCode, Value) = w.call("GET", &path("alpha", "sw1a1aa"), &sam, None).await;
+    let (s, body): (StatusCode, Value) = w
+        .call("POST", &url("alpha"), &sam, postcode("sw1a1aa"))
+        .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(body["addresses"][0]["line1"], "Buckingham Palace");
-    let (s, body) = w.call("GET", &path("alpha", "NC1 1AA"), &sam, None).await;
+    let (s, body) = w
+        .call("POST", &url("alpha"), &sam, postcode("NC1 1AA"))
+        .await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
     assert!(!body.to_string().contains(KEY));
 }

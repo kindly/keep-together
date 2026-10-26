@@ -1,13 +1,13 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { lookupAddresses } from './address'
 
-// `GET /api/t/{slug}/address-lookup`'s answers as the picker's outcomes.
+// `POST /api/t/{slug}/address-lookup`'s answers as the picker's outcomes.
 
 afterEach(() => vi.unstubAllGlobals())
 
 function answer(status: number, body: unknown) {
   const fetch = vi.fn(
-    async (_url: string) =>
+    async (_url: string, _init?: RequestInit) =>
       new Response(JSON.stringify(body), {
         status,
         headers: { 'content-type': 'application/json' },
@@ -31,9 +31,10 @@ test('asks the tenant’s route with the postcode as typed', async () => {
     kind: 'found',
     addresses: [ADDRESS],
   })
-  expect(fetch.mock.calls[0][0]).toBe(
-    '/api/t/alpha/address-lookup?postcode=id1+1qd',
-  )
+  const [url, init] = fetch.mock.calls[0]
+  expect(url).toBe('/api/t/alpha/address-lookup')
+  expect(init?.method).toBe('POST')
+  expect(JSON.parse(init?.body as string)).toEqual({ postcode: 'id1 1qd' })
 })
 
 test.each([

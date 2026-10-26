@@ -37,7 +37,7 @@ Env (`api`):
 | `KEEP_QC_TOKEN` | unset | with `KEEP_ENV=staging` only: `/api/qc/{seed,crowd,hold,session}` for the nightly QC run, the token in `x-keep-qc-token` (≥ 64 chars); `qc-` groups and `@qc.keep-together.invalid` users only; 404 when off or wrong; with `KEEP_ENV=prod` the boot stops (`routes::qc_seed`) |
 | `KEEP_AUTH_POLICY` | `strict` | `relaxed`: no required second factor (a user who enrolled one is still asked), no step-up, any non-empty password (≤ 128); invites, roles, rate limits, sessions and hashing unchanged (`auth::policy`, ADR 0020 amendment 2026-10-25). For the tailnet preview and local runs reached over the network. `/api/me` (`authPolicy`) and `/api/auth/state` (`policy`) say which; the SPA shows a banner unless strict. `KEEP_ENV=prod` refuses `relaxed`; any other value stops the boot |
 | `KEEP_ADDRESS_LOOKUP` | `off` | the contact form's postcode lookup (`api::address`): `fake` (fixed addresses, no network; `KEEP_ENV=prod` refuses it) or `ideal` (Ideal Postcodes, needs `KEEP_IDEAL_POSTCODES_KEY` or the boot stops). Any other value stops the boot. `/api/me` says `addressLookup: true` when on |
-| `KEEP_IDEAL_POSTCODES_KEY` | unset | the platform's key for `ideal`; never logged (it rides in the provider's URL, so no URL is) |
+| `KEEP_IDEAL_POSTCODES_KEY` | unset | the platform's key for `ideal`; sent in the `Authorization` header, never in a URL, never logged |
 | `KEEP_ADDRESS_LOOKUP_CAP` | `100` | lookups per organisation per calendar month (UTC): then `429 lookup_cap` |
 | `KEEP_ADDRESS_LOOKUP_DAILY_CEILING` | `2000` | lookups across the platform per UTC day: then `503 lookup_unavailable` |
 | `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`; on dev under `KEEP_AUTH_POLICY=relaxed` a missing password is `riverside` and a missing TOTP is none) |
@@ -443,7 +443,7 @@ Routes under `/api/t/{slug}` (types in `src/lib/data/rust-types/`):
 
 | route | |
 |---|---|
-| `GET address-lookup?postcode` | `AddressLookupResult {addresses: [{line1, line2, line3, town, postcode}]}`: staff and admin (a viewer `403`); the postcode is trimmed, upper-cased and shape-checked first (`422 invalid`, nothing counted or sent); not found `404`; `429 lookup_cap`; `503 lookup_unavailable`; lookup off `404`. Counted per organisation per month and per platform day in `platform.db` (`api::address::SCHEMA`), before the call and given back if the provider was never reached. Nothing returned is stored or logged (ADR 0014 amendment) |
+| `POST address-lookup {postcode}` | `AddressLookupResult {addresses: [{line1, line2, line3, town, postcode}]}`, `Cache-Control: no-store`: staff and admin (a viewer `403`, by the write guard); a `POST` because each lookup spends. The postcode is trimmed, upper-cased and shape-checked first (`422 invalid`, nothing counted or sent); not found `404`; `429 lookup_cap`; `503 lookup_unavailable`; lookup off `404`. Counted per organisation per month and per platform day in `platform.db` (`api::address::SCHEMA`), before the call and given back if the provider was never reached. Nothing returned is stored or logged (ADR 0014 amendment) |
 | `GET contacts?includeArchived&kind&fields&cursor&limit` | `ContactPage`: keyset pages on `(sort_key, id)`, ≤100 rows |
 | `GET contacts/search?q&includeArchived&kind&fields` | `SearchResult`: exact matches first, then FTS |
 | `GET contacts/{id}` | `ContactView`: every slice, counters, warnings |

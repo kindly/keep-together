@@ -41,7 +41,7 @@ pub struct LookupAddress {
     pub postcode: String,
 }
 
-/// `GET /api/t/{slug}/address-lookup`'s answer.
+/// `POST /api/t/{slug}/address-lookup`'s answer.
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct AddressLookupResult {
@@ -445,6 +445,13 @@ mod tests {
                 "KEEP_ENV=prod",
             ),
             (
+                vec![
+                    ("KEEP_ADDRESS_LOOKUP", "ideal"),
+                    ("KEEP_IDEAL_POSTCODES_KEY", "ak_bad\"key"),
+                ],
+                "KEEP_IDEAL_POSTCODES_KEY",
+            ),
+            (
                 vec![("KEEP_ADDRESS_LOOKUP_CAP", "-1")],
                 "KEEP_ADDRESS_LOOKUP_CAP",
             ),
@@ -471,6 +478,13 @@ mod tests {
         .err()
         .unwrap();
         assert!(!err.contains("ak_secret123"));
+        let err = from_vars(vars(&[
+            ("KEEP_ADDRESS_LOOKUP", "ideal"),
+            ("KEEP_IDEAL_POSTCODES_KEY", "ak_secret 123"),
+        ]))
+        .err()
+        .unwrap();
+        assert!(!err.contains("ak_secret"), "{err}");
     }
 
     #[test]

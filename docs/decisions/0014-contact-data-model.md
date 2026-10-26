@@ -115,6 +115,6 @@ typing aid, not a new kind of address:
   and per day across the platform (`rs/crates/api/src/address/`), never
   which postcode.
 - The provider (Ideal Postcodes) sits behind an `AddressLookup` trait in
-  `api`, reached only through `GET /api/t/{slug}/address-lookup`, so the
+  `api`, reached only through `POST /api/t/{slug}/address-lookup`, so the
   key stays server-side and a group's own key or autocomplete can come
   later without touching the data model.

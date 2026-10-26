@@ -140,7 +140,7 @@ them to `KEEP_MAIL_ONLY_TO` and deploy. Setting SES up (done once):
 
 The contact form's "Find address" asks Ideal Postcodes (PAF) for the
 addresses at a UK postcode, through the api
-(`GET /api/t/{slug}/address-lookup`; `rs/crates/api/src/address/`), so
+(`POST /api/t/{slug}/address-lookup`; `rs/crates/api/src/address/`), so
 the key never reaches a browser. One credit per postcode that returns
 addresses; not found costs none.
 

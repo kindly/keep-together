@@ -2,6 +2,6 @@
 import type { LookupAddress } from "./LookupAddress";
 
 /**
- * `GET /api/t/{slug}/address-lookup`'s answer.
+ * `POST /api/t/{slug}/address-lookup`'s answer.
  */
 export type AddressLookupResult = { addresses: Array<LookupAddress>, };
