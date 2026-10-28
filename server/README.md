@@ -568,7 +568,12 @@ refused the request, the event is parked (outcome `failed`: logged, sent
 to Sentry, never purged, `failedEvents` in `GET gocardless`, requeued by
 an admin's `POST gocardless/events/retry`). After each run a sweep gives
 any connected organisation's regular gift with a mandate but no
-subscription its subscription. A mandate event identifies its regular
+subscription its subscription; if GoCardless refuses, a dead mandate
+ends the regular gift and a live one is backed off, then given up on
+after 8 refusals (reported). A connected organisation whose file has no
+token (a connect still landing) retries, and an event for an account the
+organisation no longer holds is set aside, never run with another
+account's token. A mandate event identifies its regular
 gift from the metadata GoCardless copies from our billing request, and
 never makes a subscription itself.
 
@@ -577,10 +582,15 @@ and the token's install); the account is reserved in `platform.db`
 before any token is sealed. "Connected" means owning that mapping, not
 holding a token. An account another group holds is refused (`taken`) and
 the new token, which GoCardless issues by disabling the old, is sealed
-into the holder's file. Switching accounts revokes the old account's
-token. Disconnecting doesn't stop GoCardless collecting: the group's
-queued events are set aside and later ones for its account kept, and
-connecting the same account again replays them in order.
+into the holder's file. Disconnecting takes the same lock; a revoke
+GoCardless refuses outright counts as done, one it rate-limits or fails
+(429, 5xx) is a 503. Switching accounts revokes the old account's
+token and counts as disconnecting it. Disconnecting (or switching)
+doesn't stop GoCardless collecting: the group's queued events for that
+account are set aside and later ones kept from the purge, and connecting
+the same account again replays them in order, once its token is in place
+(runs are held off meanwhile). Another group connecting the account
+never gets them.
 
 Org schema step 17 rebuilds `gifts` (SQLite can't widen the method's
 CHECK in place) with foreign keys deferred and checked after, carrying
@@ -594,15 +604,18 @@ cancelled/failed`, billing request and hosted link, mandate and
 subscription ids, why it ended), and one `giving.directDebitPayment` per
 GoCardless payment. A payment becomes a gift (`method = 'direct_debit'`,
 the payment id as its reference, unique) only when GoCardless reports it
-`confirmed`, and counts exactly while GoCardless says the money was
-collected: `charged_back`, or `failed`/`cancelled` after it was confirmed
+`confirmed`, dated the day GoCardless collected it (its charge date,
+which decides the tax year for Gift Aid and income), and counts exactly
+while GoCardless says the money was collected: `charged_back`, or `failed`/`cancelled` after it was confirmed
 (a Bacs late failure), voids it with GoCardless's reason as its
 `void_reason` (so a gift already in a Gift Aid claim is voided too, and
 the next claim pays its tax back as an adjustment); a cancelled
-chargeback or a collected retry un-voids the same gift, or, if it is in a
-claim (whose void is final), records the money again as a new gift. At
-most one completed gift per payment (a partial unique index on the
-reference).
+chargeback or a retry collected the same day un-voids the same gift; a
+retry collected on another day, or money back on a gift in a claim
+(whose void is final), is recorded again as a new gift. At most one
+completed gift per payment (a partial unique index on the reference);
+un-voiding a gift whose payment is now another gift is `422
+direct_debit_recorded_again`.
 A gift staff voided themselves stays void, and staff can't un-void one
 whose money went back (`422 direct_debit_returned`). A failed payment
 with no gift shows on the regular gift. A Direct Debit gift's method,
