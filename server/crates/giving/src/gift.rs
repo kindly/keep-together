@@ -257,7 +257,8 @@ impl Contract for Gift {
             {
                 let existing: Option<String> = tx
                     .prepare_cached(
-                        "SELECT id FROM gifts WHERE method = 'direct_debit' AND reference = ?1",
+                        "SELECT id FROM gifts WHERE method = 'direct_debit' AND reference = ?1
+                             AND status = 'completed'",
                     )?
                     .query_row([payment], |r| r.get(0))
                     .optional()?;
@@ -453,8 +454,7 @@ impl Contract for GiftStatus {
                 "giving.status targets an existing gift",
             ));
         };
-        if current.returned && p.status == Status::Completed && command.source != Source::System
-        {
+        if current.returned && p.status == Status::Completed && command.source != Source::System {
             return Err(ContractError::rejected(
                 "direct_debit_returned",
                 "GoCardless says this payment wasn’t collected: it can’t count as a gift",

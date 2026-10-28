@@ -560,3 +560,80 @@ fn a_rebuild_that_orphans_a_row_fails_its_step() {
     let mut conn = Connection::open_in_memory().unwrap();
     ok.to_latest(&mut conn).unwrap();
 }
+
+/// Step 17 rebuilds `gifts`: everything Gift Aid claims (step 16) put
+/// there comes through, the claim lock and void reason values, and its
+/// two partial indexes, beside Direct Debit's own.
+#[test]
+fn the_direct_debit_rebuild_keeps_gift_aid_claims_columns_and_indexes() {
+    let tmp = tempfile::tempdir().unwrap();
+    file_at(tmp.path(), 16);
+    let mut conn = Connection::open(tmp.path().join(format!("orgs/{TENANT}.db"))).unwrap();
+    org_migrations().to_latest(&mut conn).unwrap();
+    let (claim, lock): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT claim_id, claim_lock_version FROM gifts
+             WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (claim.as_deref(), lock),
+        (Some("0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1"), 1)
+    );
+    conn.execute_batch(FIXTURES[16]).unwrap();
+    let reason: Option<String> = conn
+        .query_row(
+            "SELECT void_reason FROM gifts WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e9'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason.as_deref(), Some("entered twice"));
+    for (index, partial) in [
+        (
+            "gifts_unclaimed",
+            "claim_id IS NULL AND status = 'completed'",
+        ),
+        (
+            "gifts_claimed_void",
+            "claim_id IS NOT NULL AND status = 'void'",
+        ),
+        (
+            "gifts_by_direct_debit_payment",
+            "method = 'direct_debit' AND status = 'completed'",
+        ),
+        ("gifts_by_contact", ""),
+        ("gifts_by_entered_by", ""),
+    ] {
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [index],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("{index}: {e}"));
+        assert!(sql.contains(partial), "{index}: {sql}");
+    }
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('gifts')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for c in ["void_reason", "claim_id", "claim_lock_version"] {
+        assert!(columns.iter().any(|x| x == c), "{c} in {columns:?}");
+    }
+    // Gift Aid's eligibility read still uses its index.
+    let plan: String = conn
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT id FROM gifts INDEXED BY gifts_unclaimed
+             WHERE claim_id IS NULL AND status = 'completed' AND received_on BETWEEN '2026-01-01' AND '2026-12-31'",
+            [],
+            |r| r.get(3),
+        )
+        .unwrap();
+    assert!(plan.contains("gifts_unclaimed"), "{plan}");
+}

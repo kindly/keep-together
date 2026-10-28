@@ -1209,8 +1209,20 @@ async fn simulate_mandate(
     simulated(delivered, json!({ "mandate": id }))
 }
 
-/// The subscription's next payment: its amount, charged a few days out.
-async fn simulate_payment(State(fake): State<Arc<Fake>>, Path(id): Path<String>) -> Response {
+#[derive(Deserialize)]
+struct NextPayment {
+    /// YYYY-MM-DD; default a few days out (a month later for each payment
+    /// the subscription already has).
+    charge_date: Option<String>,
+}
+
+/// The subscription's next payment: its amount, charged a few days out
+/// (or on `?charge_date=`).
+async fn simulate_payment(
+    State(fake): State<Arc<Fake>>,
+    Path(id): Path<String>,
+    Query(q): Query<NextPayment>,
+) -> Response {
     let (event, payment) = {
         let mut w = fake.world();
         let Some(sub) = w
@@ -1241,7 +1253,7 @@ async fn simulate_payment(State(fake): State<Arc<Fake>>, Path(id): Path<String>)
             "created_at": now_iso(),
             "amount": sub.body["amount"],
             "currency": "GBP",
-            "charge_date": today_plus(3 + 31 * charged),
+            "charge_date": q.charge_date.clone().unwrap_or_else(|| today_plus(3 + 31 * charged)),
             "status": "pending_submission",
             "description": sub.body["name"],
             "metadata": {},

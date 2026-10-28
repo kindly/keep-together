@@ -254,7 +254,12 @@ impl T {
     async fn sign(&self, flow_url: &str) {
         let page = self.http.get(flow_url).send().await.unwrap();
         assert_eq!(page.status(), 200);
-        assert!(page.text().await.unwrap().contains("Jo"), "prefilled");
+        let text = page.text().await.unwrap();
+        assert!(
+            text.contains("name=\"given_name\" value=\"")
+                && !text.contains("name=\"given_name\" value=\"\""),
+            "the donor's name prefilled"
+        );
         let done = self
             .http
             .post(format!("{flow_url}/complete"))
@@ -1609,4 +1614,196 @@ async fn payments_during_a_disconnect_become_gifts_on_reconnect() {
     )
     .await;
     assert_eq!(gifts["rows"].as_array().unwrap().len(), 2);
+}
+
+fn uk_day(days_from_now: i64) -> String {
+    giftaid::uk_date(contracts::now_ms() + days_from_now * 86_400_000)
+}
+
+impl T {
+    /// A Gift Aid donor (address, declaration) through a cash gift, as
+    /// alpha's admin: the contact's id.
+    async fn gift_aid_donor(&self) -> String {
+        ok(
+            &self.w,
+            "POST",
+            "/api/t/alpha/gifts/record",
+            &self.ann,
+            Some(json!({
+                "clientKey": contracts::new_id(),
+                "contact": { "kind": "individual", "firstName": "Ann", "lastName": "Smith",
+                             "name": "" },
+                "home": { "line1": "12 High Street", "postcode": "ls1 1aa" },
+                "giftAid": {},
+                "receivedOn": uk_day(-10),
+                "amount": 500,
+                "method": "cash",
+                "allocations": [{ "sourceCodeId": self.code, "amount": 500 }],
+            })),
+        )
+        .await["contactId"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// A Gift Aid claim of everything eligible up to today, sent to HMRC.
+    async fn claim_and_send(&self) -> Value {
+        let claim = ok(
+            &self.w,
+            "POST",
+            "/api/t/alpha/giftaid/claims",
+            &self.ann,
+            Some(json!({ "periodEnd": uk_day(0) })),
+        )
+        .await["claims"][0]
+            .clone();
+        let id = claim["id"].as_str().unwrap().to_owned();
+        for step in [
+            json!({ "status": "ready" }),
+            json!({ "status": "submitted", "submittedOn": uk_day(0), "hmrcReference": "CHAR-1" }),
+        ] {
+            let now = ok(
+                &self.w,
+                "GET",
+                &format!("/api/t/alpha/giftaid/claims/{id}"),
+                &self.ann,
+                None,
+            )
+            .await;
+            let mut body = step;
+            body["expected"] = now["statusVersion"].clone();
+            ok(
+                &self.w,
+                "POST",
+                &format!("/api/t/alpha/giftaid/claims/{id}/status"),
+                &self.ann,
+                Some(body),
+            )
+            .await;
+        }
+        claim
+    }
+
+    async fn adjustments(&self) -> Value {
+        ok(
+            &self.w,
+            "GET",
+            &format!(
+                "/api/t/alpha/giftaid/claims/preview?periodEnd={}",
+                uk_day(0)
+            ),
+            &self.ann,
+            None,
+        )
+        .await["adjustments"]
+            .clone()
+    }
+}
+
+/// A Direct Debit gift already claimed for Gift Aid, then charged back
+/// or failed late: voided with GoCardless's reason (a claimed gift needs
+/// one), and the next claim pays its tax back (an adjustment). Its void
+/// is final, so if the money comes back after all it is recorded again,
+/// as a new gift: one completed gift per payment.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not_refused() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let ann = t.gift_aid_donor().await;
+    let v = t.set_up("alpha", &t.sam, &ann, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let sub = v["subscriptionId"].as_str().unwrap().to_owned();
+    t.simulate(&format!(
+        "mandates/{}/activate",
+        v["mandateId"].as_str().unwrap()
+    ))
+    .await;
+    let pay = |days: i64| format!("subscriptions/{sub}/payment?charge_date={}", uk_day(-days));
+
+    // Collected, then claimed and sent to HMRC.
+    let pm = t.simulate(&pay(5)).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let gift = payment(&t.regular("alpha", &t.val, &id).await, &pm)["giftId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let claim = t.claim_and_send().await;
+    assert!(
+        claim["lines"].to_string().contains(&gift),
+        "the DD gift is claimed: {claim}"
+    );
+    assert_eq!(t.gift(&gift).await["claimId"], claim["id"]);
+
+    // Charged back: void with the reason, and the next claim adjusts.
+    t.simulate(&format!("payments/{pm}/charge_back")).await;
+    t.settle().await;
+    let g = t.gift(&gift).await;
+    assert_eq!(g["status"], "void");
+    let reason = g["voidReason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("Charged back (GoCardless): "),
+        "{reason}"
+    );
+    let adjustments = t.adjustments().await;
+    assert_eq!(adjustments[0]["giftId"], gift.as_str(), "{adjustments}");
+    assert_eq!(adjustments[0]["reason"], reason);
+    assert!(
+        t.events()
+            .iter()
+            .all(|(_, _, o)| matches!(o.as_deref(), Some("done" | "ignored"))),
+        "nothing refused: {:?}",
+        t.events()
+    );
+
+    // The chargeback is cancelled: the claimed void stays, a new gift
+    // records the money.
+    t.simulate(&format!("payments/{pm}/cancel_chargeback"))
+        .await;
+    t.settle().await;
+    assert_eq!(t.gift(&gift).await["status"], "void");
+    let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
+    let again = row["giftId"].as_str().unwrap().to_owned();
+    assert_ne!(again, gift);
+    let g = t.gift(&again).await;
+    assert_eq!(
+        (
+            g["status"].clone(),
+            g["reference"].clone(),
+            g["claimId"].clone()
+        ),
+        (json!("completed"), json!(pm), Value::Null)
+    );
+
+    // A later payment, claimed, then failed late: the same.
+    let pm2 = t.simulate(&pay(3)).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{pm2}/confirm")).await;
+    t.settle().await;
+    let gift2 = payment(&t.regular("alpha", &t.val, &id).await, &pm2)["giftId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.claim_and_send().await;
+    assert!(t.gift(&gift2).await["claimId"].is_string());
+    t.simulate(&format!("payments/{pm2}/fail")).await;
+    t.settle().await;
+    let g = t.gift(&gift2).await;
+    assert_eq!(g["status"], "void");
+    assert!(
+        g["voidReason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Failed after it was collected (GoCardless): ")
+    );
+    assert!(t.adjustments().await.to_string().contains(gift2.as_str()));
 }

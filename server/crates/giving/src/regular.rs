@@ -831,12 +831,15 @@ pub enum GiftChange {
 /// - `confirmed` with no gift yet: a gift (`direct_debit`, the payment id
 ///   as reference, the charge date, all of it to the regular gift's code).
 /// - `chargedBack`, `failed` or `cancelled` after that (a chargeback, a
-///   Bacs late failure): its gift void, with the reason in the command
-///   group's name, and the payment marks the void as its own
-///   (`giftVoided`).
+///   Bacs late failure): its gift void, with the reason as the gift's
+///   `void_reason` (so a gift in a Gift Aid claim can be voided, and the
+///   next claim pays its tax back), and the payment marks the void as its
+///   own (`giftVoided`).
 /// - `confirmed` again after that (a cancelled chargeback, a retry that
-///   was collected): the same gift un-voided. Never a second gift: one
-///   payment id is one gift. A gift staff voided themselves is left void.
+///   was collected): the same gift un-voided; or, if it is in a Gift Aid
+///   claim (whose void is final), a new gift for the payment. At most one
+///   completed gift per payment, ever. A gift staff voided themselves is
+///   left void.
 ///
 /// A report that changes nothing writes nothing, so a replayed event is a
 /// no-op.
@@ -899,6 +902,16 @@ pub fn record_payment(
         Some(id) => crate::describe_gift(conn, id)?.map(|g| g.status),
         None => None,
     };
+    // A gift in a Gift Aid claim can be voided (with a reason: the next
+    // claim pays the tax back) but never un-voided.
+    let claimed = match &next.gift_id {
+        Some(id) => conn
+            .prepare_cached("SELECT claim_id IS NOT NULL FROM gifts WHERE id = ?1")?
+            .query_row([id], |r| r.get::<_, bool>(0))
+            .optional()?
+            .unwrap_or(false),
+        None => false,
+    };
     let amount = format_pence(report.amount);
     let because = next
         .reason
@@ -908,7 +921,8 @@ pub fn record_payment(
     // What happens to the gift, and the command group that says why.
     enum Act {
         Record,
-        Void,
+        /// Void, with this reason (the gift's `void_reason`).
+        Void(String),
         Unvoid,
         Nothing,
     }
@@ -924,18 +938,27 @@ pub fn record_payment(
             } else {
                 format!("Direct Debit {amount} collected after all")
             };
-            (Act::Unvoid, name)
+            if claimed {
+                // Its void went to HMRC as an adjustment and is final: the
+                // money is recorded again, as a new gift.
+                (Act::Record, format!("{name}, recorded again"))
+            } else {
+                (Act::Unvoid, name)
+            }
         }
         (
             PaymentStatus::ChargedBack | PaymentStatus::Failed | PaymentStatus::Cancelled,
             Some(_),
         ) if gift_status == Some(Status::Completed) => {
             let what = match report.status {
-                PaymentStatus::ChargedBack => "charged back",
-                PaymentStatus::Failed => "failed after it was collected",
-                _ => "cancelled after it was collected",
+                PaymentStatus::ChargedBack => "Charged back",
+                PaymentStatus::Failed => "Failed after it was collected",
+                _ => "Cancelled after it was collected",
             };
-            (Act::Void, format!("Direct Debit {amount} {what}{because}"))
+            (
+                Act::Void(format!("{what} (GoCardless){because}")),
+                format!("Direct Debit {amount} {}{because}", what.to_lowercase()),
+            )
         }
         (PaymentStatus::ChargedBack, _) => (
             Act::Nothing,
@@ -953,10 +976,12 @@ pub fn record_payment(
     match act {
         Act::Record => {
             // A gift made by an earlier attempt whose payment row didn't
-            // land is found by its reference, never made twice.
+            // land is found by its reference, never made twice: one
+            // completed gift per payment.
             let existing: Option<String> = conn
                 .prepare_cached(
-                    "SELECT id FROM gifts WHERE method = 'direct_debit' AND reference = ?1",
+                    "SELECT id FROM gifts WHERE method = 'direct_debit' AND reference = ?1
+                         AND status = 'completed'",
                 )?
                 .query_row([&report.payment_id], |r| r.get(0))
                 .optional()?;
@@ -983,16 +1008,17 @@ pub fn record_payment(
             };
             change = GiftChange::Recorded(gift.clone());
             next.gift_id = Some(gift);
+            next.gift_voided = false;
         }
-        Act::Void => {
+        Act::Void(reason) => {
             let gift = next.gift_id.clone().unwrap_or_default();
-            unvoid_or_void(ctx, &gift, Status::Void, group.as_ref())?;
+            unvoid_or_void(ctx, &gift, Status::Void, Some(reason), group.as_ref())?;
             next.gift_voided = true;
             change = GiftChange::Voided(gift);
         }
         Act::Unvoid => {
             let gift = next.gift_id.clone().unwrap_or_default();
-            unvoid_or_void(ctx, &gift, Status::Completed, group.as_ref())?;
+            unvoid_or_void(ctx, &gift, Status::Completed, None, group.as_ref())?;
             next.gift_voided = false;
             change = GiftChange::Unvoided(gift);
         }
@@ -1015,6 +1041,7 @@ fn unvoid_or_void(
     ctx: &Ctx,
     gift: &str,
     status: Status,
+    reason: Option<String>,
     group: Option<&CommandGroup>,
 ) -> Result<(), ContractError> {
     let exec = Exec::update(gift, None, Source::System);
@@ -1025,10 +1052,7 @@ fn unvoid_or_void(
     execute(
         ctx,
         &crate::STATUS,
-        crate::types::StatusPayload {
-            status,
-            reason: None,
-        },
+        crate::types::StatusPayload { status, reason },
         exec,
     )?;
     Ok(())
@@ -1224,7 +1248,7 @@ CREATE INDEX gifts_unclaimed ON gifts (received_on)
 CREATE INDEX gifts_claimed_void ON gifts (claim_id)
     WHERE claim_id IS NOT NULL AND status = 'void';
 CREATE UNIQUE INDEX gifts_by_direct_debit_payment ON gifts (reference)
-    WHERE method = 'direct_debit';
+    WHERE method = 'direct_debit' AND status = 'completed';
 
 CREATE TABLE regular_gifts (
     seq INTEGER PRIMARY KEY,

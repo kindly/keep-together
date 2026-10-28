@@ -582,6 +582,11 @@ token. Disconnecting doesn't stop GoCardless collecting: the group's
 queued events are set aside and later ones for its account kept, and
 connecting the same account again replays them in order.
 
+Org schema step 17 rebuilds `gifts` (SQLite can't widen the method's
+CHECK in place) with foreign keys deferred and checked after, carrying
+every column and index it has by then, Gift Aid claims' void reason,
+claim lock and partial indexes included.
+
 Regular gifts (`giving::regular`): the terms (`giving.regularGift`,
 fixed once set up), where it stands at GoCardless
 (`giving.regularGiftMandate`: status `pending → active →
@@ -591,8 +596,13 @@ GoCardless payment. A payment becomes a gift (`method = 'direct_debit'`,
 the payment id as its reference, unique) only when GoCardless reports it
 `confirmed`, and counts exactly while GoCardless says the money was
 collected: `charged_back`, or `failed`/`cancelled` after it was confirmed
-(a Bacs late failure), voids it with the reason; a cancelled chargeback
-or a collected retry un-voids the same gift (one payment id is one gift).
+(a Bacs late failure), voids it with GoCardless's reason as its
+`void_reason` (so a gift already in a Gift Aid claim is voided too, and
+the next claim pays its tax back as an adjustment); a cancelled
+chargeback or a collected retry un-voids the same gift, or, if it is in a
+claim (whose void is final), records the money again as a new gift. At
+most one completed gift per payment (a partial unique index on the
+reference).
 A gift staff voided themselves stays void, and staff can't un-void one
 whose money went back (`422 direct_debit_returned`). A failed payment
 with no gift shows on the regular gift. A Direct Debit gift's method,
