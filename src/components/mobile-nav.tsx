@@ -4,9 +4,8 @@ import {
   useRouter,
   useRouterState,
 } from '@tanstack/react-router'
-import { MenuIcon, XIcon } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import { ChevronDownIcon, MenuIcon, XIcon } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { FEATURES, useAuthState, useSignOut } from '../lib/data'
 import { useTenant } from '../lib/tenant'
 import { DONATIONS, GiftLink, RecordGiftAction, useDonations } from './gift-nav'
@@ -204,45 +203,84 @@ function useDrawerEntry() {
   return { open, onOpenChange, follow, navigated }
 }
 
-/**
- * The Donations menu, flattened: Record a gift (staff and admins), then
- * the caller's recent gifts, under the header's labels. The drawer's
- * content is mounted only while it is open, so they're fetched only then.
- */
-function Donations({ follow }: { follow: Follow }) {
-  const { canWrite, gifts } = useDonations(true)
-  return (
-    <Section title={DONATIONS.label}>
-      {canWrite && <RecordGiftAction className={item} {...follow} />}
-      <p className={heading}>{DONATIONS.recent}</p>
-      {gifts === undefined ? (
-        <p className="px-3 py-2 text-sm text-neutral-500">
-          {DONATIONS.loading}
-        </p>
-      ) : gifts.length === 0 ? (
-        <p className="px-3 py-2 text-sm text-neutral-500">{DONATIONS.none}</p>
-      ) : (
-        gifts.map((g) => (
-          <GiftLink
-            key={g._id}
-            gift={g}
-            className={`${item} text-sm`}
-            {...follow}
-          />
-        ))
-      )}
-    </Section>
-  )
+/** The Donations section's open state, kept for the session. */
+const DONATIONS_OPEN = 'keep:mobile-nav:donations'
+function stored(): boolean | null {
+  try {
+    const v = sessionStorage.getItem(DONATIONS_OPEN)
+    return v === null ? null : v === 'open'
+  } catch {
+    return null
+  }
+}
+function store(open: boolean) {
+  try {
+    sessionStorage.setItem(DONATIONS_OPEN, open ? 'open' : 'closed')
+  } catch {
+    // Storage refused (a private window): open state lasts this drawer.
+  }
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+/**
+ * The Donations menu, flattened into a section that opens in place:
+ * Record a gift (staff and admins), then the caller's recent gifts, under
+ * the header's labels. Collapsed until opened, then as last left this
+ * session; open on a donations page (a gift, or recording one). The gifts
+ * are fetched only while it is open.
+ */
+function Donations({ follow }: { follow: Follow }) {
+  const { slug } = useTenant()
+  const onDonations = useRouterState({
+    select: (s) => s.location.pathname.startsWith(`/t/${slug}/gifts/`),
+  })
+  const [open, setOpen] = useState(() => onDonations || stored() === true)
+  useEffect(() => {
+    if (onDonations) store(true)
+  }, [onDonations])
+  const { canWrite, gifts } = useDonations(open)
+  const id = useId()
+  const toggle = () => {
+    store(!open)
+    setOpen(!open)
+  }
   return (
     <section
-      aria-label={title}
+      aria-label={DONATIONS.label}
       className="my-1 border-y border-neutral-200 py-1"
     >
-      <h2 className="px-3 pt-2 pb-1 text-sm font-medium">{title}</h2>
-      {children}
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={toggle}
+        className={`${item} w-full justify-between text-left`}
+      >
+        {DONATIONS.label}
+        <ChevronDownIcon
+          aria-hidden="true"
+          className={`size-4 text-neutral-500 motion-safe:transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      <div id={id} hidden={!open} className="pl-3">
+        {canWrite && <RecordGiftAction className={item} {...follow} />}
+        <p className={heading}>{DONATIONS.recent}</p>
+        {gifts === undefined ? (
+          <p className="px-3 py-2 text-sm text-neutral-500">
+            {DONATIONS.loading}
+          </p>
+        ) : gifts.length === 0 ? (
+          <p className="px-3 py-2 text-sm text-neutral-500">{DONATIONS.none}</p>
+        ) : (
+          gifts.map((g) => (
+            <GiftLink
+              key={g._id}
+              gift={g}
+              className={`${item} text-sm`}
+              {...follow}
+            />
+          ))
+        )}
+      </div>
     </section>
   )
 }

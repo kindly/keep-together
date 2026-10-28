@@ -149,11 +149,17 @@ vi.mock('@tanstack/react-router', () => ({
     select,
   }: {
     select: (s: {
-      location: { href: string; state: Record<string, unknown> }
+      location: {
+        href: string
+        pathname: string
+        state: Record<string, unknown>
+      }
     }) => unknown
   }) => {
     const { path, state } = useEntry()
-    return select({ location: { href: path, state } })
+    return select({
+      location: { href: path, pathname: path.split('?')[0], state },
+    })
   },
   useRouter: () => ({
     state: {
@@ -228,6 +234,7 @@ beforeEach(() => {
   port.all = true
   port.leaf = '/t/$slug/'
   hist.reset('/t/alpha')
+  sessionStorage.clear()
   params = { slug: 'alpha' }
   tenants = [group('alpha')]
   gifts = []
@@ -582,6 +589,17 @@ const locked = () => document.body.hasAttribute('data-scroll-locked')
 // Radix moves focus a tick after the drawer unmounts.
 const tick = () => act(async () => new Promise((r) => setTimeout(r, 0)))
 const paths = () => hist.entries.map((e) => e.path)
+const donations = () =>
+  drawer()!.querySelector<HTMLElement>('section[aria-label="Donations"]')!
+const donationsToggle = () => donations().querySelector('button')!
+/** Links a person can see: none inside a collapsed section. */
+const shown = (scope: ParentNode) =>
+  [...scope.querySelectorAll('a')]
+    .filter((a) => !a.closest('[hidden]'))
+    .map((a) => [a.textContent.trim(), a.getAttribute('href')])
+async function toggleDonations() {
+  await act(async () => donationsToggle().click())
+}
 async function openDrawer() {
   await page(import('./t.$slug'))
   menuButton().focus()
@@ -619,7 +637,15 @@ test('the drawer lists every destination, Donations flattened, then the account'
   ]
   const d = await openDrawer()
   expect(d.textContent).toContain('Alpha')
-  expect(links(d)).toEqual([
+  // Donations starts collapsed: one row, its items hidden.
+  expect(shown(d)).toEqual([
+    ['Home', '/t/alpha'],
+    ['Contacts', '/t/alpha/contacts'],
+    ['Settings', '/t/alpha/settings'],
+    ['Your accounta@example.org', '/account'],
+  ])
+  await toggleDonations()
+  expect(shown(d)).toEqual([
     ['Home', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
     ['Record a gift', '/t/alpha/gifts/new'],
@@ -629,22 +655,20 @@ test('the drawer lists every destination, Donations flattened, then the account'
     ['Your accounta@example.org', '/account'],
   ])
   // No dropdown inside the drawer: Donations is a section, its items links.
-  const donations = d.querySelector('section[aria-label="Donations"]')!
-  expect(donations.textContent).toContain('My recent gifts')
+  expect(donations().textContent).toContain('My recent gifts')
   expect(d.querySelector('[role="menu"]')).toBeNull()
   expect(
     [...d.querySelectorAll('button')].map((b) => b.textContent.trim()),
-  ).toEqual(['', 'Sign out'])
+  ).toEqual(['', 'Donations', 'Sign out'])
   expect(d.querySelector('button[aria-label="Close menu"]')).not.toBeNull()
 })
 
 test('the drawer: a viewer has no Record a gift, and no gifts says so', async () => {
   tenants = [group('alpha', { role: 'viewer' })]
   const d = await openDrawer()
+  await toggleDonations()
   expect(d.textContent).not.toContain('Record a gift')
-  expect(d.querySelector('section[aria-label="Donations"]')!.textContent).toBe(
-    'DonationsMy recent giftsNone yet.',
-  )
+  expect(donations().textContent).toBe('DonationsMy recent giftsNone yet.')
 })
 
 test('the drawer marks the current page', async () => {
@@ -700,6 +724,7 @@ test('a drawer link takes the drawer entry’s place in history and closes it', 
 
 test('a drawer link to a page that autofocuses leaves focus on that page', async () => {
   await openDrawer()
+  await toggleDonations()
   await act(async () => drawerLink('Record a gift').click())
   await tick()
   expect(drawer()).toBeNull()
@@ -791,6 +816,65 @@ test('any other navigation closes it: another page, or only the search', async (
   expect(locked()).toBe(false)
   // Nothing was unwound: the navigations stand.
   expect(hist.now().path).toBe('/t/alpha/contacts?q=ada')
+})
+
+test('Donations: a 44px toggle, collapsed by default, opening and closing in place', async () => {
+  gifts = [gift({})]
+  await openDrawer()
+  const toggle = donationsToggle()
+  expect(toggle.className).toContain('min-h-11')
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  const region = document.getElementById(toggle.getAttribute('aria-controls')!)!
+  expect(donations().contains(region)).toBe(true)
+  expect(region.hidden).toBe(true)
+  await toggleDonations()
+  expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  expect(region.hidden).toBe(false)
+  expect(shown(region).map(([t]) => t)).toEqual([
+    'Record a gift',
+    '£20.00Jo Bloggs23 Oct 2026',
+  ])
+  await toggleDonations()
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  expect(region.hidden).toBe(true)
+  // Nothing navigated: in place.
+  expect(paths()).toEqual(['/t/alpha', '/t/alpha'])
+})
+
+test('Donations: open on a donations page, then remembered for the session', async () => {
+  hist.reset('/t/alpha/gifts/g1')
+  await openDrawer()
+  expect(donationsToggle().getAttribute('aria-expanded')).toBe('true')
+  // Elsewhere, later: still open.
+  await act(async () => hist.back())
+  act(() => root.unmount())
+  root = createRoot(el)
+  hist.reset('/t/alpha/contacts')
+  await openDrawer()
+  expect(donationsToggle().getAttribute('aria-expanded')).toBe('true')
+  // Closed by hand: stays closed elsewhere.
+  await toggleDonations()
+  await act(async () => hist.back())
+  await act(async () => menuButton().click())
+  expect(donationsToggle().getAttribute('aria-expanded')).toBe('false')
+})
+
+test('Donations: without session storage it still opens, and starts collapsed', async () => {
+  const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+    throw new Error('denied')
+  })
+  const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('denied')
+  })
+  try {
+    await openDrawer()
+    expect(donationsToggle().getAttribute('aria-expanded')).toBe('false')
+    await toggleDonations()
+    expect(donationsToggle().getAttribute('aria-expanded')).toBe('true')
+  } finally {
+    get.mockRestore()
+    set.mockRestore()
+  }
 })
 
 test('Sign out in the drawer signs out and goes to the sign-in page', async () => {

@@ -15,6 +15,9 @@ const parts = (page: Page) => ({
   menu: page.getByRole('button', { name: 'Menu' }),
   drawer: page.getByRole('dialog'),
   leave: page.getByRole('alertdialog'),
+  donations: page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Donations' }),
 })
 /** The page behind can scroll again (the drawer's scroll lock is gone). */
 const unlocked = (page: Page) =>
@@ -26,7 +29,7 @@ test(
   async ({ page, users }) => {
     await page.setViewportSize(PHONE)
     const slug = users.a.slug
-    const { menu, drawer } = parts(page)
+    const { menu, drawer, donations } = parts(page)
     await page.goto(`/t/${slug}`)
     await expect(menu).toBeVisible()
     await expect(page.getByRole('navigation', { name: 'Main' })).toBeHidden()
@@ -60,12 +63,28 @@ test(
     await expect(
       drawer.getByRole('link', { name: 'Contacts' }),
     ).toHaveAttribute('aria-current', 'page')
-    await drawer.getByRole('link', { name: 'Record a gift' }).click()
+    // Donations is one row, collapsed: its items appear when it's tapped.
+    const record = drawer.getByRole('link', { name: 'Record a gift' })
+    await expect(donations).toHaveAttribute('aria-expanded', 'false')
+    await expect(record).toBeHidden()
+    expect((await donations.boundingBox())!.height).toBeGreaterThanOrEqual(44)
+    await donations.click()
+    await expect(donations).toHaveAttribute('aria-expanded', 'true')
+    await expect(drawer.getByText('My recent gifts')).toBeVisible()
+    await donations.click()
+    await expect(record).toBeHidden()
+    await donations.click()
+    await record.click()
     await expect(page).toHaveURL(`/t/${slug}/gifts/new`)
     await expect(drawer).toBeHidden()
     // The page's own autofocus wins: the donor search, not the Menu button.
     await expect(page.getByRole('combobox', { name: 'Donor' })).toBeFocused()
     await unlocked(page)
+    // On a donations page the section opens by itself.
+    await menu.click()
+    await expect(donations).toHaveAttribute('aria-expanded', 'true')
+    await page.keyboard.press('Escape')
+    await expect(drawer).toBeHidden()
 
     // The drawer's link took the drawer's place in history: one back
     // returns to Contacts.
@@ -120,10 +139,11 @@ test(
   async ({ page, users }) => {
     await page.setViewportSize(PHONE)
     const slug = users.a.slug
-    const { menu, drawer, leave } = parts(page)
+    const { menu, drawer, leave, donations } = parts(page)
     // In the app, so the way back is the router's (a page load's isn't).
     await page.goto(`/t/${slug}/contacts`)
     await menu.click()
+    await donations.click()
     await drawer.getByRole('link', { name: 'Record a gift' }).click()
     await page.getByLabel('Amount (£)').fill('5')
     await menu.click()
