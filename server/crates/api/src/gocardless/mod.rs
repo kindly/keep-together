@@ -100,6 +100,10 @@ pub struct GoCardless {
     pub(crate) processing: tokio::sync::Mutex<()>,
     /// One OAuth connect at a time ([`oauth::callback`]).
     pub(crate) connecting: tokio::sync::Mutex<()>,
+    /// Regular gifts whose subscription GoCardless keeps refusing on a
+    /// live mandate: refusals and when to try next, by `tenant/id`
+    /// ([`process::sweep`]). In memory: a restart tries once more.
+    pub(crate) sweep_waits: std::sync::Mutex<std::collections::HashMap<String, (i64, i64)>>,
     /// The mock, in `fake` mode: mounted at [`FAKE_PREFIX`].
     pub fake: Option<Arc<fake::Fake>>,
 }
@@ -210,6 +214,7 @@ pub fn from_vars(
         settings_key,
         processing: tokio::sync::Mutex::new(()),
         connecting: tokio::sync::Mutex::new(()),
+        sweep_waits: std::sync::Mutex::new(std::collections::HashMap::new()),
         fake,
     }))
 }

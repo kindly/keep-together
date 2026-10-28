@@ -707,8 +707,55 @@ async fn sweep(store: &Arc<Store>, gc: &Arc<GoCardless>) -> Result<(), String> {
             }
         };
         for id in waiting {
-            if let Err(e) = ensure_subscription(&org, gc, &id).await {
-                errors.push(format!("{tenant}: subscription for {id}: {e:?}"));
+            let key = format!("{tenant}/{id}");
+            let now = contracts::now_ms();
+            let wait = gc
+                .sweep_waits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key)
+                .copied();
+            if !sweep_should_try(wait, now) {
+                continue;
+            }
+            match ensure_subscription(&org, gc, &id).await {
+                Ok(_) => {
+                    gc.sweep_waits
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&key);
+                }
+                Err(Failed::Permanent(e)) => {
+                    // Refused: a dead mandate ends the regular gift (its
+                    // own terminal event may be parked or lost); a live
+                    // one is backed off, then given up on.
+                    match mandate_gone(&org, gc, &id).await {
+                        Ok(true) => {
+                            gc.sweep_waits
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .remove(&key);
+                        }
+                        Ok(false) => {
+                            let tries = wait.map_or(0, |(n, _)| n) + 1;
+                            gc.sweep_waits
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(key, (tries, now + backoff(tries)));
+                            if tries == SWEEP_MAX_REFUSALS {
+                                crate::observe::error(&format!(
+                                    "gocardless: {tenant} regular gift {id}: GoCardless refused \
+                                     its subscription {tries} times on a live mandate; \
+                                     no more tries until a restart: {e}"
+                                ));
+                            }
+                        }
+                        Err(e2) => errors.push(format!(
+                            "{tenant}: subscription for {id}: {e}; mandate: {e2:?}"
+                        )),
+                    }
+                }
+                Err(e) => errors.push(format!("{tenant}: subscription for {id}: {e:?}")),
             }
         }
     }
@@ -717,6 +764,41 @@ async fn sweep(store: &Arc<Store>, gc: &Arc<GoCardless>) -> Result<(), String> {
     } else {
         Err(errors.join("; "))
     }
+}
+
+/// Refusals of a regular gift's subscription on a live mandate after which
+/// the sweep stops trying it (reported once).
+pub const SWEEP_MAX_REFUSALS: i64 = 8;
+
+/// Whether the sweep tries a regular gift now, given its refusals so far
+/// and when it may try next: not before then, and never after
+/// [`SWEEP_MAX_REFUSALS`].
+pub fn sweep_should_try(wait: Option<(i64, i64)>, now: i64) -> bool {
+    match wait {
+        None => true,
+        Some((tries, _)) if tries >= SWEEP_MAX_REFUSALS => false,
+        Some((_, next)) => next <= now,
+    }
+}
+
+/// Whether the regular gift's mandate is dead at GoCardless; if so the
+/// regular gift is ended here (failed, or cancelled), with why.
+async fn mandate_gone(org: &Org, gc: &GoCardless, id: &str) -> Result<bool, Failed> {
+    let Some(found) = org.facts_by("id", id).await? else {
+        return Ok(true);
+    };
+    let Some(md) = found.mandate.mandate_id.clone() else {
+        return Ok(false);
+    };
+    let mandate = gc.api.get_mandate(org.token()?, &md).await?;
+    let status = match mandate.status.as_str() {
+        "failed" | "blocked" => RegularStatus::Failed,
+        "cancelled" | "expired" | "consumed" => RegularStatus::Cancelled,
+        _ => return Ok(false),
+    };
+    let reason = Some(format!("The mandate is {} at GoCardless", mandate.status));
+    end(org, id, status, reason).await?;
+    Ok(true)
 }
 
 /// How many of `tenant`'s events are parked.

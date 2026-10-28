@@ -2114,3 +2114,65 @@ async fn a_rate_limited_revoke_leaves_the_connection_as_it_was() {
     assert_eq!(t.token_of(&t.w.alpha), Some(token.clone()));
     assert!(t.fake.token_works(&token));
 }
+
+/// Second review L-d: a regular gift whose mandate died at GoCardless
+/// (its own terminal event lost) isn't asked for a subscription every run
+/// for ever: the sweep's refusal finds the mandate dead and ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sweep_ends_a_regular_gift_whose_mandate_died_unheard() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.fake_post("webhooks/hold", json!({})).await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    let br = t
+        .fake
+        .resource(v["billingRequestId"].as_str().unwrap())
+        .unwrap();
+    let mandate = br["links"]["mandate_request_mandate"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.fake_post(&format!("mandates/{mandate}/fail"), json!({}))
+        .await;
+    // Only the billing request's two events arrive: the mandate's failure
+    // never does.
+    t.simulate("webhooks/release?count=2").await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["status"], "failed", "{v}");
+    assert!(v["endedReason"].as_str().unwrap().contains("failed"));
+    let calls = t.fake.calls("POST subscriptions");
+    t.settle().await;
+    t.settle().await;
+    assert_eq!(t.fake.calls("POST subscriptions"), calls, "asked no more");
+}
+
+/// Second review L-d: a live mandate whose subscription GoCardless keeps
+/// refusing is backed off between runs, then given up on.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sweep_backs_off_then_stops_for_a_refused_subscription() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    t.fake_post(
+        "outage",
+        json!({ "calls": 100_000, "status": 422, "path": "subscriptions" }),
+    )
+    .await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let calls = t.fake.calls("POST subscriptions");
+    t.settle().await;
+    t.settle().await;
+    assert_eq!(t.fake.calls("POST subscriptions"), calls, "backed off");
+
+    use api::gocardless::process::{SWEEP_MAX_REFUSALS, sweep_should_try};
+    assert!(sweep_should_try(None, 0));
+    assert!(!sweep_should_try(Some((1, 100)), 99));
+    assert!(sweep_should_try(Some((1, 100)), 100));
+    assert!(!sweep_should_try(Some((SWEEP_MAX_REFUSALS, 0)), i64::MAX));
+}

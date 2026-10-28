@@ -214,6 +214,14 @@ impl Fake {
             held.extend(events);
             return true;
         }
+        self.send(events).await
+    }
+
+    /// Deliver `events` now, holding or not.
+    async fn send(&self, events: Vec<Value>) -> bool {
+        if events.is_empty() {
+            return true;
+        }
         let body = json!({ "events": events });
         let raw = body.to_string();
         let signature = sign(WEBHOOK_SECRET, raw.as_bytes());
@@ -416,17 +424,26 @@ async fn hold_webhooks(State(fake): State<Arc<Fake>>) -> Response {
 struct Release {
     #[serde(default)]
     reverse: bool,
+    /// Deliver only the first `count` held events and keep holding the
+    /// rest (never delivered unless released later).
+    count: Option<usize>,
 }
 
 /// `POST simulate/webhooks/release?reverse`: deliver what was held, in
 /// one batch, in order or reversed, and stop holding.
 async fn release_webhooks(State(fake): State<Arc<Fake>>, Query(r): Query<Release>) -> Response {
-    let mut events = fake.world().held.take().unwrap_or_default();
+    let mut events = {
+        let mut w = fake.world();
+        match (r.count, w.held.as_mut()) {
+            (Some(n), Some(held)) => held.drain(..n.min(held.len())).collect(),
+            _ => w.held.take().unwrap_or_default(),
+        }
+    };
     if r.reverse {
         events.reverse();
     }
     let n = events.len();
-    let delivered = fake.deliver(events).await;
+    let delivered = fake.send(events).await;
     simulated(delivered, json!({ "events": n }))
 }
 
