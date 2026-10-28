@@ -80,9 +80,14 @@ struct World {
 #[derive(Clone, Debug, Deserialize)]
 struct Outage {
     calls: usize,
+    /// 0: answer normally (after the delay).
+    #[serde(default)]
     status: u16,
     #[serde(default)]
     path: String,
+    /// Wait this long before answering.
+    #[serde(default)]
+    delay_ms: u64,
 }
 
 impl World {
@@ -349,12 +354,17 @@ async fn gate(
         match w.outage.as_mut() {
             Some(o) if o.calls > 0 && path.contains(&o.path) => {
                 o.calls -= 1;
-                Some(o.status)
+                Some((o.status, o.delay_ms))
             }
             _ => None,
         }
     };
-    match failing {
+    if let Some((_, delay)) = failing
+        && delay > 0
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
+    match failing.map(|(status, _)| status).filter(|s| *s != 0) {
         Some(status) => error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
             "gocardless",
@@ -366,8 +376,9 @@ async fn gate(
     }
 }
 
-/// `POST simulate/outage {calls, status, path?}`: the next `calls` API
-/// requests (whose path holds `path`) answer `status`; `calls: 0` ends it.
+/// `POST simulate/outage {calls, status?, path?, delay_ms?}`: the next
+/// `calls` API requests (whose path holds `path`) wait `delay_ms`, then
+/// answer `status` (0 or none: as usual); `calls: 0` ends it.
 async fn outage(State(fake): State<Arc<Fake>>, Json(o): Json<Outage>) -> Response {
     fake.world().outage = Some(o);
     Json(json!({ "ok": true })).into_response()

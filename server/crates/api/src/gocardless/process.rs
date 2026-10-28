@@ -468,8 +468,9 @@ async fn fulfilled(
 }
 
 /// Make the regular gift's subscription if it has a mandate, none yet,
-/// and hasn't ended. Read fresh, not from the caller's snapshot; created
-/// once whatever the retries (the idempotency key is the regular gift's).
+/// and hasn't ended. Read fresh, not from the caller's snapshot, and
+/// again when it is recorded; created once whatever the retries (the
+/// idempotency key is the regular gift's).
 async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'static str, Failed> {
     let Some(found) = org.facts_by("id", id).await? else {
         return Ok("unknown_resource");
@@ -499,13 +500,24 @@ async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'s
             },
         )
         .await?;
-    let id = id.to_owned();
-    org.write(move |ctx| {
-        update_mandate(ctx, &id, None, Source::System, None, |m| {
-            m.subscription_id = Some(subscription)
+    // Checked again in the write's own transaction: if the regular gift
+    // ended while GoCardless was answering (staff cancelled, the mandate
+    // went), the subscription is recorded and cancelled at once.
+    let (rid, sb) = (id.to_owned(), subscription.clone());
+    let ended = org
+        .write(move |ctx| {
+            let now = regular::facts(ctx.tx.read(), &rid)?.ok_or(ContractError::NotFound)?;
+            update_mandate(ctx, &rid, None, Source::System, None, |m| {
+                m.subscription_id = Some(sb)
+            })?;
+            Ok(now.mandate.status().is_ended())
         })
-    })
-    .await?;
+        .await?;
+    if ended {
+        gc.api
+            .cancel_subscription(org.token()?, &subscription)
+            .await?;
+    }
     Ok("done")
 }
 

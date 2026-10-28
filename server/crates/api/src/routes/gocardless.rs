@@ -353,8 +353,18 @@ async fn cancel(
     match (&found.mandate.mandate_id, &found.mandate.billing_request_id) {
         (Some(md), _) => gc.api.cancel_mandate(&token, md).await,
         (None, Some(br)) => match gc.api.cancel_billing_request(&token, br).await {
-            // Fulfilled meanwhile: the mandate's own events end it.
-            Err(CallError::Refused { status: 422, .. }) => Ok(()),
+            // The donor signed meanwhile (we haven't heard yet): cancel the
+            // mandate the request made, which takes any subscription with
+            // it. Ours ends below, so none is made after.
+            Err(CallError::Refused { status: 422, .. }) => {
+                match gc.api.get_billing_request(&token, br).await {
+                    Ok(request) => match request.mandate {
+                        Some(md) => gc.api.cancel_mandate(&token, &md).await,
+                        None => Ok(()),
+                    },
+                    Err(e) => Err(e),
+                }
+            }
             other => other,
         },
         (None, None) => Ok(()),

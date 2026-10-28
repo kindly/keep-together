@@ -1162,3 +1162,75 @@ async fn a_mandate_cancelled_before_its_billing_request_is_fulfilled_still_ends_
         t.events()
     );
 }
+
+/// Codex 3 (a): staff cancel a regular gift whose donor has just signed
+/// (the webhook not yet in): the billing request can't be cancelled any
+/// more, so its mandate is, and no subscription follows.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_as_the_donor_signs_cancels_the_mandate_and_no_subscription_follows() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.fake_post("webhooks/hold", json!({})).await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    let done = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/cancel"),
+        &t.sam,
+        Some(json!({ "expected": v["mandateVersion"] })),
+    )
+    .await["view"]
+        .clone();
+    assert_eq!(done["status"], "cancelled");
+    let br = t
+        .fake
+        .resource(v["billingRequestId"].as_str().unwrap())
+        .unwrap();
+    let mandate = br["links"]["mandate_request_mandate"].as_str().unwrap();
+    assert_eq!(t.fake.resource(mandate).unwrap()["status"], "cancelled");
+    t.simulate("webhooks/release").await;
+    t.settle().await;
+    assert!(t.fake.ids("subscriptions").is_empty());
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "cancelled");
+}
+
+/// Codex 3 (b): the regular gift ends while GoCardless is making its
+/// subscription. The subscription is recorded and cancelled at once, not
+/// left collecting under a cancelled regular gift.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regular_gift_that_ends_while_its_subscription_is_made_cancels_it() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "path": "subscriptions", "delay_ms": 1500 }),
+    )
+    .await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    // Ended meanwhile, here only (as a staff cancel racing it would).
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let db = t.w.store.org(&t.w.alpha.id).unwrap();
+    let rid = id.clone();
+    contracts::transact(&db, None, move |ctx| {
+        giving::regular::end_regular_gift(
+            ctx,
+            &rid,
+            None,
+            giving::regular::RegularStatus::Cancelled,
+            Some("ended meanwhile".into()),
+            contracts::Source::Test,
+        )
+    })
+    .unwrap();
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["status"], "cancelled");
+    let sub = v["subscriptionId"].as_str().expect("recorded");
+    assert_eq!(t.fake.resource(sub).unwrap()["status"], "cancelled");
+}
