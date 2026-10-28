@@ -514,6 +514,20 @@ pub fn record_connection(
                 },
             )
             .optional()?;
+        // A switch from another account disconnects that one: what comes
+        // for it from now on is kept (never purged) and replayed if this
+        // organisation connects it again (GoCardless keeps collecting).
+        if let Some(p) = previous
+            .as_ref()
+            .filter(|p| p.organisation_id != organisation_id)
+        {
+            tx.execute(
+                "INSERT INTO gocardless_disconnections (organisation_id, tenant_id, at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (organisation_id, tenant_id) DO UPDATE SET at = excluded.at",
+                params![p.organisation_id, tenant.as_str(), now],
+            )?;
+        }
         tx.execute(
             "INSERT INTO gocardless_connections (tenant_id, organisation_id, connected_at,
                  connected_by)

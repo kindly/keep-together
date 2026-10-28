@@ -1857,3 +1857,81 @@ async fn connected_without_a_token_waits_and_never_sets_events_aside() {
     let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
     assert!(row["giftId"].is_string(), "{row}");
 }
+
+/// Second review M-2: switching to another GoCardless account doesn't
+/// lose the old one's money (GoCardless keeps collecting it): its events
+/// queued at the switch are set aside, never run with the new account's
+/// token; those that come after are kept through the purge; switching
+/// back replays both.
+#[tokio::test(flavor = "multi_thread")]
+async fn switching_accounts_keeps_the_old_accounts_events_for_switching_back() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    let x = ok(&t.w, "GET", "/api/t/alpha/gocardless", &t.val, None).await["organisationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // One of X's payments is still queued at the switch...
+    t.fake_post(
+        "outage",
+        json!({ "calls": 100_000, "status": 503, "path": "payments" }),
+    )
+    .await;
+    let queued = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{queued}/confirm")).await;
+    t.settle().await;
+    let y = t.connect("alpha", &t.ann).await["organisationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(x, y);
+    t.fake_post("outage", json!({ "calls": 0 })).await;
+    t.due_now();
+    t.settle().await;
+    assert!(
+        !t.outcome_of_events()
+            .iter()
+            .any(|o| o.as_deref() == Some("failed")),
+        "never run with Y's token: {:?}",
+        t.events()
+    );
+    // ...another comes after it.
+    let later = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{later}/confirm")).await;
+    t.settle().await;
+    let before = t.events().len();
+    api::gocardless::process::purge(&t.w.store, contracts::now_ms() + 100 * 86_400_000).unwrap();
+    let x_events: i64 =
+        t.w.store
+            .platform()
+            .with_read(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM gocardless_events WHERE organisation_id = ?1",
+                    [&x],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+    assert!(
+        x_events >= 4,
+        "X's events kept through the purge ({x_events} of {before})"
+    );
+
+    let callback = t.start_connect("alpha", &t.ann, &x).await;
+    let (_, landed) = navigate(&t.w, &callback, &t.ann).await;
+    assert_eq!(landed, "/t/alpha/settings?gocardless=connected");
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    for pm in [&queued, &later] {
+        let row = payment(&v, pm);
+        assert_eq!(row["status"], "confirmed", "{pm}: {v}");
+        assert!(row["giftId"].is_string());
+    }
+}

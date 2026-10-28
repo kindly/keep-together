@@ -198,6 +198,8 @@ impl Org {
 struct Pending {
     id: String,
     tenant: TenantId,
+    /// The GoCardless account it came for.
+    organisation: Option<String>,
     body: String,
     attempts: i64,
     next_attempt_at: Option<i64>,
@@ -208,16 +210,24 @@ struct Pending {
 pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<usize, String> {
     let _run = gc.processing.lock().await;
     let s = store.clone();
-    type Row = (String, String, String, i64, Option<i64>);
+    type Row = (String, String, String, i64, Option<i64>, Option<String>);
     let pending: Vec<Row> = crate::blocking(move || {
         s.platform().with_read(|c| {
             c.prepare(
-                "SELECT id, tenant_id, body, attempts, next_attempt_at FROM gocardless_events
+                "SELECT id, tenant_id, body, attempts, next_attempt_at, organisation_id
+                 FROM gocardless_events
                  WHERE processed_at IS NULL AND tenant_id IS NOT NULL
                  ORDER BY tenant_id, rowid",
             )?
             .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(store::StoreError::from)
@@ -231,15 +241,18 @@ pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<u
         .map_err(|e| format!("{e:?}"))?;
     let pending: Vec<Pending> = pending
         .into_iter()
-        .filter_map(|(id, tenant, body, attempts, next_attempt_at)| {
-            Some(Pending {
-                id,
-                tenant: tenants.iter().find(|t| t.as_str() == tenant)?.clone(),
-                body,
-                attempts,
-                next_attempt_at,
-            })
-        })
+        .filter_map(
+            |(id, tenant, body, attempts, next_attempt_at, organisation)| {
+                Some(Pending {
+                    id,
+                    tenant: tenants.iter().find(|t| t.as_str() == tenant)?.clone(),
+                    organisation,
+                    body,
+                    attempts,
+                    next_attempt_at,
+                })
+            },
+        )
         .collect();
 
     let mut handled = 0;
@@ -256,37 +269,45 @@ pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<u
         // Disconnected since these came: set aside untouched (never half
         // applied), and requeued if it connects the account again
         // (`super::requeue_set_aside`).
+        // Events for an account it no longer holds (disconnected, or
+        // switched to another account) are set aside untouched, never run
+        // with another account's token, and requeued if it connects that
+        // account again.
         let (s, t) = (store.clone(), tenant.clone());
-        let owned = crate::blocking(move || super::connection(&s, &t)).await;
-        match owned {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                let (s, ids) = (
-                    store.clone(),
-                    batch.iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
-                );
-                let set_aside = crate::blocking(move || {
-                    s.platform().with_write(|tx| {
-                        for id in &ids {
-                            tx.execute(
-                                "UPDATE gocardless_events SET outcome = 'not_connected',
-                                     processed_at = ?2 WHERE id = ?1",
-                                params![id, contracts::now_ms()],
-                            )?;
-                        }
-                        Ok::<_, store::StoreError>(())
-                    })
-                })
-                .await;
-                if let Err(e) = set_aside {
-                    errors.push(format!("{tenant}: {e:?}"));
-                }
-                continue;
-            }
+        let current = match crate::blocking(move || super::connection(&s, &t)).await {
+            Ok(c) => c.map(|c| c.organisation_id),
             Err(e) => {
                 errors.push(format!("{tenant}: {e:?}"));
                 continue;
             }
+        };
+        let foreign: Vec<String> = batch
+            .iter()
+            .filter(|p| current.is_none() || p.organisation != current)
+            .map(|p| p.id.clone())
+            .collect();
+        if !foreign.is_empty() {
+            let s = store.clone();
+            let set_aside = crate::blocking(move || {
+                s.platform().with_write(|tx| {
+                    for id in &foreign {
+                        tx.execute(
+                            "UPDATE gocardless_events SET outcome = 'not_connected',
+                                 processed_at = ?2 WHERE id = ?1",
+                            params![id, contracts::now_ms()],
+                        )?;
+                    }
+                    Ok::<_, store::StoreError>(())
+                })
+            })
+            .await;
+            if let Err(e) = set_aside {
+                errors.push(format!("{tenant}: {e:?}"));
+                continue;
+            }
+        }
+        if current.is_none() {
+            continue;
         }
         let (s, g, t) = (store.clone(), gc.clone(), tenant.clone());
         let opened = crate::blocking(move || {
@@ -302,7 +323,7 @@ pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<u
                 continue;
             }
         };
-        for p in batch {
+        for p in batch.iter().filter(|p| p.organisation == current) {
             let now = contracts::now_ms();
             // Waiting out its backoff: so do the events behind it.
             if p.next_attempt_at.is_some_and(|at| at > now) {
