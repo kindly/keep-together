@@ -3,6 +3,7 @@ import { sessionCookie, sessionToken } from '../fixtures'
 import type { Instance, QcUser } from '../fixtures'
 import type { Created } from '../../src/lib/data/rust-types/Created'
 import type { Executed } from '../../src/lib/data/rust-types/Executed'
+import type { GiftAidClaimSaved } from '../../src/lib/data/rust-types/GiftAidClaimSaved'
 import type { RecordedGift } from '../../src/lib/data/rust-types/RecordedGift'
 import type { SourcePicker } from '../../src/lib/data/rust-types/SourcePicker'
 
@@ -87,6 +88,48 @@ export async function recordGift(
     allocations: [{ sourceCodeId: r.codeId, amount }],
   })
   return giftId
+}
+
+/** The date `n` days before today, YYYY-MM-DD. */
+export function daysAgo(n: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  const pad = (v: number) => String(v).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/**
+ * A gift a Gift Aid claim holds, so its amount, date and donor are
+ * locked: a new donor with a home address and the gift's declaration,
+ * the gift 1,000 days ago, and a claim up to that day (other tests' gifts
+ * are newer, so it claims only this one). `r` must be an admin.
+ */
+export async function claimedGift(
+  r: Recorder,
+  lastName: string,
+  pence: bigint,
+): Promise<{ giftId: string; contactId: string; claimId: string }> {
+  const amount = Number(pence)
+  const receivedOn = daysAgo(1000)
+  const { giftId, contactId } = await call<RecordedGift>(
+    r,
+    'POST',
+    'gifts/record',
+    {
+      clientKey: randomUUID(),
+      contact: { kind: 'individual', firstName: 'Qc', lastName, name: '' },
+      home: { line1: '1 High Street', postcode: 'AB1 2CD' },
+      receivedOn,
+      amount,
+      method: 'cash',
+      allocations: [{ sourceCodeId: r.codeId, amount }],
+      giftAid: {},
+    },
+  )
+  const { id } = await call<GiftAidClaimSaved>(r, 'POST', 'giftaid/claims', {
+    periodEnd: receivedOn,
+  })
+  return { giftId, contactId, claimId: id }
 }
 
 /** An enduring declaration by `contactId`, made on `madeOn`. */

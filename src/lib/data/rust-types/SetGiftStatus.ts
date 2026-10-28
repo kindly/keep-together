@@ -5,4 +5,8 @@ import type { GiftStatus } from "./GiftStatus";
  * `POST gifts/{id}/status`: void or un-void. Re-sending the current
  * status is a no-op.
  */
-export type SetGiftStatus = { expected: number, status: GiftStatus, };
+export type SetGiftStatus = { expected: number, status: GiftStatus, 
+/**
+ * Needed to void a gift in a Gift Aid claim.
+ */
+reason?: string, };

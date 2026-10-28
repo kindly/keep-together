@@ -41,7 +41,7 @@ impl Codes {
 }
 
 const GIFT_COLUMNS: &str = "id, contact_id, received_on, amount, method, reference, status, \
-     entered_by, entered_at, gift_version, status_version, seq";
+     entered_by, entered_at, gift_version, status_version, seq, void_reason, claim_id";
 
 fn gift_row(r: &rusqlite::Row) -> rusqlite::Result<(GiftRow, i64)> {
     Ok((
@@ -54,6 +54,8 @@ fn gift_row(r: &rusqlite::Row) -> rusqlite::Result<(GiftRow, i64)> {
             reference: r.get(5)?,
             allocations: vec![],
             status: Status::parse(&r.get::<_, String>(6)?),
+            void_reason: r.get(12)?,
+            claim_id: r.get(13)?,
             entered_by: r.get(7)?,
             entered_at: r.get(8)?,
             gift_version: r.get(9)?,
@@ -192,7 +194,7 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftView>> {
 
 // ── history ────────────────────────────────────────────────────────────────
 
-/// How a gift's history names its slices: `gift`, `status`.
+/// How a gift's history names its slices: `gift`, `status`, `claimLock`.
 struct GiftSlices;
 
 impl SliceLabel for GiftSlices {

@@ -8,6 +8,14 @@ import type { GiftStatus } from "./GiftStatus";
  */
 export type GiftRow = { id: string, contactId: string, receivedOn: string, amount: number, method: GiftMethod, reference: string | null, allocations: Array<AllocationView>, status: GiftStatus, 
 /**
+ * Why it was voided, when a reason was given.
+ */
+voidReason: string | null, 
+/**
+ * The Gift Aid claim it is in: amount, date and donor locked.
+ */
+claimId: string | null, 
+/**
  * The platform user who entered it; null = system.
  */
 enteredBy: number | null, 

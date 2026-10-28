@@ -4,11 +4,13 @@
 //! `giving.status` (`status_version`). Both rebuild the allocation
 //! projection. Gifts are never deleted (rule 3: a mistake is void).
 //!
-//! A gift is editable whatever its status, void included: nothing is
-//! locked yet. The claim lock that comes with Gift Aid claims must gate
-//! BOTH contracts' applies (so every restore path is covered too), not
-//! just the save route, or un-void plus a restore could change a claimed
-//! gift's amount.
+//! A gift is editable whatever its status, void included, until a Gift
+//! Aid claim takes it (`giving.claimLock`, the third slice, its own
+//! counter `claim_lock_version`). Then BOTH other contracts' applies
+//! refuse what the claim relies on, so every restore path is covered
+//! too, not just the routes: `giving.gift` refuses a new amount or date
+//! (the donor never changes), and `giving.status` needs a reason to void
+//! and refuses an un-void (`claimed_gift`, `void_reason_required`).
 
 use std::collections::HashSet;
 
@@ -19,8 +21,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sources::{describe, mark_used};
 
-use crate::rules::prepare_gift;
-use crate::types::{AllocationRow, GiftPayload, Method, Status, StatusPayload};
+use crate::rules::{prepare_gift, prepare_status};
+use crate::types::{AllocationRow, ClaimLockPayload, GiftPayload, Method, Status, StatusPayload};
 
 pub const TABLE: &str = "gifts";
 /// The projection both contracts rebuild.
@@ -46,6 +48,9 @@ pub struct GiftState {
     entered_at: i64,
     #[serde(skip)]
     restoring: bool,
+    /// `giving.claimLock`'s: the Gift Aid claim that holds it.
+    #[serde(skip)]
+    claim_id: Option<String>,
 }
 
 pub(crate) fn load_allocations(
@@ -69,7 +74,8 @@ pub(crate) fn load_allocations(
 fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>> {
     let Some(mut state) = conn
         .prepare_cached(
-            "SELECT contact_id, received_on, amount, method, reference, entered_by, entered_at
+            "SELECT contact_id, received_on, amount, method, reference, entered_by, entered_at,
+                    claim_id
              FROM gifts WHERE id = ?1",
         )?
         .query_row([id], |r| {
@@ -86,6 +92,7 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
                 entered_by: r.get(5)?,
                 entered_at: r.get(6)?,
                 restoring: false,
+                claim_id: r.get(7)?,
             })
         })
         .optional()?
@@ -167,12 +174,22 @@ impl Contract for Gift {
                 entered_by: command.actor,
                 entered_at: command.at,
                 restoring: false,
+                claim_id: None,
             });
         };
         if p.contact_id != current.gift.contact_id {
             return Err(ContractError::rejected(
                 "contact_change",
                 "A gift’s donor can’t change: void it and record it again",
+            ));
+        }
+        if current.claim_id.is_some()
+            && (p.amount != current.gift.amount || p.received_on != current.gift.received_on)
+        {
+            return Err(ContractError::rejected(
+                "claimed_gift",
+                "This gift is in a Gift Aid claim: its amount and date can’t change. \
+                 If it was wrong, void it with a reason and record it again",
             ));
         }
         Ok(GiftState {
@@ -316,58 +333,210 @@ fn project_allocations(tx: &Connection, id: &str) -> rusqlite::Result<()> {
 
 // ── status ─────────────────────────────────────────────────────────────────
 
-/// Completed or void. A void gift is kept and counts for nothing.
+/// Completed or void, and why it was voided. A void gift is kept and
+/// counts for nothing. A claimed gift (`claim_id`) needs a reason to
+/// void, and its void is final: HMRC is repaid through an adjustment.
 pub struct GiftStatus;
 pub static STATUS: GiftStatus = GiftStatus;
 
-pub(crate) fn load_status(conn: &Connection, id: &str) -> rusqlite::Result<Option<Status>> {
-    conn.prepare_cached("SELECT status FROM gifts WHERE id = ?1")?
-        .query_row([id], |r| Ok(Status::parse(&r.get::<_, String>(0)?)))
+/// The `giving.status` slice as stored, plus the claim that holds the
+/// gift (not this slice's; never serialised).
+#[derive(Clone, Debug, Serialize)]
+pub struct StatusState {
+    #[serde(flatten)]
+    pub status: StatusPayload,
+    #[serde(skip)]
+    claim_id: Option<String>,
+}
+
+fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<StatusState>> {
+    conn.prepare_cached("SELECT status, void_reason, claim_id FROM gifts WHERE id = ?1")?
+        .query_row([id], |r| {
+            Ok(StatusState {
+                status: StatusPayload {
+                    status: Status::parse(&r.get::<_, String>(0)?),
+                    reason: r.get(1)?,
+                },
+                claim_id: r.get(2)?,
+            })
+        })
         .optional()
 }
 
 impl Contract for GiftStatus {
     const NAME: &'static str = "giving.status";
-    const VERSION: u32 = 1;
+    /// v2: `reason`.
+    const VERSION: u32 = 2;
     const ENTITY: &'static str = TABLE;
     const COUNTER: &'static str = "status_version";
     const PROJECTIONS: &'static [&'static str] = &[ALLOCATION_INDEX];
     type Payload = StatusPayload;
-    type State = StatusPayload;
+    type State = StatusState;
 
-    fn load(&self, tx: &OrgTx, id: &str) -> Result<StatusPayload, ContractError> {
-        let status = load_status(tx.read(), id)?.ok_or(ContractError::NotFound)?;
-        Ok(StatusPayload { status })
+    fn prepare(&self, p: StatusPayload) -> Result<StatusPayload, ContractError> {
+        prepare_status(p)
+    }
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<StatusState, ContractError> {
+        load_status_state(tx.read(), id)?.ok_or(ContractError::NotFound)
     }
 
     fn apply(
         &self,
-        current: Option<&StatusPayload>,
+        current: Option<&StatusState>,
         p: &StatusPayload,
         _: &Command,
-    ) -> Result<StatusPayload, ContractError> {
-        if current.is_none() {
+    ) -> Result<StatusState, ContractError> {
+        let Some(current) = current else {
             return Err(ContractError::rejected(
                 "no_root",
                 "giving.status targets an existing gift",
             ));
+        };
+        if current.claim_id.is_some() {
+            match (current.status.status, p.status) {
+                (Status::Completed, Status::Void) if p.reason.is_none() => {
+                    return Err(ContractError::rejected(
+                        "void_reason_required",
+                        "This gift is in a Gift Aid claim: say why it is void. \
+                         The next claim pays the tax back to HMRC",
+                    ));
+                }
+                (Status::Void, Status::Completed) => {
+                    return Err(ContractError::rejected(
+                        "claimed_gift",
+                        "This gift was voided after it was claimed for Gift Aid, \
+                         so it can’t be un-voided: record it again",
+                    ));
+                }
+                _ => {}
+            }
         }
-        Ok(p.clone())
+        Ok(StatusState {
+            status: StatusPayload {
+                status: p.status,
+                // Un-voiding clears the reason.
+                reason: match p.status {
+                    Status::Void => p.reason.clone(),
+                    Status::Completed => None,
+                },
+            },
+            claim_id: current.claim_id.clone(),
+        })
     }
 
     fn write(
         &self,
         tx: &WriteTx,
         id: &str,
-        _: Option<&StatusPayload>,
-        next: &StatusPayload,
+        _: Option<&StatusState>,
+        next: &StatusState,
     ) -> Result<(), ContractError> {
-        tx.prepare_cached("UPDATE gifts SET status = ?2 WHERE id = ?1")?
-            .execute(params![id, next.status.as_str()])?;
+        tx.prepare_cached("UPDATE gifts SET status = ?2, void_reason = ?3 WHERE id = ?1")?
+            .execute(params![id, next.status.status.as_str(), next.status.reason])?;
         Ok(())
+    }
+
+    /// v1 had no reason: the same JSON reads as v2.
+    fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
+        (from == 1).then_some(payload)
     }
 
     fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
         Ok(project_allocations(tx, id)?)
+    }
+}
+
+// ── claim lock ─────────────────────────────────────────────────────────────
+
+/// The Gift Aid claim a gift is in. Only Gift Aid's claim commands run it
+/// (through [`crate::lock_for_claim`] / [`crate::release_from_claim`]), in
+/// the claim's own transaction; a restore is refused, since the claim,
+/// not the gift's history, says whether the gift is claimed.
+pub struct ClaimLock;
+pub static CLAIM_LOCK: ClaimLock = ClaimLock;
+
+/// The lock as stored, plus the gift's status (a void gift can't be
+/// claimed). Only the payload is serialised.
+#[derive(Clone, Debug, Serialize)]
+pub struct ClaimLockState {
+    #[serde(flatten)]
+    pub lock: ClaimLockPayload,
+    #[serde(skip)]
+    status: Status,
+}
+
+impl Contract for ClaimLock {
+    const NAME: &'static str = "giving.claimLock";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = TABLE;
+    const COUNTER: &'static str = "claim_lock_version";
+    type Payload = ClaimLockPayload;
+    type State = ClaimLockState;
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<ClaimLockState, ContractError> {
+        tx.read()
+            .prepare_cached("SELECT claim_id, status FROM gifts WHERE id = ?1")?
+            .query_row([id], |r| {
+                Ok(ClaimLockState {
+                    lock: ClaimLockPayload {
+                        claim_id: r.get(0)?,
+                    },
+                    status: Status::parse(&r.get::<_, String>(1)?),
+                })
+            })
+            .optional()?
+            .ok_or(ContractError::NotFound)
+    }
+
+    fn apply(
+        &self,
+        current: Option<&ClaimLockState>,
+        p: &ClaimLockPayload,
+        command: &Command,
+    ) -> Result<ClaimLockState, ContractError> {
+        let Some(current) = current else {
+            return Err(ContractError::rejected(
+                "no_root",
+                "giving.claimLock targets an existing gift",
+            ));
+        };
+        if command.source == Source::Restore {
+            return Err(ContractError::rejected(
+                "not_restorable",
+                "Only its Gift Aid claim says whether a gift is claimed",
+            ));
+        }
+        match (&current.lock.claim_id, &p.claim_id) {
+            (Some(held), Some(next)) if held != next => {
+                return Err(ContractError::rejected(
+                    "already_claimed",
+                    "This gift is already in another Gift Aid claim",
+                ));
+            }
+            (None, Some(_)) if current.status == Status::Void => {
+                return Err(ContractError::rejected(
+                    "void_gift",
+                    "A void gift can’t be claimed",
+                ));
+            }
+            _ => {}
+        }
+        Ok(ClaimLockState {
+            lock: p.clone(),
+            status: current.status,
+        })
+    }
+
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        _: Option<&ClaimLockState>,
+        next: &ClaimLockState,
+    ) -> Result<(), ContractError> {
+        tx.prepare_cached("UPDATE gifts SET claim_id = ?2 WHERE id = ?1")?
+            .execute(params![id, next.lock.claim_id])?;
+        Ok(())
     }
 }

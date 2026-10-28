@@ -2,6 +2,8 @@
 import type { GiftStatus } from "./GiftStatus";
 
 /**
- * The `giving.status` slice.
+ * The `giving.status` slice (v2: `reason`). Voiding a gift that is in a
+ * Gift Aid claim needs a reason (it goes into the next claim as an
+ * adjustment); any other void may give one. Un-voiding clears it.
  */
-export type GiftStatusPayload = { status: GiftStatus, };
+export type GiftStatusPayload = { status: GiftStatus, reason?: string, };

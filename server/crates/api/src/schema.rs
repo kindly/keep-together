@@ -40,6 +40,10 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(crate::events::MIGRATION),
         // 14: a Gift Aid declaration's details counter (snapshot editable)
         M::up(giftaid::MIGRATION_DETAILS),
+        // 15: Gift Aid claims, their lines and adjustments, HMRC details
+        M::up(giftaid::MIGRATION_CLAIMS),
+        // 16: a gift's void reason and claim lock
+        M::up(giving::MIGRATION_CLAIM_LOCK),
     ])
 }
 

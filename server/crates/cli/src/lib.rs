@@ -3,5 +3,6 @@
 
 pub mod auth;
 pub mod dev;
+pub mod giftaid;
 pub mod sql;
 pub mod tenant;

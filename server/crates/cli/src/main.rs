@@ -8,6 +8,8 @@
 //! keep auth invite <slug> <email> [--role admin|staff|viewer]
 //! keep dev seed-demo [--slug <slug>] [--admin-email <email>]
 //! keep dev seed-riverside
+//! keep giftaid-xml <slug> <claim-id>
+//! keep giftaid-xml --hmrc-sample
 //! ```
 
 use std::path::PathBuf;
@@ -21,7 +23,9 @@ const USAGE: &str = "usage:
   keep [--data <dir>] auth reset-2fa <email> [--reason <text>]
   keep [--data <dir>] auth invite <slug> <email> [--role admin|staff|viewer]
   keep [--data <dir>] dev seed-demo [--slug <slug>] [--admin-email <email>]
-  keep [--data <dir>] dev seed-riverside   (KEEP_ENV=dev|staging)";
+  keep [--data <dir>] dev seed-riverside   (KEEP_ENV=dev|staging)
+  keep [--data <dir>] giftaid-xml <slug> <claim-id>   (the claim's XML on stdout, IRmark on stderr)
+  keep giftaid-xml --hmrc-sample                      (HMRC's sample data: their GAValidSample.xml)";
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
     eprintln!("{msg}");
@@ -55,6 +59,19 @@ fn send(mail: comms::mail::Mail, what: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!("{what} emailed to {to}");
     Ok(())
+}
+
+/// A claim's XML to stdout (no newline added: the IRmark covers the
+/// bytes as they are), its IRmark to stderr.
+fn print_xml(made: Result<(String, giftaid::irmark::Irmark), String>) -> ExitCode {
+    match made {
+        Ok((xml, mark)) => {
+            print!("{xml}");
+            eprintln!("IRmark {} ({})", mark.base64, mark.base32);
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(e),
+    }
 }
 
 /// The value after `--flag`, removed from `args`.
@@ -140,6 +157,8 @@ fn main() -> ExitCode {
                 Err(e) => fail(e),
             }
         }
+        ["giftaid-xml", "--hmrc-sample"] => print_xml(cli::giftaid::sample_xml()),
+        ["giftaid-xml", slug, claim] => print_xml(cli::giftaid::claim_xml(&data, slug, claim)),
         ["dev", "seed-riverside"] => {
             let seeded = cli::tenant::open(&data)
                 .map_err(|e| e.to_string())

@@ -49,6 +49,8 @@ function wireGift(over: Partial<WireGift> = {}): WireGift {
       },
     ],
     status: 'completed',
+    voidReason: null,
+    claimId: null,
     enteredBy: 1,
     enteredAt: 1000,
     giftVersion: 0,
