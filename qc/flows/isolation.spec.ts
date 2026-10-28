@@ -8,7 +8,13 @@ import {
   section,
   uniqueName,
 } from './contact.helpers'
-import { recordGift, recorder } from './gift.helpers'
+import {
+  createClaims,
+  daysAgo,
+  donorGift,
+  recordGift,
+  recorder,
+} from './gift.helpers'
 import type { Page } from '@playwright/test'
 
 // The mandatory isolation spec (factory/plans/qc-suite.sv, "Isolation";
@@ -35,8 +41,13 @@ test.describe('isolation', () => {
   })
 
   test("B's settings are not A's to open", async ({ page, users }) => {
-    route('/t/$slug', '/t/$slug/settings', '/t/$slug/settings/groups')
-    for (const tab of ['settings', 'settings/groups']) {
+    route(
+      '/t/$slug',
+      '/t/$slug/settings',
+      '/t/$slug/settings/groups',
+      '/t/$slug/settings/hmrc',
+    )
+    for (const tab of ['settings', 'settings/groups', 'settings/hmrc']) {
       await page.goto(`/t/${users.b.slug}/${tab}`)
       await expect(
         page.getByText(`No group called “${users.b.slug}” that you belong to.`),
@@ -185,6 +196,33 @@ test.describe('isolation', () => {
       panel.getByRole('link').or(panel.getByText('No gifts yet.')).first(),
     ).toBeVisible()
     await expect(page.locator('body')).not.toContainText('£43.21')
+  })
+
+  test("B's Gift Aid claim is not A's to open, nor in A's list", async ({
+    page,
+    users,
+    world,
+    instance,
+  }) => {
+    route('/t/$slug/giftaid', '/t/$slug/giftaid/', '/t/$slug/giftaid/$claimId')
+    const asB = await recorder(instance, users.b, world.tenants[1].tenantId)
+    const day = daysAgo(1100)
+    await donorGift(asB, `Bravo-${runId()}-claim`, 2500n, day)
+    const [claim] = await createClaims(asB, day)
+    await page.goto(`/t/${users.a.slug}/giftaid/${claim.id}`)
+    await expect(page.getByText('No such claim.')).toBeVisible()
+    await page.goto(`/t/${users.a.slug}/giftaid`)
+    await expect(
+      page
+        .getByTestId('claim-row')
+        .first()
+        .or(page.getByText(/^No claims yet/)),
+    ).toBeVisible()
+    await expect(page.locator(`a[href$="/giftaid/${claim.id}"]`)).toHaveCount(0)
+    await page.goto(`/t/${users.b.slug}/giftaid`)
+    await expect(
+      page.getByText(`No group called “${users.b.slug}” that you belong to.`),
+    ).toBeVisible()
   })
 
   test("A's record-gift search finds none of B's contacts", async ({

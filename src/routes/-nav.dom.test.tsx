@@ -265,12 +265,14 @@ const links = (scope: ParentNode = el) =>
   ])
 const text = () => el.textContent
 
-test('header: the group name leads home, then Contacts · Donations ▾ · Settings', async () => {
+test('header: the group name leads home, then Contacts · Donations ▾ · Gift Aid · Settings', async () => {
   await page(import('./t.$slug'))
   const nav = el.querySelector('nav[aria-label="Main"]')!
   expect(links(nav)).toEqual([
     ['Alpha', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
+    // G3: admins only.
+    ['Gift Aid', '/t/alpha/giftaid'],
     ['Settings', '/t/alpha/settings'],
   ])
   expect(nav.textContent).toContain('Donations ▾')
@@ -280,6 +282,21 @@ test('header: the group name leads home, then Contacts · Donations ▾ · Setti
   )!
   expect(trigger.querySelector('[aria-hidden="true"]')?.textContent).toBe('▾')
   expect(nav.textContent).not.toContain('keep-together')
+})
+
+test('Gift Aid claims and HMRC details are for admins: staff and viewers see neither', async () => {
+  for (const role of ['staff', 'viewer'] as const) {
+    tenants = [group('alpha', { role })]
+    await page(import('./t.$slug'))
+    const nav = el.querySelector('nav[aria-label="Main"]')!
+    expect(links(nav).map(([name]) => name)).toEqual([
+      'Alpha',
+      'Contacts',
+      'Settings',
+    ])
+    await page(import('./t.$slug.settings'))
+    expect(text()).not.toContain('HMRC details')
+  }
 })
 
 test('header: a slug that is not yours offers the way home', async () => {
@@ -507,6 +524,8 @@ test('being ported: the header has Contacts, Donations and Settings, nothing unp
   expect(links(nav)).toEqual([
     ['Alpha', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
+    // G3: Gift Aid claims, for an admin.
+    ['Gift Aid', '/t/alpha/giftaid'],
     // A3: Settings (it holds Sign out) and "last used".
     ['Settings', '/t/alpha/settings'],
   ])
@@ -525,6 +544,7 @@ test('this build serves every list tab: Settings opens on Fields', async () => {
     ['Fields', '/t/alpha/settings/fields'],
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
+    ['HMRC details', '/t/alpha/settings/hmrc'],
     ['Members', '/t/alpha/settings/members'],
     ['Switch group', '/t/alpha/settings/groups'],
     ['Your account', '/account'],
@@ -545,6 +565,7 @@ test('settings: the first tab is Fields once every list is ported', async () => 
     ['Fields', '/t/alpha/settings/fields'],
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
+    ['HMRC details', '/t/alpha/settings/hmrc'],
     ['Members', '/t/alpha/settings/members'],
     ['Your account', '/account'],
   ])
@@ -641,6 +662,8 @@ test('the drawer lists every destination, Donations flattened, then the account'
   expect(shown(d)).toEqual([
     ['Home', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
+    // G3: admins only, as in the header.
+    ['Gift Aid', '/t/alpha/giftaid'],
     ['Settings', '/t/alpha/settings'],
     ['Your accounta@example.org', '/account'],
   ])
@@ -651,6 +674,7 @@ test('the drawer lists every destination, Donations flattened, then the account'
     ['Record a gift', '/t/alpha/gifts/new'],
     ['£1,234.56Acme Ltd23 Oct 2026', '/t/alpha/gifts/g2'],
     ['£20.00Jo Bloggsvoid23 Oct 2026', '/t/alpha/gifts/g1'],
+    ['Gift Aid', '/t/alpha/giftaid'],
     ['Settings', '/t/alpha/settings'],
     ['Your accounta@example.org', '/account'],
   ])
@@ -663,9 +687,22 @@ test('the drawer lists every destination, Donations flattened, then the account'
   expect(d.querySelector('button[aria-label="Close menu"]')).not.toBeNull()
 })
 
+test('the drawer has Gift Aid for admins only, as the header does: not for staff', async () => {
+  tenants = [group('alpha', { role: 'staff' })]
+  const d = await openDrawer()
+  expect(shown(d).map(([name]) => name)).toEqual([
+    'Home',
+    'Contacts',
+    'Settings',
+    'Your accounta@example.org',
+  ])
+})
+
 test('the drawer: a viewer has no Record a gift, and no gifts says so', async () => {
   tenants = [group('alpha', { role: 'viewer' })]
   const d = await openDrawer()
+  // Nor Gift Aid: admins only.
+  expect(d.textContent).not.toContain('Gift Aid')
   await toggleDonations()
   expect(d.textContent).not.toContain('Record a gift')
   expect(donations().textContent).toBe('DonationsMy recent giftsNone yet.')

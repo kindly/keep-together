@@ -167,3 +167,44 @@ test(
     await unlocked(page)
   },
 )
+
+// Gift Aid claims G3: the drawer's Gift Aid, admins only, as the header's.
+test(
+  'phone: the drawer goes to Gift Aid for an admin; staff have none',
+  {
+    annotation: [{ type: 'route', description: '/t/$slug/giftaid/' }],
+  },
+  async ({ page, users, browser, baseURL, session }) => {
+    await page.setViewportSize(PHONE)
+    const slug = users.a.slug
+    const { menu, drawer } = parts(page)
+    await page.goto(`/t/${slug}/contacts`)
+    await menu.click()
+    await drawer.getByRole('link', { name: 'Gift Aid' }).click()
+    await expect(page).toHaveURL(`/t/${slug}/giftaid`)
+    await expect(
+      page.getByRole('heading', { level: 1, name: 'Gift Aid claims' }),
+    ).toBeVisible()
+    await expect(drawer).toBeHidden()
+    await unlocked(page)
+
+    const staff = await browser.newPage({
+      baseURL,
+      storageState: await session(users.staff),
+      viewport: PHONE,
+    })
+    try {
+      const other = parts(staff)
+      await staff.goto(`/t/${users.staff.slug}/contacts`)
+      await other.menu.click()
+      await expect(
+        other.drawer.getByRole('link', { name: 'Contacts' }),
+      ).toBeVisible()
+      await expect(
+        other.drawer.getByRole('link', { name: 'Gift Aid' }),
+      ).toHaveCount(0)
+    } finally {
+      await staff.context().close()
+    }
+  },
+)

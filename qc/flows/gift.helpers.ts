@@ -3,8 +3,10 @@ import { sessionCookie, sessionToken } from '../fixtures'
 import type { Instance, QcUser } from '../fixtures'
 import type { Created } from '../../src/lib/data/rust-types/Created'
 import type { Executed } from '../../src/lib/data/rust-types/Executed'
+import type { GiftAidClaimSaved } from '../../src/lib/data/rust-types/GiftAidClaimSaved'
 import type { GiftAidClaimsCreated } from '../../src/lib/data/rust-types/GiftAidClaimsCreated'
 import type { RecordedGift } from '../../src/lib/data/rust-types/RecordedGift'
+import type { SetGiftAidClaimStatus } from '../../src/lib/data/rust-types/SetGiftAidClaimStatus'
 import type { SourcePicker } from '../../src/lib/data/rust-types/SourcePicker'
 
 // Gifts and declarations for the gift page and contact panel specs (cash
@@ -99,18 +101,18 @@ export function daysAgo(n: number): string {
 }
 
 /**
- * A gift a Gift Aid claim holds, so its amount, date and donor are
- * locked: a new donor with a home address and the gift's declaration,
- * the gift 1,000 days ago, and a claim up to that day (other tests' gifts
- * are newer, so it claims only this one). `r` must be an admin.
+ * A gift from a new donor with a home address: with `giftAid` (the
+ * default) the record-gift save's declaration covers it, so a Gift Aid
+ * claim can take it; without, a claim leaves it out ("no declaration").
  */
-export async function claimedGift(
+export async function donorGift(
   r: Recorder,
   lastName: string,
   pence: bigint,
-): Promise<{ giftId: string; contactId: string; claimId: string }> {
+  receivedOn: string,
+  giftAid = true,
+): Promise<{ giftId: string; contactId: string }> {
   const amount = Number(pence)
-  const receivedOn = daysAgo(1000)
   const { giftId, contactId } = await call<RecordedGift>(
     r,
     'POST',
@@ -123,15 +125,59 @@ export async function claimedGift(
       amount,
       method: 'cash',
       allocations: [{ sourceCodeId: r.codeId, amount }],
-      giftAid: {},
+      ...(giftAid && { giftAid: {} }),
     },
   )
+  return { giftId, contactId }
+}
+
+/**
+ * Draft claims of every eligible gift up to `periodEnd` (as "Create"
+ * on the Gift Aid page). `r` must be an admin.
+ */
+export async function createClaims(
+  r: Recorder,
+  periodEnd: string,
+): Promise<GiftAidClaimsCreated['claims']> {
   const { claims } = await call<GiftAidClaimsCreated>(
     r,
     'POST',
     'giftaid/claims',
-    { periodEnd: receivedOn },
+    { periodEnd },
   )
+  return claims
+}
+
+/** Move a claim on a step, as another admin would; its new counter. */
+export async function setClaimStatus(
+  r: Recorder,
+  id: string,
+  body: SetGiftAidClaimStatus,
+): Promise<number> {
+  const done = await call<GiftAidClaimSaved>(
+    r,
+    'POST',
+    `giftaid/claims/${id}/status`,
+    body,
+  )
+  return done.counter
+}
+
+/**
+ * A gift a Gift Aid claim holds, so its amount, date and donor are
+ * locked: a new donor with a home address and the gift's declaration,
+ * the gift 1,000 days ago, and a claim up to that day (other tests' gifts
+ * are newer, so it claims only this one, and any older gift another
+ * claims test left unclaimed). `r` must be an admin.
+ */
+export async function claimedGift(
+  r: Recorder,
+  lastName: string,
+  pence: bigint,
+): Promise<{ giftId: string; contactId: string; claimId: string }> {
+  const receivedOn = daysAgo(1000)
+  const { giftId, contactId } = await donorGift(r, lastName, pence, receivedOn)
+  const claims = await createClaims(r, receivedOn)
   return { giftId, contactId, claimId: claims[0].id }
 }
 

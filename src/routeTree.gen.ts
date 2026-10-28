@@ -16,16 +16,21 @@ import { Route as ResetRouteImport } from './routes/reset'
 import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as TSlugRouteImport } from './routes/t.$slug'
 import { Route as TSlugIndexRouteImport } from './routes/t.$slug.index'
+import { Route as TSlugGiftaidRouteImport } from './routes/t.$slug.giftaid'
 import { Route as TSlugSettingsRouteImport } from './routes/t.$slug.settings'
 import { Route as TSlugTagsRouteImport } from './routes/t.$slug.tags'
 import { Route as TSlugContactsIndexRouteImport } from './routes/t.$slug.contacts.index'
 import { Route as TSlugContactsContactIdRouteImport } from './routes/t.$slug.contacts.$contactId'
 import { Route as TSlugContactsNewRouteImport } from './routes/t.$slug.contacts.new'
+import { Route as TSlugGiftaidIndexRouteImport } from './routes/t.$slug.giftaid.index'
+import { Route as TSlugGiftaidClaimIdRouteImport } from './routes/t.$slug.giftaid.$claimId'
+import { Route as TSlugGiftaidNewRouteImport } from './routes/t.$slug.giftaid.new'
 import { Route as TSlugGiftsGiftIdRouteImport } from './routes/t.$slug.gifts.$giftId'
 import { Route as TSlugGiftsNewRouteImport } from './routes/t.$slug.gifts.new'
 import { Route as TSlugSettingsIndexRouteImport } from './routes/t.$slug.settings.index'
 import { Route as TSlugSettingsFieldsRouteImport } from './routes/t.$slug.settings.fields'
 import { Route as TSlugSettingsGroupsRouteImport } from './routes/t.$slug.settings.groups'
+import { Route as TSlugSettingsHmrcRouteImport } from './routes/t.$slug.settings.hmrc'
 import { Route as TSlugSettingsIdentifiersRouteImport } from './routes/t.$slug.settings.identifiers'
 import { Route as TSlugSettingsMembersRouteImport } from './routes/t.$slug.settings.members'
 import { Route as TSlugSettingsSourcesRouteImport } from './routes/t.$slug.settings.sources'
@@ -66,6 +71,11 @@ const TSlugIndexRoute = TSlugIndexRouteImport.update({
   path: '/',
   getParentRoute: () => TSlugRoute,
 } as any)
+const TSlugGiftaidRoute = TSlugGiftaidRouteImport.update({
+  id: '/giftaid',
+  path: '/giftaid',
+  getParentRoute: () => TSlugRoute,
+} as any)
 const TSlugSettingsRoute = TSlugSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -91,6 +101,21 @@ const TSlugContactsNewRoute = TSlugContactsNewRouteImport.update({
   path: '/contacts/new',
   getParentRoute: () => TSlugRoute,
 } as any)
+const TSlugGiftaidIndexRoute = TSlugGiftaidIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => TSlugGiftaidRoute,
+} as any)
+const TSlugGiftaidClaimIdRoute = TSlugGiftaidClaimIdRouteImport.update({
+  id: '/$claimId',
+  path: '/$claimId',
+  getParentRoute: () => TSlugGiftaidRoute,
+} as any)
+const TSlugGiftaidNewRoute = TSlugGiftaidNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => TSlugGiftaidRoute,
+} as any)
 const TSlugGiftsGiftIdRoute = TSlugGiftsGiftIdRouteImport.update({
   id: '/gifts/$giftId',
   path: '/gifts/$giftId',
@@ -114,6 +139,11 @@ const TSlugSettingsFieldsRoute = TSlugSettingsFieldsRouteImport.update({
 const TSlugSettingsGroupsRoute = TSlugSettingsGroupsRouteImport.update({
   id: '/groups',
   path: '/groups',
+  getParentRoute: () => TSlugSettingsRoute,
+} as any)
+const TSlugSettingsHmrcRoute = TSlugSettingsHmrcRouteImport.update({
+  id: '/hmrc',
+  path: '/hmrc',
   getParentRoute: () => TSlugSettingsRoute,
 } as any)
 const TSlugSettingsIdentifiersRoute =
@@ -145,20 +175,25 @@ export interface FileRoutesByFullPath {
   '/reset': typeof ResetRoute
   '/sign-in': typeof SignInRoute
   '/t/$slug': typeof TSlugRouteWithChildren
+  '/t/$slug/giftaid': typeof TSlugGiftaidRouteWithChildren
   '/t/$slug/settings': typeof TSlugSettingsRouteWithChildren
   '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/': typeof TSlugIndexRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
+  '/t/$slug/giftaid/$claimId': typeof TSlugGiftaidClaimIdRoute
+  '/t/$slug/giftaid/new': typeof TSlugGiftaidNewRoute
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
+  '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
   '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
+  '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -171,15 +206,19 @@ export interface FileRoutesByTo {
   '/t/$slug': typeof TSlugIndexRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
+  '/t/$slug/giftaid/$claimId': typeof TSlugGiftaidClaimIdRoute
+  '/t/$slug/giftaid/new': typeof TSlugGiftaidNewRoute
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
+  '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
   '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts': typeof TSlugContactsIndexRoute
+  '/t/$slug/giftaid': typeof TSlugGiftaidIndexRoute
   '/t/$slug/settings': typeof TSlugSettingsIndexRoute
 }
 export interface FileRoutesById {
@@ -190,20 +229,25 @@ export interface FileRoutesById {
   '/reset': typeof ResetRoute
   '/sign-in': typeof SignInRoute
   '/t/$slug': typeof TSlugRouteWithChildren
+  '/t/$slug/giftaid': typeof TSlugGiftaidRouteWithChildren
   '/t/$slug/settings': typeof TSlugSettingsRouteWithChildren
   '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/': typeof TSlugIndexRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
+  '/t/$slug/giftaid/$claimId': typeof TSlugGiftaidClaimIdRoute
+  '/t/$slug/giftaid/new': typeof TSlugGiftaidNewRoute
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
+  '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
   '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
+  '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
 }
 export interface FileRouteTypes {
@@ -215,20 +259,25 @@ export interface FileRouteTypes {
     | '/reset'
     | '/sign-in'
     | '/t/$slug'
+    | '/t/$slug/giftaid'
     | '/t/$slug/settings'
     | '/t/$slug/tags'
     | '/t/$slug/'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
+    | '/t/$slug/giftaid/$claimId'
+    | '/t/$slug/giftaid/new'
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
+    | '/t/$slug/settings/hmrc'
     | '/t/$slug/settings/identifiers'
     | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/tags'
     | '/t/$slug/contacts/'
+    | '/t/$slug/giftaid/'
     | '/t/$slug/settings/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -241,15 +290,19 @@ export interface FileRouteTypes {
     | '/t/$slug'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
+    | '/t/$slug/giftaid/$claimId'
+    | '/t/$slug/giftaid/new'
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
+    | '/t/$slug/settings/hmrc'
     | '/t/$slug/settings/identifiers'
     | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/tags'
     | '/t/$slug/contacts'
+    | '/t/$slug/giftaid'
     | '/t/$slug/settings'
   id:
     | '__root__'
@@ -259,20 +312,25 @@ export interface FileRouteTypes {
     | '/reset'
     | '/sign-in'
     | '/t/$slug'
+    | '/t/$slug/giftaid'
     | '/t/$slug/settings'
     | '/t/$slug/tags'
     | '/t/$slug/'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
+    | '/t/$slug/giftaid/$claimId'
+    | '/t/$slug/giftaid/new'
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
+    | '/t/$slug/settings/hmrc'
     | '/t/$slug/settings/identifiers'
     | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/tags'
     | '/t/$slug/contacts/'
+    | '/t/$slug/giftaid/'
     | '/t/$slug/settings/'
   fileRoutesById: FileRoutesById
 }
@@ -336,6 +394,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugIndexRouteImport
       parentRoute: typeof TSlugRoute
     }
+    '/t/$slug/giftaid': {
+      id: '/t/$slug/giftaid'
+      path: '/giftaid'
+      fullPath: '/t/$slug/giftaid'
+      preLoaderRoute: typeof TSlugGiftaidRouteImport
+      parentRoute: typeof TSlugRoute
+    }
     '/t/$slug/settings': {
       id: '/t/$slug/settings'
       path: '/settings'
@@ -370,6 +435,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/t/$slug/contacts/new'
       preLoaderRoute: typeof TSlugContactsNewRouteImport
       parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/giftaid/': {
+      id: '/t/$slug/giftaid/'
+      path: '/'
+      fullPath: '/t/$slug/giftaid/'
+      preLoaderRoute: typeof TSlugGiftaidIndexRouteImport
+      parentRoute: typeof TSlugGiftaidRoute
+    }
+    '/t/$slug/giftaid/$claimId': {
+      id: '/t/$slug/giftaid/$claimId'
+      path: '/$claimId'
+      fullPath: '/t/$slug/giftaid/$claimId'
+      preLoaderRoute: typeof TSlugGiftaidClaimIdRouteImport
+      parentRoute: typeof TSlugGiftaidRoute
+    }
+    '/t/$slug/giftaid/new': {
+      id: '/t/$slug/giftaid/new'
+      path: '/new'
+      fullPath: '/t/$slug/giftaid/new'
+      preLoaderRoute: typeof TSlugGiftaidNewRouteImport
+      parentRoute: typeof TSlugGiftaidRoute
     }
     '/t/$slug/gifts/$giftId': {
       id: '/t/$slug/gifts/$giftId'
@@ -406,6 +492,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugSettingsGroupsRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
+    '/t/$slug/settings/hmrc': {
+      id: '/t/$slug/settings/hmrc'
+      path: '/hmrc'
+      fullPath: '/t/$slug/settings/hmrc'
+      preLoaderRoute: typeof TSlugSettingsHmrcRouteImport
+      parentRoute: typeof TSlugSettingsRoute
+    }
     '/t/$slug/settings/identifiers': {
       id: '/t/$slug/settings/identifiers'
       path: '/identifiers'
@@ -437,9 +530,26 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface TSlugGiftaidRouteChildren {
+  TSlugGiftaidClaimIdRoute: typeof TSlugGiftaidClaimIdRoute
+  TSlugGiftaidNewRoute: typeof TSlugGiftaidNewRoute
+  TSlugGiftaidIndexRoute: typeof TSlugGiftaidIndexRoute
+}
+
+const TSlugGiftaidRouteChildren: TSlugGiftaidRouteChildren = {
+  TSlugGiftaidClaimIdRoute: TSlugGiftaidClaimIdRoute,
+  TSlugGiftaidNewRoute: TSlugGiftaidNewRoute,
+  TSlugGiftaidIndexRoute: TSlugGiftaidIndexRoute,
+}
+
+const TSlugGiftaidRouteWithChildren = TSlugGiftaidRoute._addFileChildren(
+  TSlugGiftaidRouteChildren,
+)
+
 interface TSlugSettingsRouteChildren {
   TSlugSettingsFieldsRoute: typeof TSlugSettingsFieldsRoute
   TSlugSettingsGroupsRoute: typeof TSlugSettingsGroupsRoute
+  TSlugSettingsHmrcRoute: typeof TSlugSettingsHmrcRoute
   TSlugSettingsIdentifiersRoute: typeof TSlugSettingsIdentifiersRoute
   TSlugSettingsMembersRoute: typeof TSlugSettingsMembersRoute
   TSlugSettingsSourcesRoute: typeof TSlugSettingsSourcesRoute
@@ -450,6 +560,7 @@ interface TSlugSettingsRouteChildren {
 const TSlugSettingsRouteChildren: TSlugSettingsRouteChildren = {
   TSlugSettingsFieldsRoute: TSlugSettingsFieldsRoute,
   TSlugSettingsGroupsRoute: TSlugSettingsGroupsRoute,
+  TSlugSettingsHmrcRoute: TSlugSettingsHmrcRoute,
   TSlugSettingsIdentifiersRoute: TSlugSettingsIdentifiersRoute,
   TSlugSettingsMembersRoute: TSlugSettingsMembersRoute,
   TSlugSettingsSourcesRoute: TSlugSettingsSourcesRoute,
@@ -462,6 +573,7 @@ const TSlugSettingsRouteWithChildren = TSlugSettingsRoute._addFileChildren(
 )
 
 interface TSlugRouteChildren {
+  TSlugGiftaidRoute: typeof TSlugGiftaidRouteWithChildren
   TSlugSettingsRoute: typeof TSlugSettingsRouteWithChildren
   TSlugTagsRoute: typeof TSlugTagsRoute
   TSlugIndexRoute: typeof TSlugIndexRoute
@@ -473,6 +585,7 @@ interface TSlugRouteChildren {
 }
 
 const TSlugRouteChildren: TSlugRouteChildren = {
+  TSlugGiftaidRoute: TSlugGiftaidRouteWithChildren,
   TSlugSettingsRoute: TSlugSettingsRouteWithChildren,
   TSlugTagsRoute: TSlugTagsRoute,
   TSlugIndexRoute: TSlugIndexRoute,

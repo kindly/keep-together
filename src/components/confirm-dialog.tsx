@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -9,7 +10,11 @@ import {
   AlertDialogTitle,
 } from './ui/alert-dialog'
 
-/** An in-app yes / no question, open while `open`; Escape means no. */
+/**
+ * An in-app yes / no question, open while `open`; Escape means no.
+ * `children` go under the description (a reason box); `confirmDisabled`
+ * holds the yes back until they're filled in.
+ */
 export function ConfirmDialog({
   open,
   title,
@@ -18,6 +23,8 @@ export function ConfirmDialog({
   cancel,
   onConfirm,
   onCancel,
+  children,
+  confirmDisabled = false,
 }: {
   open: boolean
   title: string
@@ -26,6 +33,8 @@ export function ConfirmDialog({
   cancel: string
   onConfirm: () => void
   onCancel: () => void
+  children?: ReactNode
+  confirmDisabled?: boolean
 }) {
   return (
     <AlertDialog
@@ -39,10 +48,12 @@ export function ConfirmDialog({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
+        {children}
         <AlertDialogFooter>
           <AlertDialogCancel>{cancel}</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
+            disabled={confirmDisabled}
             // Not a close: the owner acts and closes it, so onCancel
             // doesn't run on the way out too.
             onClick={(e) => {

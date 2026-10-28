@@ -241,8 +241,8 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
   })
 
   // Gift Aid claims G1: a gift a claim holds keeps its amount, date and
-  // donor, and voiding it needs a reason (the page has no reason box
-  // yet: G3), each refusal said by the server and shown as it says it.
+  // donor (the refusal said by the server and shown as it says it), and
+  // voiding it needs a reason (G3's box) and can't be undone.
   test('a gift in a Gift Aid claim is locked', async ({
     page,
     flow,
@@ -283,14 +283,23 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
     await page.getByRole('button', { name: 'Cancel' }).click()
     await expect(heading(page)).toContainText('£20.00')
 
+    // G3: the page says which claim, and voiding needs a reason.
+    await expect(page.getByTestId('claim-badge')).toHaveText(
+      /^Claimed in claim \d+$/,
+    )
+    await expect(page.getByTestId('claim-lock')).toContainText(
+      'its amount, date and donor can’t change',
+    )
     await page.getByRole('button', { name: 'Void', exact: true }).click()
+    await expect(confirm(page, 'Void')).toBeDisabled()
+    await page
+      .getByRole('alertdialog')
+      .getByLabel('Reason (needed)')
+      .fill('Entered twice')
     await confirm(page, 'Void').click()
-    await expect(page.getByRole('alert')).toContainText(
-      'This gift is in a Gift Aid claim: say why it is void',
-    )
-    await expect(heading(page).getByText('void', { exact: true })).toHaveCount(
-      0,
-    )
+    await expect(heading(page).getByText('void', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('void-reason')).toContainText('Entered twice')
+    await expect(page.getByRole('button', { name: 'Unvoid' })).toHaveCount(0)
   })
 })
 

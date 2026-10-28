@@ -548,8 +548,13 @@ export function useGiftWrites(id: string) {
   return {
     save: (expected: number, fields: GiftFields) =>
       write('giving.gift', 'save', { ...fieldsToWire(fields), expected }),
-    setStatus: (expected: number, status: GiftStatus) =>
-      write('giving.status', 'status', { expected, status }),
+    // A reason is needed to void a gift in a Gift Aid claim.
+    setStatus: (expected: number, status: GiftStatus, reason?: string) =>
+      write('giving.status', 'status', {
+        expected,
+        status,
+        ...(reason && { reason }),
+      }),
   }
 }
 

@@ -19,13 +19,24 @@ import {
   useDeclarations,
 } from '../lib/giftaid'
 import { MomentList, useHistoryMoments } from '../components/contact-history'
-import { useGift, useGiftWrites, useMembers } from '../lib/data'
-import type { GiftStatus, GiftView as Gift, Member } from '../lib/data'
+import {
+  FEATURES,
+  useClaims,
+  useGift,
+  useGiftWrites,
+  useMembers,
+} from '../lib/data'
+import type {
+  ClaimSummary,
+  GiftStatus,
+  GiftView as Gift,
+  Member,
+} from '../lib/data'
 import { tenantPath } from '../lib/data/rust/client'
 import { keys } from '../lib/data/rust/keys'
 import { threeWayMerge } from '../lib/merge'
 import { AMOUNT_MESSAGES, amountPence } from '../lib/gift-form'
-import { useCanWrite, useTenant } from '../lib/tenant'
+import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/gifts/$giftId')({
   component: GiftPage,
@@ -41,7 +52,10 @@ const secondary =
  * One gift (cash gifts step 5): what was given, its Gift Aid coverage
  * (derived from the donor's declarations, never stored on the gift), an
  * edit form, void / un-void, and its history. The donor can't change
- * (g3q2): a wrong donor is void and record again.
+ * (g3q2): a wrong donor is void and record again. A gift in a Gift Aid
+ * claim says so, keeps its amount, date and donor, needs a reason to
+ * void and can't be un-voided (G1's lock; the server refuses, G3 says
+ * why up front).
  */
 function GiftPage() {
   const tenant = useTenant()
@@ -69,6 +83,15 @@ function GiftView({ gift }: { gift: Gift }) {
     status: GiftStatus
     expected: number
   } | null>(null)
+  const [voidReason, setVoidReason] = useState('')
+  const claimed = Boolean(gift.claimId)
+  // The claim, for an admin (the claims list is admin only): its number,
+  // and whether it has gone to HMRC (a void then makes an adjustment; in
+  // a draft it holds the draft back instead). Unknown for anyone else.
+  const admin = useIsAdmin()
+  const claims = useClaims(claimed && admin && FEATURES.giftAidClaims)
+  const claim = claims.data?.find((c) => c.id === gift.claimId)
+  const lock = claimLock(claim)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const isVoid = gift.status === 'void'
@@ -81,11 +104,15 @@ function GiftView({ gift }: { gift: Gift }) {
   const warnings = giftWarnings(gift, localToday())
   const coverage = giftCoverage(declarations, gift)
 
-  async function changeStatus(status: GiftStatus, expected: number) {
+  async function changeStatus(
+    status: GiftStatus,
+    expected: number,
+    reason?: string,
+  ) {
     setStatusError(null)
     setBusy(true)
     try {
-      await writes.setStatus(expected, status)
+      await writes.setStatus(expected, status, reason)
     } catch (err) {
       setStatusError(
         refusal(
@@ -128,10 +155,23 @@ function GiftView({ gift }: { gift: Gift }) {
                 void
               </span>
             )}
+            {gift.claimId && (
+              <ClaimBadge claimId={gift.claimId} claim={claim} />
+            )}
           </h1>
           {isVoid && (
             <p className="text-sm text-neutral-600">
               Void: kept for the record, counts for nothing.
+              {gift.voidReason && (
+                <span data-testid="void-reason"> Why: {gift.voidReason}</span>
+              )}
+            </p>
+          )}
+          {claimed && (
+            <p data-testid="claim-lock" className="text-sm text-neutral-600">
+              {isVoid
+                ? lock.voided
+                : 'Claimed for Gift Aid: its amount, date and donor can’t change. If it was wrong, void it with a reason and record it again.'}
             </p>
           )}
         </header>
@@ -212,30 +252,33 @@ function GiftView({ gift }: { gift: Gift }) {
               Edit
             </button>
             {isVoid ? (
-              <button
-                type="button"
-                className={secondary}
-                disabled={busy}
-                onClick={() =>
-                  setConfirming({
-                    status: 'completed',
-                    expected: gift.statusVersion,
-                  })
-                }
-              >
-                Unvoid
-              </button>
+              !claimed && (
+                <button
+                  type="button"
+                  className={secondary}
+                  disabled={busy}
+                  onClick={() =>
+                    setConfirming({
+                      status: 'completed',
+                      expected: gift.statusVersion,
+                    })
+                  }
+                >
+                  Unvoid
+                </button>
+              )
             ) : (
               <button
                 type="button"
                 className={secondary}
                 disabled={busy}
-                onClick={() =>
+                onClick={() => {
+                  setVoidReason('')
                   setConfirming({
                     status: 'void',
                     expected: gift.statusVersion,
                   })
-                }
+                }}
               >
                 Void
               </button>
@@ -258,21 +301,99 @@ function GiftView({ gift }: { gift: Gift }) {
               }
             : {
                 title: 'Void this gift?',
-                description:
-                  'It stays on record but counts for nothing. You can unvoid it later.',
+                description: claimed
+                  ? lock.voiding
+                  : 'It stays on record but counts for nothing. You can unvoid it later.',
                 confirm: 'Void',
+                confirmDisabled: claimed && voidReason.trim() === '',
               })}
           cancel="Cancel"
           onConfirm={() => {
             if (!confirming) return
             setConfirming(null)
-            void changeStatus(confirming.status, confirming.expected)
+            const reason = confirming.status === 'void' ? voidReason.trim() : ''
+            void changeStatus(
+              confirming.status,
+              confirming.expected,
+              reason || undefined,
+            )
           }}
           onCancel={() => setConfirming(null)}
-        />
+        >
+          {confirming?.status === 'void' && (
+            <label className="flex flex-col gap-1 text-sm">
+              {claimed ? 'Reason (needed)' : 'Reason (optional)'}
+              <textarea
+                value={voidReason}
+                onChange={(e) => setVoidReason(e.target.value)}
+                placeholder="Entered twice, wrong donor…"
+                className={`${field} w-full`}
+              />
+            </label>
+          )}
+        </ConfirmDialog>
       </div>
       <GiftHistory id={gift._id} members={members} />
     </main>
+  )
+}
+
+/**
+ * What voiding a claimed gift means, by where its claim stands: in a
+ * draft it holds the draft back (deleting the draft lets the gift go);
+ * once the claim may have gone to HMRC, the next claim pays the tax
+ * back. Either way it can't be un-voided while the claim holds it. With
+ * the claim unknown (staff), both are said.
+ */
+function claimLock(claim: ClaimSummary | undefined) {
+  if (claim?.status === 'draft')
+    return {
+      voided: `Voided while claim ${claim.number} is a draft: that claim can’t be marked ready until it’s deleted, and deleting it lets this gift go (it can then be unvoided).`,
+      voiding: `It is in draft claim ${claim.number}: it stays on record but counts for nothing, and that claim can’t be marked ready until it’s deleted and made again. Say why it is void.`,
+    }
+  if (claim)
+    return {
+      voided:
+        'Voided after it was claimed for Gift Aid: the next claim pays the tax back to HMRC, and it can’t be un-voided. Record it again if it was given.',
+      voiding:
+        'It is in a Gift Aid claim: it stays on record but counts for nothing, the next claim pays its Gift Aid back to HMRC, and it can’t be un-voided. Say why it is void.',
+    }
+  return {
+    voided:
+      'Voided while in a Gift Aid claim: it can’t be un-voided while the claim holds it. If the claim has gone to HMRC, the next claim pays the tax back.',
+    voiding:
+      'It is in a Gift Aid claim: it stays on record but counts for nothing, and it can’t be un-voided while the claim holds it. If the claim has gone to HMRC, the next claim pays its Gift Aid back. Say why it is void.',
+  }
+}
+
+/**
+ * "Claim 3" for an admin, linking to it (the claims list is admin
+ * only); "Gift Aid claim" for everyone else.
+ */
+function ClaimBadge({
+  claimId,
+  claim,
+}: {
+  claimId: string
+  claim: ClaimSummary | undefined
+}) {
+  const { slug } = useTenant()
+  const style = 'rounded bg-sky-100 px-1.5 text-sm font-normal text-sky-900'
+  if (!claim)
+    return (
+      <span data-testid="claim-badge" className={style}>
+        Claimed for Gift Aid
+      </span>
+    )
+  return (
+    <Link
+      to="/t/$slug/giftaid/$claimId"
+      params={{ slug, claimId }}
+      data-testid="claim-badge"
+      className={`${style} hover:underline`}
+    >
+      Claimed in claim {claim.number}
+    </Link>
   )
 }
 
@@ -450,6 +571,12 @@ function GiftEdit({ gift, onDone }: { gift: Gift; onDone: () => void }) {
       aria-label="Edit gift"
       className="flex flex-col gap-4"
     >
+      {gift.claimId && (
+        <p className="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-sm text-sky-900">
+          This gift is in a Gift Aid claim: its amount and date can’t change.
+          Its method, reference and source code can.
+        </p>
+      )}
       {merged && (
         <div
           role="status"

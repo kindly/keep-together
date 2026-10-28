@@ -4,7 +4,7 @@ import {
   createFileRoute,
   useNavigate,
 } from '@tanstack/react-router'
-import { useMyTenants, useSignOut } from '../lib/data'
+import { FEATURES, useMyTenants, useSignOut } from '../lib/data'
 import { portedListTabs } from '../lib/settings-tabs'
 
 export const Route = createFileRoute('/t/$slug/settings')({
@@ -19,7 +19,8 @@ const tab =
 const activeTab = 'border-neutral-900 font-medium text-neutral-900'
 
 /**
- * Settings: one tab per child route, every one visible to every member.
+ * Settings: one tab per child route, every one visible to every member
+ * but HMRC details (admins: it is the Gift Aid claims' settings).
  * Each list's tab opens with its admin-only switch, and is editable by
  * whoever may manage that list (read-only for the rest). The backend
  * enforces it. Then the account's own: Switch group (only for people in
@@ -29,7 +30,9 @@ function SettingsLayout() {
   const { slug } = Route.useParams()
   const signOut = useSignOut()
   const navigate = useNavigate()
-  const several = (useMyTenants()?.length ?? 0) > 1
+  const tenants = useMyTenants()
+  const several = (tenants?.length ?? 0) > 1
+  const admin = tenants?.find((t) => t.slug === slug)?.role === 'admin'
   return (
     <main className="mx-auto flex max-w-4xl flex-col gap-6 p-6">
       <h1 className="text-xl font-semibold">Settings</h1>
@@ -51,6 +54,16 @@ function SettingsLayout() {
               {t.label}
             </Link>
           ))}
+          {admin && FEATURES.giftAidClaims && (
+            <Link
+              to="/t/$slug/settings/hmrc"
+              params={{ slug }}
+              className={tab}
+              activeProps={{ className: activeTab }}
+            >
+              HMRC details
+            </Link>
+          )}
           <Link
             to="/t/$slug/settings/members"
             params={{ slug }}

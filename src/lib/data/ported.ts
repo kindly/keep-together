@@ -42,6 +42,12 @@ export const PORTED: ReadonlyArray<RouteId> = [
   // B2: recording a gift and a gift's page; FEATURES.gifts follows.
   '/t/$slug/gifts/new',
   '/t/$slug/gifts/$giftId',
+  // Gift Aid claims G3: the claims pages and Settings › HMRC details.
+  '/t/$slug/giftaid',
+  '/t/$slug/giftaid/',
+  '/t/$slug/giftaid/new',
+  '/t/$slug/giftaid/$claimId',
+  '/t/$slug/settings/hmrc',
 ]
 
 const ported = new Set<string>(PORTED)
@@ -64,6 +70,8 @@ export const FEATURES = {
   bulkSetField: true,
   /** B2: the contact's gifts and Gift Aid, home's recent gifts. */
   gifts: isPorted('/t/$slug/gifts/new'),
+  /** G3: the header's Gift Aid link (admins), the gift page's claim badge. */
+  giftAidClaims: isPorted('/t/$slug/giftaid'),
   /** A3: Settings, and "last used" group. */
   settings: isPorted('/t/$slug/settings'),
 }

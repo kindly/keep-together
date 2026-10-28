@@ -162,6 +162,20 @@ export const budgets = {
   // Completing a declaration's name and address after it was saved: an
   // edit, shown only once the server confirms it.
   'contact.giftaid.details': repeatable,
+  // Gift Aid claims G3: the Gift Aid page, a claim's preview (a new end
+  // date; Refresh after fixing a gift left out), and each step of a claim,
+  // shown only once the server confirms it (rule 4). Creating claims
+  // creates records, as gift.record does: infrequent.
+  'giftaid.open': repeatable,
+  'giftaid.preview': repeatable,
+  'giftaid.refresh': repeatable,
+  'giftaid.create': infrequent,
+  'giftaid.markReady': repeatable,
+  'giftaid.markSubmitted': repeatable,
+  'giftaid.markPaid': repeatable,
+  'giftaid.reject': repeatable,
+  // Settings › HMRC details: an edit of the group's details.
+  'giftaid.hmrcSave': repeatable,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },
