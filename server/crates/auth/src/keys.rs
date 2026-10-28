@@ -65,6 +65,12 @@ impl Keys {
         B64.encode(crate::secret::random_bytes(32))
     }
 
+    /// The `KEEP_SETTINGS_KEY` itself, for an organisation's secrets
+    /// (`platform::settings`: a GoCardless access token).
+    pub fn settings_key(&self) -> &SettingsKey {
+        &self.seal
+    }
+
     /// `plaintext` sealed for `aad` (e.g. `totp:<user>`), as stored.
     pub fn seal(&self, aad: &str, plaintext: &str) -> String {
         let s = self.seal.seal(aad, plaintext);

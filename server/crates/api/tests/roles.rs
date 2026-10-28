@@ -159,6 +159,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /contacts/{id}/history",
             "GET /contacts/{id}/notes",
             "GET /contacts/{id}/notes/archived",
+            "GET /contacts/{id}/regular-gifts",
             "GET /contacts/{id}/relationships",
             "GET /fields",
             "GET /giftaid/claims",
@@ -171,9 +172,11 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /gifts/recent",
             "GET /gifts/{id}",
             "GET /gifts/{id}/history",
+            "GET /gocardless",
             "GET /identifier-types",
             "GET /members",
             "GET /preferences",
+            "GET /regular-gifts/{id}",
             "GET /relationship-types",
             "GET /sources",
             "GET /sources/filter-options",
@@ -187,6 +190,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /contacts/{id}/archive",
             "POST /contacts/{id}/giftaid",
             "POST /contacts/{id}/giftaid/cancel",
+            "POST /contacts/{id}/regular-gifts",
             "POST /contacts/{id}/restore",
             "POST /contacts/{id}/save",
             "POST /fields",
@@ -203,6 +207,9 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /gifts/record",
             "POST /gifts/{id}/save",
             "POST /gifts/{id}/status",
+            "POST /gocardless/connect",
+            "POST /gocardless/disconnect",
+            "POST /gocardless/events/retry",
             "POST /identifier-types",
             "POST /members/invite",
             "POST /members/invites/{id}/revoke",
@@ -215,6 +222,8 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /notes/{id}/restore",
             "POST /notes/{id}/save",
             "POST /preferences/{kind}",
+            "POST /regular-gifts/{id}/cancel",
+            "POST /regular-gifts/{id}/link",
             "POST /relationship-types",
             "POST /relationships",
             "POST /sources",
@@ -244,7 +253,23 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
 async fn every_write_route_refuses_a_viewer_and_the_role_is_the_reason() {
     let routes = table();
     assert!(!routes.is_empty());
-    let w = world();
+    let mut w = world();
+    // GoCardless on (the fake; nothing here reaches it), so its routes
+    // are there to be refused.
+    let gc = api::gocardless::from_vars(
+        |name| (name == "KEEP_GOCARDLESS").then(|| "fake".to_owned()),
+        api::gocardless::Origins {
+            app_origin: "http://localhost:3000",
+            self_base: "http://127.0.0.1:9",
+        },
+        ::auth::keys::Keys::dev().settings_key().clone(),
+    )
+    .unwrap()
+    .map(std::sync::Arc::new);
+    w.app = api::app(
+        api::AppState::new(w.store.clone(), true).with_gocardless(gc),
+        api::routes::router(),
+    );
     let val = w.login("val@alpha.org").await;
     let ann = w.login("ann@alpha.org").await;
     for (method, path) in &routes {

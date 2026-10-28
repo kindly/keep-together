@@ -8,6 +8,7 @@
 
 pub mod gift;
 pub mod queries;
+pub mod regular;
 pub mod rules;
 pub mod types;
 
@@ -21,6 +22,9 @@ use rusqlite::{Connection, OptionalExtension};
 pub use gift::{CLAIM_LOCK, GIFT, STATUS};
 pub use queries::{
     BY_CONTACT_LIMIT, HISTORY_PAGE_LIMIT, RECENT_LIMIT, by_contact, get, history, my_recent,
+};
+pub use regular::{
+    DIRECT_DEBIT_PAYMENT, MIGRATION_DIRECT_DEBIT, REGULAR_GIFT, REGULAR_GIFT_MANDATE,
 };
 pub use rules::{ALLOCATION_LIMIT, CLIENT_KEY_MAX, PENCE_MAX, format_pence};
 pub use types::{ClaimLockPayload, GiftPayload, Status, StatusPayload};
@@ -99,8 +103,16 @@ CREATE INDEX gifts_claimed_void ON gifts (claim_id)
 /// (`contracts::restore_entity_to`), exclude `giving.claimLock`, or a
 /// moment when a since-deleted claim held the gift aborts the restore
 /// (review L3).
-pub static REGISTRY: LazyLock<Registry> =
-    LazyLock::new(|| Registry::new(&[&GIFT, &STATUS, &CLAIM_LOCK]));
+pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
+    Registry::new(&[
+        &GIFT,
+        &STATUS,
+        &CLAIM_LOCK,
+        &REGULAR_GIFT,
+        &REGULAR_GIFT_MANDATE,
+        &DIRECT_DEBIT_PAYMENT,
+    ])
+});
 
 /// The command group's name for a new gift, with the code as it reads now
 /// (history keeps it through renames): "gift £20 cash, Street-Wesser-001".

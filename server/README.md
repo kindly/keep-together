@@ -41,6 +41,8 @@ Env (`api`):
 | `KEEP_IDEAL_POSTCODES_KEY` | unset | the platform's key for `ideal`; sent in the `Authorization` header, never in a URL, never logged |
 | `KEEP_ADDRESS_LOOKUP_CAP` | `100` | lookups per organisation per calendar month (UTC): then `429 lookup_cap` |
 | `KEEP_ADDRESS_LOOKUP_DAILY_CEILING` | `2000` | lookups across the platform per UTC day: then `503 lookup_unavailable` |
+| `KEEP_GOCARDLESS` | `off` | Direct Debit (`api::gocardless`; "GoCardless" below): `fake` (a GoCardless mock mounted on this server at `/api/fake-gocardless`, no network; `KEEP_ENV=prod` refuses it), `sandbox` (`prod` refuses it), `live` (only with `KEEP_ENV=prod`). Any other value stops the boot |
+| `KEEP_GOCARDLESS_CLIENT_ID`, `KEEP_GOCARDLESS_CLIENT_SECRET`, `KEEP_GOCARDLESS_WEBHOOK_SECRET` | unset | the partner app's OAuth client and webhook secret; `sandbox`/`live` stop the boot without them (`scripts/fly/gocardless-secrets.sh`). Never logged, never in a URL or an error |
 | `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`; on dev under `KEEP_AUTH_POLICY=relaxed` a missing password is `riverside` and a missing TOTP is none) |
 
 The 10k measurement (`scripts/perf-search10k-rs/`):
@@ -132,6 +134,7 @@ request, an SSE stream) is never closed.
   | 429 | `rate_limited` | auth's rate limits |
   | 429 | `lookup_cap` | the organisation's address lookups for the month are used up |
   | 503 | `lookup_unavailable` | the address lookup provider is down, slow (5 s), out of credit, or the daily ceiling is reached |
+  | 503 | `gocardless_unavailable` | GoCardless didn't answer or failed; nothing changed here |
   | 500 | `internal` | details only in the server log |
 
   Tier-2 warnings (ADR 0015) aren't errors: they ride along in read
@@ -539,3 +542,106 @@ Routes under `/api/t/{slug}`, **admin only** (reads too):
 | `GET giftaid/claims/{id}/schedule?format=excel\|libreoffice` | HMRC's Gift Aid schedule (`.ods`), filled from HMRC's own template (`giftaid/assets/hmrc`); ready or later |
 | `GET giftaid/claims/{id}/xml` | the claim as HMRC's R68 XML, IRmark stamped (`X-IRmark`: base32), generated and never sent; ready or later; `422 rejected`: `missing_hmrc_details`, `org_name` |
 | `GET giftaid/hmrc-details` · `POST giftaid/hmrc-details {expected?, …}` | `HmrcDetailsView {…, version, warnings}`: HMRC reference, regulator and number, the authorised official (name, postcode, phone); stored as typed, what HMRC would refuse is a warning |
+## GoCardless (Direct Debit)
+
+`api::gocardless`, plan `factory/plans/gocardless.sv` (D1, D2). Each
+organisation connects its own GoCardless account through GoCardless's
+partner OAuth; donors' money goes straight to it. The organisation's
+access token is an org secret (`platform::settings`,
+`gocardless.accessToken`, sealed under `KEEP_SETTINGS_KEY`); `platform.db`
+(`api::gocardless::SCHEMA`) holds which GoCardless organisation is which
+of ours, the single-use OAuth states (10 minutes, bound to the admin's
+session) and every webhook event by id.
+
+Webhooks: `POST /api/gocardless/webhook`, one route for every
+organisation. The raw body's HMAC-SHA256 must match `Webhook-Signature`
+(constant time) or the answer is `498`; a signed batch is stored event by
+event (`INSERT OR IGNORE` on the event id: a repeat is a no-op), routed by
+`links.organisation` (an organisation not connected here is stored as
+handled and logged by id only), answered `204`, and handled in the
+background and by the `gocardless-events` job (30 s), one org file at a
+time in arrival order, each event in its own transaction as the system
+(`api::gocardless::process`). Nothing is dropped: a retryable failure
+holds back that organisation's later events and waits 30 s doubling to
+an hour; after 50 tries (about two days), or at once if GoCardless
+refused the request, the event is parked (outcome `failed`: logged, sent
+to Sentry, never purged, `failedEvents` in `GET gocardless`, requeued by
+an admin's `POST gocardless/events/retry`). After each run a sweep gives
+any connected organisation's regular gift with a mandate but no
+subscription its subscription; if GoCardless refuses, a dead mandate
+ends the regular gift and a live one is backed off, then given up on
+after 8 refusals (reported). A connected organisation whose file has no
+token (a connect still landing) retries, and an event for an account the
+organisation no longer holds is set aside, never run with another
+account's token. A mandate event identifies its regular
+gift from the metadata GoCardless copies from our billing request, and
+never makes a subscription itself.
+
+Connecting: one connect at a time (the code exchange, the ownership check
+and the token's install); the account is reserved in `platform.db`
+before any token is sealed. "Connected" means owning that mapping, not
+holding a token. An account another group holds is refused (`taken`) and
+the new token, which GoCardless issues by disabling the old, is sealed
+into the holder's file. Disconnecting takes the same lock; a revoke
+GoCardless refuses outright counts as done, one it rate-limits or fails
+(429, 5xx) is a 503. Switching accounts revokes the old account's
+token and counts as disconnecting it. Disconnecting (or switching)
+doesn't stop GoCardless collecting: the group's queued events for that
+account are set aside and later ones kept from the purge, and connecting
+the same account again replays them in order, once its token is in place
+(runs are held off meanwhile). Another group connecting the account
+never gets them.
+
+Org schema step 17 rebuilds `gifts` (SQLite can't widen the method's
+CHECK in place) with foreign keys deferred and checked after, carrying
+every column and index it has by then, Gift Aid claims' void reason,
+claim lock and partial indexes included.
+
+Regular gifts (`giving::regular`): the terms (`giving.regularGift`,
+fixed once set up), where it stands at GoCardless
+(`giving.regularGiftMandate`: status `pending → active →
+cancelled/failed`, billing request and hosted link, mandate and
+subscription ids, why it ended), and one `giving.directDebitPayment` per
+GoCardless payment. A payment becomes a gift (`method = 'direct_debit'`,
+the payment id as its reference, unique) only when GoCardless reports it
+`confirmed`, dated the day GoCardless collected it (its charge date,
+which decides the tax year for Gift Aid and income), and counts exactly
+while GoCardless says the money was collected: `charged_back`, or `failed`/`cancelled` after it was confirmed
+(a Bacs late failure), voids it with GoCardless's reason as its
+`void_reason` (so a gift already in a Gift Aid claim is voided too, and
+the next claim pays its tax back as an adjustment); a cancelled
+chargeback or a retry collected the same day un-voids the same gift; a
+retry collected on another day, or money back on a gift in a claim
+(whose void is final), is recorded again as a new gift. At most one
+completed gift per payment (a partial unique index on the reference);
+un-voiding a gift whose payment is now another gift is `422
+direct_debit_recorded_again`.
+A gift staff voided themselves stays void, and staff can't un-void one
+whose money went back (`422 direct_debit_returned`). A failed payment
+with no gift shows on the regular gift. A Direct Debit gift's method,
+amount, date and reference can't be edited (`422 direct_debit_fixed`) or
+entered by hand (`direct_debit_by_hand`).
+
+| route | |
+|---|---|
+| `GET /api/gocardless/callback?code&state` | GoCardless's OAuth redirect: the state checked and spent, the code traded, the token sealed into the org file, the account recorded (one already another group's: refused). Lands on `/t/{slug}/settings?gocardless=connected\|denied\|taken\|failed\|forbidden`, or `/?gocardless=expired` |
+| `POST /api/gocardless/webhook` | above |
+| `GET /api/t/{slug}/gocardless` | `GoCardlessStatus {enabled, mode, connected, organisationId, connectedAt, connectedBy, failedEvents}`, any member; the only route that answers when off |
+| `POST …/gocardless/events/retry` | parked events back in the queue, a run started → `GoCardlessStatus`; admin within the step-up hour |
+| `POST …/gocardless/connect` | → `ConnectStart {url}`: send the browser there; admin within the step-up hour |
+| `POST …/gocardless/disconnect` | revoke the token at GoCardless (one it no longer knows counts as revoked), forget it and the routing → `GoCardlessStatus`; admin within the step-up hour; regular gifts stay, `connected: false`, and GoCardless keeps collecting (kept for a reconnect) |
+| `GET …/contacts/{id}/regular-gifts` | `RegularGiftView[]` (each with its latest 100 payments and `lastFailure`), newest first |
+| `POST …/contacts/{id}/regular-gifts` | `SetUpRegularGift {amount, frequency: monthly\|yearly, dayOfMonth: 1–28, month?, sourceCodeId, clientKey?}` → `RegularGiftSaved {id, view}` with `view.flowUrl`, the donor's GoCardless page; staff. Checked first (`422`, `409 duplicate`), then GoCardless makes the billing request (Bacs, GBP) and the page, then it is stored; not connected `422 rejected not_connected` |
+| `GET …/regular-gifts/{id}` | `RegularGiftView` |
+| `POST …/regular-gifts/{id}/link` | `{expected}` (`mandateVersion`) → a new hosted page (one lasts 7 days) while pending; staff |
+| `POST …/regular-gifts/{id}/cancel` | `{expected}` → cancels the mandate (or the unsigned billing request; one the donor fulfilled meanwhile: the mandate it made) at GoCardless, then `cancelled` "Cancelled by staff" (or GoCardless's reason, if its webhook landed first); staff |
+
+The fake (`KEEP_GOCARDLESS=fake`, `api::gocardless::fake`) answers the
+calls the client makes in GoCardless's shapes, hosts the consent page and
+the donor's sign-up page, and signs its webhooks like GoCardless. Its
+scenario simulators (`POST /api/fake-gocardless/simulate/…`: a mandate's
+`activate|fail|cancel|expire`, a subscription's next `payment`, a
+payment's `submit|confirm|fail|charge_back|cancel_chargeback`; `outage`
+`{calls, status?, path?, delay_ms?}`; `webhooks/hold` and
+`webhooks/release?reverse`) drive the rest, and its consent page can pick
+an existing account. `api/tests/gocardless.rs` and `qc/flows/gocardless.spec.ts` run on it.

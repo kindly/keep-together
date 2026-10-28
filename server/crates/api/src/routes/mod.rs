@@ -8,6 +8,7 @@ pub mod fields;
 mod giftaid;
 mod giftaid_claims;
 pub mod gifts;
+pub mod gocardless;
 pub mod groups;
 mod identifiers;
 mod notes;
@@ -39,6 +40,7 @@ pub fn router() -> Router {
         .merge(gifts::router())
         .merge(giftaid::router())
         .merge(giftaid_claims::router())
+        .merge(gocardless::router())
 }
 
 /// A query string whose rejection is an [`ApiError::Invalid`], like

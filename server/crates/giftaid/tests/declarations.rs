@@ -39,6 +39,8 @@ fn migrations() -> Migrations<'static> {
         M::up(giftaid::MIGRATION_DETAILS),
         M::up(giftaid::MIGRATION_CLAIMS),
         M::up(giving::MIGRATION_CLAIM_LOCK),
+        // On an empty file: no rows for the rebuild to carry.
+        M::up(giving::MIGRATION_DIRECT_DEBIT),
     ])
 }
 

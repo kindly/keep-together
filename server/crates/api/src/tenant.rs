@@ -46,6 +46,8 @@ pub struct Tenant {
     session_id: String,
     /// `KEEP_ADDRESS_LOOKUP`, for [`Tenant::lookup_address`].
     address: Option<Arc<crate::address::Lookup>>,
+    /// `KEEP_GOCARDLESS`, for [`Tenant::gocardless`] and the connection.
+    gocardless: Option<Arc<crate::gocardless::GoCardless>>,
 }
 
 impl Tenant {
@@ -228,6 +230,122 @@ impl Tenant {
         }
     }
 
+    /// GoCardless, when it is on here (`KEEP_GOCARDLESS`); off: `404`.
+    /// The organisation's token is read from its own file
+    /// ([`crate::gocardless::GoCardless::token`]).
+    pub fn gocardless(&self) -> Result<Arc<crate::gocardless::GoCardless>, ApiError> {
+        self.gocardless.clone().ok_or(ApiError::NotFound)
+    }
+
+    /// Whether GoCardless is on, and this organisation's connection
+    /// (`platform.db`).
+    pub async fn gocardless_status(&self) -> Result<crate::gocardless::GoCardlessStatus, ApiError> {
+        use crate::gocardless::{GoCardlessStatus, Mode, connection};
+        let Some(gc) = self.gocardless.clone() else {
+            return Ok(GoCardlessStatus::new(Mode::Off, None));
+        };
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        let (connected, failed) = blocking(move || {
+            Ok::<_, ApiError>((
+                connection(&store, &id)?,
+                crate::gocardless::process::failed_count(&store, &id)?,
+            ))
+        })
+        .await?;
+        Ok(GoCardlessStatus {
+            failed_events: failed,
+            ..GoCardlessStatus::new(gc.mode, connected)
+        })
+    }
+
+    /// Whether this organisation owns a GoCardless account's mapping in
+    /// `platform.db`: what "connected" means (a token alone doesn't).
+    pub async fn gocardless_owned(&self) -> Result<bool, ApiError> {
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        Ok(blocking(move || crate::gocardless::connection(&store, &id))
+            .await?
+            .is_some())
+    }
+
+    /// Put this organisation's parked GoCardless events back in the queue
+    /// (admin) and start a run.
+    pub async fn gocardless_retry_failed(
+        &self,
+    ) -> Result<crate::gocardless::GoCardlessStatus, ApiError> {
+        self.require_admin()?;
+        let gc = self.gocardless()?;
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        blocking(move || crate::gocardless::process::requeue_failed(&store, &id)).await?;
+        crate::gocardless::webhook::spawn_processing(self.store.clone(), gc);
+        self.gocardless_status().await
+    }
+
+    /// Start "Connect with GoCardless" (admin within the step-up hour):
+    /// a single-use `state` bound to this session, user and organisation,
+    /// and the URL to send the browser to.
+    pub async fn gocardless_connect(&self) -> Result<crate::gocardless::ConnectStart, ApiError> {
+        self.require_admin()?;
+        let gc = self.gocardless()?;
+        blocking(self.recheck()).await?;
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        let (user, session) = (self.user, self.session_id.clone());
+        let state = blocking(move || {
+            crate::gocardless::new_state(&store, &id, user, &session, contracts::now_ms())
+        })
+        .await?;
+        Ok(crate::gocardless::ConnectStart {
+            url: gc.authorize_url(&state),
+        })
+    }
+
+    /// Disconnect (admin within the step-up hour): revoke the token at
+    /// GoCardless, forget it here, and stop routing the account's
+    /// webhooks. Regular gifts stay, shown as not connected. GoCardless
+    /// unreachable: `503`, nothing changed.
+    pub async fn gocardless_disconnect(
+        &self,
+    ) -> Result<crate::gocardless::GoCardlessStatus, ApiError> {
+        use crate::gocardless::{GoCardlessStatus, forget_connection};
+        self.require_admin()?;
+        let gc = self.gocardless()?;
+        // One connect or disconnect at a time: a connect's token can't
+        // land in this file after it was emptied here, nor a reservation
+        // vanish under a connect.
+        let _connecting = gc.connecting.lock().await;
+        let g = gc.clone();
+        let token = self.read(move |r| g.token(r)).await?;
+        if let Some(token) = token {
+            match gc.api.revoke(gc.credentials(), &token).await {
+                Ok(()) => {}
+                // GoCardless failing, unreachable or rate-limiting (429):
+                // the token may still be live. Nothing changes here.
+                Err(e) if e.retryable() => {
+                    eprintln!("gocardless disconnect ({}): revoke: {e}", self.slug);
+                    return Err(ApiError::GocardlessUnavailable);
+                }
+                // Revoked already (an admin removed the app in GoCardless's
+                // dashboard): nothing left to revoke.
+                Err(
+                    e @ (crate::gocardless::CallError::Unauthorized
+                    | crate::gocardless::CallError::Refused { .. }),
+                ) => eprintln!(
+                    "gocardless disconnect ({}): GoCardless no longer knows the token ({e})",
+                    self.slug
+                ),
+                Err(e) => {
+                    eprintln!("gocardless disconnect ({}): revoke: {e}", self.slug);
+                    return Err(ApiError::GocardlessUnavailable);
+                }
+            }
+            let g = gc.clone();
+            self.write(move |ctx| Ok(g.put_token(ctx, "", contracts::Source::Ui)?))
+                .await?;
+        }
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        blocking(move || forget_connection(&store, &id)).await?;
+        Ok(GoCardlessStatus::new(gc.mode, None))
+    }
+
     /// This organisation's committed changes as SSE, resuming after
     /// `Last-Event-ID` if given (see [`crate::events`]).
     pub async fn events(
@@ -301,6 +419,7 @@ pub(crate) async fn middleware(
             store: state.store.clone(),
             session_id: session.id.clone(),
             address: state.address.clone(),
+            gocardless: state.gocardless.clone(),
         })
     }
     .await;
@@ -375,6 +494,7 @@ mod tests {
             store: store.clone(),
             session_id: ::auth::secret::hash(&token),
             address: None,
+            gocardless: None,
         };
         let write = || tenant.write(|_ctx| Ok(()));
         assert!(write().await.is_ok());

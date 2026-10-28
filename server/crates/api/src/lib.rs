@@ -8,6 +8,7 @@ pub mod body;
 pub mod boot;
 pub mod error;
 pub mod events;
+pub mod gocardless;
 pub mod health;
 pub mod jobs;
 pub mod observe;
@@ -40,6 +41,8 @@ pub struct AppState {
     pub qc: Option<Arc<routes::qc_seed::QcAccess>>,
     /// `KEEP_ADDRESS_LOOKUP` ([`address`]); off when `None`.
     pub address: Option<Arc<address::Lookup>>,
+    /// `KEEP_GOCARDLESS` ([`gocardless`]); off when `None`.
+    pub gocardless: Option<Arc<gocardless::GoCardless>>,
 }
 
 impl AppState {
@@ -52,7 +55,13 @@ impl AppState {
             auth: Arc::new(auth::Runtime::default()),
             qc: None,
             address: None,
+            gocardless: None,
         }
+    }
+
+    pub fn with_gocardless(mut self, gc: Option<Arc<gocardless::GoCardless>>) -> Self {
+        self.gocardless = gc;
+        self
     }
 
     pub fn with_address(mut self, lookup: Option<address::Lookup>) -> Self {
@@ -150,7 +159,8 @@ pub fn app(state: AppState, domain: Router) -> Router {
         ))
         // Stateless: tenant handlers can't extract `AppState`.
         .with_state::<AppState>(());
-    Router::new()
+    let fake = state.gocardless.as_ref().and_then(|gc| gc.fake.clone());
+    let mut router = Router::new()
         .route("/api/dev/login", post(auth::login))
         .route("/api/dev/tenants", post(auth::create_tenant))
         .route("/api/dev/qc-seed", post(routes::qc_seed::fixture))
@@ -164,8 +174,17 @@ pub fn app(state: AppState, domain: Router) -> Router {
         .route("/api/groups", get(routes::groups::mine))
         .route("/api/groups/{slug}/opened", post(routes::groups::opened))
         .route("/healthz", get(health::healthz))
+        .route("/api/gocardless/callback", get(gocardless::oauth::callback))
+        .route(
+            "/api/gocardless/webhook",
+            post(gocardless::webhook::receive),
+        )
         .merge(auth::routes())
-        .nest("/api/t/{slug}", tenant_routes)
+        .nest("/api/t/{slug}", tenant_routes);
+    if let Some(fake) = fake {
+        router = router.nest(gocardless::FAKE_PREFIX, gocardless::fake::router(fake));
+    }
+    router
         .layer(middleware::from_fn_with_state(state.clone(), body::buffer))
         .layer(middleware::from_fn(auth::guard::dev_host))
         .layer(middleware::from_fn_with_state(

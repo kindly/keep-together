@@ -70,7 +70,8 @@ pub fn is_iso_date(value: &str) -> bool {
 
 /// Normalise a gift and refuse what can't be stored: an amount of 0 or
 /// less or over [`PENCE_MAX`], a date that isn't one, allocations missing, not positive or not
-/// summing to the amount, or a reference on a cash gift. Mints missing
+/// summing to the amount, a reference on a cash gift, or a Direct
+/// Debit gift without its payment id. Mints missing
 /// allocation keys; an empty reference is none.
 pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
     let mut problems = Vec::new();
@@ -96,10 +97,16 @@ pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
     if !is_iso_date(&p.received_on) {
         problems.push(Problem::new("receivedOn", "Dates are YYYY-MM-DD"));
     }
-    if p.reference.is_some() && p.method != Method::Card {
+    if p.reference.is_some() && p.method == Method::Cash {
         problems.push(Problem::new(
             "reference",
-            "Only a card payment has a reference",
+            "Only a card or Direct Debit payment has a reference",
+        ));
+    }
+    if p.reference.is_none() && p.method == Method::DirectDebit {
+        problems.push(Problem::new(
+            "reference",
+            "A Direct Debit gift carries its payment's id",
         ));
     }
     if p.reference
@@ -315,5 +322,47 @@ mod tests {
             ..gift(2000)
         });
         assert_eq!(p, ["allocations"]);
+    }
+
+    #[test]
+    fn a_direct_debit_gift_carries_its_payment_id_and_cash_none() {
+        let base = || GiftPayload {
+            contact_id: "c".into(),
+            received_on: "2026-10-20".into(),
+            amount: 1000,
+            method: Method::DirectDebit,
+            reference: Some("PM123".into()),
+            allocations: vec![crate::types::AllocationRow {
+                key: None,
+                source_code_id: "s".into(),
+                amount: 1000,
+            }],
+            client_key: None,
+        };
+        assert!(prepare_gift(base()).is_ok());
+        let fields = |p| match prepare_gift(p) {
+            Err(ContractError::Invalid(problems)) => {
+                problems.into_iter().map(|p| p.field).collect::<Vec<_>>()
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            fields(GiftPayload {
+                reference: None,
+                ..base()
+            }),
+            ["reference"]
+        );
+        assert_eq!(
+            fields(GiftPayload {
+                method: Method::Cash,
+                ..base()
+            }),
+            ["reference"]
+        );
+        assert_eq!(
+            Method::parse(Method::DirectDebit.as_str()),
+            Method::DirectDebit
+        );
     }
 }

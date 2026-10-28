@@ -15,6 +15,7 @@ receivedOn: string,
  */
 amount: number, method: GiftMethod, 
 /**
- * Card only: the reader's receipt id.
+ * Card: the reader's receipt id. Direct Debit: the GoCardless
+ * payment id (unique: one gift per payment).
  */
 reference?: string, allocations: Array<AllocationRow>, clientKey?: string, };

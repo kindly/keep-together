@@ -208,6 +208,11 @@ async function startApi(i, bin) {
         KEEP_QC_SEED: '1',
         // Fixed addresses, no network (address-lookup.spec.ts).
         KEEP_ADDRESS_LOOKUP: 'fake',
+        // GoCardless's mock on the api itself (gocardless.spec.ts); its
+        // consent and sign-up pages are reached through this instance's
+        // serve.mjs origin.
+        KEEP_GOCARDLESS: 'fake',
+        KEEP_APP_ORIGIN: `http://localhost:${SERVE_PORT + i}`,
         RUST_LOG: process.env.RUST_LOG ?? 'warn',
       },
       stdio: ['ignore', 'inherit', 'inherit'],

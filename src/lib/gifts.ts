@@ -7,6 +7,7 @@ export type { RecentGift } from './data'
 export const METHOD_LABELS: Record<GiftMethod, string> = {
   cash: 'Cash',
   card: 'Card (separate reader)',
+  direct_debit: 'Direct Debit',
 }
 
 const POUNDS = new Intl.NumberFormat('en-GB', {

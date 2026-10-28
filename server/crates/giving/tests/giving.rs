@@ -47,6 +47,8 @@ fn migrations() -> Migrations<'static> {
         M::up(contacts::acquisition::MIGRATION),
         M::up(giving::MIGRATION),
         M::up(giving::MIGRATION_CLAIM_LOCK),
+        // On an empty file: no rows for the rebuild to carry.
+        M::up(giving::MIGRATION_DIRECT_DEBIT),
     ])
 }
 
