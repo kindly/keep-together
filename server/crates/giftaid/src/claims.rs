@@ -114,8 +114,8 @@ CREATE TABLE gift_aid_claim_adjustments (
 CREATE INDEX gift_aid_claim_adjustments_by_claim ON gift_aid_claim_adjustments (claim_id, position);
 CREATE INDEX gift_aid_claim_adjustments_by_original
     ON gift_aid_claim_adjustments (original_claim_id) WHERE live = 1;
-CREATE UNIQUE INDEX gift_aid_claim_adjustments_one_live_per_gift
-    ON gift_aid_claim_adjustments (gift_id) WHERE live = 1;
+CREATE UNIQUE INDEX gift_aid_claim_adjustments_one_live_per_line
+    ON gift_aid_claim_adjustments (gift_id, original_claim_id) WHERE live = 1;
 
 CREATE TABLE gift_aid_hmrc_details (
     id TEXT PRIMARY KEY,
@@ -451,14 +451,18 @@ pub fn preview(conn: &Connection, period_end: &str, today: &str) -> rusqlite::Re
 fn due_adjustments(conn: &Connection) -> rusqlite::Result<Vec<ClaimAdjustment>> {
     // Gifts already paid back, and each claim's status: one read each,
     // not two per voided gift (review L6).
-    let repaid: HashSet<String> = conn
-        .prepare_cached("SELECT gift_id FROM gift_aid_claim_adjustments WHERE live = 1")?
-        .query_map([], |r| r.get(0))?
+    // A repayment is of one claim's line: keyed by gift and the claim
+    // that claimed it, so a gift claimed again later is repaid again.
+    let repaid: HashSet<(String, String)> = conn
+        .prepare_cached(
+            "SELECT gift_id, original_claim_id FROM gift_aid_claim_adjustments WHERE live = 1",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut sent: HashMap<String, bool> = HashMap::new();
     let mut out = Vec::new();
     for v in giving::voided_in_claims(conn)? {
-        if repaid.contains(&v.id) {
+        if repaid.contains(&(v.id.clone(), v.claim_id.clone())) {
             continue;
         }
         if !sent.contains_key(&v.claim_id) {
@@ -570,10 +574,10 @@ pub fn create_claim(
 /// submitted, paid, rejected, or a draft deleted. Ready is refused while
 /// a gift of the draft was voided since it was made (delete the draft
 /// and claim again); after that a voided gift is paid back by the next
-/// claim. Rejected is refused while a later *draft* pays back one of its
-/// gifts (delete that draft first); once the later claim is ready or
-/// later it may be with HMRC, so its adjustment stands and this claim
-/// can still be rejected (HMRC then owes that tax back: tell them). Deleting or rejecting lets every gift go, so the next claim
+/// claim. Rejected is refused while any later claim (whatever its
+/// status) pays back one of its gifts: that repayment tells HMRC this
+/// claim stood. Reject or delete the later claim first, which lets its
+/// repayment go. Deleting or rejecting lets every gift go, so the next claim
 /// can take them.
 pub fn set_claim_status(
     ctx: &Ctx,
@@ -609,15 +613,17 @@ pub fn set_claim_status(
                 .prepare_cached(
                     "SELECT c.number FROM gift_aid_claim_adjustments a
                      JOIN gift_aid_claims c ON c.id = a.claim_id
-                     WHERE a.original_claim_id = ?1 AND a.live = 1 AND c.status = 'draft'
-                     LIMIT 1",
+                     WHERE a.original_claim_id = ?1 AND a.live = 1 LIMIT 1",
                 )?
                 .query_row([id], |r| r.get(0))
                 .optional()?;
             if let Some(number) = later {
                 return Err(ContractError::rejected(
                     "adjusted_later",
-                    format!("Draft claim {number} pays back gifts of this one: delete it first"),
+                    format!(
+                        "Claim {number} pays back a gift of this one, so it tells HMRC \
+                         this claim stood: reject or delete claim {number} first"
+                    ),
                 ));
             }
         }

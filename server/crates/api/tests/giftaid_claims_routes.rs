@@ -1322,40 +1322,72 @@ async fn a_gift_voided_out_of_a_ready_claim_is_paid_back_by_the_next() {
     );
 }
 
-/// Review L1: a claim whose voided gift a later claim pays back can still
-/// be marked rejected once that later claim may be with HMRC (ready or
-/// later); while the later claim is a draft, delete that first.
+/// Codex P1 (replacing review L1's loosening): while a later claim
+/// carries a repayment of a claim's gift, whatever that claim's status,
+/// HMRC has been told the earlier claim stood, so it can't be marked
+/// rejected; reject (or delete) the later claim first. The whole round
+/// trip then works: the gift is let go, un-voided, claimed again and
+/// voided again, and that second claim's repayment is due.
 #[tokio::test]
-async fn a_claim_paid_back_by_a_sent_claim_can_still_be_rejected() {
+async fn a_repaid_claim_cant_be_rejected_until_its_repayment_is_let_go() {
     let c = setup().await;
     let (gift, contact) = c.gift("alpha", &ANN_SMITH, &days_ago(20), 2000).await;
-    let first = c.create("alpha").await["id"].as_str().unwrap().to_owned();
-    c.submit(&first).await;
+    let a = c.create("alpha").await["id"].as_str().unwrap().to_owned();
+    c.submit(&a).await;
     c.void(&gift, Some("Refunded")).await;
     c.again(&contact, &days_ago(2), 1000).await;
-    let second = c.create("alpha").await["id"].as_str().unwrap().to_owned();
-    let (s, out) = c
-        .step(
-            &first,
-            json!({ "status": "rejected", "reason": "HMRC rejected it" }),
-        )
+    let b = c.create("alpha").await["id"].as_str().unwrap().to_owned();
+    assert_eq!(c.claim(&b).await["adjustments"][0]["giftId"], gift.as_str());
+    for step in ["draft", "ready"] {
+        if step == "ready" {
+            c.step_ok(&b, json!({ "status": "ready" })).await;
+        }
+        let (s, out) = c
+            .step(
+                &a,
+                json!({ "status": "rejected", "reason": "HMRC rejected it" }),
+            )
+            .await;
+        assert_eq!(
+            (s, out["reason"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("adjusted_later")),
+            "B {step}"
+        );
+    }
+    // Let B go, then A.
+    c.step_ok(&b, json!({ "status": "rejected", "reason": "Redo" }))
         .await;
-    assert_eq!(
-        (s, out["reason"].as_str()),
-        (StatusCode::UNPROCESSABLE_ENTITY, Some("adjusted_later"))
+    c.step_ok(
+        &a,
+        json!({ "status": "rejected", "reason": "HMRC rejected it" }),
+    )
+    .await;
+    let g = c.gift_view(&gift).await;
+    assert_eq!(g["claimId"], Value::Null);
+    // Un-void, claim again in C, void again: C's repayment is due.
+    ok(
+        &c.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{gift}/status"),
+        &c.ann,
+        Some(json!({ "expected": g["statusVersion"], "status": "completed" })),
+    )
+    .await;
+    let made = c.create("alpha").await;
+    let cc = made["id"].as_str().unwrap().to_owned();
+    assert!(
+        made["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["giftId"] == gift.as_str())
     );
-    c.step_ok(&second, json!({ "status": "ready" })).await;
-    let out = c
-        .step_ok(
-            &first,
-            json!({ "status": "rejected", "reason": "HMRC rejected it" }),
-        )
-        .await;
-    assert_eq!(out["view"]["status"], "rejected");
-    // The adjustment stands where it went.
+    c.submit(&cc).await;
+    c.void(&gift, Some("Refunded again")).await;
+    let p = c.preview("alpha", &today()).await;
     assert_eq!(
-        c.claim(&second).await["adjustments"][0]["giftId"],
-        gift.as_str()
+        p["adjustments"],
+        json!([{ "giftId": gift, "originalClaimId": cc, "amount": 500, "reason": "Refunded again" }])
     );
 }
 
@@ -1401,4 +1433,48 @@ async fn gifts_too_old_to_claim_are_counted() {
     let p = c.preview("alpha", &today()).await;
     assert_eq!(p["tooOld"], 1);
     assert_eq!(p["totals"]["lines"], 1);
+}
+
+/// Codex P1: a repayment is keyed by the gift and the claim it repays,
+/// in the schema: one live repayment per (gift, claim), and a gift
+/// claimed again by another claim can be repaid again.
+#[tokio::test]
+async fn one_live_repayment_per_gift_and_claim() {
+    let c = setup().await;
+    let (gift, contact) = c.gift("alpha", &ANN_SMITH, &days_ago(20), 2000).await;
+    let a = c.create("alpha").await["id"].as_str().unwrap().to_owned();
+    c.submit(&a).await;
+    c.void(&gift, Some("Refunded")).await;
+    c.again(&contact, &days_ago(3), 1000).await;
+    let b = c.create("alpha").await["id"].as_str().unwrap().to_owned();
+    let third = c.again(&contact, &days_ago(2), 1000).await;
+    let line = c.preview("alpha", &today()).await["lines"][0].clone();
+    assert_eq!(line["giftId"], third.as_str());
+    let db = c.w.store.org(&c.w.alpha.id).unwrap();
+    let make = |original: &str| {
+        contracts::transact(&db, None, |ctx| {
+            contracts::execute(
+                ctx,
+                &giftaid::CLAIM,
+                giftaid::claim_types::ClaimPayload {
+                    period_end: today(),
+                    lines: vec![serde_json::from_value(line.clone()).unwrap()],
+                    adjustments: vec![giftaid::claim_types::ClaimAdjustment {
+                        key: None,
+                        gift_id: gift.clone(),
+                        original_claim_id: original.to_owned(),
+                        amount: 500,
+                        reason: "test".into(),
+                    }],
+                },
+                contracts::Exec::create(contracts::Source::Test),
+            )
+        })
+    };
+    let err = make(&a).unwrap_err();
+    assert!(
+        matches!(&err, contracts::ContractError::Rejected { reason, .. } if reason == "already_claimed"),
+        "{err:?}"
+    );
+    make(&b).unwrap();
 }
