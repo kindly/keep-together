@@ -152,6 +152,9 @@ export const budgets = {
   // Void and unvoid show the new status only once the server confirms it
   // (gifts are never optimistic, human 2026-10-23).
   'gift.void': repeatable,
+  // Gift Aid claims G1: a claimed gift's new amount, refused by the server
+  // and said why (the claim lock), the form left open.
+  'gift.saveClaimed': repeatable,
   'gift.unvoid': repeatable,
   'contact.gifts.loadMore': repeatable,
   'contact.giftaid.cancel': repeatable,

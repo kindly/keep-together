@@ -645,6 +645,7 @@ fn gifts(
                 &giving::STATUS,
                 StatusPayload {
                     status: GiftStatus::Void,
+                    reason: None,
                 },
                 Exec::update(&gift, None, Source::Seed).in_group(group),
             )?;

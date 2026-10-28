@@ -9,6 +9,7 @@ publish.workspace = true
 # `Connection` on one org file and can't name an organisation.
 [dependencies]
 contracts.workspace = true
+miniz_oxide = "0.8"
 contacts.workspace = true
 giving.workspace = true
 rusqlite.workspace = true
@@ -16,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha1 = "0.10"
 thiserror.workspace = true
+unicode-normalization.workspace = true
 ts-rs.workspace = true
 
 [dev-dependencies]

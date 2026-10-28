@@ -9,6 +9,7 @@ import {
 import {
   GIFT_ROUTE,
   cancelDeclarations,
+  claimedGift,
   contactIdOf,
   declare,
   newDonor,
@@ -237,6 +238,59 @@ test.describe('gift page', { annotation: [CONTACT_ROUTE, GIFT_ROUTE] }, () => {
       giftAid(page).getByRole('button', { name: /Mark made in error/ }),
     ).toHaveCount(0)
     await context.close()
+  })
+
+  // Gift Aid claims G1: a gift a claim holds keeps its amount, date and
+  // donor, and voiding it needs a reason (the page has no reason box
+  // yet: G3), each refusal said by the server and shown as it says it.
+  test('a gift in a Gift Aid claim is locked', async ({
+    page,
+    flow,
+    users,
+    world,
+    instance,
+  }) => {
+    const r = await recorder(instance, users.a, world.tenants[0].tenantId)
+    const { giftId } = await claimedGift(r, uniqueName('claimed'), 2000n)
+    await page.goto(`/t/${users.a.slug}/gifts/${giftId}`)
+    await expect(heading(page)).toContainText('£20')
+    const alert = page.getByRole('alert')
+
+    let pence = 2000
+    await flow(page, 'gift.saveClaimed', {
+      before: async () => {
+        pence += 101
+        const pounds = `${Math.floor(pence / 100)}.${String(pence % 100).padStart(2, '0')}`
+        // A fresh form each sample: the last refusal goes with it.
+        if (await page.getByLabel('Amount (£)').isVisible())
+          await page.getByRole('button', { name: 'Cancel' }).click()
+        await page.getByRole('button', { name: 'Edit' }).click()
+        await page.getByLabel('Amount (£)').fill(pounds)
+        await expect(alert).toHaveCount(0)
+      },
+      action: () => page.getByRole('button', { name: 'Save' }).click(),
+      server: true,
+      until: () =>
+        Boolean(
+          document
+            .querySelector('[role="alert"]')
+            ?.textContent.includes('in a Gift Aid claim'),
+        ),
+    })
+    await expect(alert).toContainText(
+      'This gift is in a Gift Aid claim: its amount and date can’t change',
+    )
+    await page.getByRole('button', { name: 'Cancel' }).click()
+    await expect(heading(page)).toContainText('£20.00')
+
+    await page.getByRole('button', { name: 'Void', exact: true }).click()
+    await confirm(page, 'Void').click()
+    await expect(page.getByRole('alert')).toContainText(
+      'This gift is in a Gift Aid claim: say why it is void',
+    )
+    await expect(heading(page).getByText('void', { exact: true })).toHaveCount(
+      0,
+    )
   })
 })
 

@@ -3,7 +3,7 @@
 
 use contracts::{ContractError, Problem, mint_ids};
 
-use crate::types::{GiftPayload, Method};
+use crate::types::{GiftPayload, Method, StatusPayload};
 
 /// Most source codes one gift is split across.
 pub const ALLOCATION_LIMIT: usize = 20;
@@ -17,6 +17,29 @@ pub const PENCE_MAX: i64 = (1 << 53) - 1;
 /// The widest a client key may be (characters): the SPA mints 32 hex;
 /// imports and seeds use their own keys.
 pub const CLIENT_KEY_MAX: usize = 200;
+
+/// Longest void reason kept.
+pub const VOID_REASON_MAX: usize = 1000;
+
+/// A void reason trimmed (blank = none) and at most [`VOID_REASON_MAX`]
+/// characters; whether one is needed is the contract's call (it knows
+/// whether the gift is claimed).
+pub fn prepare_status(mut p: StatusPayload) -> Result<StatusPayload, ContractError> {
+    p.reason = p
+        .reason
+        .map(|r| r.trim().to_owned())
+        .filter(|r| !r.is_empty());
+    if p.reason
+        .as_ref()
+        .is_some_and(|r| r.chars().count() > VOID_REASON_MAX)
+    {
+        return Err(ContractError::invalid(
+            "reason",
+            format!("At most {VOID_REASON_MAX} characters"),
+        ));
+    }
+    Ok(p)
+}
 
 /// Whether `value` is a real calendar date written YYYY-MM-DD.
 pub fn is_iso_date(value: &str) -> bool {

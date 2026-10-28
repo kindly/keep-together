@@ -37,6 +37,8 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::MIGRATION),
         M::up(giftaid::MIGRATION),
         M::up(giftaid::MIGRATION_DETAILS),
+        M::up(giftaid::MIGRATION_CLAIMS),
+        M::up(giving::MIGRATION_CLAIM_LOCK),
     ])
 }
 
@@ -171,7 +173,7 @@ fn gift_for(db: &OrgDb, contact_id: &str, date: &str, void: bool) -> String {
             None,
         )?;
         if void {
-            giving::set_status(ctx, &id, 1, giving::Status::Void, Source::Ui)?;
+            giving::set_status(ctx, &id, 1, giving::Status::Void, None, Source::Ui)?;
         }
         Ok(id)
     })

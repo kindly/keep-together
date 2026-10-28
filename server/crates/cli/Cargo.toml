@@ -17,6 +17,7 @@ store.workspace = true
 api.workspace = true
 contracts.workspace = true
 contacts.workspace = true
+giftaid.workspace = true
 platform.workspace = true
 seed.workspace = true
 thiserror.workspace = true

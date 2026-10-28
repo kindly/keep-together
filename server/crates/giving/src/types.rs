@@ -100,11 +100,28 @@ pub struct GiftPayload {
     pub client_key: Option<String>,
 }
 
-/// The `giving.status` slice.
+/// The `giving.status` slice (v2: `reason`). Voiding a gift that is in a
+/// Gift Aid claim needs a reason (it goes into the next claim as an
+/// adjustment); any other void may give one. Un-voiding clears it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, rename = "GiftStatusPayload")]
 pub struct StatusPayload {
     pub status: Status,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reason: Option<String>,
+}
+
+/// The `giving.claimLock` slice: the Gift Aid claim the gift is in, or
+/// none. Set when a claim takes the gift, cleared when that claim is
+/// deleted (a draft) or rejected. While set, the gift's amount, date and
+/// donor can't change, voiding it needs a reason, and a void can't be
+/// undone. Never restored: only a claim moves it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "GiftClaimLock")]
+pub struct ClaimLockPayload {
+    pub claim_id: Option<String>,
 }
 
 /// An allocation with its code as it reads now (`code` null: not a
@@ -158,6 +175,10 @@ pub struct GiftRow {
     pub reference: Option<String>,
     pub allocations: Vec<AllocationView>,
     pub status: Status,
+    /// Why it was voided, when a reason was given.
+    pub void_reason: Option<String>,
+    /// The Gift Aid claim it is in: amount, date and donor locked.
+    pub claim_id: Option<String>,
     /// The platform user who entered it; null = system.
     #[ts(type = "number | null")]
     pub entered_by: Option<i64>,
@@ -246,6 +267,10 @@ pub struct SetGiftStatus {
     #[ts(type = "number")]
     pub expected: i64,
     pub status: Status,
+    /// Needed to void a gift in a Gift Aid claim.
+    #[serde(default)]
+    #[ts(optional)]
+    pub reason: Option<String>,
 }
 
 /// A gift write's answer: the slice's new counter and the gift as it

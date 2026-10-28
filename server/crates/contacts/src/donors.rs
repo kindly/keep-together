@@ -95,6 +95,52 @@ pub fn describe_donor(conn: &Connection, id: &str) -> rusqlite::Result<Option<Do
     }))
 }
 
+/// A contact as a Gift Aid claim line snapshots it: the donor's name and
+/// home address now (the primary address, else the first; empty strings
+/// when none). `country` is ISO 3166 alpha-2 (`GB` for the UK).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimDonor {
+    pub kind: Kind,
+    pub title: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub line1: String,
+    pub town: String,
+    pub postcode: String,
+    pub country: String,
+}
+
+/// The claim donor, or `None` for an unknown id. Two reads.
+pub fn claim_donor(conn: &Connection, id: &str) -> rusqlite::Result<Option<ClaimDonor>> {
+    let found = conn
+        .prepare_cached("SELECT kind, title, first_name, last_name FROM contacts WHERE id = ?1")?
+        .query_row([id], |r| {
+            Ok((
+                kind(&r.get::<_, String>(0)?),
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .optional()?;
+    let Some((kind, title, first_name, last_name)) = found else {
+        return Ok(None);
+    };
+    let rows = load_addresses(conn, id)?.addresses;
+    let home = home_row(&rows);
+    let field = |f: fn(&AddressRow) -> &String| home.map(|a| f(a).clone()).unwrap_or_default();
+    Ok(Some(ClaimDonor {
+        kind,
+        title,
+        first_name,
+        last_name,
+        line1: field(|a| &a.line1),
+        town: field(|a| &a.town),
+        postcode: field(|a| &a.postcode),
+        country: field(|a| &a.country),
+    }))
+}
+
 /// The contact's kind, or `None` for an unknown id: whether a gift or a
 /// declaration may name it. One read.
 pub fn kind_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<Kind>> {

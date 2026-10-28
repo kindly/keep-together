@@ -1,18 +1,28 @@
-//! Gift Aid declarations (a dated chain, rule 1) and the IRmark: the Rust
-//! counterpart of `convex/giftaid/`. A domain crate: depends on
+//! Gift Aid declarations (a dated chain, rule 1), claims (rule 4: a real
+//! financial record, [`claims`]), HMRC's schedule spreadsheet
+//! ([`schedule`]) and claim XML ([`xml`]) with its IRmark: the Rust
+//! counterpart of `convex/giftaid/`, and its claims. A domain crate: depends on
 //! `contracts`, and on `contacts` and `giving` through their public
 //! functions, never on `store` or `platform`; it can't name an
 //! organisation.
 //!
 //! Recording declarations, completing their details, cancellations and
 //! voids is for staff and admins (the tenant middleware refuses a
-//! viewer's write); viewers read.
+//! viewer's write); viewers read. Claims and the HMRC details are admin
+//! only (the routes check).
 
+pub mod claim_rules;
+pub mod claim_types;
+pub mod claims;
 pub mod declarations;
+pub mod hmrc;
 pub mod irmark;
 pub mod rules;
+pub mod schedule;
 pub mod types;
 pub mod warnings;
+pub mod xml;
+mod zip;
 
 use std::sync::LazyLock;
 
@@ -66,9 +76,22 @@ pub const MIGRATION_DETAILS: &str = "
 ALTER TABLE gift_aid_declarations ADD COLUMN details_version INTEGER NOT NULL DEFAULT 0;
 ";
 
-/// Every contract restore may meet in an org file's declaration history.
-pub static REGISTRY: LazyLock<Registry> =
-    LazyLock::new(|| Registry::new(&[&DECLARATION, &DETAILS, &CANCELLATION, &VOID]));
+pub use claims::{CLAIM, CLAIM_STATUS, MIGRATION as MIGRATION_CLAIMS};
+pub use hmrc::HMRC_DETAILS;
+
+/// Every contract restore may meet in an org file's Gift Aid history.
+/// The claim contracts refuse a restore (a claim only moves forward).
+pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
+    Registry::new(&[
+        &DECLARATION,
+        &DETAILS,
+        &CANCELLATION,
+        &VOID,
+        &CLAIM,
+        &CLAIM_STATUS,
+        &HMRC_DETAILS,
+    ])
+});
 
 /// A new declaration; giving's one-save command runs it inside its group.
 pub fn make_declaration(

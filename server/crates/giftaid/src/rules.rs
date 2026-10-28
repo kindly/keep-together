@@ -138,6 +138,32 @@ pub fn uk_date(at: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// UTC `YYYY-MM-DDThh:mm:ss.sss` at `at` (ms since the epoch): GovTalk's
+/// `GatewayTimestamp`.
+pub fn utc_timestamp(at: i64) -> String {
+    let (y, m, d) = civil(at.div_euclid(DAY_MS));
+    let ms = at.rem_euclid(DAY_MS);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}",
+        ms / 3_600_000,
+        ms / 60_000 % 60,
+        ms / 1000 % 60,
+        ms % 1000
+    )
+}
+
+/// An ISO date as staff read it: "3 Mar 2026". Anything else is given
+/// back as it is.
+pub fn uk_date_label(date: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    match parts(date) {
+        Some((y, m, d)) if (1..=12).contains(&m) => format!("{d} {} {y}", MONTHS[m as usize - 1]),
+        _ => date.to_owned(),
+    }
+}
+
 /// What coverage needs to know about one declaration.
 pub trait Window {
     fn scope(&self) -> Scope;
@@ -453,6 +479,13 @@ mod tests {
 
     fn utc(y: i64, m: i64, d: i64, h: i64, min: i64) -> i64 {
         days_from_civil(y, m, d) * DAY_MS + h * 3_600_000 + min * 60_000
+    }
+
+    #[test]
+    fn utc_timestamps_and_date_labels() {
+        assert_eq!(utc_timestamp(1_416_045_959_005), "2014-11-15T10:05:59.005");
+        assert_eq!(uk_date_label("2026-03-03"), "3 Mar 2026");
+        assert_eq!(uk_date_label("nonsense"), "nonsense");
     }
 
     #[test]

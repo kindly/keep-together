@@ -319,12 +319,16 @@ pub struct CancellationState {
     pub payload: CancellationPayload,
     #[serde(skip)]
     voided: bool,
+    #[serde(skip)]
+    claimed: Vec<crate::claims::ClaimedUnder>,
 }
 
 /// When the declaration stops applying: gifts on or after
 /// `cancelledFrom` aren't covered by it (3.8.2). Clearing it undoes a
 /// cancellation recorded by mistake. Refused on a voided declaration:
-/// there is nothing left to cancel.
+/// there is nothing left to cancel; and from on or before the date of a
+/// completed gift a live Gift Aid claim claims under it
+/// (`claimed_declaration`).
 pub struct CancellationContract;
 pub static CANCELLATION: CancellationContract = CancellationContract;
 
@@ -348,6 +352,7 @@ impl Contract for CancellationContract {
                 note: d.cancellation_note,
             },
             voided: d.voided_at.is_some(),
+            claimed: crate::claims::claimed_under(tx.read(), id)?,
         })
     }
 
@@ -369,9 +374,20 @@ impl Contract for CancellationContract {
                 "This declaration was made in error and voided",
             ));
         }
+        // A gift HMRC is claimed for under it stays covered (rule 1 with
+        // rule 4): no cancellation from on or before its date.
+        if let Some(from) = p.cancelled_from.as_deref()
+            && let Some(c) = current
+                .claimed
+                .iter()
+                .find(|c| c.received_on.as_str() >= from)
+        {
+            return Err(c.refusal());
+        }
         Ok(CancellationState {
             payload: p.clone(),
             voided: false,
+            claimed: current.claimed.clone(),
         })
     }
 
@@ -402,13 +418,18 @@ pub struct VoidState {
     voided_at: Option<i64>,
     #[serde(skip)]
     voided_by: Option<i64>,
+    #[serde(skip)]
+    claimed: Vec<crate::claims::ClaimedUnder>,
 }
 
 /// "Made in error": the declaration was recorded by mistake (wrong
 /// contact, never made) and never applied to any gift, past or future;
 /// coverage ignores it everywhere. Unlike a cancellation it has no date.
 /// Create-only: refused on a declaration already voided, so restore can't
-/// undo it either (a new declaration is the way back).
+/// undo it either (a new declaration is the way back). Refused while a
+/// completed gift in a live Gift Aid claim is claimed under it
+/// (`claimed_declaration`): void that gift (the next claim pays HMRC
+/// back) or let the claim go first.
 pub struct VoidContract;
 pub static VOID: VoidContract = VoidContract;
 
@@ -430,6 +451,7 @@ impl Contract for VoidContract {
             reason: d.void_reason,
             voided_at: d.voided_at,
             voided_by: d.voided_by,
+            claimed: crate::claims::claimed_under(tx.read(), id)?,
         })
     }
 
@@ -451,10 +473,14 @@ impl Contract for VoidContract {
                 "This declaration is already voided",
             ));
         }
+        if let Some(c) = current.claimed.first() {
+            return Err(c.refusal());
+        }
         Ok(VoidState {
             reason: Some(p.reason.clone()),
             voided_at: Some(command.at),
             voided_by: command.actor,
+            claimed: vec![],
         })
     }
 

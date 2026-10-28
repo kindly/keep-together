@@ -123,7 +123,7 @@ async fn status(
     Body(req): Body<SetGiftStatus>,
 ) -> Result<Json<GiftSaved>, ApiError> {
     t.write(move |ctx| {
-        let done = giving::set_status(ctx, &id, req.expected, req.status, Source::Ui)?;
+        let done = giving::set_status(ctx, &id, req.expected, req.status, req.reason, Source::Ui)?;
         Ok(GiftSaved {
             view: view(ctx, &done.id)?,
             id: done.id,

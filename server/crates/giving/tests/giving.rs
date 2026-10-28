@@ -46,6 +46,7 @@ fn migrations() -> Migrations<'static> {
         M::up(sources::MIGRATION),
         M::up(contacts::acquisition::MIGRATION),
         M::up(giving::MIGRATION),
+        M::up(giving::MIGRATION_CLAIM_LOCK),
     ])
 }
 
@@ -251,7 +252,7 @@ impl World {
         status: Status,
     ) -> Result<Executed, ContractError> {
         tx(&self.a, |ctx| {
-            giving::set_status(ctx, id, expected, status, Source::Ui)
+            giving::set_status(ctx, id, expected, status, None, Source::Ui)
         })
     }
 
@@ -625,7 +626,7 @@ fn organisation_b_can_neither_read_nor_change_as_gift() {
     .unwrap_err();
     assert!(matches!(err, ContractError::NotFound), "{err:?}");
     let err = tx(&w.b, |ctx| {
-        giving::set_status(ctx, &id, 1, Status::Void, Source::Ui)
+        giving::set_status(ctx, &id, 1, Status::Void, None, Source::Ui)
     })
     .unwrap_err();
     assert!(matches!(err, ContractError::NotFound), "{err:?}");
@@ -1159,10 +1160,218 @@ fn status_needs_an_existing_gift() {
             &STATUS,
             StatusPayload {
                 status: Status::Void,
+                reason: None,
             },
             Exec::create(Source::Ui),
         )
     })
     .unwrap_err();
     assert_eq!(reason(err), "no_root");
+}
+
+// ── the Gift Aid claim lock ────────────────────────────────────────────────
+
+const CLAIM_A: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0ea01";
+const CLAIM_B: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0ea02";
+
+fn lock(w: &World, gift: &str, claim: &str) -> Result<Executed, ContractError> {
+    tx(&w.a, |ctx| {
+        let group = contracts::command_group(ctx, "Gift Aid claim")?;
+        giving::lock_for_claim(ctx, gift, claim, Source::Ui, &group)
+    })
+}
+
+fn release(w: &World, gift: &str, claim: &str) -> Result<Executed, ContractError> {
+    tx(&w.a, |ctx| {
+        let group = contracts::command_group(ctx, "Gift Aid claim deleted")?;
+        giving::release_from_claim(ctx, gift, claim, Source::Ui, &group)
+    })
+}
+
+/// A gift's revisions of `contract`, oldest first.
+fn revisions(w: &World, gift: &str, contract: &str) -> Vec<i64> {
+    read(&w.a, |c| {
+        Ok(c.prepare(
+            "SELECT id FROM revisions WHERE entity_id = ?1 AND contract = ?2 ORDER BY id",
+        )?
+        .query_map([gift, contract], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+    })
+}
+
+/// Gift Aid claims: while a claim holds a gift, its amount and date are
+/// refused on a save and on a restore alike (both go through apply);
+/// what the claim doesn't rely on stays editable.
+#[test]
+fn a_claimed_gift_keeps_its_amount_and_date_on_every_path() {
+    let w = world();
+    let id = w.create(w.gift(2000)).unwrap();
+    w.save(&id, 0, w.gift(3000)).unwrap();
+    lock(&w, &id, CLAIM_A).unwrap();
+    assert_eq!(w.stored(&id)["amount"], 3000);
+
+    assert_eq!(
+        reason(w.save(&id, 1, w.gift(2500)).unwrap_err()),
+        "claimed_gift"
+    );
+    let mut later = w.gift(3000);
+    later.received_on = "2026-10-21".into();
+    assert_eq!(reason(w.save(&id, 1, later).unwrap_err()), "claimed_gift");
+    let created = revisions(&w, &id, "giving.gift")[0];
+    let err = tx(&w.a, |ctx| restore(ctx, &REGISTRY, created, None)).unwrap_err();
+    assert_eq!(
+        reason(err),
+        "claimed_gift",
+        "a restore to the old amount too"
+    );
+
+    let mut card = w.gift(3000);
+    card.method = Method::Card;
+    card.reference = Some("R-1".into());
+    w.save(&id, 1, card).unwrap();
+    assert_eq!(w.stored(&id)["method"], "card");
+
+    // Let go, it is editable again.
+    release(&w, &id, CLAIM_A).unwrap();
+    w.save(&id, 2, w.gift(2500)).unwrap();
+}
+
+/// Voiding a claimed gift needs a reason (the next claim pays HMRC
+/// back), and the void can't be undone, by a status save or a restore.
+#[test]
+fn a_claimed_gift_is_voided_with_a_reason_for_good() {
+    let w = world();
+    let id = w.create(w.gift(2000)).unwrap();
+    lock(&w, &id, CLAIM_A).unwrap();
+    assert_eq!(
+        reason(w.set_status(&id, 1, Status::Void).unwrap_err()),
+        "void_reason_required"
+    );
+    let blank = tx(&w.a, |ctx| {
+        giving::set_status(ctx, &id, 1, Status::Void, Some("   ".into()), Source::Ui)
+    })
+    .unwrap_err();
+    assert_eq!(reason(blank), "void_reason_required", "blank is none");
+    tx(&w.a, |ctx| {
+        giving::set_status(
+            ctx,
+            &id,
+            1,
+            Status::Void,
+            Some(" Bounced ".into()),
+            Source::Ui,
+        )
+    })
+    .unwrap();
+    let reason_now: Option<String> = read(&w.a, |c| {
+        Ok(
+            c.query_row("SELECT void_reason FROM gifts WHERE id = ?1", [&id], |r| {
+                r.get(0)
+            })?,
+        )
+    });
+    assert_eq!(reason_now.as_deref(), Some("Bounced"));
+    assert_eq!(
+        reason(w.set_status(&id, 2, Status::Completed).unwrap_err()),
+        "claimed_gift"
+    );
+    let completed = revisions(&w, &id, "giving.status")[0];
+    let err = tx(&w.a, |ctx| restore(ctx, &REGISTRY, completed, None)).unwrap_err();
+    assert_eq!(reason(err), "claimed_gift");
+}
+
+/// An unclaimed gift voids without a reason, and un-voiding clears one.
+#[test]
+fn an_unclaimed_gifts_void_reason_is_optional_and_cleared_by_unvoid() {
+    let w = world();
+    let id = w.create(w.gift(2000)).unwrap();
+    tx(&w.a, |ctx| {
+        giving::set_status(ctx, &id, 1, Status::Void, Some("Typo".into()), Source::Ui)
+    })
+    .unwrap();
+    w.set_status(&id, 2, Status::Completed).unwrap();
+    let held: Option<String> = read(&w.a, |c| {
+        Ok(
+            c.query_row("SELECT void_reason FROM gifts WHERE id = ?1", [&id], |r| {
+                r.get(0)
+            })?,
+        )
+    });
+    assert_eq!(held, None);
+}
+
+/// Only its claim moves the lock: another claim, a void gift, the wrong
+/// claim letting go and any restore are refused.
+#[test]
+fn the_claim_lock_is_the_claims_alone() {
+    let w = world();
+    let id = w.create(w.gift(2000)).unwrap();
+    lock(&w, &id, CLAIM_A).unwrap();
+    lock(&w, &id, CLAIM_A).unwrap();
+    assert_eq!(
+        reason(lock(&w, &id, CLAIM_B).unwrap_err()),
+        "already_claimed"
+    );
+    assert_eq!(
+        reason(release(&w, &id, CLAIM_B).unwrap_err()),
+        "not_in_claim"
+    );
+    let locked = revisions(&w, &id, "giving.claimLock")[0];
+    release(&w, &id, CLAIM_A).unwrap();
+    let err = tx(&w.a, |ctx| restore(ctx, &REGISTRY, locked, None)).unwrap_err();
+    assert_eq!(reason(err), "not_restorable");
+
+    let void = w.create(w.gift(500)).unwrap();
+    w.set_status(&void, 1, Status::Void).unwrap();
+    assert_eq!(reason(lock(&w, &void, CLAIM_A).unwrap_err()), "void_gift");
+    assert!(matches!(
+        release(&w, "0190f0c0a0b0c0d0e0f0a0b0c0d0ea99", CLAIM_A),
+        Err(ContractError::NotFound)
+    ));
+}
+
+/// What a claim's eligibility reads: unclaimed completed gifts in a date
+/// range, and claimed gifts voided since.
+#[test]
+fn claim_reads() {
+    let w = world();
+    let a = w.create(w.gift(2000)).unwrap();
+    let b = w.create(w.gift(1000)).unwrap();
+    let mut early = w.gift(700);
+    early.received_on = "2020-01-01".into();
+    let old = w.create(early).unwrap();
+    lock(&w, &b, CLAIM_A).unwrap();
+    let in_range = read(&w.a, |c| {
+        Ok(giving::unclaimed_between(c, "2022-01-01", "2026-12-31")?)
+    });
+    assert_eq!(
+        in_range.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(),
+        [a.as_str()]
+    );
+    assert_eq!(
+        read(&w.a, |c| Ok(giving::unclaimed_before(c, "2022-01-01")?)),
+        1
+    );
+    let _ = old;
+    tx(&w.a, |ctx| {
+        giving::set_status(ctx, &b, 1, Status::Void, Some("Gone".into()), Source::Ui)
+    })
+    .unwrap();
+    let voided = read(&w.a, |c| Ok(giving::voided_in_claims(c)?));
+    assert_eq!(
+        voided,
+        [giving::VoidedClaimedGift {
+            id: b,
+            claim_id: CLAIM_A.into(),
+            void_reason: Some("Gone".into()),
+        }]
+    );
+    // One claim's own, by its index (review L6).
+    assert_eq!(
+        read(&w.a, |c| Ok(giving::voided_in_claim(c, CLAIM_A)?)),
+        voided
+    );
+    assert!(read(&w.a, |c| Ok(giving::voided_in_claim(c, CLAIM_B)?)).is_empty());
+    // B's file has none of it.
+    assert!(read(&w.b, |c| Ok(giving::voided_in_claims(c)?)).is_empty());
 }

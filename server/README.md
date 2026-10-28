@@ -65,7 +65,7 @@ parameter is ignored and both columns measure the words index.)
 | `store` | `platform.db` (tenants, users, memberships, sessions, snapshots) and `orgs/<tenant-id>.db`; pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`, no `ATTACH`); per file one writer behind a fair mutex + a read-only reader pool + a checkpointer thread, none under Litestream (no checkpoint in a commit: `docs/ops.md`); locks waited for by 1 ms polls; the handle LRU; boot migration; each file's event channel |
 | `contracts` | the **only write path**: `transact`, `Contract`, `execute`, revisions, command groups, restore through upcasters, child-row reconcile, events |
 | `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history |
-| `sources`, `giving`, `giftaid`, `comms` | domain crates, empty until wave A/B |
+| `sources`, `giving`, `giftaid`, `comms` | domain crates: source codes, gifts (and their Gift Aid claim lock), Gift Aid declarations and claims (HMRC's schedule and claim XML), email suppressions |
 | `platform` | control plane: preferences (the three "staff can manage" contracts, `may_manage_list`), encrypted tenant settings, memberships and "last used" group as functions on a `platform.db` transaction, its own `platform.db` schema list |
 | `auth` | staff auth: credentials, second factors, sessions, invites, resets, rate limits, the auth log, in `platform.db` (its own `PlatformSchema`); `api::auth` is its HTTP |
 | `api` | axum app: dev session cookie, `/api/t/{slug}` → one `OrgDb`, SSE, `/boot`, jobs, `/healthz`, `Server-Timing`, JSON errors; `schema.rs` is the org migration list; `routes/` the domain routes and the QC seed. Commands spanning modules live here, in one transaction |
@@ -354,6 +354,8 @@ keep [--data <dir>] auth reset-2fa <email> [--reason <text>]
 keep [--data <dir>] auth invite <slug> <email> [--role admin|staff|viewer]
 keep [--data <dir>] dev seed-demo [--slug demo] [--admin-email <email>]
 keep [--data <dir>] dev seed-riverside        # KEEP_ENV=dev (or staging, credentials from env)
+keep [--data <dir>] giftaid-xml <slug> <claim-id>   # a claim's HMRC XML on stdout, IRmark on stderr
+keep giftaid-xml --hmrc-sample                # HMRC's sample data: their GAValidSample.xml, byte for byte
 ```
 
 `keep sql` opens the org file `SQLITE_OPEN_READ_ONLY` with `query_only`,
@@ -482,3 +484,58 @@ phones as digits and tail, postcodes compact and spaced) as a plain FTS5
 `MATCH` on `contact_search_words` (unicode61 with prefix indexes). The
 spike's trigram variant was measured and dropped (org schema step 3): it
 was slower on every case and its index twice the size.
+
+## Gift Aid claims
+
+A claim is a financial record (rule 4): `gift_aid_claims` with its
+`gift_aid_claim_lines` (the gift, its covering declaration, and the donor
+as sent: kept through later edits and erasure) and
+`gift_aid_claim_adjustments` (tax paid back on gifts voided after an
+earlier claim may have gone to HMRC). `giftaid.claim` is the claim as
+made (create-only, **at most 1,000 lines**: HMRC's schedule limit, one
+schedule per Charities Online claim); `giftaid.claimStatus` moves it
+`draft → ready → submitted → paid`, or `rejected` (from ready or
+submitted, with a reason), or a draft `deleted` (kept, unlisted).
+Neither is restorable. Reclaim = floor(amount / 4) per line, in pence.
+"Create" over more than 1,000 eligible gifts makes several claims,
+numbered in turn, oldest gifts first; the adjustments ride on the
+first.
+
+**Ready** means the claim may go to HMRC: from then on it can't be
+deleted, and only then do its schedule and XML download (`claim_draft`
+before). A gift voided out of a draft holds the draft back
+(`voided_gifts`: delete it and claim again); one voided out of a ready,
+submitted or paid claim is paid back by the next claim.
+
+**A gift is in at most one live claim**: a partial unique index on the
+lines' `gift_id` where `live = 1` (deleted and rejected claims set their
+lines not live). The gift itself carries the lock (`giving.claimLock`,
+its own counter, set and cleared only by its claim's commands): while
+locked, `giving.gift` refuses a new amount or date and `giving.status`
+needs a reason to void and refuses an un-void (`422 rejected`:
+`claimed_gift`, `void_reason_required`), on every path, restores
+included. The declaration a completed claimed gift was claimed under
+can't be voided, nor cancelled from on or before that gift's date
+(`claimed_declaration`).
+
+Eligible: completed, unclaimed, received in the last 4 years and by the
+end date, covered by a declaration on its date, from a person whose
+name fits HMRC's name patterns once folded to ASCII (Zoë → Zoe, O’Brien
+→ O'Brien), with a house name or number and a UK postcode (or an address
+outside the UK, the Isle of Man and Channel Islands included; `UK`,
+`United Kingdom`, England and the like count as GB). The preview lists
+every other gift in range with its reasons, and counts the unclaimed
+gifts too old to claim (`tooOld`).
+
+Routes under `/api/t/{slug}`, **admin only** (reads too):
+
+| route | |
+|---|---|
+| `GET giftaid/claims` | `GiftAidClaims {claims}`: newest first, deleted drafts left out |
+| `GET giftaid/claims/preview?periodEnd` | `GiftAidClaimPreview {lines, adjustments, excluded, tooOld, totals, claims, …}` |
+| `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?, expectedAdjustment?}` | `GiftAidClaimsCreated {claims}` (drafts); `422 rejected`: `nothing_to_claim`, `preview_changed` |
+| `GET giftaid/claims/{id}` | `GiftAidClaimView`: summary, lines, adjustments, `voidedGifts` |
+| `POST giftaid/claims/{id}/status {expected, status, submittedOn?, hmrcReference?, paidOn?, paidAmount?, reason?}` | `GiftAidClaimSaved` (`view` null once deleted); `expected` = `statusVersion`; `409 stale`; `422 rejected`: `claim_status`, `voided_gifts`, `adjusted_later` (a later claim, whatever its status, pays back one of its gifts: let that go first) |
+| `GET giftaid/claims/{id}/schedule?format=excel\|libreoffice` | HMRC's Gift Aid schedule (`.ods`), filled from HMRC's own template (`giftaid/assets/hmrc`); ready or later |
+| `GET giftaid/claims/{id}/xml` | the claim as HMRC's R68 XML, IRmark stamped (`X-IRmark`: base32), generated and never sent; ready or later; `422 rejected`: `missing_hmrc_details`, `org_name` |
+| `GET giftaid/hmrc-details` · `POST giftaid/hmrc-details {expected?, …}` | `HmrcDetailsView {…, version, warnings}`: HMRC reference, regulator and number, the authorised official (name, postcode, phone); stored as typed, what HMRC would refuse is a warning |

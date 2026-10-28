@@ -131,6 +131,33 @@ const FIXTURES: &[&str] = &[
          'giftaid.declarationDetails', 1, 1,
          '{\"firstName\":\"Ann\",\"lastName\":\"Smith\",\"addressLine1\":\"2 Road\",\"postcode\":\"LS1 1AA\"}',
          1, 'ui', 2000);",
+    // 15: a Gift Aid claim of the v11 gift (draft), its line, an
+    // adjustment row, the number sequence and the HMRC details
+    "INSERT INTO gift_aid_claim_number_sequence (id, next) VALUES (1, 2);
+     INSERT INTO gift_aid_claims (id, number, status, period_end, earliest_date, line_count,
+         donations_amount, reclaim_amount, adjustment_amount, created_by, created_at,
+         claim_version, status_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', 1, 'draft', '2026-10-27', '2026-10-20', 1,
+         2000, 500, 0, 1, 3000, 0, 0);
+     INSERT INTO gift_aid_claim_lines (id, claim_id, position, gift_id, declaration_id,
+         contact_id, title, first_name, last_name, house, postcode, overseas, received_on,
+         amount, reclaim_amount)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0e2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c1',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', 'Ms', 'Ann', 'Smith', '2', 'LS1 1AA', 0,
+         '2026-10-20', 2000, 500);
+     INSERT INTO gift_aid_claim_adjustments (id, claim_id, position, gift_id,
+         original_claim_id, amount, reason, live)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0e3', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', 0, 'test', 0);
+     INSERT INTO gift_aid_hmrc_details (id, hmrc_reference, regulator, regulator_number,
+         official_title, official_first_name, official_last_name, official_postcode,
+         official_phone, details_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0e4', 'AA12345', 'ccew', 'A1234', '', 'John',
+         'Smith', 'AB12 3CD', '01234 567890', 1);",
+    // 16: the v11 gift locked to the v15 claim
+    "UPDATE gifts SET claim_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', claim_lock_version = 1
+     WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1';",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
