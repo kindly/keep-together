@@ -285,6 +285,7 @@ pub const SCHEMA: PlatformSchema = PlatformSchema {
              processed_at INTEGER,
              outcome TEXT,
              attempts INTEGER NOT NULL DEFAULT 0,
+             next_attempt_at INTEGER,
              last_error TEXT
          ) STRICT;
          CREATE INDEX gocardless_events_pending ON gocardless_events (tenant_id)
@@ -359,11 +360,16 @@ pub struct GoCardlessStatus {
     /// The platform user who connected it.
     #[ts(type = "number | null")]
     pub connected_by: Option<i64>,
+    /// Webhook events that couldn't be handled and are parked: an admin
+    /// puts them back with `POST gocardless/events/retry`.
+    #[ts(type = "number")]
+    pub failed_events: i64,
 }
 
 impl GoCardlessStatus {
     pub fn new(mode: Mode, connected: Option<Connected>) -> Self {
         Self {
+            failed_events: 0,
             enabled: mode != Mode::Off,
             mode,
             connected: connected.is_some(),

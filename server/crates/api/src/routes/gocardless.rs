@@ -30,6 +30,7 @@ pub fn router() -> Router {
         .route("/gocardless", get(status))
         .route("/gocardless/connect", post(connect))
         .route("/gocardless/disconnect", post(disconnect))
+        .route("/gocardless/events/retry", post(retry_events))
         .route("/contacts/{id}/regular-gifts", get(by_contact).post(set_up))
         .route("/regular-gifts/{id}", get(one))
         .route("/regular-gifts/{id}/link", post(new_link))
@@ -51,6 +52,12 @@ async fn connect(Extension(t): Extension<Tenant>) -> Result<Json<ConnectStart>, 
 /// `POST gocardless/disconnect` → the status, now disconnected.
 async fn disconnect(Extension(t): Extension<Tenant>) -> Result<Json<GoCardlessStatus>, ApiError> {
     t.gocardless_disconnect().await.map(Json)
+}
+
+/// `POST gocardless/events/retry` → the status: parked webhook events
+/// back in the queue (admin).
+async fn retry_events(Extension(t): Extension<Tenant>) -> Result<Json<GoCardlessStatus>, ApiError> {
+    t.gocardless_retry_failed().await.map(Json)
 }
 
 /// A GoCardless failure as the route answers it: a refused token means

@@ -808,12 +808,22 @@ async fn staff_cancel_a_regular_gift_and_get_a_new_link() {
     .await["view"]
         .clone();
     assert_eq!(done["status"], "cancelled");
-    assert_eq!(done["endedReason"], "Cancelled by staff");
+    // GoCardless's own "cancelled" webhook can land before the route's
+    // write (the fake delivers it at once): either reason is true, and it
+    // ends once.
+    let staff_or_gocardless = |r: &Value| {
+        [
+            "Cancelled by staff",
+            "This billing request has been cancelled.",
+        ]
+        .contains(&r.as_str().unwrap_or(""))
+    };
+    assert!(staff_or_gocardless(&done["endedReason"]), "{done}");
     assert_eq!(t.fake.resource(br).unwrap()["status"], "cancelled");
     t.settle().await;
     assert_eq!(
         t.regular("alpha", &t.val, &id).await["endedReason"],
-        "Cancelled by staff"
+        done["endedReason"]
     );
 
     // An active one: its mandate is cancelled at GoCardless.
@@ -1233,4 +1243,137 @@ async fn a_regular_gift_that_ends_while_its_subscription_is_made_cancels_it() {
     assert_eq!(v["status"], "cancelled");
     let sub = v["subscriptionId"].as_str().expect("recorded");
     assert_eq!(t.fake.resource(sub).unwrap()["status"], "cancelled");
+}
+
+impl T {
+    /// Every queued event's wait cut short.
+    fn due_now(&self) {
+        self.w
+            .store
+            .platform()
+            .with_write(|tx| {
+                tx.execute(
+                    "UPDATE gocardless_events SET next_attempt_at = 0
+                     WHERE processed_at IS NULL",
+                    [],
+                )
+            })
+            .unwrap();
+    }
+
+    fn attempts(&self, event_outcome_null: bool) -> Vec<i64> {
+        self.w
+            .store
+            .platform()
+            .with_read(|c| {
+                c.prepare(&format!(
+                    "SELECT attempts FROM gocardless_events WHERE outcome IS {}NULL",
+                    if event_outcome_null { "" } else { "NOT " }
+                ))?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<i64>>>()
+            })
+            .unwrap()
+    }
+}
+
+/// Reviewer H2: a GoCardless outage longer than a few runs never drops an
+/// event. It waits (backing off) and is handled once GoCardless answers.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_outage_delays_events_but_never_drops_them() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.fake_post("outage", json!({ "calls": 100_000, "status": 503 }))
+        .await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    for _ in 0..15 {
+        t.due_now();
+        t.settle().await;
+    }
+    let waiting = t.attempts(true);
+    assert!(!waiting.is_empty(), "still queued: {:?}", t.events());
+    assert!(waiting.iter().any(|n| *n >= 15), "{waiting:?}");
+    assert!(
+        t.events()
+            .iter()
+            .all(|(_, _, o)| o.as_deref() != Some("failed")),
+        "{:?}",
+        t.events()
+    );
+    let next: i64 =
+        t.w.store
+            .platform()
+            .with_read(|c| {
+                c.query_row(
+                    "SELECT max(next_attempt_at) FROM gocardless_events WHERE processed_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+    assert!(next > contracts::now_ms(), "waiting, not hammering");
+
+    t.fake_post("outage", json!({ "calls": 0 })).await;
+    t.due_now();
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert!(v["subscriptionId"].is_string(), "{v}");
+    assert!(t.attempts(true).is_empty(), "{:?}", t.events());
+    assert!(backoff_is_bounded());
+}
+
+fn backoff_is_bounded() -> bool {
+    use api::gocardless::process::backoff;
+    backoff(1) == 30_000 && backoff(2) == 60_000 && backoff(50) == 3_600_000
+}
+
+/// Reviewer H2: an event GoCardless refuses outright is parked (counted,
+/// an admin can put it back), and the regular gift its billing request
+/// fulfilled still gets its subscription.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_parked_event_is_visible_retryable_and_never_leaves_a_mandate_without_a_subscription() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "status": 422, "path": "subscriptions" }),
+    )
+    .await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let status = ok(&t.w, "GET", "/api/t/alpha/gocardless", &t.val, None).await;
+    assert_eq!(status["failedEvents"], 1, "{:?}", t.events());
+    // The sweep made the subscription anyway.
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert!(v["mandateId"].is_string());
+    assert!(v["subscriptionId"].is_string(), "{v}");
+
+    let (s, _) =
+        t.w.call("POST", "/api/t/alpha/gocardless/events/retry", &t.sam, None)
+            .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let status = ok(
+        &t.w,
+        "POST",
+        "/api/t/alpha/gocardless/events/retry",
+        &t.ann,
+        None,
+    )
+    .await;
+    assert_eq!(status["failedEvents"], 0);
+    t.settle().await;
+    assert!(
+        t.events()
+            .iter()
+            .all(|(_, _, o)| matches!(o.as_deref(), Some("done" | "ignored"))),
+        "{:?}",
+        t.events()
+    );
+    assert_eq!(t.fake.ids("subscriptions").len(), 1);
 }

@@ -245,8 +245,30 @@ impl Tenant {
             return Ok(GoCardlessStatus::new(Mode::Off, None));
         };
         let (store, id) = (self.store.clone(), self.tenant_id.clone());
-        let connected = blocking(move || connection(&store, &id)).await?;
-        Ok(GoCardlessStatus::new(gc.mode, connected))
+        let (connected, failed) = blocking(move || {
+            Ok::<_, ApiError>((
+                connection(&store, &id)?,
+                crate::gocardless::process::failed_count(&store, &id)?,
+            ))
+        })
+        .await?;
+        Ok(GoCardlessStatus {
+            failed_events: failed,
+            ..GoCardlessStatus::new(gc.mode, connected)
+        })
+    }
+
+    /// Put this organisation's parked GoCardless events back in the queue
+    /// (admin) and start a run.
+    pub async fn gocardless_retry_failed(
+        &self,
+    ) -> Result<crate::gocardless::GoCardlessStatus, ApiError> {
+        self.require_admin()?;
+        let gc = self.gocardless()?;
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        blocking(move || crate::gocardless::process::requeue_failed(&store, &id)).await?;
+        crate::gocardless::webhook::spawn_processing(self.store.clone(), gc);
+        self.gocardless_status().await
     }
 
     /// Start "Connect with GoCardless" (admin within the step-up hour):

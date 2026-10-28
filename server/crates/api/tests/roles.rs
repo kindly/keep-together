@@ -209,6 +209,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /gifts/{id}/status",
             "POST /gocardless/connect",
             "POST /gocardless/disconnect",
+            "POST /gocardless/events/retry",
             "POST /identifier-types",
             "POST /members/invite",
             "POST /members/invites/{id}/revoke",

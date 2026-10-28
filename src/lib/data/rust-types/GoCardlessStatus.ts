@@ -17,4 +17,9 @@ organisationId: string | null, connectedAt: number | null,
 /**
  * The platform user who connected it.
  */
-connectedBy: number | null, };
+connectedBy: number | null, 
+/**
+ * Webhook events that couldn't be handled and are parked: an admin
+ * puts them back with `POST gocardless/events/retry`.
+ */
+failedEvents: number, };

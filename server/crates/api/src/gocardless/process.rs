@@ -3,10 +3,23 @@
 //! after each webhook). Each event is handled in its own transaction as
 //! the system, then marked handled in `platform.db`; a crash between the
 //! two handles it again, which every handler takes as a no-op (gifts by
-//! payment id, statuses that don't change). A retryable failure (GoCardless
-//! unreachable or failing) stops that organisation's run, so later events
-//! never overtake it, and is retried on the next run, up to
-//! [`MAX_ATTEMPTS`]; anything else is marked failed and reported.
+//! payment id, statuses that don't change).
+//!
+//! Nothing is dropped. A retryable failure (GoCardless unreachable or
+//! failing, a busy file) stops that organisation's run, so later events
+//! never overtake it, and the event waits [`backoff`] (30 s doubling to an
+//! hour) before its next try. After [`MAX_ATTEMPTS`] tries (about two
+//! days), or at once for a failure retrying can't mend (GoCardless refused
+//! the request), the event is *parked*: outcome `failed`, reported to
+//! the log and Sentry, never purged, counted in `GET gocardless`
+//! (`failedEvents`), and put back in the queue by an admin's `POST
+//! gocardless/events/retry` ([`requeue_failed`]). A parked event no
+//! longer holds up the ones behind it.
+//!
+//! And a sweep after each run ([`sweep`]): any regular gift of a connected
+//! organisation with a mandate, no subscription and not ended gets its
+//! subscription, so a fulfilled billing request never leaves one
+//! collecting nothing, whatever happened to its event.
 //!
 //! What each event does (actions from GoCardless's event pages):
 //! - billing request `fulfilled`: the mandate its mandate request made is
@@ -39,10 +52,18 @@ use super::GoCardless;
 use super::client::{CallError, NewSubscription};
 use crate::jobs::Job;
 
-/// Tries before an event is given up on (and reported).
-pub const MAX_ATTEMPTS: i64 = 10;
-/// Handled events are kept this long, then purged.
+/// Tries before an event is parked (and reported): with [`backoff`],
+/// about two days of a GoCardless outage.
+pub const MAX_ATTEMPTS: i64 = 50;
+/// Handled events are kept this long, then purged. Parked ones are kept.
 pub const KEEP_HANDLED_MS: i64 = 90 * 24 * 60 * 60 * 1000;
+
+/// How long an event waits after its `attempts`-th failed try: 30 s,
+/// doubling, at most an hour.
+pub fn backoff(attempts: i64) -> i64 {
+    let doublings = (attempts.max(1) - 1).min(7) as u32;
+    (30_000i64 << doublings).min(60 * 60 * 1000)
+}
 
 /// Why an event wasn't handled.
 #[derive(Debug)]
@@ -176,6 +197,7 @@ struct Pending {
     tenant: TenantId,
     body: String,
     attempts: i64,
+    next_attempt_at: Option<i64>,
 }
 
 /// Handle every stored event not yet handled, organisation by
@@ -183,20 +205,16 @@ struct Pending {
 pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<usize, String> {
     let _run = gc.processing.lock().await;
     let s = store.clone();
-    let pending: Vec<(String, String, String, i64)> = crate::blocking(move || {
+    type Row = (String, String, String, i64, Option<i64>);
+    let pending: Vec<Row> = crate::blocking(move || {
         s.platform().with_read(|c| {
             c.prepare(
-                "SELECT id, tenant_id, body, attempts FROM gocardless_events
+                "SELECT id, tenant_id, body, attempts, next_attempt_at FROM gocardless_events
                  WHERE processed_at IS NULL AND tenant_id IS NOT NULL
                  ORDER BY tenant_id, rowid",
             )?
             .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
-                ))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(store::StoreError::from)
@@ -210,12 +228,13 @@ pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<u
         .map_err(|e| format!("{e:?}"))?;
     let pending: Vec<Pending> = pending
         .into_iter()
-        .filter_map(|(id, tenant, body, attempts)| {
+        .filter_map(|(id, tenant, body, attempts, next_attempt_at)| {
             Some(Pending {
                 id,
                 tenant: tenants.iter().find(|t| t.as_str() == tenant)?.clone(),
                 body,
                 attempts,
+                next_attempt_at,
             })
         })
         .collect();
@@ -246,41 +265,48 @@ pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<u
             }
         };
         for p in batch {
+            let now = contracts::now_ms();
+            // Waiting out its backoff: so do the events behind it.
+            if p.next_attempt_at.is_some_and(|at| at > now) {
+                break;
+            }
             let event = Event::parse(&p.id, &p.body);
             let result = handle(&org, &gc, &event).await;
-            let (outcome, error, stop) = match result {
-                Ok(outcome) => (Some(outcome.to_owned()), None, false),
+            let tries = p.attempts + 1;
+            let park = |e: &str, why: &str| {
+                crate::observe::error(&format!(
+                    "gocardless event {} ({} {}) for {tenant} parked ({why}): {e}",
+                    p.id, event.resource_type, event.action
+                ));
+            };
+            // (outcome, error, next try, stop this organisation's run)
+            let (outcome, error, next, stop) = match result {
+                Ok(outcome) => (Some(outcome.to_owned()), None, None, false),
                 Err(Failed::Permanent(e)) if e == "not_connected" => {
-                    (Some("not_connected".to_owned()), None, false)
+                    (Some("not_connected".to_owned()), None, None, false)
                 }
                 Err(Failed::Permanent(e)) => {
-                    crate::observe::error(&format!(
-                        "gocardless event {} ({} {}) for {tenant}: {e}",
-                        p.id, event.resource_type, event.action
-                    ));
-                    (Some("failed".to_owned()), Some(e), false)
+                    park(&e, "not retryable");
+                    (Some("failed".to_owned()), Some(e), None, false)
                 }
-                Err(Failed::Retry(e)) if p.attempts + 1 >= MAX_ATTEMPTS => {
-                    crate::observe::error(&format!(
-                        "gocardless event {} for {tenant}: given up after {MAX_ATTEMPTS} tries: {e}",
-                        p.id
-                    ));
-                    (Some("failed".to_owned()), Some(e), false)
+                Err(Failed::Retry(e)) if tries >= MAX_ATTEMPTS => {
+                    park(&e, &format!("{MAX_ATTEMPTS} tries"));
+                    (Some("failed".to_owned()), Some(e), None, false)
                 }
-                Err(Failed::Retry(e)) => (None, Some(e), true),
+                Err(Failed::Retry(e)) => (None, Some(e), Some(now + backoff(tries)), true),
             };
             if outcome.is_some() {
                 handled += 1;
             }
             let (s, id) = (store.clone(), p.id.clone());
-            let now = contracts::now_ms();
             let marked = crate::blocking(move || {
                 s.platform().with_write(|tx| {
                     tx.execute(
                         "UPDATE gocardless_events SET attempts = attempts + 1, last_error = ?2,
-                             outcome = ?3, processed_at = CASE WHEN ?3 IS NULL THEN NULL ELSE ?4 END
+                             outcome = ?3, next_attempt_at = ?5,
+                             processed_at = CASE WHEN ?3 IS NULL THEN NULL ELSE ?4 END
                          WHERE id = ?1",
-                        params![id, error, outcome, now],
+                        params![id, error, outcome, now, next],
                     )?;
                     Ok::<_, store::StoreError>(())
                 })
@@ -294,6 +320,9 @@ pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<u
                 break;
             }
         }
+    }
+    if let Err(e) = sweep(&store, &gc).await {
+        errors.push(e);
     }
     if errors.is_empty() {
         Ok(handled)
@@ -341,7 +370,8 @@ async fn handle(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str, 
                         })
                     })
                     .await?;
-                    Ok("done")
+                    // Whatever became of its billing request's event.
+                    ensure_subscription(org, gc, &found.id).await
                 }
                 "failed" | "blocked" => {
                     end(org, &found.id, RegularStatus::Failed, ev.reason()).await
@@ -564,11 +594,103 @@ async fn payment(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str,
     Ok("done")
 }
 
-/// Forget handled events older than [`KEEP_HANDLED_MS`].
+/// Every connected organisation's regular gifts with a mandate, no
+/// subscription and not ended get their subscription. Failures are
+/// reported and tried again on the next run.
+async fn sweep(store: &Arc<Store>, gc: &Arc<GoCardless>) -> Result<(), String> {
+    let s = store.clone();
+    let connected: Vec<TenantId> = crate::blocking(move || {
+        let ids: Vec<String> = s.platform().with_read(|c| {
+            c.prepare("SELECT tenant_id FROM gocardless_connections")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(store::StoreError::from)
+        })?;
+        Ok::<_, crate::ApiError>(
+            s.each_org()?
+                .into_iter()
+                .filter(|t| ids.iter().any(|i| i == t.as_str()))
+                .collect(),
+        )
+    })
+    .await
+    .map_err(|e| format!("{e:?}"))?;
+    let mut errors = Vec::new();
+    for tenant in connected {
+        let (s, g, t) = (store.clone(), gc.clone(), tenant.clone());
+        let opened = crate::blocking(move || {
+            let db = s.org(&t)?;
+            let token = db.read(|r| g.token(r))?;
+            Ok::<_, crate::ApiError>(Org { db, token })
+        })
+        .await;
+        let org = match opened {
+            Ok(org) => org,
+            Err(e) => {
+                errors.push(format!("{tenant}: {e:?}"));
+                continue;
+            }
+        };
+        let waiting: Vec<String> = match org
+            .read(|c| {
+                c.prepare(
+                    "SELECT id FROM regular_gifts WHERE mandate_id IS NOT NULL
+                         AND subscription_id IS NULL AND status IN ('pending', 'active')",
+                )?
+                .query_map([], |r| r.get(0))?
+                .collect()
+            })
+            .await
+        {
+            Ok(w) => w,
+            Err(e) => {
+                errors.push(format!("{tenant}: {e:?}"));
+                continue;
+            }
+        };
+        for id in waiting {
+            if let Err(e) = ensure_subscription(&org, gc, &id).await {
+                errors.push(format!("{tenant}: subscription for {id}: {e:?}"));
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// How many of `tenant`'s events are parked.
+pub fn failed_count(store: &Store, tenant: &TenantId) -> Result<i64, store::StoreError> {
+    store.platform().with_read(|c| {
+        Ok(c.query_row(
+            "SELECT count(*) FROM gocardless_events WHERE tenant_id = ?1 AND outcome = 'failed'",
+            [tenant.as_str()],
+            |r| r.get(0),
+        )?)
+    })
+}
+
+/// Put `tenant`'s parked events back in the queue, tries reset. How many.
+pub fn requeue_failed(store: &Store, tenant: &TenantId) -> Result<usize, store::StoreError> {
+    store.platform().with_write(|tx| {
+        Ok(tx.execute(
+            "UPDATE gocardless_events SET outcome = NULL, processed_at = NULL, attempts = 0,
+                 next_attempt_at = NULL
+             WHERE tenant_id = ?1 AND outcome = 'failed'",
+            [tenant.as_str()],
+        )?)
+    })
+}
+
+/// Forget handled events older than [`KEEP_HANDLED_MS`]; parked ones stay
+/// until handled.
 pub fn purge(store: &Store, now: i64) -> Result<usize, store::StoreError> {
     store.platform().with_write(|tx| {
         Ok(tx.execute(
-            "DELETE FROM gocardless_events WHERE processed_at IS NOT NULL AND processed_at < ?1",
+            "DELETE FROM gocardless_events
+             WHERE processed_at IS NOT NULL AND processed_at < ?1 AND outcome <> 'failed'",
             [now - KEEP_HANDLED_MS],
         )?)
     })
