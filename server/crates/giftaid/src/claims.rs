@@ -270,6 +270,53 @@ pub fn view(conn: &Connection, id: &str) -> rusqlite::Result<Option<ClaimView>> 
     }))
 }
 
+/// A completed gift a live claim claims under a declaration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimedUnder {
+    pub received_on: String,
+    pub claim_number: i64,
+}
+
+impl ClaimedUnder {
+    /// Why the declaration can't stop covering it.
+    pub fn refusal(&self) -> ContractError {
+        ContractError::rejected(
+            "claimed_declaration",
+            format!(
+                "This declaration covers a gift of {} in Gift Aid claim {}: void that gift \
+                 (the next claim pays HMRC back), or let the claim go, first",
+                uk_date_label(&self.received_on),
+                self.claim_number
+            ),
+        )
+    }
+}
+
+/// The completed gifts live claims claim under declaration `id`, oldest
+/// first. A voided one is left out: the next claim pays it back.
+pub fn claimed_under(conn: &Connection, id: &str) -> rusqlite::Result<Vec<ClaimedUnder>> {
+    let rows: Vec<(String, String, i64)> = conn
+        .prepare_cached(
+            "SELECT l.gift_id, l.received_on, c.number FROM gift_aid_claim_lines l
+             JOIN gift_aid_claims c ON c.id = l.claim_id
+             WHERE l.declaration_id = ?1 AND l.live = 1 ORDER BY l.received_on",
+        )?
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for (gift, received_on, claim_number) in rows {
+        if giving::describe_gift(conn, &gift)?
+            .is_some_and(|g| g.status == giving::Status::Completed)
+        {
+            out.push(ClaimedUnder {
+                received_on,
+                claim_number,
+            });
+        }
+    }
+    Ok(out)
+}
+
 // ── eligibility ────────────────────────────────────────────────────────────
 
 /// What eligibility knows about one donor, read once per contact.

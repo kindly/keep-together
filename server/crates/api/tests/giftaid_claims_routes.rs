@@ -1123,3 +1123,94 @@ async fn every_claim_route_keeps_two_orgs_apart() {
     assert_eq!(c.create("beta").await["number"], 1);
     assert_eq!(c.gift_view(&a_gift).await["claimId"], a_claim);
 }
+
+/// Review H1: a declaration backing a gift in a live claim can't be
+/// voided, nor cancelled from on or before that gift's date (the claim
+/// would claim an uncovered gift). A later cancellation is fine, and
+/// once the gift is voided (paid back) or the claim let go, so is the
+/// void.
+#[tokio::test]
+async fn a_declaration_backing_a_claimed_gift_stays_in_force_for_it() {
+    let c = setup().await;
+    // Declared 20 days ago, so a cancellation can reach back before the gift.
+    let (_, contact) = c
+        .gift(
+            "alpha",
+            &Donor {
+                gift_aid: false,
+                ..ANN_SMITH
+            },
+            &days_ago(40),
+            100,
+        )
+        .await;
+    let declaration = ok(
+        &c.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{contact}/giftaid"),
+        &c.ann,
+        Some(json!({
+            "contactId": contact, "scope": "future", "madeOn": days_ago(20),
+            "method": "paperForm", "wordingVersion": "hmrc-2016-04", "firstName": "Ann",
+            "lastName": "Smith", "addressLine1": "12 High Street", "postcode": "LS1 1AA",
+        })),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let gift = c.again(&contact, &days_ago(10), 2000).await;
+    let claim = c.create("alpha").await;
+    assert_eq!(claim["lines"][0]["declarationId"], declaration.as_str());
+    let void = format!("/api/t/alpha/giftaid/{declaration}/void");
+    let cancel = format!("/api/t/alpha/contacts/{contact}/giftaid/cancel");
+
+    let (s, reason) = refused(
+        &c.w,
+        "POST",
+        &void,
+        &c.ann,
+        Some(json!({ "reason": "Wrong person" })),
+    )
+    .await;
+    assert_eq!(
+        (s, reason.as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "claimed_declaration")
+    );
+    for from in [days_ago(10), days_ago(11)] {
+        let (s, reason) = refused(
+            &c.w,
+            "POST",
+            &cancel,
+            &c.ann,
+            Some(json!({ "cancelledFrom": from })),
+        )
+        .await;
+        assert_eq!(
+            (s, reason.as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, "claimed_declaration"),
+            "{from}"
+        );
+    }
+    ok(
+        &c.w,
+        "POST",
+        &cancel,
+        &c.ann,
+        Some(json!({ "cancelledFrom": days_ago(9) })),
+    )
+    .await;
+
+    // The claimed gift voided (paid back by the next claim): the
+    // declaration no longer backs anything HMRC keeps.
+    let (s, _) = c.void(&gift, Some("Refunded")).await;
+    assert_eq!(s, StatusCode::OK);
+    ok(
+        &c.w,
+        "POST",
+        &void,
+        &c.ann,
+        Some(json!({ "reason": "Wrong person" })),
+    )
+    .await;
+}
