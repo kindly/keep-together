@@ -3,14 +3,18 @@
 //! Aid donations", gov.uk, updated 2025-11-28; the Charities RIM schema
 //! r68 v2.0, `GAD/Donor`), and the reclaim.
 //!
-//! A line is the donor as the claim snapshots them: title (optional, ≤ 4
-//! letters), first name (one word, ≤ 35), last name (≤ 35, a hyphen
+//! A line is the donor as the claim snapshots them, folded to ASCII
+//! ([`fold`]) and held to the patterns HMRC's schema sets for a name
+//! (`r68_NameStructure`): title (optional, ≤ 4 letters), first name (one
+//! word of letters, `'` and `-`, ≤ 35), last name (≤ 35, a hyphen
 //! becomes a space as HMRC asks), house name or number (≤ 40) and a UK
 //! postcode in capitals with its space, or, for a donor living outside the
 //! UK (the Isle of Man and the Channel Islands included), the address in
 //! the house column and `X` for the postcode.
 
 use contacts::types::Kind;
+use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::char::is_combining_mark;
 
 use crate::rules::{uk_date_label, years_before};
 
@@ -50,6 +54,56 @@ pub struct DonorLine {
     pub overseas: bool,
 }
 
+/// Text folded towards what HMRC's schema takes: diacritics dropped
+/// (Zoë → Zoe, Tŷ → Ty), letters with no decomposition spelled out
+/// (ß → ss, Æ → AE, Ø → O, Ł → L), curly apostrophes straightened and
+/// dashes made hyphens. Anything else (another script) is kept, for the
+/// caller's pattern check to refuse.
+pub fn fold(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.nfkd() {
+        if is_combining_mark(c) {
+            continue;
+        }
+        match c {
+            '\u{2018}' | '\u{2019}' | '\u{02BC}' | '\u{0060}' | '\u{00B4}' => out.push('\''),
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => out.push('-'),
+            'ß' => out.push_str("ss"),
+            'Æ' => out.push_str("AE"),
+            'æ' => out.push_str("ae"),
+            'Œ' => out.push_str("OE"),
+            'œ' => out.push_str("oe"),
+            'Ø' => out.push('O'),
+            'ø' => out.push('o'),
+            'Ł' => out.push('L'),
+            'ł' => out.push('l'),
+            'Đ' | 'Ð' => out.push('D'),
+            'đ' | 'ð' => out.push('d'),
+            'Þ' => out.push_str("Th"),
+            'þ' => out.push_str("th"),
+            'ı' => out.push('i'),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// HMRC's forename pattern (`r68_NameStructure/Fore`): a letter, then
+/// letters, `'` or `-`.
+fn fits_fore(v: &str) -> bool {
+    let mut c = v.chars();
+    c.next().is_some_and(|f| f.is_ascii_alphabetic())
+        && c.all(|ch| ch.is_ascii_alphabetic() || ch == '\'' || ch == '-')
+}
+
+/// HMRC's surname pattern (`r68_NameStructure/Sur`): letters, digits,
+/// space and `, . ( ) / & - '`, with a letter somewhere.
+fn fits_sur(v: &str) -> bool {
+    v.chars().any(|c| c.is_ascii_alphabetic())
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || " ,.()/&-'".contains(c))
+}
+
 fn tidy(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -62,7 +116,7 @@ fn too_long(value: &str, max: usize) -> bool {
 /// stop is dropped ("Mrs." → "Mrs"); anything else that doesn't fit is
 /// left out (the title is optional), never a reason to leave a gift out.
 pub fn title(value: &str) -> String {
-    let t = tidy(value).replace('.', "");
+    let t = fold(&tidy(value)).replace('.', "");
     let mut chars = t.chars();
     let fits = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && chars.all(|c| c.is_ascii_alphabetic() || c == '\'' || c == '-')
@@ -169,27 +223,39 @@ pub fn donor_line(d: DonorFacts) -> Result<DonorLine, Vec<String>> {
         Kind::Household => return Err(vec!["The donor is a household".into()]),
     }
     let mut reasons = Vec::new();
-    let first_name = tidy(d.first_name)
+    // One word (HMRC: "no spaces"); an initial's full stop dropped.
+    let first_name = fold(&tidy(d.first_name))
         .split(' ')
         .next()
         .unwrap_or("")
+        .trim_end_matches('.')
         .to_owned();
     if first_name.is_empty() {
         reasons.push("No first name".to_owned());
+    } else if !fits_fore(&first_name) {
+        reasons.push(format!(
+            "First name has characters HMRC doesn't accept: {}",
+            tidy(d.first_name)
+        ));
     } else if too_long(&first_name, NAME_MAX) {
         reasons.push(format!("First name is over {NAME_MAX} characters"));
     }
-    let last_name = tidy(&d.last_name.replace('-', " "));
+    let last_name = tidy(&fold(d.last_name).replace('-', " "));
     if last_name.is_empty() {
         reasons.push("No last name".to_owned());
+    } else if !fits_sur(&last_name) {
+        reasons.push(format!(
+            "Last name has characters HMRC doesn't accept: {}",
+            tidy(d.last_name)
+        ));
     } else if too_long(&last_name, NAME_MAX) {
         reasons.push(format!("Last name is over {NAME_MAX} characters"));
     }
     let country = d.country.trim().to_ascii_uppercase();
     let overseas = !(country.is_empty() || country == "GB") || crown_dependency(d.postcode);
-    let line1 = tidy(d.line1);
+    let line1 = fold(&tidy(d.line1));
     let (house, postcode) = if overseas {
-        let town = tidy(d.town);
+        let town = fold(&tidy(d.town));
         let full = if town.is_empty() {
             line1.clone()
         } else {
@@ -230,6 +296,11 @@ pub fn donor_line(d: DonorFacts) -> Result<DonorLine, Vec<String>> {
         };
         (house, postcode)
     };
+    if !house.is_ascii() {
+        reasons.push(format!(
+            "The address has characters HMRC doesn't accept: {house}"
+        ));
+    }
     if !reasons.is_empty() {
         return Err(reasons);
     }
@@ -395,6 +466,46 @@ mod tests {
             donor_line(org).unwrap_err(),
             ["The donor is an organisation"]
         );
+    }
+
+    /// Review M3: names folded to what HMRC's name patterns take
+    /// (diacritics dropped, curly apostrophes straightened, initials'
+    /// full stops dropped); one that still can't fit is a reason, never
+    /// a bad line.
+    #[test]
+    fn names_are_folded_to_hmrcs_patterns_or_left_out() {
+        let line =
+            |first: &str, last: &str| donor_line(facts(first, last, "12 High St", "LS1 1AA"));
+        let ok = |first: &str, last: &str| {
+            let l = line(first, last).unwrap();
+            (l.first_name, l.last_name)
+        };
+        assert_eq!(ok("Zoë", "O’Brien"), ("Zoe".into(), "O'Brien".into()));
+        assert_eq!(
+            ok("Jürgen", "Müller-Lüdenscheidt"),
+            ("Jurgen".into(), "Muller Ludenscheidt".into())
+        );
+        assert_eq!(ok("J.", "Ørsted"), ("J".into(), "Orsted".into()));
+        assert_eq!(ok("Siân", "ap Rhys"), ("Sian".into(), "ap Rhys".into()));
+        assert_eq!(
+            ok("Anne-Marie", "Strauß"),
+            ("Anne-Marie".into(), "Strauss".into())
+        );
+        assert_eq!(
+            line("Ann2", "Smith").unwrap_err(),
+            ["First name has characters HMRC doesn't accept: Ann2"]
+        );
+        assert_eq!(
+            line("-", "李").unwrap_err(),
+            [
+                "First name has characters HMRC doesn't accept: -",
+                "Last name has characters HMRC doesn't accept: 李"
+            ]
+        );
+        let mut f = facts("Ann", "Smith", "Tŷ Gwyn", "LS1 1AA");
+        assert_eq!(donor_line(f).unwrap().house, "Ty Gwyn");
+        f.title = "Mme.";
+        assert_eq!(donor_line(f).unwrap().title, "Mme");
     }
 
     #[test]

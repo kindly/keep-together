@@ -10,9 +10,9 @@ import type { GiftAidClaimTotals } from "./GiftAidClaimTotals";
  */
 export type GiftAidClaimView = { lines: Array<GiftAidClaimLine>, adjustments: Array<GiftAidClaimAdjustment>, 
 /**
- * Gifts of this claim voided since it was made: while it is a draft
- * or ready, they stop it being sent (delete the draft or reject it
- * and claim again).
+ * Gifts of this claim voided since it was made: on a draft they stop
+ * it being marked ready (delete it and claim again); from ready on
+ * the next claim pays them back.
  */
 voidedGifts: Array<string>, id: string, 
 /**

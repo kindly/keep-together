@@ -927,7 +927,7 @@ async fn the_schedule_and_the_xml_download() {
     assert!(xml.contains("<Regulator><RegName>CCEW</RegName><RegNo>1234567</RegNo></Regulator>"));
     assert!(xml.contains("<OffName><Ttl>Mrs</Ttl><Fore>Jane</Fore><Sur>Doe</Sur></OffName>"));
     assert!(xml.contains(&format!(
-        "<GAD><Donor><Fore>Zoë</Fore><Sur>O'Neil Brown</Sur><House>12</House><Postcode>LS1 1AA</Postcode></Donor><Date>{}</Date><Total>10.00</Total></GAD>",
+        "<GAD><Donor><Fore>Zoe</Fore><Sur>O'Neil Brown</Sur><House>12</House><Postcode>LS1 1AA</Postcode></Donor><Date>{}</Date><Total>10.00</Total></GAD>",
         days_ago(2)
     )));
     assert!(xml.contains(&format!("<EarliestGAdate>{}</EarliestGAdate>", days_ago(4))));

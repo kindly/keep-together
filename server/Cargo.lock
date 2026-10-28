@@ -872,6 +872,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "ts-rs",
+ "unicode-normalization",
 ]
 
 [[package]]
