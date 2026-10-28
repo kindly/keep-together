@@ -431,11 +431,13 @@ pub fn preview(conn: &Connection, period_end: &str, today: &str) -> rusqlite::Re
     }
     let adjustments = due_adjustments(conn)?;
     let totals = totals_of(&lines, &adjustments);
+    let too_old = giving::unclaimed_before(conn, &from)?;
     Ok(ClaimPreview {
         period_end: period_end.to_owned(),
         today: today.to_owned(),
         claimable_from: from,
         claims: claims_for(lines.len()),
+        too_old,
         lines,
         adjustments,
         excluded,
@@ -498,7 +500,7 @@ fn invalid_date(field: &str) -> ContractError {
 /// each gift locked to its claim, all in one command group. `periodEnd`
 /// may not be after today (UK). Refused when nothing is eligible, and
 /// when the preview the caller saw (`expectedLines`,
-/// `expectedDonations`) no longer matches. The new claims' ids, in order.
+/// `expectedDonations`, `expectedAdjustment`) no longer matches. The new claims' ids, in order.
 pub fn create_claim(
     ctx: &Ctx,
     req: CreateClaim,
@@ -520,6 +522,9 @@ pub fn create_claim(
         || req
             .expected_donations
             .is_some_and(|n| n != p.totals.donations)
+        || req
+            .expected_adjustment
+            .is_some_and(|n| n != p.totals.adjustment)
     {
         return Err(ContractError::rejected(
             "preview_changed",

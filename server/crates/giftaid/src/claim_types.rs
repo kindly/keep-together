@@ -188,6 +188,10 @@ pub struct ClaimPreview {
     pub adjustments: Vec<ClaimAdjustment>,
     /// Oldest first.
     pub excluded: Vec<ExcludedGift>,
+    /// Unclaimed gifts received before `claimableFrom`, whatever their
+    /// coverage: too old to claim, so not listed one by one.
+    #[ts(type = "number")]
+    pub too_old: i64,
     pub totals: ClaimTotals,
     /// How many claims "Create" makes: one per 1,000 lines (HMRC's
     /// schedule limit), oldest gifts first; the adjustments go on the
@@ -249,7 +253,8 @@ pub struct Claims {
     pub claims: Vec<ClaimSummary>,
 }
 
-/// `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?}`:
+/// `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?,
+/// expectedAdjustment?}`:
 /// claim every eligible gift received on or before `periodEnd`, in as
 /// many claims of at most 1,000 lines as it takes. The
 /// expected counts are the preview's: if what is eligible changed since,
@@ -266,6 +271,9 @@ pub struct CreateClaim {
     #[serde(default)]
     #[ts(optional, type = "number")]
     pub expected_donations: Option<i64>,
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub expected_adjustment: Option<i64>,
 }
 
 /// `POST giftaid/claims/{id}/status {expected, …}`.

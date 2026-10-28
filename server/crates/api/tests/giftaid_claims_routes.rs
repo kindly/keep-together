@@ -1358,3 +1358,47 @@ async fn a_claim_paid_back_by_a_sent_claim_can_still_be_rejected() {
         gift.as_str()
     );
 }
+
+/// Review L2: the preview's adjustment must still hold at create, not
+/// only its lines and donations.
+#[tokio::test]
+async fn a_changed_adjustment_is_a_changed_preview() {
+    let c = setup().await;
+    let (gift, contact) = c.gift("alpha", &ANN_SMITH, &days_ago(20), 2000).await;
+    let first = c.create("alpha").await["id"].as_str().unwrap().to_owned();
+    c.submit(&first).await;
+    c.again(&contact, &days_ago(2), 1000).await;
+    // The preview was seen before the void: no adjustment.
+    let p = c.preview("alpha", &today()).await;
+    c.void(&gift, Some("Refunded")).await;
+    let (s, reason) = refused(
+        &c.w,
+        "POST",
+        "/api/t/alpha/giftaid/claims",
+        &c.ann,
+        Some(json!({
+            "periodEnd": today(),
+            "expectedLines": p["totals"]["lines"],
+            "expectedDonations": p["totals"]["donations"],
+            "expectedAdjustment": p["totals"]["adjustment"],
+        })),
+    )
+    .await;
+    assert_eq!(
+        (s, reason.as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "preview_changed")
+    );
+}
+
+/// Review L5: unclaimed gifts too old to claim are counted, not silently
+/// missing.
+#[tokio::test]
+async fn gifts_too_old_to_claim_are_counted() {
+    let c = setup().await;
+    c.gift("alpha", &ANN_SMITH, &days_ago(4 * 366 + 2), 1000)
+        .await;
+    c.gift("alpha", &ANN_SMITH, &days_ago(3), 1000).await;
+    let p = c.preview("alpha", &today()).await;
+    assert_eq!(p["tooOld"], 1);
+    assert_eq!(p["totals"]["lines"], 1);
+}

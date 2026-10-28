@@ -24,7 +24,12 @@ lines: Array<GiftAidClaimLine>, adjustments: Array<GiftAidClaimAdjustment>,
 /**
  * Oldest first.
  */
-excluded: Array<GiftAidExcludedGift>, totals: GiftAidClaimTotals, 
+excluded: Array<GiftAidExcludedGift>, 
+/**
+ * Unclaimed gifts received before `claimableFrom`, whatever their
+ * coverage: too old to claim, so not listed one by one.
+ */
+tooOld: number, totals: GiftAidClaimTotals, 
 /**
  * How many claims "Create" makes: one per 1,000 lines (HMRC's
  * schedule limit), oldest gifts first; the adjustments go on the
