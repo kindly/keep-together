@@ -189,9 +189,11 @@ pub struct ClaimPreview {
     /// Oldest first.
     pub excluded: Vec<ExcludedGift>,
     pub totals: ClaimTotals,
-    /// Schedule files the claim would need (HMRC: 1,000 rows each).
+    /// How many claims "Create" makes: one per 1,000 lines (HMRC's
+    /// schedule limit), oldest gifts first; the adjustments go on the
+    /// first.
     #[ts(type = "number")]
-    pub schedule_parts: i64,
+    pub claims: i64,
 }
 
 /// One claim in the Gift Aid page's list.
@@ -233,8 +235,6 @@ pub struct ClaimView {
     pub claim: ClaimSummary,
     pub lines: Vec<ClaimLine>,
     pub adjustments: Vec<ClaimAdjustment>,
-    #[ts(type = "number")]
-    pub schedule_parts: i64,
     /// Gifts of this claim voided since it was made: while it is a draft
     /// or ready, they stop it being sent (delete the draft or reject it
     /// and claim again).
@@ -250,7 +250,8 @@ pub struct Claims {
 }
 
 /// `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?}`:
-/// claim every eligible gift received on or before `periodEnd`. The
+/// claim every eligible gift received on or before `periodEnd`, in as
+/// many claims of at most 1,000 lines as it takes. The
 /// expected counts are the preview's: if what is eligible changed since,
 /// the create is refused (`preview_changed`) rather than claiming
 /// something else.
@@ -277,6 +278,15 @@ pub struct SetClaimStatus {
     #[serde(flatten)]
     #[ts(flatten)]
     pub payload: ClaimStatusPayload,
+}
+
+/// `POST giftaid/claims`: the claims made, numbered in turn, oldest
+/// gifts first; read in the same transaction.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "GiftAidClaimsCreated")]
+pub struct ClaimsCreated {
+    pub claims: Vec<ClaimView>,
 }
 
 /// A claim write's answer: the claim as it now is, read in the same

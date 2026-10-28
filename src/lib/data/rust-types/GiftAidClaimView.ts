@@ -8,7 +8,7 @@ import type { GiftAidClaimTotals } from "./GiftAidClaimTotals";
  * `GET giftaid/claims/{id}`: the claim, its lines and adjustments,
  * and what stops its next step.
  */
-export type GiftAidClaimView = { lines: Array<GiftAidClaimLine>, adjustments: Array<GiftAidClaimAdjustment>, scheduleParts: number, 
+export type GiftAidClaimView = { lines: Array<GiftAidClaimLine>, adjustments: Array<GiftAidClaimAdjustment>, 
 /**
  * Gifts of this claim voided since it was made: while it is a draft
  * or ready, they stop it being sent (delete the draft or reject it

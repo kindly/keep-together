@@ -14,8 +14,9 @@ use contacts::types::Kind;
 
 use crate::rules::{uk_date_label, years_before};
 
-/// HMRC's Gift Aid schedule takes at most this many donations; a longer
-/// claim is split into several files.
+/// HMRC's Gift Aid schedule takes at most this many donations, and each
+/// schedule is its own Charities Online claim: so a claim holds at most
+/// this many lines, and more eligible gifts make several claims.
 pub const SCHEDULE_ROW_LIMIT: usize = 1000;
 /// A gift can be claimed up to this many years after it was received.
 pub const CLAIM_LIMIT_YEARS: i64 = 4;

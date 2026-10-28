@@ -19,8 +19,8 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contracts::{Ctx, Executed, Source};
 use giftaid::claim_types::{
-    ClaimPreview, ClaimSaved, ClaimView, Claims, CreateClaim, HmrcDetailsView, SaveHmrcDetails,
-    SetClaimStatus,
+    ClaimPreview, ClaimSaved, ClaimView, Claims, ClaimsCreated, CreateClaim, HmrcDetailsView,
+    SaveHmrcDetails, SetClaimStatus,
 };
 use giftaid::schedule::Template;
 use giftaid::xml::Envelope;
@@ -79,20 +79,20 @@ fn view(ctx: &Ctx, id: &str) -> Result<ClaimView, ApiError> {
 }
 
 /// `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?}`
-/// → the new draft claim. `422 rejected`: `nothing_to_claim`,
-/// `preview_changed`.
+/// → the new draft claims (one per 1,000 gifts, oldest first). `422
+/// rejected`: `nothing_to_claim`, `preview_changed`.
 async fn create(
     Extension(t): Extension<Tenant>,
     Body(req): Body<CreateClaim>,
-) -> Result<Json<ClaimSaved>, ApiError> {
+) -> Result<Json<ClaimsCreated>, ApiError> {
     t.require_admin()?;
     t.write(move |ctx| {
-        let id = giftaid::claims::create_claim(ctx, req, Source::Ui)?;
-        let view = view(ctx, &id)?;
-        Ok(ClaimSaved {
-            counter: view.claim.status_version,
-            id,
-            view: Some(view),
+        let ids = giftaid::claims::create_claim(ctx, req, Source::Ui)?;
+        Ok(ClaimsCreated {
+            claims: ids
+                .iter()
+                .map(|id| view(ctx, id))
+                .collect::<Result<_, _>>()?,
         })
     })
     .await
@@ -136,7 +136,6 @@ async fn status(
 
 #[derive(Deserialize)]
 struct ScheduleQuery {
-    part: Option<usize>,
     format: Option<String>,
 }
 
@@ -151,10 +150,10 @@ fn attachment(content_type: &'static str, filename: String, bytes: Vec<u8>) -> R
     res
 }
 
-/// `GET giftaid/claims/{id}/schedule?part=1&format=excel|libreoffice`:
-/// HMRC's Gift Aid schedule for the claim's donations `part` (from 1,
-/// 1,000 each: `scheduleParts` in the view), filled from HMRC's own
-/// template for that software (default Excel). A `.ods` download.
+/// `GET giftaid/claims/{id}/schedule?format=excel|libreoffice`: HMRC's
+/// Gift Aid schedule for the claim (one per claim: at most 1,000
+/// donations), filled from HMRC's own template for that software
+/// (default Excel). A `.ods` download.
 async fn schedule(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
@@ -167,20 +166,19 @@ async fn schedule(
             problems: vec![contracts::Problem::new("format", "excel or libreoffice")],
         })?,
     };
-    let part = q.part.unwrap_or(1);
     let (bytes, number) = t
         .read(move |r| {
             let number = giftaid::claims::summary(r, &id)?
                 .ok_or(ApiError::NotFound)?
                 .number;
             let bytes =
-                giftaid::schedule::for_claim(r, &id, part, template)?.ok_or(ApiError::NotFound)?;
+                giftaid::schedule::for_claim(r, &id, template)?.ok_or(ApiError::NotFound)?;
             Ok((bytes, number))
         })
         .await?;
     Ok(attachment(
         "application/vnd.oasis.opendocument.spreadsheet",
-        format!("gift-aid-claim-{number}-part-{part}.ods"),
+        format!("gift-aid-claim-{number}.ods"),
         bytes,
     ))
 }

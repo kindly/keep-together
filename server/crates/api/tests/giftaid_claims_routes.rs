@@ -247,7 +247,7 @@ impl C {
             self.cookie(slug),
             Some(json!({ "periodEnd": today() })),
         )
-        .await["view"]
+        .await["claims"][0]
             .clone()
     }
 
@@ -401,7 +401,7 @@ async fn the_preview_claims_what_is_eligible_and_says_why_the_rest_is_left_out()
         p["totals"],
         json!({ "lines": 1, "donations": 2003, "reclaim": 500, "adjustment": 0, "net": 500 })
     );
-    assert_eq!(p["scheduleParts"], 1);
+    assert_eq!(p["claims"], 1);
     let reasons = |gift: &str| {
         p["excluded"]
             .as_array()
@@ -492,14 +492,15 @@ async fn a_claim_freezes_its_gifts_and_locks_them() {
         })),
     )
     .await;
-    let view = &made["view"];
+    assert_eq!(made["claims"].as_array().unwrap().len(), 1);
+    let view = &made["claims"][0];
     let id = view["id"].as_str().unwrap().to_owned();
     assert_eq!(view["number"], 1);
     assert_eq!(view["status"], "draft");
     assert_eq!(view["earliestDate"], days_ago(5));
     assert_eq!(view["totals"]["reclaim"], 500);
     assert_eq!(ids(&view["lines"], "giftId"), std::slice::from_ref(&gift));
-    assert_eq!(made["counter"], 0);
+    assert_eq!(view["statusVersion"], 0);
 
     // In one claim at most: nothing left to claim.
     assert_eq!(c.preview("alpha", &today()).await["lines"], json!([]));
@@ -878,11 +879,10 @@ async fn the_schedule_and_the_xml_download() {
     .await;
     let claim = c.create("alpha").await;
     let id = claim["id"].as_str().unwrap();
-    assert_eq!(claim["scheduleParts"], 1);
-    for format in ["", "&format=excel", "&format=libreoffice"] {
+    for format in ["", "format=excel", "format=libreoffice"] {
         let (s, ty, ods, _) = download(
             &c.w,
-            &format!("/api/t/alpha/giftaid/claims/{id}/schedule?part=1{format}"),
+            &format!("/api/t/alpha/giftaid/claims/{id}/schedule?{format}"),
             &c.ann,
         )
         .await;
@@ -891,13 +891,6 @@ async fn the_schedule_and_the_xml_download() {
         assert_eq!(&ods[..2], b"PK");
         assert_eq!(&ods[30..38], b"mimetype");
     }
-    let (s, _, _, _) = download(
-        &c.w,
-        &format!("/api/t/alpha/giftaid/claims/{id}/schedule?part=2"),
-        &c.ann,
-    )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
     let (s, _, _, _) = download(
         &c.w,
         &format!("/api/t/alpha/giftaid/claims/{id}/schedule?format=numbers"),
@@ -1213,4 +1206,50 @@ async fn a_declaration_backing_a_claimed_gift_stays_in_force_for_it() {
         Some(json!({ "reason": "Wrong person" })),
     )
     .await;
+}
+
+/// Controller decision (builder note 7): a claim holds at most 1,000
+/// lines, HMRC's schedule limit, so it is one Charities Online claim
+/// with one schedule. More eligible gifts make several claims, numbered
+/// in turn, oldest gifts first; the preview says how many.
+#[tokio::test]
+async fn over_a_thousand_gifts_make_several_claims_oldest_first() {
+    let c = setup().await;
+    let (first, contact) = c.gift("alpha", &ANN_SMITH, &days_ago(30), 100).await;
+    for _ in 0..999 {
+        c.again(&contact, &days_ago(30), 100).await;
+    }
+    // Entered last, received first: it leads claim 1.
+    let oldest = c.again(&contact, &days_ago(40), 100).await;
+    let p = c.preview("alpha", &today()).await;
+    assert_eq!(p["totals"]["lines"], 1001);
+    assert_eq!(p["claims"], 2);
+
+    let out = ok(
+        &c.w,
+        "POST",
+        "/api/t/alpha/giftaid/claims",
+        &c.ann,
+        Some(json!({ "periodEnd": today(), "expectedLines": 1001, "expectedDonations": 100100 })),
+    )
+    .await;
+    let claims = out["claims"].as_array().unwrap();
+    assert_eq!(claims.len(), 2);
+    assert_eq!(
+        (claims[0]["number"].as_i64(), claims[1]["number"].as_i64()),
+        (Some(1), Some(2))
+    );
+    assert_eq!(claims[0]["lines"].as_array().unwrap().len(), 1000);
+    assert_eq!(claims[1]["lines"].as_array().unwrap().len(), 1);
+    assert_eq!(claims[0]["lines"][0]["giftId"], oldest.as_str());
+    assert_eq!(claims[0]["earliestDate"], days_ago(40));
+    assert_eq!(claims[1]["earliestDate"], days_ago(30));
+    assert_eq!(claims[0]["totals"]["reclaim"], 25000);
+    assert!(
+        claims[0]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["giftId"] == first.as_str())
+    );
 }

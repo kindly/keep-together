@@ -2,7 +2,8 @@
 
 /**
  * `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?}`:
- * claim every eligible gift received on or before `periodEnd`. The
+ * claim every eligible gift received on or before `periodEnd`, in as
+ * many claims of at most 1,000 lines as it takes. The
  * expected counts are the preview's: if what is eligible changed since,
  * the create is refused (`preview_changed`) rather than claiming
  * something else.

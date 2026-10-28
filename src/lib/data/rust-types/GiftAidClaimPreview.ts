@@ -26,6 +26,8 @@ lines: Array<GiftAidClaimLine>, adjustments: Array<GiftAidClaimAdjustment>,
  */
 excluded: Array<GiftAidExcludedGift>, totals: GiftAidClaimTotals, 
 /**
- * Schedule files the claim would need (HMRC: 1,000 rows each).
+ * How many claims "Create" makes: one per 1,000 lines (HMRC's
+ * schedule limit), oldest gifts first; the adjustments go on the
+ * first.
  */
-scheduleParts: number, };
+claims: number, };

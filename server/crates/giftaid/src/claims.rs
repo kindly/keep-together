@@ -146,9 +146,9 @@ fn totals_of(lines: &[ClaimLine], adjustments: &[ClaimAdjustment]) -> ClaimTotal
     }
 }
 
-/// How many schedule files `lines` take.
-pub fn schedule_parts(lines: i64) -> i64 {
-    (lines.max(1) + SCHEDULE_ROW_LIMIT as i64 - 1) / SCHEDULE_ROW_LIMIT as i64
+/// How many claims `lines` eligible gifts make.
+pub fn claims_for(lines: usize) -> i64 {
+    lines.div_ceil(SCHEDULE_ROW_LIMIT) as i64
 }
 
 // ── reads ──────────────────────────────────────────────────────────────────
@@ -262,7 +262,6 @@ pub fn view(conn: &Connection, id: &str) -> rusqlite::Result<Option<ClaimView>> 
         return Ok(None);
     };
     Ok(Some(ClaimView {
-        schedule_parts: schedule_parts(claim.totals.lines),
         lines: lines(conn, id)?,
         adjustments: adjustments(conn, id)?,
         voided_gifts: voided_gifts(conn, id)?,
@@ -419,11 +418,7 @@ pub fn preview(conn: &Connection, period_end: &str, today: &str) -> rusqlite::Re
         period_end: period_end.to_owned(),
         today: today.to_owned(),
         claimable_from: from,
-        schedule_parts: if lines.is_empty() {
-            0
-        } else {
-            schedule_parts(totals.lines)
-        },
+        claims: claims_for(lines.len()),
         lines,
         adjustments,
         excluded,
@@ -477,11 +472,17 @@ fn invalid_date(field: &str) -> ContractError {
 }
 
 /// "New claim": every gift eligible now ([`preview`]) up to
-/// `periodEnd`, frozen into a draft claim, each gift locked to it, in one
-/// command group. `periodEnd` may not be after today (UK). Refused when
-/// nothing is eligible, and when the preview the caller saw
-/// (`expectedLines`, `expectedDonations`) no longer matches.
-pub fn create_claim(ctx: &Ctx, req: CreateClaim, source: Source) -> Result<String, ContractError> {
+/// `periodEnd`, frozen into draft claims of at most 1,000 lines each
+/// (oldest gifts first, numbered in turn; the adjustments on the first),
+/// each gift locked to its claim, all in one command group. `periodEnd`
+/// may not be after today (UK). Refused when nothing is eligible, and
+/// when the preview the caller saw (`expectedLines`,
+/// `expectedDonations`) no longer matches. The new claims' ids, in order.
+pub fn create_claim(
+    ctx: &Ctx,
+    req: CreateClaim,
+    source: Source,
+) -> Result<Vec<String>, ContractError> {
     let period_end = req.period_end.trim();
     if !is_iso_date(period_end) {
         return Err(invalid_date("periodEnd"));
@@ -514,21 +515,26 @@ pub fn create_claim(ctx: &Ctx, req: CreateClaim, source: Source) -> Result<Strin
         ctx,
         &format!("Gift Aid claim to {}", uk_date_label(period_end)),
     )?;
-    let id = execute(
-        ctx,
-        &CLAIM,
-        ClaimPayload {
-            period_end: period_end.to_owned(),
-            lines: p.lines,
-            adjustments: p.adjustments,
-        },
-        Exec::create(source).in_group(&group),
-    )?
-    .id;
-    for line in lines(ctx.tx.read(), &id)? {
-        giving::lock_for_claim(ctx, &line.gift_id, &id, source, &group)?;
+    let mut adjustments = Some(p.adjustments);
+    let mut ids = Vec::new();
+    for chunk in p.lines.chunks(SCHEDULE_ROW_LIMIT) {
+        let id = execute(
+            ctx,
+            &CLAIM,
+            ClaimPayload {
+                period_end: period_end.to_owned(),
+                lines: chunk.to_vec(),
+                adjustments: adjustments.take().unwrap_or_default(),
+            },
+            Exec::create(source).in_group(&group),
+        )?
+        .id;
+        for line in lines(ctx.tx.read(), &id)? {
+            giving::lock_for_claim(ctx, &line.gift_id, &id, source, &group)?;
+        }
+        ids.push(id);
     }
-    Ok(id)
+    Ok(ids)
 }
 
 /// One step of a claim's life ([`ClaimStatusContract`]): ready,
@@ -639,6 +645,12 @@ fn prepare_claim(mut p: ClaimPayload) -> Result<ClaimPayload, ContractError> {
     }
     if p.lines.is_empty() {
         return Err(ContractError::invalid("lines", "A claim needs a gift"));
+    }
+    if p.lines.len() > SCHEDULE_ROW_LIMIT {
+        return Err(ContractError::invalid(
+            "lines",
+            format!("A claim holds at most {SCHEDULE_ROW_LIMIT} gifts"),
+        ));
     }
     for l in &p.lines {
         if l.amount <= 0 || l.reclaim != reclaim(l.amount) || !is_iso_date(&l.received_on) {

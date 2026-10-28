@@ -14,8 +14,8 @@
 //! - the total's cached value (J20, its formula kept), so the sheet reads
 //!   right before it recalculates.
 //!
-//! At most [`SCHEDULE_ROW_LIMIT`] donations a file: a longer claim is
-//! split ([`crate::claims::schedule_parts`]).
+//! At most [`SCHEDULE_ROW_LIMIT`] donations a file, which is also the
+//! most a claim holds: one schedule per claim.
 
 use contracts::ContractError;
 
@@ -380,14 +380,12 @@ pub fn fill(
     Ok(zip::write(&entries))
 }
 
-/// Part `part` (from 1) of a stored claim's schedule: its next 1,000
-/// lines, Box 1 the earliest of them, Box 2 the claim's adjustment on
-/// part 1 only. `None` for an unknown or deleted claim or a part it
-/// doesn't have.
+/// A stored claim's schedule (at most 1,000 lines: one schedule per
+/// claim): Box 1 its earliest gift date, Box 2 its adjustment. `None` for
+/// an unknown or deleted claim.
 pub fn for_claim(
     conn: &rusqlite::Connection,
     claim_id: &str,
-    part: usize,
     template: Template,
 ) -> Result<Option<Vec<u8>>, ContractError> {
     let Some(claim) = crate::claims::summary(conn, claim_id)?
@@ -395,36 +393,20 @@ pub fn for_claim(
     else {
         return Ok(None);
     };
-    let lines = crate::claims::lines(conn, claim_id)?;
-    let Some(chunk) = part
-        .checked_sub(1)
-        .and_then(|i| lines.chunks(SCHEDULE_ROW_LIMIT).nth(i))
-    else {
-        return Ok(None);
-    };
-    let rows: Vec<Row> = chunk
-        .iter()
+    let rows: Vec<Row> = crate::claims::lines(conn, claim_id)?
+        .into_iter()
         .map(|l| Row {
-            title: l.title.clone(),
-            first_name: l.first_name.clone(),
-            last_name: l.last_name.clone(),
-            house: l.house.clone(),
-            postcode: if l.overseas {
-                "X".into()
-            } else {
-                l.postcode.clone()
-            },
-            date: l.received_on.clone(),
+            postcode: if l.overseas { "X".into() } else { l.postcode },
+            title: l.title,
+            first_name: l.first_name,
+            last_name: l.last_name,
+            house: l.house,
+            date: l.received_on,
             amount: l.amount,
         })
         .collect();
     let earliest = rows.iter().map(|r| r.date.as_str()).min();
-    let adjustment = if part == 1 {
-        claim.totals.adjustment
-    } else {
-        0
-    };
-    fill(template, &rows, earliest, adjustment)
+    fill(template, &rows, earliest, claim.totals.adjustment)
         .map(Some)
         .map_err(|e| ContractError::rejected("schedule", e.to_string()))
 }

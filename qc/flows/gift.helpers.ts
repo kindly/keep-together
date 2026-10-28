@@ -3,7 +3,7 @@ import { sessionCookie, sessionToken } from '../fixtures'
 import type { Instance, QcUser } from '../fixtures'
 import type { Created } from '../../src/lib/data/rust-types/Created'
 import type { Executed } from '../../src/lib/data/rust-types/Executed'
-import type { GiftAidClaimSaved } from '../../src/lib/data/rust-types/GiftAidClaimSaved'
+import type { GiftAidClaimsCreated } from '../../src/lib/data/rust-types/GiftAidClaimsCreated'
 import type { RecordedGift } from '../../src/lib/data/rust-types/RecordedGift'
 import type { SourcePicker } from '../../src/lib/data/rust-types/SourcePicker'
 
@@ -126,10 +126,13 @@ export async function claimedGift(
       giftAid: {},
     },
   )
-  const { id } = await call<GiftAidClaimSaved>(r, 'POST', 'giftaid/claims', {
-    periodEnd: receivedOn,
-  })
-  return { giftId, contactId, claimId: id }
+  const { claims } = await call<GiftAidClaimsCreated>(
+    r,
+    'POST',
+    'giftaid/claims',
+    { periodEnd: receivedOn },
+  )
+  return { giftId, contactId, claimId: claims[0].id }
 }
 
 /** An enduring declaration by `contactId`, made on `madeOn`. */
