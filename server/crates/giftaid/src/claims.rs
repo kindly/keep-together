@@ -24,7 +24,7 @@
 //! Neither contract can be restored: a claim moves only forward, as HMRC
 //! saw it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use contacts::donors::{ClaimDonor, claim_donor, name_of};
 use contracts::{
@@ -266,9 +266,8 @@ pub fn adjustments(conn: &Connection, claim_id: &str) -> rusqlite::Result<Vec<Cl
 
 /// The claim's gifts voided since it was made.
 fn voided_gifts(conn: &Connection, claim_id: &str) -> rusqlite::Result<Vec<String>> {
-    Ok(giving::voided_in_claims(conn)?
+    Ok(giving::voided_in_claim(conn, claim_id)?
         .into_iter()
-        .filter(|v| v.claim_id == claim_id)
         .map(|v| v.id)
         .collect())
 }
@@ -450,24 +449,28 @@ pub fn preview(conn: &Connection, period_end: &str, today: &str) -> rusqlite::Re
 /// claimed, and why it was voided. A gift voided out of a draft isn't
 /// here: it holds the draft back instead ([`set_claim_status`]).
 fn due_adjustments(conn: &Connection) -> rusqlite::Result<Vec<ClaimAdjustment>> {
+    // Gifts already paid back, and each claim's status: one read each,
+    // not two per voided gift (review L6).
+    let repaid: HashSet<String> = conn
+        .prepare_cached("SELECT gift_id FROM gift_aid_claim_adjustments WHERE live = 1")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut sent: HashMap<String, bool> = HashMap::new();
     let mut out = Vec::new();
     for v in giving::voided_in_claims(conn)? {
-        let sent = summary(conn, &v.claim_id)?.is_some_and(|c| {
-            matches!(
-                c.status,
-                ClaimStatus::Ready | ClaimStatus::Submitted | ClaimStatus::Paid
-            )
-        });
-        if !sent {
+        if repaid.contains(&v.id) {
             continue;
         }
-        let repaid: bool = conn
-            .prepare_cached(
-                "SELECT EXISTS (SELECT 1 FROM gift_aid_claim_adjustments
-                 WHERE gift_id = ?1 AND live = 1)",
-            )?
-            .query_row([&v.id], |r| r.get(0))?;
-        if repaid {
+        if !sent.contains_key(&v.claim_id) {
+            let s = summary(conn, &v.claim_id)?.is_some_and(|c| {
+                matches!(
+                    c.status,
+                    ClaimStatus::Ready | ClaimStatus::Submitted | ClaimStatus::Paid
+                )
+            });
+            sent.insert(v.claim_id.clone(), s);
+        }
+        if !sent[&v.claim_id] {
             continue;
         }
         let claimed: Option<i64> = conn

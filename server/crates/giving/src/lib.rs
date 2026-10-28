@@ -284,6 +284,26 @@ pub struct VoidedClaimedGift {
     pub void_reason: Option<String>,
 }
 
+/// The void gifts `claim_id` holds (`gifts_claimed_void`, one claim's
+/// range).
+pub fn voided_in_claim(
+    conn: &Connection,
+    claim_id: &str,
+) -> rusqlite::Result<Vec<VoidedClaimedGift>> {
+    conn.prepare_cached(
+        "SELECT id, claim_id, void_reason FROM gifts INDEXED BY gifts_claimed_void
+         WHERE claim_id = ?1 AND status = 'void' ORDER BY seq",
+    )?
+    .query_map([claim_id], |r| {
+        Ok(VoidedClaimedGift {
+            id: r.get(0)?,
+            claim_id: r.get(1)?,
+            void_reason: r.get(2)?,
+        })
+    })?
+    .collect()
+}
+
 /// Every void gift a claim still holds (`gifts_claimed_void`).
 pub fn voided_in_claims(conn: &Connection) -> rusqlite::Result<Vec<VoidedClaimedGift>> {
     conn.prepare_cached(

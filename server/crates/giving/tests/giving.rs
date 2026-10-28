@@ -1366,6 +1366,12 @@ fn claim_reads() {
             void_reason: Some("Gone".into()),
         }]
     );
+    // One claim's own, by its index (review L6).
+    assert_eq!(
+        read(&w.a, |c| Ok(giving::voided_in_claim(c, CLAIM_A)?)),
+        voided
+    );
+    assert!(read(&w.a, |c| Ok(giving::voided_in_claim(c, CLAIM_B)?)).is_empty());
     // B's file has none of it.
     assert!(read(&w.b, |c| Ok(giving::voided_in_claims(c)?)).is_empty());
 }
