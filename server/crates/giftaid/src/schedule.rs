@@ -81,8 +81,30 @@ pub enum ScheduleError {
 }
 
 /// `2015-03-24` → `24/03/15`.
+/// Anything not an ISO date is given back as it is.
 fn dd_mm_yy(iso: &str) -> String {
+    if !crate::rules::is_iso_date(iso) {
+        return iso.to_owned();
+    }
     format!("{}/{}/{}", &iso[8..10], &iso[5..7], &iso[2..4])
+}
+
+/// "1234567.89" → "1,234,567.89", as the total cell's currency style
+/// shows it.
+fn grouped(pounds: &str) -> String {
+    let (sign, digits) = match pounds.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", pounds),
+    };
+    let (whole, pence) = digits.split_once('.').unwrap_or((digits, "00"));
+    let mut out = String::new();
+    for (i, c) in whole.chars().enumerate() {
+        if i > 0 && (whole.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("{sign}{out}.{pence}")
 }
 
 fn escape(text: &str) -> String {
@@ -248,7 +270,8 @@ fn with_total(cell: &str, total: i64) -> Result<String, ScheduleError> {
     );
     let p = pounds(total);
     Ok(format!(
-        "{open} office:value=\"{p}\"><text:p>£{p}</text:p></table:table-cell>"
+        "{open} office:value=\"{p}\"><text:p>£{}</text:p></table:table-cell>",
+        grouped(&p)
     ))
 }
 
@@ -528,6 +551,20 @@ mod tests {
             assert_eq!(cells[&(7, 3)].2, "Henry");
             assert_eq!(cells[&(25, 1)].1, "1");
         }
+    }
+
+    /// Review L9: the total's cached text is grouped as the cell's style
+    /// shows it; a date that isn't ISO is written as it is, never a panic.
+    #[test]
+    fn the_total_reads_as_the_sheet_shows_it_and_odd_dates_dont_panic() {
+        let mut big = row(0);
+        big.amount = 123_456_789;
+        let cells = read_back(&fill(Template::Excel, &[big], None, 0).unwrap());
+        assert_eq!(cells[&(20, 9)].2, "£1,234,567.89");
+        assert_eq!(cells[&(20, 9)].1, "1234567.89");
+        assert_eq!(dd_mm_yy("2015-03-24"), "24/03/15");
+        assert_eq!(dd_mm_yy("24/03/15"), "24/03/15");
+        assert_eq!(dd_mm_yy("é"), "é");
     }
 
     #[test]

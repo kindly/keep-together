@@ -4,7 +4,11 @@
 //! neither template needs them.
 
 use miniz_oxide::deflate::compress_to_vec;
-use miniz_oxide::inflate::decompress_to_vec;
+use miniz_oxide::inflate::{TINFLStatus, decompress_to_vec_with_limit};
+
+/// The most one member may inflate to: HMRC's templates are under 1 MB;
+/// anything larger isn't one.
+pub const ENTRY_MAX: usize = 16 << 20;
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[error("zip: {0}")]
@@ -66,8 +70,15 @@ pub fn read(archive: &[u8]) -> Result<Vec<Entry>, ZipError> {
             .get(start..start + compressed)
             .ok_or(ZipError("truncated"))?;
         let data = match method {
+            0 if raw.len() > ENTRY_MAX => return Err(ZipError("entry too large")),
             0 => raw.to_vec(),
-            8 => decompress_to_vec(raw).map_err(|_| ZipError("bad deflate data"))?,
+            8 => decompress_to_vec_with_limit(raw, ENTRY_MAX).map_err(|e| {
+                if e.status == TINFLStatus::HasMoreOutput {
+                    ZipError("entry too large")
+                } else {
+                    ZipError("bad deflate data")
+                }
+            })?,
             _ => return Err(ZipError("unsupported compression")),
         };
         if crc32(&data) != crc {
@@ -157,6 +168,18 @@ mod tests {
     #[test]
     fn crc_of_a_known_string() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    /// Review L9: inflating stops at [`ENTRY_MAX`] (a small archive can
+    /// expand enormously).
+    #[test]
+    fn an_entry_over_the_cap_is_refused() {
+        let archive = write(&[Entry {
+            name: "big".into(),
+            data: vec![0; ENTRY_MAX + 1],
+        }]);
+        assert!(archive.len() < 100_000, "zeros deflate small");
+        assert_eq!(read(&archive), Err(ZipError("entry too large")));
     }
 
     #[test]
