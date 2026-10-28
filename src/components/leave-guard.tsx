@@ -8,6 +8,11 @@ const SETTLE_MS = 5000
 /** Waits shorter than this pass unannounced, so a quick save doesn't flash. */
 const SHOW_WAIT_MS = 300
 
+type Spot = { pathname: string; search: unknown }
+const sameSpot = (a: Spot, b: Spot) =>
+  a.pathname === b.pathname &&
+  JSON.stringify(a.search) === JSON.stringify(b.search)
+
 /**
  * Asks before the page is left with work not on the server. Inside the
  * SPA, leaving is first treated as leaving the focused field: its blur
@@ -20,22 +25,27 @@ const SHOW_WAIT_MS = 300
  */
 export function LeaveGuard({ work }: { work: UnsavedWork }) {
   const [waiting, setWaiting] = useState(false)
-  const shouldBlockFn = useCallback(async () => {
-    if (work.state() === 'clean') return false
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur()
-      // Let the blur's state updates commit and report in.
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
-    work.flush()
-    const show = setTimeout(() => setWaiting(true), SHOW_WAIT_MS)
-    try {
-      return (await work.settled(SETTLE_MS)) !== 'clean'
-    } finally {
-      clearTimeout(show)
-      setWaiting(false)
-    }
-  }, [work])
+  const shouldBlockFn = useCallback(
+    async ({ current, next }: { current: Spot; next: Spot }) => {
+      // The same URL isn't leaving: the mobile menu's own history entry.
+      if (sameSpot(current, next)) return false
+      if (work.state() === 'clean') return false
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur()
+        // Let the blur's state updates commit and report in.
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+      work.flush()
+      const show = setTimeout(() => setWaiting(true), SHOW_WAIT_MS)
+      try {
+        return (await work.settled(SETTLE_MS)) !== 'clean'
+      } finally {
+        clearTimeout(show)
+        setWaiting(false)
+      }
+    },
+    [work],
+  )
   const enableBeforeUnload = useCallback(() => work.state() !== 'clean', [work])
   const blocker = useBlocker({
     shouldBlockFn,

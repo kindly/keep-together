@@ -44,7 +44,10 @@ export const DONATIONS = {
   none: 'None yet.',
 } as const
 
-type AnchorProps = Omit<ComponentProps<'a'>, 'href' | 'children'>
+type AnchorProps = Omit<ComponentProps<'a'>, 'href' | 'children'> & {
+  /** Replace the current history entry (the mobile drawer's). */
+  replace?: boolean
+}
 
 /**
  * Who may record a gift, and the caller's last 10 gifts: fetched only

@@ -1,6 +1,11 @@
-import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
+import {
+  Link,
+  useNavigate,
+  useRouter,
+  useRouterState,
+} from '@tanstack/react-router'
 import { MenuIcon, XIcon } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { FEATURES, useAuthState, useSignOut } from '../lib/data'
 import { useTenant } from '../lib/tenant'
@@ -29,21 +34,11 @@ const WIDE = '(min-width: 48rem)'
 export function MobileNav() {
   const tenant = useTenant()
   const slug = tenant.slug
-  const [open, setOpen] = useState(false)
-  // A navigation the drawer didn't make (the back gesture) closes it too.
-  const pathname = useRouterState({ select: (s) => s.location.pathname })
-  useEffect(() => setOpen(false), [pathname])
-  useEffect(() => {
-    const wide = window.matchMedia(WIDE)
-    const onChange = () => wide.matches && setOpen(false)
-    wide.addEventListener('change', onChange)
-    return () => wide.removeEventListener('change', onChange)
-  }, [])
-  const close = () => setOpen(false)
+  const { open, onOpenChange, follow, navigated } = useDrawerEntry()
 
   return (
     <div className="mx-auto flex items-center gap-1 px-2 py-1 md:hidden">
-      <Sheet open={open} onOpenChange={setOpen}>
+      <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetTrigger
           aria-label="Menu"
           className="flex size-11 items-center justify-center rounded hover:bg-neutral-100"
@@ -55,6 +50,9 @@ export function MobileNav() {
           aria-describedby={undefined}
           className="md:hidden"
           overlayClassName="md:hidden"
+          // Closed by a navigation: the new page's own focus (an autofocus
+          // field) wins over the Menu button.
+          onCloseAutoFocus={(e) => navigated.current && e.preventDefault()}
         >
           <div className="flex items-center gap-2 border-b border-neutral-200 py-1 pr-1 pl-4">
             <SheetTitle className="min-w-0 flex-1 truncate">
@@ -73,7 +71,7 @@ export function MobileNav() {
               params={{ slug }}
               activeOptions={{ exact: true }}
               className={item}
-              onClick={close}
+              {...follow}
             >
               Home
             </Link>
@@ -81,29 +79,29 @@ export function MobileNav() {
               to="/t/$slug/contacts"
               params={{ slug }}
               className={item}
-              onClick={close}
+              {...follow}
             >
               Contacts
             </Link>
-            {FEATURES.gifts && <Donations onClick={close} />}
+            {FEATURES.gifts && <Donations follow={follow} />}
             {FEATURES.settings && (
               <Link
                 to="/t/$slug/settings"
                 params={{ slug }}
                 className={item}
-                onClick={close}
+                {...follow}
               >
                 Settings
               </Link>
             )}
-            <Account onClick={close} />
+            <Account follow={follow} />
           </nav>
         </SheetContent>
       </Sheet>
       <Link
         to="/t/$slug"
         params={{ slug }}
-        className="min-w-0 truncate font-medium hover:underline"
+        className="flex min-h-11 min-w-0 items-center truncate font-medium hover:underline"
       >
         {tenant.name}
       </Link>
@@ -111,16 +109,111 @@ export function MobileNav() {
   )
 }
 
+type DrawerState = { mobileNav?: string }
+/** A drawer link's props: it closes the drawer and takes its entry. */
+type Follow = { replace: boolean; onClick: () => void }
+let opened = 0
+
+/**
+ * The drawer as a history entry, so the back gesture closes it and stays
+ * on the page. Opening pushes an entry for the same URL marked with this
+ * opening's id; the drawer is open while that entry is current. Back pops
+ * it (closing the drawer); a link in the drawer replaces it (`replace`),
+ * so the page it opens takes the drawer's place in history (and closes
+ * the drawer at once, before that page mounts and autofocuses); any other
+ * navigation (a search change too) leaves it, and the drawer closes. Esc,
+ * the overlay, Close and widening to md unwind the entry, past any
+ * blocker: it is the same page. `navigated` says whether the last close
+ * came from a navigation.
+ */
+function useDrawerEntry() {
+  const router = useRouter()
+  const navigate = useNavigate()
+  const marker = useRouterState({
+    select: (s) => (s.location.state as DrawerState).mobileNav,
+  })
+  const href = useRouterState({ select: (s) => s.location.href })
+  const [open, setOpen] = useState(false)
+  // This opening's id, whether its entry has been current, and the push.
+  const entry = useRef<{
+    id: string
+    reached: boolean
+    pushed: Promise<void>
+  } | null>(null)
+  const navigated = useRef(false)
+  const at = useRef(href)
+  const onEntry = entry.current !== null && marker === entry.current.id
+
+  /**
+   * `unwind`: Esc, the overlay, Close, widening; `back`: the entry was
+   * popped, same page; `navigated`: another page took its place.
+   */
+  const closeBy = (how: 'unwind' | 'back' | 'navigated') => {
+    navigated.current = how === 'navigated'
+    setOpen(false)
+    const left = entry.current
+    entry.current = null
+    if (how !== 'unwind' || !left) return
+    void left.pushed.then(() => {
+      const state = router.state.location.state as DrawerState
+      if (state.mobileNav === left.id)
+        router.history.back({ ignoreBlocker: true })
+    })
+  }
+
+  // Leaving the entry, or the URL changing under it, is a navigation.
+  useEffect(() => {
+    const e = entry.current
+    if (!e) return
+    if (marker === e.id) e.reached = true
+    else if (e.reached) closeBy(at.current === href ? 'back' : 'navigated')
+  }, [marker])
+  useEffect(() => {
+    if (at.current !== href && entry.current) closeBy('navigated')
+    at.current = href
+  }, [href])
+  useEffect(() => {
+    const wide = window.matchMedia(WIDE)
+    const onChange = () => wide.matches && entry.current && closeBy('unwind')
+    wide.addEventListener('change', onChange)
+    return () => wide.removeEventListener('change', onChange)
+  }, [])
+
+  const onOpenChange = (next: boolean) => {
+    if (!next) return closeBy('unwind')
+    const id = `${Date.now()}-${++opened}`
+    navigated.current = false
+    setOpen(true)
+    entry.current = {
+      id,
+      reached: false,
+      pushed: navigate({
+        to: '.',
+        search: true,
+        hash: true,
+        state: (s) => ({ ...s, mobileNav: id }) as typeof s,
+        resetScroll: false,
+        ignoreBlocker: true,
+      }),
+    }
+  }
+  const follow: Follow = {
+    replace: onEntry,
+    onClick: () => closeBy('navigated'),
+  }
+  return { open, onOpenChange, follow, navigated }
+}
+
 /**
  * The Donations menu, flattened: Record a gift (staff and admins), then
  * the caller's recent gifts, under the header's labels. The drawer's
  * content is mounted only while it is open, so they're fetched only then.
  */
-function Donations({ onClick }: { onClick: () => void }) {
+function Donations({ follow }: { follow: Follow }) {
   const { canWrite, gifts } = useDonations(true)
   return (
     <Section title={DONATIONS.label}>
-      {canWrite && <RecordGiftAction className={item} onClick={onClick} />}
+      {canWrite && <RecordGiftAction className={item} {...follow} />}
       <p className={heading}>{DONATIONS.recent}</p>
       {gifts === undefined ? (
         <p className="px-3 py-2 text-sm text-neutral-500">
@@ -134,7 +227,7 @@ function Donations({ onClick }: { onClick: () => void }) {
             key={g._id}
             gift={g}
             className={`${item} text-sm`}
-            onClick={onClick}
+            {...follow}
           />
         ))
       )}
@@ -155,7 +248,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 /** At the bottom: who is signed in, their account page, and Sign out. */
-function Account({ onClick }: { onClick: () => void }) {
+function Account({ follow }: { follow: Follow }) {
   const email = useAuthState()?.email
   const signOut = useSignOut()
   const navigate = useNavigate()
@@ -164,7 +257,7 @@ function Account({ onClick }: { onClick: () => void }) {
       <Link
         to="/account"
         className={`${item} flex-col items-start`}
-        onClick={onClick}
+        {...follow}
       >
         <span>Your account</span>
         {email && (
@@ -175,10 +268,11 @@ function Account({ onClick }: { onClick: () => void }) {
       </Link>
       <button
         type="button"
-        onClick={() => {
-          onClick()
-          void signOut().then(() => navigate({ to: '/' }))
-        }}
+        onClick={() =>
+          void signOut().then(() =>
+            navigate({ to: '/', replace: follow.replace }),
+          )
+        }
         className={`${item} w-full text-left text-neutral-600`}
       >
         Sign out
