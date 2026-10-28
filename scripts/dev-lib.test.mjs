@@ -1,5 +1,16 @@
-import { describe, expect, test } from 'vitest'
-import { portsFor, reserved, servedOn, slotFor } from './dev-lib.mjs'
+import { execFile } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterAll, describe, expect, test } from 'vitest'
+import {
+  claimSlot,
+  portsFor,
+  reserved,
+  servedOn,
+  slotFor,
+  slotRecorded,
+} from './dev-lib.mjs'
 
 const MAIN = '/w/keep-together'
 const all = () => true
@@ -76,4 +87,56 @@ describe('servedOn', () => {
       ours: false,
     })
   })
+})
+
+describe('claimSlot', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dev-slots-test-'))
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+  const lib = path.join(import.meta.dirname, 'dev-lib.mjs')
+
+  test("keeps a checkout's slot across claims and records it", () => {
+    const file = path.join(dir, 'one.json')
+    const a = claimSlot(file, '/w/a', MAIN, all)
+    expect(claimSlot(file, '/w/b', MAIN, all)).toBe(a + 1)
+    expect(claimSlot(file, '/w/a', MAIN, all)).toBe(a)
+    expect(slotRecorded(file, '/w/b')).toBe(a + 1)
+  })
+
+  // Real processes starting together (as two worktrees' `pnpm dev`): each
+  // gets its own slot, and the file keeps every one of them.
+  test('checkouts claiming at once never share a slot', async () => {
+    const file = path.join(dir, 'race.json')
+    const racers = 12
+    const startAt = Date.now() + 400
+    const script = `
+      import { claimSlot } from ${JSON.stringify(lib)}
+      const [, file, checkout, startAt] = process.argv
+      while (Date.now() < Number(startAt)) {}
+      console.log(claimSlot(file, checkout, '/w/main', () => true))
+    `
+    const got = await Promise.all(
+      Array.from(
+        { length: racers },
+        (_, i) =>
+          new Promise((resolve, reject) =>
+            execFile(
+              process.execPath,
+              [
+                '--input-type=module',
+                '-e',
+                script,
+                file,
+                `/w/r${i}`,
+                String(startAt),
+              ],
+              (err, stdout) =>
+                err ? reject(err) : resolve(Number(stdout.trim())),
+            ),
+          ),
+      ),
+    )
+    expect(new Set(got).size).toBe(racers)
+    const slots = JSON.parse(readFileSync(file, 'utf8'))
+    for (let i = 0; i < racers; i++) expect(slots[`/w/r${i}`]).toBe(got[i])
+  }, 20_000)
 })

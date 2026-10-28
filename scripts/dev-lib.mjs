@@ -1,11 +1,13 @@
-// The pure parts of `pnpm dev` (scripts/dev.mjs): which slot a checkout
-// gets and the ports that follow from it.
+// The testable parts of `pnpm dev` (scripts/dev.mjs): which slot a
+// checkout gets, the ports that follow from it, and the slots file.
 //
 // Every checkout of the repo (the main one and each worktree) has a slot
 // n, kept in the main checkout's git dir (`keep-dev-slots.json`), so the
 // same worktree gets the same ports every time and two never share one.
 // The main checkout is always 0; a worktree takes the lowest free n from
 // 1. A slot whose checkout is gone is free again.
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { newToken, releaseLock, tryLock } from './lockfile.mjs'
 
 /** The api's port is 8787 + n (`KEEP_PORT`, CLAUDE.md "Local only"). */
 export const API_BASE = 8787
@@ -77,4 +79,65 @@ export function servedOn(status, port, target) {
   const ours =
     paths.length === 1 && paths[0] === '/' && handlers['/'].Proxy === target
   return { ours }
+}
+
+// ── the slots file ─────────────────────────────────────────────────────────
+
+const SLOT_LOCK_MAX_AGE_MS = 30_000
+const SLOT_LOCK_WAIT_MS = 10_000
+
+function readSlots(file) {
+  try {
+    const slots = JSON.parse(readFileSync(file, 'utf8'))
+    return slots && typeof slots === 'object' ? slots : {}
+  } catch (err) {
+    if (err.code === 'ENOENT' || err instanceof SyntaxError) return {}
+    throw err
+  }
+}
+
+/** The slot `checkout` holds in `file` now, or undefined. */
+export const slotRecorded = (file, checkout) => readSlots(file)[checkout]
+
+/**
+ * `checkout`'s slot from `file`, allocated if it has none. The read,
+ * the allocation and the write happen under `<file>.lock` (lockfile.mjs:
+ * created whole or not at all, a dead or 30 s old holder taken over), so
+ * two checkouts starting at once never get the same slot.
+ */
+export function claimSlot(file, checkout, mainCheckout, exists = existsSync) {
+  const lockPath = `${file}.lock`
+  const token = newToken()
+  const record = {
+    pid: process.pid,
+    token,
+    startedAt: new Date().toISOString(),
+    worktree: checkout,
+  }
+  const until = Date.now() + SLOT_LOCK_WAIT_MS
+  for (;;) {
+    const holder = tryLock(lockPath, record, {
+      maxAgeMs: SLOT_LOCK_MAX_AGE_MS,
+      label: 'dev slots lock',
+    })
+    if (holder === null) break
+    if (Date.now() > until) {
+      throw new Error(
+        `${lockPath} is held by pid ${holder.pid} (${holder.worktree}); try again`,
+      )
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+  }
+  try {
+    const slots = readSlots(file)
+    const got = slotFor(slots, checkout, mainCheckout, exists)
+    if (JSON.stringify(got.slots) !== JSON.stringify(slots)) {
+      const tmp = `${file}.${process.pid}.${token}`
+      writeFileSync(tmp, JSON.stringify(got.slots, null, 2) + '\n')
+      renameSync(tmp, file)
+    }
+    return got.n
+  } finally {
+    releaseLock(lockPath, (lock) => lock?.token === token)
+  }
 }

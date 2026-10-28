@@ -28,18 +28,10 @@
 // (scripts/preview/). If tailscale asks for rights, run once:
 //   sudo tailscale set --operator=$USER
 import { execFileSync, spawn } from 'node:child_process'
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  watch,
-  writeFileSync,
-} from 'node:fs'
+import { mkdirSync, rmSync, watch } from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
-import { portsFor, servedOn, slotFor } from './dev-lib.mjs'
+import { claimSlot, portsFor, servedOn, slotRecorded } from './dev-lib.mjs'
 
 const root = path.resolve(import.meta.dirname, '..')
 const server = path.join(root, 'server')
@@ -70,24 +62,15 @@ const git = (...args) =>
 
 // ── this checkout's slot and ports ─────────────────────────────────────────
 
+const gitCommon = git('rev-parse', '--path-format=absolute', '--git-common-dir')
+const slotsFile = path.join(gitCommon, 'keep-dev-slots.json')
+
 function slot() {
-  const common = git('rev-parse', '--path-format=absolute', '--git-common-dir')
-  const mainCheckout = path.dirname(common)
-  const file = path.join(common, 'keep-dev-slots.json')
-  let slots = {}
   try {
-    slots = JSON.parse(readFileSync(file, 'utf8'))
+    return claimSlot(slotsFile, root, path.dirname(gitCommon))
   } catch (err) {
-    if (err.code !== 'ENOENT')
-      say(`ignoring unreadable ${file}: ${err.message}`)
+    die(err.message)
   }
-  const got = slotFor(slots, root, mainCheckout, existsSync)
-  if (JSON.stringify(got.slots) !== JSON.stringify(slots)) {
-    const tmp = `${file}.${process.pid}`
-    writeFileSync(tmp, JSON.stringify(got.slots, null, 2) + '\n')
-    renameSync(tmp, file)
-  }
-  return got.n
 }
 
 const n = slot()
@@ -277,6 +260,8 @@ delete apiEnv.KEEP_DEV_AUTH
 
 let api = null
 let stopping = false
+// This run's tailnet entry is up (stop() removes it).
+let shared = false
 
 function startApi() {
   const bin = path.join(server, 'target', 'debug', 'api')
@@ -386,7 +371,10 @@ function banner() {
 async function stop(code = 0) {
   if (stopping) return
   stopping = true
-  if (host) {
+  // Only an entry this run put up, and only while the slots file still
+  // gives this checkout the slot the entry was made for: a run that lost
+  // its slot (or never got the entry up) must not take down another's.
+  if (host && shared && slotRecorded(slotsFile, root) === n) {
     try {
       shareOff()
     } catch (err) {
@@ -419,6 +407,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'])
 if (host) {
   console.log(`\n  ${url}    ← ${branch}\n`)
   orDie(shareOn)
+  shared = true
 }
 
 const vite = track(
