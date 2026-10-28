@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from './domain/ids'
 import type { Counters, FormState, Slices } from './contact-form-state'
 import {
   newKey,

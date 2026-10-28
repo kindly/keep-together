@@ -1,7 +1,6 @@
 package-lock.json
 pnpm-lock.yaml
 yarn.lock
-convex/_generated
 src/routeTree.gen.ts
 # Hand-wrapped prose (docs, plans, CLAUDE.md): not reflowed by prettier
 **/*.md

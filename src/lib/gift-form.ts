@@ -3,7 +3,7 @@
  * becomes (cash gifts plan, step 3). Pure: the page component holds a
  * draft and renders what these functions say.
  */
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from './domain/ids'
 import type { ShownCode } from '../components/source-code-picker'
 import type { DonorInfo, GiftMethod, RecordGiftArgs } from './data'
 import type { ContactKind } from './data/rust-types/ContactKind'

@@ -24,7 +24,7 @@ COPY . .
 # client send events).
 ARG VITE_SENTRY_DSN=""
 ARG VITE_RELEASE=""
-ENV VITE_BACKEND=rust VITE_SENTRY_DSN=$VITE_SENTRY_DSN VITE_RELEASE=$VITE_RELEASE
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN VITE_RELEASE=$VITE_RELEASE
 RUN pnpm build
 
 # ---- server ---------------------------------------------------------------

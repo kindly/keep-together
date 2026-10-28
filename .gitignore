@@ -24,7 +24,6 @@ todos.json
 .zshrc
 .idea
 .claude/*
-!.claude/skills/
 
 # QC suite output (pnpm qc)
 dist-qc/

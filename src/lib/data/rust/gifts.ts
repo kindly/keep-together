@@ -9,7 +9,7 @@
  * is the server's state, never what the form sent. Reads refetch when the
  * tenant's event stream names a gift or a declaration (`../events.ts`).
  *
- * The answers come back in the shapes the pages rendered from Convex
+ * The answers come back in the shapes the pages render
  * (`_id`, amounts as `bigint` pence, absent fields `undefined`), so the
  * pages' formatting, rules and tests are unchanged. Pence cross the wire
  * as JSON integers (rule 7: never pounds, never a float); `bigint` ↔
@@ -22,7 +22,7 @@ import {
 } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
 import { useMemo } from 'react'
-import type { Id } from '../../../../convex/_generated/dataModel'
+import type { Id } from '../../domain/ids'
 import { useTenant } from '../../tenant'
 import { ownWrite } from '../events'
 import type { AllocationView } from '../rust-types/AllocationView'

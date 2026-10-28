@@ -139,7 +139,7 @@ test.describe('contacts list', () => {
     'search by exact email finds the contact',
     { annotation: [LIST] },
     async ({ page, users, world }) => {
-      // The seeded Ada's primary email (convex/platform/qcSeed.ts). Step 8
+      // The seeded Ada's primary email (`api/src/routes/qc_seed.rs`). Step 8
       // edits emails on contacts it creates, not this one.
       const email = `ada-${users.a.slug}@example.com`
       const adaId = world.tenants[0].contactIds[0]
@@ -158,7 +158,7 @@ test.describe('contacts list', () => {
     'search by exact identifier opens the contact',
     { annotation: [LIST, CONTACT] },
     async ({ page, flow, users, world }) => {
-      // The seeded Ada's identifier (convex/platform/qcSeed.ts); B's Ada
+      // The seeded Ada's identifier (`api/src/routes/qc_seed.rs`); B's Ada
       // holds the same value, and must not show here.
       const { shared } = world.identifiers
       const adaId = world.tenants[0].contactIds[0]

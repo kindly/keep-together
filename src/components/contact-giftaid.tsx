@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
-import { openAt } from '../../convex/giftaid/rules'
+import type { Id } from '../lib/domain/ids'
+import { openAt } from '../lib/domain/coverage'
 import {
   fetchContactSnapshot,
   useDeclarationHistory,

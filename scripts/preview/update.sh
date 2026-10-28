@@ -108,7 +108,7 @@ if [ ! -x "$release/api" ] || [ ! -f "$release/dist/index.html" ]; then
     fail "pnpm install"
   # The image's build settings (rs/Dockerfile): the SPA talks to its own
   # origin, the Rust api.
-  (cd "$src" && VITE_BACKEND=rust VITE_RELEASE=$new run "${quiet[@]}" pnpm build) ||
+  (cd "$src" && VITE_RELEASE=$new run "${quiet[@]}" pnpm build) ||
     fail "pnpm build"
   staging=$release.partial
   {

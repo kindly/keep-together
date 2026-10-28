@@ -1,9 +1,6 @@
-import type { FunctionReturnType } from 'convex/server'
-import type { api } from '../../convex/_generated/api'
+import type { ContactView } from './domain/contacts'
 
-export type ContactView = NonNullable<
-  FunctionReturnType<typeof api.contacts.queries.get>
->
+export type { ContactView }
 
 // A just-created contact's view, handed from the new-contact form to the
 // contact page so the page renders on the create's own round trip. The

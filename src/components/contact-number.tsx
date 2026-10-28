@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { formatNumber } from '../../convex/contacts/number'
+import { formatNumber } from '../lib/domain/contacts'
 
 /** The copy shortcut as this platform's keyboard writes it. */
 const copyKeys = () =>

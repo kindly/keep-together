@@ -5,8 +5,8 @@
  * page section in `FEATURES` that is `false` isn't rendered at all. Each
  * wave step adds its routes and turns on its sections here, nowhere else.
  *
- * The unported routes and components stay on disk, still written against
- * Convex (read-only reference), until their slice ports them.
+ * Every route is ported (cutover, C2); the list stays as the place a new
+ * route is switched on.
  */
 import type { FileRouteTypes } from '../../routeTree.gen'
 

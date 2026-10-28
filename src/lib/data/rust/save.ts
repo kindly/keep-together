@@ -1,8 +1,8 @@
 /**
  * The contact form's save on the Rust API, as reducer actions (pure; the
  * request itself is in `hooks.tsx`). `POST contacts/{id}/save` answers
- * Convex's `SaveResult` plus `current`, each stale slice's state now: stale
- * slices are skipped and the rest saved, as on Convex. With no live query
+ * `SaveFormResult` with `current`, each stale slice's state now: stale
+ * slices are skipped and the rest saved. With no live query
  * to deliver the newer state, `current` is dispatched as the `server`
  * update that a subscription would have brought, so the reducer (spike
  * 04, unchanged) merges it three-way and queues the retry against the new

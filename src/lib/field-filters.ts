@@ -3,8 +3,8 @@
  * 5): what the filter bar shows, and the `fields` argument `list` and
  * `search` take.
  */
-import type { Doc, Id } from '../../convex/_generated/dataModel'
-import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
+import type { Id } from './domain/ids'
+import type { ContactKind, FieldDefinition  } from './domain/contacts'
 
 /** A field filter's choice: an option, or "not set" (`null`). */
 export type FieldPick = {
@@ -12,7 +12,7 @@ export type FieldPick = {
   optionId: Id<'contactFieldOptions'> | null
 }
 
-type Kind = Doc<'contacts'>['kind']
+type Kind = ContactKind
 
 /** A field gets a filter when it is active and applies to the kind shown. */
 export function fieldShown(f: FieldDefinition, kind: Kind | '') {

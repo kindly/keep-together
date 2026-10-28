@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
-import type { Id } from '../../convex/_generated/dataModel'
-import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
+import type { Id } from './domain/ids'
+import type { FieldDefinition } from './domain/contacts'
 import { fieldArgs } from './field-filters'
 
 const field = (

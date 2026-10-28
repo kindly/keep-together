@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from '../lib/domain/ids'
 import { useMembers, useNoteActions, useNotes } from '../lib/data'
 import type { Note } from '../lib/data'
 import { useCanWrite } from '../lib/tenant'

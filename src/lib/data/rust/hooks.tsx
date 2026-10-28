@@ -13,7 +13,7 @@ import {
 } from '@tanstack/react-query'
 import { createContext, useContext, useMemo } from 'react'
 import type { ReactNode } from 'react'
-import type { Id } from '../../../../convex/_generated/dataModel'
+import type { Id } from '../../domain/ids'
 import { newKey } from '../../contact-form-state'
 import { LIST_PAGE_SIZE } from '../../paged-list'
 import type { ListFilters, PagedList } from '../../paged-list'

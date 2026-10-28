@@ -1,5 +1,5 @@
-import { coveringDeclaration } from '../../convex/giftaid/rules'
-import type { Id } from '../../convex/_generated/dataModel'
+import { coveringDeclaration } from './domain/coverage'
+import type { Id } from './domain/ids'
 import { localToday } from '../components/source-code-picker'
 import { useDeclarations as useContactDeclarations } from './data'
 import type { ContactDeclarations, Declaration } from './data'

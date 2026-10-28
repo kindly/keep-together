@@ -8,9 +8,9 @@ import type {
   ReactNode,
   Ref,
 } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
-import { formatNumber } from '../../convex/contacts/number'
-import { giftWarnings } from '../../convex/giving/warnings'
+import type { Id } from '../lib/domain/ids'
+import { formatNumber } from '../lib/domain/contacts'
+import { giftWarnings } from '../lib/domain/warnings'
 import {
   METHOD_LABELS as DECLARATION_METHOD_LABELS,
   SCOPE_LABELS,
@@ -632,9 +632,8 @@ type SearchRow = NonNullable<
  * false: those rows answer an older term.
  */
 function useSearch(term: string, open: boolean) {
-  const tenant = useTenant()
   const now = useContactSearch(
-    open && term ? { tenantId: tenant._id, search: term } : 'skip',
+    open && term ? { search: term } : 'skip',
   )
   const last = useRef(now)
   if (now !== undefined) last.current = now

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from '../lib/domain/ids'
 import { useSetAcquisition } from '../lib/data'
 import type { SourceCodeDescription } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'

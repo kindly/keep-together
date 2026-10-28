@@ -1,28 +1,20 @@
 /**
  * The contacts pages' data interface: what each hook in `src/lib/data`
- * answers. The shapes are the ones the pages rendered from Convex before
- * the port (its types are read-only reference until cutover); the Rust
- * API's JSON is adapted into them (`rust/wire.ts`).
+ * answers, in the shapes of `../domain/`; the API's JSON (its ts-rs
+ * types, `rust-types/`) is adapted into them (`rust/wire.ts`).
  */
 import type { QueryClient } from '@tanstack/react-query'
-import type { FunctionArgs, FunctionReturnType } from 'convex/server'
-import type { api } from '../../../convex/_generated/api'
-import type { Id } from '../../../convex/_generated/dataModel'
-import type { Payloads } from '../../../convex/contacts/validators'
-import type { FieldDefinition } from '../../../convex/contacts/fieldTypes'
+import type { Id } from '../domain/ids'
+import type { FieldDefinition, Payloads } from '../domain/contacts'
 import type { Action, FormState, Slices } from '../contact-form-state'
 import type { Held } from '../email-hold'
-import type { contactWarnings } from '../../../convex/contacts/warnings'
+import type { contactWarnings } from '../domain/warnings'
 
 export type { ContactView } from '../contact-seed'
 export type { FieldDefinition }
 export type { ListFilters, ListRow, PagedList } from '../paged-list'
 
-export type SearchArgs = FunctionArgs<typeof api.contacts.queries.search>
-
-export type SearchResult = FunctionReturnType<
-  typeof api.contacts.queries.search
->
+export type { SearchArgs, SearchResult } from '../domain/contacts'
 
 /** A tenant member, as the form and history name who made a change. */
 export type Member = { userId: Id<'users'>; name: string }

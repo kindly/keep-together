@@ -8,9 +8,9 @@
  * dirty slices with their `expected` counters; the server diffs again and
  * reports invalid / stale slices while saving the rest.
  */
-import type { Id } from '../../convex/_generated/dataModel'
-import { sortValues } from '../../convex/contacts/fieldValues'
-import type { Payloads } from '../../convex/contacts/validators'
+import type { Id } from './domain/ids'
+import { sortValues } from './domain/contacts'
+import type { Payloads } from './domain/contacts'
 import { same, threeWayMerge } from './merge'
 import type { Unsaved } from './unsaved'
 

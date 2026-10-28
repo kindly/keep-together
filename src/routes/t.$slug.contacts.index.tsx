@@ -1,8 +1,8 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { memo, useCallback, useMemo, useState } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
-import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
-import { formatNumber } from '../../convex/contacts/number'
+import type { Id } from '../lib/domain/ids'
+import type { FieldDefinition } from '../lib/domain/contacts'
+import { formatNumber } from '../lib/domain/contacts'
 import { fieldArgs, fieldShown } from '../lib/field-filters'
 import type { FieldPick } from '../lib/field-filters'
 import { useCanWrite, useTenant } from '../lib/tenant'
@@ -60,7 +60,7 @@ const NOT_SET = 'none'
 function ContactList() {
   const tenant = useTenant()
   const canWrite = useCanWrite()
-  // Selecting rows is for a bulk set, which only Convex has.
+  // Selecting rows is for a bulk set.
   const canSelect = canWrite && FEATURES.bulkSetField
   const [search, setSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
@@ -77,7 +77,6 @@ function ContactList() {
   const listed = useContactSearch(
     searching
       ? {
-          tenantId: tenant._id,
           search,
           includeArchived,
           ...(kind && { kind }),
@@ -90,7 +89,6 @@ function ContactList() {
     searching
       ? 'skip'
       : {
-          tenantId: tenant._id,
           includeArchived,
           ...(kind && { kind }),
           ...(source && { source }),

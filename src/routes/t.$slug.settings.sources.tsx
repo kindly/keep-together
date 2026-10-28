@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from '../lib/domain/ids'
 import { ConfirmDialog } from '../components/confirm-dialog'
 import { StaffListSwitch } from '../components/staff-list-switch'
 import {

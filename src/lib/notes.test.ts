@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import { RustApiError } from './data/rust/client'
 import type { ApiError } from './data/rust-types/ApiError'
-import { NOTE_MAX_BYTES } from '../../convex/contacts/rules'
+import { NOTE_MAX_BYTES } from './domain/contacts'
 import {
   budget,
   budgetMessage,

@@ -15,7 +15,7 @@
 //   node scripts/perf-search10k-rs/analyze.mjs <dir>/raw.json [--rtt 30]
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { people } from '../perf-search10k/data.mjs'
+import { people } from './data.mjs'
 
 const arg = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`)

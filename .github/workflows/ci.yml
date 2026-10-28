@@ -17,8 +17,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
-        env:
-          VITE_CONVEX_URL: ${{ vars.VITE_CONVEX_URL }}
 
   rust:
     runs-on: ubuntu-latest

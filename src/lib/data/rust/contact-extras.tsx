@@ -6,7 +6,8 @@
  * optimistic: what shows is what the server answered.
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { Doc, Id } from '../../../../convex/_generated/dataModel'
+import type { Id } from '../../domain/ids'
+import type { Note } from '../../domain/contacts'
 import { useTenant } from '../../tenant'
 import type { ContactView, EmailContext, IdentifierType } from '../types'
 import type { EmailContext as WireEmailContext } from '../rust-types/EmailContext'
@@ -105,8 +106,7 @@ export function useRelease() {
 
 // ── notes ──────────────────────────────────────────────────────────────────
 
-/** A note in the shape the notes panel renders (Convex's document). */
-export type Note = Doc<'contactNotes'>
+export type { Note }
 
 function noteFromWire(n: NoteView): Note {
   return {
@@ -126,7 +126,7 @@ function noteFromWire(n: NoteView): Note {
     editedAt: n.editedAt,
     bodyVersion: n.bodyVersion,
     flagsVersion: n.flagsVersion,
-  } as Note
+  }
 }
 
 /**
