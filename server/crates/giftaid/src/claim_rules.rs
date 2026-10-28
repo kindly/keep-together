@@ -174,6 +174,34 @@ fn crown_dependency(postcode: &str) -> bool {
     })
 }
 
+/// Whether an address's country is the UK: empty, `GB`, or any usual
+/// way of writing it (`UK`, `United Kingdom`, `Great Britain`, `GBR`,
+/// England, Scotland, Wales, Northern Ireland), any case, full stops
+/// ignored. Contacts store a two-letter code, but `UK` passes that check
+/// and imports bring the rest.
+pub fn is_uk(country: &str) -> bool {
+    let c: String = country
+        .chars()
+        .filter(|c| *c != '.')
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    matches!(
+        c.as_str(),
+        "" | "gb"
+            | "gbr"
+            | "uk"
+            | "united kingdom"
+            | "great britain"
+            | "england"
+            | "scotland"
+            | "wales"
+            | "northern ireland"
+    )
+}
+
 /// "House name or number" from an address's first line: the number that
 /// starts it ("12A High Street" → "12A", "12-14 Mill Lane" → "12-14"),
 /// else the part before the first comma ("Rose Cottage, Mill Lane" →
@@ -251,8 +279,7 @@ pub fn donor_line(d: DonorFacts) -> Result<DonorLine, Vec<String>> {
     } else if too_long(&last_name, NAME_MAX) {
         reasons.push(format!("Last name is over {NAME_MAX} characters"));
     }
-    let country = d.country.trim().to_ascii_uppercase();
-    let overseas = !(country.is_empty() || country == "GB") || crown_dependency(d.postcode);
+    let overseas = !is_uk(d.country) || crown_dependency(d.postcode);
     let line1 = fold(&tidy(d.line1));
     let (house, postcode) = if overseas {
         let town = fold(&tidy(d.town));
@@ -506,6 +533,34 @@ mod tests {
         assert_eq!(donor_line(f).unwrap().house, "Ty Gwyn");
         f.title = "Mme.";
         assert_eq!(donor_line(f).unwrap().title, "Mme");
+    }
+
+    /// Review M4: any way of writing the UK is the UK, not overseas.
+    #[test]
+    fn the_uk_by_any_name_is_not_overseas() {
+        for country in [
+            "",
+            "GB",
+            "gb",
+            "UK",
+            "u.k.",
+            "GBR",
+            "United Kingdom",
+            "great britain",
+            "England",
+            "SCOTLAND",
+            "Wales",
+            "Northern Ireland",
+        ] {
+            let mut f = facts("Ann", "Smith", "12 High St", "LS1 1AA");
+            f.country = country;
+            let line = donor_line(f).unwrap();
+            assert!(!line.overseas, "{country}");
+            assert_eq!(line.postcode, "LS1 1AA", "{country}");
+        }
+        let mut f = facts("Ann", "Smith", "12 Rue", "");
+        f.country = "FR";
+        assert!(donor_line(f).unwrap().overseas);
     }
 
     #[test]
