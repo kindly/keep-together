@@ -134,6 +134,16 @@ impl Fake {
         (org, token)
     }
 
+    /// The live tokens of account `org` (tests).
+    pub fn live_tokens(&self, org: &str) -> Vec<String> {
+        self.world()
+            .tokens
+            .iter()
+            .filter(|(_, o)| *o == org)
+            .map(|(t, _)| t.clone())
+            .collect()
+    }
+
     /// Whether `token` is live (tests).
     pub fn token_works(&self, token: &str) -> bool {
         self.world().tokens.contains_key(token)
@@ -323,8 +333,13 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
     Router::new()
         .route("/connect/oauth/authorize", get(authorize))
         .route("/connect/oauth/decide", post(decide))
-        .route("/connect/oauth/access_token", post(access_token))
-        .route("/connect/oauth/revoke", post(revoke))
+        .nest(
+            "/connect/oauth",
+            Router::new()
+                .route("/access_token", post(access_token))
+                .route("/revoke", post(revoke))
+                .layer(axum::middleware::from_fn_with_state(fake.clone(), gate)),
+        )
         .nest("/api", api)
         .route("/flow/{id}", get(flow_page))
         .route("/flow/{id}/complete", post(complete_flow))
@@ -344,7 +359,8 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
         .with_state(fake)
 }
 
-/// Every API request: counted, and answered by an outage while one lasts.
+/// Every API request (and the token exchange and revoke): counted, and
+/// answered by an outage while one lasts.
 async fn gate(
     State(fake): State<Arc<Fake>>,
     req: axum::extract::Request,

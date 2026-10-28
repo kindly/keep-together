@@ -308,18 +308,26 @@ impl Tenant {
         use crate::gocardless::{GoCardlessStatus, forget_connection};
         self.require_admin()?;
         let gc = self.gocardless()?;
+        // One connect or disconnect at a time: a connect's token can't
+        // land in this file after it was emptied here, nor a reservation
+        // vanish under a connect.
+        let _connecting = gc.connecting.lock().await;
         let g = gc.clone();
         let token = self.read(move |r| g.token(r)).await?;
         if let Some(token) = token {
             match gc.api.revoke(gc.credentials(), &token).await {
                 Ok(()) => {}
+                // GoCardless failing, unreachable or rate-limiting (429):
+                // the token may still be live. Nothing changes here.
+                Err(e) if e.retryable() => {
+                    eprintln!("gocardless disconnect ({}): revoke: {e}", self.slug);
+                    return Err(ApiError::GocardlessUnavailable);
+                }
                 // Revoked already (an admin removed the app in GoCardless's
                 // dashboard): nothing left to revoke.
                 Err(
                     e @ (crate::gocardless::CallError::Unauthorized
-                    | crate::gocardless::CallError::Refused {
-                        status: 400..=499, ..
-                    }),
+                    | crate::gocardless::CallError::Refused { .. }),
                 ) => eprintln!(
                     "gocardless disconnect ({}): GoCardless no longer knows the token ({e})",
                     self.slug

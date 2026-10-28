@@ -18,6 +18,7 @@ use api::{AppState, app, routes};
 use axum::http::{StatusCode, header};
 use common::{World, request, world};
 use http_body_util::BodyExt;
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -2039,4 +2040,77 @@ async fn un_voiding_a_gift_whose_payment_was_recorded_again_is_refused_clearly()
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
     assert_eq!(out["reason"], "direct_debit_recorded_again");
+}
+
+/// Second review L-c: a disconnect and another group's connect to the same
+/// account can't interleave (disconnect takes the connect lock). Whatever
+/// the order, every token GoCardless still accepts for the account is in
+/// the file of the group that owns its mapping: none left live and lost.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_disconnect_and_a_connect_to_the_same_account_dont_interleave() {
+    let t = setup().await;
+    let x = t.connect("alpha", &t.ann).await["organisationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let callback = t.start_connect("beta", &t.bob, &x).await;
+    // The revoke takes a while: long enough for the callback to run in
+    // the middle of the disconnect, were it allowed to.
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "path": "revoke", "delay_ms": 800 }),
+    )
+    .await;
+    let disconnect =
+        t.w.call("POST", "/api/t/alpha/gocardless/disconnect", &t.ann, None);
+    let connect = async {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        navigate(&t.w, &callback, &t.bob).await
+    };
+    let ((s, _), (_, landed)) = tokio::join!(disconnect, connect);
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(landed, "/t/beta/settings?gocardless=connected");
+    let owner: Option<String> =
+        t.w.store
+            .platform()
+            .with_read(|c| {
+                c.query_row(
+                    "SELECT tenant_id FROM gocardless_connections WHERE organisation_id = ?1",
+                    [&x],
+                    |r| r.get(0),
+                )
+                .optional()
+            })
+            .unwrap();
+    assert_eq!(owner.as_deref(), Some(t.w.beta.id.as_str()));
+    assert_eq!(t.token_of(&t.w.alpha), None);
+    let live = t.fake.live_tokens(&x);
+    assert_eq!(
+        live,
+        vec![t.token_of(&t.w.beta).unwrap()],
+        "no live token lost"
+    );
+}
+
+/// Second review L-e: GoCardless rate-limiting the revoke (429) isn't
+/// "already revoked": the disconnect answers 503 and changes nothing, the
+/// token still live and held.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rate_limited_revoke_leaves_the_connection_as_it_was() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let token = t.token_of(&t.w.alpha).unwrap();
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "path": "revoke", "status": 429 }),
+    )
+    .await;
+    let (s, out) =
+        t.w.call("POST", "/api/t/alpha/gocardless/disconnect", &t.ann, None)
+            .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{out}");
+    let status = ok(&t.w, "GET", "/api/t/alpha/gocardless", &t.val, None).await;
+    assert_eq!(status["connected"], true);
+    assert_eq!(t.token_of(&t.w.alpha), Some(token.clone()));
+    assert!(t.fake.token_works(&token));
 }
