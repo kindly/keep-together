@@ -1462,12 +1462,12 @@ async fn two_groups_connecting_one_account_at_once_leave_one_owner_with_a_workin
     let b = t.start_connect("beta", &t.bob, &account).await;
     let ((_, landed_a), (_, landed_b)) =
         tokio::join!(navigate(&t.w, &a, &t.ann), navigate(&t.w, &b, &t.bob));
-    let mut outcomes = [landed_a.clone(), landed_b.clone()];
+    let mut outcomes: Vec<&str> = [&landed_a, &landed_b]
+        .iter()
+        .map(|l| l.rsplit('=').next().unwrap())
+        .collect();
     outcomes.sort();
-    assert!(
-        outcomes[0].ends_with("gocardless=connected") && outcomes[1].ends_with("gocardless=taken"),
-        "{outcomes:?}"
-    );
+    assert_eq!(outcomes, ["connected", "taken"], "{landed_a} {landed_b}");
     let (owner, loser) = if landed_a.ends_with("connected") {
         (&t.w.alpha, &t.w.beta)
     } else {
@@ -1487,4 +1487,54 @@ async fn two_groups_connecting_one_account_at_once_leave_one_owner_with_a_workin
             })
             .unwrap();
     assert_eq!(owners, 1);
+}
+
+/// Reviewer L5: switching to another GoCardless account revokes the old
+/// account's token instead of leaving it live.
+#[tokio::test(flavor = "multi_thread")]
+async fn switching_accounts_revokes_the_old_accounts_token() {
+    let t = setup().await;
+    let first = t.connect("alpha", &t.ann).await;
+    let old = t.token_of(&t.w.alpha).unwrap();
+    let second = t.connect("alpha", &t.ann).await;
+    assert_ne!(first["organisationId"], second["organisationId"]);
+    assert!(
+        !t.fake.token_works(&old),
+        "the old account's token is revoked"
+    );
+    assert!(t.fake.token_works(&t.token_of(&t.w.alpha).unwrap()));
+}
+
+/// Reviewer L4: an admin who removed the app in GoCardless's dashboard
+/// can still disconnect here (the revoke is refused: nothing to revoke).
+#[tokio::test(flavor = "multi_thread")]
+async fn disconnect_works_when_gocardless_no_longer_knows_the_token() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let token = t.token_of(&t.w.alpha).unwrap();
+    let res = t
+        .http
+        .post(format!(
+            "{}/api/fake-gocardless/connect/oauth/revoke",
+            t.base
+        ))
+        .form(&[
+            ("token", token.as_str()),
+            ("client_id", api::gocardless::fake::CLIENT_ID),
+            ("client_secret", api::gocardless::fake::CLIENT_SECRET),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let gone = ok(
+        &t.w,
+        "POST",
+        "/api/t/alpha/gocardless/disconnect",
+        &t.ann,
+        None,
+    )
+    .await;
+    assert_eq!(gone["connected"], false);
+    assert_eq!(t.token_of(&t.w.alpha), None);
 }

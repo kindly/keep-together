@@ -151,18 +151,21 @@ pub async fn callback(
         }
     };
     // Then the token into this organisation's file, as the admin; if that
-    // fails the reservation is undone.
+    // fails the reservation is undone. The token it replaces, if it was
+    // another account's, is kept to revoke.
     let (store, tenant, g) = (state.store.clone(), row.tenant.clone(), gc.clone());
     let access = token.access_token.clone();
     let sealed = blocking(move || {
         let db = store.org(&tenant)?;
+        let old = db.read(|r| g.token(r))?;
         contracts::transact(&db, Some(user), |ctx| {
             g.put_token(ctx, &access, Source::Ui)
                 .map_err(crate::ApiError::from)
-        })
+        })?;
+        Ok::<_, crate::ApiError>(old)
     })
     .await;
-    if let Err(e) = sealed {
+    if let Err(e) = &sealed {
         eprintln!("gocardless connect ({slug}): storing the token: {e:?}");
         let (store, tenant) = (state.store.clone(), row.tenant.clone());
         if let Err(e) = blocking(move || restore_connection(&store, &tenant, previous)).await {
@@ -171,6 +174,16 @@ pub async fn callback(
             ));
         }
         return land(Some(&slug), "failed");
+    }
+    // A switch to another account: the old account's token is revoked,
+    // not left live at GoCardless.
+    if let (Ok(Some(old)), Some(previous)) = (&sealed, &previous)
+        && previous.organisation_id != token.organisation_id
+        && let Err(e) = gc.api.revoke(gc.credentials(), old).await
+    {
+        crate::observe::warning(&format!(
+            "gocardless connect ({slug}): revoking the previous account's token: {e}"
+        ));
     }
     land(Some(&slug), "connected")
 }

@@ -311,10 +311,24 @@ impl Tenant {
         let g = gc.clone();
         let token = self.read(move |r| g.token(r)).await?;
         if let Some(token) = token {
-            gc.api.revoke(gc.credentials(), &token).await.map_err(|e| {
-                eprintln!("gocardless disconnect ({}): revoke: {e}", self.slug);
-                ApiError::GocardlessUnavailable
-            })?;
+            match gc.api.revoke(gc.credentials(), &token).await {
+                Ok(()) => {}
+                // Revoked already (an admin removed the app in GoCardless's
+                // dashboard): nothing left to revoke.
+                Err(
+                    e @ (crate::gocardless::CallError::Unauthorized
+                    | crate::gocardless::CallError::Refused {
+                        status: 400..=499, ..
+                    }),
+                ) => eprintln!(
+                    "gocardless disconnect ({}): GoCardless no longer knows the token ({e})",
+                    self.slug
+                ),
+                Err(e) => {
+                    eprintln!("gocardless disconnect ({}): revoke: {e}", self.slug);
+                    return Err(ApiError::GocardlessUnavailable);
+                }
+            }
             let g = gc.clone();
             self.write(move |ctx| Ok(g.put_token(ctx, "", contracts::Source::Ui)?))
                 .await?;

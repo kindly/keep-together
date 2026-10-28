@@ -614,8 +614,16 @@ async fn revoke(State(fake): State<Arc<Fake>>, Form(f): Form<RevokeForm>) -> Res
         )
             .into_response();
     }
-    fake.world().tokens.remove(&f.token);
-    StatusCode::OK.into_response()
+    // Stricter than GoCardless documents (200 either way): an unknown
+    // token is refused, so a disconnect is proven to cope with one.
+    match fake.world().tokens.remove(&f.token) {
+        Some(_) => StatusCode::OK.into_response(),
+        None => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "invalid_token"})),
+        )
+            .into_response(),
+    }
 }
 
 /// A create under an idempotency key: a repeat is GoCardless's conflict,
