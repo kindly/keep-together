@@ -1,8 +1,11 @@
 # 0024: Rust + SQLite, one file per organisation
 
-Status: proposed (2026-10-24), drafted by builder F2 from the plan
+Status: accepted (2026-10-28, at cutover: plan step C2; the human
+approved it after four green nightly QC runs on staging). Proposed
+2026-10-24, drafted by builder F2 from the plan
 `factory/plans/migration-rust.sv` (grill complete, confirmed by the human
-2026-10-24). It becomes accepted at cutover (step C2).
+2026-10-24). Convex's code is at the tag `convex-final`; `keep-prod` is
+created by hand (`scripts/fly/prod.sh`) when the first real group is due.
 
 Supersedes the parts of [ADR 0017](0017-convex-react-shared-tenancy.md)
 that name the stack, the tenancy mechanism, the dedicated-instance tiers

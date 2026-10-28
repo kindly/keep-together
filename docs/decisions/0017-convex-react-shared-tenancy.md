@@ -1,6 +1,9 @@
 # 0017 — keep-together: Convex backend, React SPA, one multi-tenant deployment with dedicated instances as a tier
 
 Status: accepted (2026-10) · the founding decision of this repo.
+Superseded in part by [0024](0024-rust-sqlite-per-org.md) (2026-10-28):
+the stack, the tenancy mechanism, the dedicated-instance tiers and the
+export/import between deployments. The rest stands.
 
 Supersedes the *mechanism* ADRs inherited from ngo-go: 0001 (instance per
 charity), 0002 (Django + Postgres), 0004 (SSE upgrade path), 0005

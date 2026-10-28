@@ -109,7 +109,7 @@ request, an SSE stream) is never closed.
   `POST /api/t/{slug}/contacts` (create),
   `POST /api/t/{slug}/contacts/{id}/save` (the form: several slices, one
   transaction, one command group), `POST …/{id}/archive`, `…/{id}/restore`.
-- **JSON**, `camelCase` field names (as the Convex side), ids are
+- **JSON**, `camelCase` field names, ids are
   strings (UUIDv7, 32 hex chars). `i64` fields (counters, timestamps,
   revision ids) are JSON numbers and typed `number` in TS (they stay below
   2^53); timestamps are ms since the epoch.
@@ -164,8 +164,8 @@ request, an SSE stream) is never closed.
   `platform` = session + membership lookup, `db` = time inside org-file
   closures (writer lock wait included).
 - **Types.** `#[derive(TS)] #[ts(export)]` on every request/response type;
-  `cargo test` writes them to `src/lib/data/rust-types/` (committed, like
-  `convex/_generated`; never edit by hand). Payload JSON with no fixed shape
+  `cargo test` writes them to `src/lib/data/rust-types/` (committed:
+  typechecking needs them; never edit by hand). Payload JSON with no fixed shape
   is typed `unknown`.
 
 ## Auth (ADR 0020 §3, without Google)
