@@ -918,3 +918,32 @@ async fn with_gocardless_off_only_the_status_answers() {
     let (s, _) = navigate(&w, "/api/gocardless/callback?code=x&state=y", &ann).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
+
+/// Routing a webhook reads `platform.db`; if that read fails the batch
+/// fails (GoCardless retries a 5xx), and no event is filed as an unknown
+/// organisation's.
+#[test]
+fn a_routing_read_that_fails_fails_the_batch() {
+    let w = world();
+    let events = api::gocardless::webhook::parse(
+        br#"{"events":[{"id":"EVerr","resource_type":"payments","action":"confirmed",
+            "links":{"payment":"PM1","organisation":"OR1"}}]}"#,
+    )
+    .unwrap();
+    w.store
+        .platform()
+        .with_write(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE gocardless_connections RENAME COLUMN organisation_id TO gone",
+            )
+        })
+        .unwrap();
+    let stored = api::gocardless::webhook::store_events(&w.store, &events, 1);
+    assert!(stored.is_err(), "{stored:?}");
+    let n: i64 = w
+        .store
+        .platform()
+        .with_read(|c| c.query_row("SELECT count(*) FROM gocardless_events", [], |r| r.get(0)))
+        .unwrap();
+    assert_eq!(n, 0);
+}

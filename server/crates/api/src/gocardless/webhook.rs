@@ -19,7 +19,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use hmac::{Hmac, Mac};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
 use sha2::Sha256;
 use store::Store;
@@ -115,6 +115,8 @@ pub fn store_events(
     store.platform().with_write(|tx| {
         let mut out = Stored::default();
         for e in events {
+            // A read that fails fails the batch (a 5xx: GoCardless sends
+            // it again), never reads as an unknown organisation.
             let tenant: Option<String> = match &e.organisation {
                 Some(org) => tx
                     .query_row(
@@ -122,7 +124,7 @@ pub fn store_events(
                         [org],
                         |r| r.get(0),
                     )
-                    .ok(),
+                    .optional()?,
                 None => None,
             };
             let (processed_at, outcome) = match tenant {
