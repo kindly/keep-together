@@ -89,3 +89,28 @@ export type {
   RecentGift,
   RecordGiftArgs,
 } from './rust/gifts'
+export {
+  downloadClaim,
+  useClaim,
+  useClaimPreview,
+  useClaimStep,
+  useClaims,
+  useCreateClaims,
+  useHmrcDetails,
+  useSaveHmrcDetails,
+} from './rust/claims'
+export type {
+  Claim,
+  ClaimAdjustment,
+  ClaimDownload,
+  ClaimLine,
+  ClaimPreview,
+  ClaimRead,
+  ClaimStatus,
+  ClaimStep,
+  ClaimSummary,
+  ClaimTotals,
+  ExcludedGift,
+  HmrcDetails,
+  HmrcDetailsView,
+} from './rust/claims'

@@ -67,4 +67,13 @@ export const keys = {
   /** A declaration's details history: under `declarations`, so their events refetch it. */
   declarationHistory: (slug: string, id: string) =>
     ['t', slug, 'declarations', 'history', id] as const,
+  /** Gift Aid claims: the list, each claim, each preview. */
+  giftaid: (slug: string) => ['t', slug, 'giftaid'] as const,
+  claims: (slug: string) => ['t', slug, 'giftaid', 'list'] as const,
+  claim: (slug: string, id: string) =>
+    ['t', slug, 'giftaid', 'one', id] as const,
+  claimPreview: (slug: string, periodEnd: string) =>
+    ['t', slug, 'giftaid', 'preview', periodEnd] as const,
+  /** The charity's HMRC details (Settings). */
+  hmrcDetails: (slug: string) => ['t', slug, 'hmrcDetails'] as const,
 }

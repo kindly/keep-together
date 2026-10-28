@@ -19,7 +19,18 @@ vi.mock('@tanstack/react-router', () => ({
     options,
     useParams: () => ({ slug: 'a', giftId: 'g1' }),
   }),
-  Link: ({ children }: { children: ReactNode }) => <a>{children}</a>,
+  Link: ({
+    children,
+    params,
+    ...rest
+  }: {
+    children: ReactNode
+    params?: Record<string, string>
+  }) => (
+    <a data-claim={params?.claimId} {...rest}>
+      {children}
+    </a>
+  ),
 }))
 
 const mutations: Record<string, ReturnType<typeof vi.fn>> = {
@@ -28,7 +39,12 @@ const mutations: Record<string, ReturnType<typeof vi.fn>> = {
 }
 let gift: Gift
 let members: Array<{ userId: string; name: string }> | undefined
+let claimList: Array<{ id: string; number: number }> | undefined
 vi.mock('../lib/data', () => ({
+  FEATURES: { giftAidClaims: true },
+  useClaims: (enabled: boolean) => ({
+    data: enabled ? claimList : undefined,
+  }),
   useGift: () => gift,
   useMembers: () => members,
   useDeclarations: () => ({ declarations: [], currentId: null }),
@@ -44,9 +60,11 @@ vi.mock('../components/source-code-picker', () => ({
   ),
   localToday: () => '2026-10-23',
 }))
+let admin = true
 vi.mock('../lib/tenant', () => ({
   useTenant: () => ({ _id: 'tenantA', slug: 'a' }),
   useCanWrite: () => true,
+  useIsAdmin: () => admin,
 }))
 
 const { Route } = await import('./t.$slug.gifts.$giftId')
@@ -63,6 +81,8 @@ function makeGift(over: Partial<Gift> = {}): Gift {
     amount: 2000n,
     method: 'cash',
     status: 'completed',
+    voidReason: null,
+    claimId: null,
     giftVersion: 1,
     statusVersion: 0,
     enteredBy: 1,
@@ -87,6 +107,8 @@ beforeEach(() => {
   for (const m of Object.values(mutations)) m.mockReset().mockResolvedValue({})
   gift = makeGift()
   members = [{ userId: '1', name: 'Jo Staff' }]
+  claimList = [{ id: 'claim7', number: 7 }]
+  admin = true
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -101,9 +123,14 @@ const render = () => act(() => root.render(<GiftPage />))
 const button = (scope: ParentNode, name: string) =>
   [...scope.querySelectorAll('button')].find((b) => b.textContent === name)!
 const click = (b: HTMLElement) => act(async () => b.click())
-async function type(input: HTMLInputElement, value: string) {
+async function type(
+  input: HTMLInputElement | HTMLTextAreaElement,
+  value: string,
+) {
   const set = Object.getOwnPropertyDescriptor(
-    HTMLInputElement.prototype,
+    input instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype,
     'value',
   )!.set!
   await act(async () => {
@@ -224,5 +251,89 @@ test('Unvoid confirms first, as Void does', async () => {
   const dialog = document.querySelector('[role="alertdialog"]')!
   expect(dialog.textContent).toContain('Unvoid this gift?')
   await click(button(dialog, 'Unvoid'))
-  expect(setStatus).toHaveBeenCalledWith(3, 'completed')
+  expect(setStatus).toHaveBeenCalledWith(3, 'completed', undefined)
+})
+
+// G3: a gift in a Gift Aid claim.
+
+const dialog = () => document.querySelector('[role="alertdialog"]')!
+const badge = () => el.querySelector('[data-testid="claim-badge"]')
+
+test('a claimed gift says which claim (a link, for an admin) and why it is locked', async () => {
+  gift = makeGift({ claimId: 'claim7' })
+  render()
+  expect(badge()?.textContent).toBe('Claimed in claim 7')
+  expect(badge()?.getAttribute('data-claim')).toBe('claim7')
+  expect(el.querySelector('[data-testid="claim-lock"]')?.textContent).toContain(
+    'its amount, date and donor can’t change',
+  )
+  await click(button(el, 'Edit'))
+  expect(form().textContent).toContain(
+    'This gift is in a Gift Aid claim: its amount and date can’t change.',
+  )
+})
+
+test('staff see that a gift is claimed, without the claim (the claims are admin only)', () => {
+  admin = false
+  gift = makeGift({ claimId: 'claim7' })
+  render()
+  expect(badge()?.textContent).toBe('Claimed for Gift Aid')
+})
+
+test('voiding a claimed gift needs a reason, and sends it', async () => {
+  gift = makeGift({ claimId: 'claim7', statusVersion: 4 })
+  render()
+  await click(button(el, 'Void'))
+  expect(dialog().textContent).toContain(
+    'the next claim pays its Gift Aid back',
+  )
+  const confirm = button(dialog(), 'Void')
+  expect(confirm.disabled).toBe(true)
+  const box = dialog().querySelector('textarea')!
+  await type(box, '  Entered twice ')
+  expect(confirm.disabled).toBe(false)
+  await click(confirm)
+  expect(mutations.setStatus).toHaveBeenCalledWith(4, 'void', 'Entered twice')
+})
+
+test('an unclaimed gift voids with an optional reason', async () => {
+  render()
+  await click(button(el, 'Void'))
+  expect(dialog().textContent).toContain('Reason (optional)')
+  await click(button(dialog(), 'Void'))
+  expect(mutations.setStatus).toHaveBeenCalledWith(0, 'void', undefined)
+})
+
+test('a claimed gift voided since: its reason shows, and it has no Unvoid', () => {
+  gift = makeGift({
+    claimId: 'claim7',
+    status: 'void',
+    voidReason: 'Entered twice',
+  })
+  render()
+  expect(el.querySelector('[data-testid="void-reason"]')?.textContent).toBe(
+    ' Why: Entered twice',
+  )
+  expect(button(el, 'Unvoid')).toBeUndefined()
+  expect(el.querySelector('[data-testid="claim-lock"]')?.textContent).toContain(
+    'can’t be un-voided',
+  )
+})
+
+test('the server’s refusal of a claimed gift’s void is shown as it says it', async () => {
+  gift = makeGift({ claimId: 'claim7' })
+  mutations.setStatus.mockRejectedValue(
+    new RustApiError(422, {
+      kind: 'rejected',
+      reason: 'void_reason_required',
+      message: 'This gift is in a Gift Aid claim: say why it is void.',
+    }),
+  )
+  render()
+  await click(button(el, 'Void'))
+  await type(dialog().querySelector('textarea')!, 'x')
+  await click(button(dialog(), 'Void'))
+  expect(el.querySelector('[role="alert"]')?.textContent).toBe(
+    'This gift is in a Gift Aid claim: say why it is void.',
+  )
 })

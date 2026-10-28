@@ -88,6 +88,11 @@ const INVALIDATES: Partial<
   // record-gift save's contact writes come as `contacts` events.
   gifts: (slug) => [keys.gifts(slug)],
   gift_aid_declarations: (slug) => [keys.declarations(slug), keys.gifts(slug)],
+  // G3: a claim shows in the list, on its page and in every preview
+  // (its gifts are no longer eligible). Its gifts' locks come as `gifts`
+  // events (`giving.claimLock`).
+  gift_aid_claims: (slug) => [keys.giftaid(slug)],
+  gift_aid_hmrc_details: (slug) => [keys.hmrcDetails(slug)],
 }
 
 /**

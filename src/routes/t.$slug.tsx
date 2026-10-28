@@ -90,6 +90,18 @@ function Resolved({ slug }: { slug: string }) {
               Contacts
             </Link>
             {FEATURES.gifts && <DonationsMenu />}
+            {FEATURES.giftAidClaims && tenant.role === 'admin' && (
+              <Link
+                to="/t/$slug/giftaid"
+                params={{ slug }}
+                className="text-sm whitespace-nowrap hover:underline"
+                activeProps={{
+                  className: 'text-sm whitespace-nowrap font-medium underline',
+                }}
+              >
+                Gift Aid
+              </Link>
+            )}
             {FEATURES.settings ? (
               <Link
                 to="/t/$slug/settings"
