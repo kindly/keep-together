@@ -1997,3 +1997,46 @@ async fn a_retry_collected_on_another_day_is_a_gift_on_that_day() {
         .count();
     assert_eq!(completed, 1, "one completed gift per payment");
 }
+
+/// Second review L-b: a Direct Debit gift whose payment was recorded
+/// again as another gift (a retry on another day here; or a claimed void
+/// whose claim was later deleted) can't be un-voided: a clear 422, not
+/// the unique index's 500.
+#[tokio::test(flavor = "multi_thread")]
+async fn un_voiding_a_gift_whose_payment_was_recorded_again_is_refused_clearly() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    let pm = t
+        .simulate(&format!(
+            "subscriptions/{sub}/payment?charge_date={}",
+            uk_day(-2)
+        ))
+        .await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let first = payment(&t.regular("alpha", &t.val, &id).await, &pm)["giftId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{pm}/fail")).await;
+    t.settle().await;
+    t.simulate(&format!("payments/{pm}/retry?charge_date={}", uk_day(5)))
+        .await;
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let g = t.gift(&first).await;
+    assert_eq!(g["status"], "void");
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/gifts/{first}/status"),
+            &t.sam,
+            Some(json!({ "expected": g["statusVersion"], "status": "completed" })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "direct_debit_recorded_again");
+}

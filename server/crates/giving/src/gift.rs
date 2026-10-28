@@ -399,6 +399,10 @@ pub struct StatusState {
     claim_id: Option<String>,
     #[serde(skip)]
     returned: bool,
+    /// A Direct Debit gift whose payment is now another completed gift
+    /// (recorded again after a claimed void, or a retry on another day).
+    #[serde(skip)]
+    superseded: bool,
 }
 
 fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<StatusState>> {
@@ -411,6 +415,7 @@ fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sta
                 },
                 claim_id: r.get(2)?,
                 returned: false,
+                superseded: false,
             })
         })
         .optional()
@@ -439,6 +444,14 @@ impl Contract for GiftStatus {
                  WHERE gift_id = ?1 AND status IN ('charged_back', 'failed', 'cancelled')",
             )?
             .exists([id])?;
+        state.superseded = conn
+            .prepare_cached(
+                "SELECT 1 FROM gifts g JOIN gifts other
+                     ON other.method = 'direct_debit' AND other.reference = g.reference
+                 WHERE g.id = ?1 AND g.method = 'direct_debit' AND other.id <> g.id
+                     AND other.status = 'completed'",
+            )?
+            .exists([id])?;
         Ok(state)
     }
 
@@ -454,6 +467,12 @@ impl Contract for GiftStatus {
                 "giving.status targets an existing gift",
             ));
         };
+        if current.superseded && p.status == Status::Completed {
+            return Err(ContractError::rejected(
+                "direct_debit_recorded_again",
+                "This Direct Debit payment is already counted as another gift",
+            ));
+        }
         if current.returned && p.status == Status::Completed && command.source != Source::System {
             return Err(ContractError::rejected(
                 "direct_debit_returned",
@@ -490,6 +509,7 @@ impl Contract for GiftStatus {
             },
             claim_id: current.claim_id.clone(),
             returned: current.returned,
+            superseded: current.superseded,
         })
     }
 
