@@ -1807,3 +1807,53 @@ async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not
     );
     assert!(t.adjustments().await.to_string().contains(gift2.as_str()));
 }
+
+impl T {
+    /// Seal `token` into `tenant`'s file directly ("" forgets it).
+    fn seal(&self, tenant: &store::Tenant, token: &str) {
+        let db = self.w.store.org(&tenant.id).unwrap();
+        let gc = self.gc.clone();
+        let token = token.to_owned();
+        contracts::transact(&db, None, move |ctx| {
+            gc.put_token(ctx, &token, contracts::Source::Test)
+        })
+        .unwrap();
+    }
+
+    fn outcome_of_events(&self) -> Vec<Option<String>> {
+        self.events().into_iter().map(|(_, _, o)| o).collect()
+    }
+}
+
+/// Second review M-1: a run that finds an organisation connected (it owns
+/// the mapping) but no token in its file (a connect still landing) never
+/// sets its events aside: they wait, and become gifts once the token is
+/// there.
+#[tokio::test(flavor = "multi_thread")]
+async fn connected_without_a_token_waits_and_never_sets_events_aside() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    let token = t.token_of(&t.w.alpha).unwrap();
+    t.seal(&t.w.alpha, "");
+    let pm = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.due_now();
+    t.settle().await;
+    assert!(
+        !t.outcome_of_events()
+            .iter()
+            .any(|o| o.as_deref() == Some("not_connected")),
+        "{:?}",
+        t.events()
+    );
+    assert!(!t.attempts(true).is_empty(), "still queued");
+
+    t.seal(&t.w.alpha, &token);
+    t.due_now();
+    t.settle().await;
+    let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
+    assert!(row["giftId"].is_string(), "{row}");
+}

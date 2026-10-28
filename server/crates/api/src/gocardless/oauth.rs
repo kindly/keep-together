@@ -24,7 +24,10 @@ use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 use store::Role;
 
-use super::{ConnectRefused, STATE_TTL_MS, record_connection, restore_connection, take_state};
+use super::{
+    ConnectRefused, STATE_TTL_MS, record_connection, requeue_set_aside, restore_connection,
+    take_state,
+};
 use crate::timing::Timing;
 use crate::{AppState, auth, blocking};
 
@@ -111,6 +114,11 @@ pub async fn callback(
             return land(Some(&slug), "failed");
         }
     };
+    // No processing run may see the organisation between its reservation
+    // and its token (it would read "connected, no token"), nor its
+    // set-aside events before they can run: reserve, seal and requeue
+    // happen with runs held off.
+    let _processing = gc.processing.lock().await;
     // The account is reserved for this organisation (or found to be
     // another's) in one platform.db transaction, before any token moves.
     let (store, tenant) = (state.store.clone(), row.tenant.clone());
@@ -185,8 +193,22 @@ pub async fn callback(
             "gocardless connect ({slug}): revoking the previous account's token: {e}"
         ));
     }
-    // Events kept while it wasn't connected were requeued with the
-    // reservation: handle them now.
+    // Only now, with the token in place, do the events kept while it
+    // wasn't connected go back in the queue; then a run handles them.
+    let (store, tenant) = (state.store.clone(), row.tenant.clone());
+    let organisation = token.organisation_id.clone();
+    let requeued = blocking(move || {
+        store.platform().with_write(|tx| {
+            Ok::<_, store::StoreError>(requeue_set_aside(tx, &tenant, &organisation)?)
+        })
+    })
+    .await;
+    if let Err(e) = requeued {
+        crate::observe::error(&format!(
+            "gocardless connect ({slug}): requeueing the events kept while disconnected: {e:?}"
+        ));
+    }
+    drop(_processing);
     super::webhook::spawn_processing(state.store.clone(), gc.clone());
     land(Some(&slug), "connected")
 }

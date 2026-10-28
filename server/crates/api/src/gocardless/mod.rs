@@ -522,7 +522,6 @@ pub fn record_connection(
                  connected_at = excluded.connected_at, connected_by = excluded.connected_by",
             params![tenant.as_str(), organisation_id, now, user],
         )?;
-        requeue_set_aside(tx, tenant, organisation_id)?;
         Ok(Ok(previous))
     })
 }

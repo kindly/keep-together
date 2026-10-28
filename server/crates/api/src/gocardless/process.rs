@@ -175,10 +175,13 @@ impl Org {
             .map_err(Failed::from)
     }
 
+    /// The organisation owns its account's mapping (only those get an
+    /// `Org`), so a missing token is a connect still landing, never a
+    /// settled state: try again, never set the event aside.
     fn token(&self) -> Result<&str, Failed> {
         self.token
             .as_deref()
-            .ok_or_else(|| Failed::Permanent("not_connected".into()))
+            .ok_or_else(|| Failed::Retry("connected, but no token in its file yet".into()))
     }
 
     async fn facts_by(
@@ -317,9 +320,6 @@ pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<u
             // (outcome, error, next try, stop this organisation's run)
             let (outcome, error, next, stop) = match result {
                 Ok(outcome) => (Some(outcome.to_owned()), None, None, false),
-                Err(Failed::Permanent(e)) if e == "not_connected" => {
-                    (Some("not_connected".to_owned()), None, None, false)
-                }
                 Err(Failed::Permanent(e)) => {
                     park(&e, "not retryable");
                     (Some("failed".to_owned()), Some(e), None, false)
@@ -467,10 +467,7 @@ async fn identify_mandate(
     if let Some(found) = org.facts_by("mandate_id", md).await? {
         return Ok(Some(found));
     }
-    let Some(token) = org.token.as_deref() else {
-        return Ok(None);
-    };
-    let mandate = gc.api.get_mandate(token, md).await?;
+    let mandate = gc.api.get_mandate(org.token()?, md).await?;
     let Some(id) = mandate.regular_gift else {
         return Ok(None);
     };
