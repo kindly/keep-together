@@ -553,8 +553,11 @@ the Convex era's `preview` deployment. Scripts in `scripts/preview/`:
 | `update.sh [--force]` | what `keep-preview-update.timer` runs every 5 min: deploy `origin/main` if it moved |
 | `status.sh` | running commit, last update and its result, URL, health, the riverside sign-ins (relaxed: email and password; strict: emails and where their secrets are) |
 
-The installed copies live in `~/.local/share/keep-preview/bin/`; each
-deploy replaces them with the new release's.
+The installed copies live in `~/.local/share/keep-preview/bin/`. Each
+update replaces them with the commit it is about to build, before the
+build, and re-runs itself as the new `update.sh` when that changed, so
+a change to the scripts (a moved path, a new step) never strands the
+preview on an old copy, even if that build then fails.
 
 **What runs.** `keep-preview.service`: the release `api` of the commit in
 `current/` (a symlink into `releases/<sha>/`, the last 3 kept), serving

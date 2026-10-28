@@ -16,7 +16,8 @@
 // The api runs as dev (KEEP_ENV=dev, loopback) with KEEP_AUTH_POLICY=
 // relaxed (a password alone), KEEP_MAIL=log (codes and links in this
 // terminal), KEEP_ADDRESS_LOOKUP=fake and data in server/data/; any of
-// them set in the environment wins. It seeds the riverside group on the
+// them set in the environment wins (dev:reset still only wipes
+// server/data/, and refuses while KEEP_DATA_DIR points elsewhere). It seeds the riverside group on the
 // first boot (KEEP_RESET_SEED=riverside: idempotent, so later boots keep
 // what you changed); dev:reset starts again from it. KEEP_DEV_AUTH is
 // never set: dev auth is loopback-only, and the tailnet reaches the api
@@ -43,6 +44,11 @@ import { portsFor, servedOn, slotFor } from './dev-lib.mjs'
 const root = path.resolve(import.meta.dirname, '..')
 const server = path.join(root, 'server')
 const dataDir = path.join(server, 'data')
+// KEEP_DATA_DIR wins (relative to the repo root); dev:reset only ever
+// wipes server/data/.
+const apiData = process.env.KEEP_DATA_DIR
+  ? path.resolve(root, process.env.KEEP_DATA_DIR)
+  : dataDir
 const RIVERSIDE = {
   slug: 'riverside',
   users: ['admin', 'staff', 'viewer'].map((r) => `${r}@keep-together.example`),
@@ -221,10 +227,15 @@ for (const [what, p] of [
 }
 
 if (command === 'reset') {
+  if (apiData !== dataDir) {
+    die(
+      `KEEP_DATA_DIR is ${apiData}: dev:reset only wipes server/data/ (unset it, or wipe that dir yourself)`,
+    )
+  }
   say(`wiping ${path.relative(root, dataDir)}/ (riverside is reseeded on boot)`)
   rmSync(dataDir, { recursive: true, force: true })
 }
-mkdirSync(dataDir, { recursive: true })
+mkdirSync(apiData, { recursive: true })
 
 const host = local ? null : tailnetHost()
 const url = host
@@ -255,7 +266,7 @@ const apiEnv = {
   KEEP_ENV: env.KEEP_ENV ?? 'dev',
   KEEP_BIND: '127.0.0.1',
   KEEP_PORT: String(apiPort),
-  KEEP_DATA_DIR: dataDir,
+  KEEP_DATA_DIR: apiData,
   KEEP_AUTH_POLICY: env.KEEP_AUTH_POLICY ?? 'relaxed',
   KEEP_MAIL: env.KEEP_MAIL ?? 'log',
   KEEP_ADDRESS_LOOKUP: env.KEEP_ADDRESS_LOOKUP ?? 'fake',
@@ -367,7 +378,7 @@ function banner() {
     `  sign in: ${RIVERSIDE.users[0]} / ${RIVERSIDE.password}  (also ${RIVERSIDE.users.slice(1).join(', ')}; same password)`,
   )
   console.log(
-    `  api ${apiPort} · data ${path.relative(root, dataDir)}/ · slot ${n} · Ctrl-C stops`,
+    `  api ${apiPort} · data ${path.relative(root, apiData)}/ · slot ${n} · Ctrl-C stops`,
   )
   console.log('')
 }

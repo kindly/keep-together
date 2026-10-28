@@ -9,7 +9,7 @@
 #   releases/<sha>/   api + dist/ of one built commit; the last 3 are kept
 #   current           symlink to the release the service runs
 #   data/             KEEP_DATA_DIR (data.prev: the one before the last reseed)
-#   bin/              these scripts, copied from the running release's src
+#   bin/              these scripts, from the last commit update.sh took up
 #   preview.env       the api's settings and the scripts' (KEEP_PREVIEW_*)
 #   secrets.env       0600: auth keys and the riverside sign-ins
 #   state             last update: when, commit, result

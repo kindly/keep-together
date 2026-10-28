@@ -2,14 +2,17 @@ name: Deploy
 
 # Every push to main: the CI checks, then the image to keep-staging (Fly,
 # lhr), which resets itself to the riverside seed. Prod (keep-prod) is
-# deployed only by hand: Run workflow with env=prod. It refuses until the
-# variable PROD_URL is set, which scripts/fly/prod.sh tells the human to
-# do once keep-prod exists.
+# deployed only by hand: Run workflow with env=prod, from main. It
+# refuses any other branch, and refuses until the variable PROD_URL is
+# set, which scripts/fly/prod.sh tells the human to do once keep-prod
+# exists.
 #
-# Needs: secret FLY_API_TOKEN in each GitHub environment (`fly tokens
-# create deploy -a keep-<env>`), variables STAGING_URL and PROD_URL, and
-# optionally SENTRY_DSN_SPA (the SPA's Sentry DSN, public by design) —
-# scripts/fly/{staging,prod}.sh print the commands.
+# Needs: secret FLY_API_TOKEN (`fly tokens create deploy -a keep-<env>`):
+# staging's is repo-wide (scripts/fly/staging.sh), prod's is set on the
+# GitHub environment `prod` (scripts/fly/prod.sh), which overrides the
+# repo-wide one for prod's job. Variables STAGING_URL and PROD_URL, and
+# optionally SENTRY_DSN_SPA (the SPA's Sentry DSN, public by design).
+# The scripts print the commands.
 
 on:
   push:
@@ -39,6 +42,12 @@ jobs:
         if: ${{ inputs.env == 'prod' && vars.PROD_URL == '' }}
         run: |
           echo "::error::keep-prod isn't set up: run scripts/fly/prod.sh, then gh variable set PROD_URL."
+          exit 1
+      # Real data: only what main holds, never a branch picked in the form.
+      - name: Prod deploys main only
+        if: ${{ inputs.env == 'prod' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::prod deploys only from main (this run is on $GITHUB_REF)."
           exit 1
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@1.5

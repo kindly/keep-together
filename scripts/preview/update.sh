@@ -7,6 +7,10 @@
 #    main checkout: a build would skew its timings.
 # 2. Fetch origin/main. Same commit as running: nothing to do. A commit
 #    that already failed is skipped until main moves (or --force).
+#    Otherwise bin/ first takes that commit's own lib.sh, update.sh and
+#    status.sh, and a changed update.sh is re-run in place of this one
+#    (lock kept), so a script change (a moved path, a new step) never
+#    strands the preview on an old copy.
 # 3. Build in src/ (cargo --release, pnpm build) at nice 19 / ionice idle
 #    with KEEP_PREVIEW_JOBS jobs, into releases/<sha>. A failed build
 #    leaves the running preview alone.
@@ -49,11 +53,13 @@ write_state() {
 }
 
 # fd 9 holds the lock; the starts below close it, so nothing they spawn
-# keeps it.
-exec 9>"$PREVIEW/update.lock"
-if ! flock -n 9; then
-  log "another update is running; skipping"
-  exit 0
+# keeps it. A re-run of a refreshed update.sh (below) inherits it.
+if [ "${KEEP_PREVIEW_LOCKED:-}" != 1 ]; then
+  exec 9>"$PREVIEW/update.lock"
+  if ! flock -n 9; then
+    log "another update is running; skipping"
+    exit 0
+  fi
 fi
 
 # scripts/lockfile.mjs's rule: held while its pid lives and it is younger
@@ -86,6 +92,26 @@ if ((!force)); then
     log "origin/main ${new:0:12} failed before; waiting for a new commit (or --force)"
     write_state "checked_at=$(date -Is)" result=failed
     exit 0
+  fi
+fi
+
+# The commit's own scripts into bin/, before anything is built: a build
+# step that changed (a path, a flag) must be the new one. Read from git,
+# so nothing is checked out yet. A commit from before these scripts
+# existed has none.
+if [ "${KEEP_PREVIEW_REEXEC:-}" != "$new" ] &&
+  git -C "$src" cat-file -e "$new:scripts/preview/update.sh" 2>/dev/null; then
+  changed=0
+  for f in lib.sh update.sh status.sh; do
+    git -C "$src" show "$new:scripts/preview/$f" >"$PREVIEW/bin/.$f.new"
+    chmod 755 "$PREVIEW/bin/.$f.new"
+    cmp -s "$PREVIEW/bin/.$f.new" "$PREVIEW/bin/$f" || changed=1
+    # Renamed into place: this run keeps reading its own file.
+    mv "$PREVIEW/bin/.$f.new" "$PREVIEW/bin/$f"
+  done
+  if ((changed)); then
+    log "scripts changed in ${new:0:12}: re-running its update.sh"
+    KEEP_PREVIEW_REEXEC=$new KEEP_PREVIEW_LOCKED=1 exec "$PREVIEW/bin/update.sh" "$@"
   fi
 fi
 log "deploying ${new:0:12} (running: ${running:-nothing})"
@@ -160,15 +186,6 @@ if ! healthy; then
   fi
   fail "unhealthy after start"
 fi
-
-# The new release's own scripts, for the next run (renamed into place:
-# this one keeps reading its own file).
-for f in lib.sh update.sh status.sh; do
-  [ -f "$release/bin/$f" ] || continue
-  cp "$release/bin/$f" "$PREVIEW/bin/.$f.new"
-  chmod 755 "$PREVIEW/bin/.$f.new"
-  mv "$PREVIEW/bin/.$f.new" "$PREVIEW/bin/$f"
-done
 
 # The last 3 releases (the running one among them).
 kept=0
