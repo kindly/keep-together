@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
+import type { ComponentProps } from 'react'
 import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
 import type { RecentGift } from '../lib/gifts'
 import { useCanWrite, useTenant } from '../lib/tenant'
@@ -33,23 +34,58 @@ function GiftSummary({ gift }: { gift: RecentGift }) {
   )
 }
 
-/** "Record a gift": the record-gift page (step 3). */
-export function RecordGiftAction({ className }: { className?: string }) {
+// What the Donations entries say: the header's menu and the mobile drawer
+// list the same ones, from here and `useDonations`.
+export const DONATIONS = {
+  label: 'Donations',
+  record: 'Record a gift',
+  recent: 'My recent gifts',
+  loading: 'Loading…',
+  none: 'None yet.',
+} as const
+
+type AnchorProps = Omit<ComponentProps<'a'>, 'href' | 'children'>
+
+/**
+ * Who may record a gift, and the caller's last 10 gifts: fetched only
+ * while `open` (undefined until then, and while loading).
+ */
+export function useDonations(open: boolean) {
+  return { canWrite: useCanWrite(), gifts: useMyRecentGifts(open) }
+}
+
+/**
+ * "Record a gift": the record-gift page (step 3). Other props pass
+ * through, as a menu item's do (asChild).
+ */
+export function RecordGiftAction(props: AnchorProps) {
+  const tenant = useTenant()
+  return (
+    <Link to="/t/$slug/gifts/new" params={{ slug: tenant.slug }} {...props}>
+      {DONATIONS.record}
+    </Link>
+  )
+}
+
+/** One recent gift, linking to its page; other props pass through. */
+export function GiftLink({
+  gift,
+  ...props
+}: AnchorProps & { gift: RecentGift }) {
   const tenant = useTenant()
   return (
     <Link
-      to="/t/$slug/gifts/new"
-      params={{ slug: tenant.slug }}
-      className={className}
+      to="/t/$slug/gifts/$giftId"
+      params={{ slug: tenant.slug, giftId: gift._id }}
+      {...props}
     >
-      Record a gift
+      <GiftSummary gift={gift} />
     </Link>
   )
 }
 
 /** The caller's recent gifts inline, for the home page. */
 export function RecentGifts() {
-  const tenant = useTenant()
   const gifts = useMyRecentGifts()
   if (gifts === undefined)
     return <p className="text-sm text-neutral-500">Loading…</p>
@@ -63,13 +99,7 @@ export function RecentGifts() {
     <ul className="divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
       {gifts.map((g) => (
         <li key={g._id} className="text-sm">
-          <Link
-            to="/t/$slug/gifts/$giftId"
-            params={{ slug: tenant.slug, giftId: g._id }}
-            className="block px-3 py-2 hover:bg-neutral-50"
-          >
-            <GiftSummary gift={g} />
-          </Link>
+          <GiftLink gift={g} className="block px-3 py-2 hover:bg-neutral-50" />
         </li>
       ))}
     </ul>
@@ -82,40 +112,31 @@ export function RecentGifts() {
  */
 export function DonationsMenu() {
   const [open, setOpen] = useState(false)
-  const tenant = useTenant()
-  const canWrite = useCanWrite()
-  const gifts = useMyRecentGifts(open)
+  const { canWrite, gifts } = useDonations(open)
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger className="text-sm whitespace-nowrap hover:underline data-[state=open]:underline">
-        Donations <span aria-hidden="true">▾</span>
+        {DONATIONS.label} <span aria-hidden="true">▾</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-80">
         {canWrite && (
           <>
             <DropdownMenuItem asChild>
-              <Link to="/t/$slug/gifts/new" params={{ slug: tenant.slug }}>
-                Record a gift
-              </Link>
+              <RecordGiftAction />
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>
         )}
-        <DropdownMenuLabel>My recent gifts</DropdownMenuLabel>
+        <DropdownMenuLabel>{DONATIONS.recent}</DropdownMenuLabel>
         {/* Only menu items inside role=menu: the states are disabled ones. */}
         {gifts === undefined ? (
-          <DropdownMenuItem disabled>Loading…</DropdownMenuItem>
+          <DropdownMenuItem disabled>{DONATIONS.loading}</DropdownMenuItem>
         ) : gifts.length === 0 ? (
-          <DropdownMenuItem disabled>None yet.</DropdownMenuItem>
+          <DropdownMenuItem disabled>{DONATIONS.none}</DropdownMenuItem>
         ) : (
           gifts.map((g) => (
             <DropdownMenuItem key={g._id} asChild>
-              <Link
-                to="/t/$slug/gifts/$giftId"
-                params={{ slug: tenant.slug, giftId: g._id }}
-              >
-                <GiftSummary gift={g} />
-              </Link>
+              <GiftLink gift={g} />
             </DropdownMenuItem>
           ))
         )}

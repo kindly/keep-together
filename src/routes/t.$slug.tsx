@@ -19,6 +19,7 @@ import {
   useSignOut,
 } from '../lib/data'
 import { DonationsMenu } from '../components/gift-nav'
+import { MobileNav } from '../components/mobile-nav'
 
 export const Route = createFileRoute('/t/$slug')({ component: TenantLayout })
 
@@ -67,9 +68,10 @@ function Resolved({ slug }: { slug: string }) {
       )}
       <div className="min-h-screen bg-neutral-50 text-neutral-900">
         <header className="border-b border-neutral-200 bg-white">
+          <MobileNav />
           <nav
             aria-label="Main"
-            className="mx-auto flex max-w-5xl items-baseline gap-4 px-4 py-3 sm:gap-6 sm:px-6"
+            className="mx-auto hidden max-w-5xl md:flex items-baseline gap-4 px-4 py-3 sm:gap-6 sm:px-6"
           >
             <Link
               to="/t/$slug"

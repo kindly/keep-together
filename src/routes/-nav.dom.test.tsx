@@ -21,6 +21,9 @@ const fill = (to: string, params: Record<string, string> = {}) =>
   to.replace(/\$(\w+)/g, (_, k: string) => params[k])
 
 let params: Record<string, string> = {}
+// The current path, for links' aria-current (as the router marks them) and
+// the drawer's close-on-navigation.
+const here = vi.hoisted(() => ({ path: '/t/alpha' }))
 // A tab's own params, for tests that render two tabs side by side.
 const TabParams = createContext<Record<string, string> | null>(null)
 const navigated: Array<string> = []
@@ -32,21 +35,32 @@ vi.mock('@tanstack/react-router', () => ({
     options,
     useParams: () => use(TabParams) ?? params,
   }),
-  // Other props pass through, as a menu item's role does (asChild).
+  // Other props pass through, as a menu item's role does (asChild). The
+  // current page is marked as the router marks it: by prefix, or exactly.
   Link: ({
     to,
     params: p,
     children,
+    activeOptions,
+    activeProps: _,
     ...rest
   }: {
     to: string
     params?: Record<string, string>
     children: ReactNode
-  }) => (
-    <a href={fill(to, p)} {...rest}>
-      {children}
-    </a>
-  ),
+    activeOptions?: { exact?: boolean }
+    activeProps?: object
+  }) => {
+    const href = fill(to, p)
+    const active = activeOptions?.exact
+      ? here.path === href
+      : here.path === href || here.path.startsWith(`${href}/`)
+    return (
+      <a href={href} aria-current={active ? 'page' : undefined} {...rest}>
+        {children}
+      </a>
+    )
+  },
   Navigate: ({
     to,
     params: p,
@@ -59,6 +73,11 @@ vi.mock('@tanstack/react-router', () => ({
   },
   Outlet: () => <div data-testid="outlet" />,
   useNavigate: () => navigate,
+  useRouterState: ({
+    select,
+  }: {
+    select: (s: { location: { pathname: string } }) => unknown
+  }) => select({ location: { pathname: here.path } }),
   useMatches: ({ select }: { select: (m: Array<object>) => unknown }) =>
     select([{ routeId: '__root__' }, { routeId: port.leaf }]),
 }))
@@ -83,6 +102,7 @@ vi.mock('../lib/data', async (original) => {
     SessionLoading: () => null,
     useMyTenants: () => tenants,
     useSignOut: () => signOut,
+    useAuthState: () => ({ email: 'a@example.org' }),
     useOpened: () => opened,
     useOrgEvents: () => {},
   }
@@ -122,6 +142,7 @@ let el: HTMLDivElement
 beforeEach(() => {
   port.all = true
   port.leaf = '/t/$slug/'
+  here.path = '/t/alpha'
   params = { slug: 'alpha' }
   tenants = [group('alpha')]
   gifts = []
@@ -461,4 +482,161 @@ test('being ported: home has the gift actions (B2)', async () => {
     ['New contact', '/t/alpha/contacts/new'],
   ])
   expect(text()).toContain('My recent gifts')
+})
+
+// The phone header (below md): a Menu button opens a drawer from the left
+// with the same destinations, Donations flattened, then the account.
+
+const menuButton = () =>
+  el.querySelector<HTMLButtonElement>('button[aria-label="Menu"]')!
+const drawer = () => document.querySelector('[role="dialog"]')
+async function openDrawer() {
+  await page(import('./t.$slug'))
+  menuButton().focus()
+  await act(async () => menuButton().click())
+  expect(drawer()).not.toBeNull()
+  return drawer()!
+}
+
+test('phone header: a Menu button and the group name, and the desktop nav only from md', async () => {
+  await page(import('./t.$slug'))
+  const button = menuButton()
+  expect(button.getAttribute('aria-expanded')).toBe('false')
+  // A 44px tap target.
+  expect(button.className).toContain('size-11')
+  const bar = button.closest('div')!
+  expect(bar.className.split(' ')).toContain('md:hidden')
+  expect(links(bar)).toEqual([['Alpha', '/t/alpha']])
+  const nav = el.querySelector('nav[aria-label="Main"]')!
+  expect(nav.className.split(' ')).toEqual(
+    expect.arrayContaining(['hidden', 'md:flex']),
+  )
+  expect(nav.className.split(' ')).not.toContain('flex')
+  expect(drawer()).toBeNull()
+})
+
+test('the drawer lists every destination, Donations flattened, then the account', async () => {
+  gifts = [
+    gift({
+      _id: 'g2' as RecentGift['_id'],
+      amount: 123456n,
+      contactName: 'Acme Ltd',
+    }),
+    gift({ status: 'void' }),
+  ]
+  const d = await openDrawer()
+  expect(d.textContent).toContain('Alpha')
+  expect(links(d)).toEqual([
+    ['Home', '/t/alpha'],
+    ['Contacts', '/t/alpha/contacts'],
+    ['Record a gift', '/t/alpha/gifts/new'],
+    ['£1,234.56Acme Ltd23 Oct 2026', '/t/alpha/gifts/g2'],
+    ['£20.00Jo Bloggsvoid23 Oct 2026', '/t/alpha/gifts/g1'],
+    ['Settings', '/t/alpha/settings'],
+    ['Your accounta@example.org', '/account'],
+  ])
+  // No dropdown inside the drawer: Donations is a section, its items links.
+  const donations = d.querySelector('section[aria-label="Donations"]')!
+  expect(donations.textContent).toContain('My recent gifts')
+  expect(d.querySelector('[role="menu"]')).toBeNull()
+  expect(
+    [...d.querySelectorAll('button')].map((b) => b.textContent.trim()),
+  ).toEqual(['', 'Sign out'])
+  expect(d.querySelector('button[aria-label="Close menu"]')).not.toBeNull()
+})
+
+test('the drawer: a viewer has no Record a gift, and no gifts says so', async () => {
+  tenants = [group('alpha', { role: 'viewer' })]
+  const d = await openDrawer()
+  expect(d.textContent).not.toContain('Record a gift')
+  expect(d.querySelector('section[aria-label="Donations"]')!.textContent).toBe(
+    'DonationsMy recent giftsNone yet.',
+  )
+})
+
+test('the drawer marks the current page', async () => {
+  here.path = '/t/alpha/contacts/c1'
+  const d = await openDrawer()
+  const current = [...d.querySelectorAll('[aria-current="page"]')]
+  expect(current.map((a) => a.textContent)).toEqual(['Contacts'])
+  // The visible mark is the aria-current style.
+  expect(current[0].className).toContain('aria-[current=page]:font-medium')
+  // Home is marked only on the home page itself.
+  act(() => root.unmount())
+  root = createRoot(el)
+  here.path = '/t/alpha'
+  const onHome = await openDrawer()
+  expect(
+    [...onHome.querySelectorAll('[aria-current="page"]')].map(
+      (a) => a.textContent,
+    ),
+  ).toEqual(['Home'])
+})
+
+test('the drawer closes on a link tap and focus returns to the Menu button', async () => {
+  const d = await openDrawer()
+  const contacts = [...d.querySelectorAll('a')].find(
+    (a) => a.textContent === 'Contacts',
+  )!
+  await act(async () => contacts.click())
+  expect(drawer()).toBeNull()
+  // Radix returns focus a tick after the drawer unmounts.
+  await act(async () => new Promise((r) => setTimeout(r, 0)))
+  expect(document.activeElement).toBe(menuButton())
+  expect(menuButton().getAttribute('aria-expanded')).toBe('false')
+})
+
+test('the drawer closes on Esc, and focus returns', async () => {
+  await openDrawer()
+  await act(async () => {
+    document.activeElement!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    )
+  })
+  expect(drawer()).toBeNull()
+  expect(document.activeElement).toBe(menuButton())
+})
+
+test('the drawer closes on an overlay tap', async () => {
+  await openDrawer()
+  const overlay = document.querySelector('[data-slot="sheet-overlay"]')!
+  await act(async () => {
+    // Radix listens for outside presses a tick after opening, and acts on
+    // a primary press once its click follows, as a tap's does.
+    await new Promise((r) => setTimeout(r, 0))
+    overlay.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+    )
+    overlay.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }))
+  })
+  expect(drawer()).toBeNull()
+})
+
+test('the drawer traps focus while open', async () => {
+  const d = await openDrawer()
+  expect(d.contains(document.activeElement)).toBe(true)
+  // Focus can't leave for the page behind it.
+  await act(async () => menuButton().focus())
+  expect(d.contains(document.activeElement)).toBe(true)
+  // The page behind is hidden from assistive tech, and doesn't scroll.
+  expect(el.getAttribute('aria-hidden')).toBe('true')
+  expect(document.body.hasAttribute('data-scroll-locked')).toBe(true)
+})
+
+test('a navigation the drawer did not make (the back gesture) closes it', async () => {
+  await openDrawer()
+  here.path = '/t/alpha/contacts'
+  await page(import('./t.$slug'))
+  expect(drawer()).toBeNull()
+})
+
+test('Sign out in the drawer signs out and goes to the sign-in page', async () => {
+  const d = await openDrawer()
+  const button = [...d.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Sign out',
+  )!
+  await act(async () => button.click())
+  expect(signOut).toHaveBeenCalledOnce()
+  expect(navigate).toHaveBeenCalledWith({ to: '/' })
+  expect(drawer()).toBeNull()
 })
