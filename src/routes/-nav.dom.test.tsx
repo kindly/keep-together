@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-import { act, createContext, use } from 'react'
-import type { ComponentType, ReactNode } from 'react'
+import { act, createContext, use, useSyncExternalStore } from 'react'
+import type { ComponentType, MouseEvent, ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
@@ -21,6 +21,60 @@ const fill = (to: string, params: Record<string, string> = {}) =>
   to.replace(/\$(\w+)/g, (_, k: string) => params[k])
 
 let params: Record<string, string> = {}
+// The browser history, reduced: entries of path and state. Links mark the
+// current one (aria-current, as the router does), push it or replace it;
+// the mobile drawer pushes its own entry, and back pops.
+type Entry = { path: string; state: Record<string, unknown> }
+const hist = vi.hoisted(() => {
+  const h = {
+    entries: [] as Array<Entry>,
+    index: 0,
+    subs: new Set<() => void>(),
+    now: () => h.entries[h.index],
+    emit: () => h.subs.forEach((f) => f()),
+    reset(path: string) {
+      h.entries = [{ path, state: {} }]
+      h.index = 0
+    },
+    push(path: string, state: Record<string, unknown> = {}) {
+      h.entries = [...h.entries.slice(0, h.index + 1), { path, state }]
+      h.index++
+      h.emit()
+    },
+    replace(path: string, state: Record<string, unknown> = {}) {
+      h.entries[h.index] = { path, state }
+      h.entries = [...h.entries]
+      h.emit()
+    },
+    back() {
+      h.index--
+      h.emit()
+    },
+  }
+  return h
+})
+const useEntry = () =>
+  useSyncExternalStore(
+    (f) => {
+      hist.subs.add(f)
+      return () => hist.subs.delete(f)
+    },
+    () => hist.now(),
+  )
+/** What the router's navigate does here: '.' keeps the path. */
+function fakeNavigate(o: {
+  to: string
+  params?: Record<string, string>
+  replace?: boolean
+  state?: (s: Record<string, unknown>) => Record<string, unknown>
+}) {
+  const now = hist.now()
+  const path = o.to === '.' ? now.path : fill(o.to, o.params)
+  const state = o.state ? o.state(now.state) : {}
+  if (o.replace) hist.replace(path, state)
+  else hist.push(path, state)
+  return Promise.resolve()
+}
 // A tab's own params, for tests that render two tabs side by side.
 const TabParams = createContext<Record<string, string> | null>(null)
 const navigated: Array<string> = []
@@ -32,21 +86,47 @@ vi.mock('@tanstack/react-router', () => ({
     options,
     useParams: () => use(TabParams) ?? params,
   }),
-  // Other props pass through, as a menu item's role does (asChild).
+  // Other props pass through, as a menu item's role does (asChild). The
+  // current page is marked as the router marks it: by prefix, or exactly.
   Link: ({
     to,
     params: p,
     children,
+    activeOptions,
+    activeProps: _,
+    replace,
+    onClick,
     ...rest
   }: {
     to: string
     params?: Record<string, string>
     children: ReactNode
-  }) => (
-    <a href={fill(to, p)} {...rest}>
-      {children}
-    </a>
-  ),
+    activeOptions?: { exact?: boolean }
+    activeProps?: object
+    replace?: boolean
+    onClick?: (e: MouseEvent) => void
+  }) => {
+    const href = fill(to, p)
+    const here = useEntry().path
+    const active = activeOptions?.exact
+      ? here === href
+      : here === href || here.startsWith(`${href}/`)
+    return (
+      <a
+        href={href}
+        aria-current={active ? 'page' : undefined}
+        onClick={(e) => {
+          onClick?.(e)
+          e.preventDefault()
+          // As the router: the history changes after the click's own render.
+          queueMicrotask(() => (replace ? hist.replace(href) : hist.push(href)))
+        }}
+        {...rest}
+      >
+        {children}
+      </a>
+    )
+  },
   Navigate: ({
     to,
     params: p,
@@ -57,8 +137,38 @@ vi.mock('@tanstack/react-router', () => ({
     navigated.push(fill(to, p))
     return null
   },
-  Outlet: () => <div data-testid="outlet" />,
+  // The page; Record a gift's autofocuses its first field, as the real one.
+  Outlet: () =>
+    useEntry().path.endsWith('/gifts/new') ? (
+      <input aria-label="Contact" autoFocus data-testid="outlet" />
+    ) : (
+      <div data-testid="outlet" />
+    ),
   useNavigate: () => navigate,
+  useRouterState: ({
+    select,
+  }: {
+    select: (s: {
+      location: {
+        href: string
+        pathname: string
+        state: Record<string, unknown>
+      }
+    }) => unknown
+  }) => {
+    const { path, state } = useEntry()
+    return select({
+      location: { href: path, pathname: path.split('?')[0], state },
+    })
+  },
+  useRouter: () => ({
+    state: {
+      get location() {
+        return { state: hist.now().state }
+      },
+    },
+    history: { back: () => hist.back() },
+  }),
   useMatches: ({ select }: { select: (m: Array<object>) => unknown }) =>
     select([{ routeId: '__root__' }, { routeId: port.leaf }]),
 }))
@@ -83,6 +193,7 @@ vi.mock('../lib/data', async (original) => {
     SessionLoading: () => null,
     useMyTenants: () => tenants,
     useSignOut: () => signOut,
+    useAuthState: () => ({ email: 'a@example.org' }),
     useOpened: () => opened,
     useOrgEvents: () => {},
   }
@@ -122,13 +233,15 @@ let el: HTMLDivElement
 beforeEach(() => {
   port.all = true
   port.leaf = '/t/$slug/'
+  hist.reset('/t/alpha')
+  sessionStorage.clear()
   params = { slug: 'alpha' }
   tenants = [group('alpha')]
   gifts = []
   navigated.length = 0
   opened.mockReset().mockResolvedValue(null)
   signOut.mockReset().mockResolvedValue(undefined)
-  navigate.mockReset()
+  navigate.mockReset().mockImplementation(fakeNavigate)
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -461,4 +574,317 @@ test('being ported: home has the gift actions (B2)', async () => {
     ['New contact', '/t/alpha/contacts/new'],
   ])
   expect(text()).toContain('My recent gifts')
+})
+
+// The phone header (below md): a Menu button opens a drawer from the left
+// with the same destinations, Donations flattened, then the account. The
+// drawer is a history entry of its own: back closes it.
+
+const menuButton = () =>
+  el.querySelector<HTMLButtonElement>('button[aria-label="Menu"]')!
+const drawer = () => document.querySelector('[role="dialog"]')
+const drawerLink = (name: string) =>
+  [...drawer()!.querySelectorAll('a')].find((a) => a.textContent === name)!
+const locked = () => document.body.hasAttribute('data-scroll-locked')
+// Radix moves focus a tick after the drawer unmounts.
+const tick = () => act(async () => new Promise((r) => setTimeout(r, 0)))
+const paths = () => hist.entries.map((e) => e.path)
+const donations = () =>
+  drawer()!.querySelector<HTMLElement>('section[aria-label="Donations"]')!
+const donationsToggle = () => donations().querySelector('button')!
+/** Links a person can see: none inside a collapsed section. */
+const shown = (scope: ParentNode) =>
+  [...scope.querySelectorAll('a')]
+    .filter((a) => !a.closest('[hidden]'))
+    .map((a) => [a.textContent.trim(), a.getAttribute('href')])
+async function toggleDonations() {
+  await act(async () => donationsToggle().click())
+}
+async function openDrawer() {
+  await page(import('./t.$slug'))
+  menuButton().focus()
+  await act(async () => menuButton().click())
+  expect(drawer()).not.toBeNull()
+  return drawer()!
+}
+
+test('phone header: a Menu button and the group name, and the desktop nav only from md', async () => {
+  await page(import('./t.$slug'))
+  const button = menuButton()
+  expect(button.getAttribute('aria-expanded')).toBe('false')
+  // 44px tap targets.
+  expect(button.className).toContain('size-11')
+  const bar = button.closest('div')!
+  expect(bar.className.split(' ')).toContain('md:hidden')
+  expect(links(bar)).toEqual([['Alpha', '/t/alpha']])
+  expect(bar.querySelector('a')!.className).toContain('min-h-11')
+  const nav = el.querySelector('nav[aria-label="Main"]')!
+  expect(nav.className.split(' ')).toEqual(
+    expect.arrayContaining(['hidden', 'md:flex']),
+  )
+  expect(nav.className.split(' ')).not.toContain('flex')
+  expect(drawer()).toBeNull()
+})
+
+test('the drawer lists every destination, Donations flattened, then the account', async () => {
+  gifts = [
+    gift({
+      _id: 'g2' as RecentGift['_id'],
+      amount: 123456n,
+      contactName: 'Acme Ltd',
+    }),
+    gift({ status: 'void' }),
+  ]
+  const d = await openDrawer()
+  expect(d.textContent).toContain('Alpha')
+  // Donations starts collapsed: one row, its items hidden.
+  expect(shown(d)).toEqual([
+    ['Home', '/t/alpha'],
+    ['Contacts', '/t/alpha/contacts'],
+    ['Settings', '/t/alpha/settings'],
+    ['Your accounta@example.org', '/account'],
+  ])
+  await toggleDonations()
+  expect(shown(d)).toEqual([
+    ['Home', '/t/alpha'],
+    ['Contacts', '/t/alpha/contacts'],
+    ['Record a gift', '/t/alpha/gifts/new'],
+    ['£1,234.56Acme Ltd23 Oct 2026', '/t/alpha/gifts/g2'],
+    ['£20.00Jo Bloggsvoid23 Oct 2026', '/t/alpha/gifts/g1'],
+    ['Settings', '/t/alpha/settings'],
+    ['Your accounta@example.org', '/account'],
+  ])
+  // No dropdown inside the drawer: Donations is a section, its items links.
+  expect(donations().textContent).toContain('My recent gifts')
+  expect(d.querySelector('[role="menu"]')).toBeNull()
+  expect(
+    [...d.querySelectorAll('button')].map((b) => b.textContent.trim()),
+  ).toEqual(['', 'Donations', 'Sign out'])
+  expect(d.querySelector('button[aria-label="Close menu"]')).not.toBeNull()
+})
+
+test('the drawer: a viewer has no Record a gift, and no gifts says so', async () => {
+  tenants = [group('alpha', { role: 'viewer' })]
+  const d = await openDrawer()
+  await toggleDonations()
+  expect(d.textContent).not.toContain('Record a gift')
+  expect(donations().textContent).toBe('DonationsMy recent giftsNone yet.')
+})
+
+test('the drawer marks the current page', async () => {
+  hist.reset('/t/alpha/contacts/c1')
+  const d = await openDrawer()
+  const current = [...d.querySelectorAll('[aria-current="page"]')]
+  expect(current.map((a) => a.textContent)).toEqual(['Contacts'])
+  // The visible mark is the aria-current style.
+  expect(current[0].className).toContain('aria-[current=page]:font-medium')
+  // Home is marked only on the home page itself.
+  act(() => root.unmount())
+  root = createRoot(el)
+  hist.reset('/t/alpha')
+  const onHome = await openDrawer()
+  expect(
+    [...onHome.querySelectorAll('[aria-current="page"]')].map(
+      (a) => a.textContent,
+    ),
+  ).toEqual(['Home'])
+})
+
+test('opening the drawer pushes an entry for the same page; back closes it and stays', async () => {
+  await openDrawer()
+  expect(paths()).toEqual(['/t/alpha', '/t/alpha'])
+  expect(hist.now().state.mobileNav).toEqual(expect.any(String))
+  expect(locked()).toBe(true)
+  await act(async () => hist.back())
+  await tick()
+  expect(drawer()).toBeNull()
+  expect(hist.now()).toEqual({ path: '/t/alpha', state: {} })
+  expect(locked()).toBe(false)
+  // Same page: focus goes back to the Menu button.
+  expect(document.activeElement).toBe(menuButton())
+  // Opening again works, with a new entry.
+  await act(async () => menuButton().click())
+  expect(drawer()).not.toBeNull()
+  expect(hist.index).toBe(1)
+})
+
+test('a drawer link takes the drawer entry’s place in history and closes it', async () => {
+  await openDrawer()
+  await act(async () => drawerLink('Contacts').click())
+  await tick()
+  expect(drawer()).toBeNull()
+  expect(paths()).toEqual(['/t/alpha', '/t/alpha/contacts'])
+  expect(hist.index).toBe(1)
+  expect(hist.now().state.mobileNav).toBeUndefined()
+  expect(locked()).toBe(false)
+  // Back from Contacts lands on the page the drawer was opened on.
+  await act(async () => hist.back())
+  expect(hist.now()).toEqual({ path: '/t/alpha', state: {} })
+})
+
+test('a drawer link to a page that autofocuses leaves focus on that page', async () => {
+  await openDrawer()
+  await toggleDonations()
+  await act(async () => drawerLink('Record a gift').click())
+  await tick()
+  expect(drawer()).toBeNull()
+  expect(document.activeElement).toBe(
+    el.querySelector('input[aria-label="Contact"]'),
+  )
+  expect(menuButton()).not.toBe(document.activeElement)
+})
+
+test('a drawer link to the page already shown closes it, in place', async () => {
+  await openDrawer()
+  await act(async () => drawerLink('Home').click())
+  await tick()
+  expect(drawer()).toBeNull()
+  expect(paths()).toEqual(['/t/alpha', '/t/alpha'])
+  expect(hist.now().state.mobileNav).toBeUndefined()
+})
+
+const closers: Array<[string, () => void]> = [
+  [
+    'Esc',
+    () =>
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      ),
+  ],
+  [
+    'Close',
+    () =>
+      drawer()!
+        .querySelector<HTMLButtonElement>('button[aria-label="Close menu"]')!
+        .click(),
+  ],
+  [
+    'an overlay tap',
+    () => {
+      // Radix acts on a primary press once its click follows, as a tap's.
+      const overlay = document.querySelector('[data-slot="sheet-overlay"]')!
+      overlay.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+      )
+      overlay.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, button: 0 }),
+      )
+    },
+  ],
+]
+
+test.each(closers)(
+  'the drawer closes on %s, unwinds its entry once, and focus returns',
+  async (_, close) => {
+    await openDrawer()
+    // Radix listens for outside presses a tick after opening.
+    await tick()
+    await act(async () => close())
+    await tick()
+    expect(drawer()).toBeNull()
+    expect(paths()).toEqual(['/t/alpha', '/t/alpha'])
+    expect(hist.index).toBe(0)
+    expect(hist.now()).toEqual({ path: '/t/alpha', state: {} })
+    expect(document.activeElement).toBe(menuButton())
+    expect(locked()).toBe(false)
+  },
+)
+
+test('the drawer traps focus while open', async () => {
+  const d = await openDrawer()
+  expect(d.contains(document.activeElement)).toBe(true)
+  // Focus can't leave for the page behind it.
+  await act(async () => menuButton().focus())
+  expect(d.contains(document.activeElement)).toBe(true)
+  // The page behind is hidden from assistive tech, and doesn't scroll.
+  expect(el.getAttribute('aria-hidden')).toBe('true')
+  expect(locked()).toBe(true)
+})
+
+test('any other navigation closes it: another page, or only the search', async () => {
+  await openDrawer()
+  await act(async () => hist.push('/t/alpha/contacts'))
+  await tick()
+  expect(drawer()).toBeNull()
+  expect(locked()).toBe(false)
+
+  await act(async () => menuButton().click())
+  expect(drawer()).not.toBeNull()
+  await act(async () => hist.push('/t/alpha/contacts?q=ada'))
+  await tick()
+  expect(drawer()).toBeNull()
+  expect(locked()).toBe(false)
+  // Nothing was unwound: the navigations stand.
+  expect(hist.now().path).toBe('/t/alpha/contacts?q=ada')
+})
+
+test('Donations: a 44px toggle, collapsed by default, opening and closing in place', async () => {
+  gifts = [gift({})]
+  await openDrawer()
+  const toggle = donationsToggle()
+  expect(toggle.className).toContain('min-h-11')
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  const region = document.getElementById(toggle.getAttribute('aria-controls')!)!
+  expect(donations().contains(region)).toBe(true)
+  expect(region.hidden).toBe(true)
+  await toggleDonations()
+  expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  expect(region.hidden).toBe(false)
+  expect(shown(region).map(([t]) => t)).toEqual([
+    'Record a gift',
+    '£20.00Jo Bloggs23 Oct 2026',
+  ])
+  await toggleDonations()
+  expect(toggle.getAttribute('aria-expanded')).toBe('false')
+  expect(region.hidden).toBe(true)
+  // Nothing navigated: in place.
+  expect(paths()).toEqual(['/t/alpha', '/t/alpha'])
+})
+
+test('Donations: open on a donations page, then remembered for the session', async () => {
+  hist.reset('/t/alpha/gifts/g1')
+  await openDrawer()
+  expect(donationsToggle().getAttribute('aria-expanded')).toBe('true')
+  // Elsewhere, later: still open.
+  await act(async () => hist.back())
+  act(() => root.unmount())
+  root = createRoot(el)
+  hist.reset('/t/alpha/contacts')
+  await openDrawer()
+  expect(donationsToggle().getAttribute('aria-expanded')).toBe('true')
+  // Closed by hand: stays closed elsewhere.
+  await toggleDonations()
+  await act(async () => hist.back())
+  await act(async () => menuButton().click())
+  expect(donationsToggle().getAttribute('aria-expanded')).toBe('false')
+})
+
+test('Donations: without session storage it still opens, and starts collapsed', async () => {
+  const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+    throw new Error('denied')
+  })
+  const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('denied')
+  })
+  try {
+    await openDrawer()
+    expect(donationsToggle().getAttribute('aria-expanded')).toBe('false')
+    await toggleDonations()
+    expect(donationsToggle().getAttribute('aria-expanded')).toBe('true')
+  } finally {
+    get.mockRestore()
+    set.mockRestore()
+  }
+})
+
+test('Sign out in the drawer signs out and goes to the sign-in page', async () => {
+  const d = await openDrawer()
+  const button = [...d.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Sign out',
+  )!
+  await act(async () => button.click())
+  expect(signOut).toHaveBeenCalledOnce()
+  // In the drawer entry's place.
+  expect(navigate).toHaveBeenLastCalledWith({ to: '/', replace: true })
+  expect(paths()).toEqual(['/t/alpha', '/'])
 })
