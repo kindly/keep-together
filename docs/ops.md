@@ -12,7 +12,7 @@ London (`lhr`):
 | app | host | data | deploys |
 |---|---|---|---|
 | `keep-staging` | `staging.keep-together.org.uk` | reset to the riverside seed on every deploy | every push to `main` (`deploy.yml`) |
-| `keep-prod` | `app.keep-together.org.uk` | real | by hand, from cutover (C2) |
+| `keep-prod` | `app.keep-together.org.uk` | real | by hand only (`deploy.yml`, `env=prod`); created by `scripts/fly/prod.sh` |
 
 The image (`server/Dockerfile`) holds the api, the built SPA, Litestream and
 a few scripts. The process tree inside the machine:
@@ -97,8 +97,18 @@ In order. Each script is idempotent and echoes every command.
 5. Run the restore drill (below) and paste its table into the log at the
    end of this page.
 
-At cutover: `scripts/aws/backup.sh prod`, a `scripts/fly/prod.sh` (C2
-writes it from `staging.sh`), and the prod path of `deploy.yml`.
+**Prod** (`keep-prod`), when the first real group is due: the same steps
+with `prod`. `scripts/aws/backup.sh prod`; `scripts/aws/ses-sender.sh`
+for `KEEP_SMTP_URL` (and SES production access: "Mail on staging"
+below); `scripts/fly/prod.sh` (the app, its volume, auth's keys, the
+secrets it lacks, the certificate for `app.keep-together.org.uk`; it
+prints the Route 53 record and the GitHub commands); then `fly deploy -c
+fly.prod.toml --ha=false`. Prod has no reset seed, no riverside sign-ins
+and no QC token; its first group comes from `keep tenant create` in `fly
+ssh console`. Later deploys are by hand only: Actions › Deploy › Run
+workflow with `env=prod`, which refuses until the variable `PROD_URL` is
+set (`prod.sh` prints the command); a push to `main` never deploys prod.
+`PROD_URL` also turns on `health.yml`'s prod check.
 
 ### Mail on staging (later, human-run)
 
@@ -505,11 +515,37 @@ opens `/api/qc/*` on staging for the nightly `pnpm qc --target staging`:
 it seeds and signs into `qc-` groups only, never riverside. The api
 refuses to boot with it under `KEEP_ENV=prod`.
 
+## Dev loop (tailnet)
+
+`pnpm dev` (README, "Dev loop") is the per-checkout counterpart of the
+preview: a debug api rebuilt on every save and Vite with HMR, for seeing a
+branch's UI in seconds. It runs as the human, from any worktree, on the
+checkout's own ports (api 8787 + n, Vite 3000 + n, tailnet https
+9100 + n; the slot n is kept in the main checkout's
+`.git/keep-dev-slots.json`), with data in that checkout's `server/data/`.
+
+- **Tailnet.** `tailscale serve --bg --https=<9100+n>
+  http://127.0.0.1:<3000+n>`, added when `pnpm dev` starts and removed
+  when it stops; `pnpm dev:share --off` removes one left by a killed run.
+  The machine's serve config is shared with other projects (443 is the
+  preview's, 8443–8450 others'): `pnpm dev` reads `tailscale serve
+  status` first, refuses a port that serves anything else, and never
+  removes an entry that isn't exactly its own. Never `tailscale serve
+  reset`. Vite accepts `*.ts.net` hosts (`server.allowedHosts`), and its
+  HMR socket goes through the same https port. `pnpm dev --local` skips
+  the tailnet.
+- **Auth** as on the preview: `KEEP_AUTH_POLICY=relaxed`, riverside's
+  three users with the password `riverside`, `KEEP_MAIL=log`. The api
+  binds loopback and `KEEP_DEV_AUTH` is never set; the tailnet reaches
+  it only through Vite's `/api` proxy, with the session cookie.
+- **Operator rights.** If `tailscale serve` is refused, run once `sudo
+  tailscale set --operator=$USER`.
+
 ## Preview (tailnet)
 
 The house server runs `main` all the time with the riverside sample
 data, reachable from the human's tailnet (phone included). It replaces
-the old Convex `preview` deployment. Scripts in `scripts/preview/`:
+the Convex era's `preview` deployment. Scripts in `scripts/preview/`:
 
 | script | |
 |---|---|
@@ -559,7 +595,7 @@ refuses as a client-address header); fine for a household.
 
 **Updates.** Every 5 min `update.sh` fetches `origin/main`; if it moved,
 it builds in `src/` (`cargo build --release -p api`, `pnpm install`,
-`pnpm build` with `VITE_BACKEND=rust`) at nice 19 / ionice idle with half
+`pnpm build`) at nice 19 / ionice idle with half
 the cores, then stops the api, moves `data/` to `data.prev/`, points
 `current` at the new release and starts it: the api seeds riverside at
 boot (`KEEP_RESET_SEED`) with the same sign-ins (under strict, so an

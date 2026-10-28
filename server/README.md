@@ -1,22 +1,23 @@
 # server/ — the Rust + SQLite backend
 
-keep-together is moving off Convex (`factory/plans/migration-rust.sv`):
-axum + rusqlite, **one SQLite file per organisation** plus `platform.db`.
-Each route is ported straight here; `convex/` is read-only reference until
-cutover. The SPA talks only to this API.
+keep-together's api: axum + rusqlite, **one SQLite file per
+organisation** plus `platform.db` (ADR 0024). The SPA (`src/`) talks only
+to it. Comments that cite `convex/…` name the Convex code a piece was
+ported from; it is at the tag `convex-final`.
 
 ```
 cargo test                                 # from server/: every crate; also re-exports the TS types
 cargo clippy --all-targets -- -D warnings
-KEEP_DEV_AUTH=1 KEEP_PORT=8788 cargo run -p api   # data in server/data/ (gitignored)
-KEEP_PORT=8788 pnpm dev                           # from the repo root: Vite proxies /api to it
 cargo run -p cli --bin keep -- sql <slug> "SELECT count(*) FROM contacts"
 ```
 
-Each worktree runs its api on its own `KEEP_PORT` (8787 + n) with its own
-`server/data/`; Vite (`pnpm dev`, `vite preview`) always proxies `/api` to
-`127.0.0.1:$KEEP_PORT` (or `KEEP_API`). With no api running, `/api` calls
-get proxy errors.
+From the repo root, `pnpm dev` runs this api (rebuilt on every save)
+behind Vite, with riverside seeded in `server/data/` (README, "Dev
+loop"). By hand: `KEEP_DEV_AUTH=1 KEEP_PORT=8788 cargo run -p api` (data
+in `server/data/`, gitignored), and `KEEP_PORT=8788 vite dev` from the
+root proxies `/api` to it (or to `KEEP_API`). Each checkout uses its own
+`KEEP_PORT` (8787 + n); with no api running, `/api` calls get proxy
+errors.
 
 Env (`api`):
 

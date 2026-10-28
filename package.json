@@ -7,7 +7,9 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "dev": "vite dev --port 3000",
+    "dev": "node scripts/dev.mjs",
+    "dev:reset": "node scripts/dev.mjs reset",
+    "dev:share": "node scripts/dev.mjs share",
     "generate-routes": "tsr generate",
     "build": "vite build",
     "preview": "vite preview",

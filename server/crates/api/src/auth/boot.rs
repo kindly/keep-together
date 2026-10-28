@@ -207,13 +207,13 @@ mod tests {
         assert!(boot_owned(&bad_key, ANY).is_err());
     }
 
-    /// H1: `fly.staging.toml`'s own `[env]`, plus the secrets
-    /// `scripts/fly/staging.sh` sets, boots; without the secrets it
-    /// doesn't.
-    #[test]
-    fn fly_staging_toml_boots_with_its_secrets() {
+    /// A fly toml's `[env]` (`fly.staging.toml` or `fly.prod.toml`, at the
+    /// repo root), as boot reads the environment.
+    fn fly_env(file: &str) -> Vec<(&'static str, String)> {
         let toml = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fly.staging.toml"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../..")
+                .join(file),
         )
         .unwrap();
         let mut vars: Vec<(&'static str, String)> = vec![];
@@ -232,16 +232,54 @@ mod tests {
             "KEEP_CLIENT_IP_HEADER",
             "KEEP_MAIL",
         ] {
-            assert!(
-                vars.iter().any(|(n, _)| *n == k),
-                "fly.staging.toml lacks {k}"
-            );
+            assert!(vars.iter().any(|(n, _)| *n == k), "{file} lacks {k}");
         }
-        assert!(boot_owned(&vars, ANY).is_err(), "no keys yet");
-        vars.push(("KEEP_SETTINGS_KEY", Keys::generate()));
-        vars.push(("KEEP_AUTH_PEPPER", Keys::generate()));
-        let rt = boot_owned(&vars, ANY).expect("boots");
-        assert_eq!(rt.config.app_origin, "https://staging.keep-together.org.uk");
+        vars
+    }
+
+    /// H1: each fly toml's own `[env]`, plus the secrets its
+    /// `scripts/fly/*.sh` sets, boots; without the secrets it doesn't.
+    #[test]
+    fn the_fly_tomls_boot_with_their_secrets() {
+        for (file, keep_env, origin) in [
+            (
+                "fly.staging.toml",
+                "staging",
+                "https://staging.keep-together.org.uk",
+            ),
+            ("fly.prod.toml", "prod", "https://app.keep-together.org.uk"),
+        ] {
+            let mut vars = fly_env(file);
+            assert!(
+                vars.iter().any(|(k, v)| *k == "KEEP_ENV" && v == keep_env),
+                "{file}: KEEP_ENV"
+            );
+            assert!(boot_owned(&vars, ANY).is_err(), "{file}: no keys yet");
+            vars.push(("KEEP_SETTINGS_KEY", Keys::generate()));
+            vars.push(("KEEP_AUTH_PEPPER", Keys::generate()));
+            let rt = boot_owned(&vars, ANY).unwrap_or_else(|e| panic!("{file} boots: {e}"));
+            assert_eq!(rt.config.app_origin, origin, "{file}");
+        }
+    }
+
+    /// Prod never gets staging's or dev's conveniences in its toml.
+    #[test]
+    fn fly_prod_toml_has_no_staging_settings() {
+        let vars = fly_env("fly.prod.toml");
+        for k in [
+            "KEEP_RESET_SEED",
+            "KEEP_MAIL_ONLY_TO",
+            "KEEP_AUTH_POLICY",
+            "KEEP_QC_TOKEN",
+            "KEEP_DEV_AUTH",
+        ] {
+            assert!(vars.iter().all(|(n, _)| *n != k), "fly.prod.toml sets {k}");
+        }
+        assert!(
+            vars.iter()
+                .any(|(k, v)| *k == "KEEP_ADDRESS_LOOKUP" && v != "fake"),
+            "fly.prod.toml: KEEP_ADDRESS_LOOKUP must be off or ideal"
+        );
     }
 
     /// L3: the log mailer only for dev.

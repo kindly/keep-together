@@ -1,0 +1,69 @@
+# keep-prod: one machine, one volume, London. Created by
+# scripts/fly/prod.sh (the human runs it); deployed by hand only
+# (.github/workflows/deploy.yml, workflow_dispatch env=prod), never on a
+# push. Real data: no reset seed, no QC token, no dev settings.
+# Secrets (fly secrets list): LITESTREAM_BUCKET, LITESTREAM_ACCESS_KEY_ID,
+# LITESTREAM_SECRET_ACCESS_KEY, KEEP_SNAPSHOT_BUCKET,
+# KEEP_SNAPSHOT_ACCESS_KEY_ID, KEEP_SNAPSHOT_SECRET_ACCESS_KEY (from
+# scripts/aws/backup.sh prod), SENTRY_DSN, KEEP_SETTINGS_KEY and
+# KEEP_AUTH_PEPPER (generated once by the script; never rotated casually:
+# a new KEEP_SETTINGS_KEY makes every enrolled authenticator app
+# unreadable), KEEP_SMTP_URL (SES, scripts/aws/ses-sender.sh, docs/ops.md).
+# With KEEP_ENV=prod the api also refuses KEEP_MAIL=log/off,
+# KEEP_MAIL_ONLY_TO, KEEP_AUTH_POLICY=relaxed, KEEP_ADDRESS_LOOKUP=fake,
+# KEEP_RESET_SEED and KEEP_QC_TOKEN (server/README.md, "Env"); the api
+# tests boot this file's [env] (auth::boot).
+# KEEP_IDEAL_POSTCODES_KEY (the address lookup's key) is set by
+# scripts/fly/address-lookup-key.sh prod.
+
+app = "keep-prod"
+primary_region = "lhr"
+# Litestream is PID 1: it forwards the signal to the api, waits for it to
+# exit, then flushes the last WAL frames to S3 before exiting itself.
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "server/Dockerfile"
+
+[env]
+  KEEP_ENV = "prod"
+  KEEP_SNAPSHOT_REGION = "eu-west-2"
+  # Links in emails, and the trusted Origin for writes.
+  KEEP_APP_ORIGIN = "https://app.keep-together.org.uk"
+  # fly-proxy's client address: without it every client shares the
+  # proxy's rate-limit bucket (S1 review H1).
+  KEEP_CLIENT_IP_HEADER = "Fly-Client-IP"
+  # Mail through SES (out of the sandbox before the first real group).
+  KEEP_MAIL = "smtp"
+  # The contact form's "Find address": off (the control is hidden) until
+  # the key is set (scripts/fly/address-lookup-key.sh prod), then `ideal`.
+  KEEP_ADDRESS_LOOKUP = "off"
+
+[mounts]
+  source = "keep_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always on: Litestream and the hourly snapshots run in this machine.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "5s"
+    # Room for an empty-volume restore before the first check counts.
+    grace_period = "120s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[metrics]
+  port = 9090
+  path = "/metrics"
