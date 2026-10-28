@@ -6,9 +6,9 @@
 //! transaction.
 //!
 //! The steps: preview (`GET claims/preview?periodEnd`), create (`POST
-//! claims`), download the schedule (`GET claims/{id}/schedule?part&format`)
-//! and upload it to Charities Online, then mark it ready, submitted and
-//! paid (`POST claims/{id}/status`). `GET claims/{id}/xml` is the claim
+//! claims`), mark it ready (`POST claims/{id}/status`: no longer
+//! deletable), download the schedule (`GET claims/{id}/schedule?format`)
+//! and upload it to Charities Online, then mark it submitted and paid. `GET claims/{id}/xml` is the claim
 //! as HMRC's XML: generated for checking and for HMRC's recognition,
 //! never sent.
 
@@ -153,7 +153,8 @@ fn attachment(content_type: &'static str, filename: String, bytes: Vec<u8>) -> R
 /// `GET giftaid/claims/{id}/schedule?format=excel|libreoffice`: HMRC's
 /// Gift Aid schedule for the claim (one per claim: at most 1,000
 /// donations), filled from HMRC's own template for that software
-/// (default Excel). A `.ods` download.
+/// (default Excel). A `.ods` download, ready or later: a draft is `422
+/// rejected {reason: claim_draft}`.
 async fn schedule(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
@@ -168,11 +169,8 @@ async fn schedule(
     };
     let (bytes, number) = t
         .read(move |r| {
-            let number = giftaid::claims::summary(r, &id)?
-                .ok_or(ApiError::NotFound)?
-                .number;
-            let bytes =
-                giftaid::schedule::for_claim(r, &id, template)?.ok_or(ApiError::NotFound)?;
+            let number = giftaid::claims::downloadable(r, &id)?.number;
+            let bytes = giftaid::schedule::for_claim(r, &id, template)?;
             Ok((bytes, number))
         })
         .await?;
@@ -184,8 +182,9 @@ async fn schedule(
 }
 
 /// `GET giftaid/claims/{id}/xml`: the claim as HMRC's claim XML, IRmark
-/// stamped; `X-IRmark` carries its base32 form. `422 rejected
-/// {reason: missing_hmrc_details}` until the HMRC details are complete.
+/// stamped; `X-IRmark` carries its base32 form. Ready or later (`422
+/// claim_draft`); `422 rejected {reason: missing_hmrc_details}` until
+/// the HMRC details are complete.
 async fn xml(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
@@ -194,9 +193,7 @@ async fn xml(
     let org = t.name.clone();
     let (xml, mark, number) = t
         .read(move |r| {
-            let number = giftaid::claims::summary(r, &id)?
-                .ok_or(ApiError::NotFound)?
-                .number;
+            let number = giftaid::claims::downloadable(r, &id)?.number;
             let env = Envelope::generated(contracts::now_ms());
             let (xml, mark) = giftaid::xml::for_claim(r, &id, &org, &env)?;
             Ok((xml, mark, number))

@@ -826,6 +826,7 @@ async fn a_gift_voided_after_its_claim_was_sent_is_paid_back_by_the_next() {
 
     // The schedule's Box 2 and the XML carry the adjustment.
     c.hmrc_details().await;
+    c.step_ok(&second_id, json!({ "status": "ready" })).await;
     let (s, _, xml, _) = download(
         &c.w,
         &format!("/api/t/alpha/giftaid/claims/{second_id}/xml"),
@@ -879,6 +880,7 @@ async fn the_schedule_and_the_xml_download() {
     .await;
     let claim = c.create("alpha").await;
     let id = claim["id"].as_str().unwrap();
+    c.step_ok(id, json!({ "status": "ready" })).await;
     for format in ["", "format=excel", "format=libreoffice"] {
         let (s, ty, ods, _) = download(
             &c.w,
@@ -1251,5 +1253,47 @@ async fn over_a_thousand_gifts_make_several_claims_oldest_first() {
             .unwrap()
             .iter()
             .any(|l| l["giftId"] == first.as_str())
+    );
+}
+
+/// Review M1: what goes to HMRC is downloaded only once the claim is
+/// ready (and no longer deletable), never from a draft, so a draft that
+/// was uploaded can't be deleted and its gifts claimed again.
+#[tokio::test]
+async fn a_draft_cant_be_downloaded() {
+    let c = setup().await;
+    c.gift("alpha", &ANN_SMITH, &days_ago(3), 1000).await;
+    c.hmrc_details().await;
+    let id = c.create("alpha").await["id"].as_str().unwrap().to_owned();
+    for path in ["schedule", "xml"] {
+        let (s, reason) = refused(
+            &c.w,
+            "GET",
+            &format!("/api/t/alpha/giftaid/claims/{id}/{path}"),
+            &c.ann,
+            None,
+        )
+        .await;
+        assert_eq!(
+            (s, reason.as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, "claim_draft"),
+            "{path}"
+        );
+    }
+    c.step_ok(&id, json!({ "status": "ready" })).await;
+    for path in ["schedule", "xml"] {
+        let (s, _, _, _) = download(
+            &c.w,
+            &format!("/api/t/alpha/giftaid/claims/{id}/{path}"),
+            &c.ann,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{path}");
+    }
+    let (s, _) = c.step(&id, json!({ "status": "deleted" })).await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a ready claim can't be deleted"
     );
 }

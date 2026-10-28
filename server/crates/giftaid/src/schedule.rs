@@ -381,18 +381,14 @@ pub fn fill(
 }
 
 /// A stored claim's schedule (at most 1,000 lines: one schedule per
-/// claim): Box 1 its earliest gift date, Box 2 its adjustment. `None` for
-/// an unknown or deleted claim.
+/// claim): Box 1 its earliest gift date, Box 2 its adjustment. Ready or
+/// later only ([`crate::claims::downloadable`]).
 pub fn for_claim(
     conn: &rusqlite::Connection,
     claim_id: &str,
     template: Template,
-) -> Result<Option<Vec<u8>>, ContractError> {
-    let Some(claim) = crate::claims::summary(conn, claim_id)?
-        .filter(|c| c.status != crate::claim_types::ClaimStatus::Deleted)
-    else {
-        return Ok(None);
-    };
+) -> Result<Vec<u8>, ContractError> {
+    let claim = crate::claims::downloadable(conn, claim_id)?;
     let rows: Vec<Row> = crate::claims::lines(conn, claim_id)?
         .into_iter()
         .map(|l| Row {
@@ -407,7 +403,6 @@ pub fn for_claim(
         .collect();
     let earliest = rows.iter().map(|r| r.date.as_str()).min();
     fill(template, &rows, earliest, claim.totals.adjustment)
-        .map(Some)
         .map_err(|e| ContractError::rejected("schedule", e.to_string()))
 }
 

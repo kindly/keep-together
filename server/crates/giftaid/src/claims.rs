@@ -202,6 +202,23 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<ClaimSummary>> {
     .collect()
 }
 
+/// A claim whose schedule and XML may be downloaded: ready or later
+/// (the step that says it may go to HMRC, after which it can't be
+/// deleted). A draft is refused (`claim_draft`); an unknown or deleted
+/// claim is `NotFound`.
+pub fn downloadable(conn: &Connection, id: &str) -> Result<ClaimSummary, ContractError> {
+    let claim = summary(conn, id)?
+        .filter(|c| c.status != ClaimStatus::Deleted)
+        .ok_or(ContractError::NotFound)?;
+    if claim.status == ClaimStatus::Draft {
+        return Err(ContractError::rejected(
+            "claim_draft",
+            "Mark the claim ready before downloading it for HMRC",
+        ));
+    }
+    Ok(claim)
+}
+
 /// A claim's lines in the order sent.
 pub fn lines(conn: &Connection, claim_id: &str) -> rusqlite::Result<Vec<ClaimLine>> {
     conn.prepare_cached(

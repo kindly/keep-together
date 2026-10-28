@@ -14,8 +14,8 @@
 use rusqlite::Connection;
 
 use crate::claim_rules::{OTHER_INFO_MAX, pounds};
-use crate::claim_types::{ClaimStatus, HmrcDetails, Regulator};
-use crate::claims::{adjustments, lines, summary};
+use crate::claim_types::{HmrcDetails, Regulator};
+use crate::claims::{adjustments, downloadable, lines, summary};
 use crate::hmrc::{missing_for_xml, read as read_details};
 use crate::irmark::{Irmark, IrmarkError, escape_attribute, escape_text, stamp_irmark};
 use contracts::ContractError;
@@ -266,18 +266,17 @@ fn adjustment_note(total: i64, claims: &[i64], reasons: &[String]) -> String {
     note
 }
 
-/// The claim message for a stored claim (never a deleted one), with the
-/// organisation's HMRC details: refused (`missing_hmrc_details`) until
-/// they are complete. `org_name` is the organisation's name.
+/// The claim message for a stored claim, ready or later
+/// ([`crate::claims::downloadable`]), with the organisation's HMRC
+/// details: refused (`missing_hmrc_details`) until they are complete.
+/// `org_name` is the organisation's name.
 pub fn for_claim(
     conn: &Connection,
     claim_id: &str,
     org_name: &str,
     env: &Envelope,
 ) -> Result<(String, Irmark), ContractError> {
-    let claim = summary(conn, claim_id)?
-        .filter(|c| c.status != ClaimStatus::Deleted)
-        .ok_or(ContractError::NotFound)?;
+    let claim = downloadable(conn, claim_id)?;
     let details: HmrcDetails = read_details(conn)?;
     missing_for_xml(&details)?;
     let adjustments = adjustments(conn, claim_id)?;
