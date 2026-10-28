@@ -21,7 +21,8 @@
 //!   and expire cancel its subscriptions too, as GoCardless does);
 //! - `simulate/subscriptions/{id}/payment`: the subscription's next
 //!   payment (`pending_submission`), answering `{payment}`;
-//! - `simulate/payments/{id}/{submit|confirm|fail|charge_back|cancel_chargeback}`;
+//! - `simulate/payments/{id}/{retry|submit|confirm|fail|charge_back|cancel_chargeback}`
+//!   (`retry?charge_date=`: a new charge date);
 //! - `GET simulate/webhooks`: what was delivered (ids, statuses).
 //!
 //! Every simulator answers once the webhook has been delivered (or failed
@@ -1282,11 +1283,24 @@ async fn simulate_payment(
     simulated(delivered, json!({ "payment": payment }))
 }
 
+#[derive(Deserialize)]
+struct Retry {
+    /// `retry`: the new charge date (YYYY-MM-DD); default a week out.
+    charge_date: Option<String>,
+}
+
 async fn simulate_payment_action(
     State(fake): State<Arc<Fake>>,
     Path((id, action)): Path<(String, String)>,
+    Query(retry): Query<Retry>,
 ) -> Response {
     let (status, event_action, cause, description) = match action.as_str() {
+        "retry" => (
+            "submitted",
+            "resubmission_requested",
+            "payment_retried",
+            "The payment was retried.",
+        ),
         "submit" => (
             "submitted",
             "submitted",
@@ -1325,6 +1339,11 @@ async fn simulate_payment_action(
     else {
         return not_found();
     };
+    if action == "retry"
+        && let Some(r) = fake.world().resources.get_mut(&id)
+    {
+        r.body["charge_date"] = json!(retry.charge_date.unwrap_or_else(|| today_plus(7)));
+    }
     let event = {
         let mut w = fake.world();
         Fake::event(

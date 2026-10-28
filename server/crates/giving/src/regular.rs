@@ -836,10 +836,12 @@ pub enum GiftChange {
 ///   next claim pays its tax back), and the payment marks the void as its
 ///   own (`giftVoided`).
 /// - `confirmed` again after that (a cancelled chargeback, a retry that
-///   was collected): the same gift un-voided; or, if it is in a Gift Aid
-///   claim (whose void is final), a new gift for the payment. At most one
-///   completed gift per payment, ever. A gift staff voided themselves is
-///   left void.
+///   was collected): the same gift un-voided, if the money is dated as it
+///   was (a gift is dated when GoCardless collected it: that date decides
+///   its tax year for Gift Aid and income); a new gift on the new date if
+///   a retry was collected another day; and a new gift if the voided one
+///   is in a Gift Aid claim (whose void is final). At most one completed
+///   gift per payment, ever. A gift staff voided themselves is left void.
 ///
 /// A report that changes nothing writes nothing, so a replayed event is a
 /// no-op.
@@ -898,10 +900,16 @@ pub fn record_payment(
         return Ok(GiftChange::None);
     }
     let was = before.as_ref().map(|b| b.status);
-    let gift_status = match &next.gift_id {
-        Some(id) => crate::describe_gift(conn, id)?.map(|g| g.status),
+    let described = match &next.gift_id {
+        Some(id) => crate::describe_gift(conn, id)?,
         None => None,
     };
+    let gift_status = described.as_ref().map(|g| g.status);
+    // A gift is dated when GoCardless collected the money: a retry
+    // collected on another day is another gift.
+    let same_day = described
+        .as_ref()
+        .is_some_and(|g| g.received_on == report.charge_date);
     // A gift in a Gift Aid claim can be voided (with a reason: the next
     // claim pays the tax back) but never un-voided.
     let claimed = match &next.gift_id {
@@ -942,6 +950,14 @@ pub fn record_payment(
                 // Its void went to HMRC as an adjustment and is final: the
                 // money is recorded again, as a new gift.
                 (Act::Record, format!("{name}, recorded again"))
+            } else if !same_day {
+                // Collected on another day (a retry): a new gift on that
+                // day, which decides its tax year; the failed attempt's
+                // gift stays void.
+                (
+                    Act::Record,
+                    format!("{name} on {}, recorded again", report.charge_date),
+                )
             } else {
                 (Act::Unvoid, name)
             }

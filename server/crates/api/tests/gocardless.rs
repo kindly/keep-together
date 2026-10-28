@@ -1935,3 +1935,65 @@ async fn switching_accounts_keeps_the_old_accounts_events_for_switching_back() {
         assert!(row["giftId"].is_string());
     }
 }
+
+/// Second review L-a: a gift is dated when GoCardless collected the money,
+/// which decides its tax year. A late failure retried and collected on
+/// another day is a new gift on that day; the failed attempt's stays void.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_collected_on_another_day_is_a_gift_on_that_day() {
+    let t = setup().await;
+    let (jo, id, sub) = t.active().await;
+    let first_day = uk_day(-2);
+    let pm = t
+        .simulate(&format!(
+            "subscriptions/{sub}/payment?charge_date={first_day}"
+        ))
+        .await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let first = payment(&t.regular("alpha", &t.val, &id).await, &pm)["giftId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{pm}/fail")).await;
+    t.settle().await;
+    assert_eq!(t.gift(&first).await["status"], "void");
+
+    let retry_day = uk_day(5);
+    t.simulate(&format!("payments/{pm}/retry?charge_date={retry_day}"))
+        .await;
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
+    assert_eq!(row["chargeDate"], retry_day.as_str());
+    let again = row["giftId"].as_str().unwrap().to_owned();
+    assert_ne!(again, first);
+    let g = t.gift(&again).await;
+    assert_eq!(
+        (g["status"].clone(), g["receivedOn"].clone()),
+        (json!("completed"), json!(retry_day))
+    );
+    let f = t.gift(&first).await;
+    assert_eq!(
+        (f["status"].clone(), f["receivedOn"].clone()),
+        (json!("void"), json!(first_day))
+    );
+    let gifts = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/gifts"),
+        &t.val,
+        None,
+    )
+    .await;
+    let completed = gifts["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| g["status"] == "completed")
+        .count();
+    assert_eq!(completed, 1, "one completed gift per payment");
+}
