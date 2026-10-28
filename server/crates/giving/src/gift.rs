@@ -384,14 +384,20 @@ fn project_allocations(tx: &Connection, id: &str) -> rusqlite::Result<()> {
 pub struct GiftStatus;
 pub static STATUS: GiftStatus = GiftStatus;
 
-/// The `giving.status` slice as stored, plus the claim that holds the
-/// gift (not this slice's; never serialised).
+/// The `giving.status` slice as stored, plus what isn't this slice's
+/// (never serialised): the claim that holds the gift, and whether it is a
+/// Direct Debit payment GoCardless says was not collected after all
+/// (charged back, failed late, cancelled): such a gift only the system
+/// may un-void, when the money comes back
+/// ([`crate::regular::record_payment`]).
 #[derive(Clone, Debug, Serialize)]
 pub struct StatusState {
     #[serde(flatten)]
     pub status: StatusPayload,
     #[serde(skip)]
     claim_id: Option<String>,
+    #[serde(skip)]
+    returned: bool,
 }
 
 fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<StatusState>> {
@@ -403,6 +409,7 @@ fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sta
                     reason: r.get(1)?,
                 },
                 claim_id: r.get(2)?,
+                returned: false,
             })
         })
         .optional()
@@ -423,14 +430,22 @@ impl Contract for GiftStatus {
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<StatusState, ContractError> {
-        load_status_state(tx.read(), id)?.ok_or(ContractError::NotFound)
+        let conn = tx.read();
+        let mut state = load_status_state(conn, id)?.ok_or(ContractError::NotFound)?;
+        state.returned = conn
+            .prepare_cached(
+                "SELECT 1 FROM direct_debit_payments
+                 WHERE gift_id = ?1 AND status IN ('charged_back', 'failed', 'cancelled')",
+            )?
+            .exists([id])?;
+        Ok(state)
     }
 
     fn apply(
         &self,
         current: Option<&StatusState>,
         p: &StatusPayload,
-        _: &Command,
+        command: &Command,
     ) -> Result<StatusState, ContractError> {
         let Some(current) = current else {
             return Err(ContractError::rejected(
@@ -438,6 +453,13 @@ impl Contract for GiftStatus {
                 "giving.status targets an existing gift",
             ));
         };
+        if current.returned && p.status == Status::Completed && command.source != Source::System
+        {
+            return Err(ContractError::rejected(
+                "direct_debit_returned",
+                "GoCardless says this payment wasn’t collected: it can’t count as a gift",
+            ));
+        }
         if current.claim_id.is_some() {
             match (current.status.status, p.status) {
                 (Status::Completed, Status::Void) if p.reason.is_none() => {
@@ -467,6 +489,7 @@ impl Contract for GiftStatus {
                 },
             },
             claim_id: current.claim_id.clone(),
+            returned: current.returned,
         })
     }
 

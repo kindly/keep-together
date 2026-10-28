@@ -24,4 +24,10 @@ reason: string | null,
 /**
  * The gift it became, once confirmed.
  */
-giftId: string | null, };
+giftId: string | null, 
+/**
+ * Whether that gift is void because of this payment (a chargeback, a
+ * late failure, a cancellation), so the payment's recovery may
+ * un-void it. A gift staff voided themselves stays theirs.
+ */
+giftVoided: boolean, };
