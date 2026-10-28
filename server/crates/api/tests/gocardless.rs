@@ -1538,3 +1538,75 @@ async fn disconnect_works_when_gocardless_no_longer_knows_the_token() {
     assert_eq!(gone["connected"], false);
     assert_eq!(t.token_of(&t.w.alpha), None);
 }
+
+/// Reviewer M3: disconnecting doesn't stop GoCardless collecting, so
+/// what happens meanwhile is kept: events queued at the disconnect (set
+/// aside) and those that arrive after it (for an account no group here
+/// holds) are replayed when the group connects the same account again.
+#[tokio::test(flavor = "multi_thread")]
+async fn payments_during_a_disconnect_become_gifts_on_reconnect() {
+    let t = setup().await;
+    let (jo, id, sub) = t.active().await;
+    let status = ok(&t.w, "GET", "/api/t/alpha/gocardless", &t.val, None).await;
+    let account = status["organisationId"].as_str().unwrap().to_owned();
+
+    // One payment's events wait (GoCardless failing) at the disconnect...
+    t.fake_post(
+        "outage",
+        json!({ "calls": 100_000, "status": 503, "path": "payments" }),
+    )
+    .await;
+    let early = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{early}/confirm")).await;
+    t.settle().await;
+    ok(
+        &t.w,
+        "POST",
+        "/api/t/alpha/gocardless/disconnect",
+        &t.ann,
+        None,
+    )
+    .await;
+    t.fake_post("outage", json!({ "calls": 0 })).await;
+    t.due_now();
+    t.settle().await;
+    // ...another arrives after it.
+    let late = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{late}/confirm")).await;
+    t.settle().await;
+    let gifts = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/gifts"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(gifts["rows"].as_array().unwrap().len(), 0);
+
+    let callback = t.start_connect("alpha", &t.ann, &account).await;
+    let (_, landed) = navigate(&t.w, &callback, &t.ann).await;
+    assert_eq!(landed, "/t/alpha/settings?gocardless=connected");
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    for pm in [&early, &late] {
+        let row = payment(&v, pm);
+        assert_eq!(row["status"], "confirmed", "{pm}: {v}");
+        assert!(row["giftId"].is_string());
+    }
+    let gifts = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/gifts"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(gifts["rows"].as_array().unwrap().len(), 2);
+}

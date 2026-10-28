@@ -185,5 +185,8 @@ pub async fn callback(
             "gocardless connect ({slug}): revoking the previous account's token: {e}"
         ));
     }
+    // Events kept while it wasn't connected were requeued with the
+    // reservation: handle them now.
+    super::webhook::spawn_processing(state.store.clone(), gc.clone());
     land(Some(&slug), "connected")
 }

@@ -250,15 +250,45 @@ pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<u
             .map_or(pending.len(), |n| i + n);
         let batch = &pending[i..end];
         i = end;
+        // Disconnected since these came: set aside untouched (never half
+        // applied), and requeued if it connects the account again
+        // (`super::requeue_set_aside`).
+        let (s, t) = (store.clone(), tenant.clone());
+        let owned = crate::blocking(move || super::connection(&s, &t)).await;
+        match owned {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let (s, ids) = (
+                    store.clone(),
+                    batch.iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
+                );
+                let set_aside = crate::blocking(move || {
+                    s.platform().with_write(|tx| {
+                        for id in &ids {
+                            tx.execute(
+                                "UPDATE gocardless_events SET outcome = 'not_connected',
+                                     processed_at = ?2 WHERE id = ?1",
+                                params![id, contracts::now_ms()],
+                            )?;
+                        }
+                        Ok::<_, store::StoreError>(())
+                    })
+                })
+                .await;
+                if let Err(e) = set_aside {
+                    errors.push(format!("{tenant}: {e:?}"));
+                }
+                continue;
+            }
+            Err(e) => {
+                errors.push(format!("{tenant}: {e:?}"));
+                continue;
+            }
+        }
         let (s, g, t) = (store.clone(), gc.clone(), tenant.clone());
         let opened = crate::blocking(move || {
             let db = s.org(&t)?;
-            // Only an organisation that owns its account's mapping uses
-            // the token in its file.
-            let token = match super::connection(&s, &t)? {
-                Some(_) => db.read(|r| g.token(r))?,
-                None => None,
-            };
+            let token = db.read(|r| g.token(r))?;
             Ok::<_, crate::ApiError>(Org { db, token })
         })
         .await;
@@ -694,13 +724,17 @@ pub fn requeue_failed(store: &Store, tenant: &TenantId) -> Result<usize, store::
     })
 }
 
-/// Forget handled events older than [`KEEP_HANDLED_MS`]; parked ones stay
-/// until handled.
+/// Forget handled events older than [`KEEP_HANDLED_MS`]; parked ones, and
+/// those kept for a reconnect (set aside, or for an account a group
+/// disconnected), stay.
 pub fn purge(store: &Store, now: i64) -> Result<usize, store::StoreError> {
     store.platform().with_write(|tx| {
         Ok(tx.execute(
             "DELETE FROM gocardless_events
-             WHERE processed_at IS NOT NULL AND processed_at < ?1 AND outcome <> 'failed'",
+             WHERE processed_at IS NOT NULL AND processed_at < ?1 AND outcome <> 'failed'
+               AND outcome <> 'not_connected'
+               AND NOT (outcome = 'unknown_organisation' AND organisation_id IN
+                   (SELECT organisation_id FROM gocardless_disconnections))",
             [now - KEEP_HANDLED_MS],
         )?)
     })

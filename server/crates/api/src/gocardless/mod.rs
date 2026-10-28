@@ -292,7 +292,15 @@ pub const SCHEMA: PlatformSchema = PlatformSchema {
              last_error TEXT
          ) STRICT;
          CREATE INDEX gocardless_events_pending ON gocardless_events (tenant_id)
-             WHERE processed_at IS NULL;",
+             WHERE processed_at IS NULL;
+         CREATE INDEX gocardless_events_by_organisation
+             ON gocardless_events (organisation_id, outcome);
+         CREATE TABLE gocardless_disconnections (
+             organisation_id TEXT NOT NULL,
+             tenant_id TEXT NOT NULL REFERENCES tenants (id),
+             at INTEGER NOT NULL,
+             PRIMARY KEY (organisation_id, tenant_id)
+         ) STRICT;",
     ],
 };
 
@@ -514,6 +522,7 @@ pub fn record_connection(
                  connected_at = excluded.connected_at, connected_by = excluded.connected_by",
             params![tenant.as_str(), organisation_id, now, user],
         )?;
+        requeue_set_aside(tx, tenant, organisation_id)?;
         Ok(Ok(previous))
     })
 }
@@ -547,8 +556,40 @@ pub fn restore_connection(
     })
 }
 
+/// Events this organisation missed while it wasn't connected to
+/// `organisation_id`, back in the queue (in arrival order: rowid): its
+/// own set aside as `not_connected`, and those that came for the account
+/// after this organisation disconnected it (`unknown_organisation`). An
+/// account's events are never handed to an organisation that didn't hold
+/// it when they came. How many.
+pub fn requeue_set_aside(
+    tx: &rusqlite::Transaction,
+    tenant: &TenantId,
+    organisation_id: &str,
+) -> rusqlite::Result<usize> {
+    tx.execute(
+        "UPDATE gocardless_events SET tenant_id = ?1, processed_at = NULL, outcome = NULL,
+             attempts = 0, next_attempt_at = NULL
+         WHERE organisation_id = ?2
+           AND ((outcome = 'not_connected' AND tenant_id = ?1)
+             OR (outcome = 'unknown_organisation' AND received_at >= (
+                 SELECT at FROM gocardless_disconnections
+                 WHERE organisation_id = ?2 AND tenant_id = ?1)))",
+        params![tenant.as_str(), organisation_id],
+    )
+}
+
+/// Disconnect `tenant`: its mapping goes, and the account it held is
+/// remembered, so what comes for it meanwhile is kept for a reconnect.
 pub fn forget_connection(store: &Store, tenant: &TenantId) -> Result<(), StoreError> {
     store.platform().with_write(|tx| {
+        tx.execute(
+            "INSERT INTO gocardless_disconnections (organisation_id, tenant_id, at)
+             SELECT organisation_id, tenant_id, ?2 FROM gocardless_connections
+             WHERE tenant_id = ?1
+             ON CONFLICT (organisation_id, tenant_id) DO UPDATE SET at = excluded.at",
+            params![tenant.as_str(), contracts::now_ms()],
+        )?;
         tx.execute(
             "DELETE FROM gocardless_connections WHERE tenant_id = ?1",
             [tenant.as_str()],
