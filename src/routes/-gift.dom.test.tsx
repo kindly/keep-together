@@ -39,7 +39,7 @@ const mutations: Record<string, ReturnType<typeof vi.fn>> = {
 }
 let gift: Gift
 let members: Array<{ userId: string; name: string }> | undefined
-let claimList: Array<{ id: string; number: number }> | undefined
+let claimList: Array<{ id: string; number: number; status: string }> | undefined
 vi.mock('../lib/data', () => ({
   FEATURES: { giftAidClaims: true },
   useClaims: (enabled: boolean) => ({
@@ -107,7 +107,7 @@ beforeEach(() => {
   for (const m of Object.values(mutations)) m.mockReset().mockResolvedValue({})
   gift = makeGift()
   members = [{ userId: '1', name: 'Jo Staff' }]
-  claimList = [{ id: 'claim7', number: 7 }]
+  claimList = [{ id: 'claim7', number: 7, status: 'submitted' }]
   admin = true
   el = document.createElement('div')
   document.body.append(el)
@@ -335,5 +335,32 @@ test('the server’s refusal of a claimed gift’s void is shown as it says it',
   await click(button(dialog(), 'Void'))
   expect(el.querySelector('[role="alert"]')?.textContent).toBe(
     'This gift is in a Gift Aid claim: say why it is void.',
+  )
+})
+
+test('a gift voided out of a draft claim: the draft is held back, no repayment promised', async () => {
+  claimList = [{ id: 'claim7', number: 7, status: 'draft' }]
+  gift = makeGift({ claimId: 'claim7' })
+  render()
+  await click(button(el, 'Void'))
+  expect(dialog().textContent).toContain(
+    'It is in draft claim 7: it stays on record but counts for nothing, and that claim can’t be marked ready until it’s deleted',
+  )
+  expect(dialog().textContent).not.toContain('pays its Gift Aid back')
+  await act(async () => root.unmount())
+  root = createRoot(el)
+  gift = makeGift({ claimId: 'claim7', status: 'void', voidReason: 'x' })
+  render()
+  const lock = el.querySelector('[data-testid="claim-lock"]')!.textContent
+  expect(lock).toContain('Voided while claim 7 is a draft')
+  expect(lock).toContain('deleting it lets this gift go')
+})
+
+test('staff, who can’t see the claim, are told both cases', () => {
+  admin = false
+  gift = makeGift({ claimId: 'claim7', status: 'void' })
+  render()
+  expect(el.querySelector('[data-testid="claim-lock"]')?.textContent).toBe(
+    'Voided while in a Gift Aid claim: it can’t be un-voided while the claim holds it. If the claim has gone to HMRC, the next claim pays the tax back.',
   )
 })

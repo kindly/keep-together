@@ -662,6 +662,8 @@ test('the drawer lists every destination, Donations flattened, then the account'
   expect(shown(d)).toEqual([
     ['Home', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
+    // G3: admins only, as in the header.
+    ['Gift Aid', '/t/alpha/giftaid'],
     ['Settings', '/t/alpha/settings'],
     ['Your accounta@example.org', '/account'],
   ])
@@ -672,6 +674,7 @@ test('the drawer lists every destination, Donations flattened, then the account'
     ['Record a gift', '/t/alpha/gifts/new'],
     ['£1,234.56Acme Ltd23 Oct 2026', '/t/alpha/gifts/g2'],
     ['£20.00Jo Bloggsvoid23 Oct 2026', '/t/alpha/gifts/g1'],
+    ['Gift Aid', '/t/alpha/giftaid'],
     ['Settings', '/t/alpha/settings'],
     ['Your accounta@example.org', '/account'],
   ])
@@ -684,9 +687,22 @@ test('the drawer lists every destination, Donations flattened, then the account'
   expect(d.querySelector('button[aria-label="Close menu"]')).not.toBeNull()
 })
 
+test('the drawer has Gift Aid for admins only, as the header does: not for staff', async () => {
+  tenants = [group('alpha', { role: 'staff' })]
+  const d = await openDrawer()
+  expect(shown(d).map(([name]) => name)).toEqual([
+    'Home',
+    'Contacts',
+    'Settings',
+    'Your accounta@example.org',
+  ])
+})
+
 test('the drawer: a viewer has no Record a gift, and no gifts says so', async () => {
   tenants = [group('alpha', { role: 'viewer' })]
   const d = await openDrawer()
+  // Nor Gift Aid: admins only.
+  expect(d.textContent).not.toContain('Gift Aid')
   await toggleDonations()
   expect(d.textContent).not.toContain('Record a gift')
   expect(donations().textContent).toBe('DonationsMy recent giftsNone yet.')

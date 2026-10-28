@@ -26,7 +26,12 @@ import {
   useGiftWrites,
   useMembers,
 } from '../lib/data'
-import type { GiftStatus, GiftView as Gift, Member } from '../lib/data'
+import type {
+  ClaimSummary,
+  GiftStatus,
+  GiftView as Gift,
+  Member,
+} from '../lib/data'
 import { tenantPath } from '../lib/data/rust/client'
 import { keys } from '../lib/data/rust/keys'
 import { threeWayMerge } from '../lib/merge'
@@ -80,6 +85,13 @@ function GiftView({ gift }: { gift: Gift }) {
   } | null>(null)
   const [voidReason, setVoidReason] = useState('')
   const claimed = Boolean(gift.claimId)
+  // The claim, for an admin (the claims list is admin only): its number,
+  // and whether it has gone to HMRC (a void then makes an adjustment; in
+  // a draft it holds the draft back instead). Unknown for anyone else.
+  const admin = useIsAdmin()
+  const claims = useClaims(claimed && admin && FEATURES.giftAidClaims)
+  const claim = claims.data?.find((c) => c.id === gift.claimId)
+  const lock = claimLock(claim)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const isVoid = gift.status === 'void'
@@ -143,7 +155,9 @@ function GiftView({ gift }: { gift: Gift }) {
                 void
               </span>
             )}
-            {gift.claimId && <ClaimBadge claimId={gift.claimId} />}
+            {gift.claimId && (
+              <ClaimBadge claimId={gift.claimId} claim={claim} />
+            )}
           </h1>
           {isVoid && (
             <p className="text-sm text-neutral-600">
@@ -156,7 +170,7 @@ function GiftView({ gift }: { gift: Gift }) {
           {claimed && (
             <p data-testid="claim-lock" className="text-sm text-neutral-600">
               {isVoid
-                ? 'Voided after it was claimed for Gift Aid: the next claim pays the tax back, and it can’t be un-voided. Record it again if it was given.'
+                ? lock.voided
                 : 'Claimed for Gift Aid: its amount, date and donor can’t change. If it was wrong, void it with a reason and record it again.'}
             </p>
           )}
@@ -288,7 +302,7 @@ function GiftView({ gift }: { gift: Gift }) {
             : {
                 title: 'Void this gift?',
                 description: claimed
-                  ? 'It is in a Gift Aid claim: it stays on record but counts for nothing, the next claim pays its Gift Aid back to HMRC, and it can’t be un-voided. Say why it is void.'
+                  ? lock.voiding
                   : 'It stays on record but counts for nothing. You can unvoid it later.',
                 confirm: 'Void',
                 confirmDisabled: claimed && voidReason.trim() === '',
@@ -325,14 +339,45 @@ function GiftView({ gift }: { gift: Gift }) {
 }
 
 /**
+ * What voiding a claimed gift means, by where its claim stands: in a
+ * draft it holds the draft back (deleting the draft lets the gift go);
+ * once the claim may have gone to HMRC, the next claim pays the tax
+ * back. Either way it can't be un-voided while the claim holds it. With
+ * the claim unknown (staff), both are said.
+ */
+function claimLock(claim: ClaimSummary | undefined) {
+  if (claim?.status === 'draft')
+    return {
+      voided: `Voided while claim ${claim.number} is a draft: that claim can’t be marked ready until it’s deleted, and deleting it lets this gift go (it can then be unvoided).`,
+      voiding: `It is in draft claim ${claim.number}: it stays on record but counts for nothing, and that claim can’t be marked ready until it’s deleted and made again. Say why it is void.`,
+    }
+  if (claim)
+    return {
+      voided:
+        'Voided after it was claimed for Gift Aid: the next claim pays the tax back to HMRC, and it can’t be un-voided. Record it again if it was given.',
+      voiding:
+        'It is in a Gift Aid claim: it stays on record but counts for nothing, the next claim pays its Gift Aid back to HMRC, and it can’t be un-voided. Say why it is void.',
+    }
+  return {
+    voided:
+      'Voided while in a Gift Aid claim: it can’t be un-voided while the claim holds it. If the claim has gone to HMRC, the next claim pays the tax back.',
+    voiding:
+      'It is in a Gift Aid claim: it stays on record but counts for nothing, and it can’t be un-voided while the claim holds it. If the claim has gone to HMRC, the next claim pays its Gift Aid back. Say why it is void.',
+  }
+}
+
+/**
  * "Claim 3" for an admin, linking to it (the claims list is admin
  * only); "Gift Aid claim" for everyone else.
  */
-function ClaimBadge({ claimId }: { claimId: string }) {
+function ClaimBadge({
+  claimId,
+  claim,
+}: {
+  claimId: string
+  claim: ClaimSummary | undefined
+}) {
   const { slug } = useTenant()
-  const admin = useIsAdmin()
-  const claims = useClaims(admin && FEATURES.giftAidClaims)
-  const claim = claims.data?.find((c) => c.id === claimId)
   const style = 'rounded bg-sky-100 px-1.5 text-sm font-normal text-sky-900'
   if (!claim)
     return (

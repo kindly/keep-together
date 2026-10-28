@@ -59,29 +59,46 @@ export function claimRefusal(err: unknown, fallback: string): string {
 }
 
 /**
- * A write that may need a step-up first: `run(f)` runs it, and on
- * `step_up_required` shows "Confirm it's you" (`form`), running it again
- * once confirmed. Any other refusal is thrown to the caller.
+ * A write that may need a step-up first. `run(f)` runs it; on
+ * `step_up_required` it shows "Confirm it's you" (`form`) and stays
+ * pending until then: once confirmed it runs `f` again and settles as
+ * that run does, so the caller's own catch and finally see the retry's
+ * refusal (preview_changed, voided_gifts…) and its busy state lasts
+ * through it. Cancel settles it with nothing done. Render `form` outside
+ * any other `<form>`: it is one itself.
  */
 export function useStepUp() {
   const auth = useAuthState()
-  const [retry, setRetry] = useState<(() => Promise<void>) | null>(null)
-  async function run(f: () => Promise<void>): Promise<void> {
-    try {
-      await f()
-    } catch (err) {
-      if (needsStepUp(err)) setRetry(() => () => run(f))
-      else throw err
-    }
+  const [pending, setPending] = useState<{
+    confirm: () => void
+    cancel: () => void
+  } | null>(null)
+  function run(f: () => Promise<void>): Promise<void> {
+    return f().catch((err: unknown) => {
+      if (!needsStepUp(err)) throw err
+      return new Promise<void>((resolve, reject) =>
+        setPending({
+          confirm: () => {
+            setPending(null)
+            run(f).then(resolve, reject)
+          },
+          cancel: () => {
+            setPending(null)
+            resolve()
+          },
+        }),
+      )
+    })
   }
-  const form = retry && (
+  const form = pending && (
     <StepUpForm
       method={auth?.method ?? null}
-      onCancel={() => setRetry(null)}
-      onDone={async () => {
-        const f = retry
-        setRetry(null)
-        await f()
+      onCancel={pending.cancel}
+      // The retry's outcome goes to the caller of `run`, not this form
+      // (it is gone by then).
+      onDone={() => {
+        pending.confirm()
+        return Promise.resolve()
       }}
     />
   )

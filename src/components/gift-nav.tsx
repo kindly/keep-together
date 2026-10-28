@@ -3,7 +3,8 @@ import { useState } from 'react'
 import type { ComponentProps } from 'react'
 import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
 import type { RecentGift } from '../lib/gifts'
-import { useCanWrite, useTenant } from '../lib/tenant'
+import { FEATURES } from '../lib/data'
+import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,6 +48,30 @@ export const DONATIONS = {
 type AnchorProps = Omit<ComponentProps<'a'>, 'href' | 'children'> & {
   /** Replace the current history entry (the mobile drawer's). */
   replace?: boolean
+}
+
+/**
+ * "Gift Aid": the claims pages (G3), for admins only, as every claims
+ * route is; nothing for anyone else. The header and the phone drawer
+ * both show this one, each with its own style. Other props pass through.
+ */
+export function GiftAidLink({
+  activeProps,
+  ...props
+}: AnchorProps & { activeProps?: { className?: string } }) {
+  const tenant = useTenant()
+  const admin = useIsAdmin()
+  if (!admin || !FEATURES.giftAidClaims) return null
+  return (
+    <Link
+      to="/t/$slug/giftaid"
+      params={{ slug: tenant.slug }}
+      activeProps={activeProps}
+      {...props}
+    >
+      Gift Aid
+    </Link>
+  )
 }
 
 /**

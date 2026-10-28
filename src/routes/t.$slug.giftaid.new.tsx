@@ -105,7 +105,9 @@ function Preview({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const { totals } = preview
-  const empty = totals.lines === 0 && preview.adjustments.length === 0
+  // The server's count: 0 when no gift can be claimed, whatever is due
+  // back (a claim needs a gift; it refuses `nothing_to_claim`).
+  const empty = preview.claims === 0
 
   async function submit() {
     setError(null)
@@ -157,7 +159,11 @@ function Preview({
       </dl>
       <p className="text-sm text-neutral-600">
         {empty
-          ? `No gift can be claimed up to ${formatDay(preview.periodEnd)}.`
+          ? `No gift can be claimed up to ${formatDay(preview.periodEnd)}.${
+              preview.adjustments.length > 0
+                ? ` The ${formatPence(totals.adjustment)} to pay back to HMRC goes into the next claim with a gift in it.`
+                : ''
+            }`
           : preview.claims > 1
             ? `This makes ${preview.claims} claims, oldest gifts first: HMRC takes at most 1,000 gifts per claim.`
             : 'This makes one claim, a draft until you mark it ready.'}{' '}
@@ -200,7 +206,7 @@ function Preview({
           <h2 className="font-medium">Paid back to HMRC</h2>
           <p className="text-sm text-neutral-600">
             Gifts an earlier claim took, voided since: the tax on them comes off
-            this claim.
+            {empty ? ' the next claim with a gift in it.' : ' this claim.'}
           </p>
           <ul className="divide-y divide-neutral-200 rounded border border-neutral-200 bg-white text-sm">
             {preview.adjustments.map((a) => (

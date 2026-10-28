@@ -178,9 +178,10 @@ export function useClaims(enabled = true): ClaimRead<Array<ClaimSummary>> {
 
 /**
  * What a claim up to `periodEnd` would take now; `enabled` false until
- * a date is chosen. Refetched only on request ("Refresh", after fixing
- * an excluded gift) and when a claim changes: the create checks the
- * totals shown against what is eligible then (`preview_changed`).
+ * a date is chosen. Refetched on request ("Refresh", after fixing an
+ * excluded gift), when the page opens again, and when a claim changes:
+ * the create checks the totals shown against what is eligible then
+ * (`preview_changed`).
  */
 export function useClaimPreview(
   periodEnd: string,
@@ -190,6 +191,9 @@ export function useClaimPreview(
   const q = useQuery({
     queryKey: keys.claimPreview(slug, periodEnd),
     enabled,
+    // Dropped once nothing shows it: coming back (from fixing a gift
+    // left out) reads it afresh, never the preview as it was left.
+    gcTime: 0,
     ...noRetry,
     queryFn: async () =>
       previewFromWire(

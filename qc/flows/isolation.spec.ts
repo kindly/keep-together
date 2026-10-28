@@ -41,8 +41,13 @@ test.describe('isolation', () => {
   })
 
   test("B's settings are not A's to open", async ({ page, users }) => {
-    route('/t/$slug', '/t/$slug/settings', '/t/$slug/settings/groups')
-    for (const tab of ['settings', 'settings/groups']) {
+    route(
+      '/t/$slug',
+      '/t/$slug/settings',
+      '/t/$slug/settings/groups',
+      '/t/$slug/settings/hmrc',
+    )
+    for (const tab of ['settings', 'settings/groups', 'settings/hmrc']) {
       await page.goto(`/t/${users.b.slug}/${tab}`)
       await expect(
         page.getByText(`No group called “${users.b.slug}” that you belong to.`),

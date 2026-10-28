@@ -8,7 +8,13 @@ import { ChevronDownIcon, MenuIcon, XIcon } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { FEATURES, useAuthState, useSignOut } from '../lib/data'
 import { useTenant } from '../lib/tenant'
-import { DONATIONS, GiftLink, RecordGiftAction, useDonations } from './gift-nav'
+import {
+  DONATIONS,
+  GiftAidLink,
+  GiftLink,
+  RecordGiftAction,
+  useDonations,
+} from './gift-nav'
 import {
   Sheet,
   SheetClose,
@@ -83,6 +89,7 @@ export function MobileNav() {
               Contacts
             </Link>
             {FEATURES.gifts && <Donations follow={follow} />}
+            <GiftAidLink className={item} {...follow} />
             {FEATURES.settings && (
               <Link
                 to="/t/$slug/settings"

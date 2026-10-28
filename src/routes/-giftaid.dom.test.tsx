@@ -57,6 +57,7 @@ const create = vi.fn()
 const step = vi.fn()
 const saveDetails = vi.fn()
 const download = vi.fn()
+const stepUpCall = vi.fn()
 let role: 'admin' | 'staff' = 'admin'
 vi.mock('../lib/data', () => ({
   useClaims: () => claims,
@@ -68,7 +69,7 @@ vi.mock('../lib/data', () => ({
   useSaveHmrcDetails: () => saveDetails,
   downloadClaim: (...a: Array<unknown>) => download(...a),
   useAuthState: () => ({ method: 'totp' }),
-  useSignInSteps: () => ({}),
+  useSignInSteps: () => ({ stepUp: stepUpCall }),
 }))
 vi.mock('../components/source-code-picker', () => ({
   localToday: () => '2026-10-28',
@@ -161,7 +162,7 @@ beforeEach(() => {
   preview = Object.assign(read(makePreview()), { fetching: false })
   claim = read<Claim | null>(makeClaim())
   details = read<HmrcDetailsView>(undefined)
-  for (const f of [create, step, saveDetails, download, navigate])
+  for (const f of [create, step, saveDetails, download, navigate, stepUpCall])
     f.mockReset().mockResolvedValue(undefined)
   el = document.createElement('div')
   document.body.append(el)
@@ -349,7 +350,7 @@ test('a changed preview is refused in the server’s words and read again', asyn
 
 test('nothing to claim: said, and Create is off', async () => {
   preview = Object.assign(
-    read(makePreview({ lines: [], totals: totals({ lines: 0 }) })),
+    read(makePreview({ lines: [], totals: totals({ lines: 0 }), claims: 0 })),
     { fetching: false },
   )
   await page(import('./t.$slug.giftaid.new'))
@@ -576,6 +577,7 @@ test('HMRC details: the form shows them and their warnings, and saves against th
       hmrcReference: 'nope',
     }),
   )
+  saveDetails.mockResolvedValue({ id: 'h', counter: 3 })
   await page(import('./t.$slug.settings.hmrc'))
   expect(
     el.querySelector('[data-testid="hmrc-warnings"]')?.textContent,
@@ -626,4 +628,156 @@ test('HMRC details are for admins', async () => {
     'The group’s HMRC details are for its admins.',
   )
   expect(el.querySelector('form')).toBeNull()
+})
+
+// ── review round (gaur): step-up retries, counts, merge ───────────────────
+
+const stepUpDialog = () =>
+  el.querySelector<HTMLElement>('[aria-label="Confirm it\'s you"]')
+
+/** Fill in "Confirm it's you" and confirm. */
+async function confirmItsYou() {
+  const dialog = stepUpDialog()!
+  const stepForm = dialog.querySelector('form')!
+  await type(stepForm.querySelector('input[name="password"]')!, 'pw')
+  await type(stepForm.querySelector('input[name="code"]')!, '123456')
+  await act(async () => stepForm.requestSubmit())
+  await act(async () => {})
+}
+
+test('a create retried after a step-up shows its refusal, and reads the preview again', async () => {
+  create
+    .mockRejectedValueOnce(new RustApiError(403, { kind: 'step_up_required' }))
+    .mockRejectedValueOnce(
+      rejected(
+        'preview_changed',
+        'The eligible gifts changed since the preview: check it again',
+      ),
+    )
+  await page(import('./t.$slug.giftaid.new'))
+  await click(button(el, 'Create claim')!)
+  // Waiting on the step-up: Create can't be pressed again meanwhile.
+  expect(button(el, 'Create claim')!.disabled).toBe(true)
+  await confirmItsYou()
+  expect(stepUpCall).toHaveBeenCalledWith('pw', '123456')
+  expect(create).toHaveBeenCalledTimes(2)
+  expect(stepUpDialog()).toBeNull()
+  expect(alert()).toBe(
+    'The eligible gifts changed since the preview: check it again',
+  )
+  expect(preview.refetch).toHaveBeenCalledOnce()
+  expect(button(el, 'Create claim')!.disabled).toBe(false)
+})
+
+test('a step retried after a step-up shows its refusal (voided gifts)', async () => {
+  step
+    .mockRejectedValueOnce(new RustApiError(403, { kind: 'step_up_required' }))
+    .mockRejectedValueOnce(
+      rejected(
+        'voided_gifts',
+        "1 of this claim's gifts was voided since it was made",
+      ),
+    )
+  await page(import('./t.$slug.giftaid.$claimId'))
+  await click(button(el, 'Mark ready')!)
+  await click(
+    button(document.querySelector('[role="alertdialog"]')!, 'Mark ready')!,
+  )
+  await confirmItsYou()
+  expect(step).toHaveBeenCalledTimes(2)
+  expect(alert()).toContain('was voided since it was made')
+})
+
+test('cancelling a step-up leaves the page as it was, buttons back on', async () => {
+  create.mockRejectedValueOnce(
+    new RustApiError(403, { kind: 'step_up_required' }),
+  )
+  await page(import('./t.$slug.giftaid.new'))
+  await click(button(el, 'Create claim')!)
+  await click(button(stepUpDialog()!, 'Cancel')!)
+  expect(stepUpDialog()).toBeNull()
+  expect(alert()).toBeUndefined()
+  expect(create).toHaveBeenCalledOnce()
+  expect(button(el, 'Create claim')!.disabled).toBe(false)
+})
+
+test('HMRC details: the step-up is its own form, and Confirm saves once', async () => {
+  details = read(view())
+  saveDetails
+    .mockRejectedValueOnce(new RustApiError(403, { kind: 'step_up_required' }))
+    .mockResolvedValueOnce({ id: 'h', counter: 3 })
+  await page(import('./t.$slug.settings.hmrc'))
+  const form = el.querySelector<HTMLFormElement>(
+    'form[aria-label="HMRC details"]',
+  )!
+  await act(async () => form.requestSubmit())
+  const dialog = stepUpDialog()!
+  // Not nested: Confirm submits only the step-up.
+  expect(form.contains(dialog)).toBe(false)
+  expect(
+    dialog.querySelector('form')!.parentElement!.closest('form'),
+  ).toBeNull()
+  await confirmItsYou()
+  expect(saveDetails).toHaveBeenCalledTimes(2)
+  expect(el.textContent).toContain('Saved.')
+  expect(alert()).toBeUndefined()
+})
+
+test('HMRC details: another admin’s save merges in under what is being typed', async () => {
+  details = read(view())
+  await page(import('./t.$slug.settings.hmrc'))
+  const form = () =>
+    el.querySelector<HTMLFormElement>('form[aria-label="HMRC details"]')!
+  await type(labelled(form(), 'HMRC charity reference'), 'CD67890')
+  // Their save comes in by the event stream: a new version, a new phone.
+  details = read(view({ version: 3, officialPhone: '0300 123 4567' }))
+  await page(import('./t.$slug.settings.hmrc'))
+  expect(labelled(form(), 'HMRC charity reference').value).toBe('CD67890')
+  expect(labelled(form(), 'Phone').value).toBe('0300 123 4567')
+  expect(
+    el.querySelector('[data-testid="hmrc-merged"]')?.textContent,
+  ).toContain('Someone else saved these details while you were editing (phone)')
+  saveDetails.mockResolvedValue({ id: 'h', counter: 4 })
+  await act(async () => form().requestSubmit())
+  expect(saveDetails).toHaveBeenCalledWith(
+    3,
+    expect.objectContaining({
+      hmrcReference: 'CD67890',
+      officialPhone: '0300 123 4567',
+    }),
+  )
+})
+
+test('only gifts paid back, none to claim: no claim, said plainly, Create off', async () => {
+  preview = Object.assign(
+    read(
+      makePreview({
+        lines: [],
+        excluded: [],
+        claims: 0,
+        totals: totals({
+          lines: 0,
+          donations: 0n,
+          reclaim: 0n,
+          adjustment: 125n,
+          net: -125n,
+        }),
+        adjustments: [
+          {
+            giftId: 'g0',
+            originalClaimId: 'c0',
+            amount: 125n,
+            reason: 'Entered twice',
+          },
+        ],
+      }),
+    ),
+    { fetching: false },
+  )
+  await page(import('./t.$slug.giftaid.new'))
+  expect(el.textContent).toContain(
+    'No gift can be claimed up to 28 Oct 2026. The £1.25 to pay back to HMRC goes into the next claim with a gift in it.',
+  )
+  expect(el.textContent).not.toContain('This makes one claim')
+  expect(button(el, 'Create claim')!.disabled).toBe(true)
 })

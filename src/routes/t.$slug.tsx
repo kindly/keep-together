@@ -18,7 +18,7 @@ import {
   useOrgEvents,
   useSignOut,
 } from '../lib/data'
-import { DonationsMenu } from '../components/gift-nav'
+import { DonationsMenu, GiftAidLink } from '../components/gift-nav'
 import { MobileNav } from '../components/mobile-nav'
 
 export const Route = createFileRoute('/t/$slug')({ component: TenantLayout })
@@ -90,18 +90,12 @@ function Resolved({ slug }: { slug: string }) {
               Contacts
             </Link>
             {FEATURES.gifts && <DonationsMenu />}
-            {FEATURES.giftAidClaims && tenant.role === 'admin' && (
-              <Link
-                to="/t/$slug/giftaid"
-                params={{ slug }}
-                className="text-sm whitespace-nowrap hover:underline"
-                activeProps={{
-                  className: 'text-sm whitespace-nowrap font-medium underline',
-                }}
-              >
-                Gift Aid
-              </Link>
-            )}
+            <GiftAidLink
+              className="text-sm whitespace-nowrap hover:underline"
+              activeProps={{
+                className: 'text-sm whitespace-nowrap font-medium underline',
+              }}
+            />
             {FEATURES.settings ? (
               <Link
                 to="/t/$slug/settings"

@@ -16,6 +16,7 @@ import {
   downloadClaim,
   previewFromWire,
   useClaim,
+  useClaimPreview,
   useClaimStep,
   useCreateClaims,
 } from './claims'
@@ -341,4 +342,14 @@ test('a refused download is the server’s refusal, not a file', async () => {
 test('the file name comes from Content-Disposition, else a fallback', () => {
   expect(attachmentName('attachment; filename="a.xml"', 'b')).toBe('a.xml')
   expect(attachmentName(null, 'b')).toBe('b')
+})
+
+test('a preview nothing shows is dropped: coming back reads it afresh', async () => {
+  answers.push(json(200, wirePreview))
+  const read = mount(() => useClaimPreview('2026-10-28'))
+  await until(() => read().data !== undefined)
+  expect(read().data?.totals.reclaim).toBe(500n)
+  act(() => root.render(null))
+  await settle()
+  expect(qc.getQueryData(keys.claimPreview(SLUG, '2026-10-28'))).toBeUndefined()
 })
