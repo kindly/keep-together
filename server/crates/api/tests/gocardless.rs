@@ -272,6 +272,19 @@ impl T {
         out
     }
 
+    /// A fake control (`simulate/…`) that answers no webhook.
+    async fn fake_post(&self, path: &str, body: Value) -> Value {
+        let res = self
+            .http
+            .post(format!("{}/api/fake-gocardless/simulate/{path}", self.base))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+        res.json().await.unwrap()
+    }
+
     /// Wait out any run the webhook started, then handle what's left.
     async fn settle(&self) {
         process::process_pending(self.w.store.clone(), self.gc.clone())
@@ -1099,4 +1112,53 @@ async fn a_staff_void_outlives_a_cancelled_chargeback_and_returned_money_stays_v
         .await;
     t.settle().await;
     assert_eq!(t.gift(&gift2).await["status"], "completed");
+}
+
+/// Codex 4 and reviewer L3: a mandate's events can overtake its billing
+/// request's. A cancellation that arrives first still ends the regular
+/// gift (identifying a mandate never makes a subscription), the later
+/// "fulfilled" makes none, and identifying it costs one mandate lookup,
+/// not one per pending regular gift.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mandate_cancelled_before_its_billing_request_is_fulfilled_still_ends_the_gift() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    for _ in 0..3 {
+        t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    }
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.fake_post("webhooks/hold", json!({})).await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    let br = t
+        .fake
+        .resource(v["billingRequestId"].as_str().unwrap())
+        .unwrap();
+    let mandate = br["links"]["mandate_request_mandate"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.fake_post(&format!("mandates/{mandate}/cancel"), json!({}))
+        .await;
+    let before = t.fake.calls("GET billing_requests");
+    t.simulate("webhooks/release?reverse=true").await;
+    t.settle().await;
+
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["status"], "cancelled", "{v}");
+    assert_eq!(v["mandateId"], mandate.as_str());
+    assert_eq!(v["subscriptionId"], Value::Null);
+    assert!(t.fake.ids("subscriptions").is_empty());
+    assert!(
+        t.fake.calls("GET billing_requests") - before <= 1,
+        "no billing request lookup per pending regular gift"
+    );
+    assert!(
+        t.events()
+            .iter()
+            .all(|(_, _, outcome)| matches!(outcome.as_deref(), Some("done" | "ignored"))),
+        "{:?}",
+        t.events()
+    );
 }

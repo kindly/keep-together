@@ -67,6 +67,22 @@ struct World {
     idempotency: HashMap<(String, String), String>,
     /// Every webhook body delivered, oldest first, and whether it landed.
     deliveries: Vec<(Value, bool)>,
+    /// While set, events wait here instead of being delivered
+    /// (`simulate/webhooks/hold`), to be released in or out of order.
+    held: Option<Vec<Value>>,
+    /// The next `calls` API requests whose path holds `path` answer
+    /// `status` (`simulate/outage`).
+    outage: Option<Outage>,
+    /// API requests answered, by `"<METHOD> <resource>"`.
+    calls: HashMap<String, usize>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct Outage {
+    calls: usize,
+    status: u16,
+    #[serde(default)]
+    path: String,
 }
 
 impl World {
@@ -130,6 +146,12 @@ impl Fake {
         ids
     }
 
+    /// API requests answered so far as `"<METHOD> <resource>"` (e.g.
+    /// `"GET billing_requests"`).
+    pub fn calls(&self, what: &str) -> usize {
+        self.world().calls.get(what).copied().unwrap_or(0)
+    }
+
     /// Every webhook body delivered so far.
     pub fn deliveries(&self) -> Vec<(Value, bool)> {
         self.world().deliveries.clone()
@@ -165,6 +187,10 @@ impl Fake {
     /// Deliver `events` in one signed webhook; whether it got a 2xx.
     pub async fn deliver(&self, events: Vec<Value>) -> bool {
         if events.is_empty() {
+            return true;
+        }
+        if let Some(held) = self.world().held.as_mut() {
+            held.extend(events);
             return true;
         }
         let body = json!({ "events": events });
@@ -265,23 +291,30 @@ fn caller(fake: &Fake, headers: &HeaderMap) -> Result<String, Response> {
 }
 
 pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
+    let api = Router::new()
+        .route("/billing_requests", post(create_billing_request))
+        .route("/billing_requests/{id}", get(get_resource))
+        .route(
+            "/billing_requests/{id}/actions/cancel",
+            post(cancel_billing_request),
+        )
+        .route("/billing_request_flows", post(create_flow))
+        .route("/subscriptions", post(create_subscription))
+        .route("/subscriptions/{id}", get(get_resource))
+        .route(
+            "/subscriptions/{id}/actions/cancel",
+            post(cancel_subscription),
+        )
+        .route("/mandates/{id}", get(get_resource))
+        .route("/mandates/{id}/actions/cancel", post(cancel_mandate))
+        .route("/payments/{id}", get(get_resource))
+        .layer(axum::middleware::from_fn_with_state(fake.clone(), gate));
     Router::new()
         .route("/connect/oauth/authorize", get(authorize))
         .route("/connect/oauth/decide", post(decide))
         .route("/connect/oauth/access_token", post(access_token))
         .route("/connect/oauth/revoke", post(revoke))
-        .route("/api/billing_requests", post(create_billing_request))
-        .route("/api/billing_requests/{id}", get(get_resource))
-        .route(
-            "/api/billing_requests/{id}/actions/cancel",
-            post(cancel_billing_request),
-        )
-        .route("/api/billing_request_flows", post(create_flow))
-        .route("/api/subscriptions", post(create_subscription))
-        .route("/api/subscriptions/{id}", get(get_resource))
-        .route("/api/mandates/{id}", get(get_resource))
-        .route("/api/mandates/{id}/actions/cancel", post(cancel_mandate))
-        .route("/api/payments/{id}", get(get_resource))
+        .nest("/api", api)
         .route("/flow/{id}", get(flow_page))
         .route("/flow/{id}/complete", post(complete_flow))
         .route("/simulate/mandates/{id}/{action}", post(simulate_mandate))
@@ -294,7 +327,119 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
             post(simulate_payment_action),
         )
         .route("/simulate/webhooks", get(webhooks))
+        .route("/simulate/webhooks/hold", post(hold_webhooks))
+        .route("/simulate/webhooks/release", post(release_webhooks))
+        .route("/simulate/outage", post(outage))
         .with_state(fake)
+}
+
+/// Every API request: counted, and answered by an outage while one lasts.
+async fn gate(
+    State(fake): State<Arc<Fake>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path().to_owned();
+    let resource = path.trim_start_matches('/').split('/').next().unwrap_or("");
+    let failing = {
+        let mut w = fake.world();
+        *w.calls
+            .entry(format!("{} {resource}", req.method()))
+            .or_default() += 1;
+        match w.outage.as_mut() {
+            Some(o) if o.calls > 0 && path.contains(&o.path) => {
+                o.calls -= 1;
+                Some(o.status)
+            }
+            _ => None,
+        }
+    };
+    match failing {
+        Some(status) => error(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+            "gocardless",
+            "simulated_outage",
+            "A simulated outage",
+            json!({}),
+        ),
+        None => next.run(req).await,
+    }
+}
+
+/// `POST simulate/outage {calls, status, path?}`: the next `calls` API
+/// requests (whose path holds `path`) answer `status`; `calls: 0` ends it.
+async fn outage(State(fake): State<Arc<Fake>>, Json(o): Json<Outage>) -> Response {
+    fake.world().outage = Some(o);
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// `POST simulate/webhooks/hold`: keep events back from now on.
+async fn hold_webhooks(State(fake): State<Arc<Fake>>) -> Response {
+    fake.world().held.get_or_insert_with(Vec::new);
+    Json(json!({ "ok": true })).into_response()
+}
+
+#[derive(Deserialize)]
+struct Release {
+    #[serde(default)]
+    reverse: bool,
+}
+
+/// `POST simulate/webhooks/release?reverse`: deliver what was held, in
+/// one batch, in order or reversed, and stop holding.
+async fn release_webhooks(State(fake): State<Arc<Fake>>, Query(r): Query<Release>) -> Response {
+    let mut events = fake.world().held.take().unwrap_or_default();
+    if r.reverse {
+        events.reverse();
+    }
+    let n = events.len();
+    let delivered = fake.deliver(events).await;
+    simulated(delivered, json!({ "events": n }))
+}
+
+async fn cancel_subscription(
+    State(fake): State<Arc<Fake>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let org = match caller(&fake, &headers) {
+        Ok(org) => org,
+        Err(r) => return r,
+    };
+    let event = {
+        let mut w = fake.world();
+        let Some(r) = w
+            .resources
+            .get_mut(&id)
+            .filter(|r| r.org == org && r.kind == "subscriptions")
+        else {
+            return not_found();
+        };
+        if r.body["status"] == "cancelled" {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_state",
+                "subscription_already_cancelled",
+                "The subscription is already cancelled",
+                json!({}),
+            );
+        }
+        r.body["status"] = json!("cancelled");
+        let mut e = Fake::event(
+            &mut w,
+            &org,
+            "subscriptions",
+            "cancelled",
+            json!({ "subscription": id }),
+            "subscription_cancelled",
+            "The subscription was cancelled at your request.",
+        );
+        e["details"]["origin"] = json!("api");
+        e
+    };
+    let body = fake.resource(&id).unwrap_or_default();
+    fake.deliver(vec![event]).await;
+    Json(json!({ "subscriptions": body })).into_response()
 }
 
 fn page(title: &str, body: &str) -> Html<String> {
@@ -498,7 +643,8 @@ async fn create_billing_request(
         "status": "pending",
         "mandate_request": {
             "scheme": req.pointer("/mandate_request/scheme").cloned().unwrap_or(json!("bacs")),
-            "currency": "GBP"
+            "currency": "GBP",
+            "metadata": req.pointer("/mandate_request/metadata").cloned().unwrap_or(json!({}))
         },
         "metadata": req.get("metadata").cloned().unwrap_or(json!({})),
         "links": {}
@@ -721,6 +867,11 @@ async fn complete_flow(
                 }),
             },
         );
+        let metadata = w
+            .resources
+            .get(&br)
+            .and_then(|r| r.body.pointer("/mandate_request/metadata").cloned())
+            .unwrap_or(json!({}));
         w.resources.insert(
             mandate.clone(),
             Resource {
@@ -729,6 +880,8 @@ async fn complete_flow(
                 body: json!({
                     "id": mandate, "status": "pending_submission", "scheme": "bacs",
                     "next_possible_charge_date": today_plus(5),
+                    // GoCardless copies the mandate request's metadata.
+                    "metadata": metadata,
                     "links": { "customer": customer }
                 }),
             },

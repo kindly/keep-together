@@ -15,8 +15,9 @@
 //!   mandate yet is cancelled;
 //! - mandate `active`: the regular gift is active; `failed`/`blocked`: it
 //!   failed; `cancelled`/`expired`: it ended; `replaced`: it follows the
-//!   new mandate. A mandate we don't know yet is looked for among pending
-//!   billing requests (events can overtake one another);
+//!   new mandate. A mandate we don't know yet is identified by the
+//!   metadata GoCardless copies to it from our billing request (events
+//!   can overtake one another), never by making its subscription;
 //! - subscription `cancelled`/`finished`: it ended;
 //! - payment (any action): the payment is fetched and its *current*
 //!   status recorded ([`giving::regular::record_payment`]): a gift only
@@ -309,7 +310,7 @@ async fn handle(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str, 
             let Some(found) = org.facts_by("billing_request_id", br).await? else {
                 return Ok("unknown_resource");
             };
-            link_mandate(org, gc, found, None).await
+            fulfilled(org, gc, found).await
         }
         ("billing_requests", "cancelled") => {
             let br = ev.need("billing_request")?;
@@ -326,7 +327,7 @@ async fn handle(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str, 
         }
         ("mandates", action) => {
             let md = ev.need("mandate")?;
-            let Some(found) = resolve_mandate(org, gc, md).await? else {
+            let Some(found) = identify_mandate(org, gc, md).await? else {
                 return Ok("unknown_resource");
             };
             match action {
@@ -386,10 +387,14 @@ async fn end(
     Ok("done")
 }
 
-/// The regular gift on mandate `md`: by its id, else among pending ones
-/// whose billing request turns out to have made it (a mandate event that
-/// overtook the billing request's).
-async fn resolve_mandate(
+/// The regular gift on mandate `md`, by its id here; the first time we
+/// hear of the mandate (its event overtook the billing request's), by the
+/// regular gift its metadata names (one `GET mandates/{id}`: the billing
+/// request's mandate request carries our id, and GoCardless copies it to
+/// the mandate), which is then linked to it. Only identifies: never
+/// makes a subscription, so a terminal mandate event always reaches the
+/// regular gift's status, whatever came first.
+async fn identify_mandate(
     org: &Org,
     gc: &GoCardless,
     md: &str,
@@ -400,28 +405,33 @@ async fn resolve_mandate(
     let Some(token) = org.token.as_deref() else {
         return Ok(None);
     };
-    let waiting: Vec<String> = org
-        .read(|c| {
-            c.prepare(
-                "SELECT id FROM regular_gifts WHERE status = 'pending'
-                     AND billing_request_id IS NOT NULL AND mandate_id IS NULL",
-            )?
-            .query_map([], |r| r.get(0))?
-            .collect()
-        })
-        .await?;
-    for id in waiting {
-        let Some(found) = org.facts_by("id", &id).await? else {
-            continue;
-        };
-        let br = found.mandate.billing_request_id.clone().unwrap_or_default();
-        let request = gc.api.get_billing_request(token, &br).await?;
-        if request.mandate.as_deref() == Some(md) {
-            link_mandate(org, gc, found, Some(md.to_owned())).await?;
-            return org.facts_by("mandate_id", md).await;
-        }
+    let mandate = gc.api.get_mandate(token, md).await?;
+    let Some(id) = mandate.regular_gift else {
+        return Ok(None);
+    };
+    let Some(found) = org.facts_by("id", &id).await? else {
+        return Ok(None);
+    };
+    if found.mandate.mandate_id.is_some() {
+        // Linked to another mandate already ("replaced" moves it).
+        return Ok(None);
     }
-    Ok(None)
+    link(org, &id, md).await?;
+    org.facts_by("id", &id).await
+}
+
+/// Record `md` as the regular gift's mandate, unless it has one.
+async fn link(org: &Org, id: &str, md: &str) -> Result<(), Failed> {
+    let (id, md) = (id.to_owned(), md.to_owned());
+    org.write(move |ctx| {
+        update_mandate(ctx, &id, None, Source::System, None, |m| {
+            if m.mandate_id.is_none() {
+                m.mandate_id = Some(md)
+            }
+        })
+    })
+    .await?;
+    Ok(())
 }
 
 const MONTHS: [&str; 12] = [
@@ -439,38 +449,35 @@ const MONTHS: [&str; 12] = [
     "december",
 ];
 
-/// Link the mandate the regular gift's billing request made (`mandate`,
-/// or asked of GoCardless), then make its subscription. Each step only
-/// once, so a repeat does nothing.
-async fn link_mandate(
+/// A billing request fulfilled: link the mandate its mandate request made
+/// (asked of GoCardless), then make the subscription.
+async fn fulfilled(
     org: &Org,
     gc: &GoCardless,
     found: RegularFacts,
-    mandate: Option<String>,
 ) -> Result<&'static str, Failed> {
-    let id = found.id.clone();
-    let mandate = match (found.mandate.mandate_id.clone(), mandate) {
-        (Some(held), _) => held,
-        (None, Some(md)) => md,
-        (None, None) => {
-            let br = found.mandate.billing_request_id.clone().unwrap_or_default();
-            let request = gc.api.get_billing_request(org.token()?, &br).await?;
-            match request.mandate {
-                Some(md) => md,
-                None => return Ok("ignored"),
-            }
-        }
-    };
     if found.mandate.mandate_id.is_none() {
-        let (rid, md) = (id.clone(), mandate.clone());
-        org.write(move |ctx| {
-            update_mandate(ctx, &rid, None, Source::System, None, |m| {
-                m.mandate_id = Some(md)
-            })
-        })
-        .await?;
+        let br = found.mandate.billing_request_id.clone().unwrap_or_default();
+        let request = gc.api.get_billing_request(org.token()?, &br).await?;
+        let Some(md) = request.mandate else {
+            return Ok("ignored");
+        };
+        link(org, &found.id, &md).await?;
     }
-    if found.mandate.subscription_id.is_some() || found.mandate.status().is_ended() {
+    ensure_subscription(org, gc, &found.id).await
+}
+
+/// Make the regular gift's subscription if it has a mandate, none yet,
+/// and hasn't ended. Read fresh, not from the caller's snapshot; created
+/// once whatever the retries (the idempotency key is the regular gift's).
+async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'static str, Failed> {
+    let Some(found) = org.facts_by("id", id).await? else {
+        return Ok("unknown_resource");
+    };
+    let (Some(mandate), None) = (&found.mandate.mandate_id, &found.mandate.subscription_id) else {
+        return Ok("done");
+    };
+    if found.mandate.status().is_ended() {
         return Ok("done");
     }
     let t = &found.terms;
@@ -480,7 +487,7 @@ async fn link_mandate(
         .create_subscription(
             org.token()?,
             &NewSubscription {
-                mandate: &mandate,
+                mandate,
                 amount: t.amount,
                 interval_unit: t.frequency.as_str(),
                 day_of_month: t.day_of_month,
@@ -488,10 +495,11 @@ async fn link_mandate(
                     .month
                     .and_then(|m| MONTHS.get(usize::from(m).wrapping_sub(1)).copied()),
                 name: &name,
-                regular_gift: &id,
+                regular_gift: id,
             },
         )
         .await?;
+    let id = id.to_owned();
     org.write(move |ctx| {
         update_mandate(ctx, &id, None, Source::System, None, |m| {
             m.subscription_id = Some(subscription)
@@ -512,7 +520,7 @@ async fn payment(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str,
     if found.is_none()
         && let Some(md) = &p.mandate
     {
-        found = resolve_mandate(org, gc, md).await?;
+        found = identify_mandate(org, gc, md).await?;
     }
     let Some(found) = found else {
         return Ok("unknown_resource");

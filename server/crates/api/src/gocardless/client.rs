@@ -133,6 +133,14 @@ pub struct Flow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mandate {
+    pub id: String,
+    pub status: String,
+    /// `metadata.keep_regular_gift`: ours, if we made it.
+    pub regular_gift: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payment {
     pub id: String,
     pub amount: i64,
@@ -351,7 +359,10 @@ impl Api {
 
     // ── billing requests ───────────────────────────────────────────────────
 
-    /// A mandate-only billing request (Bacs, GBP) for our regular gift.
+    /// A mandate-only billing request (Bacs, GBP) for our regular gift. Our
+    /// id rides as metadata on the request and on its mandate request
+    /// (GoCardless copies that to the mandate it makes), so a mandate
+    /// event names its regular gift with one `GET mandates/{id}`.
     pub async fn create_billing_request(
         &self,
         token: &str,
@@ -359,7 +370,11 @@ impl Api {
     ) -> Result<BillingRequest, CallError> {
         let body = json!({
             "billing_requests": {
-                "mandate_request": { "scheme": "bacs", "currency": "GBP" },
+                "mandate_request": {
+                    "scheme": "bacs",
+                    "currency": "GBP",
+                    "metadata": { "keep_regular_gift": regular_gift }
+                },
                 "metadata": { "keep_regular_gift": regular_gift }
             }
         });
@@ -492,6 +507,47 @@ impl Api {
         {
             Ok(_) => Ok(()),
             Err(CallError::Refused { status: 422, .. }) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// A mandate's status and the regular gift its metadata names.
+    pub async fn get_mandate(&self, token: &str, id: &str) -> Result<Mandate, CallError> {
+        let v = self
+            .call(Method::GET, token, &["mandates", id], None, None)
+            .await?;
+        let m = v.get("mandates").unwrap_or(&Value::Null);
+        Ok(Mandate {
+            id: m
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| CallError::Malformed("mandate id".into()))?
+                .to_owned(),
+            status: m
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            regular_gift: m
+                .pointer("/metadata/keep_regular_gift")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
+    }
+
+    /// Cancel a subscription (one already cancelled is fine).
+    pub async fn cancel_subscription(&self, token: &str, id: &str) -> Result<(), CallError> {
+        match self
+            .call(
+                Method::POST,
+                token,
+                &["subscriptions", id, "actions", "cancel"],
+                Some(json!({ "data": {} })),
+                None,
+            )
+            .await
+        {
+            Ok(_) | Err(CallError::Refused { status: 422, .. }) => Ok(()),
             Err(e) => Err(e),
         }
     }
