@@ -4,12 +4,12 @@
 # Layout under $PREVIEW (KEEP_PREVIEW_HOME, default
 # ~/.local/share/keep-preview):
 #   src/              a clone of the GitHub repo, detached at origin/main;
-#                     builds happen here (rs/target and node_modules stay
+#                     builds happen here (server/target and node_modules stay
 #                     between updates)
 #   releases/<sha>/   api + dist/ of one built commit; the last 3 are kept
 #   current           symlink to the release the service runs
 #   data/             KEEP_DATA_DIR (data.prev: the one before the last reseed)
-#   bin/              these scripts, copied from the running release's src
+#   bin/              these scripts, from the last commit update.sh took up
 #   preview.env       the api's settings and the scripts' (KEEP_PREVIEW_*)
 #   secrets.env       0600: auth keys and the riverside sign-ins
 #   state             last update: when, commit, result
@@ -89,7 +89,7 @@ relaxed_settings() {
 }
 
 # The preview's address lookup is the fake provider (fixed addresses, no
-# network, no credit spent: rs/crates/api/src/address/fake.rs). An install
+# network, no credit spent: server/crates/api/src/address/fake.rs). An install
 # from before it gains KEEP_ADDRESS_LOOKUP=fake once; one already there
 # is the human's choice, kept. Prints what it changed.
 lookup_settings() {

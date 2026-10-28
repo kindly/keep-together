@@ -2,7 +2,7 @@
 # Set the platform's Ideal Postcodes key on keep-<env> (plan
 # address-lookup.sv, step L3). The human runs it; the api reads the key as
 # KEEP_IDEAL_POSTCODES_KEY when KEEP_ADDRESS_LOOKUP=ideal
-# (rs/crates/api/src/address/; docs/ops.md "Address lookup").
+# (server/crates/api/src/address/; docs/ops.md "Address lookup").
 #
 #   fly auth login
 #   scripts/fly/address-lookup-key.sh staging     # or prod

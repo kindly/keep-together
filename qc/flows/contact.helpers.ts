@@ -18,7 +18,7 @@ export const LIST_ROUTE = { type: 'route', description: '/t/$slug/contacts/' }
  * free test postcode, so the nightly on staging spends no credit with
  * `KEEP_ADDRESS_LOOKUP=ideal` (to be confirmed with them: plan step L0);
  * the `fake` provider answers it with three addresses
- * (rs/crates/api/src/address/fake.rs).
+ * (server/crates/api/src/address/fake.rs).
  */
 export const QC_POSTCODE = 'ID1 1QD'
 

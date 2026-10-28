@@ -2,7 +2,7 @@
 # One bench run: a fresh data dir, the api on KEEP_PORT (8800), optional
 # machine load, the bench, then the api stopped. From the repo root:
 #   scripts/perf-stall/run.sh <api-binary> <out-dir> [--load] [bench args…]
-# --load runs `cargo build --release` of rs/ into <out-dir>/load-target
+# --load runs `cargo build --release` of server/ into <out-dir>/load-target
 # (a cold target dir: real CPU and disk load) for the whole run.
 set -euo pipefail
 api=$1 out=$2
@@ -31,7 +31,7 @@ for _ in $(seq 50); do
 done
 if ((load)); then
   set -m
-  (cd rs && cargo build --release --target-dir "$out/load-target" >"$out/load.log" 2>&1) &
+  (cd server && cargo build --release --target-dir "$out/load-target" >"$out/load.log" 2>&1) &
   loader=$!
   set +m
 fi

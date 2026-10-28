@@ -2,156 +2,88 @@
 
 Open-source (AGPL-3.0) fundraising CRM for small UK community groups and
 charities: donor records, Direct Debit, painless HMRC Gift Aid. Rebuild of
-[ngo-go](../ngo-go) on a fully managed stack — Convex backend, React SPA,
-nothing of ours runs on a server. Why: `docs/decisions/0017-*.md`.
+[ngo-go](../ngo-go): a Rust api (axum + rusqlite, **one SQLite file per
+organisation**) serving a React SPA, on one Fly machine with Litestream
+and hourly snapshots to S3. Why: `docs/decisions/0024-*.md` (and 0017,
+the founding decision it amends).
 
-## Run it
+## Dev loop
 
 ```sh
 pnpm install
-pnpm convex          # first run: logs you into Convex, creates a dev deployment,
-                     # writes .env.local (CONVEX_DEPLOYMENT, VITE_CONVEX_URL),
-                     # pushes functions, generates convex/_generated. Keep it running.
-npx @convex-dev/auth # once per deployment: sets JWT keys + SITE_URL for Convex Auth
-pnpm dev             # Vite on http://localhost:3000
-pnpm check           # typecheck + lint + tests (CI)
-pnpm dev:instance scratch   # another cloud dev deployment: dev/scratch, auth keys set, code pushed
-                            # (to try something against a throwaway backend, claim a
-                            # rehearsal slot instead: see "Rehearsal slots")
-npx convex run platform/devSeed:demoTenant '{"slug":"demo"}'   # a tenant with contacts
-# (dev/demo and dev/preview are taken: see "Manual test instances")
+pnpm dev               # the api and Vite, shared on the tailnet; prints the URL first
+pnpm dev --local       # the same on this machine only
+pnpm dev:reset         # wipe server/data/ and reseed riverside, then as pnpm dev
+pnpm dev:share --off   # remove this checkout's tailnet entry (pnpm dev removes it on exit)
+pnpm check             # clippy + cargo test, then typecheck + lint + vitest (what CI runs)
+pnpm qc                # the Playwright QC suite (qc/README.md)
 ```
 
-## Create a tenant
+`pnpm dev` runs from any checkout (the main one or a worktree):
 
-Groups can't sign up for a tenant in the app; the operator creates each one
-from the CLI. The admin signs up first (any email + password). Before
-you run `create`, check with them that they can sign in. Sign-up is open
-and emails aren't verified yet, so anyone could have registered that
-address first (invitations will close this gap). Then:
+- **The api** (`server/`) is rebuilt and restarted on every save under
+  `server/crates` (a debug build: a couple of seconds). A failed build
+  keeps the last good api running.
+- **Vite** serves the SPA with HMR and proxies `/api` (the SSE stream
+  included) to it.
+- **Ports** come from the checkout's slot n (main = 0, each worktree its
+  own, kept in the main checkout's `.git/keep-dev-slots.json`): api
+  8787 + n, Vite 3000 + n, tailnet https 9100 + n. Several branches run
+  side by side; each URL line names its branch. `KEEP_PORT`,
+  `KEEP_VITE_PORT` and `KEEP_HTTPS_PORT` override them.
+- **The tailnet**: `tailscale serve --bg --https=<9100+n>` in front of
+  Vite (never funnel). The serve config is the machine's, shared with
+  other projects: `pnpm dev` refuses a port that serves something else and
+  only ever removes its own entry. If tailscale asks for rights, run once
+  `sudo tailscale set --operator=$USER`.
+- **Data** is `server/data/` (gitignored), seeded with the riverside
+  group on the first boot and kept across restarts. Sign in as
+  `admin@keep-together.example` (or `staff@…`, `viewer@…`), password
+  `riverside`: the api runs `KEEP_AUTH_POLICY=relaxed` (a password alone),
+  `KEEP_MAIL=log` (codes and links in the terminal) and
+  `KEEP_ADDRESS_LOOKUP=fake`. Set any of them in the environment to
+  change it. Dev auth (`KEEP_DEV_AUTH`) is never on here.
+
+Rust alone: `cargo test`, `cargo clippy --all-targets -- -D warnings` and
+`cargo run -p cli --bin keep -- …` from `server/` (`server/README.md`).
+
+## Create a group
+
+Groups can't sign up in the app; the operator creates each one with
+`keep`, against the data directory (locally `server/data`, on Fly
+`/data` in `fly ssh console`):
 
 ```sh
-npx convex run platform/tenants:create \
-  '{"slug":"anytown-hall","name":"Anytown Village Hall","adminEmail":"jo@example.org"}'
+keep tenant create --slug anytown-hall --name "Anytown Village Hall" --admin-email jo@example.org
+keep auth invite anytown-hall sam@example.org --role staff
+keep sql anytown-hall "SELECT count(*) FROM contacts"     # read-only by construction
 ```
 
-The slug is lowercase letters, digits and hyphens, 3–40 characters, and
-must be unused. `adminEmail` must match an existing user exactly; that
-user becomes the tenant's admin. Add `--prod` (or `--deployment <name>`)
-to target a deployment other than the one in `.env.local`. For a demo
-tenant you can open yourself, pass your email to the seed:
-`platform/devSeed:demoTenant '{"slug":"demo","adminEmail":"you@example.org"}'`.
+## Environments
 
-## Manual test instances
-
-Two cloud dev deployments always run main, seeded with the same world:
-tenant `riverside` ("Riverside Community Trust"), one password user per
-membership role, and 100 generated donors (individuals, organisations,
-households; shared and malformed emails, missing postcodes, archived
-contacts, notes, relationships). The data comes from a fixed random seed,
-so it is identical on both instances and after every reset.
-
-| Instance | Deployment | Browse at |
+| | where | data |
 |---|---|---|
-| demo (for demos) | `dev/demo` = `careful-dolphin-689` | GitHub Pages, built from main (`vars.VITE_CONVEX_URL` = `https://careful-dolphin-689.eu-west-1.convex.cloud`) |
-| preview (fast feedback) | `dev/preview` = `robust-spider-537` | `http://lenovo.tail6804fa.ts.net:4300/` over Tailscale, while `pnpm instances:serve` runs |
+| dev | `pnpm dev`, per checkout | riverside seed, kept |
+| preview | `https://<this machine>.ts.net` (tailnet), main rebuilt every 5 min (`scripts/preview/`) | riverside seed |
+| staging | `staging.keep-together.org.uk` (`keep-staging`, Fly lhr), every push to main | reset to riverside on each deploy |
+| prod | `app.keep-together.org.uk` (`keep-prod`), by hand only | real |
 
-```sh
-pnpm instances:sync           # after every merge, from the main checkout on main:
-                              # push main to both, (re)seed, rebuild dist-preview
-pnpm instances:sync --reset   # wipe both and reseed from scratch (same passwords)
-pnpm instances:sync --only preview   # just one of them
-pnpm instances:serve          # serve dist-preview on this machine's Tailscale IP, port 4300
-```
-
-Sync resets the seeded users' passwords and roles; other data you create
-is kept (the seed only fills in what is missing). It refuses to run from
-a branch other than `main`, with uncommitted changes, or with untracked
-files under `convex/`, `src/` or `public/` (`--any-branch` overrides,
-for working on the script). It runs the Convex CLI and writes to the
-main checkout, so run it outside the Claude sandbox.
-
-- **Sign-ins** are in `.env.test-users.local` in the main checkout (mode
-  600, gitignored): email and password per role. Passwords are generated
-  once and kept across resets. Edit one and sync to change it.
-- **Deploy keys** are in `.env.demo.local` / `.env.preview.local` in the
-  main checkout. Before writing, the sync checks that each key really
-  belongs to `dev/demo` / `dev/preview`. A missing file means the
-  deployment is created (EU, auth keys, deploy key).
-- **Deployment env**: `TEST_SEED_ENABLED=1` allows `platform/testSeed`
-  there and nowhere else. `AUTH_2FA_REQUIRED=0` exempts these instances
-  from staff 2FA once it exists (auth-roles R4).
-- `dist-preview` is a symlink to the newest build in
-  `dist-preview.builds/`; the one before stays until the next sync, so
-  tabs already open keep loading their route chunks.
-- The seed is `convex/platform/testSeed.ts` (users, tenant) and
-  `testSeedData.ts` (the donors). A new membership role is one line in
-  `TEST_USERS`; the next sync mints its password.
-
-## Rehearsal slots
-
-Two fixed dev deployments for trying something against a real, empty
-backend: a migration from an old commit, a seed, a deploy you don't want on
-your own dev. Use them instead of creating a deployment per attempt; the
-Convex CLI can't delete deployments, so throwaways pile up.
-
-| Slot | Deployment | URL |
-|---|---|---|
-| 1 | `dev/rehearsal-1` = `fortunate-pika-201` | `https://fortunate-pika-201.eu-west-1.convex.cloud` |
-| 2 | `dev/rehearsal-2` = `first-newt-648` | `https://first-newt-648.eu-west-1.convex.cloud` |
-
-```sh
-pnpm rehearsal:claim [--slot N]    # take a free slot and wipe its data
-pnpm rehearsal:run 1 -- deploy --codegen disable -y      # push this checkout
-pnpm rehearsal:run 1 --cwd ../old-commit -- deploy -y    # or another checkout
-pnpm rehearsal:run 1 -- run platform/devSeed:demoTenant '{"slug":"demo"}'
-pnpm rehearsal:release 1
-pnpm rehearsal:status              # who holds what
-```
-
-- **Claim** takes `.rehearsal-<n>.lock` in the main checkout, creates the
-  deployment on first use (EU, auth keys, deploy key in
-  `.env.rehearsal-<n>.local`, mode 600), proves the key is that slot's,
-  replaces all its data with an empty snapshot (component tables too)
-  and sets `TEST_SEED_ENABLED=1` and `QC_SEED_ENABLED=1`. It doesn't
-  deploy: the code is whatever the last holder pushed, so push yours first.
-- **The lock** belongs to the process that claimed: the Claude session or
-  interactive shell above the command (`--pid` to name another). It is
-  stale once that process dies or 2 h after the last claim or `run`, and
-  the next claim takes it over (as it does an empty or corrupt lock). A
-  live holder blocks every other claim; claiming again while you hold a
-  slot hands back that slot, not reset.
-- **`run`** passes `deploy`, `run`, `import`, `export`, `data`, `env`,
-  `logs` and `function-spec` to `npx convex` with the slot's key, for the
-  worktree holding the slot only, and refuses flags that would pick
-  another deployment (`--prod`, `--deployment`, `--env-file`, …). The key
-  is never printed. `npx convex <cmd> --env-file
-  <main>/.env.rehearsal-<n>.local` also works, without the lock check.
-- A slot's env file that names `zany-bird-247`, or any deployment another
-  `.env.*.local` in the main checkout names (QC pool, demo, preview), is
-  refused before anything runs.
-- Runs the Convex CLI and writes to the main checkout: outside the Claude
-  sandbox.
+`docs/ops.md` has the operations: settings, first-time setup
+(`scripts/fly/{staging,prod}.sh`, `scripts/aws/*`), backups, restore and
+the drill, monitoring, the nightly QC.
 
 ## Where things are
 
-- `convex/` — backend: `schema.ts`, `lib/tenancy.ts` (scoped function
-  constructors — the only way to declare domain functions), `platform/`
-  (tenants, memberships), `auth.ts`/`http.ts`.
-- `src/` — React SPA: TanStack Router file routes under `src/routes/`,
-  shadcn components under `src/components/ui/`.
-- `docs/` — `architecture.md`, `decisions/` (ADRs; 0017 is the founding
-  one), `research.md` (CiviCRM/Gift Aid/GDPR domain reference),
-  `product-brief.md`, `competition.md`, `inherited-from-ngo-go.md` (what
-  the Django predecessor proved in code; the checklist to re-prove here).
+- `server/` — the api (`server/README.md`: crates, HTTP conventions, the
+  write path, migrations, jobs, `keep`).
+- `src/` — the React SPA: TanStack Router file routes under `src/routes/`,
+  the data layer in `src/lib/data/` (TanStack Query over the api, its
+  ts-rs types in `rust-types/`), shared shapes and pure rules in
+  `src/lib/domain/`, shadcn components under `src/components/ui/`.
+- `qc/` — the Playwright QC suite and its budgets (ADR 0018).
+- `docs/` — `architecture.md`, `ops.md`, `decisions/` (ADRs),
+  `research.md` (CiviCRM/Gift Aid/GDPR domain reference),
+  `product-brief.md`, `inherited-from-ngo-go.md`.
 
-`CLAUDE.md` holds the working rules (domain invariants, contracts,
-tenancy, validation tiers). `docs/spikes/` records what each ADR 0017
-spike proved.
-
-## Deploy the SPA
-
-It is static. `.github/workflows/pages.yml` builds to GitHub Pages with
-`VITE_CONVEX_URL` from a repository variable and the repo name as base
-path. Any static host works; nothing may depend on where the files are
-served from. The backend deploys with `npx convex deploy`.
+`CLAUDE.md` holds the working rules (domain invariants, the write path,
+tenancy, validation tiers).

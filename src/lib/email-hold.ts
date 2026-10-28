@@ -1,11 +1,10 @@
-import type { FunctionReturnType } from 'convex/server'
-import type { api } from '../../convex/_generated/api'
-import { normaliseEmail } from '../../convex/contacts/rules'
+import { normaliseEmail } from './domain/contacts'
 import { RustApiError } from './data/rust/client'
+import type { Hold } from './data/rust-types/Hold'
 
 /** The held addresses, keyed by normalised address (`email-context`). */
-export type Held = FunctionReturnType<typeof api.comms.suppressions.held>
-export type Hold = Held[string]
+export type Held = Record<string, Hold>
+export type { Hold }
 
 // Built once: `toLocaleDateString` with options makes one per call.
 const ON = new Intl.DateTimeFormat([], {

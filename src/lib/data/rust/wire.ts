@@ -1,14 +1,12 @@
 /**
- * The contacts endpoints' JSON (step 2a's ts-rs types in `../rust-types/`)
- * adapted into the shapes the pages already render (the Convex view,
- * `ListRow`, `FieldDefinition`, `search`'s result), so both backends feed
- * the same components. The API keeps Convex's payload shapes (child rows
- * by `key`, slices named as the form names them), so this is mostly ids:
- * `id` → `_id`, and the view's slices flattened as Convex's `get` has them.
+ * The contacts endpoints' JSON (the ts-rs types in `../rust-types/`)
+ * adapted into the shapes the pages render (`../../domain/contacts`:
+ * the view, `ListRow`, `FieldDefinition`, the search result). The API's
+ * payloads are the form's slices (child rows by `key`), so this is mostly
+ * ids: `id` → a branded `_id`, and the view's slices flattened.
  */
-import type { Id } from '../../../../convex/_generated/dataModel'
-import type { FieldDefinition } from '../../../../convex/contacts/fieldTypes'
-import type { FieldSlot } from '../../../../convex/lib/fieldSlots'
+import type { Id } from '../../domain/ids'
+import type { FieldDefinition } from '../../domain/contacts'
 import type { ListFilters, ListRow } from '../../paged-list'
 import type { ContactView, SearchArgs, SearchResult } from '../types'
 import type { ContactRow } from '../rust-types/ContactRow'
@@ -52,7 +50,7 @@ export function fieldsFromWire(
     isActive: f.isActive,
     retiring: f.retiring,
     // The API has no slots; the pages only order by it (filters, form).
-    slot: (i + 1) as FieldSlot,
+    slot: i + 1,
     saveVersion: f.saveVersion,
     options: f.options.map((o) => ({
       _id: o.id as Id<'contactFieldOptions'>,
@@ -89,10 +87,8 @@ export function searchFromWire(s: WireSearch): SearchResult {
 }
 
 /**
- * The contact in the Convex view's shape (what the form renders), with
- * what Rust doesn't have yet left empty. The
- * root carries the fields the pages read; the cast covers the rest of
- * `Doc<'contacts'>` (tenantId, field slots), which no page reads.
+ * The contact as the page and form render it. The cast brands the ids
+ * (and makes the saved rows' keys, always present on a read, required).
  */
 export function contactFromWire(
   c: WireContact,
@@ -102,7 +98,6 @@ export function contactFromWire(
   const { clientKey: _, ...details } = c.details
   const contact = {
     _id: c.id,
-    _creationTime: 0,
     ...details,
     displayName: c.displayName,
     sortName: c.sortName,

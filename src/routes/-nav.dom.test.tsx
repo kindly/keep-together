@@ -6,7 +6,6 @@ import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { RecentGift } from '../lib/gifts'
 import type { Tenant } from '../lib/tenant'
-import type * as TenantLib from '../lib/tenant'
 import type * as GiftsLib from '../lib/gifts'
 import type * as DataLib from '../lib/data'
 
@@ -66,21 +65,6 @@ vi.mock('@tanstack/react-router', () => ({
 
 const opened = vi.fn()
 const signOut = vi.fn()
-vi.mock('convex/react', () => ({
-  Authenticated: ({ children }: { children: ReactNode }) => children,
-  Unauthenticated: () => null,
-  AuthLoading: () => null,
-  useMutation: () => opened,
-  useQuery: () => undefined,
-  useConvexAuth: () => ({ isAuthenticated: true }),
-}))
-vi.mock('@convex-dev/auth/react', () => ({
-  useAuthActions: () => ({ signIn: vi.fn(), signOut }),
-}))
-vi.mock('../lib/query-cache', () => ({
-  ContactQueryCache: ({ children }: { children: ReactNode }) => children,
-}))
-
 let tenants: Array<Tenant> | undefined
 vi.mock('../lib/data', async (original) => {
   const real = await original<typeof DataLib>()
@@ -103,10 +87,6 @@ vi.mock('../lib/data', async (original) => {
     useOrgEvents: () => {},
   }
 })
-vi.mock('../lib/tenant', async (original) => ({
-  ...(await original<typeof TenantLib>()),
-  useMyTenants: () => tenants,
-}))
 
 let gifts: Array<RecentGift> = []
 vi.mock('../lib/gifts', async (original) => ({

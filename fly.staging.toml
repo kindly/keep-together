@@ -25,7 +25,7 @@ kill_signal = "SIGTERM"
 kill_timeout = 30
 
 [build]
-  dockerfile = "rs/Dockerfile"
+  dockerfile = "server/Dockerfile"
 
 [env]
   KEEP_ENV = "staging"

@@ -1,11 +1,10 @@
 # Hosting (ngo-go, August 2026) — superseded
 
-> **Status in keep-together: superseded by [ADR 0017](decisions/0017-convex-react-shared-tenancy.md).**
-> Nothing of ours runs on a server now: the backend is Convex (EU, AWS
-> Ireland) and the SPA is static. This page is kept because ADRs 0016 and
-> 0017 cite it, and because the research below is the starting point for
-> the *exit* spike in 0017 (one self-hosted Convex run on a VPS) and for
-> any future UK-residency conversation. Prices and incident records are
+> **Status in keep-together: superseded by [ADR 0017](decisions/0017-convex-react-shared-tenancy.md),
+> then by [ADR 0024](decisions/0024-rust-sqlite-per-org.md)** (a Rust api
+> with a SQLite file per organisation, on Fly in London: `docs/ops.md`).
+> This page is kept because ADRs 0016 and 0017 cite it, and as the
+> starting point for any future hosting or UK-residency conversation. Prices and incident records are
 > as of August 2026 — re-verify before reuse.
 
 Decision date: 2026-08-17. Research method: parallel web research across

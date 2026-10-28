@@ -9,7 +9,7 @@ import type { QcUser } from '../fixtures'
 // a dead invite link. The timed sign-in (`auth.signIn`) is the worker
 // fixture's; these check behaviour. Invites and resets past the request
 // need the emailed link, which QC can't read (KEEP_MAIL=log): the Rust
-// tests (rs/crates/api/tests/auth.rs) cover them. With mail off (staging
+// tests (server/crates/api/tests/auth.rs) cover them. With mail off (staging
 // until SES) the reset request checks the refusal instead (`mailOff`). Every test starts signed
 // out in a fresh context, so signing out never ends the session the other
 // specs share through storageState.

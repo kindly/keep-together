@@ -18,8 +18,8 @@ wins; where this page and `docs/decisions/0013` disagree on child rows,
 | ADRs 0001–0016 | copied; superseded ones carry a status line pointing at 0017 |
 | `docs/hosting.md` | copied with a superseded header (0016/0017 cite it) |
 | `docs/pi-extension-investigation.md` | copied with a "what still applies" header |
-| `CLAUDE.md` rules | rewritten for Convex in `CLAUDE.md`; domain rules unchanged |
-| `backend/apps/core/{contracts,commands}.py` | not ported — behaviour listed below, to be rebuilt as `convex/lib/contracts.ts` |
+| `CLAUDE.md` rules | rewritten for Convex in `CLAUDE.md`, then for Rust (ADR 0024); domain rules unchanged |
+| `backend/apps/core/{contracts,commands}.py` | not ported — behaviour listed below, rebuilt as `convex/lib/contracts.ts`, now `server/crates/contracts` |
 | `backend/apps/contacts/*` | not ported — behaviour listed below |
 | `backend/tests/*` | not ported — test inventory below |
 | `extensions/example/` | not ported; extensions become a different bundle (0017) |
@@ -179,7 +179,7 @@ three-way merge, but these findings are independent of the transport:
 - Create flow: the form carries a pre-generated id so a double submit
   lands on the existing record.
 
-## Test inventory (ngo-go had 80 tests; re-prove these on `convex-test`)
+## Test inventory (ngo-go had 80 tests; re-proved on `convex-test`, then as named Rust tests)
 
 Command layer: create saves entity + revision (counter 0, source, no
 group) · update bumps only its counter · stale `expected` conflicts ·

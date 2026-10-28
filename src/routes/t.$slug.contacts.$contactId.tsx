@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from '../lib/domain/ids'
 import { useTenant } from '../lib/tenant'
 import { contactSeed, dropContactSeed } from '../lib/contact-seed'
 import { FEATURES, preloadContact, useContact } from '../lib/data'

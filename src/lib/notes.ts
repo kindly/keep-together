@@ -2,7 +2,7 @@
  * Pure state for the contact notes panel: the byte budget a note body is
  * held to, and how an open editor follows a note someone else edits.
  */
-import { NOTE_MAX_BYTES } from '../../convex/contacts/rules'
+import { NOTE_MAX_BYTES } from './domain/contacts'
 import { RustApiError } from './data/rust/client'
 import type { Unsaved } from './unsaved'
 

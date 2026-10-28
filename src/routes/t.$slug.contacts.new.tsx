@@ -6,7 +6,7 @@ import { FEATURES, useCreateContact } from '../lib/data'
 import { DetailsFields } from '../components/contact-form'
 import { SourceCodePicker } from '../components/source-code-picker'
 import type { PickerEntry } from '../components/source-code-picker'
-import type { Payloads } from '../../convex/contacts/validators'
+import type { Payloads } from '../lib/domain/contacts'
 
 export const Route = createFileRoute('/t/$slug/contacts/new')({
   component: NewContact,

@@ -91,7 +91,7 @@ snapshot)
 esac
 echo "restore: all files $(secs "$started")s"
 
-# A new recovery generation in every org file (rs/crates/api/src/events.rs):
+# A new recovery generation in every org file (server/crates/api/src/events.rs):
 # a tab's event cursor from before names the old one, so the stream resets
 # it instead of replaying from a seq this history reuses. A file from
 # before the table existed gets a fresh one when it migrates.

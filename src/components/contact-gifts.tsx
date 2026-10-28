@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from '../lib/domain/ids'
 import { useContactGifts } from '../lib/data'
 import { METHOD_LABELS, formatDay, formatPence } from '../lib/gifts'
 import { giftCoverage, useDeclarations } from '../lib/giftaid'

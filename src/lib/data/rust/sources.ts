@@ -6,7 +6,7 @@
  * answer the server's state and the caller waits for it (a source code on
  * a contact is a record of how they were recruited: nothing optimistic).
  *
- * Parts come back in the shape the pages rendered from Convex (`_id`), so
+ * Parts come back in the shape the pages render (`_id`), so
  * the tab, the picker and their tests keep their types.
  */
 import {
@@ -15,7 +15,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
-import type { Id } from '../../../../convex/_generated/dataModel'
+import type { Id } from '../../domain/ids'
 import { useTenant } from '../../tenant'
 import type { Loaders } from '../types'
 import { ownWrite } from '../events'

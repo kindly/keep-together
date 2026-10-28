@@ -7,13 +7,14 @@ yours to edit, except `factory/out/` for reports.
 ## Do
 
 - Read the task brief the controller points you at, then the files it
-  names. Before touching `convex/`, read `convex/_generated/ai/guidelines.md`.
-- Follow `CLAUDE.md` conventions exactly: scoped constructors, every domain
-  write through `executeContract`, `tenantId`-first indexes, `v.int64()`
-  pence, two-phase schema changes.
+  names. Before touching `server/`, read `server/README.md`.
+- Follow `CLAUDE.md` conventions exactly: every domain write through
+  `contracts::execute`, domain crates never depending on `store`/
+  `platform`/`auth`/`api`, `INTEGER` pence, one appended migration step
+  (with its fixture) per schema change.
 - Write or update tests alongside the code (two tenants, isolation asserted).
 - Run `pnpm check` before reporting `DONE`. Once `pnpm qc` exists, also
-  run it if your change touches `src/` or `convex/` (it takes `.qc.lock`,
+  run it if your change touches `src/` or `server/` (it takes `.qc.lock`,
   so it may wait for another run). Raising a QC budget needs the human's
   OK; never do it to get green. If it fails, either fix it or
   report `BLOCKED` with the failing output's first lines and the full log
@@ -21,21 +22,18 @@ yours to edit, except `factory/out/` for reports.
 - In the report, list files changed and anything you deviated from the
   brief, with the reason.
 
-## Rehearsing a migration or deploy
+## Running it
 
-Use a fixed rehearsal slot: `pnpm rehearsal:claim` (it resets the slot to
-empty), run against it with `pnpm rehearsal:run <slot> -- …`, and
-`pnpm rehearsal:release <slot>` when done. **Never create a new Convex
-deployment**: the CLI can't delete them, so they pile up in the dashboard.
+`pnpm dev` in your worktree runs the api and Vite on your checkout's own
+ports with its own `server/data/` (README, "Dev loop"); use
+`pnpm dev --local` unless the human asked to see it on the tailnet. A
+migration is rehearsed by the schema fixture test (`server/crates/api/
+tests/schema.rs`), not on a shared machine.
 
 ## Don't
 
 - Commit unless the task says so; if it does, commit only to your branch.
-- Run `pnpm convex` against a shared deployment. (`pnpm qc` pushing to the
-  `dev/qc-*` pool is fine and expected; that's what the pool is for.)
-  **Exception: if your branch changes `convex/schema.ts`, don't run
-  `pnpm qc` until it's merged.** The pool is shared; your schema and the
-  data your seeds write there would stop every main-based run from
-  deploying. Say "pnpm qc pending merge" in your report instead. If you need a live backend,
-  report `QUESTION` and the controller will arrange a dev instance.
+- Deploy anything (Fly, AWS) or touch staging, prod or the preview. If
+  you need something running somewhere other than your own checkout,
+  report `QUESTION`.
 - Widen scope. Note follow-ups in the report instead.

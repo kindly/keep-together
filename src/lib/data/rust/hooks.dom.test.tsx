@@ -656,7 +656,6 @@ describe('cold load', () => {
       seen.tenants = data.useMyTenants()
       seen.fields = data.useFields()
       seen.list = data.useContactList({
-        tenantId: 'a' as never,
         includeArchived: false,
       })
       return null
@@ -747,7 +746,6 @@ describe('contacts list on the Rust API', () => {
     const seen: { current?: ReturnType<typeof useContactList> } = {}
     function Probe() {
       seen.current = useContactList({
-        tenantId: slug as never,
         includeArchived: false,
         kind: 'individual',
         fields: [{ fieldId: 'f1' as never, optionId: null }],

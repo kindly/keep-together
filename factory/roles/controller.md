@@ -68,7 +68,8 @@ are not spawned by `spawn.sh`; the human starts you and points you here.
 - Relay each `DONE|BLOCKED|QUESTION` with the decision it needs, not a
   transcript. Show reviewer and codex findings close to verbatim.
 - Commits, merges into `main`, pushes, deploys and anything touching a
-  shared Convex deployment need the human's explicit go-ahead each time.
+  shared environment (staging, prod, the preview, Fly, AWS) need the
+  human's explicit go-ahead each time.
 
 ## Tearing down
 

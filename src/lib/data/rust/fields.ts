@@ -9,7 +9,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import type { Id } from '../../../../convex/_generated/dataModel'
+import type { Id } from '../../domain/ids'
 import type { FieldDefinition } from '../types'
 import { useTenant } from '../../tenant'
 import type { BulkSetResult } from '../rust-types/BulkSetResult'

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { judge, parseServerTiming } from './timing'
 
 // The pure parts of qc/timing.ts: the pass rule and the server time each
-// sample's calls carry (the api's `Server-Timing`, rs/README.md "Timing").
+// sample's calls carry (the api's `Server-Timing`, server/README.md "Timing").
 
 describe('parseServerTiming', () => {
   test('total and db from the api’s header', () => {

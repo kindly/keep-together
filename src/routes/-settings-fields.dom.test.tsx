@@ -71,7 +71,6 @@ vi.mock('../lib/tenant', () => ({
   useTenant: () => ({ _id: 'tenantA' }),
   useCanManageList: () => canManage,
   useIsAdmin: () => false,
-  cachedTenant: () => null,
 }))
 
 // The page component, from the route module (not exported on its own).

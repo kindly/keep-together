@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { SUPPRESSION_NOTE_MAX } from '../../convex/comms/rules'
+import { SUPPRESSION_NOTE_MAX } from '../lib/domain/contacts'
 import type { Hold } from '../lib/email-hold'
 import {
   NO_LONGER_HELD,

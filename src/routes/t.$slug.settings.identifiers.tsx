@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { IDENTIFIER_TYPE_LIMIT } from '../../convex/contacts/rules'
+import { IDENTIFIER_TYPE_LIMIT } from '../lib/domain/contacts'
 import { StaffListSwitch } from '../components/staff-list-switch'
 import {
   FEATURES,

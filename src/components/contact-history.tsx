@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import type { QueryKey } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from '../lib/domain/ids'
 import { useMembers } from '../lib/data'
 import type { Member } from '../lib/data'
 import { ownWrite } from '../lib/data/events'

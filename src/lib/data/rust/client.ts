@@ -1,5 +1,5 @@
 /**
- * `fetch` for the Rust API (rs/README.md, "HTTP conventions"). Same
+ * `fetch` for the Rust API (server/README.md, "HTTP conventions"). Same
  * origin by default: Vite proxies `/api` to the server in dev and the api
  * serves the SPA when hosted, so the session cookie (`kt_session`,
  * HttpOnly) rides along with no CORS. Every failure is a

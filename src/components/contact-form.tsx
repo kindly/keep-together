@@ -1,11 +1,10 @@
 import { Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useReducer, useRef } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
-import type { Payloads } from '../../convex/contacts/validators'
-import type { FieldDefinition } from '../../convex/contacts/fieldTypes'
-import { sortValues } from '../../convex/contacts/fieldValues'
-import { contactWarnings } from '../../convex/contacts/warnings'
-import type { Warning } from '../../convex/contacts/warnings'
+import type { Id } from '../lib/domain/ids'
+import type { Payloads, FieldDefinition  } from '../lib/domain/contacts'
+import { sortValues } from '../lib/domain/contacts'
+import { contactWarnings } from '../lib/domain/warnings'
+import type { Warning } from '../lib/domain/warnings'
 import type {
   Counters,
   FormState,

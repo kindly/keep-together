@@ -1,12 +1,18 @@
 name: Deploy
 
 # Every push to main: the CI checks, then the image to keep-staging (Fly,
-# lhr), which resets itself to the riverside seed. Prod is created at
-# cutover (plan migration-rust.sv, C2); until then `env: prod` refuses.
+# lhr), which resets itself to the riverside seed. Prod (keep-prod) is
+# deployed only by hand: Run workflow with env=prod, from main. It
+# refuses any other branch, and refuses until the variable PROD_URL is
+# set, which scripts/fly/prod.sh tells the human to do once keep-prod
+# exists.
 #
-# Needs: secret FLY_API_TOKEN (`fly tokens create deploy -a keep-staging`),
-# variable STAGING_URL, and optionally SENTRY_DSN_SPA (the SPA's Sentry
-# DSN, public by design) — scripts/fly/staging.sh prints the commands.
+# Needs: secret FLY_API_TOKEN (`fly tokens create deploy -a keep-<env>`):
+# staging's is repo-wide (scripts/fly/staging.sh), prod's is set on the
+# GitHub environment `prod` (scripts/fly/prod.sh), which overrides the
+# repo-wide one for prod's job. Variables STAGING_URL and PROD_URL, and
+# optionally SENTRY_DSN_SPA (the SPA's Sentry DSN, public by design).
+# The scripts print the commands.
 
 on:
   push:
@@ -32,34 +38,41 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.env || 'staging' }}
     steps:
-      - name: Prod is not live yet
-        if: ${{ inputs.env == 'prod' }}
+      - name: Prod exists
+        if: ${{ inputs.env == 'prod' && vars.PROD_URL == '' }}
         run: |
-          echo "::error::keep-prod is created at cutover (C2); deploy.yml's prod path goes live then."
+          echo "::error::keep-prod isn't set up: run scripts/fly/prod.sh, then gh variable set PROD_URL."
+          exit 1
+      # Real data: only what main holds, never a branch picked in the form.
+      - name: Prod deploys main only
+        if: ${{ inputs.env == 'prod' && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::prod deploys only from main (this run is on $GITHUB_REF)."
           exit 1
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@1.5
       # --ha=false: one machine, one volume. Two would each replicate
       # their own platform.db to the same Litestream prefix.
-      - name: Deploy keep-staging
+      - name: Deploy keep-${{ inputs.env || 'staging' }}
         run: >
-          flyctl deploy -c fly.staging.toml --remote-only --yes --ha=false
+          flyctl deploy -c "fly.$DEPLOY_ENV.toml" --remote-only --yes --ha=false
           --build-arg VITE_SENTRY_DSN="$SENTRY_DSN_SPA"
           --build-arg VITE_RELEASE="$GITHUB_SHA"
         env:
+          DEPLOY_ENV: ${{ inputs.env || 'staging' }}
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           SENTRY_DSN_SPA: ${{ vars.SENTRY_DSN_SPA }}
       - name: Smoke test
         run: |
           for i in $(seq 30); do
-            if body=$(curl -fsS --max-time 5 "$STAGING_URL/healthz"); then
+            if body=$(curl -fsS --max-time 5 "$URL/healthz"); then
               echo "$body"
-              curl -fsS --max-time 5 "$STAGING_URL/" | grep -q '<div id="app">'
+              curl -fsS --max-time 5 "$URL/" | grep -q '<div id="app">'
               exit 0
             fi
             sleep 5
           done
-          echo "::error::$STAGING_URL/healthz did not come up"
+          echo "::error::$URL/healthz did not come up"
           exit 1
         env:
-          STAGING_URL: ${{ vars.STAGING_URL }}
+          URL: ${{ inputs.env == 'prod' && vars.PROD_URL || vars.STAGING_URL }}

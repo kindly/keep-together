@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from '../lib/domain/ids'
 import type { BulkFieldState, FieldDefinition } from '../lib/data'
 
 /** "clear" in the value select ('' is "not chosen yet"). */

@@ -3,7 +3,7 @@ import type { ApiCall, FlowRecord } from './timing'
 
 // The server rule (ADR 0018): every call a user waits on must take under
 // 100 ms on the server, bar one spike per route. Server time comes from
-// each response's `Server-Timing: total` (rs/README.md "Timing"), carried
+// each response's `Server-Timing: total` (server/README.md "Timing"), carried
 // by the timed samples' calls (qc/timing.ts), so it covers exactly what
 // the flows waited on: no log stream to keep alive, no clock to align.
 //

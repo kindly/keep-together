@@ -4,7 +4,7 @@ import type { ComponentType, ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import type { Id } from '../../convex/_generated/dataModel'
+import type { Id } from '../lib/domain/ids'
 import type { GiftView as Gift } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
 
@@ -45,7 +45,6 @@ vi.mock('../components/source-code-picker', () => ({
   localToday: () => '2026-10-23',
 }))
 vi.mock('../lib/tenant', () => ({
-  cachedTenant: () => undefined,
   useTenant: () => ({ _id: 'tenantA', slug: 'a' }),
   useCanWrite: () => true,
 }))

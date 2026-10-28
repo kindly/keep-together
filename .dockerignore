@@ -1,10 +1,10 @@
-# rs/Dockerfile builds from the repo root.
+# server/Dockerfile builds from the repo root.
 .git
 node_modules
 dist
 dist-*
-rs/target
-rs/data
+server/target
+server/data
 qc-data
 qc-results
 qc-report

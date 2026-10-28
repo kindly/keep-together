@@ -42,7 +42,7 @@ pnpm qc:rtt --write                      # re-measure the hosted RTT into qc/rtt
 
 `pnpm qc` runs `scripts/qc.mjs`, which:
 
-1. builds the release `api` (`cargo build --release -p api` in `rs/`) and
+1. builds the release `api` (`cargo build --release -p api` in `server/`) and
    the SPA into `dist-qc/`, in parallel (`--no-build` skips it);
 2. starts `QC_INSTANCES` (default 3) apis, instance `i` on `KEEP_PORT`
    8801+i with an empty data dir `qc-data/<i>`, `KEEP_DEV_AUTH=1` and
@@ -80,7 +80,7 @@ check.
 at `QC_STAGING_URL` (default `https://staging.keep-together.org.uk`), no
 build, no netem, no lock. Its history lines carry `env: staging`.
 Staging has no dev auth, so set-up goes through its token surface,
-`/api/qc/*` (`rs/crates/api/src/routes/qc_seed.rs`): `KEEP_QC_TOKEN` must
+`/api/qc/*` (`server/crates/api/src/routes/qc_seed.rs`): `KEEP_QC_TOKEN` must
 be in the env (the Fly secret; `scripts/fly/staging.sh` makes it and
 sets it as the GitHub secret too, without ever showing it). With it the workers seed `qc-` groups
 whose users have `@qc.keep-together.invalid` addresses, sign in for real
@@ -373,7 +373,7 @@ that shows tenant data adds its case there.
 
 ## The builder obligation
 
-A builder whose change touches `src/` or `rs/` runs `pnpm qc` before
+A builder whose change touches `src/` or `server/` runs `pnpm qc` before
 reporting DONE and puts the summary table in the report. If it fails,
 fix the code, or report BLOCKED with the first failing lines and the log
 path; never raise a budget to get green.
