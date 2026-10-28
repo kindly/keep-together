@@ -205,27 +205,45 @@ pub fn is_uk(country: &str) -> bool {
 /// "House name or number" from an address's first line: the number that
 /// starts it ("12A High Street" → "12A", "12-14 Mill Lane" → "12-14"),
 /// else the part before the first comma ("Rose Cottage, Mill Lane" →
-/// "Rose Cottage"), keeping a flat's building number ("Flat 3, 12 High
-/// Street" → "Flat 3, 12").
+/// "Rose Cottage"), keeping the building's number after a flat, unit or
+/// floor ("Flat 3, 12 High Street" → "Flat 3, 12", "1st Floor, 12 High
+/// St" → "1st Floor, 12").
 pub fn house_name_or_number(line1: &str) -> String {
     let line = tidy(line1);
-    let first = line.split(' ').next().unwrap_or("");
-    if first.starts_with(|c: char| c.is_ascii_digit()) {
-        return first.trim_end_matches(',').to_owned();
+    let first = line.split(' ').next().unwrap_or("").trim_end_matches(',');
+    if is_house_number(first) {
+        return first.to_owned();
     }
     let mut parts = line.splitn(2, ',');
     let head = parts.next().unwrap_or("").trim().to_owned();
-    let flat = ["flat", "apartment", "apt", "unit", "room"]
+    let lower = head.to_ascii_lowercase();
+    // A flat, unit or floor: the building's number follows the comma.
+    let within = ["flat", "apartment", "apt", "unit", "room"]
         .iter()
-        .any(|w| head.to_ascii_lowercase().starts_with(&format!("{w} ")));
-    if flat
+        .any(|w| lower.starts_with(&format!("{w} ")))
+        || lower.split(' ').any(|w| w == "floor");
+    if within
         && let Some(rest) = parts.next()
         && let Some(number) = rest.split_whitespace().next()
-        && number.starts_with(|c: char| c.is_ascii_digit())
+        && is_house_number(number.trim_end_matches(','))
     {
         return format!("{head}, {}", number.trim_end_matches(','));
     }
     head
+}
+
+/// A house number: digits and an optional letter, or a range of two
+/// ("12", "12A", "12-14", "12a-14b"); never an ordinal ("1st").
+fn is_house_number(token: &str) -> bool {
+    let one = |t: &str| {
+        let digits = t.bytes().take_while(u8::is_ascii_digit).count();
+        let rest = &t[digits..];
+        digits > 0 && rest.len() <= 1 && rest.bytes().all(|b| b.is_ascii_alphabetic())
+    };
+    match token.split_once('-') {
+        Some((a, b)) => one(a) && one(b),
+        None => one(token),
+    }
 }
 
 /// The contact facts a line is built from.
@@ -432,6 +450,17 @@ mod tests {
         assert_eq!(house_name_or_number("Flat 3, 12 High Street"), "Flat 3, 12");
         assert_eq!(house_name_or_number("Flat 3, Rose Court"), "Flat 3");
         assert_eq!(house_name_or_number("  "), "");
+        // Review L7: an ordinal isn't a house number.
+        assert_eq!(
+            house_name_or_number("1st Floor, 12 High St"),
+            "1st Floor, 12"
+        );
+        assert_eq!(
+            house_name_or_number("2nd Floor Flat, 5 Rd"),
+            "2nd Floor Flat, 5"
+        );
+        assert_eq!(house_name_or_number("4B Mill Rd"), "4B");
+        assert_eq!(house_name_or_number("12a-14b Mill Rd"), "12a-14b");
     }
 
     #[test]

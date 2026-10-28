@@ -13,7 +13,7 @@
 
 use rusqlite::Connection;
 
-use crate::claim_rules::{OTHER_INFO_MAX, pounds};
+use crate::claim_rules::{OTHER_INFO_MAX, fold, pounds};
 use crate::claim_types::{HmrcDetails, Regulator};
 use crate::claims::{adjustments, downloadable, lines, summary};
 use crate::hmrc::{missing_for_xml, read as read_details};
@@ -254,26 +254,44 @@ fn adjustment_note(total: i64, claims: &[i64], reasons: &[String]) -> String {
         .map(i64::to_string)
         .collect::<Vec<_>>()
         .join(", ");
-    let mut note = format!(
+    let mut note = fold(&format!(
         "Adjustment of {} is tax on gifts claimed in our claim {numbers} and voided \
          since: {}",
         pounds(total),
         reasons.join("; ")
-    );
+    ));
     if note.chars().count() > OTHER_INFO_MAX {
-        note = note.chars().take(OTHER_INFO_MAX - 1).collect::<String>() + "…";
+        note = note.chars().take(OTHER_INFO_MAX - 3).collect::<String>() + "...";
     }
     note
+}
+
+/// The organisation's name as HMRC's `OrgName` takes it: folded
+/// ([`fold`]), starting with a letter or digit, ASCII, at most 160; else
+/// refused (`org_name`) for an operator to rename the organisation.
+pub fn org_name(name: &str) -> Result<String, ContractError> {
+    let n = fold(&name.split_whitespace().collect::<Vec<_>>().join(" "));
+    if n.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && n.is_ascii()
+        && n.chars().count() <= 160
+    {
+        Ok(n)
+    } else {
+        Err(ContractError::rejected(
+            "org_name",
+            format!("HMRC can't take the organisation's name as it is: {name}"),
+        ))
+    }
 }
 
 /// The claim message for a stored claim, ready or later
 /// ([`crate::claims::downloadable`]), with the organisation's HMRC
 /// details: refused (`missing_hmrc_details`) until they are complete.
-/// `org_name` is the organisation's name.
+/// `org` is the organisation's name ([`org_name`]).
 pub fn for_claim(
     conn: &Connection,
     claim_id: &str,
-    org_name: &str,
+    org: &str,
     env: &Envelope,
 ) -> Result<(String, Irmark), ContractError> {
     let claim = downloadable(conn, claim_id)?;
@@ -302,7 +320,7 @@ pub fn for_claim(
             postcode: Some(details.official_postcode.clone()),
             phone: details.official_phone.clone(),
         },
-        org_name: org_name.to_owned(),
+        org_name: org_name(org)?,
         regulator: details
             .regulator
             .map(|r| (r, details.regulator_number.clone())),
@@ -442,11 +460,78 @@ mod tests {
         assert!(xml.contains("</GASDS><OtherInfo>Gift voided</OtherInfo></Claim>"));
     }
 
+    /// Review L7: the organisation's name folded to HMRC's `OrgName`
+    /// pattern, or refused.
+    #[test]
+    fn org_names_fold_or_are_refused() {
+        assert_eq!(org_name("St Mary’s Café").unwrap(), "St Mary's Cafe");
+        assert!(org_name("— Friends").is_err());
+        assert!(org_name(&"a".repeat(161)).is_err());
+    }
+
+    /// Review L7: a generated claim with every shape we write (titles,
+    /// NoReg, overseas donors, an adjustment and its OtherInfo, 1,000
+    /// lines) is valid against HMRC's r68 schema. Needs `xmllint`; says
+    /// so and passes where it isn't installed.
+    #[test]
+    fn a_generated_claim_is_valid_against_hmrcs_schema() {
+        let (env, mut claim) = hmrc_sample();
+        claim.official.name.title = Some("Mrs".into());
+        claim.regulator = Some((Regulator::None, String::new()));
+        claim.other_income.clear();
+        let base = claim.donations.clone();
+        claim.donations = (0..1000)
+            .map(|i| {
+                let mut d = base[i % base.len()].clone();
+                d.donor.title = (i % 3 == 0).then(|| "Dr".into());
+                d
+            })
+            .collect();
+        claim.adjustment = 262;
+        claim.other_info = Some(adjustment_note(262, &[1], &["Café refund ’24".into()]));
+        let (xml, _) = claim_message(&env, &claim).unwrap();
+        let start = xml.find("<IRenvelope").unwrap();
+        let end = xml.rfind("</IRenvelope>").unwrap() + "</IRenvelope>".len();
+        let dir = tempfile::tempdir().unwrap();
+        let body = dir.path().join("body.xml");
+        std::fs::write(
+            &body,
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>{}",
+                &xml[start..end]
+            ),
+        )
+        .unwrap();
+        let xsd = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../test/fixtures/hmrc/r68-v2-0.xsd"
+        );
+        let out = match std::process::Command::new("xmllint")
+            .args(["--noout", "--schema", xsd])
+            .arg(&body)
+            .output()
+        {
+            Ok(out) => out,
+            Err(_) => {
+                eprintln!("xmllint not installed: r68 schema check skipped");
+                return;
+            }
+        };
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     #[test]
     fn the_adjustment_note_fits_hmrcs_limit() {
         let long = vec!["x".repeat(400)];
         let note = adjustment_note(262, &[3, 4], &long);
         assert_eq!(note.chars().count(), OTHER_INFO_MAX);
+        assert!(note.ends_with("..."), "ASCII, not …");
+        let folded = adjustment_note(262, &[1], &["Café ’refund’".into()]);
+        assert!(folded.ends_with("Cafe 'refund'"), "{folded}");
         assert!(note.starts_with("Adjustment of 2.62 is tax on gifts claimed in our claim 3, 4"));
     }
 }
