@@ -1321,3 +1321,40 @@ async fn a_gift_voided_out_of_a_ready_claim_is_paid_back_by_the_next() {
         json!([{ "giftId": gift, "originalClaimId": first, "amount": 500, "reason": "Refunded" }])
     );
 }
+
+/// Review L1: a claim whose voided gift a later claim pays back can still
+/// be marked rejected once that later claim may be with HMRC (ready or
+/// later); while the later claim is a draft, delete that first.
+#[tokio::test]
+async fn a_claim_paid_back_by_a_sent_claim_can_still_be_rejected() {
+    let c = setup().await;
+    let (gift, contact) = c.gift("alpha", &ANN_SMITH, &days_ago(20), 2000).await;
+    let first = c.create("alpha").await["id"].as_str().unwrap().to_owned();
+    c.submit(&first).await;
+    c.void(&gift, Some("Refunded")).await;
+    c.again(&contact, &days_ago(2), 1000).await;
+    let second = c.create("alpha").await["id"].as_str().unwrap().to_owned();
+    let (s, out) = c
+        .step(
+            &first,
+            json!({ "status": "rejected", "reason": "HMRC rejected it" }),
+        )
+        .await;
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("adjusted_later"))
+    );
+    c.step_ok(&second, json!({ "status": "ready" })).await;
+    let out = c
+        .step_ok(
+            &first,
+            json!({ "status": "rejected", "reason": "HMRC rejected it" }),
+        )
+        .await;
+    assert_eq!(out["view"]["status"], "rejected");
+    // The adjustment stands where it went.
+    assert_eq!(
+        c.claim(&second).await["adjustments"][0]["giftId"],
+        gift.as_str()
+    );
+}

@@ -562,8 +562,10 @@ pub fn create_claim(
 /// submitted, paid, rejected, or a draft deleted. Ready is refused while
 /// a gift of the draft was voided since it was made (delete the draft
 /// and claim again); after that a voided gift is paid back by the next
-/// claim. Rejected is refused while a later claim pays back one of its
-/// gifts. Deleting or rejecting lets every gift go, so the next claim
+/// claim. Rejected is refused while a later *draft* pays back one of its
+/// gifts (delete that draft first); once the later claim is ready or
+/// later it may be with HMRC, so its adjustment stands and this claim
+/// can still be rejected (HMRC then owes that tax back: tell them). Deleting or rejecting lets every gift go, so the next claim
 /// can take them.
 pub fn set_claim_status(
     ctx: &Ctx,
@@ -599,14 +601,15 @@ pub fn set_claim_status(
                 .prepare_cached(
                     "SELECT c.number FROM gift_aid_claim_adjustments a
                      JOIN gift_aid_claims c ON c.id = a.claim_id
-                     WHERE a.original_claim_id = ?1 AND a.live = 1 LIMIT 1",
+                     WHERE a.original_claim_id = ?1 AND a.live = 1 AND c.status = 'draft'
+                     LIMIT 1",
                 )?
                 .query_row([id], |r| r.get(0))
                 .optional()?;
             if let Some(number) = later {
                 return Err(ContractError::rejected(
                     "adjusted_later",
-                    format!("Claim {number} pays back gifts of this one: reject that first"),
+                    format!("Draft claim {number} pays back gifts of this one: delete it first"),
                 ));
             }
         }
