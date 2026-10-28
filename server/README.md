@@ -491,11 +491,21 @@ A claim is a financial record (rule 4): `gift_aid_claims` with its
 `gift_aid_claim_lines` (the gift, its covering declaration, and the donor
 as sent: kept through later edits and erasure) and
 `gift_aid_claim_adjustments` (tax paid back on gifts voided after an
-earlier claim was sent). `giftaid.claim` is the claim as made
-(create-only); `giftaid.claimStatus` moves it `draft → ready → submitted →
-paid`, or `rejected` (from ready or submitted), or a draft `deleted`
-(kept, unlisted). Neither is restorable. Reclaim = floor(amount / 4) per
-line, in pence.
+earlier claim may have gone to HMRC). `giftaid.claim` is the claim as
+made (create-only, **at most 1,000 lines**: HMRC's schedule limit, one
+schedule per Charities Online claim); `giftaid.claimStatus` moves it
+`draft → ready → submitted → paid`, or `rejected` (from ready or
+submitted, with a reason), or a draft `deleted` (kept, unlisted).
+Neither is restorable. Reclaim = floor(amount / 4) per line, in pence.
+"Create" over more than 1,000 eligible gifts makes several claims,
+numbered in turn, oldest gifts first; the adjustments ride on the
+first.
+
+**Ready** means the claim may go to HMRC: from then on it can't be
+deleted, and only then do its schedule and XML download (`claim_draft`
+before). A gift voided out of a draft holds the draft back
+(`voided_gifts`: delete it and claim again); one voided out of a ready,
+submitted or paid claim is paid back by the next claim.
 
 **A gift is in at most one live claim**: a partial unique index on the
 lines' `gift_id` where `live = 1` (deleted and rejected claims set their
@@ -504,25 +514,28 @@ its own counter, set and cleared only by its claim's commands): while
 locked, `giving.gift` refuses a new amount or date and `giving.status`
 needs a reason to void and refuses an un-void (`422 rejected`:
 `claimed_gift`, `void_reason_required`), on every path, restores
-included. A gift voided out of a sent claim is paid back by the next
-claim (an adjustment); one voided out of a draft or ready claim stops
-that claim being marked ready or submitted (`voided_gifts`).
+included. The declaration a completed claimed gift was claimed under
+can't be voided, nor cancelled from on or before that gift's date
+(`claimed_declaration`).
 
 Eligible: completed, unclaimed, received in the last 4 years and by the
-end date, covered by a declaration on its date, from a person with a
-first and last name, a house name or number and a UK postcode (or an
-address outside the UK, the Isle of Man and Channel Islands included).
-The preview lists every other gift in range with its reasons.
+end date, covered by a declaration on its date, from a person whose
+name fits HMRC's name patterns once folded to ASCII (Zoë → Zoe, O’Brien
+→ O'Brien), with a house name or number and a UK postcode (or an address
+outside the UK, the Isle of Man and Channel Islands included; `UK`,
+`United Kingdom`, England and the like count as GB). The preview lists
+every other gift in range with its reasons, and counts the unclaimed
+gifts too old to claim (`tooOld`).
 
 Routes under `/api/t/{slug}`, **admin only** (reads too):
 
 | route | |
 |---|---|
 | `GET giftaid/claims` | `GiftAidClaims {claims}`: newest first, deleted drafts left out |
-| `GET giftaid/claims/preview?periodEnd` | `GiftAidClaimPreview {lines, adjustments, excluded, totals, scheduleParts, …}` |
-| `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?}` | `GiftAidClaimSaved {id, counter, view}` (a draft); `422 rejected`: `nothing_to_claim`, `preview_changed` |
-| `GET giftaid/claims/{id}` | `GiftAidClaimView`: summary, lines, adjustments, `scheduleParts`, `voidedGifts` |
-| `POST giftaid/claims/{id}/status {expected, status, submittedOn?, hmrcReference?, paidOn?, paidAmount?, reason?}` | `GiftAidClaimSaved` (`view` null once deleted); `expected` = `statusVersion`; `409 stale`; `422 rejected`: `claim_status`, `voided_gifts`, `adjusted_later` |
-| `GET giftaid/claims/{id}/schedule?part=1&format=excel\|libreoffice` | HMRC's Gift Aid schedule (`.ods`), filled from HMRC's own template (`giftaid/assets/hmrc`), 1,000 donations a part |
-| `GET giftaid/claims/{id}/xml` | the claim as HMRC's R68 XML, IRmark stamped (`X-IRmark`: base32), generated and never sent; `422 rejected {reason: missing_hmrc_details}` until the details are complete |
+| `GET giftaid/claims/preview?periodEnd` | `GiftAidClaimPreview {lines, adjustments, excluded, tooOld, totals, claims, …}` |
+| `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?, expectedAdjustment?}` | `GiftAidClaimsCreated {claims}` (drafts); `422 rejected`: `nothing_to_claim`, `preview_changed` |
+| `GET giftaid/claims/{id}` | `GiftAidClaimView`: summary, lines, adjustments, `voidedGifts` |
+| `POST giftaid/claims/{id}/status {expected, status, submittedOn?, hmrcReference?, paidOn?, paidAmount?, reason?}` | `GiftAidClaimSaved` (`view` null once deleted); `expected` = `statusVersion`; `409 stale`; `422 rejected`: `claim_status`, `voided_gifts`, `adjusted_later` (a later *draft* pays back one of its gifts) |
+| `GET giftaid/claims/{id}/schedule?format=excel\|libreoffice` | HMRC's Gift Aid schedule (`.ods`), filled from HMRC's own template (`giftaid/assets/hmrc`); ready or later |
+| `GET giftaid/claims/{id}/xml` | the claim as HMRC's R68 XML, IRmark stamped (`X-IRmark`: base32), generated and never sent; ready or later; `422 rejected`: `missing_hmrc_details`, `org_name` |
 | `GET giftaid/hmrc-details` · `POST giftaid/hmrc-details {expected?, …}` | `HmrcDetailsView {…, version, warnings}`: HMRC reference, regulator and number, the authorised official (name, postcode, phone); stored as typed, what HMRC would refuse is a warning |

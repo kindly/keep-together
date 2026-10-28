@@ -95,7 +95,10 @@ CREATE INDEX gifts_claimed_void ON gifts (claim_id)
 
 /// Every contract restore may meet in an org file's gift history.
 /// `giving.claimLock` is here for its upcasters; its apply refuses a
-/// restore.
+/// restore. There is no whole-gift restore yet: when one is added
+/// (`contracts::restore_entity_to`), exclude `giving.claimLock`, or a
+/// moment when a since-deleted claim held the gift aborts the restore
+/// (review L3).
 pub static REGISTRY: LazyLock<Registry> =
     LazyLock::new(|| Registry::new(&[&GIFT, &STATUS, &CLAIM_LOCK]));
 
