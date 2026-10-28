@@ -2176,3 +2176,100 @@ async fn the_sweep_backs_off_then_stops_for_a_refused_subscription() {
     assert!(sweep_should_try(Some((1, 100)), 100));
     assert!(!sweep_should_try(Some((SWEEP_MAX_REFUSALS, 0)), i64::MAX));
 }
+
+/// Second review L-f: the events routes are per organisation. Alpha's
+/// parked event is counted only in alpha's status; beta's retry puts
+/// nothing of alpha's back; beta's admin can't reach alpha's.
+#[tokio::test(flavor = "multi_thread")]
+async fn parked_events_and_their_retry_stay_in_their_organisation() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    t.connect("beta", &t.bob).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "status": 422, "path": "subscriptions" }),
+    )
+    .await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let alpha = ok(&t.w, "GET", "/api/t/alpha/gocardless", &t.val, None).await;
+    assert_eq!(alpha["failedEvents"], 1);
+    let beta = ok(&t.w, "GET", "/api/t/beta/gocardless", &t.bob, None).await;
+    assert_eq!(beta["failedEvents"], 0);
+
+    let beta = ok(
+        &t.w,
+        "POST",
+        "/api/t/beta/gocardless/events/retry",
+        &t.bob,
+        None,
+    )
+    .await;
+    assert_eq!(beta["failedEvents"], 0);
+    t.settle().await;
+    let alpha = ok(&t.w, "GET", "/api/t/alpha/gocardless", &t.val, None).await;
+    assert_eq!(alpha["failedEvents"], 1, "beta's retry left alpha's parked");
+    for (method, path) in [
+        ("GET", "/api/t/alpha/gocardless"),
+        ("POST", "/api/t/alpha/gocardless/events/retry"),
+    ] {
+        let (s, _) = t.w.call(method, path, &t.bob, None).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{method} {path}");
+    }
+    let alpha = ok(&t.w, "GET", "/api/t/alpha/gocardless", &t.val, None).await;
+    assert_eq!(alpha["failedEvents"], 1);
+}
+
+/// Second review L-f: what was kept for alpha after it disconnected an
+/// account never goes to another group that connects that account next.
+#[tokio::test(flavor = "multi_thread")]
+async fn another_group_connecting_the_account_never_gets_the_kept_events() {
+    let t = setup().await;
+    let (_, _, sub) = t.active().await;
+    let x = ok(&t.w, "GET", "/api/t/alpha/gocardless", &t.val, None).await["organisationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok(
+        &t.w,
+        "POST",
+        "/api/t/alpha/gocardless/disconnect",
+        &t.ann,
+        None,
+    )
+    .await;
+    let pm = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let kept = t
+        .events()
+        .into_iter()
+        .filter(|(_, tenant, o)| tenant.is_none() && o.as_deref() == Some("unknown_organisation"))
+        .count();
+    assert!(kept >= 2, "{:?}", t.events());
+
+    let callback = t.start_connect("beta", &t.bob, &x).await;
+    let (_, landed) = navigate(&t.w, &callback, &t.bob).await;
+    assert_eq!(landed, "/t/beta/settings?gocardless=connected");
+    t.settle().await;
+    let to_beta = t
+        .events()
+        .into_iter()
+        .filter(|(_, tenant, _)| tenant.as_deref() == Some(t.w.beta.id.as_str()))
+        .count();
+    assert_eq!(to_beta, 0, "{:?}", t.events());
+    let beta_db = t.w.store.org(&t.w.beta.id).unwrap();
+    let n: i64 = beta_db
+        .read(|r| {
+            r.query_row("SELECT count(*) FROM direct_debit_payments", [], |row| {
+                row.get(0)
+            })
+        })
+        .unwrap();
+    assert_eq!(n, 0);
+}

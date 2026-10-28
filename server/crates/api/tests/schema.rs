@@ -159,8 +159,9 @@ const FIXTURES: &[&str] = &[
     "UPDATE gifts SET claim_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', claim_lock_version = 1
      WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1';",
     // 17: Direct Debit (the gifts rebuild carries the v11 gift with its
-    // claim lock, and a void gift with its reason): a regular gift, its
-    // confirmed payment and the gift it became
+    // claim lock; `the_direct_debit_rebuild_keeps_…` puts a claimed void
+    // gift with its reason through it too): a void gift with a reason, a
+    // regular gift, its confirmed payment and the gift it became
     "INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, status, void_reason,
          entered_by, entered_at, gift_version, status_version)
      VALUES (3, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e9', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
@@ -569,7 +570,37 @@ fn the_direct_debit_rebuild_keeps_gift_aid_claims_columns_and_indexes() {
     let tmp = tempfile::tempdir().unwrap();
     file_at(tmp.path(), 16);
     let mut conn = Connection::open(tmp.path().join(format!("orgs/{TENANT}.db"))).unwrap();
+    // Before the rebuild: a gift claimed and then voided with a reason
+    // (what `gifts_claimed_void` finds for the next claim's adjustment).
+    conn.execute_batch(
+        "INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, status,
+             void_reason, claim_id, claim_lock_version, entered_by, entered_at, gift_version,
+             status_version)
+         VALUES (9, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0ea', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+             '2026-10-22', 700, 'cash', 'void', 'cheque bounced',
+             '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', 1, 1, 2600, 0, 2);",
+    )
+    .unwrap();
     org_migrations().to_latest(&mut conn).unwrap();
+    let carried: (String, Option<String>, Option<String>, i64) = conn
+        .query_row(
+            "SELECT status, void_reason, claim_id, claim_lock_version FROM gifts
+             INDEXED BY gifts_claimed_void
+             WHERE claim_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1' AND status = 'void'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        carried,
+        (
+            "void".into(),
+            Some("cheque bounced".into()),
+            Some("0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1".into()),
+            1
+        ),
+        "a claimed void gift and its reason through the rebuild"
+    );
     let (claim, lock): (Option<String>, i64) = conn
         .query_row(
             "SELECT claim_id, claim_lock_version FROM gifts
