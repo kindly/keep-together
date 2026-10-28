@@ -516,3 +516,47 @@ fn domain_crates_cannot_switch_the_read_view_off() {
         );
     }
 }
+
+/// Step 15's rebuild checks the foreign keys after it runs, whatever the
+/// connection's `foreign_keys` says: a rebuild that orphaned a row fails.
+#[test]
+fn a_rebuild_that_orphans_a_row_fails_its_step() {
+    use rusqlite_migration::{M, Migrations};
+    let migrations = Migrations::new(vec![
+        M::up(
+            "CREATE TABLE p (id TEXT PRIMARY KEY);
+             CREATE TABLE c (pid TEXT REFERENCES p (id));
+             INSERT INTO p VALUES ('x');
+             INSERT INTO c VALUES ('x');",
+        ),
+        M::up_with_hook("", api::schema::rebuild_with_deferred_keys("DELETE FROM p")),
+    ]);
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    let err = migrations.to_latest(&mut conn).unwrap_err();
+    assert!(err.to_string().contains("point at nothing"), "{err}");
+    // The migration's one transaction rolled back: nothing stayed.
+    let v: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 0);
+    // A rebuild that keeps every parent passes.
+    let ok = Migrations::new(vec![
+        M::up(
+            "CREATE TABLE p (id TEXT PRIMARY KEY);
+             CREATE TABLE c (pid TEXT REFERENCES p (id));
+             INSERT INTO p VALUES ('x');
+             INSERT INTO c VALUES ('x');",
+        ),
+        M::up_with_hook(
+            "",
+            api::schema::rebuild_with_deferred_keys(
+                "CREATE TABLE hold AS SELECT * FROM p; DROP TABLE p;
+                 CREATE TABLE p (id TEXT PRIMARY KEY); INSERT INTO p SELECT * FROM hold;
+                 DROP TABLE hold;",
+            ),
+        ),
+    ]);
+    let mut conn = Connection::open_in_memory().unwrap();
+    ok.to_latest(&mut conn).unwrap();
+}
