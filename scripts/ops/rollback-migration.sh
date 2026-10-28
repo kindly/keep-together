@@ -63,7 +63,7 @@ restore() {
 }
 
 # An org file put back gets a new recovery generation
-# (rs/crates/api/src/events.rs), so a tab's event cursor from the history
+# (server/crates/api/src/events.rs), so a tab's event cursor from the history
 # rolled back resets instead of replaying from a reused seq. A copy from
 # before the table existed gets a fresh one when it next migrates.
 rotate_generation() {

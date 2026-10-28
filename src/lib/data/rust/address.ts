@@ -1,6 +1,6 @@
 /**
  * The contact form's "Find address" (`POST /api/t/{slug}/address-lookup`,
- * rs `api::address`). Not a cached query: every lookup is a paid credit
+ * server `api::address`). Not a cached query: every lookup is a paid credit
  * counted against the group's month, and PAF results may not be kept.
  */
 import { useTenant } from '../../tenant'

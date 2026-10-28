@@ -47,6 +47,6 @@ factory/out/
 # sideview page locks
 *.sv.lock
 
-# Rust spike (rs/): build output and local org databases
-/rs/target/
-/rs/data/
+# The api (server/): build output and local org databases
+/server/target/
+/server/data/

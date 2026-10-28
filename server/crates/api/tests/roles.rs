@@ -133,7 +133,7 @@ fn the_route_table_parser_finds_chained_and_single_writes() {
 /// The viewer guard is method-based (a viewer's GET passes), so a GET
 /// must never write. The route table is pinned here: a new route, or a
 /// method changing, fails this test until it is added below, which is the
-/// moment to check that a new GET only reads (rs/README.md, "no writes on
+/// moment to check that a new GET only reads (server/README.md, "no writes on
 /// GET"). Routes are only ever registered as `.route(…, get/post…)` in
 /// `src/routes/` (and the members page's in `src/auth/members.rs`), the
 /// form the table is read from.

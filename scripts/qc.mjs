@@ -10,7 +10,7 @@
 // 1. Takes `.qc.lock` in the main checkout: the pool's ports are the
 //    machine's, so runs from different worktrees queue. A lock whose pid
 //    is dead is taken over; --no-wait (or QC_NO_WAIT=1) fails fast.
-// 2. Builds the release `api` (rs/) and the SPA into dist-qc/.
+// 2. Builds the release `api` (server/) and the SPA into dist-qc/.
 // 3. Starts N = --instances (QC_INSTANCES, default 3) apis, each on
 //    KEEP_PORT 8801+i with an empty data dir qc-data/<i>, dev auth and the
 //    QC seed on, bound to 127.0.0.1.
@@ -231,14 +231,14 @@ async function startApi(i, bin) {
 }
 
 async function localPool(opts) {
-  const bin = path.join(root, 'rs', 'target', 'release', 'api')
+  const bin = path.join(root, 'server', 'target', 'release', 'api')
   if (opts.build) {
     console.log('▸ building the release api and the SPA in parallel')
     const vite = path.join(root, 'node_modules/.bin/vite')
     await Promise.all([
       timed('cargo build --release -p api', () =>
         run('cargo', ['build', '--release', '-p', 'api'], {
-          cwd: path.join(root, 'rs'),
+          cwd: path.join(root, 'server'),
         }),
       ),
       timed('vite build', () =>

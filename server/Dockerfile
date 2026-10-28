@@ -2,7 +2,7 @@
 #
 # keep: one image, one process tree. Litestream runs the api (`-exec`), so
 # replication starts before the app writes and stops after it exits.
-# Build from the repo root:  docker build -f rs/Dockerfile .
+# Build from the repo root:  docker build -f server/Dockerfile .
 # (fly.staging.toml does the same.)
 
 ARG LITESTREAM_VERSION=0.5.17
@@ -29,11 +29,11 @@ RUN pnpm build
 
 # ---- server ---------------------------------------------------------------
 FROM rust:1.97-slim-trixie AS server
-WORKDIR /src/rs
-COPY rs/ ./
+WORKDIR /src/server
+COPY server/ ./
 # `keep` (crates/cli) is built when the crate exists (F1 adds it).
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=cargo-target,target=/src/rs/target \
+    --mount=type=cache,id=cargo-target,target=/src/server/target \
     set -eu; \
     pkgs="-p api -p seed"; \
     [ -d crates/cli ] && pkgs="$pkgs -p cli"; \
@@ -65,7 +65,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 COPY --from=server /out/ /usr/local/bin/
 COPY --from=web /src/dist /app/dist
-COPY rs/litestream.yml /etc/litestream.yml
+COPY server/litestream.yml /etc/litestream.yml
 COPY scripts/ops/entrypoint.sh scripts/ops/restore.sh scripts/ops/drill.sh /usr/local/bin/
 ENV KEEP_DATA_DIR=/data \
     KEEP_STATIC_DIR=/app/dist \

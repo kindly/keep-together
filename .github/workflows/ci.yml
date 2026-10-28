@@ -16,13 +16,14 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
+      # The server half of `pnpm check` is the rust job below.
+      - run: pnpm check:ts
 
   rust:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: rs
+        working-directory: server
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -31,7 +32,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rs
+          workspaces: server
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked

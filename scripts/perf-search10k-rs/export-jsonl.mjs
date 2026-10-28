@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The perf generator's people (./data.mjs) as JSONL,
-// one contact a line, for the Rust seed (rs/crates/seed). The same shape
+// one contact a line, for the Rust seed (server/crates/seed). The same shape
 // and seeds as the Convex measurement: tenant A = people(10000, 1), tenant
 // B = 63 contacts (people(63, 2): the Convex run's 60 seeded + 3 fixture).
 //

@@ -6,7 +6,7 @@
 // (e.g. a parallel `cargo build --release` in another worktree).
 //
 //   KEEP_DATA_DIR=<dir> KEEP_DEV_AUTH=1 KEEP_QC_SEED=1 KEEP_PORT=8800 \
-//     KEEP_SNAPSHOT_BUCKET=file://<dir>/bucket rs/target/release/api &
+//     KEEP_SNAPSHOT_BUCKET=file://<dir>/bucket server/target/release/api &
 //   node scripts/perf-stall/bench.mjs --url http://127.0.0.1:8800 \
 //     --out <dir> [--seconds 120] [--workers 4] [--contacts 10000] \
 //     [--retire-every 20] [--think 0] [--slug stall]

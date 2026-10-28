@@ -16,7 +16,7 @@
 # only (no org names or ids), and deletes the restored data unless you pass
 # --keep. Run it on your own machine or a UK box: it pulls every donor's
 # data. Needs the aws CLI, litestream (0.5.17) and sqlite3; it builds
-# keep-snapshot from rs/.
+# keep-snapshot from server/.
 #
 # 1. Seed a 10k org ("drill", the perf generator's people) with the `seed`
 #    bin inside the machine, then take a snapshot pass at once
@@ -61,8 +61,8 @@ if [[ ${1:-} == local ]]; then
   backup_creds=$(creds keep-backup) || die "no keep-backup credentials"
   prod_account=$(aws sts get-caller-identity --profile keep-prod --query Account --output text)
   backup_account=$(aws sts get-caller-identity --profile keep-backup --query Account --output text)
-  (cd rs && cargo build --release --locked --bin keep-snapshot -q)
-  PATH=$PWD/rs/target/release:$PWD/scripts/ops:$PATH
+  (cd server && cargo build --release --locked --bin keep-snapshot -q)
+  PATH=$PWD/server/target/release:$PWD/scripts/ops:$PATH
 
   prefix=$ENV_NAME
   if [[ $ENV_NAME == staging ]]; then

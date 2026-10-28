@@ -8,7 +8,7 @@
 // variants (`fts=words` and `fts=trigram`). Source-code cases are skipped:
 // source codes aren't in the spike.
 //
-//   KEEP_DATA_DIR=rs/data KEEP_DEV_AUTH=1 rs/target/release/api &
+//   KEEP_DATA_DIR=server/data KEEP_DEV_AUTH=1 server/target/release/api &
 //   node scripts/perf-search10k-rs/measure.mjs --url http://127.0.0.1:8787 \
 //     --slug perf-a --email perf-a@example.com \
 //     --slugB perf-b --emailB perf-b@example.com --out <dir> [--reps 20]

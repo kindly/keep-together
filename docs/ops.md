@@ -14,7 +14,7 @@ London (`lhr`):
 | `keep-staging` | `staging.keep-together.org.uk` | reset to the riverside seed on every deploy | every push to `main` (`deploy.yml`) |
 | `keep-prod` | `app.keep-together.org.uk` | real | by hand, from cutover (C2) |
 
-The image (`rs/Dockerfile`) holds the api, the built SPA, Litestream and
+The image (`server/Dockerfile`) holds the api, the built SPA, Litestream and
 a few scripts. The process tree inside the machine:
 
 ```
@@ -51,7 +51,7 @@ Set in `fly.staging.toml` or the image: `KEEP_ENV`, `KEEP_DATA_DIR=/data`,
 `KEEP_APP_ORIGIN`, `KEEP_CLIENT_IP_HEADER=Fly-Client-IP` and `KEEP_MAIL`.
 With `KEEP_ENV=staging|prod` the api won't boot without the origin, the
 client-IP header and both auth keys, and refuses `KEEP_MAIL=log`
-(`rs/crates/api/src/auth/boot.rs`).
+(`server/crates/api/src/auth/boot.rs`).
 
 Fly secrets:
 
@@ -140,7 +140,7 @@ them to `KEEP_MAIL_ONLY_TO` and deploy. Setting SES up (done once):
 
 The contact form's "Find address" asks Ideal Postcodes (PAF) for the
 addresses at a UK postcode, through the api
-(`POST /api/t/{slug}/address-lookup`; `rs/crates/api/src/address/`), so
+(`POST /api/t/{slug}/address-lookup`; `server/crates/api/src/address/`), so
 the key never reaches a browser. One credit per postcode that returns
 addresses; not found costs none.
 
@@ -251,7 +251,7 @@ disk load. Who checkpoints instead depends on Litestream.
 
 **Without Litestream** (local, QC, anything without
 `KEEP_LITESTREAM_SOCKET`), each open org file has a checkpointer thread
-with its own connection (`rs/crates/store/src/checkpoint.rs`):
+with its own connection (`server/crates/store/src/checkpoint.rs`):
 
 - a `PASSIVE` checkpoint about every second while anything has committed
   since the last one, and at once when a commit leaves 1000 or more pages
@@ -299,7 +299,7 @@ the seed's checkpoint):
 
 Restores matched the live file row for row in every run.
 
-`rs/litestream.yml` keeps Litestream's checkpoint defaults:
+`server/litestream.yml` keeps Litestream's checkpoint defaults:
 
 - `min-checkpoint-page-count` higher (10000) makes checkpoints rarer but
   each one longer (~1 s at 10k pages), lets the WAL reach ~40 MB per busy
@@ -443,7 +443,7 @@ temporary directory, and checks every file. It prints only pass/fail,
 timings, file and contact totals, and whether both sources list the same
 tenants: no org names or ids. Then it deletes the restored data. It
 needs the aws CLI, litestream 0.5.x and sqlite3, and builds
-`keep-snapshot` from `rs/`. Paste its lines into the drill log.
+`keep-snapshot` from `server/`. Paste its lines into the drill log.
 
 ## Monitoring
 
@@ -702,7 +702,7 @@ it in a file (`gh auth login --insecure-storage`). To remove it:
 ## To verify on the first real run
 
 Checked locally (podman, 2026-10-24, file replicas instead of S3): the
-image builds; Litestream 0.5.17 accepts `rs/litestream.yml` (socket,
+image builds; Litestream 0.5.17 accepts `server/litestream.yml` (socket,
 snapshot keys, `dir` + `watch` beside a `path`, `${VAR}` expansion) and
 picks up an org file created while running; `GET /list` keeps
 `last_sync_at` fresh for idle databases, so the lag check doesn't flag

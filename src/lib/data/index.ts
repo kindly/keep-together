@@ -1,5 +1,5 @@
 /**
- * The SPA's data layer, on the Rust API (`rs/README.md`, "HTTP
+ * The SPA's data layer, on the Rust API (`server/README.md`, "HTTP
  * conventions") through TanStack Query. Pages and the contact form import
  * from here. What isn't ported yet is listed in `ported.ts`.
  */

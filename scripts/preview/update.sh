@@ -102,11 +102,11 @@ jobs=${KEEP_PREVIEW_JOBS:-1}
 release=$PREVIEW/releases/$new
 if [ ! -x "$release/api" ] || [ ! -f "$release/dist/index.html" ]; then
   run git -C "$src" checkout --quiet --force --detach "$new" || fail "checkout"
-  (cd "$src/rs" && run "${quiet[@]}" cargo build --release --locked -j "$jobs" -p api) ||
+  (cd "$src/server" && run "${quiet[@]}" cargo build --release --locked -j "$jobs" -p api) ||
     fail "cargo build"
   (cd "$src" && run "${quiet[@]}" pnpm install --frozen-lockfile --reporter=silent) ||
     fail "pnpm install"
-  # The image's build settings (rs/Dockerfile): the SPA talks to its own
+  # The image's build settings (server/Dockerfile): the SPA talks to its own
   # origin, the Rust api.
   (cd "$src" && VITE_RELEASE=$new run "${quiet[@]}" pnpm build) ||
     fail "pnpm build"
@@ -114,7 +114,7 @@ if [ ! -x "$release/api" ] || [ ! -f "$release/dist/index.html" ]; then
   {
     rm -rf "$staging" &&
       mkdir -p "$staging/bin" &&
-      cp "$src/rs/target/release/api" "$staging/api" &&
+      cp "$src/server/target/release/api" "$staging/api" &&
       cp -r "$src/dist" "$staging/dist" &&
       # A commit from before these scripts existed has none to copy.
       { [ ! -d "$src/scripts/preview" ] ||

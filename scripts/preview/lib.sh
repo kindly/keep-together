@@ -4,7 +4,7 @@
 # Layout under $PREVIEW (KEEP_PREVIEW_HOME, default
 # ~/.local/share/keep-preview):
 #   src/              a clone of the GitHub repo, detached at origin/main;
-#                     builds happen here (rs/target and node_modules stay
+#                     builds happen here (server/target and node_modules stay
 #                     between updates)
 #   releases/<sha>/   api + dist/ of one built commit; the last 3 are kept
 #   current           symlink to the release the service runs
@@ -89,7 +89,7 @@ relaxed_settings() {
 }
 
 # The preview's address lookup is the fake provider (fixed addresses, no
-# network, no credit spent: rs/crates/api/src/address/fake.rs). An install
+# network, no credit spent: server/crates/api/src/address/fake.rs). An install
 # from before it gains KEEP_ADDRESS_LOOKUP=fake once; one already there
 # is the human's choice, kept. Prints what it changed.
 lookup_settings() {

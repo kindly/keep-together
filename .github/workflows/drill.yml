@@ -34,7 +34,7 @@ jobs:
           toolchain: '1.97'
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rs
+          workspaces: server
       - name: Tools
         run: |
           sudo apt-get update -q && sudo apt-get install -yq sqlite3
@@ -42,8 +42,8 @@ jobs:
           curl -fsSLo "$RUNNER_TEMP/$f" "https://github.com/benbjohnson/litestream/releases/download/v$LITESTREAM_VERSION/$f"
           echo "$LITESTREAM_SHA256  $RUNNER_TEMP/$f" | sha256sum -c -
           sudo tar -xzf "$RUNNER_TEMP/$f" -C /usr/local/bin litestream
-          (cd rs && cargo build --release --locked --bin keep-snapshot)
-          echo "$PWD/rs/target/release" >>"$GITHUB_PATH"
+          (cd server && cargo build --release --locked --bin keep-snapshot)
+          echo "$PWD/server/target/release" >>"$GITHUB_PATH"
           echo "$PWD/scripts/ops" >>"$GITHUB_PATH"
       - name: Replica prefix
         # Staging replicates under staging/<deployment>: the newest one is

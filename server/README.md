@@ -1,4 +1,4 @@
-# rs/ — the Rust + SQLite backend
+# server/ — the Rust + SQLite backend
 
 keep-together is moving off Convex (`factory/plans/migration-rust.sv`):
 axum + rusqlite, **one SQLite file per organisation** plus `platform.db`.
@@ -6,15 +6,15 @@ Each route is ported straight here; `convex/` is read-only reference until
 cutover. The SPA talks only to this API.
 
 ```
-cargo test                                 # from rs/: every crate; also re-exports the TS types
+cargo test                                 # from server/: every crate; also re-exports the TS types
 cargo clippy --all-targets -- -D warnings
-KEEP_DEV_AUTH=1 KEEP_PORT=8788 cargo run -p api   # data in rs/data/ (gitignored)
+KEEP_DEV_AUTH=1 KEEP_PORT=8788 cargo run -p api   # data in server/data/ (gitignored)
 KEEP_PORT=8788 pnpm dev                           # from the repo root: Vite proxies /api to it
 cargo run -p cli --bin keep -- sql <slug> "SELECT count(*) FROM contacts"
 ```
 
 Each worktree runs its api on its own `KEEP_PORT` (8787 + n) with its own
-`rs/data/`; Vite (`pnpm dev`, `vite preview`) always proxies `/api` to
+`server/data/`; Vite (`pnpm dev`, `vite preview`) always proxies `/api` to
 `127.0.0.1:$KEEP_PORT` (or `KEEP_API`). With no api running, `/api` calls
 get proxy errors.
 
@@ -46,7 +46,7 @@ The 10k measurement (`scripts/perf-search10k-rs/`):
 
 ```
 node scripts/perf-search10k-rs/export-jsonl.mjs $TMPDIR/rs10k      # from the repo root
-cargo build --release -p seed -p api                               # from rs/
+cargo build --release -p seed -p api                               # from server/
 ./target/release/seed --data data --slug perf-a --admin perf-a@example.com --jsonl $TMPDIR/rs10k/a.jsonl --prefix perfa
 ./target/release/seed --data data --slug perf-b --admin perf-b@example.com --jsonl $TMPDIR/rs10k/b.jsonl --prefix perfb
 KEEP_DATA_DIR=data KEEP_DEV_AUTH=1 ./target/release/api &

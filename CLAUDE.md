@@ -38,10 +38,10 @@ keep-together is moving off Convex to Rust (axum + rusqlite) with **one
 SQLite file per organisation** (`factory/plans/migration-rust.sv`; ADR
 0024). Until cutover:
 
-- **Convex is frozen**: fixes only. New and ported work goes in `rs/`;
+- **Convex is frozen**: fixes only. New and ported work goes in `server/`;
   `convex/` is read-only reference for the port. The Convex sections of
   this file stay true for `convex/` and go at cutover.
-- Read `rs/README.md` first: crates, HTTP conventions, the write path,
+- Read `server/README.md` first: crates, HTTP conventions, the write path,
   migrations, jobs, `keep`.
 - **Writes**: only through `contracts::transact` → `execute` (sealed: an
   `OrgTx` has no write method; `compile_fail` doctests prove it), each
@@ -52,14 +52,14 @@ SQLite file per organisation** (`factory/plans/migration-rust.sv`; ADR
   domain crates must not contain `query_only`, `authorizer(`,
   `unchecked_transaction`, or SQL literals starting with
   `COMMIT`/`BEGIN`/`ROLLBACK`/`SAVEPOINT`/`RELEASE`/`ATTACH`/`PRAGMA`/`END`
-  (`rs/crates/api/tests/schema.rs` greps for them).
+  (`server/crates/api/tests/schema.rs` greps for them).
 - **Tenancy is the file** (rule 6): no `tenantId` columns, no scoped
   constructors. Domain crates depend on `contracts`, never on `store`,
   `platform`, `auth` or `api` (a test reads their manifests). Commands
   that span modules live in `api`, in one transaction.
 - **Money** is `INTEGER` pence; no `REAL` column anywhere (a schema test).
 - **Schema**: append a step to `api::schema::org_migrations()` and its
-  fixture to `FIXTURES` in `rs/crates/api/tests/schema.rs`. One
+  fixture to `FIXTURES` in `server/crates/api/tests/schema.rs`. One
   transactional step per change; files migrate at boot, copy first, fail
   closed. Never edit a shipped step.
 - **Every route** gets an isolation test (two orgs: B never sees A; A's ids
@@ -70,11 +70,11 @@ SQLite file per organisation** (`factory/plans/migration-rust.sv`; ADR
 - **Jobs**: register on `api::jobs`; loop orgs with `each_org`, one file
   at a time.
 - **Local only**: each worktree runs its api on its own `KEEP_PORT` (8787 +
-  n) with data in `rs/data/`; no cloud deployments, no Convex deploys.
+  n) with data in `server/data/`; no cloud deployments, no Convex deploys.
   `KEEP_DEV_AUTH=1` is no auth and only works on a loopback bind.
 - **Tests**: port every Convex test whose rule still holds as a named Rust
   (or dom) test; the report carries a parity table. `cargo test`, `cargo
-  clippy --all-targets -- -D warnings` (from `rs/`) and `pnpm check`.
+  clippy --all-targets -- -D warnings` (from `server/`) and `pnpm check`.
 - Agents' SQL goes through `keep sql <slug> "<select…>"`: read-only by
   construction.
 

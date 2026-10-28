@@ -1,5 +1,5 @@
 //! The HTTP API: JSON over HTTP, one `POST` per contract command, `GET`s
-//! for reads. Conventions are in `rs/README.md`.
+//! for reads. Conventions are in `server/README.md`.
 
 pub mod address;
 pub mod auth;

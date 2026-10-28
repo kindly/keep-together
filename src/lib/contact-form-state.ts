@@ -17,7 +17,7 @@ import type { Unsaved } from './unsaved'
 /**
  * A new child row's key, or a create's client key: 32 lower-case hex
  * characters, the only shape the api takes for an id the client chooses
- * (rs/README.md; F1 L5). A v4 UUID without its dashes.
+ * (server/README.md; F1 L5). A v4 UUID without its dashes.
  */
 export function newKey(): string {
   return crypto.randomUUID().replaceAll('-', '')
