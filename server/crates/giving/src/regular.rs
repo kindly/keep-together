@@ -1292,6 +1292,9 @@ CREATE TABLE direct_debit_payments (
 ) STRICT;
 CREATE INDEX direct_debit_payments_by_regular_gift
     ON direct_debit_payments (regular_gift_id, charge_date, seq);
+-- giving.status reads a gift's payment on every void and un-void.
+CREATE INDEX direct_debit_payments_by_gift ON direct_debit_payments (gift_id)
+    WHERE gift_id IS NOT NULL;
 ";
 
 #[cfg(test)]
