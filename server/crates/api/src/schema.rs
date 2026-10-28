@@ -44,7 +44,31 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(giftaid::MIGRATION_CLAIMS),
         // 16: a gift's void reason and claim lock
         M::up(giving::MIGRATION_CLAIM_LOCK),
+        // 17: Direct Debit: `gifts.method` widened (a rebuild), regular
+        // gifts and their payments (GoCardless D2)
+        M::up_with_hook(
+            "",
+            rebuild_with_deferred_keys(giving::MIGRATION_DIRECT_DEBIT),
+        )
+        .foreign_key_check(),
     ])
+}
+
+/// A step that rebuilds a table other tables point at (drop, create,
+/// copy back). Foreign keys can't be switched off inside the migration's
+/// transaction, so they are deferred to its commit instead: the drop
+/// orphans the child rows, the copy back finds their parents again, and
+/// the commit (and the `foreign_key_check` after it) fails if any stays
+/// orphaned. `defer_foreign_keys` resets itself at the commit.
+fn rebuild_with_deferred_keys(
+    sql: &'static str,
+) -> impl Fn(&rusqlite::Transaction) -> rusqlite_migration::HookResult + Clone + Send + Sync + 'static
+{
+    move |tx| {
+        tx.pragma_update(None, "defer_foreign_keys", "ON")?;
+        tx.execute_batch(sql)?;
+        Ok(())
+    }
 }
 
 /// `platform.db`'s per-crate schemas, run in this order after its base
@@ -54,6 +78,7 @@ pub const PLATFORM_SCHEMAS: &[PlatformSchema] = &[
     auth::SCHEMA,
     crate::jobs::SCHEMA,
     crate::address::SCHEMA,
+    crate::gocardless::SCHEMA,
 ];
 
 /// A new organisation's reference data, in its file's first transaction

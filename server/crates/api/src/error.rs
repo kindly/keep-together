@@ -50,6 +50,9 @@ pub enum ApiError {
     /// 503: the address lookup provider can't answer now (down, slow, out
     /// of credit, or the platform's daily ceiling); type the address.
     LookupUnavailable,
+    /// 503: GoCardless can't be reached or failed; nothing was changed
+    /// here. Try again.
+    GocardlessUnavailable,
     /// 500. Details go to the server log, not the client.
     Internal,
 }
@@ -65,7 +68,9 @@ impl ApiError {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             ApiError::RateLimited | ApiError::LookupCap => StatusCode::TOO_MANY_REQUESTS,
-            ApiError::LookupUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::LookupUnavailable | ApiError::GocardlessUnavailable => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

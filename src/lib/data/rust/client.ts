@@ -44,6 +44,8 @@ export function describe(error: ApiError): string {
       return 'Lookups used up this month: type the address'
     case 'lookup_unavailable':
       return 'Lookup unavailable: type the address'
+    case 'gocardless_unavailable':
+      return 'GoCardless isn’t answering: try again'
     case 'internal':
       return 'Could not save'
   }

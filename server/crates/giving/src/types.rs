@@ -7,13 +7,16 @@ use serde::{Deserialize, Serialize};
 use sources::CodeDescription;
 use ts_rs::TS;
 
-/// How a gift was paid: by hand, or on a card reader we don't drive (yet).
+/// How a gift was paid: by hand, on a card reader we don't drive (yet), or
+/// by Direct Debit (a GoCardless payment GoCardless confirmed: recorded by
+/// the system, never by hand).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 #[ts(export, rename = "GiftMethod")]
 pub enum Method {
     Cash,
     Card,
+    DirectDebit,
 }
 
 impl Method {
@@ -21,14 +24,15 @@ impl Method {
         match self {
             Method::Cash => "cash",
             Method::Card => "card",
+            Method::DirectDebit => "direct_debit",
         }
     }
 
     pub fn parse(s: &str) -> Self {
-        if s == "card" {
-            Method::Card
-        } else {
-            Method::Cash
+        match s {
+            "card" => Method::Card,
+            "direct_debit" => Method::DirectDebit,
+            _ => Method::Cash,
         }
     }
 }
@@ -90,7 +94,8 @@ pub struct GiftPayload {
     #[ts(type = "number")]
     pub amount: i64,
     pub method: Method,
-    /// Card only: the reader's receipt id.
+    /// Card: the reader's receipt id. Direct Debit: the GoCardless
+    /// payment id (unique: one gift per payment).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub reference: Option<String>,

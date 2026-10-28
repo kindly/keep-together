@@ -186,7 +186,7 @@ function GiftView({ gift }: { gift: Gift }) {
             <dd>{formatPence(gift.amount)}</dd>
             <dt className="text-neutral-500">Method</dt>
             <dd>{METHOD_LABELS[gift.method]}</dd>
-            {gift.method === 'card' && (
+            {gift.method !== 'cash' && (
               <>
                 <dt className="text-neutral-500">Reference</dt>
                 <dd>{gift.reference ?? '—'}</dd>
@@ -542,7 +542,9 @@ function GiftEdit({ gift, onDone }: { gift: Gift; onDone: () => void }) {
         receivedOn,
         amount,
         method,
-        reference: method === 'card' ? reference : undefined,
+        // A Direct Debit gift keeps its payment id (the server refuses
+        // any change to it).
+        reference: method === 'cash' ? undefined : reference,
         allocations: single
           ? [{ key: single.key, sourceCodeId: code!.id, amount }]
           : gift.allocations.map((a) => ({

@@ -14,6 +14,11 @@
 //!   when set, Litestream also owns org files' WAL checkpoints (no
 //!   checkpointer threads: `store::Store::without_checkpointer`)
 //! - `SENTRY_DSN`: error reporting (`observe`)
+//! - `KEEP_GOCARDLESS` (`off`/`fake`/`sandbox`/`live`),
+//!   `KEEP_GOCARDLESS_CLIENT_ID`, `KEEP_GOCARDLESS_CLIENT_SECRET`,
+//!   `KEEP_GOCARDLESS_WEBHOOK_SECRET`: Direct Debit (`gocardless`); `fake`
+//!   and `sandbox` are refused with `KEEP_ENV=prod`, `live` without it, and
+//!   `sandbox`/`live` without the three secrets
 //! - `KEEP_ADDRESS_LOOKUP` (`off`/`fake`/`ideal`), `KEEP_IDEAL_POSTCODES_KEY`,
 //!   `KEEP_ADDRESS_LOOKUP_CAP`, `KEEP_ADDRESS_LOOKUP_DAILY_CEILING`: the
 //!   contact form's postcode lookup (`address`); `ideal` without a key or
@@ -71,6 +76,36 @@ async fn main() {
         eprintln!("{e}");
         std::process::exit(2)
     });
+    let self_host = if bind.is_unspecified() || bind.is_loopback() {
+        if bind.is_ipv6() {
+            "[::1]".to_owned()
+        } else {
+            "127.0.0.1".to_owned()
+        }
+    } else if bind.is_ipv6() {
+        format!("[{bind}]")
+    } else {
+        bind.to_string()
+    };
+    let gocardless = api::gocardless::from_vars(
+        |name| std::env::var(name).ok(),
+        api::gocardless::Origins {
+            app_origin: &auth.config.app_origin,
+            self_base: &format!("http://{self_host}:{port}"),
+        },
+        auth.keys.settings_key().clone(),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2)
+    })
+    .map(Arc::new);
+    if let Some(gc) = &gocardless {
+        eprintln!(
+            "gocardless {:?}: OAuth redirect {}",
+            gc.mode, gc.redirect_uri
+        );
+    }
     if let Some(lookup) = &address {
         eprintln!(
             "address lookup {:?}: {} a month per organisation, {} a day in all",
@@ -155,10 +190,17 @@ async fn main() {
         // A minute after boot (`first_after`), then hourly.
         jobs.register(SnapshotJob::new(config));
     }
+    if let Some(gc) = &gocardless {
+        jobs.register(api::gocardless::process::EventsJob {
+            store: store.clone(),
+            gc: gc.clone(),
+        });
+    }
     let state = AppState::new(store, dev_auth)
         .with_auth(auth)
         .with_qc(qc)
-        .with_address(address);
+        .with_address(address)
+        .with_gocardless(gocardless);
     jobs.register(api::auth::LimitSweep(state.auth.clone()));
     jobs.spawn();
 

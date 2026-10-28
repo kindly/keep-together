@@ -1,0 +1,920 @@
+//! GoCardless (`api::gocardless`, plan gocardless.sv D1 and D2) end to end
+//! against the fake, served on a real port so the HTTP client, the OAuth
+//! redirects and the signed webhooks all cross the wire: connecting and
+//! disconnecting, who may, the single-use OAuth state, the webhook's
+//! signature and event store, and a regular gift from set-up through
+//! mandate, payments, failure, chargeback and cancellation. Tenancy on
+//! every route: B never sees A; A's ids under B's slug are 404.
+
+mod common;
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use api::gocardless::fake::Fake;
+use api::gocardless::webhook::{SIGNATURE_HEADER, sign};
+use api::gocardless::{GoCardless, Origins, from_vars, process};
+use api::{AppState, app, routes};
+use axum::http::{StatusCode, header};
+use common::{World, request, world};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+struct T {
+    w: World,
+    gc: Arc<GoCardless>,
+    fake: Arc<Fake>,
+    base: String,
+    http: reqwest::Client,
+    ann: String,
+    sam: String,
+    val: String,
+    bob: String,
+    code: String,
+    beta_code: String,
+}
+
+async fn ok(w: &World, method: &str, path: &str, cookie: &str, body: Option<Value>) -> Value {
+    let (s, out) = w.call(method, path, cookie, body).await;
+    assert_eq!(s, StatusCode::OK, "{method} {path}: {out}");
+    out
+}
+
+/// A new full source code (version) under a seeded category.
+async fn source_code(w: &World, slug: &str, cookie: &str) -> String {
+    let tree = ok(w, "GET", &format!("/api/t/{slug}/sources"), cookie, None).await;
+    let category = tree["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["parentId"].is_null())
+        .expect("a seeded category")["id"]
+        .clone();
+    let made = ok(
+        w,
+        "POST",
+        &format!("/api/t/{slug}/sources"),
+        cookie,
+        Some(json!({ "parentId": category, "name": "Direct", "isActive": true })),
+    )
+    .await;
+    made["versionId"].as_str().unwrap().to_owned()
+}
+
+fn settings_key() -> platform::settings::SettingsKey {
+    ::auth::keys::Keys::dev().settings_key().clone()
+}
+
+/// The two-org world with `KEEP_GOCARDLESS=fake`, served on a local port
+/// (the fake's API and webhooks reach this same app over HTTP).
+async fn setup() -> T {
+    let mut w = world();
+    for t in [&w.alpha, &w.beta] {
+        let db = w.store.org(&t.id).unwrap();
+        contracts::transact(&db, None, api::schema::seed_new_org).unwrap();
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let gc = from_vars(
+        |name| (name == "KEEP_GOCARDLESS").then(|| "fake".to_owned()),
+        Origins {
+            app_origin: &base,
+            self_base: &base,
+        },
+        settings_key(),
+    )
+    .unwrap()
+    .map(Arc::new)
+    .unwrap();
+    w.app = app(
+        AppState::new(w.store.clone(), true).with_gocardless(Some(gc.clone())),
+        routes::router(),
+    );
+    let served = w.app.clone();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            served.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
+    let ann = w.login("ann@alpha.org").await;
+    let sam = w.login("sam@alpha.org").await;
+    let val = w.login("val@alpha.org").await;
+    let bob = w.login("bob@beta.org").await;
+    let code = source_code(&w, "alpha", &ann).await;
+    let beta_code = source_code(&w, "beta", &bob).await;
+    T {
+        fake: gc.fake.clone().unwrap(),
+        gc,
+        w,
+        base,
+        http: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap(),
+        ann,
+        sam,
+        val,
+        bob,
+        code,
+        beta_code,
+    }
+}
+
+/// A GET through the app with a cookie, answering status and Location.
+async fn navigate(w: &World, path: &str, cookie: &str) -> (StatusCode, String) {
+    let res = w
+        .app
+        .clone()
+        .oneshot(request("GET", path, Some(cookie), None))
+        .await
+        .unwrap();
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .map(|v| v.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    (res.status(), location)
+}
+
+impl T {
+    /// The fake's consent page, answered as a browser would: the callback
+    /// path GoCardless sends the browser back to.
+    async fn consent(&self, start_url: &str, decision: &str) -> String {
+        let url = reqwest::Url::parse(start_url).unwrap();
+        assert!(
+            url.as_str().starts_with(&format!(
+                "{}/api/fake-gocardless/connect/oauth/authorize",
+                self.base
+            )),
+            "{url}"
+        );
+        let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(q["scope"], "read_write");
+        assert_eq!(q["client_id"], api::gocardless::fake::CLIENT_ID);
+        let page = self.http.get(url.clone()).send().await.unwrap();
+        assert_eq!(page.status(), 200);
+        let res = self
+            .http
+            .post(format!(
+                "{}/api/fake-gocardless/connect/oauth/decide",
+                self.base
+            ))
+            .form(&[
+                ("redirect_uri", q["redirect_uri"].as_str()),
+                ("state", q["state"].as_str()),
+                ("decision", decision),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 303);
+        let back = reqwest::Url::parse(res.headers()["location"].to_str().unwrap()).unwrap();
+        assert_eq!(back.path(), "/api/gocardless/callback");
+        format!("{}?{}", back.path(), back.query().unwrap())
+    }
+
+    /// Connect `slug` as `cookie` (its admin) all the way through.
+    async fn connect(&self, slug: &str, cookie: &str) -> Value {
+        let start = ok(
+            &self.w,
+            "POST",
+            &format!("/api/t/{slug}/gocardless/connect"),
+            cookie,
+            None,
+        )
+        .await;
+        let callback = self
+            .consent(start["url"].as_str().unwrap(), "connect")
+            .await;
+        let (s, landed) = navigate(&self.w, &callback, cookie).await;
+        assert_eq!(s, StatusCode::SEE_OTHER);
+        assert_eq!(landed, format!("/t/{slug}/settings?gocardless=connected"));
+        ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/{slug}/gocardless"),
+            cookie,
+            None,
+        )
+        .await
+    }
+
+    async fn contact(&self, slug: &str, cookie: &str) -> String {
+        ok(
+            &self.w,
+            "POST",
+            &format!("/api/t/{slug}/contacts"),
+            cookie,
+            Some(common::person("Jo", "Bloggs")),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    async fn set_up(&self, slug: &str, cookie: &str, contact: &str, code: &str) -> Value {
+        ok(
+            &self.w,
+            "POST",
+            &format!("/api/t/{slug}/contacts/{contact}/regular-gifts"),
+            cookie,
+            Some(json!({
+                "amount": 1000, "frequency": "monthly", "dayOfMonth": 5,
+                "sourceCodeId": code, "clientKey": contracts::new_id()
+            })),
+        )
+        .await["view"]
+            .clone()
+    }
+
+    /// The donor completes the hosted page.
+    async fn sign(&self, flow_url: &str) {
+        let page = self.http.get(flow_url).send().await.unwrap();
+        assert_eq!(page.status(), 200);
+        assert!(page.text().await.unwrap().contains("Jo"), "prefilled");
+        let done = self
+            .http
+            .post(format!("{flow_url}/complete"))
+            .form(&[("given_name", "Jo"), ("family_name", "Bloggs")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(done.status(), 200);
+        assert!(!done.text().await.unwrap().contains("didn’t land"));
+    }
+
+    async fn simulate(&self, path: &str) -> Value {
+        let res = self
+            .http
+            .post(format!("{}/api/fake-gocardless/simulate/{path}", self.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+        let out: Value = res.json().await.unwrap();
+        assert_eq!(out["delivered"], true, "{path}: {out}");
+        out
+    }
+
+    /// Wait out any run the webhook started, then handle what's left.
+    async fn settle(&self) {
+        process::process_pending(self.w.store.clone(), self.gc.clone())
+            .await
+            .unwrap();
+    }
+
+    async fn regular(&self, slug: &str, cookie: &str, id: &str) -> Value {
+        ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/{slug}/regular-gifts/{id}"),
+            cookie,
+            None,
+        )
+        .await
+    }
+
+    async fn post_webhook(&self, body: &str, signature: &str) -> u16 {
+        self.http
+            .post(format!("{}/api/gocardless/webhook", self.base))
+            .header("Content-Type", "application/json")
+            .header(SIGNATURE_HEADER, signature)
+            .body(body.to_owned())
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+
+    fn events(&self) -> Vec<(String, Option<String>, Option<String>)> {
+        self.w
+            .store
+            .platform()
+            .with_read(|c| {
+                c.prepare("SELECT id, tenant_id, outcome FROM gocardless_events ORDER BY id")?
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_admin_connects_and_disconnects_with_partner_oauth() {
+    let t = setup().await;
+    let before = ok(&t.w, "GET", "/api/t/alpha/gocardless", &t.val, None).await;
+    assert_eq!(
+        (
+            before["enabled"].clone(),
+            before["mode"].clone(),
+            before["connected"].clone()
+        ),
+        (json!(true), json!("fake"), json!(false))
+    );
+    let status = t.connect("alpha", &t.ann).await;
+    assert_eq!(status["connected"], true);
+    let org = status["organisationId"].as_str().unwrap().to_owned();
+    assert!(org.starts_with("OR"), "{org}");
+    // The token is sealed in alpha's file: no plaintext in the row or its
+    // revision.
+    let db = t.w.store.org(&t.w.alpha.id).unwrap();
+    let raw: Vec<String> = db
+        .read(|r| {
+            r.prepare(
+                "SELECT ciphertext FROM tenant_settings
+                 UNION ALL SELECT payload FROM revisions WHERE contract = 'tenantSettings.value'",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap();
+    assert!(!raw.is_empty());
+    assert!(raw.iter().all(|r| !r.contains("fake_token_")));
+    // Beta sees nothing of it.
+    let beta = ok(&t.w, "GET", "/api/t/beta/gocardless", &t.bob, None).await;
+    assert_eq!(beta["connected"], false);
+
+    let gone = ok(
+        &t.w,
+        "POST",
+        "/api/t/alpha/gocardless/disconnect",
+        &t.ann,
+        None,
+    )
+    .await;
+    assert_eq!(gone["connected"], false);
+    let token = db.read(|r| t.gc.token(r)).unwrap();
+    assert_eq!(token, None);
+    // Webhooks for that account are now no organisation's.
+    let body = json!({"events": [{"id": "EVgone1", "resource_type": "mandates",
+        "action": "active", "links": {"mandate": "MD1", "organisation": org}}]})
+    .to_string();
+    let sig = sign(api::gocardless::fake::WEBHOOK_SECRET, body.as_bytes());
+    assert_eq!(t.post_webhook(&body, &sig).await, 204);
+    assert!(
+        t.events()
+            .contains(&("EVgone1".into(), None, Some("unknown_organisation".into())))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_admin_connects_and_the_state_is_single_use_and_this_sessions() {
+    let t = setup().await;
+    for cookie in [&t.sam, &t.val] {
+        let (s, _) =
+            t.w.call("POST", "/api/t/alpha/gocardless/connect", cookie, None)
+                .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    let (s, _) =
+        t.w.call("POST", "/api/t/alpha/gocardless/connect", &t.bob, None)
+            .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) =
+        t.w.call("POST", "/api/t/alpha/gocardless/disconnect", &t.sam, None)
+            .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // A state from ann's session, brought back by another session of
+    // hers: refused, and spent.
+    let start = ok(
+        &t.w,
+        "POST",
+        "/api/t/alpha/gocardless/connect",
+        &t.ann,
+        None,
+    )
+    .await;
+    let callback = t.consent(start["url"].as_str().unwrap(), "connect").await;
+    let other = t.w.login("ann@alpha.org").await;
+    let (_, landed) = navigate(&t.w, &callback, &other).await;
+    assert_eq!(landed, "/?gocardless=expired");
+    let (_, landed) = navigate(&t.w, &callback, &t.ann).await;
+    assert_eq!(landed, "/?gocardless=expired", "spent on first sight");
+    // A good one works once.
+    let start = ok(
+        &t.w,
+        "POST",
+        "/api/t/alpha/gocardless/connect",
+        &t.ann,
+        None,
+    )
+    .await;
+    let callback = t.consent(start["url"].as_str().unwrap(), "connect").await;
+    let (_, landed) = navigate(&t.w, &callback, &t.ann).await;
+    assert_eq!(landed, "/t/alpha/settings?gocardless=connected");
+    let (_, landed) = navigate(&t.w, &callback, &t.ann).await;
+    assert_eq!(landed, "/?gocardless=expired");
+    // The admin saying no.
+    let start = ok(&t.w, "POST", "/api/t/beta/gocardless/connect", &t.bob, None).await;
+    let callback = t.consent(start["url"].as_str().unwrap(), "cancel").await;
+    let (_, landed) = navigate(&t.w, &callback, &t.bob).await;
+    assert_eq!(landed, "/t/beta/settings?gocardless=denied");
+    let beta = ok(&t.w, "GET", "/api/t/beta/gocardless", &t.bob, None).await;
+    assert_eq!(beta["connected"], false);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_webhook_needs_gocardless_signature_and_each_event_counts_once() {
+    let t = setup().await;
+    let status = t.connect("alpha", &t.ann).await;
+    let org = status["organisationId"].as_str().unwrap();
+    let body = json!({"events": [
+        {"id": "EVsig1", "resource_type": "creditors", "action": "updated",
+         "links": {"organisation": org}},
+        {"id": "EVsig2", "resource_type": "mandates", "action": "active",
+         "links": {"mandate": "MDnobody", "organisation": "ORnobody"}}
+    ]})
+    .to_string();
+    let good = sign(api::gocardless::fake::WEBHOOK_SECRET, body.as_bytes());
+    assert_eq!(t.post_webhook(&body, "00").await, 498);
+    assert_eq!(
+        t.post_webhook(&body, &sign("wrong", body.as_bytes())).await,
+        498
+    );
+    assert_eq!(t.post_webhook(&format!("{body} "), &good).await, 498);
+    assert!(t.events().is_empty(), "nothing read before the signature");
+    assert_eq!(t.post_webhook(&body, &good).await, 204);
+    assert_eq!(t.post_webhook(&body, &good).await, 204);
+    t.settle().await;
+    let events = t.events();
+    assert_eq!(events.len(), 2, "a repeat is no new event");
+    assert_eq!(
+        events[0],
+        (
+            "EVsig1".into(),
+            Some(t.w.alpha.id.as_str().to_owned()),
+            Some("ignored".into())
+        )
+    );
+    assert_eq!(
+        events[1],
+        ("EVsig2".into(), None, Some("unknown_organisation".into()))
+    );
+    // Off: the route isn't there.
+    let off = world();
+    let res = off
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/api/gocardless/webhook",
+            None,
+            Some(json!({})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let _ = res.into_body().collect().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_cancellation() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    assert_eq!(v["status"], "pending");
+    assert_eq!(v["connected"], true);
+    let flow = v["flowUrl"].as_str().unwrap().to_owned();
+    assert!(flow.starts_with(&format!("{}/api/fake-gocardless/flow/BRF", t.base)));
+    let br = v["billingRequestId"].as_str().unwrap();
+    assert_eq!(
+        t.fake.resource(br).unwrap()["metadata"]["keep_regular_gift"],
+        id.as_str()
+    );
+
+    // The donor signs: the mandate is linked and the subscription made.
+    t.sign(&flow).await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let mandate = v["mandateId"].as_str().unwrap().to_owned();
+    let sub = v["subscriptionId"].as_str().unwrap().to_owned();
+    assert_eq!(v["status"], "pending");
+    let s = t.fake.resource(&sub).unwrap();
+    assert_eq!(
+        (
+            s["amount"].clone(),
+            s["interval_unit"].clone(),
+            s["day_of_month"].clone()
+        ),
+        (json!(1000), json!("monthly"), json!(5))
+    );
+    assert_eq!(t.fake.ids("subscriptions").len(), 1);
+
+    t.simulate(&format!("mandates/{mandate}/activate")).await;
+    t.settle().await;
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "active");
+
+    // A payment is made: pending, no gift.
+    let pm = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["payments"][0]["status"], "pending");
+    assert_eq!(v["payments"][0]["giftId"], Value::Null);
+    let gifts = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/gifts"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(gifts["rows"].as_array().unwrap().len(), 0);
+
+    // Confirmed: the gift.
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["payments"][0]["status"], "confirmed");
+    let gift = v["payments"][0]["giftId"].as_str().unwrap().to_owned();
+    let g = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/gifts/{gift}"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (
+            g["method"].clone(),
+            g["reference"].clone(),
+            g["amount"].clone(),
+            g["status"].clone()
+        ),
+        (
+            json!("direct_debit"),
+            json!(pm),
+            json!(1000),
+            json!("completed")
+        )
+    );
+    assert_eq!(g["allocations"][0]["sourceCodeId"], t.code.as_str());
+    assert_eq!(g["contactId"], jo.as_str());
+
+    // GoCardless sends it again (a retry): nothing new.
+    let (last, _) = t.fake.deliveries().last().unwrap().clone();
+    let raw = last.to_string();
+    let sig = sign(api::gocardless::fake::WEBHOOK_SECRET, raw.as_bytes());
+    assert_eq!(t.post_webhook(&raw, &sig).await, 204);
+    // And another event about the same payment: still one gift.
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let gifts = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/gifts"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(gifts["rows"].as_array().unwrap().len(), 1);
+
+    // What GoCardless collected can't be edited, nor a DD gift entered by
+    // hand.
+    let mut save = g.clone();
+    save["expected"] = g["giftVersion"].clone();
+    save["amount"] = json!(2000);
+    save["allocations"][0]["amount"] = json!(2000);
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/gifts/{gift}/save"),
+            &t.sam,
+            Some(save),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "direct_debit_fixed");
+    let (s, out) =
+        t.w.call(
+            "POST",
+            "/api/t/alpha/gifts/record",
+            &t.sam,
+            Some(json!({
+                "clientKey": contracts::new_id(), "contact": jo,
+                "receivedOn": "2026-10-20", "amount": 500, "method": "direct_debit",
+                "reference": "PMbyhand",
+                "allocations": [{ "sourceCodeId": t.code, "amount": 500 }]
+            })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "direct_debit_by_hand");
+
+    // The next payment fails: no gift, shown on the regular gift.
+    let pm2 = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("payments/{pm2}/fail")).await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["lastFailure"]["paymentId"], pm2.as_str());
+    assert_eq!(v["lastFailure"]["giftId"], Value::Null);
+    assert!(
+        v["lastFailure"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("insufficient funds")
+    );
+
+    // The first is charged back: its gift void, with the reason; then the
+    // chargeback is cancelled: un-void.
+    t.simulate(&format!("payments/{pm}/charge_back")).await;
+    t.settle().await;
+    let g = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/gifts/{gift}"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(g["status"], "void");
+    let v = t.regular("alpha", &t.val, &id).await;
+    let first = v["payments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["paymentId"] == pm.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(first["status"], "chargedBack");
+    assert!(first["reason"].as_str().unwrap().contains("disputed"));
+    let history = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/gifts/{gift}/history"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert!(history.to_string().contains("charged back"), "{history}");
+    t.simulate(&format!("payments/{pm}/cancel_chargeback"))
+        .await;
+    t.settle().await;
+    let g = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/gifts/{gift}"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(g["status"], "completed");
+
+    // The donor's bank cancels the mandate: the regular gift ends.
+    t.simulate(&format!("mandates/{mandate}/cancel")).await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["status"], "cancelled");
+    assert!(v["endedReason"].as_str().unwrap().contains("closed"));
+    let list = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/regular-gifts"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    // Every event was handled, none failed.
+    assert!(
+        t.events()
+            .iter()
+            .all(|(_, _, outcome)| matches!(outcome.as_deref(), Some("done" | "ignored"))),
+        "{:?}",
+        t.events()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn staff_cancel_a_regular_gift_and_get_a_new_link() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    let first_flow = v["flowUrl"].as_str().unwrap().to_owned();
+
+    let fresh = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/link"),
+        &t.sam,
+        Some(json!({ "expected": v["mandateVersion"] })),
+    )
+    .await["view"]
+        .clone();
+    assert_ne!(fresh["flowUrl"], first_flow.as_str());
+    assert_eq!(fresh["billingRequestId"], v["billingRequestId"]);
+
+    // Stale: refused before GoCardless is touched.
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/regular-gifts/{id}/cancel"),
+            &t.sam,
+            Some(json!({ "expected": v["mandateVersion"] })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{out}");
+    let br = v["billingRequestId"].as_str().unwrap();
+    assert_eq!(t.fake.resource(br).unwrap()["status"], "pending");
+
+    let done = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/cancel"),
+        &t.sam,
+        Some(json!({ "expected": fresh["mandateVersion"] })),
+    )
+    .await["view"]
+        .clone();
+    assert_eq!(done["status"], "cancelled");
+    assert_eq!(done["endedReason"], "Cancelled by staff");
+    assert_eq!(t.fake.resource(br).unwrap()["status"], "cancelled");
+    t.settle().await;
+    assert_eq!(
+        t.regular("alpha", &t.val, &id).await["endedReason"],
+        "Cancelled by staff"
+    );
+
+    // An active one: its mandate is cancelled at GoCardless.
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let mandate = v["mandateId"].as_str().unwrap().to_owned();
+    let done = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/cancel"),
+        &t.sam,
+        Some(json!({ "expected": v["mandateVersion"] })),
+    )
+    .await["view"]
+        .clone();
+    assert_eq!(done["status"], "cancelled");
+    assert_eq!(t.fake.resource(&mandate).unwrap()["status"], "cancelled");
+    let sub = v["subscriptionId"].as_str().unwrap();
+    assert_eq!(t.fake.resource(sub).unwrap()["status"], "cancelled");
+    t.settle().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn set_up_needs_a_connection_staff_and_good_terms() {
+    let t = setup().await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let path = format!("/api/t/alpha/contacts/{jo}/regular-gifts");
+    let terms = json!({ "amount": 1000, "frequency": "monthly", "dayOfMonth": 5,
+                        "sourceCodeId": t.code });
+    let (s, out) = t.w.call("POST", &path, &t.sam, Some(terms.clone())).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(out["reason"], "not_connected");
+    t.connect("alpha", &t.ann).await;
+    let (s, _) = t.w.call("POST", &path, &t.val, Some(terms.clone())).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    for (bad, field) in [
+        (json!({ "amount": 0 }), "amount"),
+        (json!({ "dayOfMonth": 29 }), "dayOfMonth"),
+        (json!({ "frequency": "yearly" }), "month"),
+        (json!({ "month": 3 }), "month"),
+    ] {
+        let mut body = terms.clone();
+        for (k, v) in bad.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        let (s, out) = t.w.call("POST", &path, &t.sam, Some(body)).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+        assert_eq!(out["problems"][0]["field"], field, "{out}");
+    }
+    let mut yearly = terms.clone();
+    yearly["frequency"] = json!("yearly");
+    yearly["month"] = json!(4);
+    let (s, out) = t.w.call("POST", &path, &t.sam, Some(yearly)).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // Nothing reached GoCardless for the refusals.
+    assert_eq!(t.fake.ids("billing_requests").len(), 1);
+    // The same client key twice is the first one.
+    let mut keyed = terms.clone();
+    keyed["clientKey"] = json!("k-1");
+    let first = ok(&t.w, "POST", &path, &t.sam, Some(keyed.clone())).await;
+    let (s, out) = t.w.call("POST", &path, &t.sam, Some(keyed)).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(out["id"], first["id"]);
+    // Another organisation's code.
+    let mut theirs = terms.clone();
+    theirs["sourceCodeId"] = json!(t.beta_code);
+    let (s, out) = t.w.call("POST", &path, &t.sam, Some(theirs)).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(out["reason"], "unknown_source_code");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_organisation_never_sees_a_regular_gift() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    t.connect("beta", &t.bob).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap();
+    let body = Some(json!({ "expected": v["mandateVersion"] }));
+    for (method, path, body) in [
+        ("GET", format!("/api/t/beta/regular-gifts/{id}"), None),
+        (
+            "GET",
+            format!("/api/t/beta/contacts/{jo}/regular-gifts"),
+            None,
+        ),
+        (
+            "POST",
+            format!("/api/t/beta/regular-gifts/{id}/link"),
+            body.clone(),
+        ),
+        (
+            "POST",
+            format!("/api/t/beta/regular-gifts/{id}/cancel"),
+            body.clone(),
+        ),
+        (
+            "POST",
+            format!("/api/t/beta/contacts/{jo}/regular-gifts"),
+            Some(
+                json!({ "amount": 1000, "frequency": "monthly", "dayOfMonth": 5,
+                         "sourceCodeId": t.beta_code }),
+            ),
+        ),
+    ] {
+        let (s, out) = t.w.call(method, &path, &t.bob, body).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{method} {path}: {out}");
+    }
+    // Under alpha's slug, bob is no member.
+    let (s, _) =
+        t.w.call(
+            "GET",
+            &format!("/api/t/alpha/regular-gifts/{id}"),
+            &t.bob,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Beta's own list is empty; alpha's payment events never reach beta.
+    let beta_jo = t.contact("beta", &t.bob).await;
+    let list = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/beta/contacts/{beta_jo}/regular-gifts"),
+        &t.bob,
+        None,
+    )
+    .await;
+    assert_eq!(list, json!([]));
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let beta_db = t.w.store.org(&t.w.beta.id).unwrap();
+    let n: i64 = beta_db
+        .read(|r| r.query_row("SELECT count(*) FROM regular_gifts", [], |row| row.get(0)))
+        .unwrap();
+    assert_eq!(n, 0);
+    assert!(
+        t.events()
+            .iter()
+            .all(|(_, tenant, _)| tenant.as_deref() == Some(t.w.alpha.id.as_str()))
+    );
+}
+
+#[tokio::test]
+async fn with_gocardless_off_only_the_status_answers() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    let status = ok(&w, "GET", "/api/t/alpha/gocardless", &ann, None).await;
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["mode"], "off");
+    for (method, path) in [
+        ("POST", "/api/t/alpha/gocardless/connect"),
+        ("POST", "/api/t/alpha/gocardless/disconnect"),
+        (
+            "GET",
+            "/api/t/alpha/regular-gifts/0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1",
+        ),
+    ] {
+        let (s, _) = w.call(method, path, &ann, None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}");
+    }
+    let (s, _) = navigate(&w, "/api/gocardless/callback?code=x&state=y", &ann).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}

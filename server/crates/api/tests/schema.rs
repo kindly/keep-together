@@ -158,6 +158,32 @@ const FIXTURES: &[&str] = &[
     // 16: the v11 gift locked to the v15 claim
     "UPDATE gifts SET claim_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', claim_lock_version = 1
      WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1';",
+    // 17: Direct Debit (the gifts rebuild carries the v11 gift with its
+    // claim lock, and a void gift with its reason): a regular gift, its
+    // confirmed payment and the gift it became
+    "INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, status, void_reason,
+         entered_by, entered_at, gift_version, status_version)
+     VALUES (3, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e9', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '2026-10-21', 500, 'cash', 'void', 'entered twice', 1, 2500, 0, 2);
+     INSERT INTO regular_gifts (seq, id, contact_id, amount, frequency, day_of_month, month,
+         source_code_id, status, billing_request_id, flow_url, flow_expires_at, mandate_id,
+         subscription_id, entered_by, entered_at, terms_version, mandate_version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', 1000,
+         'monthly', 5, NULL, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 'active', 'BRQ000010',
+         'https://pay.example/flow', '2026-11-04T10:00:00.000Z', 'MD000010', 'SB000010', 1,
+         1000, 1, 3);
+     INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, reference, status,
+         entered_by, entered_at, gift_version, status_version)
+     VALUES (2, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e6', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '2026-11-05', 1000, 'direct_debit', 'PM000010', 'completed', NULL, 3000, 1, 1);
+     INSERT INTO gift_allocations (id, gift_id, position, source_code_id, amount)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0e7', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e6', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 1000);
+     INSERT INTO direct_debit_payments (seq, id, payment_id, regular_gift_id, amount,
+         charge_date, status, gift_id, version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e8', 'PM000010',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 1000, '2026-11-05', 'confirmed',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e6', 2);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
