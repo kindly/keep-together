@@ -79,7 +79,8 @@ fn not_connected() -> ApiError {
     }
 }
 
-/// A view with `connected` filled in from the organisation's token.
+/// A view with `connected` filled in: the organisation owns its
+/// GoCardless account's mapping and holds its token.
 fn with_connection(mut v: RegularGiftView, connected: bool) -> RegularGiftView {
     v.connected = connected;
     v
@@ -92,11 +93,12 @@ async fn by_contact(
     Path(IdParam { id }): Path<IdParam>,
 ) -> Result<Json<Vec<RegularGiftView>>, ApiError> {
     let gc = t.gocardless()?;
+    let owned = t.gocardless_owned().await?;
     t.read(move |r| {
         if contacts::donors::kind_of(r, &id)?.is_none() {
             return Err(ApiError::NotFound);
         }
-        let connected = gc.token(r)?.is_some();
+        let connected = owned && gc.token(r)?.is_some();
         Ok(regular::regular_by_contact(r, &id)?
             .into_iter()
             .map(|v| with_connection(v, connected))
@@ -112,9 +114,10 @@ async fn one(
     Path(IdParam { id }): Path<IdParam>,
 ) -> Result<Json<RegularGiftView>, ApiError> {
     let gc = t.gocardless()?;
+    let owned = t.gocardless_owned().await?;
     t.read(move |r| {
         let v = regular::get_regular(r, &id)?.ok_or(ApiError::NotFound)?;
-        Ok(with_connection(v, gc.token(r)?.is_some()))
+        Ok(with_connection(v, owned && gc.token(r)?.is_some()))
     })
     .await
     .map(Json)
@@ -184,6 +187,9 @@ async fn set_up(
     Body(req): Body<SetUpRegularGift>,
 ) -> Result<Json<RegularGiftSaved>, ApiError> {
     let gc = t.gocardless()?;
+    // Connected = this organisation owns the account's mapping, not
+    // merely holds a token.
+    let owned = t.gocardless_owned().await?;
     let terms = prepare_terms(RegularGiftPayload {
         contact_id: contact,
         amount: req.amount,
@@ -221,7 +227,7 @@ async fn set_up(
                 }
                 Some(_) => {}
             }
-            let token = g.token(r)?.ok_or_else(not_connected)?;
+            let token = g.token(r)?.filter(|_| owned).ok_or_else(not_connected)?;
             Ok((token, prefill(&donor)))
         })
         .await?;
@@ -287,13 +293,16 @@ async fn new_link(
     Body(req): Body<Expected>,
 ) -> Result<Json<RegularGiftSaved>, ApiError> {
     let gc = t.gocardless()?;
+    // Connected = this organisation owns the account's mapping, not
+    // merely holds a token.
+    let owned = t.gocardless_owned().await?;
     let (g, rid) = (gc.clone(), id.clone());
     let (token, found, prefill) = t
         .read(move |r| {
             let found = regular::facts(r, &rid)?.ok_or(ApiError::NotFound)?;
             let donor = contacts::donors::describe_donor(r, &found.terms.contact_id)?
                 .ok_or(ApiError::NotFound)?;
-            let token = g.token(r)?.ok_or_else(not_connected)?;
+            let token = g.token(r)?.filter(|_| owned).ok_or_else(not_connected)?;
             Ok((token, found, prefill(&donor)))
         })
         .await?;
@@ -336,12 +345,15 @@ async fn cancel(
     Body(req): Body<Expected>,
 ) -> Result<Json<RegularGiftSaved>, ApiError> {
     let gc = t.gocardless()?;
+    // Connected = this organisation owns the account's mapping, not
+    // merely holds a token.
+    let owned = t.gocardless_owned().await?;
     let (g, rid) = (gc.clone(), id.clone());
     let (token, found, counter) = t
         .read(move |r| {
             let view = regular::get_regular(r, &rid)?.ok_or(ApiError::NotFound)?;
             let found = regular::facts(r, &rid)?.ok_or(ApiError::NotFound)?;
-            Ok((g.token(r)?, found, view.mandate_version))
+            Ok((g.token(r)?.filter(|_| owned), found, view.mandate_version))
         })
         .await?;
     if found.mandate.status().is_ended() {

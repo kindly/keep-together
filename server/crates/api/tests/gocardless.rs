@@ -155,6 +155,12 @@ impl T {
     /// The fake's consent page, answered as a browser would: the callback
     /// path GoCardless sends the browser back to.
     async fn consent(&self, start_url: &str, decision: &str) -> String {
+        self.consent_as(start_url, decision, "").await
+    }
+
+    /// The consent page, picking an existing fake account (`""`: a new
+    /// one).
+    async fn consent_as(&self, start_url: &str, decision: &str, account: &str) -> String {
         let url = reqwest::Url::parse(start_url).unwrap();
         assert!(
             url.as_str().starts_with(&format!(
@@ -178,6 +184,7 @@ impl T {
                 ("redirect_uri", q["redirect_uri"].as_str()),
                 ("state", q["state"].as_str()),
                 ("decision", decision),
+                ("account", account),
             ])
             .send()
             .await
@@ -1376,4 +1383,108 @@ async fn a_parked_event_is_visible_retryable_and_never_leaves_a_mandate_without_
         t.events()
     );
     assert_eq!(t.fake.ids("subscriptions").len(), 1);
+}
+
+impl T {
+    /// The token sealed in `tenant`'s file, if any.
+    fn token_of(&self, tenant: &store::Tenant) -> Option<String> {
+        let db = self.w.store.org(&tenant.id).unwrap();
+        db.read(|r| self.gc.token(r)).unwrap()
+    }
+
+    /// `slug`'s admin starts connecting and picks `account` on the consent
+    /// page: the callback path to bring back.
+    async fn start_connect(&self, slug: &str, cookie: &str, account: &str) -> String {
+        let start = ok(
+            &self.w,
+            "POST",
+            &format!("/api/t/{slug}/gocardless/connect"),
+            cookie,
+            None,
+        )
+        .await;
+        self.consent_as(start["url"].as_str().unwrap(), "connect", account)
+            .await
+    }
+}
+
+/// Reviewer M1: a second group connecting an account another group here
+/// holds is refused, keeps no token, and the holder keeps a working one
+/// (GoCardless disabled its old token when it issued the new).
+#[tokio::test(flavor = "multi_thread")]
+async fn connecting_an_account_another_group_holds_is_refused_and_the_holder_keeps_working() {
+    let t = setup().await;
+    let status = t.connect("alpha", &t.ann).await;
+    let account = status["organisationId"].as_str().unwrap().to_owned();
+    let alpha_before = t.token_of(&t.w.alpha).unwrap();
+
+    let callback = t.start_connect("beta", &t.bob, &account).await;
+    let (_, landed) = navigate(&t.w, &callback, &t.bob).await;
+    assert_eq!(landed, "/t/beta/settings?gocardless=taken");
+    let beta = ok(&t.w, "GET", "/api/t/beta/gocardless", &t.bob, None).await;
+    assert_eq!(beta["connected"], false);
+    assert_eq!(
+        t.token_of(&t.w.beta),
+        None,
+        "the refused group keeps no token"
+    );
+
+    let alpha_now = t.token_of(&t.w.alpha).unwrap();
+    assert!(!t.fake.token_works(&alpha_before), "GoCardless disabled it");
+    assert!(t.fake.token_works(&alpha_now), "the holder has the new one");
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    assert_eq!(v["status"], "pending");
+    let beta_jo = t.contact("beta", &t.bob).await;
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/beta/contacts/{beta_jo}/regular-gifts"),
+            &t.bob,
+            Some(
+                json!({ "amount": 1000, "frequency": "monthly", "dayOfMonth": 5,
+                         "sourceCodeId": t.beta_code }),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(out["reason"], "not_connected");
+}
+
+/// Reviewer M2 / codex 1: two groups' callbacks for one account at once.
+/// One owns it; the other is refused and holds no token; the owner's
+/// token is the one GoCardless still accepts.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_groups_connecting_one_account_at_once_leave_one_owner_with_a_working_token() {
+    let t = setup().await;
+    let (account, _) = t.fake.connect_account();
+    let a = t.start_connect("alpha", &t.ann, &account).await;
+    let b = t.start_connect("beta", &t.bob, &account).await;
+    let ((_, landed_a), (_, landed_b)) =
+        tokio::join!(navigate(&t.w, &a, &t.ann), navigate(&t.w, &b, &t.bob));
+    let mut outcomes = [landed_a.clone(), landed_b.clone()];
+    outcomes.sort();
+    assert!(
+        outcomes[0].ends_with("gocardless=connected") && outcomes[1].ends_with("gocardless=taken"),
+        "{outcomes:?}"
+    );
+    let (owner, loser) = if landed_a.ends_with("connected") {
+        (&t.w.alpha, &t.w.beta)
+    } else {
+        (&t.w.beta, &t.w.alpha)
+    };
+    assert_eq!(t.token_of(loser), None);
+    assert!(t.fake.token_works(&t.token_of(owner).unwrap()));
+    let owners: i64 =
+        t.w.store
+            .platform()
+            .with_read(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM gocardless_connections WHERE organisation_id = ?1",
+                    [&account],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+    assert_eq!(owners, 1);
 }

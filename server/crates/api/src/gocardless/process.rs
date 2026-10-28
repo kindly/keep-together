@@ -253,7 +253,12 @@ pub async fn process_pending(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<u
         let (s, g, t) = (store.clone(), gc.clone(), tenant.clone());
         let opened = crate::blocking(move || {
             let db = s.org(&t)?;
-            let token = db.read(|r| g.token(r))?;
+            // Only an organisation that owns its account's mapping uses
+            // the token in its file.
+            let token = match super::connection(&s, &t)? {
+                Some(_) => db.read(|r| g.token(r))?,
+                None => None,
+            };
             Ok::<_, crate::ApiError>(Org { db, token })
         })
         .await;
@@ -620,7 +625,12 @@ async fn sweep(store: &Arc<Store>, gc: &Arc<GoCardless>) -> Result<(), String> {
         let (s, g, t) = (store.clone(), gc.clone(), tenant.clone());
         let opened = crate::blocking(move || {
             let db = s.org(&t)?;
-            let token = db.read(|r| g.token(r))?;
+            // Only an organisation that owns its account's mapping uses
+            // the token in its file.
+            let token = match super::connection(&s, &t)? {
+                Some(_) => db.read(|r| g.token(r))?,
+                None => None,
+            };
             Ok::<_, crate::ApiError>(Org { db, token })
         })
         .await;

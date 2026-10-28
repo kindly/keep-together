@@ -133,6 +133,11 @@ impl Fake {
         (org, token)
     }
 
+    /// Whether `token` is live (tests).
+    pub fn token_works(&self, token: &str) -> bool {
+        self.world().tokens.contains_key(token)
+    }
+
     /// A resource's JSON as GoCardless would answer it (tests, QC).
     pub fn resource(&self, id: &str) -> Option<Value> {
         self.world().resources.get(id).map(|r| r.body.clone())
@@ -500,6 +505,8 @@ async fn authorize(Query(q): Query<Authorize>) -> Response {
              <form method=\"post\" action=\"decide\">\
              <input type=\"hidden\" name=\"redirect_uri\" value=\"{redirect}\">\
              <input type=\"hidden\" name=\"state\" value=\"{state}\">\
+             <label>An existing account id (blank: a new account) \
+             <input name=\"account\" value=\"\"></label>\
              <button name=\"decision\" value=\"connect\">Connect</button>\
              <button name=\"decision\" value=\"cancel\">Cancel</button></form>"
         ),
@@ -512,6 +519,9 @@ struct Decide {
     redirect_uri: String,
     state: String,
     decision: String,
+    /// An account the fake already knows (`OR…`); blank: a new one.
+    #[serde(default)]
+    account: String,
 }
 
 async fn decide(State(fake): State<Arc<Fake>>, Form(d): Form<Decide>) -> Response {
@@ -520,7 +530,12 @@ async fn decide(State(fake): State<Arc<Fake>>, Form(d): Form<Decide>) -> Respons
     };
     if d.decision == "connect" {
         let mut w = fake.world();
-        let org = w.id("OR");
+        let account = d.account.trim();
+        let org = if account.is_empty() {
+            w.id("OR")
+        } else {
+            account.to_owned()
+        };
         let code = format!("fake_code_{}", uuid::Uuid::new_v4().simple());
         w.codes.insert(code.clone(), (org, d.redirect_uri.clone()));
         url.query_pairs_mut()
@@ -562,6 +577,9 @@ async fn access_token(State(fake): State<Arc<Fake>>, Form(f): Form<TokenForm>) -
     let mut w = fake.world();
     match w.codes.remove(&f.code) {
         Some((org, redirect)) if redirect == f.redirect_uri => {
+            // Reconnecting an account issues a new token and disables any
+            // existing one (GoCardless's OAuth reference).
+            w.tokens.retain(|_, o| *o != org);
             let token = format!("fake_token_{}", uuid::Uuid::new_v4().simple());
             w.tokens.insert(token.clone(), org.clone());
             Json(json!({

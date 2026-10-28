@@ -5,10 +5,12 @@
 //! The `state` must be one this server issued ([`super::new_state`]) in the
 //! last 10 minutes, to this same session and user, and is spent on first
 //! sight whatever happens; the user must still be the organisation's
-//! admin. The code is traded for the organisation's token, which is
-//! sealed into the organisation's file, and the GoCardless organisation
-//! id recorded against ours in `platform.db` (an account another
-//! organisation here holds is refused). The browser always lands on the
+//! admin. Then, one connect at a time: the code is traded for a token,
+//! the GoCardless account reserved for this organisation in `platform.db`
+//! (the mapping is what "connected" means), and the token sealed into its
+//! file. An account another organisation here holds is refused, and the
+//! new token (GoCardless disables the old one as it issues it) goes to
+//! that holder instead. The browser always lands on the
 //! group's settings with `?gocardless=<outcome>`: `connected`, `denied`
 //! (the admin said no), `taken`, `failed`, `forbidden`, or, with no group
 //! to name, on `/?gocardless=expired`.
@@ -22,7 +24,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 use store::Role;
 
-use super::{ConnectRefused, STATE_TTL_MS, held_elsewhere, record_connection, take_state};
+use super::{ConnectRefused, STATE_TTL_MS, record_connection, restore_connection, take_state};
 use crate::timing::Timing;
 use crate::{AppState, auth, blocking};
 
@@ -92,6 +94,12 @@ pub async fn callback(
     let Some(code) = q.code.filter(|c| !c.is_empty()) else {
         return land(Some(&slug), "failed");
     };
+    // One connect at a time on this server: the code exchange (which
+    // disables the account's earlier token at GoCardless), who owns the
+    // account, and where its token goes are one step, so the account's
+    // holder always ends with its newest token and a refused group with
+    // none.
+    let _connecting = gc.connecting.lock().await;
     let token = match gc
         .api
         .exchange_code(gc.credentials(), &code, &gc.redirect_uri)
@@ -103,17 +111,47 @@ pub async fn callback(
             return land(Some(&slug), "failed");
         }
     };
+    // The account is reserved for this organisation (or found to be
+    // another's) in one platform.db transaction, before any token moves.
     let (store, tenant) = (state.store.clone(), row.tenant.clone());
     let organisation = token.organisation_id.clone();
-    let elsewhere = blocking(move || held_elsewhere(&store, &tenant, &organisation)).await;
-    match elsewhere {
-        Ok(false) => {}
-        Ok(true) => return land(Some(&slug), "taken"),
-        Err(_) => return land(Some(&slug), "failed"),
-    }
-    // The token into the organisation's file, as the admin, then the
-    // routing row: a failure between leaves a token nobody routes to,
-    // which the next connect replaces.
+    let reserved =
+        blocking(move || record_connection(&store, &tenant, &organisation, user, now)).await;
+    let previous = match reserved {
+        Ok(Ok(previous)) => previous,
+        Ok(Err(ConnectRefused::Taken(holder))) => {
+            // The exchange just disabled the holder's token: the new one
+            // is the same account's, so it goes to the holder, who keeps
+            // working. This group gets nothing.
+            let (store, g) = (state.store.clone(), gc.clone());
+            let access = token.access_token.clone();
+            let h = holder.clone();
+            let sealed = blocking(move || {
+                let db = store.org(&h)?;
+                contracts::transact(&db, None, |ctx| {
+                    g.put_token(ctx, &access, Source::System)
+                        .map_err(crate::ApiError::from)
+                })
+            })
+            .await;
+            match sealed {
+                Ok(()) => eprintln!(
+                    "gocardless connect: refused {slug} (the account is {holder}'s); \
+                     {holder}'s token refreshed from the refused connect"
+                ),
+                Err(e) => crate::observe::error(&format!(
+                    "gocardless connect: refused {slug}; refreshing {holder}'s token failed: {e:?}"
+                )),
+            }
+            return land(Some(&slug), "taken");
+        }
+        Err(e) => {
+            eprintln!("gocardless connect ({slug}): recording the connection: {e:?}");
+            return land(Some(&slug), "failed");
+        }
+    };
+    // Then the token into this organisation's file, as the admin; if that
+    // fails the reservation is undone.
     let (store, tenant, g) = (state.store.clone(), row.tenant.clone(), gc.clone());
     let access = token.access_token.clone();
     let sealed = blocking(move || {
@@ -126,18 +164,13 @@ pub async fn callback(
     .await;
     if let Err(e) = sealed {
         eprintln!("gocardless connect ({slug}): storing the token: {e:?}");
+        let (store, tenant) = (state.store.clone(), row.tenant.clone());
+        if let Err(e) = blocking(move || restore_connection(&store, &tenant, previous)).await {
+            crate::observe::error(&format!(
+                "gocardless connect ({slug}): undoing the reservation: {e:?}"
+            ));
+        }
         return land(Some(&slug), "failed");
     }
-    let (store, tenant) = (state.store.clone(), row.tenant.clone());
-    let organisation = token.organisation_id.clone();
-    let recorded =
-        blocking(move || record_connection(&store, &tenant, &organisation, user, now)).await;
-    match recorded {
-        Ok(Ok(())) => land(Some(&slug), "connected"),
-        Ok(Err(ConnectRefused::Taken)) => land(Some(&slug), "taken"),
-        Err(e) => {
-            eprintln!("gocardless connect ({slug}): recording the connection: {e:?}");
-            land(Some(&slug), "failed")
-        }
-    }
+    land(Some(&slug), "connected")
 }

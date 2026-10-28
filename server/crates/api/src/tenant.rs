@@ -258,6 +258,15 @@ impl Tenant {
         })
     }
 
+    /// Whether this organisation owns a GoCardless account's mapping in
+    /// `platform.db`: what "connected" means (a token alone doesn't).
+    pub async fn gocardless_owned(&self) -> Result<bool, ApiError> {
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        Ok(blocking(move || crate::gocardless::connection(&store, &id))
+            .await?
+            .is_some())
+    }
+
     /// Put this organisation's parked GoCardless events back in the queue
     /// (admin) and start a run.
     pub async fn gocardless_retry_failed(

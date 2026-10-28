@@ -98,6 +98,8 @@ pub struct GoCardless {
     settings_key: SettingsKey,
     /// One processing run at a time ([`process::process_pending`]).
     pub(crate) processing: tokio::sync::Mutex<()>,
+    /// One OAuth connect at a time ([`oauth::callback`]).
+    pub(crate) connecting: tokio::sync::Mutex<()>,
     /// The mock, in `fake` mode: mounted at [`FAKE_PREFIX`].
     pub fake: Option<Arc<fake::Fake>>,
 }
@@ -207,6 +209,7 @@ pub fn from_vars(
         redirect_uri,
         settings_key,
         processing: tokio::sync::Mutex::new(()),
+        connecting: tokio::sync::Mutex::new(()),
         fake,
     }))
 }
@@ -460,19 +463,22 @@ pub fn take_state(store: &Store, state: &str) -> Result<Option<StateRow>, StoreE
 /// Why a connection can't be recorded.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConnectRefused {
-    /// That GoCardless account is another organisation's here.
-    Taken,
+    /// That GoCardless account is this other organisation's here.
+    Taken(TenantId),
 }
 
 /// Record `tenant` as connected to `organisation_id`, replacing any
-/// account it had. Another organisation's account is refused.
+/// account it had (answered, so a failure after can put it back), in one
+/// `platform.db` transaction. Another organisation's account is refused,
+/// naming that organisation.
 pub fn record_connection(
     store: &Store,
     tenant: &TenantId,
     organisation_id: &str,
     user: i64,
     now: i64,
-) -> Result<Result<(), ConnectRefused>, StoreError> {
+) -> Result<Result<Option<Connected>, ConnectRefused>, StoreError> {
+    let tenants = store.each_org()?;
     store.platform().with_write(|tx| {
         let holder: Option<String> = tx
             .query_row(
@@ -481,9 +487,25 @@ pub fn record_connection(
                 |r| r.get(0),
             )
             .optional()?;
-        if holder.is_some_and(|h| h != tenant.as_str()) {
-            return Ok(Err(ConnectRefused::Taken));
+        if let Some(holder) = holder.filter(|h| h != tenant.as_str())
+            && let Some(holder) = tenants.iter().find(|t| t.as_str() == holder)
+        {
+            return Ok(Err(ConnectRefused::Taken(holder.clone())));
         }
+        let previous = tx
+            .query_row(
+                "SELECT organisation_id, connected_at, connected_by FROM gocardless_connections
+                 WHERE tenant_id = ?1",
+                [tenant.as_str()],
+                |r| {
+                    Ok(Connected {
+                        organisation_id: r.get(0)?,
+                        connected_at: r.get(1)?,
+                        connected_by: r.get(2)?,
+                    })
+                },
+            )
+            .optional()?;
         tx.execute(
             "INSERT INTO gocardless_connections (tenant_id, organisation_id, connected_at,
                  connected_by)
@@ -492,18 +514,37 @@ pub fn record_connection(
                  connected_at = excluded.connected_at, connected_by = excluded.connected_by",
             params![tenant.as_str(), organisation_id, now, user],
         )?;
-        Ok(Ok(()))
+        Ok(Ok(previous))
     })
 }
 
-/// Whether `organisation_id` is already another organisation's here (the
-/// callback asks before it stores a token).
-pub fn held_elsewhere(
+/// Put `tenant`'s connection back as it was before a
+/// [`record_connection`] whose token couldn't be stored.
+pub fn restore_connection(
     store: &Store,
     tenant: &TenantId,
-    organisation_id: &str,
-) -> Result<bool, StoreError> {
-    Ok(tenant_for(store, organisation_id)?.is_some_and(|t| &t != tenant))
+    previous: Option<Connected>,
+) -> Result<(), StoreError> {
+    store.platform().with_write(|tx| {
+        tx.execute(
+            "DELETE FROM gocardless_connections WHERE tenant_id = ?1",
+            [tenant.as_str()],
+        )?;
+        if let Some(p) = previous {
+            tx.execute(
+                "INSERT INTO gocardless_connections (tenant_id, organisation_id, connected_at,
+                     connected_by)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    tenant.as_str(),
+                    p.organisation_id,
+                    p.connected_at,
+                    p.connected_by
+                ],
+            )?;
+        }
+        Ok(())
+    })
 }
 
 pub fn forget_connection(store: &Store, tenant: &TenantId) -> Result<(), StoreError> {
