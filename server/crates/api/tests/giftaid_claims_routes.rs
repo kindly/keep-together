@@ -1297,3 +1297,27 @@ async fn a_draft_cant_be_downloaded() {
         "a ready claim can't be deleted"
     );
 }
+
+/// Review M2: a ready claim may already be with HMRC, so a gift voided
+/// out of it doesn't hold it back: it is submitted as it was, and the
+/// next claim pays that gift's tax back.
+#[tokio::test]
+async fn a_gift_voided_out_of_a_ready_claim_is_paid_back_by_the_next() {
+    let c = setup().await;
+    let (gift, contact) = c.gift("alpha", &ANN_SMITH, &days_ago(5), 2000).await;
+    let first = c.create("alpha").await["id"].as_str().unwrap().to_owned();
+    c.step_ok(&first, json!({ "status": "ready" })).await;
+    let (s, _) = c.void(&gift, Some("Refunded")).await;
+    assert_eq!(s, StatusCode::OK);
+    c.step_ok(
+        &first,
+        json!({ "status": "submitted", "submittedOn": today() }),
+    )
+    .await;
+    c.again(&contact, &days_ago(1), 1000).await;
+    let p = c.preview("alpha", &today()).await;
+    assert_eq!(
+        p["adjustments"],
+        json!([{ "giftId": gift, "originalClaimId": first, "amount": 500, "reason": "Refunded" }])
+    );
+}

@@ -443,15 +443,19 @@ pub fn preview(conn: &Connection, period_end: &str, today: &str) -> rusqlite::Re
     })
 }
 
-/// Gifts claimed by a claim already sent (submitted or paid), voided
-/// since and not yet paid back: each the tax its line claimed, and why it
-/// was voided. A gift voided out of a draft or ready claim isn't here: it
-/// holds that claim back instead ([`set_claim_status`]).
+/// Gifts claimed by a claim that may have gone to HMRC (ready, submitted
+/// or paid), voided since and not yet paid back: each the tax its line
+/// claimed, and why it was voided. A gift voided out of a draft isn't
+/// here: it holds the draft back instead ([`set_claim_status`]).
 fn due_adjustments(conn: &Connection) -> rusqlite::Result<Vec<ClaimAdjustment>> {
     let mut out = Vec::new();
     for v in giving::voided_in_claims(conn)? {
-        let sent = summary(conn, &v.claim_id)?
-            .is_some_and(|c| matches!(c.status, ClaimStatus::Submitted | ClaimStatus::Paid));
+        let sent = summary(conn, &v.claim_id)?.is_some_and(|c| {
+            matches!(
+                c.status,
+                ClaimStatus::Ready | ClaimStatus::Submitted | ClaimStatus::Paid
+            )
+        });
         if !sent {
             continue;
         }
@@ -555,10 +559,11 @@ pub fn create_claim(
 }
 
 /// One step of a claim's life ([`ClaimStatusContract`]): ready,
-/// submitted, paid, rejected, or a draft deleted. Ready and submitted are
-/// refused while a gift of the claim was voided since it was made (the
-/// claim would claim it); rejected while a later claim pays back one of
-/// its gifts. Deleting or rejecting lets every gift go, so the next claim
+/// submitted, paid, rejected, or a draft deleted. Ready is refused while
+/// a gift of the draft was voided since it was made (delete the draft
+/// and claim again); after that a voided gift is paid back by the next
+/// claim. Rejected is refused while a later claim pays back one of its
+/// gifts. Deleting or rejecting lets every gift go, so the next claim
 /// can take them.
 pub fn set_claim_status(
     ctx: &Ctx,
@@ -572,14 +577,17 @@ pub fn set_claim_status(
         .filter(|c| c.status != ClaimStatus::Deleted)
         .ok_or(ContractError::NotFound)?;
     match payload.status {
-        ClaimStatus::Ready | ClaimStatus::Submitted => {
+        // A draft has never been downloaded: a gift voided out of it
+        // holds it back. From ready on, the claim may be with HMRC, so
+        // it goes on and the next claim pays the gift back.
+        ClaimStatus::Ready => {
             let voided = voided_gifts(conn, id)?;
             if !voided.is_empty() {
                 return Err(ContractError::rejected(
                     "voided_gifts",
                     format!(
                         "{} of this claim's gifts {} voided since it was made: \
-                         delete the claim (or mark it rejected) and make a new one",
+                         delete the draft and make a new claim",
                         voided.len(),
                         if voided.len() == 1 { "was" } else { "were" }
                     ),
