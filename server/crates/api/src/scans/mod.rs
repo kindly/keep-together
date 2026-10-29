@@ -558,6 +558,43 @@ pub fn upload(
     })
 }
 
+/// A page the phone sent before, sent again because the answer was lost
+/// (L2): its `pageId` is already on that scan, which is `pairing`'s (or
+/// direct, for none). Answers the scan and its page count as if the
+/// upload had just landed, whatever the scan's state since (accepted,
+/// discarded), so the phone counts it landed rather than starting a new
+/// scan with it. Read before the upload is counted or its blob put: a
+/// resend stores nothing. `None`: not a resend, upload as usual (a new
+/// page onto a scan that isn't a draft stays refused there). Blocking.
+pub fn resent(
+    db: &OrgDb,
+    pairing: Option<&str>,
+    target: &Target,
+) -> Result<Option<(String, usize)>, ApiError> {
+    let Target::Page {
+        scan_id,
+        page_id: Some(page_id),
+    } = target
+    else {
+        return Ok(None);
+    };
+    let via = if pairing.is_some() {
+        Via::Phone
+    } else {
+        Via::Direct
+    };
+    let (scan_id, page_id) = (scan_id.clone(), page_id.clone());
+    let pairing = pairing.map(str::to_owned);
+    db.read(move |r| {
+        Ok::<_, ApiError>(
+            domain::get(r, &scan_id)?
+                .filter(|s| s.via == via && s.pairing_id == pairing)
+                .filter(|s| s.pages.iter().any(|p| p.id == page_id))
+                .map(|s| (s.id, s.pages.len())),
+        )
+    })
+}
+
 /// The pages a scan now has (after an upload).
 pub fn page_count(db: &OrgDb, scan_id: &str) -> Result<usize, ApiError> {
     let id = scan_id.to_owned();

@@ -432,9 +432,15 @@ impl Tenant {
             let _slot = slot;
             check()?;
             let start = Instant::now();
-            let page = crate::scans::store_page(&db, &raw, &limits)?;
-            let scan_id = crate::scans::upload(&db, user, None, target, page)?;
-            let pages = crate::scans::page_count(&db, &scan_id)?;
+            let (scan_id, pages) = match crate::scans::resent(&db, None, &target)? {
+                Some(held) => held,
+                None => {
+                    let page = crate::scans::store_page(&db, &raw, &limits)?;
+                    let scan_id = crate::scans::upload(&db, user, None, target, page)?;
+                    let pages = crate::scans::page_count(&db, &scan_id)?;
+                    (scan_id, pages)
+                }
+            };
             timing.add_db(start.elapsed());
             Ok::<_, ApiError>(crate::scans::Uploaded {
                 scan_id,

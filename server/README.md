@@ -660,7 +660,7 @@ The phone's routes (outside the tenant prefix; `ScanSitting`, `ScanUploaded`):
 |---|---|
 | `GET /api/scan/{token}` | claims the link for this device (sets the device cookie if it has none) or reopens it → `ScanSitting {orgName, purpose, expiresAt, idleExpiresAt, uploadsLeft, maxPages, maxPageBytes, scans: [{id, pages, open}]}`, `Cache-Control: no-store`; another device `403`; dead `410` |
 | `POST /api/scan/{token}/scans?id=` | body: one page's image (raw bytes, any content type) → `ScanUploaded {scanId, pages, uploadsLeft}`: a new draft. `id` (32 hex, optional) is the phone's key: a retry with it answers the same scan |
-| `POST /api/scan/{token}/scans/{scanId}/pages?pageId=` | body: the next page → `ScanUploaded`; only onto one of this sitting's drafts (else `404`); `pageId` (32 hex, optional): a retry adds nothing; a 7th page `422 rejected page_limit` |
+| `POST /api/scan/{token}/scans/{scanId}/pages?pageId=` | body: the next page → `ScanUploaded`; only onto one of this sitting's drafts (else `404`); `pageId` (32 hex, optional): a retry with a `pageId` the scan already holds answers as landed (the same scan and count, nothing stored or counted), even after the scan was accepted or discarded; a new page on a non-draft is refused; a 7th page `422 rejected page_limit` |
 
 Under `/api/t/{slug}` (types in `src/lib/data/rust-types/`; live updates
 are `declaration_scans` events on the org's stream):

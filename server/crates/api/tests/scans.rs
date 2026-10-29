@@ -952,6 +952,199 @@ async fn accept_discard_merge_and_reorder_on_the_laptop() {
     assert_eq!(panel["declarations"].as_array().unwrap().len(), 1);
 }
 
+/// Whether `seed`'s photo, as the server stores it, is a blob in alpha's
+/// files db.
+fn alpha_holds(w: &World, seed: u8) -> bool {
+    let db = w.store.org(&w.alpha.id).unwrap();
+    let processed = api::scans::image::reencode(&photo(seed)).unwrap();
+    db.files_if_any()
+        .unwrap()
+        .unwrap()
+        .get(&store::files::sha256_hex(&processed.bytes))
+        .unwrap()
+        .is_some()
+}
+
+/// L2: the phone sends a page again because the answer was lost, and the
+/// laptop has accepted (or discarded) its scan meanwhile. The known
+/// `pageId` is answered as landed, the same scan and pages, with nothing
+/// stored or counted; a new page there is still refused.
+#[tokio::test]
+async fn a_page_resent_after_accept_or_discard_is_answered_as_landed() {
+    let w = world();
+    let (sam, _, token) = staff_sitting(&w).await;
+    let mut phone = Phone::new(&token);
+    phone.open(&w).await;
+    let page = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0b1";
+    let scan = phone.new_scan(&w, photo(1)).await.json["scanId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sent = phone
+        .upload(&w, &format!("/scans/{scan}/pages?pageId={page}"), photo(2))
+        .await;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.json);
+    let left = sent.json["uploadsLeft"].clone();
+    let jo = contact(&w, &sam).await;
+    let (s, out) = w.call("POST", &format!("/api/t/alpha/scans/{scan}/accept"), &sam, Some(json!({
+        "expected": 0, "contactId": jo,
+        "match": { "kind": "new", "declaration": declaration(&jo, "2026-05-05", "paperForm") }
+    }))).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+
+    // Resent (different bytes, to show none are kept): the same answer.
+    let again = phone
+        .upload(&w, &format!("/scans/{scan}/pages?pageId={page}"), photo(9))
+        .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.json);
+    assert_eq!(
+        again.json,
+        json!({ "scanId": scan, "pages": 2, "uploadsLeft": left })
+    );
+    assert!(!alpha_holds(&w, 9), "a resend stores no blob");
+    let (_, view) = w
+        .call("GET", &format!("/api/t/alpha/scans/{scan}"), &sam, None)
+        .await;
+    assert_eq!(view["pages"].as_array().unwrap().len(), 2);
+    assert_eq!(view["pages"][1]["id"], page);
+
+    // A new page onto the accepted scan: still refused.
+    let fresh = phone
+        .upload(
+            &w,
+            &format!("/scans/{scan}/pages?pageId=0190f0c0a0b0c0d0e0f0a0b0c0d0e0b2"),
+            photo(3),
+        )
+        .await;
+    assert!(!fresh.status.is_success(), "{}", fresh.json);
+
+    // The same after a discard.
+    let other = phone.new_scan(&w, photo(4)).await.json["scanId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0b3";
+    phone
+        .upload(
+            &w,
+            &format!("/scans/{other}/pages?pageId={second}"),
+            photo(5),
+        )
+        .await;
+    let (s, _) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/scans/{other}/discard"),
+            &sam,
+            Some(json!({ "expected": 0 })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let again = phone
+        .upload(
+            &w,
+            &format!("/scans/{other}/pages?pageId={second}"),
+            photo(5),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.json);
+    assert_eq!(
+        (&again.json["scanId"], &again.json["pages"]),
+        (&json!(other), &json!(2))
+    );
+
+    // A signed-in phone's direct resend, likewise.
+    let direct = send(
+        &w,
+        "POST",
+        "/api/t/alpha/scans",
+        Some(&sam),
+        HttpBody::from(photo(6)),
+    )
+    .await;
+    let direct = direct.json["scanId"].as_str().unwrap().to_owned();
+    let third = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0b4";
+    let path = format!("/api/t/alpha/scans/{direct}/pages?pageId={third}");
+    let first = send(&w, "POST", &path, Some(&sam), HttpBody::from(photo(7))).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.json);
+    let (s, _) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/scans/{direct}/discard"),
+            &sam,
+            Some(json!({ "expected": 0 })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let again = send(&w, "POST", &path, Some(&sam), HttpBody::from(photo(8))).await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.json);
+    assert_eq!(
+        again.json,
+        json!({ "scanId": direct, "pages": 2, "uploadsLeft": null })
+    );
+    assert!(!alpha_holds(&w, 8));
+}
+
+/// A resend is only ever answered for the scan's own sitting: the same
+/// scan and `pageId` from another pairing (same org or another), or
+/// direct, or under another org's slug, is `404`.
+#[tokio::test]
+async fn a_resent_page_id_is_only_known_to_its_own_sitting() {
+    let w = world();
+    let (sam, _, token) = staff_sitting(&w).await;
+    let mut phone = Phone::new(&token);
+    phone.open(&w).await;
+    let page = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0c1";
+    let scan = phone.new_scan(&w, photo(1)).await.json["scanId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let path = format!("/scans/{scan}/pages?pageId={page}");
+    assert_eq!(
+        phone.upload(&w, &path, photo(2)).await.status,
+        StatusCode::OK
+    );
+    let (s, _) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/scans/{scan}/discard"),
+            &sam,
+            Some(json!({ "expected": 0 })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Another sitting of the same org.
+    let (_, other_token) = pair(&w, &sam, "alpha").await;
+    let mut other = Phone::new(&other_token);
+    other.open(&w).await;
+    assert_eq!(
+        other.upload(&w, &path, photo(2)).await.status,
+        StatusCode::NOT_FOUND
+    );
+    // A sitting of another org.
+    let bob = w.login("bob@beta.org").await;
+    let (_, beta_token) = pair(&w, &bob, "beta").await;
+    let mut beta = Phone::new(&beta_token);
+    beta.open(&w).await;
+    assert_eq!(
+        beta.upload(&w, &path, photo(2)).await.status,
+        StatusCode::NOT_FOUND
+    );
+    // Direct, in its own org (a phone's scan isn't a direct one) and under B.
+    for (slug, cookie) in [("alpha", &sam), ("beta", &bob)] {
+        let res = send(
+            &w,
+            "POST",
+            &format!("/api/t/{slug}/scans/{scan}/pages?pageId={page}"),
+            Some(cookie),
+            HttpBody::from(photo(2)),
+        )
+        .await;
+        assert_eq!(res.status, StatusCode::NOT_FOUND, "{slug}: {}", res.json);
+    }
+}
+
 /// Blob first on the way in: a refused contract leaves an orphan, which
 /// the sweep removes after a day, never a blob a page names. Contract
 /// first on the way out: the image is unreachable at once, the blob goes
