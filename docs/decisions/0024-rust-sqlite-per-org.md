@@ -168,3 +168,52 @@ record.
 - Litestream is one more moving part, and it was unmeasured when this was
   written. The hourly snapshots exist so that a Litestream bug or a bad
   config isn't the only copy.
+
+## Amendment: an organisation is two files (proposed 2026-10-29)
+
+Status: proposed by builder-scs from the plan
+`factory/plans/declaration-scans.sv` (confirmed by the human
+2026-10-29), for the human to accept. Scanned paper Gift Aid
+declarations need somewhere to keep images, and HMRC treats the image as
+the record (Chapter 3, 3.7.2).
+
+- **Each organisation has a second file**, its files db,
+  `files/<tenant-id>.db` (`store::files`), beside `orgs/<tenant-id>.db`.
+  It holds immutable blobs (scanned pages today) keyed by SHA-256, stamped
+  with the tenant id and refused under another name, like the org file.
+  It is in its own directory because `orgs/` is read as "every `*.db`
+  is an org file" by the boot migration, the snapshot job and Litestream.
+  It is made at an organisation's first scan, so an organisation that
+  never scanned has none.
+- **Only `store` opens it.** The org's handle opens it and closes it with
+  the org (the same LRU slot); `api` calls `put`, `get`, `usage` and
+  `delete_unreferenced`. Domain crates never see it (rule 6): a page row
+  in the org file names its blob by hash.
+- **It is outside contracts and revisions.** A blob never changes, so
+  there is nothing to version: the contract is on the org-file row that
+  points at it. There is no transaction across the two files. A write
+  puts the blob first, then commits the row, and a blob whose row never
+  committed is an orphan that a daily sweep removes after a day. A
+  deletion commits the row first, then deletes the blob. A sweep never
+  removes a blob put in the last hour, so a write in flight is safe.
+- **Capped at 2 GB per organisation.** Past the cap a new blob is
+  refused; Settings shows the usage.
+- **Backups cover both files.** Litestream replicates `files/` like
+  `orgs/`. The snapshot job copies a files db at most daily, when it
+  changed (it can be 2 GB and never changes in place), then at the daily
+  and monthly tiers. `restore.sh`, the entrypoint and the restore drill
+  restore and count both.
+
+Consequences, amending the list above:
+
+- **Moving, restoring or deleting an organisation means both files.**
+  Org deletion and contact erasure (not built yet) must cover the files
+  db. The plan fixes what erasure does to a scan: kept, admin-only,
+  while it is the evidence of a claimed gift; deleted otherwise.
+- A snapshot restore can bring back a files db up to a day older than its
+  org file, so pages scanned in between have no image until a Litestream
+  restore fills them (`docs/ops.md`, Backups).
+- The rollback script (`scripts/ops/rollback-migration.sh`) knows only
+  org files and `platform.db`. The files db has a single schema step, run
+  on open. A later step that changes it needs the boot copy and rollback
+  taught about `files/` first.
