@@ -790,9 +790,12 @@ impl Contract for DirectDebitPayment {
         p: &PaymentPayload,
         _: &Command,
     ) -> Result<PaymentPayload, ContractError> {
+        // A payment stored unmatched (no gift) may be adopted by its
+        // regular gift; after that, neither changes.
+        let adopting = |c: &PaymentPayload| c.regular_gift_id.is_none() && c.gift_id.is_none();
         if let Some(current) = current
             && (current.payment_id != p.payment_id
-                || current.regular_gift_id != p.regular_gift_id
+                || (current.regular_gift_id != p.regular_gift_id && !adopting(current))
                 || (current.gift_id.is_some() && current.gift_id != p.gift_id))
         {
             return Err(ContractError::rejected(
@@ -843,7 +846,7 @@ impl Contract for DirectDebitPayment {
         } else {
             tx.prepare_cached(
                 "UPDATE direct_debit_payments SET mandate_id = ?2, amount = ?3, charge_date = ?4,
-                     status = ?5, reason = ?6, gift_id = ?7
+                     status = ?5, reason = ?6, gift_id = ?7, regular_gift_id = ?8
                  WHERE id = ?1",
             )?
             .execute(params![
@@ -853,7 +856,8 @@ impl Contract for DirectDebitPayment {
                 next.charge_date,
                 next.status.as_str(),
                 next.reason,
-                next.gift_id
+                next.gift_id,
+                next.regular_gift_id
             ])?;
         }
         Ok(())
@@ -886,6 +890,9 @@ pub enum PaymentOwner {
     OneOff {
         contact_id: String,
         source_code_id: String,
+        /// The staff request it answers ([`crate::requests`]): its gift is
+        /// made as the staff member who asked.
+        request: Option<String>,
     },
     /// Nobody we know: stored with no gift, listed for staff to match.
     Unmatched,
@@ -977,6 +984,12 @@ fn record(
                 "This payment belongs to another regular gift",
             ));
         }
+        // Stored unmatched before its regular gift was known: adopted.
+        (Some(b), PaymentOwner::Regular(id))
+            if b.regular_gift_id.is_none() && b.gift_id.is_none() =>
+        {
+            Some(id.clone())
+        }
         (Some(b), _) => b.regular_gift_id.clone(),
         (None, PaymentOwner::Regular(id)) => Some(id.clone()),
         (None, _) => None,
@@ -997,18 +1010,20 @@ fn record(
             .or_else(|| before.as_ref().and_then(|b| b.reason.clone())),
         gift_id: before.as_ref().and_then(|b| b.gift_id.clone()),
     };
-    // Who the gift is for and its code, while the payment has none.
-    let donor: Option<(String, String)> = if next.gift_id.is_some() {
+    // Who the gift is for and its code, while the payment has none, and
+    // the staff request it answers.
+    let donor: Option<(String, String, Option<String>)> = if next.gift_id.is_some() {
         None
     } else if let Some(id) = &regular_id {
         let regular = facts(conn, id)?.ok_or(ContractError::NotFound)?;
-        Some((regular.terms.contact_id, regular.terms.source_code_id))
+        Some((regular.terms.contact_id, regular.terms.source_code_id, None))
     } else if let PaymentOwner::OneOff {
         contact_id,
         source_code_id,
+        request,
     } = &owner
     {
-        Some((contact_id.clone(), source_code_id.clone()))
+        Some((contact_id.clone(), source_code_id.clone(), request.clone()))
     } else {
         None
     };
@@ -1027,10 +1042,32 @@ fn record(
     let reason = gift_reason(report.status, next.reason.as_deref());
 
     let mut change = GiftChange::None;
-    if let Some((contact_id, code)) = donor {
-        let name = match staff {
-            Some(_) => format!("Direct Debit {amount} matched to a donor"),
-            None => format!("Direct Debit {amount} {}{because}", said(report.status)),
+    if let Some((contact_id, code, request)) = donor {
+        // Asked for by staff: the gift is theirs to answer for (its
+        // history names them), though GoCardless's word made it.
+        let requester = match &request {
+            Some(r) => crate::requests::requested_by(conn, r)?.flatten(),
+            None => None,
+        };
+        let acting;
+        let ctx = match requester {
+            Some(actor) => {
+                acting = Ctx {
+                    tx: ctx.tx,
+                    actor: Some(actor),
+                    at: ctx.at,
+                };
+                &acting
+            }
+            None => ctx,
+        };
+        let name = match (staff, requester) {
+            (Some(_), _) => format!("Direct Debit {amount} matched to a donor"),
+            (None, Some(_)) => format!(
+                "Direct Debit {amount} {}{because}, as asked by staff",
+                said(report.status)
+            ),
+            (None, None) => format!("Direct Debit {amount} {}{because}", said(report.status)),
         };
         let group = command_group(ctx, &name)?;
         let gift = crate::create_provider_gift(
@@ -1179,6 +1216,46 @@ fn sync_gift(
     Ok(changed)
 }
 
+/// Whether gift `gift_id`'s payment now says another amount or charge
+/// date than the gift (which a claim holds): a draft claim holding it is
+/// held back (Gift Aid's Ready check, review L4).
+pub fn payment_moved(conn: &Connection, gift_id: &str) -> rusqlite::Result<bool> {
+    conn.prepare_cached(
+        "SELECT 1 FROM direct_debit_payments p JOIN gifts g ON g.id = p.gift_id
+         WHERE p.gift_id = ?1 AND (p.amount <> g.amount OR p.charge_date <> g.received_on)
+         /* any status: one gift */",
+    )?
+    .exists([gift_id])
+}
+
+/// Bring a provider gift up to its payment again (after a claim let it
+/// go: what the claim held may have moved since), under `group`. A gift
+/// with no payment row is left as it is.
+pub fn resync_gift(ctx: &Ctx, gift_id: &str, group: &CommandGroup) -> Result<(), ContractError> {
+    let Some(p) = ctx
+        .tx
+        .read()
+        .prepare_cached(&format!(
+            "SELECT {PAYMENT_COLUMNS} FROM direct_debit_payments WHERE gift_id = ?1"
+        ))?
+        .query_row([gift_id], payment_row)
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let report = PaymentReport {
+        payment_id: p.payment_id,
+        amount: p.amount,
+        charge_date: p.charge_date,
+        status: p.status,
+        reason: p.reason.clone(),
+        mandate_id: p.mandate_id,
+    };
+    let reason = gift_reason(p.status, p.reason.as_deref());
+    sync_gift(ctx, gift_id, &report, p.status.gift_status(), reason, group)?;
+    Ok(())
+}
+
 /// Staff match an unmatched payment (row `id`, `expected` its version) to
 /// a donor: its gift is made, with the payment's facts and status,
 /// allocated to `source_code_id` (which must be live). Its id.
@@ -1246,6 +1323,7 @@ pub fn match_payment(
         PaymentOwner::OneOff {
             contact_id: contact_id.to_owned(),
             source_code_id: source_code_id.to_owned(),
+            request: None,
         },
         Some((expected, source)),
     )? {
@@ -1323,8 +1401,10 @@ pub fn by_mandate(conn: &Connection, mandate_id: &str) -> rusqlite::Result<Optio
 /// Every way a provider payment and the gifts disagree (ADR 0025,
 /// decision 7): a matched payment without exactly one gift, a gift
 /// whose amount, date or status isn't its payment's (a claimed gift keeps
-/// its claimed amount and date; a staff void stands), or a provider gift
-/// with no payment. Empty when consistent. Read-only.
+/// its claimed amount and date; a staff void stands), a gift of another
+/// regular gift or (for an instalment) another donor, a provider gift
+/// with no payment, or one with no payment id that isn't void. Empty
+/// when consistent. Read-only.
 pub fn consistency(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut problems: Vec<String> = conn
         .prepare(&format!(
@@ -1391,6 +1471,43 @@ pub fn consistency(conn: &Connection) -> rusqlite::Result<Vec<String>> {
         })?
         .collect::<rusqlite::Result<_>>()?;
     problems.extend(orphans);
+    // A provider gift with no payment id is D2's superseded attempt: it
+    // must stay void, or the same money counts twice (review L2).
+    let loose: Vec<String> = conn
+        .prepare(
+            "SELECT g.id, g.status FROM gifts g
+             WHERE g.provider IS NOT NULL AND g.provider_payment_id IS NULL
+               AND g.status <> 'void'
+             /* any status: every provider gift without a payment */",
+        )?
+        .query_map([], |r| {
+            Ok(format!(
+                "gift {}: a provider gift with no payment id is {}, not void",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    problems.extend(loose);
+    // The gift is the payment's regular gift's, and an instalment's donor
+    // is its regular gift's.
+    let owners: Vec<String> = conn
+        .prepare(
+            "SELECT p.payment_id, g.id FROM direct_debit_payments p
+             JOIN gifts g ON g.id = p.gift_id /* any status: the payment's */
+             LEFT JOIN regular_gifts r ON r.id = p.regular_gift_id
+             WHERE g.regular_gift_id IS NOT p.regular_gift_id
+                OR (r.id IS NOT NULL AND g.contact_id <> r.contact_id)",
+        )?
+        .query_map([], |r| {
+            Ok(format!(
+                "payment {}: its gift {} names another regular gift or donor",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    problems.extend(owners);
     Ok(problems)
 }
 
@@ -1644,6 +1761,9 @@ CREATE INDEX direct_debit_payments_by_gift ON direct_debit_payments (gift_id)
 /// - `direct_debit_payments`: the regular gift is optional (one-offs,
 ///   unmatched payments), the mandate is kept, `gift_voided` goes, and a
 ///   gift belongs to one payment;
+/// - `provider_requests`: what staff asked a provider for (a one-off
+///   charge, an Instant Bank Pay link), recorded as them before the
+///   call ([`crate::requests`]);
 /// - every existing payment gets exactly one gift: one confirmed under D2
 ///   keeps its gift, which takes the payment's status (a void staff made
 ///   stays void); one never confirmed gets a new gift with its status, to
@@ -1707,7 +1827,13 @@ INSERT INTO gifts (id, contact_id, received_on, amount, method, reference, statu
     entered_by, entered_at, provider, provider_payment_id, regular_gift_id)
 SELECT lower(hex(randomblob(16))), r.contact_id, p.charge_date, p.amount, 'direct_debit',
     p.payment_id, CASE p.status WHEN 'confirmed' THEN 'completed' ELSE p.status END,
-    CASE WHEN p.status = 'confirmed' THEN NULL ELSE p.reason END, NULL,
+    -- As live processing words it (`gift_reason`).
+    CASE p.status
+        WHEN 'confirmed' THEN NULL
+        ELSE (CASE p.status WHEN 'pending' THEN 'Not collected yet' WHEN 'failed' THEN 'Failed'
+                  WHEN 'charged_back' THEN 'Charged back' ELSE 'Cancelled' END)
+             || ' (GoCardless)' || coalesce(': ' || p.reason, '') END,
+    NULL,
     CAST(strftime('%s', 'now') AS INTEGER) * 1000, 'gocardless', p.payment_id,
     p.regular_gift_id
 FROM payments_widen p JOIN regular_gifts r ON r.id = p.regular_gift_id
@@ -1768,6 +1894,24 @@ CREATE INDEX direct_debit_payments_by_regular_gift
     ON direct_debit_payments (regular_gift_id, charge_date, seq);
 CREATE INDEX direct_debit_payments_unmatched ON direct_debit_payments (seq)
     WHERE gift_id IS NULL;
+
+CREATE TABLE provider_requests (
+    seq INTEGER PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('one_off', 'instant')),
+    provider TEXT NOT NULL CHECK (provider IN ('gocardless', 'stripe')),
+    contact_id TEXT NOT NULL REFERENCES contacts (id),
+    regular_gift_id TEXT REFERENCES regular_gifts (id),
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    source_code_id TEXT NOT NULL REFERENCES source_codes (id),
+    charge_date TEXT,
+    provider_ref TEXT,
+    requested_by INTEGER,
+    requested_at INTEGER NOT NULL,
+    version INTEGER NOT NULL DEFAULT 0
+) STRICT;
+CREATE UNIQUE INDEX provider_requests_by_ref ON provider_requests (provider, provider_ref)
+    WHERE provider_ref IS NOT NULL;
 ";
 
 #[cfg(test)]

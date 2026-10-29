@@ -3,4 +3,8 @@
 /**
  * What GoCardless made: the gift follows from its events.
  */
-export type OneOffStarted = { paymentId: string, status: string, chargeDate: string, };
+export type OneOffStarted = { 
+/**
+ * Our record of the request (who asked): the form's `clientKey`.
+ */
+requestId: string, paymentId: string, status: string, chargeDate: string, };

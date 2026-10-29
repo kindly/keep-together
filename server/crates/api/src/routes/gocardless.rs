@@ -23,7 +23,8 @@ use giving::regular::{
     self, Frequency, MandatePayload, RegularGiftPayload, RegularGiftView, RegularStatus,
     UnmatchedPayment, prepare_terms,
 };
-use giving::types::GiftView;
+use giving::requests::{ProviderRequestPayload, RequestKind, record_request, set_provider_ref};
+use giving::types::{GiftView, Provider};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -493,6 +494,8 @@ pub struct TakeOneOff {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct OneOffStarted {
+    /// Our record of the request (who asked): the form's `clientKey`.
+    pub request_id: String,
     pub payment_id: String,
     pub status: String,
     pub charge_date: String,
@@ -546,7 +549,8 @@ fn check_one_off(
 
 /// `POST regular-gifts/{id}/one-off {amount, chargeDate?, sourceCodeId,
 /// clientKey}` → `OneOffStarted`: GoCardless takes a payment on the
-/// regular gift's mandate once, tagged with its donor and the code. Staff.
+/// regular gift's mandate once, tagged with its donor, the code and our
+/// request (recorded first as the staff member: who asked). Staff.
 /// No mandate yet or ended: `422 rejected no_mandate`. The gift arrives
 /// with GoCardless's event (pending until collected).
 async fn one_off(
@@ -583,28 +587,75 @@ async fn one_off(
         )
         .into());
     };
-    let description = format!("One-off gift {}", giving::format_pence(req.amount));
+    // Who asked, on record before GoCardless is called; a retry with the
+    // same key is the same request, as first asked.
+    let asked = ask(
+        &t,
+        &req.client_key,
+        ProviderRequestPayload {
+            kind: RequestKind::OneOff,
+            provider: Provider::Gocardless,
+            contact_id: found.terms.contact_id.clone(),
+            regular_gift_id: Some(found.id.clone()),
+            amount: req.amount,
+            source_code_id: req.source_code_id.clone(),
+            charge_date: req.charge_date.clone(),
+            provider_ref: None,
+        },
+    )
+    .await?;
+    let description = format!("One-off gift {}", giving::format_pence(asked.amount));
     let p = gc
         .api
         .create_payment(
             &token,
             &NewPayment {
                 mandate: &mandate,
-                amount: req.amount,
-                charge_date: req.charge_date.as_deref(),
+                amount: asked.amount,
+                charge_date: asked.charge_date.as_deref(),
                 description: &description,
-                contact: &found.terms.contact_id,
-                source_code: &req.source_code_id,
+                contact: &asked.contact_id,
+                source_code: &asked.source_code_id,
                 key: &req.client_key,
             },
         )
         .await
         .map_err(|e| provider(&t.slug, e))?;
+    answered(&t, &req.client_key, &p.id).await?;
     Ok(Json(OneOffStarted {
+        request_id: req.client_key,
         payment_id: p.id,
         status: p.status,
         charge_date: p.charge_date,
     }))
+}
+
+/// Record a staff request to GoCardless as the caller (review M2), before
+/// GoCardless is called. A key already used for another request (another
+/// kind, donor or regular gift) is `409 duplicate`.
+async fn ask(
+    t: &Tenant,
+    key: &str,
+    payload: ProviderRequestPayload,
+) -> Result<ProviderRequestPayload, ApiError> {
+    let key = key.to_owned();
+    t.write(move |ctx| {
+        let asked = record_request(ctx, &key, payload.clone(), Source::Ui)?;
+        if (asked.kind, &asked.contact_id, &asked.regular_gift_id)
+            != (payload.kind, &payload.contact_id, &payload.regular_gift_id)
+        {
+            return Err(ApiError::Duplicate { id: key });
+        }
+        Ok(asked)
+    })
+    .await
+}
+
+/// GoCardless's id for what the request made, on the request.
+async fn answered(t: &Tenant, key: &str, provider_ref: &str) -> Result<(), ApiError> {
+    let (key, provider_ref) = (key.to_owned(), provider_ref.to_owned());
+    t.write(move |ctx| Ok(set_provider_ref(ctx, &key, &provider_ref)?))
+        .await
 }
 
 /// `POST contacts/{id}/instant-payment`: a link to pay once by bank.
@@ -628,6 +679,8 @@ pub struct InstantPayment {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct InstantPaymentLink {
+    /// Our record of the request (who asked): the form's `clientKey`.
+    pub request_id: String,
     pub billing_request_id: String,
     pub flow_url: String,
     pub flow_expires_at: Option<String>,
@@ -640,8 +693,9 @@ const DESCRIPTION_MAX: usize = 100;
 /// description?, clientKey}` → `InstantPaymentLink`: an Instant Bank Pay
 /// request (a payment request, no mandate; the group switches Instant
 /// Bank Pay on in GoCardless), tagged with the contact and code, and its
-/// hosted page for staff to send. Staff. Nothing is stored here: the
-/// payment becomes the contact's gift from GoCardless's events.
+/// hosted page for staff to send. Staff. Only the request is stored here
+/// (who asked, [`giving::requests`]): the payment becomes the contact's
+/// gift from GoCardless's events, with the requester as its actor.
 async fn instant_payment(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id: contact }): Path<IdParam>,
@@ -664,31 +718,48 @@ async fn instant_payment(
             Ok((token, prefill(&donor)))
         })
         .await?;
+    let asked = ask(
+        &t,
+        &req.client_key,
+        ProviderRequestPayload {
+            kind: RequestKind::Instant,
+            provider: Provider::Gocardless,
+            contact_id: contact.clone(),
+            regular_gift_id: None,
+            amount: req.amount,
+            source_code_id: req.source_code_id.clone(),
+            charge_date: None,
+            provider_ref: None,
+        },
+    )
+    .await?;
     let description = req
         .description
         .as_deref()
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(|d| d.chars().take(DESCRIPTION_MAX).collect::<String>())
-        .unwrap_or_else(|| format!("Gift of {}", giving::format_pence(req.amount)));
+        .unwrap_or_else(|| format!("Gift of {}", giving::format_pence(asked.amount)));
     let request = gc
         .api
         .create_instant_payment_request(
             &token,
-            req.amount,
+            asked.amount,
             &description,
-            &contact,
-            &req.source_code_id,
+            &asked.contact_id,
+            &asked.source_code_id,
             &req.client_key,
         )
         .await
         .map_err(|e| provider(&t.slug, e))?;
+    answered(&t, &req.client_key, &request.id).await?;
     let flow = gc
         .api
         .create_flow(&token, &request.id, &prefill)
         .await
         .map_err(|e| provider(&t.slug, e))?;
     Ok(Json(InstantPaymentLink {
+        request_id: req.client_key,
         billing_request_id: request.id,
         flow_url: flow.authorisation_url,
         flow_expires_at: flow.expires_at,

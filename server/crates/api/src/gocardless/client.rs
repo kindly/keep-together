@@ -137,6 +137,9 @@ pub struct BillingRequest {
 pub struct OneOffTag {
     pub contact: String,
     pub source_code: Option<String>,
+    /// Our record of the staff request that made it
+    /// (`giving::requests`): `metadata.keep_request`.
+    pub request: Option<String>,
 }
 
 impl OneOffTag {
@@ -146,11 +149,17 @@ impl OneOffTag {
         Some(Self {
             contact: text("keep_contact")?,
             source_code: text("keep_source_code"),
+            request: text("keep_request"),
         })
     }
 
-    fn metadata(contact: &str, source_code: &str) -> Value {
-        json!({ "keep_contact": contact, "keep_source_code": source_code })
+    /// Three keys: GoCardless's most.
+    fn metadata(contact: &str, source_code: &str, request: &str) -> Value {
+        json!({
+            "keep_contact": contact,
+            "keep_source_code": source_code,
+            "keep_request": request
+        })
     }
 }
 
@@ -193,7 +202,8 @@ pub struct NewPayment<'a> {
     pub description: &'a str,
     pub contact: &'a str,
     pub source_code: &'a str,
-    /// Our key for it: the idempotency key (a retry makes it once).
+    /// Our request's id: the idempotency key (a retry makes it once) and
+    /// `metadata.keep_request`.
     pub key: &'a str,
 }
 
@@ -522,7 +532,7 @@ impl Api {
         source_code: &str,
         key: &str,
     ) -> Result<BillingRequest, CallError> {
-        let tag = OneOffTag::metadata(contact, source_code);
+        let tag = OneOffTag::metadata(contact, source_code, key);
         let body = json!({
             "billing_requests": {
                 "payment_request": {
@@ -653,7 +663,7 @@ impl Api {
             "amount": p.amount,
             "currency": "GBP",
             "description": p.description,
-            "metadata": OneOffTag::metadata(p.contact, p.source_code),
+            "metadata": OneOffTag::metadata(p.contact, p.source_code, p.key),
             "links": { "mandate": p.mandate }
         });
         if let Some(date) = p.charge_date {

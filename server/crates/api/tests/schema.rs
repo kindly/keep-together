@@ -186,8 +186,9 @@ const FIXTURES: &[&str] = &[
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 1000, '2026-11-05', 'confirmed',
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e6', 2);",
     // 18: every payment attempt (ADR 0025): a pending instalment and its
-    // pending gift, a one-off on the same mandate (no regular gift), and
-    // an unmatched payment (no regular gift, no gift)
+    // pending gift, a one-off on the same mandate (no regular gift) and
+    // the staff request that took it, and an unmatched payment (no
+    // regular gift, no gift)
     "INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, reference, status,
          entered_by, entered_at, gift_version, status_version, provider, provider_payment_id,
          regular_gift_id)
@@ -210,7 +211,12 @@ const FIXTURES: &[&str] = &[
             (3, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d6', 'PM000012', NULL, 'MD000010', 2500,
          '2026-12-09', 'confirmed', NULL, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d2', 1),
             (4, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d7', 'PM000013', NULL, 'MD000099', 700,
-         '2026-12-10', 'confirmed', NULL, NULL, 1);",
+         '2026-12-10', 'confirmed', NULL, NULL, 1);
+     INSERT INTO provider_requests (seq, id, kind, provider, contact_id, regular_gift_id,
+         amount, source_code_id, charge_date, provider_ref, requested_by, requested_at, version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d8', 'one_off', 'gocardless',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 2500,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', NULL, 'PM000012', 1, 4050, 2);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
@@ -554,12 +560,31 @@ fn literals(text: &str) -> Vec<&str> {
 /// plain writes (`UPDATE`, `DELETE`) aren't reads.
 #[test]
 fn every_gifts_read_counts_only_money_received_or_says_why() {
-    fn reads_gifts(lit: &str) -> bool {
-        ["FROM", "JOIN"].iter().any(|k| {
-            ["gifts", "gift_allocation_index"].iter().any(|t| {
-                let needle = format!("{k} {t}");
-                lit.match_indices(&needle).any(|(i, _)| {
-                    lit[i + needle.len()..]
+    /// The literal as the matcher sees it: whitespace runs collapsed to
+    /// one space, upper case (SQL is case-insensitive).
+    fn normal(lit: &str) -> String {
+        lit.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_uppercase()
+    }
+    /// `FROM`/`JOIN` (or a schema-qualified `MAIN.`) a gifts table, or a
+    /// constant in `consts` (`{TABLE}` in a file where `TABLE` is
+    /// "gifts").
+    fn reads_gifts(lit: &str, consts: &[String]) -> bool {
+        let spaced = lit.split_whitespace().collect::<Vec<_>>().join(" ");
+        if consts
+            .iter()
+            .any(|c| spaced.contains(&format!("FROM {c}")) || spaced.contains(&format!("JOIN {c}")))
+        {
+            return true;
+        }
+        let n = normal(lit).replace("MAIN.", "");
+        ["FROM ", "JOIN "].iter().any(|k| {
+            ["GIFTS", "GIFT_ALLOCATION_INDEX"].iter().any(|t| {
+                let needle = format!("{k}{t}");
+                n.match_indices(&needle).any(|(i, _)| {
+                    n[i + needle.len()..]
                         .chars()
                         .next()
                         .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -568,29 +593,64 @@ fn every_gifts_read_counts_only_money_received_or_says_why() {
         })
     }
     fn exempt(lit: &str) -> bool {
-        let head = lit.trim_start().to_ascii_uppercase();
-        lit.contains("CREATE TABLE")
-            || lit.contains("CREATE INDEX")
-            || head.starts_with("UPDATE")
-            || head.starts_with("DELETE")
+        let n = normal(lit);
+        n.contains("CREATE TABLE")
+            || n.contains("CREATE INDEX")
+            || n.starts_with("UPDATE")
+            || n.starts_with("DELETE")
+    }
+    /// Never allowed: a view over gifts (reads through it dodge the
+    /// filter), or income summed from a provider's or a request's table
+    /// (income comes from gifts).
+    fn forbidden(lit: &str) -> bool {
+        let n = normal(lit);
+        (n.contains("CREATE VIEW") && n.contains("GIFT"))
+            || (["DIRECT_DEBIT_PAYMENTS", "PROVIDER_REQUESTS"]
+                .iter()
+                .any(|t| n.contains(t))
+                && ["SUM(", "TOTAL(", "AVG("].iter().any(|f| n.contains(f)))
     }
     fn unfiltered(text: &str) -> Vec<String> {
+        // A constant naming a gifts table in this file.
+        let consts: Vec<String> = ["TABLE", "ENTITY", "ALLOCATION_INDEX"]
+            .iter()
+            .filter(|c| {
+                ["gifts", "gift_allocation_index"]
+                    .iter()
+                    .any(|t| text.contains(&format!("{c}: &str = \"{t}\"")))
+            })
+            .map(|c| format!("{{{c}}}"))
+            .collect();
         literals(text)
             .into_iter()
-            .filter(|l| reads_gifts(l) && !exempt(l))
-            .filter(|l| !l.contains("RECEIVED}") && !l.contains("/* any status: "))
+            .filter(|l| {
+                forbidden(l)
+                    || (reads_gifts(l, &consts)
+                        && !exempt(l)
+                        && !l.contains("RECEIVED}")
+                        && !l.contains("/* any status: "))
+            })
             .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
             .collect()
     }
-    assert_eq!(
-        unfiltered(r#"x("SELECT sum(amount) FROM gifts WHERE received_on > ?1")"#).len(),
-        1
-    );
+    for dodge in [
+        r#"x("SELECT sum(amount) FROM gifts WHERE received_on > ?1")"#,
+        r#"x("SELECT sum(amount) from
+             gifts WHERE x")"#,
+        r#"x("SELECT sum(amount) FROM  main.gifts")"#,
+        r#"pub const TABLE: &str = "gifts"; x("SELECT sum(amount) FROM {TABLE} WHERE x")"#,
+        r#"x("SELECT 1 FROM x JOIN gift_allocation_index i ON 1")"#,
+        r#"x("CREATE VIEW income AS SELECT * FROM gifts WHERE {RECEIVED}")"#,
+        r#"x("SELECT total(amount) FROM direct_debit_payments WHERE status = 'confirmed'")"#,
+    ] {
+        assert_eq!(unfiltered(dodge).len(), 1, "{dodge}");
+    }
     assert!(
         unfiltered(
             r#"x("SELECT 1 FROM gifts WHERE {RECEIVED}", "SELECT 1 FROM gifts_widen",
                "SELECT 1 FROM gifts WHERE id = ?1 /* any status: one gift */",
-               "UPDATE gifts SET status = ?2", "DELETE FROM gift_allocation_index WHERE x")"#
+               "UPDATE gifts SET status = ?2", "DELETE FROM gift_allocation_index WHERE x",
+               "SELECT amount FROM direct_debit_payments WHERE id = ?1")"#
         )
         .is_empty()
     );
@@ -849,7 +909,8 @@ fn the_unified_gifts_step_gives_every_payment_one_gift_with_its_status() {
     let pm22 = gift("PM22");
     assert_eq!(
         (pm22.2.as_str(), pm22.3.as_deref()),
-        ("failed", Some("insufficient funds"))
+        ("failed", Some("Failed (GoCardless): insufficient funds")),
+        "the reason as live processing writes it"
     );
     assert_eq!(gift("PM23").0, "000000000000000000000000000000a4");
     // The new gift: allocated to the regular gift's code, projected.

@@ -1908,7 +1908,7 @@ impl T {
         let gc = self.gc.clone();
         let token = token.to_owned();
         contracts::transact(&db, None, move |ctx| {
-            gc.put_token(ctx, &token, contracts::Source::Test)
+            gc.put_token(ctx, &token, "", contracts::Source::Test)
         })
         .unwrap();
     }
@@ -2548,8 +2548,9 @@ async fn staff_charge_a_mandate_once_and_the_gift_comes_from_gocardless() {
     let tag = t.fake.resource(&pm).unwrap()["metadata"].clone();
     assert_eq!(
         tag,
-        json!({ "keep_contact": jo, "keep_source_code": t.code })
+        json!({ "keep_contact": jo, "keep_source_code": t.code, "keep_request": key })
     );
+    assert_eq!(started["requestId"], key.as_str());
     // Never optimistic: no gift before GoCardless's event.
     t.settle().await;
     assert!(t.gifts_of("alpha", &t.val, &jo).await.is_empty());
@@ -2565,6 +2566,25 @@ async fn staff_charge_a_mandate_once_and_the_gift_comes_from_gocardless() {
             gifts[0]["regularGiftId"].clone()
         ),
         (json!(3000), json!("pending"), json!(pm), Value::Null)
+    );
+    // Review M2: who asked is on the gift: Sam entered it, and its history
+    // says it was asked for, as Sam.
+    let sam = t.user_id("sam@alpha.org").await;
+    assert_eq!(gifts[0]["enteredBy"], sam);
+    let history = ok(
+        &t.w,
+        "GET",
+        &format!(
+            "/api/t/alpha/gifts/{}/history",
+            gifts[0]["id"].as_str().unwrap()
+        ),
+        &t.val,
+        None,
+    )
+    .await;
+    assert!(
+        history.to_string().contains("as asked by staff"),
+        "{history}"
     );
     // The same key again: the same payment.
     let again = ok(
@@ -2650,7 +2670,8 @@ async fn an_instant_bank_pay_link_becomes_the_contacts_gift_when_paid() {
     let br = link["billingRequestId"].as_str().unwrap();
     assert_eq!(
         t.fake.resource(br).unwrap()["payment_request"]["metadata"],
-        json!({ "keep_contact": jo, "keep_source_code": t.code })
+        json!({ "keep_contact": jo, "keep_source_code": t.code,
+                "keep_request": link["requestId"] })
     );
     assert!(t.gifts_of("alpha", &t.val, &jo).await.is_empty());
     t.sign(link["flowUrl"].as_str().unwrap()).await;
@@ -2666,6 +2687,8 @@ async fn an_instant_bank_pay_link_becomes_the_contacts_gift_when_paid() {
         ),
         (json!(4000), json!("completed"), Value::Null, json!(t.code))
     );
+    // Review M2: the staff member who sent the link.
+    assert_eq!(gifts[0]["enteredBy"], t.user_id("sam@alpha.org").await);
     let listed = ok(
         &t.w,
         "GET",
@@ -2759,4 +2782,213 @@ async fn a_subscription_payment_before_its_subscription_is_recorded_is_an_instal
     assert_eq!(g["regularGiftId"], id.as_str());
     t.fake_post("outage", json!({ "calls": 0 })).await;
     t.consistent("alpha");
+}
+
+impl T {
+    /// `email`'s platform user id, from alpha's members.
+    async fn user_id(&self, email: &str) -> Value {
+        let page = ok(&self.w, "GET", "/api/t/alpha/members", &self.ann, None).await;
+        page["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["email"] == email)
+            .unwrap_or_else(|| panic!("no {email} in {page}"))["userId"]
+            .clone()
+    }
+
+    /// A Gift Aid claim of everything eligible up to today, as a draft.
+    async fn claim_draft(&self) -> Value {
+        ok(
+            &self.w,
+            "POST",
+            "/api/t/alpha/giftaid/claims",
+            &self.ann,
+            Some(json!({ "periodEnd": uk_day(0) })),
+        )
+        .await["claims"][0]
+            .clone()
+    }
+
+    /// Move claim `id` to `body.status` (its `expected` read first).
+    async fn claim_status(&self, id: &str, mut body: Value) -> (StatusCode, Value) {
+        let now = ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/alpha/giftaid/claims/{id}"),
+            &self.ann,
+            None,
+        )
+        .await;
+        body["expected"] = now["statusVersion"].clone();
+        self.w
+            .call(
+                "POST",
+                &format!("/api/t/alpha/giftaid/claims/{id}/status"),
+                &self.ann,
+                Some(body),
+            )
+            .await
+    }
+
+    /// A cash gift for `contact` dated `days` ago, as alpha's admin.
+    async fn cash_gift(&self, contact: &str, days: i64) {
+        ok(
+            &self.w,
+            "POST",
+            "/api/t/alpha/gifts/record",
+            &self.ann,
+            Some(json!({
+                "clientKey": contracts::new_id(), "contact": contact,
+                "receivedOn": uk_day(-days), "amount": 300, "method": "cash",
+                "allocations": [{ "sourceCodeId": self.code, "amount": 300 }]
+            })),
+        )
+        .await;
+    }
+
+    /// Ann, a Gift Aid donor with an active regular gift: (contact,
+    /// regular gift, subscription).
+    async fn gift_aid_regular(&self) -> (String, String, String) {
+        self.connect("alpha", &self.ann).await;
+        let ann = self.gift_aid_donor().await;
+        let v = self.set_up("alpha", &self.sam, &ann, &self.code).await;
+        let id = v["id"].as_str().unwrap().to_owned();
+        self.sign(v["flowUrl"].as_str().unwrap()).await;
+        self.settle().await;
+        let v = self.regular("alpha", &self.val, &id).await;
+        self.simulate(&format!(
+            "mandates/{}/activate",
+            v["mandateId"].as_str().unwrap()
+        ))
+        .await;
+        (ann, id, v["subscriptionId"].as_str().unwrap().to_owned())
+    }
+
+    /// A payment on `sub` charged `days` ago and collected: (payment, gift).
+    async fn collected_on(&self, id: &str, sub: &str, days: i64) -> (String, String) {
+        let pm = self
+            .simulate(&format!(
+                "subscriptions/{sub}/payment?charge_date={}",
+                uk_day(-days)
+            ))
+            .await["payment"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        self.simulate(&format!("payments/{pm}/confirm")).await;
+        self.settle().await;
+        let gift = payment(&self.regular("alpha", &self.val, id).await, &pm)["giftId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (pm, gift)
+    }
+}
+
+/// Review M1: a draft claim that pays back a gift whose chargeback has
+/// since been cancelled (money received again) can't be marked ready:
+/// it would repay HMRC tax on money the charity has. Deleting the draft
+/// lets the repayment go.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_repaying_a_gift_received_again_is_held_back() {
+    let t = setup().await;
+    let (ann, id, sub) = t.gift_aid_regular().await;
+    let (pm, gift) = t.collected_on(&id, &sub, 5).await;
+    t.claim_and_send().await;
+    t.simulate(&format!("payments/{pm}/charge_back")).await;
+    t.settle().await;
+    // A new gift to claim, and a draft that also repays the charged-back
+    // one.
+    t.cash_gift(&ann, 2).await;
+    let draft = t.claim_draft().await;
+    let draft_id = draft["id"].as_str().unwrap().to_owned();
+    let view = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/giftaid/claims/{draft_id}"),
+        &t.ann,
+        None,
+    )
+    .await;
+    assert!(view["adjustments"].to_string().contains(&gift), "{view}");
+    t.simulate(&format!("payments/{pm}/cancel_chargeback"))
+        .await;
+    t.settle().await;
+    assert_eq!(t.gift(&gift).await["status"], "completed");
+    let (s, out) = t
+        .claim_status(&draft_id, json!({ "status": "ready" }))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "received_again");
+    let (s, out) = t
+        .claim_status(&draft_id, json!({ "status": "deleted" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(t.adjustments().await, json!([]), "nothing to repay now");
+    t.consistent("alpha");
+}
+
+/// Review L4: a gift in a draft claim whose payment fails and is
+/// collected on another day keeps its claimed date, so the draft is held
+/// back (its tax year may be wrong); deleting the draft lets the gift go
+/// and it moves to the day the money came.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_whose_gift_was_collected_on_another_day_is_held_back() {
+    let t = setup().await;
+    let (_, id, sub) = t.gift_aid_regular().await;
+    let (pm, gift) = t.collected_on(&id, &sub, 5).await;
+    let draft = t.claim_draft().await;
+    let draft_id = draft["id"].as_str().unwrap().to_owned();
+    assert_eq!(t.gift(&gift).await["claimId"], draft_id.as_str());
+    let claimed_on = t.gift(&gift).await["receivedOn"].clone();
+    t.simulate(&format!("payments/{pm}/fail")).await;
+    t.settle().await;
+    let retry_day = uk_day(-1);
+    t.simulate(&format!("payments/{pm}/retry?charge_date={retry_day}"))
+        .await;
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let g = t.gift(&gift).await;
+    assert_eq!(
+        (g["status"].clone(), g["receivedOn"].clone()),
+        (json!("completed"), claimed_on)
+    );
+    let (s, out) = t
+        .claim_status(&draft_id, json!({ "status": "ready" }))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "payment_moved");
+    let (s, out) = t
+        .claim_status(&draft_id, json!({ "status": "deleted" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let g = t.gift(&gift).await;
+    assert_eq!(
+        (g["claimId"].clone(), g["receivedOn"].clone()),
+        (Value::Null, json!(retry_day))
+    );
+    t.consistent("alpha");
+}
+
+/// Review L7: catch-up uses an organisation's token only if it is the
+/// mapped account's; one sealed for another account (a switch still
+/// landing) is skipped for this run.
+#[tokio::test(flavor = "multi_thread")]
+async fn catch_up_never_lists_with_another_accounts_token() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let db = t.w.store.org(&t.w.alpha.id).unwrap();
+    let gc = t.gc.clone();
+    let token = db.read(|r| gc.token(r)).unwrap().unwrap();
+    let gc = t.gc.clone();
+    contracts::transact(&db, None, move |ctx| {
+        gc.put_token(ctx, &token, "ORSOMEONEELSE", contracts::Source::Test)
+    })
+    .unwrap();
+    let caught = api::gocardless::catchup::catch_up(t.w.store.clone(), t.gc.clone())
+        .await
+        .unwrap();
+    assert!(caught.is_empty(), "{caught:?}");
+    assert_eq!(t.fake.calls("GET events"), 0);
 }

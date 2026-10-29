@@ -548,7 +548,11 @@ first.
 **Ready** means the claim may go to HMRC: from then on it can't be
 deleted, and only then do its schedule and XML download (`claim_draft`
 before). A gift voided out of a draft holds the draft back
-(`voided_gifts`: delete it and claim again); one voided out of a ready,
+(`voided_gifts`: delete it and claim again), and so does one whose
+payment moved (`payment_moved`) or a gift it pays back that is money
+received again, a chargeback cancelled since (`received_again`); deleting
+or rejecting a claim lets a Direct Debit gift take its payment's amount
+and date again. One voided out of a ready,
 submitted or paid claim is paid back by the next claim.
 
 **A gift is in at most one live claim**: a partial unique index on the
@@ -579,7 +583,7 @@ Routes under `/api/t/{slug}`, **admin only** (reads too):
 | `GET giftaid/claims/preview?periodEnd` | `GiftAidClaimPreview {lines, adjustments, excluded, tooOld, totals, claims, …}` |
 | `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?, expectedAdjustment?}` | `GiftAidClaimsCreated {claims}` (drafts); `422 rejected`: `nothing_to_claim`, `preview_changed` |
 | `GET giftaid/claims/{id}` | `GiftAidClaimView`: summary, lines, adjustments, `voidedGifts` |
-| `POST giftaid/claims/{id}/status {expected, status, submittedOn?, hmrcReference?, paidOn?, paidAmount?, reason?}` | `GiftAidClaimSaved` (`view` null once deleted); `expected` = `statusVersion`; `409 stale`; `422 rejected`: `claim_status`, `voided_gifts`, `adjusted_later` (a later claim, whatever its status, pays back one of its gifts: let that go first) |
+| `POST giftaid/claims/{id}/status {expected, status, submittedOn?, hmrcReference?, paidOn?, paidAmount?, reason?}` | `GiftAidClaimSaved` (`view` null once deleted); `expected` = `statusVersion`; `409 stale`; `422 rejected`: `claim_status`, `voided_gifts`, `payment_moved` (a draft's Direct Debit gift was collected on another day or for another amount since: delete the draft), `received_again` (a gift the draft pays back is money received again: delete the draft), `adjusted_later` (a later claim, whatever its status, pays back one of its gifts: let that go first) |
 | `GET giftaid/claims/{id}/schedule?format=excel\|libreoffice` | HMRC's Gift Aid schedule (`.ods`), filled from HMRC's own template (`giftaid/assets/hmrc`); ready or later |
 | `GET giftaid/claims/{id}/xml` | the claim as HMRC's R68 XML, IRmark stamped (`X-IRmark`: base32), generated and never sent; ready or later; `422 rejected`: `missing_hmrc_details`, `org_name` |
 | `GET giftaid/hmrc-details` · `POST giftaid/hmrc-details {expected?, …}` | `HmrcDetailsView {…, version, warnings}`: HMRC reference, regulator and number, the authorised official (name, postcode, phone); stored as typed, what HMRC would refuse is a warning |
@@ -661,7 +665,10 @@ stops counting is paid back by the next claim (an adjustment); if its
 money comes back before that claim, nothing is repaid (after it, the tax
 stays repaid: re-claiming it is a follow-up).
 
-Whose a payment is: its subscription's regular gift (an instalment);
+Whose a payment is: its subscription's regular gift (an instalment;
+also a subscription payment on its mandate before the subscription id is
+recorded, and a payment stored unmatched that its regular gift turns out
+to own);
 else our one-off tag (`metadata.keep_contact`/`keep_source_code`, on a
 payment staff took or an Instant Bank Pay request, whose `fulfilled`
 event names its payment); else a mandate we know (a one-off from its
@@ -672,12 +679,26 @@ Sentry, never recorded. `keep giving-consistency <slug>` and
 `giving::regular::consistency` check that every matched payment has
 exactly one gift agreeing with it.
 
+**Who asked** (review M2): a staff one-off or Instant Bank Pay link is
+first recorded as the staff member (`giving.providerRequest`,
+`provider_requests`: kind, donor, regular gift, amount, code, charge
+date; the form's `clientKey` is its id, so a retry is the same request,
+and a key reused for another donor or kind is `409 duplicate`), then
+GoCardless is called with the request id as `metadata.keep_request`, and
+GoCardless's id for what it made is added to the request. The gift that
+comes from GoCardless's events is made with the requester as its actor:
+`enteredBy` and its history ("…, as asked by staff") name them.
+
 **Catch-up** (`api::gocardless::catchup`, job `gocardless-catchup`,
 daily, first run 15 minutes after boot): for each connected
 organisation, GoCardless's events for its account since the last run
 (`GET events`, 500 a page; the cursor per organisation and account in
 `platform.db`'s `gocardless_catchup`, read again from an hour before;
-an account's first run from its connection, at most a week back) go into
+an account's first run from its connection, at most a week back; never
+further back than 85 days, inside the 90 days handled events are kept;
+only with a token sealed for that account, `gocardless.organisationId`
+beside `gocardless.accessToken`, so a switch still landing is skipped)
+go into
 the same event store, a repeat being a no-op. How many were new is
 logged, and sent to Sentry as a warning when not zero (webhooks are
 being missed); then a processing run handles them.
@@ -694,8 +715,8 @@ being missed); then a processing run handles them.
 | `POST …/contacts/{id}/regular-gifts` | `SetUpRegularGift {amount, frequency: monthly\|yearly, dayOfMonth: 1–28, month?, sourceCodeId, clientKey?}` → `RegularGiftSaved {id, view}` with `view.flowUrl`, the donor's GoCardless page; staff. Checked first (`422`, `409 duplicate`), then GoCardless makes the billing request (Bacs, GBP) and the page, then it is stored; not connected `422 rejected not_connected` |
 | `GET …/regular-gifts/{id}` | `RegularGiftView` |
 | `POST …/regular-gifts/{id}/link` | `{expected}` (`mandateVersion`) → a new hosted page (one lasts 7 days) while pending; staff |
-| `POST …/regular-gifts/{id}/one-off` | `TakeOneOff {amount, chargeDate?, sourceCodeId, clientKey}` → `OneOffStarted {paymentId, status, chargeDate}`: GoCardless takes a payment on the mandate once (idempotent per `clientKey`, 32 hex), tagged with the donor and code; the gift comes from its events; staff. No live mandate: `422 rejected no_mandate` |
-| `POST …/contacts/{id}/instant-payment` | `InstantPayment {amount, sourceCodeId, description?, clientKey}` → `InstantPaymentLink {billingRequestId, flowUrl, flowExpiresAt}`: an Instant Bank Pay request (a payment request, no mandate; the group switches Instant Bank Pay on in GoCardless) and its hosted page; nothing stored here; staff |
+| `POST …/regular-gifts/{id}/one-off` | `TakeOneOff {amount, chargeDate?, sourceCodeId, clientKey}` → `OneOffStarted {requestId, paymentId, status, chargeDate}`: GoCardless takes a payment on the mandate once (idempotent per `clientKey`, 32 hex), tagged with the donor and code; the gift comes from its events; staff. No live mandate: `422 rejected no_mandate` |
+| `POST …/contacts/{id}/instant-payment` | `InstantPayment {amount, sourceCodeId, description?, clientKey}` → `InstantPaymentLink {requestId, billingRequestId, flowUrl, flowExpiresAt}`: an Instant Bank Pay request (a payment request, no mandate; the group switches Instant Bank Pay on in GoCardless) and its hosted page; only the request (who asked) is stored here; staff |
 | `GET …/gocardless/unmatched` | `UnmatchedPayment[]`: payments nobody could be matched to (no gift), newest first, at most 500; any member |
 | `POST …/gocardless/unmatched/{id}/match` | `MatchPayment {expected, contactId, sourceCodeId}` → `MatchedPayment {giftId, gift}`: the contact's gift, with GoCardless's amount, date and status; staff; `409 stale`; `422 rejected already_matched` |
 | `POST …/regular-gifts/{id}/cancel` | `{expected}` → cancels the mandate (or the unsigned billing request; one the donor fulfilled meanwhile: the mandate it made) at GoCardless, then `cancelled` "Cancelled by staff" (or GoCardless's reason, if its webhook landed first); staff |

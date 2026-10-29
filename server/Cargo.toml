@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Claude Code drops a `.claude/` folder in a directory a session works in;
+# under crates/ the glob would take it for a crate.
+exclude = ["crates/.claude"]
 
 [workspace.package]
 edition = "2024"

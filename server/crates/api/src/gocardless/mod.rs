@@ -64,6 +64,10 @@ pub use client::{Api, CallError, Credentials};
 /// The org secret holding the organisation's access token ("" once
 /// disconnected).
 pub const TOKEN_SETTING: &str = "gocardless.accessToken";
+/// The GoCardless account (`OR…`) that token is for, sealed beside it, so
+/// a reader can tell a token from an account switch still landing
+/// (review L7). Unset for a token sealed before it existed.
+pub const ACCOUNT_SETTING: &str = "gocardless.organisationId";
 /// How long an OAuth `state` is good for.
 pub const STATE_TTL_MS: i64 = 10 * 60 * 1000;
 
@@ -230,14 +234,40 @@ impl GoCardless {
         Ok(token.filter(|t| !t.is_empty()))
     }
 
-    /// Seal `token` (or "" to forget it) into the organisation's file.
+    /// Seal `token` (or "" to forget it) and the account it is for
+    /// (`organisation`, "" with it) into the organisation's file.
     pub fn put_token(
         &self,
         ctx: &contracts::Ctx,
         token: &str,
+        organisation: &str,
         source: contracts::Source,
     ) -> Result<(), contracts::ContractError> {
-        platform::settings::put(ctx, &self.settings_key, TOKEN_SETTING, token, source).map(|_| ())
+        platform::settings::put(ctx, &self.settings_key, TOKEN_SETTING, token, source)?;
+        platform::settings::put(
+            ctx,
+            &self.settings_key,
+            ACCOUNT_SETTING,
+            organisation,
+            source,
+        )
+        .map(|_| ())
+    }
+
+    /// The token, only if it is account `organisation`'s (or was sealed
+    /// before the account was recorded beside it).
+    pub fn token_for(
+        &self,
+        conn: &Connection,
+        organisation: &str,
+    ) -> Result<Option<String>, crate::ApiError> {
+        let account = platform::settings::get(conn, &self.settings_key, ACCOUNT_SETTING)
+            .map_err(crate::ApiError::internal)?
+            .filter(|a| !a.is_empty());
+        if account.is_some_and(|a| a != organisation) {
+            return Ok(None);
+        }
+        self.token(conn)
     }
 
     pub fn credentials(&self) -> &Credentials {

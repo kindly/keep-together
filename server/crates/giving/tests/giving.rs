@@ -1542,3 +1542,66 @@ fn a_claimed_gift_that_stops_counting_is_paid_back_whatever_the_reason() {
         (Status::Completed, None, Some(CLAIM_A))
     );
 }
+
+/// Review L3: a payment first stored unmatched (its subscription and
+/// mandate not known here yet) is adopted by its regular gift on a later
+/// event: an instalment with its gift, not stuck as a one-off. Once it
+/// has a regular gift and a gift, that's fixed.
+#[test]
+fn an_unmatched_payment_is_adopted_by_its_regular_gift() {
+    use giving::regular::{
+        Frequency, GiftChange, MandatePayload, PaymentOwner, PaymentReport, PaymentStatus,
+        RegularGiftPayload, create_regular_gift, record_payment,
+    };
+    let w = world();
+    let regular = contracts::new_id();
+    tx(&w.a, |ctx| {
+        create_regular_gift(
+            ctx,
+            &regular,
+            RegularGiftPayload {
+                contact_id: w.jo.clone(),
+                amount: 1000,
+                frequency: Frequency::Monthly,
+                day_of_month: 5,
+                month: None,
+                source_code_id: w.street.version.clone(),
+                client_key: None,
+            },
+            MandatePayload::default(),
+            Source::Ui,
+        )
+    })
+    .unwrap();
+    let report = PaymentReport {
+        payment_id: "PM1".into(),
+        amount: 1000,
+        charge_date: "2026-10-05".into(),
+        status: PaymentStatus::Pending,
+        reason: None,
+        mandate_id: Some("MD1".into()),
+    };
+    let first = tx(&w.a, |ctx| {
+        record_payment(ctx, report.clone(), PaymentOwner::Unmatched)
+    })
+    .unwrap();
+    assert_eq!(first, GiftChange::Unmatched);
+    let adopted = tx(&w.a, |ctx| {
+        record_payment(ctx, report.clone(), PaymentOwner::Regular(regular.clone()))
+    })
+    .unwrap();
+    let GiftChange::Recorded(gift) = adopted else {
+        panic!("{adopted:?}")
+    };
+    let g = read(&w.a, |c| Ok(giving::get(c, &gift)?)).unwrap().gift;
+    assert_eq!(
+        (
+            g.regular_gift_id.as_deref(),
+            g.status,
+            g.contact_id.as_str()
+        ),
+        (Some(regular.as_str()), Status::Pending, w.jo.as_str())
+    );
+    assert!(read(&w.a, |c| Ok(giving::regular::unmatched(c)?)).is_empty());
+    assert!(read(&w.a, |c| Ok(giving::regular::consistency(c)?)).is_empty());
+}

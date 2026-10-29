@@ -10,7 +10,8 @@
 //! The cursor (`platform.db`, `gocardless_catchup`) is per organisation
 //! and account: the start of the last run, read again from an hour
 //! earlier (events are deduplicated, and clocks drift). The first run for
-//! an account starts from when it was connected, at most a week back.
+//! an account starts from when it was connected, at most a week back, and
+//! no run reads further back than handled events are kept (85 days).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +32,10 @@ pub const PAGE: usize = 500;
 pub const MAX_PAGES: usize = 200;
 /// How far before the cursor each run reads again.
 pub const OVERLAP_MS: i64 = 60 * 60 * 1000;
+/// How far back any run reads at most: inside the 90 days handled events
+/// are kept ([`super::process::KEEP_HANDLED_MS`]), with a margin.
+pub const FLOOR_MS: i64 = super::process::KEEP_HANDLED_MS - 5 * 24 * 60 * 60 * 1000;
+const _: () = assert!(FLOOR_MS > 0 && FLOOR_MS < super::process::KEEP_HANDLED_MS);
 /// How far back an account's first run reads at most: since it was
 /// connected, or a week (handled events are kept 90 days, so older ones
 /// would come back as "missed").
@@ -47,6 +52,19 @@ fn ms_of(s: &str) -> Option<i64> {
     OffsetDateTime::parse(s, &Rfc3339)
         .ok()
         .map(|t| (t.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+/// Where a run starting at `started` reads from (ms): an hour before the
+/// cursor, or (first run) since the connection at most a week back; and
+/// never further back than handled events are kept, whatever the cursor
+/// (a long disconnect, runs failing for months): older events would come
+/// back as "missed" (review L5).
+fn since(cursor: Option<&str>, connected_at: i64, started: i64) -> i64 {
+    (cursor
+        .and_then(ms_of)
+        .unwrap_or_else(|| connected_at.max(started - FIRST_RUN_MS))
+        - OVERLAP_MS)
+        .max(started - FLOOR_MS)
 }
 
 /// What one organisation's catch-up found.
@@ -116,18 +134,25 @@ async fn one(
     organisation: &str,
     connected_at: i64,
 ) -> Result<Option<Caught>, String> {
-    let (s, g, raw) = (store.clone(), gc.clone(), tenant.to_owned());
+    let (s, g, raw, org) = (
+        store.clone(),
+        gc.clone(),
+        tenant.to_owned(),
+        organisation.to_owned(),
+    );
     let opened = crate::blocking(move || {
         let Some(id) = super::known_tenant(&s, &raw)? else {
             return Ok::<_, crate::ApiError>(None);
         };
         let db = s.org(&id)?;
-        let token = db.read(|r| g.token(r))?;
+        // Only this account's token: during a switch the mapping and the
+        // token land in different files (review L7).
+        let token = db.read(|r| g.token_for(r, &org))?;
         Ok(Some((id, token)))
     })
     .await
     .map_err(|e| format!("{e:?}"))?;
-    // A connect still landing has no token yet: the next run.
+    // A connect (or a switch) still landing: the next run.
     let Some((id, Some(token))) = opened else {
         return Ok(None);
     };
@@ -148,11 +173,7 @@ async fn one(
     .await
     .map_err(|e| format!("{e:?}"))?;
     let started = contracts::now_ms();
-    let since_ms = cursor
-        .as_deref()
-        .and_then(ms_of)
-        .unwrap_or_else(|| connected_at.max(started - FIRST_RUN_MS))
-        - OVERLAP_MS;
+    let since_ms = since(cursor.as_deref(), connected_at, started);
     let since = rfc3339(since_ms);
 
     let mut events: Vec<Value> = vec![];
@@ -170,9 +191,11 @@ async fn one(
         }
     }
     if after.is_some() {
+        // GoCardless lists newest first: the oldest beyond the pages read
+        // are never reached, so say so and move on (review L6).
         crate::observe::warning(&format!(
             "gocardless catch-up: {tenant}: more than {} events since {since}; \
-             the rest next run",
+             only the newest were read, older ones are not caught up",
             PAGE * MAX_PAGES
         ));
     }
@@ -197,12 +220,7 @@ async fn one(
         .collect();
     let read = incoming.len();
     let (s, t, org) = (store.clone(), tenant.to_owned(), organisation.to_owned());
-    // The cursor moves only if every page was read.
-    let next = if after.is_none() {
-        Some(rfc3339(started))
-    } else {
-        cursor
-    };
+    let next = rfc3339(started);
     let stored = crate::blocking(move || {
         let stored = store_events(&s, &incoming, contracts::now_ms())?;
         s.platform().with_write(|tx| {
@@ -213,13 +231,7 @@ async fn one(
                  ON CONFLICT (tenant_id) DO UPDATE SET organisation_id = excluded.organisation_id,
                      since = excluded.since, last_run_at = excluded.last_run_at,
                      last_found = excluded.last_found",
-                params![
-                    t,
-                    org,
-                    next.unwrap_or_else(|| rfc3339(since_ms + OVERLAP_MS)),
-                    contracts::now_ms(),
-                    stored.queued as i64
-                ],
+                params![t, org, next, contracts::now_ms(), stored.queued as i64],
             )?;
             Ok::<_, store::StoreError>(())
         })?;
@@ -269,5 +281,19 @@ mod tests {
         assert_eq!(ms_of(&rfc3339(ms)), Some(ms));
         assert_eq!(ms_of("2026-10-29T08:00:00Z"), Some(1_793_260_800_000));
         assert_eq!(ms_of("yesterday"), None);
+    }
+
+    #[test]
+    fn a_run_reads_from_an_hour_before_its_cursor_and_never_past_retention() {
+        let day = 24 * 60 * 60 * 1000;
+        let now = 1_793_260_800_000;
+        let cursor = rfc3339(now - day);
+        assert_eq!(since(Some(&cursor), 0, now), now - day - OVERLAP_MS);
+        // First run: since connected, at most a week back.
+        assert_eq!(since(None, now - 2 * day, now), now - 2 * day - OVERLAP_MS);
+        assert_eq!(since(None, 0, now), now - FIRST_RUN_MS - OVERLAP_MS);
+        // A cursor from a year ago: floored inside retention.
+        let ancient = rfc3339(now - 365 * day);
+        assert_eq!(since(Some(&ancient), 0, now), now - FLOOR_MS);
     }
 }

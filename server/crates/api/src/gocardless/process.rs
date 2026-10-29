@@ -720,6 +720,7 @@ async fn owner_of(
                 Ok(code.map(|source_code_id| PaymentOwner::OneOff {
                     contact_id: tag.contact,
                     source_code_id,
+                    request: tag.request,
                 }))
             })
             .await?;
@@ -731,6 +732,7 @@ async fn owner_of(
         Some(found) => PaymentOwner::OneOff {
             contact_id: found.terms.contact_id,
             source_code_id: found.terms.source_code_id,
+            request: None,
         },
         None => PaymentOwner::Unmatched,
     })

@@ -3,4 +3,8 @@
 /**
  * The donor's page to pay on (GoCardless's hosted page).
  */
-export type InstantPaymentLink = { billingRequestId: string, flowUrl: string, flowExpiresAt: string | null, };
+export type InstantPaymentLink = { 
+/**
+ * Our record of the request (who asked): the form's `clientKey`.
+ */
+requestId: string, billingRequestId: string, flowUrl: string, flowExpiresAt: string | null, };

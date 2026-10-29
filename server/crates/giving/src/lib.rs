@@ -15,6 +15,7 @@
 pub mod gift;
 pub mod queries;
 pub mod regular;
+pub mod requests;
 pub mod rules;
 pub mod types;
 
@@ -128,6 +129,7 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &REGULAR_GIFT,
         &REGULAR_GIFT_MANDATE,
         &DIRECT_DEBIT_PAYMENT,
+        &requests::PROVIDER_REQUEST,
     ])
 });
 
@@ -265,8 +267,9 @@ pub fn lock_for_claim(
     )
 }
 
-/// The claim lets the gift go (a draft deleted, a claim rejected). A gift
-/// another claim holds is left alone and refused.
+/// The claim lets the gift go (a draft deleted, a claim rejected); a
+/// provider's gift then takes its payment's amount and date again. A
+/// gift another claim holds is left alone and refused.
 pub fn release_from_claim(
     ctx: &Ctx,
     gift_id: &str,
@@ -282,12 +285,18 @@ pub fn release_from_claim(
         .optional()?;
     match held {
         None => Err(ContractError::NotFound),
-        Some(Some(c)) if c == claim_id => execute(
-            ctx,
-            &CLAIM_LOCK,
-            ClaimLockPayload { claim_id: None },
-            Exec::update(gift_id, None, source).in_group(group),
-        ),
+        Some(Some(c)) if c == claim_id => {
+            let done = execute(
+                ctx,
+                &CLAIM_LOCK,
+                ClaimLockPayload { claim_id: None },
+                Exec::update(gift_id, None, source).in_group(group),
+            )?;
+            // A provider gift's payment may have moved while the claim
+            // held its amount and date (review L4): it follows again.
+            regular::resync_gift(ctx, gift_id, group)?;
+            Ok(done)
+        }
         Some(_) => Err(ContractError::rejected(
             "not_in_claim",
             "The gift isn't in this claim",
