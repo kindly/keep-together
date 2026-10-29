@@ -50,6 +50,11 @@ kill_timeout = 30
   # staging), then `ideal`; the nightly QC looks up only the provider's
   # free test postcode (qc/flows/contact.helpers.ts QC_POSTCODE).
   KEEP_ADDRESS_LOOKUP = "fake"
+  # GoCardless's sandbox through the sandbox partner app; its client id,
+  # client secret and webhook secret are Fly secrets
+  # (scripts/fly/gocardless-secrets.sh staging). Redirect and webhook are
+  # KEEP_APP_ORIGIN + /api/gocardless/{callback,webhook}.
+  KEEP_GOCARDLESS = "sandbox"
 
 [mounts]
   source = "keep_data"
