@@ -1,4 +1,4 @@
-<sv-page label="plan: search" category="plans">
+<sv-page label="plan: search" category="archive">
 
 <sv-prose id="tree">
 ## Design tree

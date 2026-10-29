@@ -1,4 +1,4 @@
-<sv-page label="plan: Gift Aid claims" category="plans">
+<sv-page label="plan: Gift Aid claims" category="archive">
 
 <sv-prose id="b1">
 ## Design tree

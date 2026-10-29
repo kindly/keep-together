@@ -1,4 +1,4 @@
-<sv-page label="plan: email provider" category="plans">
+<sv-page label="plan: email provider" category="archive">
 
 <sv-prose id="b1">
 # Email provider: Mailgun EU, Brevo or AWS SES London

@@ -1,4 +1,4 @@
-<sv-page label="plan: logins & roles" category="plans">
+<sv-page label="plan: logins & roles" category="archive">
 
 <sv-prose id="b1">
 ## Design tree

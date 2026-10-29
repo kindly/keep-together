@@ -1,4 +1,4 @@
-<sv-page label="plan: QC suite" category="plans">
+<sv-page label="plan: QC suite" category="archive">
 
 <sv-prose id="b1">
 ## Design tree

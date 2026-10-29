@@ -1,4 +1,4 @@
-<sv-page label="plan: address lookup" category="plans">
+<sv-page label="plan: address lookup" category="archive">
 
 <sv-prose id="b1">
 ## Design tree

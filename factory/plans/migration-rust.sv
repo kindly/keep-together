@@ -1,4 +1,4 @@
-<sv-page label="plan: migration to rust" category="plans">
+<sv-page label="plan: migration to rust" category="archive">
 
 <sv-prose id="b1">
 # Plan: migration to Rust + SQLite per organisation

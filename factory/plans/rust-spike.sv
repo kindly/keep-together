@@ -1,4 +1,4 @@
-<sv-page label="plan: rust spike" category="plans">
+<sv-page label="plan: rust spike" category="archive">
 
 <sv-prose id="b1">
 # Plan: Rust + SQLite spike
