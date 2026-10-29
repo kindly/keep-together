@@ -683,8 +683,11 @@ are `declaration_scans` events on the org's stream):
 | `GET giftaid/{id}/scans` | `DeclarationScans {held: [{id, scannedAt, reviewedAt, imagesHeld}], scans: ScanView[] \| null}`: any member sees "✓ scan held" and when; `scans` for staff and admins only |
 | `GET files-usage` | `FilesUsage {bytes, capBytes}` (Settings); staff and admins |
 
-Not built here (later steps or plans): the SPA (step 4) and `scan.html`
-(step 5, its own Vite entry; the api serves it like the SPA); erasure and
+The phone's page is `scan.html` with `src/scan/` (step 5): its own Vite
+entry with none of the app's bundle, served from `dist/` like the SPA.
+
+Not built here (later steps or plans): the SPA's laptop side (step 4);
+the phone page for a signed-in phone (`POST scans` under the tenant); erasure and
 org deletion (`giftaid::scans::erasure_deletes` says what they must do:
 keep a scan whose declaration covers a claimed gift, admin-only, until its
 retention ends; delete the rest); viewer-only-once-erased image access
