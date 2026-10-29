@@ -49,6 +49,15 @@ describe('routeOf', () => {
       'GET /t/:slug/contacts/search',
     )
     expect(routeOf(call('/api/me', 1))).toBe('GET /me')
+    expect(
+      routeOf(
+        call(
+          `/api/scan/${'ab'.repeat(32)}/scans/${ID}/pages?pageId=${ID}`,
+          1,
+          'POST',
+        ),
+      ),
+    ).toBe('POST /scan/:token/scans/:id/pages')
   })
 })
 

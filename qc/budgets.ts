@@ -183,6 +183,17 @@ export const budgets = {
   'scans.open': repeatable,
   'scans.pair': infrequent,
   'scans.accept': infrequent,
+  // Declaration scans step 5, the phone's page (qc/flows/scan-phone.spec.ts).
+  // PROVISIONAL, for the human's OK: recorded 2026-10-29 in runs tnoqzxpr,
+  // tnor0ywg, tnor1s78 with netem off and load about 8 (worst: open 63 ms,
+  // sendPage 214 ms), 1.5× rounded up to 10 ms. scan.open: opening the
+  // link, the phone page's first load (oncePerSession, as
+  // contacts.coldLoad). scan.sendPage: Use page to "Sent", which flattens
+  // and encodes the photo on the phone before the upload and the server's
+  // re-encode, "Preparing the page…" shown meanwhile: bulk's class (its own
+  // recorded budget, a progress state), though it is one page.
+  'scan.open': { kind: 'oncePerSession', maxMs: 100 },
+  'scan.sendPage': { kind: 'bulk', maxMs: 330 },
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },

@@ -411,7 +411,8 @@ function readSample([t0, t1, watched]: [number, number, boolean]) {
     .filter(([start]) => start >= t0 - 1 && start <= t1)
     .map(([start, end, method, url, status, timing]) => ({
       method,
-      url,
+      // A phone pairing's token is its credential: kept out of history.
+      url: url.replace(/^(\/api\/scan\/)[^/?]+/, '$1:token'),
       startMs: rel(start)!,
       endMs: end === null || end > t1 ? null : rel(end),
       status,

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <!-- The pairing token is in this page's fragment: send no referrer anywhere. -->
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex" />
+    <title>Scan a declaration · keep-together</title>
+  </head>
+  <body>
+    <!-- One camera input for the whole page, outside what re-renders, so a
+         redraw while the camera is open can't drop the photo. -->
+    <input
+      id="camera"
+      class="camera-input"
+      type="file"
+      accept="image/*"
+      capture="environment"
+      tabindex="-1"
+      aria-hidden="true"
+    />
+    <main id="scan"></main>
+    <script type="module" src="/src/scan/main.ts"></script>
+  </body>
+</html>

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
 import { devtools } from '@tanstack/devtools-vite'
 
@@ -26,6 +27,16 @@ const config = defineConfig(({ mode }) => {
     // `vite preview` serves a build the same way (QC on the Rust backend).
     preview: { proxy },
     resolve: { tsconfigPaths: true },
+    build: {
+      // Two pages: the app, and the phone's scanning page (src/scan/),
+      // which shares no code with it and so never loads its bundle.
+      rolldownOptions: {
+        input: {
+          main: fileURLToPath(new URL('index.html', import.meta.url)),
+          scan: fileURLToPath(new URL('scan.html', import.meta.url)),
+        },
+      },
+    },
     plugins: [
       devtools(),
       tailwindcss(),

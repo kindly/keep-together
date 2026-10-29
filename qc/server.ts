@@ -27,6 +27,8 @@ export function routeOf(c: Pick<ApiCall, 'method' | 'url'>): string {
     .split('?')[0]
     .replace(/^\/api/, '')
     .replace(/^\/t\/[^/]+/, '/t/:slug')
+    // A phone pairing's token is its credential: never in a report.
+    .replace(/^\/scan\/[^/]+/, '/scan/:token')
     .replace(/\/[0-9a-f]{32}(?=\/|$)/g, '/:id')
   return `${c.method} ${p}`
 }
