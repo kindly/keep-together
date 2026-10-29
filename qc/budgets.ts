@@ -194,6 +194,15 @@ export const budgets = {
   // recorded budget, a progress state), though it is one page.
   'scan.open': { kind: 'oncePerSession', maxMs: 100 },
   'scan.sendPage': { kind: 'bulk', maxMs: 330 },
+  // Declaration scans step 6 (qc/flows/scans-e2e.spec.ts). PROVISIONAL,
+  // AWAITING THE HUMAN'S OK: recorded 2026-10-29 in runs tnoxdojv,
+  // tnoxdz0z, tnoxea0c with netem off and load under 2 (worst 182 ms),
+  // 1.5× rounded up to 10 ms. scans.uploadToLaptop: Use page on the phone
+  // to the page's thumbnail in the laptop's stack, so scan.sendPage's work,
+  // then the SSE event, the laptop's refetch and the thumbnail's image.
+  // Bulk's class, as scan.sendPage (its own recorded budget; the phone
+  // shows "Preparing the page…").
+  'scans.uploadToLaptop': { kind: 'bulk', maxMs: 280 },
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },

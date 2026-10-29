@@ -432,9 +432,15 @@ impl Tenant {
             let _slot = slot;
             check()?;
             let start = Instant::now();
-            let page = crate::scans::store_page(&db, &raw, &limits)?;
-            let scan_id = crate::scans::upload(&db, user, None, target, page)?;
-            let pages = crate::scans::page_count(&db, &scan_id)?;
+            let (scan_id, pages) = match crate::scans::resent(&db, None, &target)? {
+                Some(held) => held,
+                None => {
+                    let page = crate::scans::store_page(&db, &raw, &limits)?;
+                    let scan_id = crate::scans::upload(&db, user, None, target, page)?;
+                    let pages = crate::scans::page_count(&db, &scan_id)?;
+                    (scan_id, pages)
+                }
+            };
             timing.add_db(start.elapsed());
             Ok::<_, ApiError>(crate::scans::Uploaded {
                 scan_id,
@@ -469,8 +475,9 @@ impl Tenant {
         .await
     }
 
-    /// Bytes this organisation's files db holds (Settings), and its cap.
-    pub async fn files_usage(&self) -> Result<(i64, i64), ApiError> {
+    /// Bytes this organisation's files db holds (Settings), and its cap
+    /// if it has one.
+    pub async fn files_usage(&self) -> Result<(i64, Option<i64>), ApiError> {
         let db = self.db.clone();
         let used = blocking(move || match db.files_if_any()? {
             Some(files) => Ok::<_, ApiError>(files.usage()?),

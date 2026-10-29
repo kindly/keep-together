@@ -587,7 +587,7 @@ async fn a_snapshot_restore_rotates_each_orgs_recovery_generation() {
 #[tokio::test]
 async fn the_files_db_is_snapshotted_daily_when_changed_and_restored_with_its_org() {
     let w = world();
-    let cap = store::files::CAP_BYTES;
+    let cap = None;
     let put = |bytes: &[u8]| {
         w.store
             .org(&w.a.id)
@@ -706,9 +706,7 @@ fn a_files_db_larger_than_the_memory_budget_snapshots_and_restores_within_it() {
                 x.to_le_bytes()
             })
             .collect();
-        files
-            .put(&blob, "image/jpeg", 1, store::files::CAP_BYTES)
-            .unwrap();
+        files.put(&blob, "image/jpeg", 1, None).unwrap();
     }
     let size = files.usage().unwrap() as u64;
     assert!(size > 2 * BUDGET, "{size}");

@@ -193,8 +193,11 @@ export class Outbox {
         // The scan stopped being a draft (accepted, merged or discarded
         // on the laptop) before this page reached it: the rest of its
         // pages start a scan of their own.
-        // An earlier attempt of this page may have reached the old scan
-        // before the laptop took it, so it may now be there and here.
+        // A resend of a page the scan already holds is answered `ok`,
+        // whatever the scan's state, so the old scan doesn't hold this
+        // one now; but an earlier attempt may have landed there before
+        // the laptop merged it away or deleted its images, so it may be
+        // in two scans.
         if (page.retried) page.maybeTwice = true
         const [gone, fresh] = [page.scanId, newId()]
         this.moved.set(gone, fresh)

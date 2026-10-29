@@ -35,7 +35,7 @@ Data on the volume (`/data`):
 |---|---|
 | `platform.db` | tenants, users, memberships, sessions, the snapshot ledger |
 | `orgs/<tenant-id>.db` | one organisation, named by its 32-hex tenant id |
-| `files/<tenant-id>.db` | that organisation's files db: scanned pages as immutable blobs (`store::files`), made at its first scan, stamped with its tenant id, capped at 2 GB. **An organisation is both files**: moving or restoring one means both (ADR 0024 amendment) |
+| `files/<tenant-id>.db` | that organisation's files db: scanned pages as immutable blobs (`store::files`), made at its first scan, stamped with its tenant id, no cap (unless `KEEP_FILES_CAP_BYTES` sets one). **An organisation is both files**: moving or restoring one means both (ADR 0024 amendment) |
 | `premigrate/` | the `VACUUM INTO` copies taken before a boot migration (F1); `scripts/ops/rollback-migration.sh <data> [--apply]` puts them back |
 | `snapshots-tmp/` | the snapshot job's scratch copies, removed after each file |
 | `drill/` | the restore drill's write-loss probe, only during a drill |
@@ -235,9 +235,9 @@ requires. A restore streams the download to a file and decompresses
 file to file. The snapshot job needs free disk for a copy plus its
 `.zst` of the largest file, which is why scan uploads keep a reserve
 free on the volume (`KEEP_FILES_DISK_RESERVE_BYTES`, `server/README.md`).
-Uploads past it answer `507 storage_full`. **The volumes are 1 GB while
-an org's cap is 2 GB (`KEEP_FILES_CAP_BYTES`): size the volume or the
-cap before scanning goes live.**
+Uploads past it answer `507 storage_full`. The volumes are 10 GB, and
+health.yml raises an issue well before the reserve is reached ("Disk",
+under Monitoring).
 
 An org's files db (`files/<id>.db`) is snapshotted as
 `files-<tenant-id>`, **daily at most**: at the first run of a UTC day
@@ -498,8 +498,11 @@ needs the aws CLI, litestream 0.5.x and sqlite3, and builds
   - `restore`: present after an empty-volume restore, as `{source,
     fallback, missingOrgs, at}`.
 
-  And `walBacklogBytes` at the top level: the worst open org file's WAL
-  not yet checkpointed ("WAL checkpoints and Litestream" above).
+  And at the top level: `walBacklogBytes`, the worst open org file's WAL
+  not yet checkpointed ("WAL checkpoints and Litestream" above); and
+  `diskFreeBytes` and `diskTotalBytes`, the `/data` volume's (`statvfs`;
+  `null` if it can't be read). Neither changes `ok`: a full disk is the
+  monitor's to raise, not a reason to take the machine out of service.
 
   It is public, so it has counts and status words only. Error text
   (bucket names, account ids, tenant ids) goes to the log and Sentry, and
@@ -509,9 +512,11 @@ needs the aws CLI, litestream 0.5.x and sqlite3, and builds
 - `health.yml` every 15 minutes, for each URL in `STAGING_URL` and
   `PROD_URL`: fails on a non-200, a snapshot older than 2 h or never
   taken, snapshot errors, Litestream not `ok`, a lag over
-  `LITESTREAM_MAX_LAG` (default 300 s), or a restore that fell back or
-  left orgs out. A failure opens an issue labelled `health`, or comments
-  on the open one. GitHub emails it.
+  `LITESTREAM_MAX_LAG` (default 300 s), a restore that fell back or
+  left orgs out, or the volume under 20% free ("Disk" below). A failure
+  opens an issue labelled `health`, or comments on the open one. GitHub
+  emails it. The checks are `scripts/ops/health-problems.jq` (tested by
+  `health-problems.test.mjs` beside it).
 - Sentry, EU region. The api reports panics and logged errors
   (`SENTRY_DSN`). The SPA imports `@sentry/browser` (npm, pinned) as a
   separate chunk, only when the build had `VITE_SENTRY_DSN`. It contacts
@@ -519,6 +524,35 @@ needs the aws CLI, litestream 0.5.x and sqlite3, and builds
   header, body and query-string collection, scrub what's left, and
   redact anything shaped like an email address.
 - Litestream's Prometheus metrics on :9090, scraped by Fly (`[metrics]`).
+- Once a day (the snapshot job's first run of each UTC day) the log has
+  `data usage: N org files B bytes, N files dbs B bytes; volume F of T
+  bytes free`, so growth can be read back from the log.
+
+### Disk
+
+The org files, the declaration scans' files dbs (no per-org cap: the
+volume is the limit) and the snapshot job's temporary copies share one
+volume, `keep_data`, 10 GB. health.yml reads `diskFreeBytes` of
+`diskTotalBytes`:
+
+- **under 20% free**: a problem in the `health` issue, `disk 81% full on
+  prod: 1.9 GB free of 10 GB`. Grow the volume within days.
+- **under 10% free**: `URGENT: …`. The issue's title says so and it gets
+  the `urgent` label. Grow it now: scan uploads stop at the reserve
+  (`507 storage_full`), and after that the org files themselves and the
+  snapshots are at risk.
+
+To grow it (Fly volumes only grow, never shrink; the human runs it):
+
+```sh
+fly auth login
+scripts/fly/volume-size.sh prod 20     # or staging; size in GB
+```
+
+It extends `keep_data` and its filesystem in place. If flyctl says the
+machine needs a restart, restart it (`fly apps restart keep-prod`).
+Then check `/healthz`'s `diskTotalBytes` and the next health run. To see
+what grew, read the daily `data usage:` lines in `fly logs`.
 
 ## Staging reset
 

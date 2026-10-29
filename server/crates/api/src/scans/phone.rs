@@ -304,8 +304,15 @@ async fn receive(
     let out = blocking(move || {
         // Held until the work ends, whether or not anyone still waits.
         let _slot = slot;
-        let left = super::take_upload(&store, &live.pairing.id)?;
         let db = store.org(&live.tenant)?;
+        if let Some((scan_id, pages)) = super::resent(&db, Some(&live.pairing.id), &target)? {
+            return Ok(Uploaded {
+                scan_id,
+                pages,
+                uploads_left: Some(MAX_UPLOADS - live.pairing.uploads),
+            });
+        }
+        let left = super::take_upload(&store, &live.pairing.id)?;
         let page = super::store_page(&db, &body, &limits)?;
         let scan_id = super::upload(
             &db,

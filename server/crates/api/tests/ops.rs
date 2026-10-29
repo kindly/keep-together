@@ -99,6 +99,71 @@ async fn healthz_answers_without_a_session() {
     assert_eq!(body["ok"], true);
     assert_eq!(body["db"], "ok");
     assert!(body["walBacklogBytes"].is_i64(), "{body}");
+    // The data volume, as counts: free within total, and no path.
+    let (free, total) = (
+        body["diskFreeBytes"].as_u64().unwrap(),
+        body["diskTotalBytes"].as_u64().unwrap(),
+    );
+    assert!(total > 0 && free <= total, "{body}");
+    let dir = w.store.dir().to_str().unwrap().to_owned();
+    assert!(!body.to_string().contains(&dir), "{body}");
+}
+
+/// The data volume's numbers are statvfs's for the data dir.
+#[tokio::test]
+async fn healthz_reports_the_data_volume() {
+    let w = world();
+    let res = w
+        .app
+        .clone()
+        .oneshot(request("GET", "/healthz", None, None))
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let (free, total) = api::scans::limits::volume(w.store.dir()).unwrap();
+    // Within a few MB of what statvfs says now (other writers share it).
+    let near = |a: u64, b: u64| a.abs_diff(b) < 64 << 20;
+    assert!(
+        near(body["diskFreeBytes"].as_u64().unwrap(), free),
+        "{body}"
+    );
+    assert_eq!(body["diskTotalBytes"].as_u64().unwrap(), total);
+}
+
+#[test]
+fn the_daily_usage_line_counts_org_files_and_files_dbs() {
+    let tmp = tempfile::tempdir().unwrap();
+    for (dir, name, len) in [
+        ("orgs", "a.db", 4096),
+        ("orgs", "a.db-wal", 100),
+        ("orgs", "b.db", 8192),
+        ("files", "a.db", 1000),
+    ] {
+        std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        std::fs::write(tmp.path().join(dir).join(name), vec![0u8; len]).unwrap();
+    }
+    assert_eq!(
+        api::scans::limits::data_usage(tmp.path()),
+        api::scans::limits::DataUsage {
+            org_files: 2,
+            org_bytes: 4096 + 100 + 8192,
+            files_dbs: 1,
+            files_bytes: 1000,
+        }
+    );
+    let line = api::backup::usage_line(tmp.path());
+    assert!(
+        line.starts_with("data usage: 2 org files 12388 bytes, 1 files dbs 1000 bytes; volume ")
+            && line.contains(" bytes free"),
+        "{line}"
+    );
+    // An empty data dir counts nothing rather than failing.
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(
+        api::scans::limits::data_usage(empty.path()),
+        api::scans::limits::DataUsage::default()
+    );
 }
 
 #[test]

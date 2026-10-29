@@ -228,6 +228,32 @@ describe('Outbox', () => {
     expect(outbox.pages[0].maybeTwice).toBeUndefined()
   })
 
+  it('a page unanswered, then answered as landed after the laptop took its scan, is sent once', async () => {
+    // The server answers a known page id on an accepted or discarded
+    // scan as landed (L2), so only its next page moves to a new scan.
+    const { outbox, sent, drained } = harness([
+      'ok',
+      'retry',
+      'ok',
+      'not_found',
+      'ok',
+    ])
+    outbox.add(SCAN, blob)
+    outbox.add(SCAN, blob)
+    outbox.add(SCAN, blob)
+    await drained()
+    expect(outbox.pages[1]).toMatchObject({ state: 'sent', retried: true })
+    expect(outbox.pages.some((p) => p.maybeTwice)).toBe(false)
+    expect(sent.map((s) => [s.scanId === SCAN, s.first])).toEqual([
+      [true, true],
+      [true, false],
+      [true, false],
+      [true, false],
+      [false, true],
+    ])
+    expect(sent[2].pageId).toBe(sent[1].pageId)
+  })
+
   it('a page refused at once as its scan was taken is not there twice', async () => {
     const { outbox, drained } = harness(['ok', 'not_found'])
     outbox.add(SCAN, blob)

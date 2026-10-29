@@ -25,12 +25,20 @@ export function formatBytes(bytes: number): string {
 /** From this share of the cap, Settings warns that scans will stop. */
 export const USAGE_WARN_AT = 0.9
 
-/** "120 MB of 2 GB (6%)", and whether it is nearly or quite full. */
-export function describeUsage(usage: { bytes: number; capBytes: number }): {
+/**
+ * "120 MB of 2 GB (6%)", and whether it is nearly or quite full; with no
+ * cap (`capBytes` null, the default), just "120 MB" and no share.
+ */
+export function describeUsage(usage: {
+  bytes: number
+  capBytes: number | null
+}): {
   text: string
-  share: number
+  share: number | null
   level: 'ok' | 'warn' | 'full'
 } {
+  if (usage.capBytes === null)
+    return { text: formatBytes(usage.bytes), share: null, level: 'ok' }
   const share = usage.capBytes > 0 ? usage.bytes / usage.capBytes : 1
   const percent = Math.min(100, Math.floor(share * 100))
   return {
