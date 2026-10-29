@@ -341,11 +341,11 @@ own `INTEGER NOT NULL DEFAULT 0` counter and has its upcasters.
 `each_org(&store, |id, db| …)`: one file at a time, never two in one
 transaction; one org's failure doesn't stop the others. Running now:
 `idle-close` (1 min), `session-purge` (1 h: expired sessions, spent
-reset links, old invites) and `field-retire` (1 min: retires left part
+reset links, old invites), `field-retire` (1 min: retires left part
 way, as whoever started them, in only the orgs `platform.db`'s
 `pending_jobs` names; one field failing is reported and the rest carry
-on), `scan-pairing-sweep`, `scan-orphan-sweep` and `scan-discard-purge`
-(daily: Declaration scans, below); F2's hourly snapshot
+on), and `scan-pairing-sweep`, `scan-orphan-sweep` and
+`scan-discard-purge` (daily: Declaration scans, below). F2's hourly snapshot
 registers the same way. A job's first run is `first_after()` after boot
 (default: one period), so the snapshot needn't wait an hour after every
 deploy.
