@@ -134,6 +134,12 @@ pub struct ProviderRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub regular_gift_id: Option<String>,
+    /// The charge date the provider first gave the payment (ISO; kept
+    /// through retries): its period. A regular gift's payments only
+    /// (ADR 0026).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scheduled_on: Option<String>,
 }
 
 /// A share of the gift under one source code (a version), in pence.

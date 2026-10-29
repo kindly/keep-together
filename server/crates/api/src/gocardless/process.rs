@@ -570,7 +570,11 @@ async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'s
     if found.mandate.status().is_ended() {
         return Ok("done");
     }
-    let t = &found.terms;
+    // The terms GoCardless is to run: the chain's latest it has (row 1
+    // for a new gift).
+    let Some(t) = found.current.clone() else {
+        return Ok("done");
+    };
     let name = format!("Regular gift {}", giving::format_pence(t.amount));
     let subscription = gc
         .api
@@ -592,12 +596,16 @@ async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'s
     // Checked again in the write's own transaction: if the regular gift
     // ended while GoCardless was answering (staff cancelled, the mandate
     // went), the subscription is recorded and cancelled at once.
-    let (rid, sb) = (id.to_owned(), subscription.clone());
+    let (rid, sb, tid) = (id.to_owned(), subscription.clone(), t.id.clone());
     let ended = org
         .write(move |ctx| {
             let now = regular::facts(ctx.tx.read(), &rid)?.ok_or(ContractError::NotFound)?;
             update_mandate(ctx, &rid, None, Source::System, None, |m| {
-                m.subscription_id = Some(sb)
+                m.subscription_id = Some(sb.clone())
+            })?;
+            // The row it was made from runs under it.
+            giving::terms::update_sync(ctx, &tid, None, |s| {
+                s.subscription_id.get_or_insert(sb);
             })?;
             Ok(now.mandate.status().is_ended())
         })
@@ -668,6 +676,7 @@ async fn record_fetched(
         status,
         reason,
         mandate_id: p.mandate,
+        subscription_id: p.subscription,
     };
     let change = org
         .write(move |ctx| regular::record_payment(ctx, report, owner))
@@ -707,7 +716,7 @@ async fn owner_of(
         return Ok(PaymentOwner::Regular(found.id.clone()));
     }
     if let Some(tag) = p.one_off.clone() {
-        let fallback = on_mandate.as_ref().map(|f| f.terms.source_code_id.clone());
+        let fallback = on_mandate.as_ref().and_then(|f| f.code());
         let owner = org
             .read(move |c| {
                 if contacts::donors::kind_of(c, &tag.contact)?.is_none() {
@@ -728,10 +737,10 @@ async fn owner_of(
             return Ok(owner);
         }
     }
-    Ok(match on_mandate {
-        Some(found) => PaymentOwner::OneOff {
-            contact_id: found.terms.contact_id,
-            source_code_id: found.terms.source_code_id,
+    Ok(match on_mandate.and_then(|f| Some((f.code()?, f.contact_id))) {
+        Some((source_code_id, contact_id)) => PaymentOwner::OneOff {
+            contact_id,
+            source_code_id,
             request: None,
         },
         None => PaymentOwner::Unmatched,

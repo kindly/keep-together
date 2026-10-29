@@ -20,8 +20,8 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contracts::{Contract, ContractError, Source};
 use giving::regular::{
-    self, Frequency, MandatePayload, RegularGiftPayload, RegularGiftView, RegularStatus,
-    UnmatchedPayment, prepare_terms,
+    self, Frequency, MandatePayload, RegularGiftView, RegularStatus, SetUp, UnmatchedPayment,
+    prepare_setup,
 };
 use giving::requests::{ProviderRequestPayload, RequestKind, record_request, set_provider_ref};
 use giving::types::{GiftView, Provider};
@@ -83,6 +83,11 @@ fn provider(slug: &str, e: CallError) -> ApiError {
     }
 }
 
+/// Today's date (UTC), for what a read shows as in force.
+pub(crate) fn today() -> String {
+    giving::terms_rules::date_of_ms(contracts::now_ms())
+}
+
 fn not_connected() -> ApiError {
     ApiError::Rejected {
         reason: "not_connected".into(),
@@ -110,7 +115,7 @@ async fn by_contact(
             return Err(ApiError::NotFound);
         }
         let connected = owned && gc.token(r)?.is_some();
-        Ok(regular::regular_by_contact(r, &id)?
+        Ok(regular::regular_by_contact(r, &id, &today())?
             .into_iter()
             .map(|v| with_connection(v, connected))
             .collect())
@@ -127,7 +132,7 @@ async fn one(
     let gc = t.gocardless()?;
     let owned = t.gocardless_owned().await?;
     t.read(move |r| {
-        let v = regular::get_regular(r, &id)?.ok_or(ApiError::NotFound)?;
+        let v = regular::get_regular(r, &id, &today())?.ok_or(ApiError::NotFound)?;
         Ok(with_connection(v, owned && gc.token(r)?.is_some()))
     })
     .await
@@ -164,7 +169,8 @@ pub struct RegularGiftSaved {
 }
 
 fn saved(ctx: &contracts::Ctx, id: &str) -> Result<RegularGiftSaved, ApiError> {
-    let view = regular::get_regular(ctx.tx.read(), id)?.ok_or(ApiError::NotFound)?;
+    let view = regular::get_regular(ctx.tx.read(), id, &giving::terms_rules::date_of_ms(ctx.at))?
+        .ok_or(ApiError::NotFound)?;
     Ok(RegularGiftSaved {
         id: id.to_owned(),
         view: with_connection(view, true),
@@ -201,7 +207,7 @@ async fn set_up(
     // Connected = this organisation owns the account's mapping, not
     // merely holds a token.
     let owned = t.gocardless_owned().await?;
-    let terms = prepare_terms(RegularGiftPayload {
+    let terms = prepare_setup(SetUp {
         contact_id: contact,
         amount: req.amount,
         frequency: req.frequency,
@@ -311,7 +317,7 @@ async fn new_link(
     let (token, found, prefill) = t
         .read(move |r| {
             let found = regular::facts(r, &rid)?.ok_or(ApiError::NotFound)?;
-            let donor = contacts::donors::describe_donor(r, &found.terms.contact_id)?
+            let donor = contacts::donors::describe_donor(r, &found.contact_id)?
                 .ok_or(ApiError::NotFound)?;
             let token = g.token(r)?.filter(|_| owned).ok_or_else(not_connected)?;
             Ok((token, found, prefill(&donor)))
@@ -362,7 +368,7 @@ async fn cancel(
     let (g, rid) = (gc.clone(), id.clone());
     let (token, found, counter) = t
         .read(move |r| {
-            let view = regular::get_regular(r, &rid)?.ok_or(ApiError::NotFound)?;
+            let view = regular::get_regular(r, &rid, &today())?.ok_or(ApiError::NotFound)?;
             let found = regular::facts(r, &rid)?.ok_or(ApiError::NotFound)?;
             Ok((g.token(r)?.filter(|_| owned), found, view.mandate_version))
         })
@@ -595,7 +601,7 @@ async fn one_off(
         ProviderRequestPayload {
             kind: RequestKind::OneOff,
             provider: Provider::Gocardless,
-            contact_id: found.terms.contact_id.clone(),
+            contact_id: found.contact_id.clone(),
             regular_gift_id: Some(found.id.clone()),
             amount: req.amount,
             source_code_id: req.source_code_id.clone(),

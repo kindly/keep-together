@@ -2,22 +2,48 @@
 import type { DirectDebitPaymentRow } from "./DirectDebitPaymentRow";
 import type { RegularGiftFrequency } from "./RegularGiftFrequency";
 import type { RegularGiftStatus } from "./RegularGiftStatus";
+import type { TermAllocationView } from "./TermAllocationView";
+import type { TermView } from "./TermView";
+import type { UpcomingPayment } from "./UpcomingPayment";
 
 /**
- * A regular gift with its code and its latest payments (newest charge
- * date first, at most [`PAYMENTS_LIMIT`]). `connected` is the api's: is
- * the organisation's GoCardless account connected now.
+ * A regular gift with its chain and its latest payments (newest charge
+ * date first, at most [`PAYMENTS_LIMIT`]). The amount, schedule and
+ * split are the row in force today (or the first row, before it
+ * starts). `upcoming` and `connected` are the api's: GoCardless's next
+ * payments (one regular gift's read only) and whether the
+ * organisation's account is connected now.
  */
-export type RegularGiftView = { id: string, contactId: string, amount: number, frequency: RegularGiftFrequency, dayOfMonth: number, month: number | null, sourceCodeId: string, 
+export type RegularGiftView = { id: string, contactId: string, amount: number, frequency: RegularGiftFrequency, dayOfMonth: number, month: number | null, 
+/**
+ * The oldest layer's code: the one that recruited the donor.
+ */
+sourceCodeId: string, 
 /**
  * The code as it reads now; null if it isn't one of this
  * organisation's.
  */
-sourceCode: string | null, status: RegularGiftStatus, endedReason: string | null, endedAt: number | null, billingRequestId: string | null, 
+sourceCode: string | null, 
+/**
+ * The split in force, oldest money first.
+ */
+allocations: Array<TermAllocationView>, status: RegularGiftStatus, endedReason: string | null, endedAt: number | null, billingRequestId: string | null, 
 /**
  * The donor's sign-up link (GoCardless's hosted page) while pending.
  */
-flowUrl: string | null, flowExpiresAt: string | null, mandateId: string | null, subscriptionId: string | null, enteredBy: number | null, enteredAt: number, termsVersion: number, mandateVersion: number, 
+flowUrl: string | null, flowExpiresAt: string | null, mandateId: string | null, subscriptionId: string | null, enteredBy: number | null, enteredAt: number, setupVersion: number, mandateVersion: number, 
+/**
+ * The chain, in effective order, withdrawn rows included.
+ */
+terms: Array<TermView>, 
+/**
+ * The next change still to reach GoCardless, if any.
+ */
+scheduled: TermView | null, 
+/**
+ * A change GoCardless told us of is waiting for its code.
+ */
+changeNotCoded: boolean, upcoming: Array<UpcomingPayment>, 
 /**
  * The latest failed payment, if the latest payment failed.
  */

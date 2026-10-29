@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::rules::{CLIENT_KEY_MAX, PENCE_MAX, format_pence, is_iso_date};
+use crate::terms_rules::Share;
 use crate::types::{
     AllocationRow, GiftPayload, Method, Provider, ProviderRef, Status, StatusPayload,
 };
@@ -148,46 +149,56 @@ impl PaymentStatus {
     }
 }
 
-// ── the terms ──────────────────────────────────────────────────────────────
+// ── the set-up ─────────────────────────────────────────────────────────────
 
-/// `giving.regularGift`: what staff set up. Fixed once created (changing
-/// an amount = cancel and set up again).
+/// `giving.regularGift` (v2): who it is from and the form's key, fixed
+/// once set up. The terms are its chain ([`crate::terms`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct RegularGiftPayload {
     pub contact_id: String,
-    /// Pence, over 0.
-    #[ts(type = "number")]
-    pub amount: i64,
-    pub frequency: Frequency,
-    /// 1–28: the day of the month it is collected.
-    pub day_of_month: u8,
-    /// Yearly only: 1–12, the month it is collected.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub month: Option<u8>,
-    /// The source code (a version) each payment's gift is allocated to.
-    pub source_code_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub client_key: Option<String>,
 }
 
-/// Refuse terms that can't be stored: an amount out of range, a day
-/// outside 1–28 (every month has it; GoCardless takes 1–28 or the last
-/// day), a month missing on a yearly gift or present on a monthly one.
-pub fn prepare_terms(p: RegularGiftPayload) -> Result<RegularGiftPayload, ContractError> {
-    let mut problems = Vec::new();
-    if p.amount <= 0 {
+/// What staff choose to set a regular gift up: the donor and the first
+/// row of its chain (one code for the whole amount).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetUp {
+    pub contact_id: String,
+    /// Pence, over 0.
+    pub amount: i64,
+    pub frequency: Frequency,
+    /// 1–28: the day of the month it is collected.
+    pub day_of_month: u8,
+    /// Yearly only: 1–12, the month it is collected.
+    pub month: Option<u8>,
+    /// The source code (a version) the whole amount is allocated to.
+    pub source_code_id: String,
+    pub client_key: Option<String>,
+}
+
+/// An amount out of range, a day outside 1–28 (every month has it;
+/// GoCardless takes 1–28 or the last day), a month missing on a yearly
+/// gift or present on a monthly one.
+pub fn schedule_problems(
+    amount: i64,
+    frequency: Frequency,
+    day_of_month: u8,
+    month: Option<u8>,
+    problems: &mut Vec<Problem>,
+) {
+    if amount <= 0 {
         problems.push(Problem::new("amount", "The amount must be over £0"));
-    } else if p.amount > PENCE_MAX {
+    } else if amount > PENCE_MAX {
         problems.push(Problem::new("amount", "The amount is too large"));
     }
-    if !(1..=28).contains(&p.day_of_month) {
+    if !(1..=28).contains(&day_of_month) {
         problems.push(Problem::new("dayOfMonth", "Choose a day from 1 to 28"));
     }
-    match (p.frequency, p.month) {
+    match (frequency, month) {
         (Frequency::Yearly, None) => {
             problems.push(Problem::new("month", "A yearly gift needs its month"))
         }
@@ -199,6 +210,19 @@ pub fn prepare_terms(p: RegularGiftPayload) -> Result<RegularGiftPayload, Contra
         }
         _ => {}
     }
+}
+
+/// Refuse a set-up that can't be stored: [`schedule_problems`], no code,
+/// a client key too long.
+pub fn prepare_setup(p: SetUp) -> Result<SetUp, ContractError> {
+    let mut problems = Vec::new();
+    schedule_problems(
+        p.amount,
+        p.frequency,
+        p.day_of_month,
+        p.month,
+        &mut problems,
+    );
     if p.source_code_id.trim().is_empty() {
         problems.push(Problem::new("sourceCodeId", "Pick a source code"));
     }
@@ -218,11 +242,11 @@ pub fn prepare_terms(p: RegularGiftPayload) -> Result<RegularGiftPayload, Contra
     }
 }
 
-/// The terms as stored, plus who set it up and when (system-owned).
+/// The set-up as stored, plus who set it up and when (system-owned).
 #[derive(Clone, Debug, Serialize)]
-pub struct TermsState {
+pub struct SetUpState {
     #[serde(flatten)]
-    pub terms: RegularGiftPayload,
+    pub setup: RegularGiftPayload,
     #[serde(skip)]
     entered_by: Option<i64>,
     #[serde(skip)]
@@ -234,36 +258,39 @@ pub static REGULAR_GIFT: RegularGift = RegularGift;
 
 impl Contract for RegularGift {
     const NAME: &'static str = "giving.regularGift";
-    const VERSION: u32 = 1;
+    /// v2: the terms moved to the chain (ADR 0026).
+    const VERSION: u32 = 2;
     const ENTITY: &'static str = TABLE;
-    const COUNTER: &'static str = "terms_version";
+    const COUNTER: &'static str = "setup_version";
     type Payload = RegularGiftPayload;
-    type State = TermsState;
+    type State = SetUpState;
 
     fn prepare(&self, p: RegularGiftPayload) -> Result<RegularGiftPayload, ContractError> {
-        prepare_terms(p)
+        if p.client_key
+            .as_ref()
+            .is_some_and(|k| contacts::rules::too_long(k, CLIENT_KEY_MAX))
+        {
+            return Err(ContractError::invalid(
+                "clientKey",
+                format!("At most {CLIENT_KEY_MAX} characters"),
+            ));
+        }
+        Ok(p)
     }
 
-    fn load(&self, tx: &OrgTx, id: &str) -> Result<TermsState, ContractError> {
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<SetUpState, ContractError> {
         tx.read()
             .prepare_cached(
-                "SELECT contact_id, amount, frequency, day_of_month, month, source_code_id,
-                     entered_by, entered_at
-                 FROM regular_gifts WHERE id = ?1",
+                "SELECT contact_id, entered_by, entered_at FROM regular_gifts WHERE id = ?1",
             )?
             .query_row([id], |r| {
-                Ok(TermsState {
-                    terms: RegularGiftPayload {
+                Ok(SetUpState {
+                    setup: RegularGiftPayload {
                         contact_id: r.get(0)?,
-                        amount: r.get(1)?,
-                        frequency: Frequency::parse(&r.get::<_, String>(2)?),
-                        day_of_month: r.get(3)?,
-                        month: r.get(4)?,
-                        source_code_id: r.get(5)?,
                         client_key: None,
                     },
-                    entered_by: r.get(6)?,
-                    entered_at: r.get(7)?,
+                    entered_by: r.get(1)?,
+                    entered_at: r.get(2)?,
                 })
             })
             .optional()?
@@ -272,32 +299,51 @@ impl Contract for RegularGift {
 
     fn apply(
         &self,
-        current: Option<&TermsState>,
+        current: Option<&SetUpState>,
         p: &RegularGiftPayload,
         command: &Command,
-    ) -> Result<TermsState, ContractError> {
+    ) -> Result<SetUpState, ContractError> {
         match current {
-            None => Ok(TermsState {
-                terms: p.clone(),
+            None => Ok(SetUpState {
+                setup: p.clone(),
                 entered_by: command.actor,
                 entered_at: command.at,
             }),
-            // The subscription at GoCardless was made from these terms.
+            // Restoring an old revision says the same: nothing changes
+            // (the terms it held are the chain's now).
+            Some(c) if c.setup.contact_id == p.contact_id => Ok(c.clone()),
             Some(_) => Err(ContractError::rejected(
-                "terms_fixed",
-                "A regular gift’s terms can’t change: cancel it and set up another",
+                "setup_fixed",
+                "A regular gift’s donor can’t change: cancel it and set up another",
             )),
         }
+    }
+
+    /// v1 held the terms, which are the chain's first row now: dropped.
+    fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
+        if from != 1 {
+            return None;
+        }
+        let mut payload = payload;
+        if let Some(o) = payload.as_object_mut() {
+            for k in ["amount", "frequency", "dayOfMonth", "month", "sourceCodeId"] {
+                o.remove(k);
+            }
+        }
+        Some(payload)
     }
 
     fn write(
         &self,
         tx: &WriteTx,
         id: &str,
-        _: Option<&TermsState>,
-        next: &TermsState,
+        before: Option<&SetUpState>,
+        next: &SetUpState,
     ) -> Result<(), ContractError> {
-        let t = &next.terms;
+        if before.is_some() {
+            return Ok(());
+        }
+        let t = &next.setup;
         if let Some(key) = t.client_key.as_deref() {
             let existing: Option<String> = tx
                 .prepare_cached("SELECT id FROM regular_gifts WHERE client_key = ?1")?
@@ -313,36 +359,13 @@ impl Contract for RegularGift {
                 "Contact must exist",
             ));
         }
-        match sources::describe(tx, &t.source_code_id)? {
-            None => {
-                return Err(ContractError::rejected(
-                    "unknown_source_code",
-                    "The source code must be a full code (category, detail and version)",
-                ));
-            }
-            Some(code) if !code.is_active => {
-                return Err(ContractError::rejected(
-                    "archived_source_code",
-                    format!("{} is archived: choose another", code.code),
-                ));
-            }
-            Some(_) => {
-                sources::mark_used(tx, &t.source_code_id, false)?;
-            }
-        }
         tx.prepare_cached(
-            "INSERT INTO regular_gifts (id, contact_id, amount, frequency, day_of_month, month,
-                 source_code_id, status, entered_by, entered_at, client_key)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10)",
+            "INSERT INTO regular_gifts (id, contact_id, status, entered_by, entered_at, client_key)
+             VALUES (?1, ?2, 'pending', ?3, ?4, ?5)",
         )?
         .execute(params![
             id,
             t.contact_id,
-            t.amount,
-            t.frequency.as_str(),
-            t.day_of_month,
-            t.month,
-            t.source_code_id,
             next.entered_by,
             next.entered_at,
             t.client_key
@@ -494,39 +517,58 @@ impl Contract for RegularGiftMandate {
 
 /// The command group's name for a new regular gift: "regular gift £10
 /// monthly".
-pub fn regular_group_name(p: &RegularGiftPayload) -> String {
+pub fn regular_group_name(amount: i64, frequency: Frequency) -> String {
     format!(
         "regular gift {} {}",
-        format_pence(p.amount),
-        p.frequency.as_str()
+        format_pence(amount),
+        frequency.as_str()
     )
 }
 
 /// Set up a regular gift, pending, in the caller's transaction: the
-/// terms, then the mandate slice as `link` has it (the billing request
-/// and its hosted page made for it), so its history starts with the
-/// set-up. `id` is pre-generated (the provider's requests carry it); one
-/// that exists, or a `clientKey` already on one, is `Duplicate`.
+/// set-up, the first row of its chain (in force from today: GoCardless
+/// takes the first payment once the donor has signed), then the mandate
+/// slice as `link` has it (the billing request and its hosted page made
+/// for it), so its history starts with the set-up. `id` is pre-generated
+/// (the provider's requests carry it); one that exists, or a `clientKey`
+/// already on one, is `Duplicate`.
 pub fn create_regular_gift(
     ctx: &Ctx,
     id: &str,
-    payload: RegularGiftPayload,
+    setup: SetUp,
     link: MandatePayload,
     source: Source,
 ) -> Result<String, ContractError> {
-    let group = command_group(ctx, &regular_group_name(&payload))?;
+    let setup = prepare_setup(setup)?;
+    let group = command_group(ctx, &regular_group_name(setup.amount, setup.frequency))?;
     let id = execute(
         ctx,
         &REGULAR_GIFT,
-        payload,
+        RegularGiftPayload {
+            contact_id: setup.contact_id.clone(),
+            client_key: setup.client_key.clone(),
+        },
         Exec::create_with_id(id, source).in_group(&group),
     )?
     .id;
+    check_live_code(ctx.tx.read(), &setup.source_code_id)?;
+    crate::terms::create_first_row(
+        ctx,
+        &id,
+        &crate::terms_rules::date_of_ms(ctx.at),
+        setup.amount,
+        setup.frequency,
+        setup.day_of_month,
+        setup.month,
+        &setup.source_code_id,
+        None,
+        &group,
+    )?;
     execute(
         ctx,
         &REGULAR_GIFT_MANDATE,
         MandatePayload {
-            status: Some(RegularStatus::Pending),
+            status: Some(link.status.unwrap_or(RegularStatus::Pending)),
             ended_reason: None,
             ended_at: None,
             ..link
@@ -534,6 +576,22 @@ pub fn create_regular_gift(
         Exec::update(&id, Some(0), source).in_group(&group),
     )?;
     Ok(id)
+}
+
+/// A code staff may give new money to: one of this organisation's full
+/// codes, not archived.
+pub fn check_live_code(conn: &Connection, source_code_id: &str) -> Result<(), ContractError> {
+    match sources::describe(conn, source_code_id)? {
+        None => Err(ContractError::rejected(
+            "unknown_source_code",
+            "The source code must be a full code (category, detail and version)",
+        )),
+        Some(code) if !code.is_active => Err(ContractError::rejected(
+            "archived_source_code",
+            format!("{} is archived: choose another", code.code),
+        )),
+        Some(_) => Ok(()),
+    }
 }
 
 /// Change the mandate slice with `change` unless that changes nothing (a
@@ -563,8 +621,9 @@ pub fn update_mandate(
     execute(ctx, &REGULAR_GIFT_MANDATE, next, exec).map(Some)
 }
 
-/// End a regular gift (cancelled or failed) with `reason`, at `at` (ms).
-/// One already ended keeps its first end. `None` when nothing changed.
+/// End a regular gift (cancelled or failed) with `reason`, at `at` (ms),
+/// and withdraw the changes it had scheduled. One already ended keeps its
+/// first end. `None` when nothing changed.
 pub fn end_regular_gift(
     ctx: &Ctx,
     id: &str,
@@ -575,50 +634,58 @@ pub fn end_regular_gift(
 ) -> Result<Option<Executed>, ContractError> {
     debug_assert!(status.is_ended());
     let at = ctx.at;
-    update_mandate(ctx, id, expected, source, None, |m| {
+    let done = update_mandate(ctx, id, expected, source, None, |m| {
         if m.status().is_ended() {
             return;
         }
         m.status = Some(status);
         m.ended_reason = reason;
         m.ended_at = Some(at);
-    })
+    })?;
+    crate::terms::withdraw_scheduled(ctx, id, None)?;
+    Ok(done)
 }
 
 /// What the provider glue needs of a regular gift. One read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegularFacts {
     pub id: String,
-    pub terms: RegularGiftPayload,
+    pub contact_id: String,
     pub mandate: MandatePayload,
+    /// The row GoCardless runs now ([`crate::terms::current_at_provider`]).
+    pub current: Option<crate::terms::TermView>,
 }
 
-const FACT_COLUMNS: &str = "id, contact_id, amount, frequency, day_of_month, month, \
-     source_code_id, status, ended_reason, ended_at, billing_request_id, flow_url, \
-     flow_expires_at, mandate_id, subscription_id";
+impl RegularFacts {
+    /// The code a one-off on its mandate goes to: the oldest layer of the
+    /// terms GoCardless runs (the code that recruited the donor).
+    pub fn code(&self) -> Option<String> {
+        self.current
+            .as_ref()?
+            .allocations
+            .first()
+            .map(|a| a.source_code_id.clone())
+    }
+}
+
+const FACT_COLUMNS: &str = "id, contact_id, status, ended_reason, ended_at, billing_request_id, \
+     flow_url, flow_expires_at, mandate_id, subscription_id";
 
 fn facts_row(r: &Row) -> rusqlite::Result<RegularFacts> {
     Ok(RegularFacts {
         id: r.get(0)?,
-        terms: RegularGiftPayload {
-            contact_id: r.get(1)?,
-            amount: r.get(2)?,
-            frequency: Frequency::parse(&r.get::<_, String>(3)?),
-            day_of_month: r.get(4)?,
-            month: r.get(5)?,
-            source_code_id: r.get(6)?,
-            client_key: None,
-        },
+        contact_id: r.get(1)?,
         mandate: MandatePayload {
-            status: Some(RegularStatus::parse(&r.get::<_, String>(7)?)),
-            ended_reason: r.get(8)?,
-            ended_at: r.get(9)?,
-            billing_request_id: r.get(10)?,
-            flow_url: r.get(11)?,
-            flow_expires_at: r.get(12)?,
-            mandate_id: r.get(13)?,
-            subscription_id: r.get(14)?,
+            status: Some(RegularStatus::parse(&r.get::<_, String>(2)?)),
+            ended_reason: r.get(3)?,
+            ended_at: r.get(4)?,
+            billing_request_id: r.get(5)?,
+            flow_url: r.get(6)?,
+            flow_expires_at: r.get(7)?,
+            mandate_id: r.get(8)?,
+            subscription_id: r.get(9)?,
         },
+        current: None,
     })
 }
 
@@ -644,11 +711,18 @@ pub fn facts_by(
         ]
         .contains(&column)
     );
-    conn.prepare_cached(&format!(
-        "SELECT {FACT_COLUMNS} FROM regular_gifts WHERE {column} = ?1"
-    ))?
-    .query_row([value], facts_row)
-    .optional()
+    let Some(mut found) = conn
+        .prepare_cached(&format!(
+            "SELECT {FACT_COLUMNS} FROM regular_gifts WHERE {column} = ?1"
+        ))?
+        .query_row([value], facts_row)
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let chain = crate::terms::chain(conn, &found.id)?;
+    found.current = crate::terms::current_at_provider(&chain).cloned();
+    Ok(Some(found))
 }
 
 // ── payments ───────────────────────────────────────────────────────────────
@@ -695,13 +769,20 @@ pub struct PaymentPayload {
     /// Its gift (one for the payment's whole life); none while unmatched.
     /// Set once.
     pub gift_id: Option<String>,
+    /// The charge date GoCardless first gave it (ISO): its period, kept
+    /// through retries. Set once.
+    #[serde(default)]
+    pub scheduled_on: Option<String>,
+    /// The subscription it was created by, if any.
+    #[serde(default)]
+    pub subscription_id: Option<String>,
 }
 
 pub struct DirectDebitPayment;
 pub static DIRECT_DEBIT_PAYMENT: DirectDebitPayment = DirectDebitPayment;
 
-const PAYMENT_COLUMNS: &str =
-    "payment_id, regular_gift_id, mandate_id, amount, charge_date, status, reason, gift_id";
+const PAYMENT_COLUMNS: &str = "payment_id, regular_gift_id, mandate_id, amount, charge_date, \
+     status, reason, gift_id, scheduled_on, subscription_id";
 
 fn load_payment(conn: &Connection, id: &str) -> rusqlite::Result<Option<PaymentPayload>> {
     conn.prepare_cached(&format!(
@@ -721,6 +802,8 @@ fn payment_row(r: &Row) -> rusqlite::Result<PaymentPayload> {
         status: PaymentStatus::parse(&r.get::<_, String>(5)?),
         reason: r.get(6)?,
         gift_id: r.get(7)?,
+        scheduled_on: r.get(8)?,
+        subscription_id: r.get(9)?,
     })
 }
 
@@ -742,6 +825,8 @@ fn payment_by_provider_id(
             status: PaymentStatus::parse(&r.get::<_, String>(6)?),
             reason: r.get(7)?,
             gift_id: r.get(8)?,
+            scheduled_on: r.get(9)?,
+            subscription_id: r.get(10)?,
         };
         Ok((r.get(0)?, p))
     })
@@ -751,8 +836,8 @@ fn payment_by_provider_id(
 impl Contract for DirectDebitPayment {
     const NAME: &'static str = "giving.directDebitPayment";
     /// v2: `mandateId`; `regularGiftId` optional; no `giftVoided`
-    /// (ADR 0025).
-    const VERSION: u32 = 2;
+    /// (ADR 0025). v3: `scheduledOn`, `subscriptionId` (ADR 0026).
+    const VERSION: u32 = 3;
     const ENTITY: &'static str = PAYMENTS;
     const COUNTER: &'static str = "version";
     type Payload = PaymentPayload;
@@ -796,7 +881,8 @@ impl Contract for DirectDebitPayment {
         if let Some(current) = current
             && (current.payment_id != p.payment_id
                 || (current.regular_gift_id != p.regular_gift_id && !adopting(current))
-                || (current.gift_id.is_some() && current.gift_id != p.gift_id))
+                || (current.gift_id.is_some() && current.gift_id != p.gift_id)
+                || (current.scheduled_on.is_some() && current.scheduled_on != p.scheduled_on))
         {
             return Err(ContractError::rejected(
                 "identity_immutable",
@@ -806,10 +892,11 @@ impl Contract for DirectDebitPayment {
         Ok(p.clone())
     }
 
-    /// v1 had `giftVoided` (ignored now) and always a regular gift: the
-    /// same JSON reads as v2.
+    /// v1 had `giftVoided` (ignored now) and always a regular gift; v2
+    /// no `scheduledOn` or `subscriptionId` (none): the same JSON reads
+    /// as v3.
     fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
-        (from == 1).then_some(payload)
+        (from == 1 || from == 2).then_some(payload)
     }
 
     fn write(
@@ -829,8 +916,8 @@ impl Contract for DirectDebitPayment {
             }
             tx.prepare_cached(
                 "INSERT INTO direct_debit_payments (id, payment_id, regular_gift_id, mandate_id,
-                     amount, charge_date, status, reason, gift_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     amount, charge_date, status, reason, gift_id, scheduled_on, subscription_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?
             .execute(params![
                 id,
@@ -841,12 +928,15 @@ impl Contract for DirectDebitPayment {
                 next.charge_date,
                 next.status.as_str(),
                 next.reason,
-                next.gift_id
+                next.gift_id,
+                next.scheduled_on,
+                next.subscription_id
             ])?;
         } else {
             tx.prepare_cached(
                 "UPDATE direct_debit_payments SET mandate_id = ?2, amount = ?3, charge_date = ?4,
-                     status = ?5, reason = ?6, gift_id = ?7, regular_gift_id = ?8
+                     status = ?5, reason = ?6, gift_id = ?7, regular_gift_id = ?8,
+                     scheduled_on = ?9, subscription_id = ?10
                  WHERE id = ?1",
             )?
             .execute(params![
@@ -857,7 +947,9 @@ impl Contract for DirectDebitPayment {
                 next.status.as_str(),
                 next.reason,
                 next.gift_id,
-                next.regular_gift_id
+                next.regular_gift_id,
+                next.scheduled_on,
+                next.subscription_id
             ])?;
         }
         Ok(())
@@ -876,6 +968,8 @@ pub struct PaymentReport {
     pub reason: Option<String>,
     /// The mandate it was taken on, if any.
     pub mandate_id: Option<String>,
+    /// The subscription that created it, if any.
+    pub subscription_id: Option<String>,
 }
 
 /// Whose a payment is, as the provider glue worked it out. A payment
@@ -908,6 +1002,18 @@ pub enum GiftChange {
     Updated(String),
     /// Stored with no gift: nobody to give it to yet.
     Unmatched,
+}
+
+/// A split as gift allocation rows (new keys).
+fn allocation_rows(split: Vec<Share>) -> Vec<AllocationRow> {
+    split
+        .into_iter()
+        .map(|s| AllocationRow {
+            key: None,
+            source_code_id: s.source_code_id,
+            amount: s.amount,
+        })
+        .collect()
 }
 
 /// "collected", "failed", "charged back": what a payment's status says.
@@ -1009,21 +1115,47 @@ fn record(
             .clone()
             .or_else(|| before.as_ref().and_then(|b| b.reason.clone())),
         gift_id: before.as_ref().and_then(|b| b.gift_id.clone()),
+        // The date it was first given: its period for good.
+        scheduled_on: before
+            .as_ref()
+            .and_then(|b| b.scheduled_on.clone())
+            .or_else(|| Some(report.charge_date.clone())),
+        subscription_id: report
+            .subscription_id
+            .clone()
+            .or_else(|| before.as_ref().and_then(|b| b.subscription_id.clone())),
     };
-    // Who the gift is for and its code, while the payment has none, and
+    let scheduled_on = next.scheduled_on.clone().unwrap_or_default();
+    // Who the gift is for and its split, while the payment has none, and
     // the staff request it answers.
-    let donor: Option<(String, String, Option<String>)> = if next.gift_id.is_some() {
+    let donor: Option<(String, Vec<AllocationRow>, Option<String>)> = if next.gift_id.is_some() {
         None
     } else if let Some(id) = &regular_id {
         let regular = facts(conn, id)?.ok_or(ContractError::NotFound)?;
-        Some((regular.terms.contact_id, regular.terms.source_code_id, None))
+        // The rows GoCardless has that this payment settles, then the
+        // split in force on its scheduled date (ADR 0026).
+        crate::terms::on_payment(ctx, id, &scheduled_on, report.amount, None)?;
+        let chain = crate::terms::chain(ctx.tx.read(), id)?;
+        let row = crate::terms::in_force(&chain, &scheduled_on)
+            .or_else(|| chain.iter().find(|t| t.is_live()))
+            .ok_or(ContractError::NotFound)?;
+        let split = crate::terms_rules::split_for_collected(&row.split(), report.amount);
+        Some((regular.contact_id, allocation_rows(split), None))
     } else if let PaymentOwner::OneOff {
         contact_id,
         source_code_id,
         request,
     } = &owner
     {
-        Some((contact_id.clone(), source_code_id.clone(), request.clone()))
+        Some((
+            contact_id.clone(),
+            vec![AllocationRow {
+                key: None,
+                source_code_id: source_code_id.clone(),
+                amount: report.amount,
+            }],
+            request.clone(),
+        ))
     } else {
         None
     };
@@ -1042,7 +1174,7 @@ fn record(
     let reason = gift_reason(report.status, next.reason.as_deref());
 
     let mut change = GiftChange::None;
-    if let Some((contact_id, code, request)) = donor {
+    if let Some((contact_id, allocations, request)) = donor {
         // Asked for by staff: the gift is theirs to answer for (its
         // history names them), though GoCardless's word made it.
         let requester = match &request {
@@ -1078,16 +1210,13 @@ fn record(
                 amount: report.amount,
                 method: Method::DirectDebit,
                 reference: Some(report.payment_id.clone()),
-                allocations: vec![AllocationRow {
-                    key: None,
-                    source_code_id: code,
-                    amount: report.amount,
-                }],
+                allocations,
                 client_key: None,
                 origin: Some(ProviderRef {
                     provider: Provider::Gocardless,
                     payment_id: report.payment_id.clone(),
                     regular_gift_id: regular_id.clone(),
+                    scheduled_on: regular_id.as_ref().map(|_| scheduled_on.clone()),
                 }),
             },
             target,
@@ -1151,30 +1280,27 @@ fn sync_gift(
     if !claimed {
         let current = crate::get(conn, gift)?.ok_or(ContractError::NotFound)?.gift;
         if current.amount != report.amount || current.received_on != report.charge_date {
-            // One allocation takes the whole amount; a split staff made is
-            // kept when the amount is the same.
-            let allocations = if current.amount == report.amount {
-                current
-                    .allocations
-                    .iter()
-                    .map(|a| AllocationRow {
-                        key: Some(a.key.clone()),
-                        source_code_id: a.source_code_id.clone(),
-                        amount: a.amount,
-                    })
-                    .collect()
-            } else {
-                current
-                    .allocations
-                    .first()
-                    .map(|a| AllocationRow {
-                        key: Some(a.key.clone()),
-                        source_code_id: a.source_code_id.clone(),
-                        amount: report.amount,
-                    })
-                    .into_iter()
-                    .collect()
-            };
+            // The gift's own split (staff may have corrected it), with
+            // its newest layer absorbing a new amount (ADR 0026); a
+            // layer kept keeps its key.
+            let split: Vec<Share> = current
+                .allocations
+                .iter()
+                .map(|a| Share::new(&a.source_code_id, a.amount))
+                .collect();
+            let allocations = crate::terms_rules::split_for_collected(&split, report.amount)
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| AllocationRow {
+                    key: current
+                        .allocations
+                        .get(i)
+                        .filter(|a| a.source_code_id == s.source_code_id)
+                        .map(|a| a.key.clone()),
+                    source_code_id: s.source_code_id,
+                    amount: s.amount,
+                })
+                .collect();
             execute(
                 ctx,
                 &crate::GIFT,
@@ -1250,6 +1376,7 @@ pub fn resync_gift(ctx: &Ctx, gift_id: &str, group: &CommandGroup) -> Result<(),
         status: p.status,
         reason: p.reason.clone(),
         mandate_id: p.mandate_id,
+        subscription_id: p.subscription_id,
     };
     let reason = gift_reason(p.status, p.reason.as_deref());
     sync_gift(ctx, gift_id, &report, p.status.gift_status(), reason, group)?;
@@ -1272,7 +1399,7 @@ pub fn match_payment(
         .prepare_cached(&format!(
             "SELECT {PAYMENT_COLUMNS}, version FROM direct_debit_payments WHERE id = ?1"
         ))?
-        .query_row([id], |r| Ok((payment_row(r)?, r.get(8)?)))
+        .query_row([id], |r| Ok((payment_row(r)?, r.get(10)?)))
         .optional()?
         .ok_or(ContractError::NotFound)?;
     if p.gift_id.is_some() || p.regular_gift_id.is_some() {
@@ -1316,6 +1443,7 @@ pub fn match_payment(
         status: p.status,
         reason: p.reason.clone(),
         mandate_id: p.mandate_id.clone(),
+        subscription_id: p.subscription_id.clone(),
     };
     match record(
         ctx,
@@ -1523,14 +1651,32 @@ pub struct DirectDebitPaymentRow {
     #[ts(type = "number")]
     pub amount: i64,
     pub charge_date: String,
+    /// The date it was first scheduled: its period.
+    pub scheduled_on: Option<String>,
     pub status: PaymentStatus,
     pub reason: Option<String>,
     pub gift_id: Option<String>,
 }
 
-/// A regular gift with its code and its latest payments (newest charge
-/// date first, at most [`PAYMENTS_LIMIT`]). `connected` is the api's: is
-/// the organisation's GoCardless account connected now.
+/// A payment GoCardless will take next, as staff pick a change's first
+/// payment from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UpcomingPayment {
+    pub charge_date: String,
+    #[ts(type = "number")]
+    pub amount: i64,
+    /// Far enough off for a change sent now to reach it.
+    pub changeable: bool,
+}
+
+/// A regular gift with its chain and its latest payments (newest charge
+/// date first, at most [`PAYMENTS_LIMIT`]). The amount, schedule and
+/// split are the row in force today (or the first row, before it
+/// starts). `upcoming` and `connected` are the api's: GoCardless's next
+/// payments (one regular gift's read only) and whether the
+/// organisation's account is connected now.
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -1542,10 +1688,13 @@ pub struct RegularGiftView {
     pub frequency: Frequency,
     pub day_of_month: u8,
     pub month: Option<u8>,
+    /// The oldest layer's code: the one that recruited the donor.
     pub source_code_id: String,
     /// The code as it reads now; null if it isn't one of this
     /// organisation's.
     pub source_code: Option<String>,
+    /// The split in force, oldest money first.
+    pub allocations: Vec<crate::terms::TermAllocationView>,
     pub status: RegularStatus,
     pub ended_reason: Option<String>,
     #[ts(type = "number | null")]
@@ -1561,53 +1710,85 @@ pub struct RegularGiftView {
     #[ts(type = "number")]
     pub entered_at: i64,
     #[ts(type = "number")]
-    pub terms_version: i64,
+    pub setup_version: i64,
     #[ts(type = "number")]
     pub mandate_version: i64,
+    /// The chain, in effective order, withdrawn rows included.
+    pub terms: Vec<crate::terms::TermView>,
+    /// The next change still to reach GoCardless, if any.
+    pub scheduled: Option<crate::terms::TermView>,
+    /// A change GoCardless told us of is waiting for its code.
+    pub change_not_coded: bool,
+    pub upcoming: Vec<UpcomingPayment>,
     /// The latest failed payment, if the latest payment failed.
     pub last_failure: Option<DirectDebitPaymentRow>,
     pub payments: Vec<DirectDebitPaymentRow>,
     pub connected: bool,
 }
 
-const VIEW_COLUMNS: &str = "id, contact_id, amount, frequency, day_of_month, month, \
-     source_code_id, status, ended_reason, ended_at, billing_request_id, flow_url, \
-     flow_expires_at, mandate_id, subscription_id, entered_by, entered_at, terms_version, \
-     mandate_version";
+const VIEW_COLUMNS: &str = "id, contact_id, status, ended_reason, ended_at, billing_request_id, \
+     flow_url, flow_expires_at, mandate_id, subscription_id, entered_by, entered_at, \
+     setup_version, mandate_version";
 
 fn view_row(r: &Row) -> rusqlite::Result<RegularGiftView> {
     Ok(RegularGiftView {
         id: r.get(0)?,
         contact_id: r.get(1)?,
-        amount: r.get(2)?,
-        frequency: Frequency::parse(&r.get::<_, String>(3)?),
-        day_of_month: r.get(4)?,
-        month: r.get(5)?,
-        source_code_id: r.get(6)?,
+        amount: 0,
+        frequency: Frequency::Monthly,
+        day_of_month: 1,
+        month: None,
+        source_code_id: String::new(),
         source_code: None,
-        status: RegularStatus::parse(&r.get::<_, String>(7)?),
-        ended_reason: r.get(8)?,
-        ended_at: r.get(9)?,
-        billing_request_id: r.get(10)?,
-        flow_url: r.get(11)?,
-        flow_expires_at: r.get(12)?,
-        mandate_id: r.get(13)?,
-        subscription_id: r.get(14)?,
-        entered_by: r.get(15)?,
-        entered_at: r.get(16)?,
-        terms_version: r.get(17)?,
-        mandate_version: r.get(18)?,
+        allocations: vec![],
+        status: RegularStatus::parse(&r.get::<_, String>(2)?),
+        ended_reason: r.get(3)?,
+        ended_at: r.get(4)?,
+        billing_request_id: r.get(5)?,
+        flow_url: r.get(6)?,
+        flow_expires_at: r.get(7)?,
+        mandate_id: r.get(8)?,
+        subscription_id: r.get(9)?,
+        entered_by: r.get(10)?,
+        entered_at: r.get(11)?,
+        setup_version: r.get(12)?,
+        mandate_version: r.get(13)?,
+        terms: vec![],
+        scheduled: None,
+        change_not_coded: false,
+        upcoming: vec![],
         last_failure: None,
         payments: vec![],
         connected: false,
     })
 }
 
-fn fill(conn: &Connection, mut v: RegularGiftView) -> rusqlite::Result<RegularGiftView> {
-    v.source_code = sources::describe(conn, &v.source_code_id)?.map(|c| c.code);
+/// Fill a view's chain and payments; `today` (ISO) picks the row in
+/// force.
+fn fill(conn: &Connection, mut v: RegularGiftView, today: &str) -> rusqlite::Result<RegularGiftView> {
+    v.terms = crate::terms::chain(conn, &v.id)?;
+    if let Some(now) = crate::terms::in_force(&v.terms, today)
+        .or_else(|| v.terms.iter().find(|t| t.is_live()))
+    {
+        v.amount = now.amount;
+        v.frequency = now.frequency;
+        v.day_of_month = now.day_of_month;
+        v.month = now.month;
+        v.allocations = now.allocations.clone();
+        if let Some(first) = now.allocations.first() {
+            v.source_code_id = first.source_code_id.clone();
+            v.source_code = first.source_code.clone();
+        }
+    }
+    v.scheduled = v
+        .terms
+        .iter()
+        .find(|t| t.status == crate::terms::TermStatus::Scheduled)
+        .cloned();
+    v.change_not_coded = v.terms.iter().any(|t| t.uncoded);
     v.payments = conn
         .prepare_cached(
-            "SELECT id, payment_id, amount, charge_date, status, reason, gift_id
+            "SELECT id, payment_id, amount, charge_date, scheduled_on, status, reason, gift_id
              FROM direct_debit_payments WHERE regular_gift_id = ?1
              ORDER BY charge_date DESC, seq DESC LIMIT ?2",
         )?
@@ -1617,9 +1798,10 @@ fn fill(conn: &Connection, mut v: RegularGiftView) -> rusqlite::Result<RegularGi
                 payment_id: r.get(1)?,
                 amount: r.get(2)?,
                 charge_date: r.get(3)?,
-                status: PaymentStatus::parse(&r.get::<_, String>(4)?),
-                reason: r.get(5)?,
-                gift_id: r.get(6)?,
+                scheduled_on: r.get(4)?,
+                status: PaymentStatus::parse(&r.get::<_, String>(5)?),
+                reason: r.get(6)?,
+                gift_id: r.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -1631,21 +1813,26 @@ fn fill(conn: &Connection, mut v: RegularGiftView) -> rusqlite::Result<RegularGi
     Ok(v)
 }
 
-/// One regular gift, or `None`.
-pub fn get_regular(conn: &Connection, id: &str) -> rusqlite::Result<Option<RegularGiftView>> {
+/// One regular gift as of `today` (ISO), or `None`.
+pub fn get_regular(
+    conn: &Connection,
+    id: &str,
+    today: &str,
+) -> rusqlite::Result<Option<RegularGiftView>> {
     let found = conn
         .prepare_cached(&format!(
             "SELECT {VIEW_COLUMNS} FROM regular_gifts WHERE id = ?1"
         ))?
         .query_row([id], view_row)
         .optional()?;
-    found.map(|v| fill(conn, v)).transpose()
+    found.map(|v| fill(conn, v, today)).transpose()
 }
 
-/// A contact's regular gifts, newest set up first.
+/// A contact's regular gifts as of `today` (ISO), newest set up first.
 pub fn regular_by_contact(
     conn: &Connection,
     contact_id: &str,
+    today: &str,
 ) -> rusqlite::Result<Vec<RegularGiftView>> {
     let rows: Vec<RegularGiftView> = conn
         .prepare_cached(&format!(
@@ -1653,8 +1840,157 @@ pub fn regular_by_contact(
         ))?
         .query_map([contact_id], view_row)?
         .collect::<rusqlite::Result<_>>()?;
-    rows.into_iter().map(|v| fill(conn, v)).collect()
+    rows.into_iter().map(|v| fill(conn, v, today)).collect()
 }
+
+/// The next payments of a regular gift as its chain projects them after
+/// `today` (when GoCardless can't be asked): at most `n`, each changeable
+/// if it is more than a week off and no payment for it exists yet.
+pub fn projected_upcoming(
+    conn: &Connection,
+    id: &str,
+    today: &str,
+    n: usize,
+) -> rusqlite::Result<Vec<UpcomingPayment>> {
+    let chain = crate::terms::chain(conn, id)?;
+    let Some(now) = crate::terms::current_at_provider(&chain) else {
+        return Ok(vec![]);
+    };
+    let rules = crate::terms::live_rules(&chain);
+    let mut out = Vec::new();
+    for date in crate::terms_rules::next_due(&now.rules(), today, n) {
+        let amount = crate::terms_rules::term_in_force(&rules, &date)
+            .map_or(now.amount, |t| t.amount);
+        out.push(UpcomingPayment {
+            changeable: changeable(conn, id, today, &date)?,
+            charge_date: date,
+            amount,
+        });
+    }
+    Ok(out)
+}
+
+/// Whether a change can still reach the payment due on `date`: it is more
+/// than a week after `today` and GoCardless hasn't created it.
+pub fn changeable(conn: &Connection, id: &str, today: &str, date: &str) -> rusqlite::Result<bool> {
+    let soon = crate::terms_rules::add_days(today, 7).unwrap_or_default();
+    if date <= soon.as_str() {
+        return Ok(false);
+    }
+    Ok(crate::terms::payment_on_or_after(conn, id, date)?.is_none())
+}
+
+/// A subscription nobody here set up, on a mandate we know: its payments
+/// are one-off gifts until staff adopt it as a regular gift.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UnknownSubscription {
+    pub subscription_id: String,
+    pub mandate_id: Option<String>,
+    /// The donor its mandate's regular gift is from.
+    pub contact_id: Option<String>,
+    #[ts(type = "number")]
+    pub payments: i64,
+    /// The latest payment's amount and charge date.
+    #[ts(type = "number")]
+    pub last_amount: i64,
+    pub last_charge_date: String,
+}
+
+/// Subscriptions payments came from that no regular gift here has ever
+/// run under, newest payment first, at most [`UNMATCHED_LIMIT`].
+pub fn unknown_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<UnknownSubscription>> {
+    conn.prepare_cached(
+        "SELECT p.subscription_id, max(p.mandate_id), count(*),
+             (SELECT q.amount FROM direct_debit_payments q
+              WHERE q.subscription_id = p.subscription_id ORDER BY q.charge_date DESC LIMIT 1),
+             max(p.charge_date),
+             (SELECT r.contact_id FROM regular_gifts r WHERE r.mandate_id = max(p.mandate_id))
+         FROM direct_debit_payments p
+         WHERE p.subscription_id IS NOT NULL AND p.regular_gift_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM regular_gifts r WHERE r.subscription_id = p.subscription_id)
+           AND NOT EXISTS (SELECT 1 FROM regular_gift_terms t
+                           WHERE t.subscription_id = p.subscription_id)
+         GROUP BY p.subscription_id ORDER BY max(p.seq) DESC LIMIT ?1",
+    )?
+    .query_map([UNMATCHED_LIMIT as i64], |r| {
+        Ok(UnknownSubscription {
+            subscription_id: r.get(0)?,
+            mandate_id: r.get(1)?,
+            payments: r.get(2)?,
+            last_amount: r.get(3)?,
+            last_charge_date: r.get(4)?,
+            contact_id: r.get(5)?,
+        })
+    })?
+    .collect()
+}
+
+/// Staff adopt subscription `sb` as a new regular gift of `contact_id`
+/// (`id` pre-generated): active, the subscription its own, its first row
+/// applied from GoCardless's terms (`setup`) in force from
+/// `effective_from` (its next payment). No GoCardless call: it is
+/// collecting already. Payments before stay one-off gifts.
+pub fn adopt_subscription(
+    ctx: &Ctx,
+    id: &str,
+    sb: &str,
+    setup: SetUp,
+    effective_from: &str,
+    source: Source,
+) -> Result<String, ContractError> {
+    let setup = prepare_setup(setup)?;
+    let conn = ctx.tx.read();
+    if crate::terms::regular_gift_of_subscription(conn, sb)?.is_some() {
+        return Err(ContractError::rejected(
+            "already_adopted",
+            "This subscription is already a regular gift",
+        ));
+    }
+    check_live_code(conn, &setup.source_code_id)?;
+    let group = command_group(
+        ctx,
+        &format!(
+            "{} adopted from GoCardless",
+            regular_group_name(setup.amount, setup.frequency)
+        ),
+    )?;
+    let id = execute(
+        ctx,
+        &REGULAR_GIFT,
+        RegularGiftPayload {
+            contact_id: setup.contact_id.clone(),
+            client_key: setup.client_key.clone(),
+        },
+        Exec::create_with_id(id, source).in_group(&group),
+    )?
+    .id;
+    crate::terms::create_first_row(
+        ctx,
+        &id,
+        effective_from,
+        setup.amount,
+        setup.frequency,
+        setup.day_of_month,
+        setup.month,
+        &setup.source_code_id,
+        Some(sb.to_owned()),
+        &group,
+    )?;
+    execute(
+        ctx,
+        &REGULAR_GIFT_MANDATE,
+        MandatePayload {
+            status: Some(RegularStatus::Active),
+            subscription_id: Some(sb.to_owned()),
+            ..MandatePayload::default()
+        },
+        Exec::update(&id, Some(0), source).in_group(&group),
+    )?;
+    Ok(id)
+}
+
 
 /// The org-schema step for Direct Debit (GoCardless D2), after
 /// `giving::MIGRATION_CLAIM_LOCK` (Gift Aid claims' step 16): the rebuild
@@ -1918,8 +2254,8 @@ CREATE UNIQUE INDEX provider_requests_by_ref ON provider_requests (provider, pro
 mod tests {
     use super::*;
 
-    fn terms() -> RegularGiftPayload {
-        RegularGiftPayload {
+    fn terms() -> SetUp {
+        SetUp {
             contact_id: "c".into(),
             amount: 1000,
             frequency: Frequency::Monthly,
@@ -1930,8 +2266,8 @@ mod tests {
         }
     }
 
-    fn fields(p: RegularGiftPayload) -> Vec<String> {
-        match prepare_terms(p) {
+    fn fields(p: SetUp) -> Vec<String> {
+        match prepare_setup(p) {
             Ok(_) => vec![],
             Err(ContractError::Invalid(problems)) => {
                 problems.into_iter().map(|p| p.field).collect()
@@ -1944,14 +2280,14 @@ mod tests {
     fn terms_are_pence_a_day_every_month_has_and_a_month_only_when_yearly() {
         assert!(fields(terms()).is_empty());
         assert_eq!(
-            fields(RegularGiftPayload {
+            fields(SetUp {
                 amount: 0,
                 ..terms()
             }),
             ["amount"]
         );
         assert_eq!(
-            fields(RegularGiftPayload {
+            fields(SetUp {
                 amount: PENCE_MAX + 1,
                 ..terms()
             }),
@@ -1959,7 +2295,7 @@ mod tests {
         );
         for day in [0, 29, 31] {
             assert_eq!(
-                fields(RegularGiftPayload {
+                fields(SetUp {
                     day_of_month: day,
                     ..terms()
                 }),
@@ -1967,14 +2303,14 @@ mod tests {
             );
         }
         assert_eq!(
-            fields(RegularGiftPayload {
+            fields(SetUp {
                 frequency: Frequency::Yearly,
                 ..terms()
             }),
             ["month"]
         );
         assert_eq!(
-            fields(RegularGiftPayload {
+            fields(SetUp {
                 frequency: Frequency::Yearly,
                 month: Some(13),
                 ..terms()
@@ -1982,7 +2318,7 @@ mod tests {
             ["month"]
         );
         assert!(
-            fields(RegularGiftPayload {
+            fields(SetUp {
                 frequency: Frequency::Yearly,
                 month: Some(12),
                 ..terms()
@@ -1990,14 +2326,14 @@ mod tests {
             .is_empty()
         );
         assert_eq!(
-            fields(RegularGiftPayload {
+            fields(SetUp {
                 month: Some(1),
                 ..terms()
             }),
             ["month"]
         );
         assert_eq!(
-            fields(RegularGiftPayload {
+            fields(SetUp {
                 source_code_id: " ".into(),
                 ..terms()
             }),

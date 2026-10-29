@@ -10,4 +10,10 @@ export type GiftOrigin = { provider: GiftProvider, paymentId: string,
 /**
  * The regular gift it was collected for; none for a one-off.
  */
-regularGiftId?: string, };
+regularGiftId?: string, 
+/**
+ * The charge date the provider first gave the payment (ISO; kept
+ * through retries): its period. A regular gift's payments only
+ * (ADR 0026).
+ */
+scheduledOn?: string, };

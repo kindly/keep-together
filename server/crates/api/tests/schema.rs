@@ -239,6 +239,25 @@ const FIXTURES: &[&str] = &[
          'aa00000000000000000000000000000000000000000000000000000000000003', 1240, 1754, 90000),
             ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b8', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c8', 1,
          'aa00000000000000000000000000000000000000000000000000000000000004', 1240, 1754, 200000);",
+    // 20: the dated chain (ADR 0026): an upgrade scheduled on the v17
+    // regular gift (its row 1 is the backfill's), split across two codes
+    // with a change code, and a payment from a subscription nobody here
+    // set up
+    "INSERT INTO regular_gift_terms (seq, id, regular_gift_id, effective_from, amount, frequency,
+         day_of_month, month, note, withdrawn, origin, entered_by, entered_at, change_code_id,
+         state, terms_version, code_version)
+     VALUES (10, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5',
+         '2027-01-05', 1200, 'monthly', 5, NULL, 'phone call', 0, 'staff', 1, 5000,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 'scheduled', 1, 1);
+     INSERT INTO regular_gift_term_allocations (id, term_id, position, source_code_id, amount)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f1', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 1000),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f3', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f1', 1,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 200);
+     INSERT INTO direct_debit_payments (seq, id, payment_id, regular_gift_id, mandate_id,
+         amount, charge_date, status, reason, gift_id, version, scheduled_on, subscription_id)
+     VALUES (5, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f4', 'PM000014', NULL, 'MD000010', 300,
+         '2027-01-09', 'pending', NULL, NULL, 1, '2027-01-09', 'SB000099');",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
@@ -993,4 +1012,116 @@ fn the_unified_gifts_step_gives_every_payment_one_gift_with_its_status() {
         )
         .unwrap();
     assert!(plan.contains("gifts_unclaimed"), "{plan}");
+}
+
+/// Step 19 (ADR 0026): every regular gift gets exactly one applied row,
+/// its split the old amount to the old code, in force from its first
+/// payment's charge date (or the day it was set up); the old columns are
+/// gone and `scheduled_on` is filled.
+#[test]
+fn the_terms_step_backfills_one_applied_row_per_regular_gift() {
+    let tmp = tempfile::tempdir().unwrap();
+    file_at(tmp.path(), 18);
+    let mut conn = Connection::open(tmp.path().join(format!("orgs/{TENANT}.db"))).unwrap();
+    // A second regular gift with no payment yet: in force from the day it
+    // was set up (entered_at 2026-10-26).
+    conn.execute_batch(
+        "INSERT INTO regular_gifts (seq, id, contact_id, amount, frequency, day_of_month, month,
+             source_code_id, status, entered_by, entered_at, terms_version, mandate_version)
+         VALUES (2, '000000000000000000000000000000c0', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+             12000, 'yearly', 3, 4, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 'pending', 1,
+             1793000000000, 1, 1);",
+    )
+    .unwrap();
+    org_migrations().to_latest(&mut conn).unwrap();
+    type Row = (String, String, i64, String, String, i64, String, i64, String);
+    let rows: Vec<Row> = conn
+        .prepare(
+            "SELECT t.regular_gift_id, t.effective_from, t.amount, t.frequency, t.state,
+                 count(a.id), a.source_code_id, sum(a.amount), t.origin
+             FROM regular_gift_terms t JOIN regular_gift_term_allocations a ON a.term_id = t.id
+             GROUP BY t.id ORDER BY t.regular_gift_id",
+        )
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let code = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3".to_owned();
+    assert_eq!(
+        rows,
+        [
+            (
+                "000000000000000000000000000000c0".to_owned(),
+                "2026-10-26".to_owned(),
+                12000,
+                "yearly".to_owned(),
+                "applied".to_owned(),
+                1,
+                code.clone(),
+                12000,
+                "setup".to_owned()
+            ),
+            (
+                "0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5".to_owned(),
+                "2026-11-05".to_owned(),
+                1000,
+                "monthly".to_owned(),
+                "applied".to_owned(),
+                1,
+                code,
+                1000,
+                "setup".to_owned()
+            ),
+        ]
+    );
+    // The row runs under the gift's subscription; the counter carried over.
+    let (sub, setup): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT t.subscription_id, g.setup_version FROM regular_gift_terms t
+             JOIN regular_gifts g ON g.id = t.regular_gift_id
+             WHERE g.id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((sub.as_deref(), setup), (Some("SB000010"), 1));
+    let old: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('regular_gifts')
+             WHERE name IN ('amount', 'frequency', 'day_of_month', 'month', 'source_code_id',
+                            'terms_version')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(old, 0);
+    let unscheduled: i64 = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM direct_debit_payments
+                     WHERE scheduled_on IS NOT charge_date)
+                  + (SELECT count(*) FROM gifts WHERE regular_gift_id IS NOT NULL
+                     AND provider_payment_id IS NOT NULL AND scheduled_on IS NOT received_on
+                     /* any status: every instalment */)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unscheduled, 0);
+    assert_eq!(
+        giving::regular::consistency(&conn).unwrap(),
+        Vec::<String>::new()
+    );
 }

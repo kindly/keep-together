@@ -57,6 +57,10 @@ pub fn org_migrations() -> Migrations<'static> {
         // 19: scanned Gift Aid declarations and their pages (the images
         // are in the org's files db: `store::files`)
         M::up(giftaid::MIGRATION_SCANS),
+        // 20: regular gift terms are a dated chain (ADR 0026):
+        // `regular_gifts` rebuilt without its terms, the terms and their
+        // split backfilled as each one's first row, `scheduled_on`
+        M::up_with_hook("", rebuild_with_deferred_keys(giving::terms::MIGRATION)),
     ])
 }
 
