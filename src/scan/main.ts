@@ -1,14 +1,17 @@
 import './scan.css'
 import { openSitting, sendPage, newId, tokenFrom } from './api'
-import type { Refusal } from './api'
+import type { Refusal, RetryWhy } from './api'
 import { cornerEditor } from './corners'
 import type { CornerEditor } from './corners'
 import { detectCorners } from './detect'
-import { rotateQuad } from './geometry'
+import { isUsableQuad, rotateQuad } from './geometry'
 import type { Quad } from './geometry'
 import { flatten, greyOf, loadPhoto, rotateCanvas } from './photo'
+import { noPersist, openPersist, pairingKey } from './persist'
+import type { Persist } from './persist'
 import { Outbox } from './queue'
 import type { OutboxPage } from './queue'
+import { recover } from './recover'
 import type { ScanSitting } from '#/lib/data/rust-types/ScanSitting'
 
 /**
@@ -24,6 +27,8 @@ type Ended = 'gone' | 'forbidden' | 'no_token'
 
 interface Scan {
   id: string
+  /** Pages sent before a reload: on the server, not on this page. */
+  earlier: number
   pages: Array<OutboxPage>
   /** Object URLs of the flattened pages, for the thumbnails. */
   thumbs: Array<string>
@@ -42,8 +47,42 @@ let cropping = false
 /** The link ended: the page shows only that from now on. */
 let over = false
 
+/** Where pages are kept until they land (persist.ts), under `key`. */
+let persist: Persist = noPersist
+let key: string | null = null
+/** Each page's place in the order taken, kept across reloads. */
+const seqs = new Map<string, number>()
+let lastSeq = 0
+
 const outbox = new Outbox({
   send: (page) => sendPage(token, page),
+  keep: {
+    put: (page) => {
+      if (!key) return
+      const k = key
+      let seq = seqs.get(page.pageId)
+      if (seq === undefined) {
+        seq = lastSeq = Math.max(Date.now(), lastSeq + 1)
+        seqs.set(page.pageId, seq)
+      }
+      const at = seq
+      void page.blob
+        .arrayBuffer()
+        .then((bytes) =>
+          persist.put({
+            key: k,
+            pageId: page.pageId,
+            scanId: page.scanId,
+            opens: page.opens,
+            seq: at,
+            bytes,
+            savedAt: Date.now(),
+          }),
+        )
+        .catch(() => {})
+    },
+    drop: (page) => void persist.drop(page.pageId),
+  },
   sleep: (ms, wake) =>
     Promise.race([new Promise<void>((r) => setTimeout(r, ms)), wake]),
   changed: () => {
@@ -111,6 +150,8 @@ const ENDED_TEXT: Record<Ended, [string, string]> = {
 function ended(why: Ended) {
   over = true
   cropping = false
+  // The pages kept for this link can't be sent any more.
+  if (key) void persist.clear(key)
   const [title, text] = ENDED_TEXT[why]
   const unsent = outbox.pages.filter((p) => p.state === 'waiting').length
   show(
@@ -151,6 +192,13 @@ function unreachable() {
   )
 }
 
+const RETRYING: Record<RetryWhy, string> = {
+  offline: 'No connection. Your pages are kept and will send when it’s back.',
+  slow: 'The connection is slow. Still trying to send.',
+  busy: 'The server is busy. Trying again shortly.',
+  server: 'The server is busy. Trying again shortly.',
+}
+
 const REFUSED: Record<Refusal, string> = {
   page_limit: 'A scan holds at most 6 pages. Send this one and start another.',
   upload_limit:
@@ -164,7 +212,7 @@ const REFUSED: Record<Refusal, string> = {
 function pageStatus(p: OutboxPage): string {
   switch (p.state) {
     case 'sent':
-      return 'Sent'
+      return p.maybeTwice ? 'Sent, maybe twice' : 'Sent'
     case 'sending':
       return 'Sending…'
     case 'waiting':
@@ -200,7 +248,10 @@ function blocked(): string | null {
 
 function home() {
   if (!sitting || over) return
-  if (current) current.id = outbox.current(current.id)
+  if (current && outbox.current(current.id) !== current.id) {
+    current.id = outbox.current(current.id)
+    if (key) void persist.setCurrent(key, current.id)
+  }
   const stop = blocked()
   const retrying = outbox.retrying
   const maxPages = sitting.maxPages
@@ -210,13 +261,7 @@ function home() {
     h(
       'div',
       { class: 'banner', role: 'status', 'data-retrying': retrying.why },
-      h(
-        'span',
-        {},
-        retrying.why === 'offline'
-          ? 'No connection. Your pages are kept and will send when it’s back.'
-          : 'The server is busy. Trying again shortly.',
-      ),
+      h('span', {}, RETRYING[retrying.why]),
       h(
         'button',
         { type: 'button', class: 'link', onclick: () => outbox.wake() },
@@ -229,7 +274,11 @@ function home() {
   const refused = current?.pages.filter((p) => p.problem).at(-1)?.problem
   const problem = refused ? REFUSED[refused] : null
   // Refused pages aren't on the server, so they don't count to the cap.
-  const held = current?.pages.filter((p) => p.state !== 'failed').length ?? 0
+  const held = current
+    ? current.earlier + current.pages.filter((p) => p.state !== 'failed').length
+    : 0
+  const twice = current?.pages.some((p) => p.maybeTwice)
+  const count = current ? current.earlier + current.pages.length : 0
 
   const thisScan =
     current &&
@@ -239,18 +288,33 @@ function home() {
       h(
         'h2',
         {},
-        current.pages.length === 1
-          ? 'This scan: 1 page'
-          : `This scan: ${current.pages.length} pages`,
+        count === 1 ? 'This scan: 1 page' : `This scan: ${count} pages`,
       ),
+      twice &&
+        h(
+          'p',
+          { class: 'notice' },
+          'The laptop took this scan while a page was on its way, so that page may be in two scans. Check “Scans to match”.',
+        ),
       h(
         'ol',
         { class: 'pages' },
+        Array.from({ length: current.earlier }, (_, i) =>
+          h(
+            'li',
+            { 'data-state': 'sent', class: 'earlier' },
+            h('div', { class: 'thumb' }, String(i + 1)),
+            h('span', {}, 'Sent'),
+          ),
+        ),
         current.pages.map((p, i) =>
           h(
             'li',
             { 'data-state': p.state },
-            h('img', { src: current!.thumbs[i], alt: `Page ${i + 1}` }),
+            h('img', {
+              src: current!.thumbs[i],
+              alt: `Page ${current!.earlier + i + 1}`,
+            }),
             h('span', {}, pageStatus(p)),
           ),
         ),
@@ -314,9 +378,9 @@ function home() {
               h(
                 'span',
                 {},
-                scan.pages.length === 1
+                scan.earlier + scan.pages.length === 1
                   ? '1 page'
-                  : `${scan.pages.length} pages`,
+                  : `${scan.earlier + scan.pages.length} pages`,
               ),
               h('span', {}, s.text),
             )
@@ -333,6 +397,7 @@ function finish() {
   done.unshift(current)
   current = null
   notice = null
+  if (key) void persist.setCurrent(key, null)
   home()
 }
 
@@ -372,7 +437,19 @@ function cropAt(photo: HTMLCanvasElement, quad: Quad, found: boolean) {
     photo.width = photo.height = 0
     cropAt(turned, rotateQuad(q, h0), found)
   }
-  const use = () => void usePage(photo, editor!.quad())
+  const use = () => {
+    const q = editor!.quad()
+    if (!isUsableQuad(q)) {
+      crossed.hidden = false
+      return
+    }
+    void usePage(photo, q)
+  }
+  const crossed = h(
+    'p',
+    { class: 'warn', role: 'alert', hidden: true, 'data-crossed': '' },
+    'The outline crosses itself. Move the corners so each sits on its own corner of the page.',
+  )
   show(
     h(
       'section',
@@ -384,6 +461,7 @@ function cropAt(photo: HTMLCanvasElement, quad: Quad, found: boolean) {
           ? 'Check the corners sit on the page’s corners.'
           : 'Drag each corner to a corner of the page.',
       ),
+      crossed,
       host,
       h(
         'div',
@@ -403,6 +481,7 @@ function cropAt(photo: HTMLCanvasElement, quad: Quad, found: boolean) {
     ),
   )
   editor = cornerEditor(host, photo, quad)
+  host.addEventListener('pointerdown', () => (crossed.hidden = true))
 }
 
 async function usePage(photo: HTMLCanvasElement, quad: Quad) {
@@ -429,8 +508,9 @@ async function usePage(photo: HTMLCanvasElement, quad: Quad) {
     home()
     return
   }
-  current ??= { id: newId(), pages: [], thumbs: [] }
+  current ??= { id: newId(), earlier: 0, pages: [], thumbs: [] }
   current.id = outbox.current(current.id)
+  if (key) void persist.setCurrent(key, current.id)
   current.thumbs.push(URL.createObjectURL(fitted.blob))
   current.pages.push(outbox.add(current.id, fitted.blob))
   home()
@@ -445,6 +525,74 @@ camera.addEventListener('change', () => {
   if (file) void crop(file)
 })
 
+/** The pages kept on this phone for this link, from before a reload. */
+async function openKept(t: string) {
+  const open = async () => {
+    const k = await pairingKey(t)
+    if (!k) return null
+    const store = await openPersist()
+    const saved = await store.load(k)
+    return { key: k, store, saved }
+  }
+  // Storage that never answers (some private modes) mustn't hold the page.
+  const late = new Promise<null>((r) => setTimeout(() => r(null), 2000))
+  return Promise.race([open().catch(() => null), late])
+}
+
+/**
+ * Sends again what didn't reach the laptop before the page was thrown
+ * away, and reopens the scan that was open.
+ */
+function resume(kept: NonNullable<Awaited<ReturnType<typeof openKept>>>) {
+  key = kept.key
+  persist = kept.store
+  const r = recover(kept.saved, sitting!.scans)
+  for (const pageId of r.landed) void persist.drop(pageId)
+  for (const p of r.resend) {
+    seqs.set(p.pageId, p.seq)
+    lastSeq = Math.max(lastSeq, p.seq)
+  }
+  const restored = outbox.restore(
+    r.resend.map((p) => ({
+      scanId: p.scanId,
+      pageId: p.pageId,
+      opens: p.opens,
+      blob: new Blob([p.bytes], { type: 'image/jpeg' }),
+    })),
+    r.created,
+  )
+  const byScan = new Map<string, Scan>()
+  for (const page of restored) {
+    let scan = byScan.get(page.scanId)
+    if (!scan) {
+      scan = { id: page.scanId, earlier: 0, pages: [], thumbs: [] }
+      byScan.set(page.scanId, scan)
+    }
+    scan.pages.push(page)
+    scan.thumbs.push(URL.createObjectURL(page.blob))
+  }
+  if (r.current) {
+    current = byScan.get(r.current.id) ?? {
+      id: r.current.id,
+      earlier: 0,
+      pages: [],
+      thumbs: [],
+    }
+    current.earlier = r.current.earlier
+    byScan.delete(r.current.id)
+  }
+  for (const scan of byScan.values()) {
+    scan.thumbs.forEach((url) => URL.revokeObjectURL(url))
+    done.unshift(scan)
+  }
+  if (restored.length) {
+    notice =
+      restored.length === 1
+        ? 'Picked up 1 page that hadn’t reached the laptop. Sending it now.'
+        : `Picked up ${restored.length} pages that hadn’t reached the laptop. Sending them now.`
+  }
+}
+
 async function start() {
   const t = tokenFrom(location.hash)
   if (!t) return ended('no_token')
@@ -456,17 +604,19 @@ async function start() {
       h('p', {}, 'Opening the link…'),
     ),
   )
-  const out = await openSitting(token)
+  const [out, kept] = await Promise.all([openSitting(token), openKept(token)])
   switch (out.kind) {
     case 'ok':
       sitting = out.value
       outbox.uploadsLeft = sitting.uploadsLeft
+      if (kept) resume(kept)
       home()
       // Fetch the corner finder while the first photo is being taken.
       void import('scanic').catch(() => {})
       return
     case 'gone':
     case 'forbidden':
+      if (kept) void kept.store.clear(kept.key)
       return ended(out.kind)
     case 'retry':
       return unreachable()
@@ -480,8 +630,9 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') outbox.wake()
 })
 // Pages still on the phone are lost with the page: say so before leaving.
+// (iOS never asks: the pages are kept on the phone for that.)
 addEventListener('beforeunload', (e) => {
-  if (!outbox.idle) e.preventDefault()
+  if (!over && !outbox.idle) e.preventDefault()
 })
 // A new code scanned into the same tab changes only the fragment.
 addEventListener('hashchange', () => location.reload())

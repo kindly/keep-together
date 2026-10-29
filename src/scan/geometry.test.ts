@@ -4,6 +4,7 @@ import {
   clampPoint,
   homography,
   insetQuad,
+  isUsableQuad,
   outputSize,
   rectQuad,
   rotatePoint,
@@ -126,4 +127,27 @@ describe('rotation', () => {
 
 it('clamps a dragged corner inside the photo', () => {
   expect(clampPoint({ x: -5, y: 120 }, 100, 100)).toEqual({ x: 0, y: 100 })
+})
+
+describe('isUsableQuad', () => {
+  it('takes a clockwise convex outline, however it is turned', () => {
+    expect(isUsableQuad(insetQuad(400, 300))).toBe(true)
+    expect(isUsableQuad(rotateQuad(insetQuad(400, 300), 300))).toBe(true)
+  })
+
+  it('refuses a crossed outline (top left dragged past top right)', () => {
+    const [tl, tr, br, bl] = insetQuad(400, 300)
+    expect(isUsableQuad([tr, tl, br, bl])).toBe(false)
+  })
+
+  it('refuses a mirrored (anticlockwise) outline', () => {
+    const [tl, tr, br, bl] = insetQuad(400, 300)
+    expect(isUsableQuad([tl, bl, br, tr])).toBe(false)
+  })
+
+  it('refuses a folded outline and a corner on top of another', () => {
+    const [tl, tr, br, bl] = insetQuad(400, 300)
+    expect(isUsableQuad([tl, tr, { x: 100, y: 60 }, bl])).toBe(false)
+    expect(isUsableQuad([tl, tr, br, br])).toBe(false)
+  })
 })

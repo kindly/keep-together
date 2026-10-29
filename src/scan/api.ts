@@ -17,9 +17,15 @@ export type Outcome<T> =
   /** This scan isn't a draft of this sitting any more. */
   | { kind: 'not_found' }
   /** Nothing was stored, and sending the same thing again may work. */
-  | { kind: 'retry'; why: 'offline' | 'busy' | 'server' }
+  | { kind: 'retry'; why: RetryWhy }
   /** Refused for good: sending it again won't help. */
   | { kind: 'refused'; reason: Refusal }
+
+/**
+ * Why a send will be tried again: no connection, a connection too slow
+ * to finish in time, or the server busy or failing.
+ */
+export type RetryWhy = 'offline' | 'slow' | 'busy' | 'server'
 
 export type Refusal =
   | 'page_limit'
@@ -77,8 +83,14 @@ export async function outcomeOf<T>(res: Response): Promise<Outcome<T>> {
   return { kind: 'refused', reason: 'other' }
 }
 
-/** An upload given up after this long counts as lost and is sent again. */
-const UPLOAD_TIMEOUT_MS = 60_000
+/**
+ * How long an upload of `bytes` may take before it counts as lost and is
+ * sent again: a minute, plus a second for every 10 KB, so a 400 KB page
+ * has 100 s, time enough at about 40 kbit/s (one bar in a church hall).
+ */
+export function uploadTimeoutMs(bytes: number): number {
+  return 60_000 + Math.ceil(bytes / 10_000) * 1000
+}
 
 async function call<T>(
   path: string,
@@ -98,7 +110,7 @@ async function call<T>(
   } catch {
     // A network failure, a timeout or a body cut short: nothing tells
     // whether the server stored it, and the ids make sending it again safe.
-    return { kind: 'retry', why: 'offline' }
+    return { kind: 'retry', why: abort.signal.aborted ? 'slow' : 'offline' }
   } finally {
     clearTimeout(timer)
   }
@@ -123,7 +135,7 @@ export function sendPage(
     method: 'POST',
     headers: { 'content-type': 'image/jpeg' },
     body: page.blob,
-    timeoutMs: UPLOAD_TIMEOUT_MS,
+    timeoutMs: uploadTimeoutMs(page.blob.size),
   })
 }
 

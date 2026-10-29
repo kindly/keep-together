@@ -276,6 +276,33 @@ for (const [phone, device] of Object.entries(PHONES)) {
       expect((await handle.boundingBox())!.x).toBeGreaterThan(after.x)
     })
 
+    test('a crossed outline is refused, not sent mirrored', async ({
+      page,
+      instance,
+      users,
+    }) => {
+      const { id, path } = await startPairing(instance, users.a)
+      await page.goto(path)
+      await photograph(page)
+      // Top left dragged past top right.
+      const tl = (await page
+        .getByRole('button', { name: 'Top left corner' })
+        .boundingBox())!
+      const tr = (await page
+        .getByRole('button', { name: 'Top right corner' })
+        .boundingBox())!
+      await page.mouse.move(tl.x + tl.width / 2, tl.y + tl.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(tr.x + tr.width / 2 + 20, tr.y + tr.height / 2, {
+        steps: 8,
+      })
+      await page.mouse.up()
+      await page.getByRole('button', { name: 'Use page' }).click()
+      await expect(page.locator('[data-crossed]')).toBeVisible()
+      await expect(screen(page)).toHaveAttribute('data-screen', 'crop')
+      expect((await sitting(instance, users.a, id)).scans).toHaveLength(0)
+    })
+
     test('a page taken offline waits, then sends once when back', async ({
       page,
       context,
@@ -295,6 +322,42 @@ for (const [phone, device] of Object.entries(PHONES)) {
       const view = await sitting(instance, users.a, id)
       expect(view.scans).toHaveLength(1)
       expect(view.scans[0].pages).toHaveLength(1)
+    })
+
+    test('a page kept on the phone is sent after the page is thrown away', async ({
+      page,
+      context,
+      instance,
+      users,
+    }) => {
+      // As iOS does while the camera is open: the tab is discarded with a
+      // page still waiting for a signal, and the link opened again.
+      const { id, path } = await startPairing(instance, users.a)
+      await page.goto(path)
+      await photograph(page)
+      await page.getByRole('button', { name: 'Use page' }).click()
+      await page.waitForFunction(lastPageIs, 'sent')
+      await photograph(page)
+      await context.setOffline(true)
+      await page.getByRole('button', { name: 'Use page' }).click()
+      await page.waitForFunction(lastPageIs, 'waiting')
+      await page.close()
+      await context.setOffline(false)
+
+      const again = await context.newPage()
+      await again.goto(path)
+      await expect(again.getByText('Picked up 1 page')).toBeVisible()
+      await expect(
+        again.getByRole('heading', { name: 'This scan: 2 pages' }),
+      ).toBeVisible()
+      await again.waitForFunction(lastPageIs, 'sent')
+      const view = await sitting(instance, users.a, id)
+      expect(view.scans).toHaveLength(1)
+      expect(view.scans[0].pages).toHaveLength(2)
+      // Nothing is picked up a second time.
+      await again.reload()
+      await expect(screen(again)).toHaveAttribute('data-screen', 'scan')
+      await expect(again.getByText('Picked up')).toHaveCount(0)
     })
 
     test('the link ending on the laptop ends it on the phone', async ({

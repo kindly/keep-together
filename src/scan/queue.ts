@@ -1,5 +1,5 @@
 import { backoffMs, newId } from './api'
-import type { Outcome, Refusal } from './api'
+import type { Outcome, Refusal, RetryWhy } from './api'
 import type { ScanUploaded } from '#/lib/data/rust-types/ScanUploaded'
 
 /**
@@ -7,7 +7,9 @@ import type { ScanUploaded } from '#/lib/data/rust-types/ScanUploaded'
  * taken, so a scan's first page always reaches the server before its
  * next. A page that can't get through (no signal, the server busy) waits
  * and is sent again with the same ids, which the server answers as the
- * same scan and page, until it lands or the link ends.
+ * same scan and page, until it lands or the link ends. Each page is
+ * also kept on the phone (`keep`, persist.ts) until it lands, so a reload
+ * can send it again (`restore`).
  */
 
 export type PageState = 'waiting' | 'sending' | 'sent' | 'failed'
@@ -17,8 +19,24 @@ export interface OutboxPage {
   pageId: string
   blob: Blob
   state: PageState
+  /** It opens its scan: no earlier page of the scan was taken. */
+  opens: boolean
   /** Why a failed page was refused. */
   problem?: Refusal
+  /** An attempt went unanswered: it may have landed anyway. */
+  retried?: boolean
+  /**
+   * Moved to a new scan after its own was taken on the laptop, though an
+   * unanswered attempt may have reached that scan first: this page may
+   * be on the laptop twice.
+   */
+  maybeTwice?: boolean
+}
+
+/** Where the outbox keeps its pages until they land. */
+export interface OutboxKeep {
+  put: (page: OutboxPage) => void
+  drop: (page: OutboxPage) => void
 }
 
 export interface OutboxDeps {
@@ -34,6 +52,7 @@ export interface OutboxDeps {
   changed: () => void
   /** The link ended or belongs to another phone: nothing more will go. */
   ended: (kind: 'gone' | 'forbidden') => void
+  keep?: OutboxKeep
 }
 
 /** Refusals that stop every page after them too, not just this one. */
@@ -48,8 +67,7 @@ export class Outbox {
   /** Scans the server holds: their next page adds to them. */
   readonly created = new Set<string>()
   /** Set while a page waits to be sent again. */
-  retrying: { why: 'offline' | 'busy' | 'server'; attempt: number } | null =
-    null
+  retrying: { why: RetryWhy; attempt: number } | null = null
   uploadsLeft: number | null = null
   /** Scan ids replaced because the laptop took the scan meanwhile. */
   readonly moved = new Map<string, string>()
@@ -61,11 +79,34 @@ export class Outbox {
   constructor(private deps: OutboxDeps) {}
 
   add(scanId: string, blob: Blob): OutboxPage {
-    const page: OutboxPage = { scanId, pageId: newId(), blob, state: 'waiting' }
+    const page: OutboxPage = {
+      scanId,
+      pageId: newId(),
+      blob,
+      state: 'waiting',
+      opens: !this.pages.some((p) => p.scanId === scanId),
+    }
     this.pages.push(page)
+    this.deps.keep?.put(page)
     this.deps.changed()
     void this.run()
     return page
+  }
+
+  /**
+   * Pages kept from before a reload, with their own ids, and the scans
+   * the server already holds.
+   */
+  restore(
+    pages: Array<Pick<OutboxPage, 'scanId' | 'pageId' | 'blob' | 'opens'>>,
+    created: Iterable<string>,
+  ): Array<OutboxPage> {
+    for (const id of created) this.created.add(id)
+    const restored = pages.map((p): OutboxPage => ({ ...p, state: 'waiting' }))
+    this.pages.push(...restored)
+    this.deps.changed()
+    void this.run()
+    return restored
   }
 
   /** Retry now (back online, or the user asked). */
@@ -73,10 +114,11 @@ export class Outbox {
     this.waking()
   }
 
-  /** Nothing waiting or being sent. */
+  /** Nothing waiting or being sent, or nothing more will be. */
   get idle(): boolean {
-    return !this.pages.some(
-      (p) => p.state === 'waiting' || p.state === 'sending',
+    return (
+      this.stopped ||
+      !this.pages.some((p) => p.state === 'waiting' || p.state === 'sending')
     )
   }
 
@@ -97,6 +139,11 @@ export class Outbox {
         page.state = 'sending'
         this.deps.changed()
         const first = !this.created.has(page.scanId)
+        if (first && !page.opens) {
+          // Its scan's earlier pages were refused: this one opens it now.
+          page.opens = true
+          this.deps.keep?.put(page)
+        }
         const out = await this.deps.send({
           scanId: page.scanId,
           pageId: page.pageId,
@@ -131,12 +178,14 @@ export class Outbox {
     switch (out.kind) {
       case 'ok':
         page.state = 'sent'
+        this.deps.keep?.drop(page)
         this.created.add(out.value.scanId)
         this.uploadsLeft = out.value.uploadsLeft
         this.retrying = null
         return true
       case 'retry':
         page.state = 'waiting'
+        page.retried = true
         this.retrying ??= { why: out.why, attempt: 0 }
         this.retrying.why = out.why
         return false
@@ -144,12 +193,19 @@ export class Outbox {
         // The scan stopped being a draft (accepted, merged or discarded
         // on the laptop) before this page reached it: the rest of its
         // pages start a scan of their own.
+        // An earlier attempt of this page may have reached the old scan
+        // before the laptop took it, so it may now be there and here.
+        if (page.retried) page.maybeTwice = true
         const [gone, fresh] = [page.scanId, newId()]
         this.moved.set(gone, fresh)
+        let opens = true
         for (const p of this.pages) {
           if (p.scanId === gone && p.state !== 'sent') {
             p.scanId = fresh
+            p.opens = opens
+            opens = false
             if (p.state === 'sending') p.state = 'waiting'
+            this.deps.keep?.put(p)
           }
         }
         return true
@@ -163,12 +219,14 @@ export class Outbox {
       case 'refused': {
         page.state = 'failed'
         page.problem = out.reason
+        this.deps.keep?.drop(page)
         this.retrying = null
         if (STOPS_ALL.includes(out.reason)) {
           for (const p of this.pages) {
             if (p.state === 'waiting') {
               p.state = 'failed'
               p.problem = out.reason
+              this.deps.keep?.drop(p)
             }
           }
         }

@@ -193,6 +193,17 @@ p {
   border-radius: 6px;
 }
 
+.pages .thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1240 / 1754;
+  background: var(--bg);
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  font-size: 1.25rem;
+}
+
 .pages li[data-state='failed'] {
   color: var(--warn);
 }

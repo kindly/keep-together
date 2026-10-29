@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { backoffMs, newId, outcomeOf, sendPage, tokenFrom } from './api'
+import {
+  backoffMs,
+  newId,
+  outcomeOf,
+  sendPage,
+  tokenFrom,
+  uploadTimeoutMs,
+} from './api'
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -156,4 +163,35 @@ it('backs off 1, 2, 4, 8, 15, then 30 s', () => {
   expect([0, 1, 2, 3, 4, 5, 6, 50].map(backoffMs)).toEqual(
     [1, 2, 4, 8, 15, 30, 30, 30].map((s) => s * 1000),
   )
+})
+
+it('gives an upload a minute plus a second per 10 KB', () => {
+  expect(uploadTimeoutMs(0)).toBe(60_000)
+  // A full 400 KB page: 100 s, enough at about 40 kbit/s.
+  expect(uploadTimeoutMs(400_000)).toBe(100_000)
+  expect((400_000 * 8) / (uploadTimeoutMs(400_000) / 1000)).toBeLessThan(40_000)
+})
+
+it('an upload cut off by its timeout is a slow connection, sent again', async () => {
+  vi.useFakeTimers()
+  vi.stubGlobal(
+    'fetch',
+    (_: string, init: RequestInit) =>
+      new Promise((_r, reject) =>
+        init.signal!.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')),
+        ),
+      ),
+  )
+  const blob = new Blob([new Uint8Array(10)])
+  const out = sendPage(TOKEN, {
+    scanId: 'a'.repeat(32),
+    pageId: 'b'.repeat(32),
+    first: true,
+    blob,
+  })
+  await vi.advanceTimersByTimeAsync(uploadTimeoutMs(blob.size))
+  expect(await out).toEqual({ kind: 'retry', why: 'slow' })
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
 })

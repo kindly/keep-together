@@ -1,6 +1,8 @@
 import { fitPage, toGrey, warp } from './image'
 import type { Fitted, Grey } from './image'
 import type { Quad } from './geometry'
+import { jpegInfo, orientTransform, orientationIgnored } from './orient'
+import type { JpegInfo } from './orient'
 
 /**
  * The canvas side of a page: the camera's file decoded (EXIF orientation
@@ -16,24 +18,50 @@ import type { Quad } from './geometry'
  */
 export const WORKING_LONG = 2800
 
-/** The photo in `file` drawn on a canvas at most WORKING_LONG long. */
+/**
+ * The photo in `file` drawn upright on a canvas at most WORKING_LONG
+ * long. The decoder is asked to apply EXIF orientation, and checked: when
+ * the decoded size is the stored one although EXIF says a quarter turn,
+ * the turn is drawn here (orient.ts).
+ */
 export async function loadPhoto(file: Blob): Promise<HTMLCanvasElement> {
+  const info = await headerOf(file)
   const source = await decode(file)
   try {
+    const turn = info && orientationIgnored(info, source) ? info.orientation : 1
+    const upright = orientTransform(turn, source.width, source.height)
     const scale = Math.min(
       1,
-      WORKING_LONG / Math.max(source.width, source.height),
+      WORKING_LONG / Math.max(upright.width, upright.height),
     )
     const canvas = document.createElement('canvas')
-    canvas.width = Math.round(source.width * scale)
-    canvas.height = Math.round(source.height * scale)
+    canvas.width = Math.round(upright.width * scale)
+    canvas.height = Math.round(upright.height * scale)
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('no 2d context')
     ctx.imageSmoothingQuality = 'high'
-    ctx.drawImage(source.image, 0, 0, canvas.width, canvas.height)
+    const [a, b, c, d, e, f] = upright.matrix
+    ctx.setTransform(
+      a * scale,
+      b * scale,
+      c * scale,
+      d * scale,
+      e * scale,
+      f * scale,
+    )
+    ctx.drawImage(source.image, 0, 0, source.width, source.height)
     return canvas
   } finally {
     source.close()
+  }
+}
+
+/** The JPEG header's size and orientation, if it is a JPEG. */
+async function headerOf(file: Blob): Promise<JpegInfo | null> {
+  try {
+    return jpegInfo(new Uint8Array(await file.slice(0, 131_072).arrayBuffer()))
+  } catch {
+    return null
   }
 }
 
@@ -45,19 +73,25 @@ interface Decoded {
 }
 
 async function decode(file: Blob): Promise<Decoded> {
-  // createImageBitmap applies EXIF orientation by default; an <img> is the
-  // fallback for a browser that lacks it or can't decode this file that way.
+  // createImageBitmap, asked for EXIF orientation outright; plain if this
+  // browser refuses the option; an <img> (which applies EXIF too) if it
+  // lacks createImageBitmap or can't decode this file that way.
   if (typeof createImageBitmap === 'function') {
-    try {
-      const bitmap = await createImageBitmap(file)
-      return {
-        image: bitmap,
-        width: bitmap.width,
-        height: bitmap.height,
-        close: () => bitmap.close(),
+    for (const options of [
+      { imageOrientation: 'from-image' as const },
+      undefined,
+    ]) {
+      try {
+        const bitmap = await createImageBitmap(file, options)
+        return {
+          image: bitmap,
+          width: bitmap.width,
+          height: bitmap.height,
+          close: () => bitmap.close(),
+        }
+      } catch {
+        // the next way
       }
-    } catch {
-      // fall through
     }
   }
   const url = URL.createObjectURL(file)

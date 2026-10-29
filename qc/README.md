@@ -221,6 +221,14 @@ screenshot and, when the page logged anything, its console and uncaught
 errors (`console`), not a trace; to trace one, rerun it with
 `pnpm qc --trace on <spec>` and ignore its times.
 
+**Phone pairing tokens.** The history, the server table and the
+over-budget message name `/api/scan/<token>` as `/scan/:token`. A trace
+doesn't: one from `scan.open` or `scan.sendPage` (or a `--trace on` run of
+`qc/flows/scan-phone.spec.ts`) holds the page URL with its token and every
+call made with it. The pairings are the test's own, held by its phone
+context and soon ended, but the trace still holds a credential in a
+working format: keep it out of issues and chats, and delete it after use.
+
 **Held results.** Every timed sample must do the work it claims to
 measure. TanStack Query keeps what it fetched until something invalidates
 it (the change stream, or this tab's own write), so a flow whose result

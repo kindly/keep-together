@@ -11,17 +11,23 @@ type Sent = Parameters<OutboxDeps['send']>[0]
  * sleeps that return at once but are recorded.
  */
 function harness(
-  script: Array<Outcome<ScanUploaded>['kind'] | Outcome<ScanUploaded>> = [],
+  script: Array<
+    Outcome<ScanUploaded>['kind'] | Outcome<ScanUploaded> | 'hang'
+  > = [],
 ) {
   const sent: Array<Sent> = []
   const slept: Array<number> = []
   const ended: Array<string> = []
+  /** What the outbox keeps on the phone: page id → its scan and opening. */
+  const kept = new Map<string, { scanId: string; opens: boolean }>()
   let left = 300
   const outbox = new Outbox({
     send: (page) => {
       sent.push({ ...page })
       const next = script.shift() ?? 'ok'
       if (typeof next !== 'string') return Promise.resolve(next)
+      // A request still out: what is kept can be looked at meanwhile.
+      if (next === 'hang') return new Promise<never>(() => {})
       if (next === 'ok') {
         return Promise.resolve({
           kind: 'ok',
@@ -40,13 +46,17 @@ function harness(
     },
     changed: () => {},
     ended: (why) => ended.push(why),
+    keep: {
+      put: (p) => kept.set(p.pageId, { scanId: p.scanId, opens: p.opens }),
+      drop: (p) => kept.delete(p.pageId),
+    },
   })
   /** Until the outbox has nothing left to send. */
   const drained = async () => {
     for (let i = 0; i < 100 && !outbox.idle; i++)
       await new Promise((r) => setTimeout(r, 0))
   }
-  return { outbox, sent, slept, ended, drained }
+  return { outbox, sent, slept, ended, kept, drained }
 }
 
 const blob = new Blob(['x'])
@@ -199,5 +209,92 @@ describe('Outbox', () => {
       await new Promise((r) => setTimeout(r, 0))
     expect(sent).toHaveLength(2)
     expect(outbox.idle).toBe(true)
+  })
+
+  it('counts as idle once the link has ended, so leaving asks nothing', async () => {
+    const { outbox, drained } = harness(['gone'])
+    outbox.add(SCAN, blob)
+    await drained()
+    expect(outbox.pages[0].state).toBe('waiting')
+    expect(outbox.idle).toBe(true)
+  })
+
+  it('a page unanswered, then refused as the laptop took its scan, may be there twice', async () => {
+    const { outbox, drained } = harness(['ok', 'retry', 'not_found'])
+    outbox.add(SCAN, blob)
+    outbox.add(SCAN, blob)
+    await drained()
+    expect(outbox.pages[1]).toMatchObject({ state: 'sent', maybeTwice: true })
+    expect(outbox.pages[0].maybeTwice).toBeUndefined()
+  })
+
+  it('a page refused at once as its scan was taken is not there twice', async () => {
+    const { outbox, drained } = harness(['ok', 'not_found'])
+    outbox.add(SCAN, blob)
+    outbox.add(SCAN, blob)
+    await drained()
+    expect(outbox.pages[1].maybeTwice).toBeUndefined()
+  })
+})
+
+describe('Outbox keeping pages on the phone', () => {
+  it('keeps each page from when it is taken until it lands', async () => {
+    const { outbox, kept, drained } = harness(['retry'])
+    const first = outbox.add(SCAN, blob)
+    const next = outbox.add(SCAN, blob)
+    expect([...kept.keys()]).toEqual([first.pageId, next.pageId])
+    expect(kept.get(first.pageId)).toEqual({ scanId: SCAN, opens: true })
+    expect(kept.get(next.pageId)).toEqual({ scanId: SCAN, opens: false })
+    await drained()
+    expect(kept.size).toBe(0)
+  })
+
+  it('stops keeping a refused page', async () => {
+    const { outbox, kept, drained } = harness(['refused'])
+    outbox.add(SCAN, blob)
+    await drained()
+    expect(kept.size).toBe(0)
+  })
+
+  const ticks = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0))
+  }
+
+  it('keeps the new scan of pages moved off a taken one', async () => {
+    const { outbox, kept } = harness(['ok', 'not_found', 'hang'])
+    outbox.add(SCAN, blob)
+    const moved = outbox.add(SCAN, blob)
+    await ticks()
+    expect(outbox.current(SCAN)).not.toBe(SCAN)
+    expect(kept.get(moved.pageId)).toEqual({
+      scanId: outbox.current(SCAN),
+      opens: true,
+    })
+  })
+
+  it('a page opening its scan after the earlier ones were refused is kept as opening it', async () => {
+    const { outbox, kept, sent } = harness(['refused', 'hang'])
+    outbox.add(SCAN, blob)
+    const next = outbox.add(SCAN, blob)
+    await ticks()
+    expect(sent.slice(0, 2).map((s) => s.first)).toEqual([true, true])
+    expect(next.opens).toBe(true)
+    expect(kept.get(next.pageId)?.opens).toBe(true)
+  })
+
+  it('restores kept pages with their own ids, into the scans the server holds', async () => {
+    const { outbox, sent, drained } = harness()
+    outbox.restore(
+      [
+        { scanId: SCAN, pageId: 'c'.repeat(32), blob, opens: false },
+        { scanId: OTHER, pageId: 'd'.repeat(32), blob, opens: true },
+      ],
+      [SCAN],
+    )
+    await drained()
+    expect(sent.map((s) => [s.scanId, s.pageId, s.first])).toEqual([
+      [SCAN, 'c'.repeat(32), false],
+      [OTHER, 'd'.repeat(32), true],
+    ])
   })
 })

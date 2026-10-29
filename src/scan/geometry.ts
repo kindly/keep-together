@@ -130,3 +130,20 @@ export function rectQuad(width: number, height: number): Quad {
     { x: 0, y: height },
   ]
 }
+
+/**
+ * The outline is a convex quadrilateral going clockwise on screen (y
+ * down), as the corners are labelled. A crossed or folded outline (a
+ * handle dragged past another) would warp to a mirrored or folded page,
+ * so "Use page" refuses it; a merely rotated labelling stays clockwise.
+ */
+export function isUsableQuad(quad: Quad): boolean {
+  for (let i = 0; i < 4; i++) {
+    const a = quad[i]
+    const b = quad[(i + 1) % 4]
+    const c = quad[(i + 2) % 4]
+    const turn = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)
+    if (!(turn > 0)) return false
+  }
+  return true
+}
