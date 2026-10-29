@@ -6,7 +6,7 @@
 #   scripts/aws/backup.sh staging        # first: it prints the bucket secrets
 #   scripts/fly/staging.sh
 #
-# Makes the app in lhr, its 1 GB volume keep_data, asks for any secret
+# Makes the app in lhr, its 10 GB volume keep_data, asks for any secret
 # still missing, generates the riverside sign-ins (printed once: note
 # them) and the QC token (to Fly and the GitHub secret, never shown) if
 # missing, adds the certificate for staging.keep-together.org.uk and
@@ -47,12 +47,12 @@ else
   run fly apps create "$APP" --org "$ORG"
 fi
 
-say "Volume keep_data ($REGION, 1 GB)"
+say "Volume keep_data ($REGION, 10 GB)"
 # One machine, one volume: a second copy of the data would replicate to
 # the same Litestream prefix as the first.
 vols=$(fly volumes list -a "$APP" --json | names | grep -cx keep_data || true)
 case $vols in
-0) run fly volumes create keep_data -a "$APP" --region "$REGION" --size 1 --yes ;;
+0) run fly volumes create keep_data -a "$APP" --region "$REGION" --size 10 --yes ;;
 1) echo "exists" ;;
 *) die "$APP has $vols keep_data volumes; keep one (fly volumes list -a $APP) and destroy the rest" ;;
 esac

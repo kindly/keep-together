@@ -9,7 +9,7 @@
 #   scripts/aws/ses-sender.sh            # KEEP_SMTP_URL (docs/ops.md "Mail")
 #   scripts/fly/prod.sh
 #
-# Makes the app in lhr, its 1 GB volume keep_data, generates auth's keys,
+# Makes the app in lhr, its 10 GB volume keep_data, generates auth's keys,
 # asks for any secret still missing, adds the certificate for
 # app.keep-together.org.uk and prints the Route 53 record to add, the
 # GitHub variable that switches deploy.yml's prod path on, and the first
@@ -48,12 +48,12 @@ else
   run fly apps create "$APP" --org "$ORG"
 fi
 
-say "Volume keep_data ($REGION, 1 GB)"
+say "Volume keep_data ($REGION, 10 GB)"
 # One machine, one volume: a second copy of the data would replicate to
-# the same Litestream prefix as the first. `fly volumes extend` grows it.
+# the same Litestream prefix as the first. `fly volumes extend` grows it (scripts/fly/volume-size.sh).
 vols=$(fly volumes list -a "$APP" --json | names | grep -cx keep_data || true)
 case $vols in
-0) run fly volumes create keep_data -a "$APP" --region "$REGION" --size 1 --yes ;;
+0) run fly volumes create keep_data -a "$APP" --region "$REGION" --size 10 --yes ;;
 1) echo "exists" ;;
 *) die "$APP has $vols keep_data volumes; keep one (fly volumes list -a $APP) and destroy the rest" ;;
 esac
