@@ -7,6 +7,7 @@ import { FEATURES, preloadContact, useContact } from '../lib/data'
 import { ContactForm } from '../components/contact-form'
 import { ContactGiftAid } from '../components/contact-giftaid'
 import { ContactGifts } from '../components/contact-gifts'
+import { ContactDirectDebit } from '../components/direct-debit'
 import { ContactHistory } from '../components/contact-history'
 import { ContactNotes } from '../components/contact-notes'
 import { LeaveGuard } from '../components/leave-guard'
@@ -57,6 +58,8 @@ function ContactPage() {
               individual={data.contact.kind === 'individual'}
             />
           )}
+          {/* Nothing while GoCardless is off here. */}
+          {FEATURES.gifts && <ContactDirectDebit contactId={id} />}
           {/* Only a person can make a Gift Aid declaration (HMRC 3.6.7). */}
           {FEATURES.gifts && data.contact.kind === 'individual' && (
             <ContactGiftAid contactId={id} />

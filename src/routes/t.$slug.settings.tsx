@@ -20,8 +20,9 @@ const activeTab = 'border-neutral-900 font-medium text-neutral-900'
 
 /**
  * Settings: one tab per child route, every one visible to every member
- * but HMRC details (admins: it is the Gift Aid claims' settings) and
- * Scans storage (staff and admins: the scans are theirs).
+ * but HMRC details (admins: it is the Gift Aid claims' settings),
+ * GoCardless (admins: connecting the group's account) and Scans storage
+ * (staff and admins: the scans are theirs).
  * Each list's tab opens with its admin-only switch, and is editable by
  * whoever may manage that list (read-only for the rest). The backend
  * enforces it. Then the account's own: Switch group (only for people in
@@ -64,6 +65,16 @@ function SettingsLayout() {
               activeProps={{ className: activeTab }}
             >
               HMRC details
+            </Link>
+          )}
+          {admin && (
+            <Link
+              to="/t/$slug/settings/gocardless"
+              params={{ slug }}
+              className={tab}
+              activeProps={{ className: activeTab }}
+            >
+              GoCardless
             </Link>
           )}
           {role !== undefined && role !== 'viewer' && (

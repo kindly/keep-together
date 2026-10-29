@@ -83,9 +83,15 @@ test.describe('GoCardless (fake)', { annotation: GIFT_ROUTE }, () => {
       'POST',
       `/api/t/${slug}/gocardless/connect`,
     )
+    // The account it holds, if any: gocardless-ui.spec.ts connects this
+    // group too, and a new account would switch it under that spec.
     await page.goto(url)
+    await page
+      .getByLabel(/An existing account id/)
+      .fill(status.organisationId ?? '')
     await page.getByRole('button', { name: 'Connect' }).click()
-    await page.waitForURL(`**/t/${slug}/settings?gocardless=connected`)
+    // Settings passes the outcome on to its GoCardless tab.
+    await page.waitForURL(/\/settings\/gocardless\?gocardless=connected$/)
     const connected = await json<GoCardlessStatus>(
       page,
       'GET',

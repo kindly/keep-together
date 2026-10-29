@@ -194,6 +194,21 @@ export const budgets = {
   // recorded budget, a progress state), though it is one page.
   'scan.open': { kind: 'oncePerSession', maxMs: 100 },
   'scan.sendPage': { kind: 'bulk', maxMs: 330 },
+  // GoCardless D3 (qc/flows/gocardless-ui.spec.ts). PROVISIONAL, awaiting
+  // the human's OK: classes picked, not yet recorded. Opening Settings ›
+  // GoCardless and the unmatched list are reads: repeatable. Setting up a
+  // Direct Debit, a one-off on the mandate, an Instant Bank Pay link,
+  // cancelling and matching a payment each create or end a record:
+  // infrequent. All but matching wait for GoCardless itself (the fake,
+  // locally; the real one adds its own round trip), so the line may need
+  // its own class once recorded.
+  'gocardless.settings': repeatable,
+  'gocardless.unmatched': repeatable,
+  'gocardless.setUp': infrequent,
+  'gocardless.oneOff': infrequent,
+  'gocardless.instantPayment': infrequent,
+  'gocardless.cancel': infrequent,
+  'gocardless.match': infrequent,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },

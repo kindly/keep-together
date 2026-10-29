@@ -27,11 +27,13 @@ import { Route as TSlugGiftaidClaimIdRouteImport } from './routes/t.$slug.giftai
 import { Route as TSlugGiftaidNewRouteImport } from './routes/t.$slug.giftaid.new'
 import { Route as TSlugGiftsGiftIdRouteImport } from './routes/t.$slug.gifts.$giftId'
 import { Route as TSlugGiftsNewRouteImport } from './routes/t.$slug.gifts.new'
+import { Route as TSlugGocardlessUnmatchedRouteImport } from './routes/t.$slug.gocardless.unmatched'
 import { Route as TSlugScansIndexRouteImport } from './routes/t.$slug.scans.index'
 import { Route as TSlugScansScanIdRouteImport } from './routes/t.$slug.scans.$scanId'
 import { Route as TSlugScansDeletableRouteImport } from './routes/t.$slug.scans.deletable'
 import { Route as TSlugSettingsIndexRouteImport } from './routes/t.$slug.settings.index'
 import { Route as TSlugSettingsFieldsRouteImport } from './routes/t.$slug.settings.fields'
+import { Route as TSlugSettingsGocardlessRouteImport } from './routes/t.$slug.settings.gocardless'
 import { Route as TSlugSettingsGroupsRouteImport } from './routes/t.$slug.settings.groups'
 import { Route as TSlugSettingsHmrcRouteImport } from './routes/t.$slug.settings.hmrc'
 import { Route as TSlugSettingsIdentifiersRouteImport } from './routes/t.$slug.settings.identifiers'
@@ -130,6 +132,12 @@ const TSlugGiftsNewRoute = TSlugGiftsNewRouteImport.update({
   path: '/gifts/new',
   getParentRoute: () => TSlugRoute,
 } as any)
+const TSlugGocardlessUnmatchedRoute =
+  TSlugGocardlessUnmatchedRouteImport.update({
+    id: '/gocardless/unmatched',
+    path: '/gocardless/unmatched',
+    getParentRoute: () => TSlugRoute,
+  } as any)
 const TSlugScansIndexRoute = TSlugScansIndexRouteImport.update({
   id: '/scans/',
   path: '/scans/',
@@ -153,6 +161,11 @@ const TSlugSettingsIndexRoute = TSlugSettingsIndexRouteImport.update({
 const TSlugSettingsFieldsRoute = TSlugSettingsFieldsRouteImport.update({
   id: '/fields',
   path: '/fields',
+  getParentRoute: () => TSlugSettingsRoute,
+} as any)
+const TSlugSettingsGocardlessRoute = TSlugSettingsGocardlessRouteImport.update({
+  id: '/gocardless',
+  path: '/gocardless',
   getParentRoute: () => TSlugSettingsRoute,
 } as any)
 const TSlugSettingsGroupsRoute = TSlugSettingsGroupsRouteImport.update({
@@ -209,9 +222,11 @@ export interface FileRoutesByFullPath {
   '/t/$slug/giftaid/new': typeof TSlugGiftaidNewRoute
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
+  '/t/$slug/gocardless/unmatched': typeof TSlugGocardlessUnmatchedRoute
   '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
+  '/t/$slug/settings/gocardless': typeof TSlugSettingsGocardlessRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
@@ -238,9 +253,11 @@ export interface FileRoutesByTo {
   '/t/$slug/giftaid/new': typeof TSlugGiftaidNewRoute
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
+  '/t/$slug/gocardless/unmatched': typeof TSlugGocardlessUnmatchedRoute
   '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
+  '/t/$slug/settings/gocardless': typeof TSlugSettingsGocardlessRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
@@ -271,9 +288,11 @@ export interface FileRoutesById {
   '/t/$slug/giftaid/new': typeof TSlugGiftaidNewRoute
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
+  '/t/$slug/gocardless/unmatched': typeof TSlugGocardlessUnmatchedRoute
   '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
+  '/t/$slug/settings/gocardless': typeof TSlugSettingsGocardlessRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
@@ -305,9 +324,11 @@ export interface FileRouteTypes {
     | '/t/$slug/giftaid/new'
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
+    | '/t/$slug/gocardless/unmatched'
     | '/t/$slug/scans/$scanId'
     | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/fields'
+    | '/t/$slug/settings/gocardless'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/hmrc'
     | '/t/$slug/settings/identifiers'
@@ -334,9 +355,11 @@ export interface FileRouteTypes {
     | '/t/$slug/giftaid/new'
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
+    | '/t/$slug/gocardless/unmatched'
     | '/t/$slug/scans/$scanId'
     | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/fields'
+    | '/t/$slug/settings/gocardless'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/hmrc'
     | '/t/$slug/settings/identifiers'
@@ -366,9 +389,11 @@ export interface FileRouteTypes {
     | '/t/$slug/giftaid/new'
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
+    | '/t/$slug/gocardless/unmatched'
     | '/t/$slug/scans/$scanId'
     | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/fields'
+    | '/t/$slug/settings/gocardless'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/hmrc'
     | '/t/$slug/settings/identifiers'
@@ -519,6 +544,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugGiftsNewRouteImport
       parentRoute: typeof TSlugRoute
     }
+    '/t/$slug/gocardless/unmatched': {
+      id: '/t/$slug/gocardless/unmatched'
+      path: '/gocardless/unmatched'
+      fullPath: '/t/$slug/gocardless/unmatched'
+      preLoaderRoute: typeof TSlugGocardlessUnmatchedRouteImport
+      parentRoute: typeof TSlugRoute
+    }
     '/t/$slug/scans/': {
       id: '/t/$slug/scans/'
       path: '/scans'
@@ -552,6 +584,13 @@ declare module '@tanstack/react-router' {
       path: '/fields'
       fullPath: '/t/$slug/settings/fields'
       preLoaderRoute: typeof TSlugSettingsFieldsRouteImport
+      parentRoute: typeof TSlugSettingsRoute
+    }
+    '/t/$slug/settings/gocardless': {
+      id: '/t/$slug/settings/gocardless'
+      path: '/gocardless'
+      fullPath: '/t/$slug/settings/gocardless'
+      preLoaderRoute: typeof TSlugSettingsGocardlessRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
     '/t/$slug/settings/groups': {
@@ -624,6 +663,7 @@ const TSlugGiftaidRouteWithChildren = TSlugGiftaidRoute._addFileChildren(
 
 interface TSlugSettingsRouteChildren {
   TSlugSettingsFieldsRoute: typeof TSlugSettingsFieldsRoute
+  TSlugSettingsGocardlessRoute: typeof TSlugSettingsGocardlessRoute
   TSlugSettingsGroupsRoute: typeof TSlugSettingsGroupsRoute
   TSlugSettingsHmrcRoute: typeof TSlugSettingsHmrcRoute
   TSlugSettingsIdentifiersRoute: typeof TSlugSettingsIdentifiersRoute
@@ -636,6 +676,7 @@ interface TSlugSettingsRouteChildren {
 
 const TSlugSettingsRouteChildren: TSlugSettingsRouteChildren = {
   TSlugSettingsFieldsRoute: TSlugSettingsFieldsRoute,
+  TSlugSettingsGocardlessRoute: TSlugSettingsGocardlessRoute,
   TSlugSettingsGroupsRoute: TSlugSettingsGroupsRoute,
   TSlugSettingsHmrcRoute: TSlugSettingsHmrcRoute,
   TSlugSettingsIdentifiersRoute: TSlugSettingsIdentifiersRoute,
@@ -659,6 +700,7 @@ interface TSlugRouteChildren {
   TSlugContactsNewRoute: typeof TSlugContactsNewRoute
   TSlugGiftsGiftIdRoute: typeof TSlugGiftsGiftIdRoute
   TSlugGiftsNewRoute: typeof TSlugGiftsNewRoute
+  TSlugGocardlessUnmatchedRoute: typeof TSlugGocardlessUnmatchedRoute
   TSlugScansScanIdRoute: typeof TSlugScansScanIdRoute
   TSlugScansDeletableRoute: typeof TSlugScansDeletableRoute
   TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
@@ -674,6 +716,7 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugContactsNewRoute: TSlugContactsNewRoute,
   TSlugGiftsGiftIdRoute: TSlugGiftsGiftIdRoute,
   TSlugGiftsNewRoute: TSlugGiftsNewRoute,
+  TSlugGocardlessUnmatchedRoute: TSlugGocardlessUnmatchedRoute,
   TSlugScansScanIdRoute: TSlugScansScanIdRoute,
   TSlugScansDeletableRoute: TSlugScansDeletableRoute,
   TSlugContactsIndexRoute: TSlugContactsIndexRoute,
