@@ -10,10 +10,12 @@ import { FEATURES, useAuthState, useSignOut } from '../lib/data'
 import { useTenant } from '../lib/tenant'
 import {
   DONATIONS,
-  GiftAidLink,
+  GIFT_AID,
+  GiftAidEntryLink,
   GiftLink,
   RecordGiftAction,
   useDonations,
+  useGiftAidEntries,
 } from './gift-nav'
 import {
   Sheet,
@@ -89,7 +91,7 @@ export function MobileNav() {
               Contacts
             </Link>
             {FEATURES.gifts && <Donations follow={follow} />}
-            <GiftAidLink className={item} {...follow} />
+            {FEATURES.gifts && <GiftAid follow={follow} />}
             {FEATURES.settings && (
               <Link
                 to="/t/$slug/settings"
@@ -235,6 +237,29 @@ function store(open: boolean) {
  * session; open on a donations page (a gift, or recording one). The gifts
  * are fetched only while it is open.
  */
+/**
+ * Gift Aid's entries under a heading, flat: the claims, "Scans to match",
+ * the "can be deleted" report. Not the stack sitting: on a phone it would
+ * show the phone a QR code of itself.
+ */
+function GiftAid({ follow }: { follow: Follow }) {
+  const entries = useGiftAidEntries().filter((e) => e.key !== 'stack')
+  if (entries.length === 0) return null
+  return (
+    <section aria-label={GIFT_AID.label}>
+      <p className={heading}>{GIFT_AID.label}</p>
+      {entries.map((e) => (
+        <GiftAidEntryLink
+          key={e.key}
+          entry={e}
+          className={`${item} pl-6`}
+          {...follow}
+        />
+      ))}
+    </section>
+  )
+}
+
 function Donations({ follow }: { follow: Follow }) {
   const { slug } = useTenant()
   const onDonations = useRouterState({

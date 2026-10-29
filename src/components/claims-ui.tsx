@@ -112,9 +112,15 @@ export function useStepUp() {
 export function ReadRefused({
   error,
   retry,
+  forbidden = 'Only admins can see Gift Aid claims.',
+  failed = 'Gift Aid claims couldn’t load.',
 }: {
   error: unknown
   retry: () => Promise<unknown>
+  /** What a `403 forbidden` says; the claims' wording by default. */
+  forbidden?: string
+  /** What any other failure says, unless the server's own words fit. */
+  failed?: string
 }) {
   const auth = useAuthState()
   if (needsStepUp(error))
@@ -129,8 +135,8 @@ export function ReadRefused({
     )
   const message =
     error instanceof RustApiError && error.error.kind === 'forbidden'
-      ? 'Only admins can see Gift Aid claims.'
-      : claimRefusal(error, 'Gift Aid claims couldn’t load.')
+      ? forbidden
+      : claimRefusal(error, failed)
   return (
     <p role="alert" className="text-sm text-red-700">
       {message}{' '}

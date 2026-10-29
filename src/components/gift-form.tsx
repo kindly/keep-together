@@ -50,6 +50,7 @@ import { RustApiError } from '../lib/data/rust/client'
 import { METHOD_LABELS, formatPence, refusal } from '../lib/gifts'
 import { useTenant } from '../lib/tenant'
 import { useReportUnsaved } from '../lib/unsaved'
+import { ScanWithPhone } from './scans'
 import { SourceCodePicker, localToday } from './source-code-picker'
 
 const fieldClass = 'rounded border border-neutral-300 px-2 py-1.5 text-sm'
@@ -557,6 +558,21 @@ export function GiftForm() {
                   {explain.explain}
                 </p>
               )}
+              {/* The form in hand, scanned now and matched to the
+                  declaration this save records (declaration scans g2q3):
+                  only a paper form's, as only that can hold a scan. */}
+              {draft.declarationMethod === 'paperForm' && (
+                <div className="flex flex-col gap-1">
+                  <ScanWithPhone
+                    purpose="gift"
+                    contactId={existingId ?? undefined}
+                  />
+                  <p className="text-xs text-neutral-500">
+                    Scans wait in Scans to match: once the gift is saved, match
+                    them to its paper declaration there or on the donor’s page.
+                  </p>
+                </div>
+              )}
               {onFile && existingId ? (
                 <p className="text-sm text-neutral-700">
                   Declared under their home address: {onFile.line1},{' '}
@@ -632,9 +648,7 @@ type SearchRow = NonNullable<
  * false: those rows answer an older term.
  */
 function useSearch(term: string, open: boolean) {
-  const now = useContactSearch(
-    open && term ? { search: term } : 'skip',
-  )
+  const now = useContactSearch(open && term ? { search: term } : 'skip')
   const last = useRef(now)
   if (now !== undefined) last.current = now
   if (!term) return { result: undefined, fresh: false }

@@ -176,6 +176,13 @@ export const budgets = {
   'giftaid.reject': repeatable,
   // Settings › HMRC details: an edit of the group's details.
   'giftaid.hmrcSave': repeatable,
+  // Declaration scans step 4: "Scans to match" from the Gift Aid menu;
+  // "Scan with phone" (a new pairing: its QR code and link) and accepting
+  // a scan onto a new paper declaration each create a record, as
+  // gift.record does: infrequent.
+  'scans.open': repeatable,
+  'scans.pair': infrequent,
+  'scans.accept': infrequent,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },

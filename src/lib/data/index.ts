@@ -114,3 +114,28 @@ export type {
   HmrcDetails,
   HmrcDetailsView,
 } from './rust/claims'
+export {
+  PAIRING_POLL_MS,
+  endScanPairingNow,
+  scanLink,
+  scanPageUrl,
+  useDeclarationScans,
+  useDeletableScans,
+  useEndScanPairing,
+  useFilesUsage,
+  useScan,
+  useScanInbox,
+  useScanPairing,
+  useScanWrites,
+  useStartScanPairing,
+} from './rust/scans'
+export type {
+  DeclarationScans,
+  DeletableScan,
+  FilesUsage,
+  ScanMatch,
+  ScanPairingStarted,
+  ScanPairingView,
+  ScanPurpose,
+  ScanView,
+} from './rust/scans'

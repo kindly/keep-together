@@ -1,4 +1,4 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useRouterState } from '@tanstack/react-router'
 import { useState } from 'react'
 import type { ComponentProps } from 'react'
 import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
@@ -58,27 +58,99 @@ type AnchorProps = Omit<ComponentProps<'a'>, 'href' | 'children'> & {
   replace?: boolean
 }
 
+// What the Gift Aid entries say: the header's menu and the mobile drawer
+// list the same ones, from here and `useGiftAidEntries`.
+export const GIFT_AID = {
+  label: 'Gift Aid',
+  claims: 'Claims',
+  scans: 'Scans to match',
+  stack: 'Scan a stack with phone',
+  deletable: 'Scans that can be deleted',
+} as const
+
+type GiftAidEntry = {
+  key: keyof typeof GIFT_AID
+  to: '/t/$slug/giftaid' | '/t/$slug/scans' | '/t/$slug/scans/deletable'
+  search?: { sitting: true }
+}
+
 /**
- * "Gift Aid": the claims pages (G3), for admins only, as every claims
- * route is; nothing for anyone else. The header and the phone drawer
- * both show this one, each with its own style. Other props pass through.
+ * The Gift Aid entries the caller has: the claims (G3, admins only, as
+ * every claims route is), "Scans to match" and a stack sitting (staff and
+ * admins, declaration scans g2q3), and the "can be deleted" report
+ * (admins). None for a viewer.
  */
-export function GiftAidLink({
+export function useGiftAidEntries(): Array<GiftAidEntry> {
+  const admin = useIsAdmin()
+  const canWrite = useCanWrite()
+  if (!canWrite) return []
+  return [
+    ...(admin && FEATURES.giftAidClaims
+      ? [{ key: 'claims', to: '/t/$slug/giftaid' } as const]
+      : []),
+    { key: 'scans', to: '/t/$slug/scans' },
+    { key: 'stack', to: '/t/$slug/scans', search: { sitting: true } },
+    ...(admin
+      ? [{ key: 'deletable', to: '/t/$slug/scans/deletable' } as const]
+      : []),
+  ]
+}
+
+/** One Gift Aid entry as a link; other props pass through. */
+export function GiftAidEntryLink({
+  entry,
   activeProps,
   ...props
-}: AnchorProps & { activeProps?: { className?: string } }) {
+}: AnchorProps & {
+  entry: GiftAidEntry
+  activeProps?: { className?: string }
+}) {
   const tenant = useTenant()
-  const admin = useIsAdmin()
-  if (!admin || !FEATURES.giftAidClaims) return null
   return (
     <Link
-      to="/t/$slug/giftaid"
+      to={entry.to}
       params={{ slug: tenant.slug }}
+      search={entry.search ?? {}}
       activeProps={activeProps}
+      activeOptions={{ includeSearch: true, exact: entry.key !== 'claims' }}
       {...props}
     >
-      Gift Aid
+      {GIFT_AID[entry.key]}
     </Link>
+  )
+}
+
+/**
+ * The header's Gift Aid ▾: the caller's entries; nothing with none. On
+ * a Gift Aid page (claims or scans) it is marked, as a link to it was.
+ */
+export function GiftAidMenu() {
+  const entries = useGiftAidEntries()
+  const { slug } = useTenant()
+  const here = useRouterState({
+    select: (s) =>
+      [`/t/${slug}/giftaid`, `/t/${slug}/scans`].some(
+        (p) =>
+          s.location.pathname === p || s.location.pathname.startsWith(`${p}/`),
+      ),
+  })
+  if (entries.length === 0) return null
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        data-current={here || undefined}
+        className="text-sm whitespace-nowrap hover:underline data-[current]:font-medium data-[current]:underline data-[state=open]:underline"
+      >
+        {GIFT_AID.label} <span aria-hidden="true">▾</span>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-64">
+        {entries.map((e) => (
+          <DropdownMenuItem key={e.key} asChild>
+            <GiftAidEntryLink entry={e} />
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

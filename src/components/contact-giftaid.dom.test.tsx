@@ -31,6 +31,8 @@ vi.mock('../lib/data', () => ({
   fetchContactSnapshot: (...args: Array<unknown>) => snapshot(...args),
   useDeclarationHistory: (id: string, enabled: boolean) =>
     enabled ? historyOf(id) : undefined,
+  // Scans: none held (scans.dom.test.tsx covers them).
+  useDeclarationScans: () => undefined,
 }))
 vi.mock('../lib/tenant', () => ({
   useTenant: () => ({ _id: 'tenantA', slug: 'alpha' }),

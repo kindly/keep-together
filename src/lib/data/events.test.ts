@@ -179,3 +179,28 @@ describe('own writes', () => {
     expect(stale(qc)).not.toContain(JSON.stringify(keys.list('o3')))
   })
 })
+
+describe('declaration scans', () => {
+  test('a scan event refetches every scan read (the stack, the inbox, a declaration’s) and nothing else', async () => {
+    const qc = cache()
+    for (const k of [
+      keys.scanInbox(SLUG),
+      keys.scanPairing(SLUG, 'p1'),
+      keys.declarationScans(SLUG, 'd1'),
+      keys.filesUsage(SLUG),
+    ])
+      qc.setQueryData(k, {})
+    applyEvent(qc, SLUG, event('declaration_scans', 'giftaid.scan', 's1'))
+    await Promise.resolve()
+    expect(stale(qc)).toEqual(
+      [
+        keys.declarationScans(SLUG, 'd1'),
+        keys.scanInbox(SLUG),
+        keys.scanPairing(SLUG, 'p1'),
+        keys.filesUsage(SLUG),
+      ]
+        .map((k) => JSON.stringify(k))
+        .sort(),
+    )
+  })
+})
