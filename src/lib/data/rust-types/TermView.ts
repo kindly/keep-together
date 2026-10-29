@@ -21,7 +21,11 @@ appliesFrom: string | null,
 /**
  * `appliesFrom`, else `effectiveFrom`: what the chain reads.
  */
-effectiveOn: string, amount: number, frequency: RegularGiftFrequency, dayOfMonth: number, month: number | null, allocations: Array<TermAllocationView>, note: string | null, origin: TermOrigin, status: TermStatus, subscriptionId: string | null, sentAt: number | null, changeCodeId: string | null, changeCode: string | null, 
+effectiveOn: string, amount: number, frequency: RegularGiftFrequency, dayOfMonth: number, month: number | null, allocations: Array<TermAllocationView>, note: string | null, origin: TermOrigin, status: TermStatus, subscriptionId: string | null, sentAt: number | null, 
+/**
+ * Why GoCardless refused it for good, if it did: edit or withdraw it.
+ */
+syncError: string | null, changeCodeId: string | null, changeCode: string | null, 
 /**
  * From the live row before (withdrawn rows: from the row before them
  * all the same).

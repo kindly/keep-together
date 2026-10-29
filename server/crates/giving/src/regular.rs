@@ -1905,12 +1905,40 @@ pub struct UnknownSubscription {
 /// Subscriptions payments came from that no regular gift here has ever
 /// run under, newest payment first, at most [`UNMATCHED_LIMIT`].
 pub fn unknown_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<UnknownSubscription>> {
+    unknown(conn, None)
+}
+
+/// Subscription `sb` if it is one of [`unknown_subscriptions`], however
+/// far down the list.
+pub fn unknown_subscription(
+    conn: &Connection,
+    sb: &str,
+) -> rusqlite::Result<Option<UnknownSubscription>> {
+    Ok(unknown(conn, Some(sb))?.pop())
+}
+
+/// Whether a regular gift other than `id`, not ended, collects on mandate
+/// `md`: its own mandate, or (adopted) a subscription whose payments were
+/// taken on it. Cancelling the mandate would end that one too.
+pub fn others_on_mandate(conn: &Connection, id: &str, md: &str) -> rusqlite::Result<bool> {
+    conn.prepare_cached(
+        "SELECT 1 FROM regular_gifts r
+         WHERE r.id <> ?1 AND r.status IN ('pending', 'active')
+           AND (r.mandate_id = ?2
+                OR EXISTS (SELECT 1 FROM direct_debit_payments p
+                           WHERE p.subscription_id = r.subscription_id AND p.mandate_id = ?2))",
+    )?
+    .exists(params![id, md])
+}
+
+fn unknown(conn: &Connection, only: Option<&str>) -> rusqlite::Result<Vec<UnknownSubscription>> {
     conn.prepare_cached(
         "WITH unknown AS (
              SELECT p.subscription_id AS sb, max(p.mandate_id) AS mandate, count(*) AS n,
                  max(p.charge_date) AS last, max(p.seq) AS latest
              FROM direct_debit_payments p INDEXED BY direct_debit_payments_by_subscription
              WHERE p.subscription_id IS NOT NULL AND p.regular_gift_id IS NULL
+               AND (?2 IS NULL OR p.subscription_id = ?2)
                AND NOT EXISTS (SELECT 1 FROM regular_gifts r
                                WHERE r.subscription_id = p.subscription_id)
                AND NOT EXISTS (SELECT 1 FROM regular_gift_terms t
@@ -1923,7 +1951,7 @@ pub fn unknown_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<UnknownS
              (SELECT r.contact_id FROM regular_gifts r WHERE r.mandate_id = u.mandate)
          FROM unknown u ORDER BY u.latest DESC LIMIT ?1",
     )?
-    .query_map([UNMATCHED_LIMIT as i64], |r| {
+    .query_map(params![UNMATCHED_LIMIT as i64, only], |r| {
         Ok(UnknownSubscription {
             subscription_id: r.get(0)?,
             mandate_id: r.get(1)?,

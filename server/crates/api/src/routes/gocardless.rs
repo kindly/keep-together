@@ -440,9 +440,27 @@ async fn cancel(
         });
     }
     let token = token.ok_or_else(not_connected)?;
-    match (&found.mandate.mandate_id, &found.mandate.billing_request_id) {
-        (Some(md), _) => gc.api.cancel_mandate(&token, md).await,
-        (None, Some(br)) => match gc.api.cancel_billing_request(&token, br).await {
+    let (rid, md) = (id.clone(), found.mandate.mandate_id.clone());
+    let shared = match md {
+        Some(md) => {
+            t.read(move |r| Ok(regular::others_on_mandate(r, &rid, &md)?))
+                .await?
+        }
+        None => false,
+    };
+    match (
+        &found.mandate.mandate_id,
+        &found.mandate.billing_request_id,
+        &found.mandate.subscription_id,
+    ) {
+        // Another regular gift (one adopted) collects on the same mandate:
+        // stop only this one's subscription.
+        (Some(_), _, Some(sb)) if shared => gc.api.cancel_subscription(&token, sb).await,
+        (Some(md), _, _) => gc.api.cancel_mandate(&token, md).await,
+        // Adopted from GoCardless: no mandate of its own, its
+        // subscription is what collects (review H2).
+        (None, _, Some(sb)) => gc.api.cancel_subscription(&token, sb).await,
+        (None, Some(br), None) => match gc.api.cancel_billing_request(&token, br).await {
             // The donor signed meanwhile (we haven't heard yet): cancel the
             // mandate the request made, which takes any subscription with
             // it. Ours ends below, so none is made after.
@@ -457,7 +475,7 @@ async fn cancel(
             }
             other => other,
         },
-        (None, None) => Ok(()),
+        (None, None, None) => Ok(()),
     }
     .map_err(|e| provider(&t.slug, e))?;
     let out = t
@@ -671,6 +689,7 @@ async fn one_off(
         },
     )
     .await?;
+    over_cap(asked.amount)?;
     let description = format!("One-off gift {}", giving::format_pence(asked.amount));
     let p = gc
         .api
@@ -695,6 +714,15 @@ async fn one_off(
         status: p.status,
         charge_date: p.charge_date,
     }))
+}
+
+/// A request on record for more than the cap (one saved before it) is
+/// refused all the same: what is sent is the request's own amount.
+fn over_cap(amount: i64) -> Result<(), ApiError> {
+    if amount > giving::rules::ONE_OFF_MAX {
+        return Err(ContractError::invalid("amount", giving::rules::ONE_OFF_MAX_MESSAGE).into());
+    }
+    Ok(())
 }
 
 /// Record a staff request to GoCardless as the caller (review M2), before
@@ -800,6 +828,7 @@ async fn instant_payment(
         },
     )
     .await?;
+    over_cap(asked.amount)?;
     let description = req
         .description
         .as_deref()
@@ -866,6 +895,11 @@ pub struct EditTerms {
     /// The row's `termsVersion` as last read.
     #[ts(type = "number")]
     pub expected: i64,
+    /// The row's `codeVersion` as last read: needed when `changeCodeId`
+    /// changes the code (a code set meanwhile is then `409 stale`).
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub code_expected: Option<i64>,
     #[serde(flatten)]
     pub change: TermChange,
 }
@@ -931,7 +965,14 @@ async fn edit_terms(
     let out = t
         .write(move |ctx| {
             term_of(ctx.tx.read(), &id, &term_id)?;
-            terms::edit_terms(ctx, &term_id, req.expected, req.change, Source::Ui)?;
+            terms::edit_terms(
+                ctx,
+                &term_id,
+                req.expected,
+                req.code_expected,
+                req.change,
+                Source::Ui,
+            )?;
             saved(ctx, &id)
         })
         .await?;
@@ -1019,10 +1060,7 @@ async fn adopt_subscription(
     let (g, s) = (gc.clone(), sb.clone());
     let (token, contact) = t
         .read(move |r| {
-            let listed = regular::unknown_subscriptions(r)?
-                .into_iter()
-                .find(|u| u.subscription_id == s)
-                .ok_or(ApiError::NotFound)?;
+            let listed = regular::unknown_subscription(r, &s)?.ok_or(ApiError::NotFound)?;
             let contact = listed.contact_id.ok_or_else(|| {
                 ApiError::from(ContractError::rejected(
                     "unknown_contact",
@@ -1038,6 +1076,16 @@ async fn adopt_subscription(
         .get_subscription(&token, &sb)
         .await
         .map_err(|e| provider(&t.slug, e))?;
+    if sub.status != "active" {
+        return Err(ContractError::rejected(
+            "subscription_not_active",
+            format!(
+                "This subscription is {} at GoCardless: it collects nothing",
+                sub.status
+            ),
+        )
+        .into());
+    }
     let unsupported = || {
         ApiError::from(ContractError::rejected(
             "unsupported_schedule",

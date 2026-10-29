@@ -143,6 +143,13 @@ impl Event {
             .ok_or_else(|| Failed::Permanent(format!("no links.{name}")))
     }
 
+    /// Who caused it (`details.origin`: `api` for a call, ours or
+    /// another app's; else GoCardless, the customer, the bank or its
+    /// dashboard).
+    fn origin(&self) -> Option<&str> {
+        self.details.get("origin").and_then(Value::as_str)
+    }
+
     /// GoCardless's human description of why, when there is one.
     fn reason(&self) -> Option<String> {
         self.details
@@ -464,7 +471,10 @@ async fn handle(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str, 
             };
             end(org, &found.id, RegularStatus::Cancelled, ev.reason()).await
         }
-        ("subscriptions", "amended") => amended(org, gc, ev.need("subscription")?).await,
+        ("subscriptions", "amended") => {
+            let by_api = ev.origin() == Some("api");
+            amended(org, gc, ev.need("subscription")?, by_api).await
+        }
         ("subscriptions", "payment_created") => {
             record_fetched(org, gc, ev.need("payment")?, None, None).await
         }
@@ -627,9 +637,16 @@ async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'s
 }
 
 /// A subscription's amount changed (ADR 0026). A change we sent at that
-/// amount is applied; otherwise someone changed it in GoCardless: a row
+/// amount is applied. A change by API call that isn't ours to apply (a
+/// replay, a late event) records nothing: we never guess from the amount
+/// now (review M7). Otherwise someone changed it in GoCardless: a row
 /// from its next payment, uncoded, the difference on the newest layer.
-async fn amended(org: &Org, gc: &GoCardless, sb: &str) -> Result<&'static str, Failed> {
+async fn amended(
+    org: &Org,
+    gc: &GoCardless,
+    sb: &str,
+    by_api: bool,
+) -> Result<&'static str, Failed> {
     let id = sb.to_owned();
     let Some(regular) = org
         .read(move |c| giving::terms::regular_gift_of_subscription(c, &id))
@@ -657,6 +674,9 @@ async fn amended(org: &Org, gc: &GoCardless, sb: &str) -> Result<&'static str, F
                     s.state = giving::terms::SyncState::Applied
                 })?;
             }
+            return Ok(());
+        }
+        if by_api {
             return Ok(());
         }
         // Not ours: from GoCardless's next payment (or the chain's).

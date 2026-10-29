@@ -159,10 +159,40 @@ pub fn change_kind(old: Option<&Terms>, new: &Terms) -> ChangeKind {
 // ── dates, as months ───────────────────────────────────────────────────────
 
 /// `YYYY-MM-DD` (or `YYYY-MM`) as a month count: year × 12 + month − 1.
+/// Digits and dashes only.
 pub fn month_index(date: &str) -> Option<i32> {
-    let y: i32 = date.get(0..4)?.parse().ok()?;
-    let m: i32 = date.get(5..7)?.parse().ok()?;
+    let b = date.as_bytes();
+    if b.len() < 7 || b[4] != b'-' || (b.len() > 7 && b.get(7) != Some(&b'-')) {
+        return None;
+    }
+    if !b[0..4].iter().chain(&b[5..7]).all(u8::is_ascii_digit) {
+        return None;
+    }
+    let y: i32 = date[0..4].parse().ok()?;
+    let m: i32 = date[5..7].parse().ok()?;
     (1..=12).contains(&m).then_some(y * 12 + m - 1)
+}
+
+/// How many days after its day a payment may be charged: GoCardless
+/// moves a charge off a weekend or bank holiday (Christmas and Boxing
+/// Day on a weekend: four days).
+pub const ROLL_DAYS: u8 = 4;
+
+/// Whether `date` (ISO) is one of `t`'s payment dates: its day of the
+/// month (or up to [`ROLL_DAYS`] after, where a weekend or holiday moved
+/// it), in its month when yearly.
+pub fn is_due_date(t: &Terms, date: &str) -> bool {
+    let (Some(index), Some(day)) = (
+        month_index(date),
+        date.get(8..10).and_then(|d| d.parse::<u8>().ok()),
+    ) else {
+        return false;
+    };
+    let in_month = match t.frequency {
+        Frequency::Monthly => true,
+        Frequency::Yearly => t.month.map(i32::from) == Some(index.rem_euclid(12) + 1),
+    };
+    in_month && (t.day_of_month..=t.day_of_month + ROLL_DAYS).contains(&day)
 }
 
 /// Days since 1970-01-01 of an ISO date (Howard Hinnant's
@@ -478,6 +508,25 @@ mod tests {
             month_label(month_index("2026-12-31").unwrap() + 1),
             "2027-01"
         );
+    }
+
+    #[test]
+    fn a_change_starts_on_one_of_its_payment_dates() {
+        let t = terms("2026-12-05", 1200, vec![]);
+        assert!(is_due_date(&t, "2026-12-05"));
+        assert!(is_due_date(&t, "2026-12-07"), "moved off a weekend");
+        assert!(!is_due_date(&t, "2026-12-10"));
+        assert!(!is_due_date(&t, "2026-12-04"));
+        let yearly = Terms {
+            frequency: Frequency::Yearly,
+            month: Some(3),
+            ..t
+        };
+        assert!(is_due_date(&yearly, "2027-03-05"));
+        assert!(!is_due_date(&yearly, "2027-04-05"));
+        assert_eq!(month_index("2026/05"), None);
+        assert_eq!(month_index("+026-05"), None);
+        assert_eq!(month_index("2026-05"), month_index("2026-05-01"));
     }
 
     #[test]

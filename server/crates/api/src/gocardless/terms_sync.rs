@@ -24,6 +24,7 @@
 //! amount first, and a new subscription is made once whatever the
 //! retries. GoCardless emails the donor the advance notice.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -107,12 +108,23 @@ async fn one(
         .await
         .map_err(|e| format!("{e:?}"))?;
     let mut sent = 0;
+    // A gift whose earlier row didn't go through this run sends none of
+    // its later rows (review M4): they would land on the wrong
+    // subscription or overtake it.
+    let mut held: HashSet<String> = HashSet::new();
     for d in due {
+        if held.contains(&d.regular_gift_id) {
+            continue;
+        }
         match send(&org, gc, &d, today).await {
-            Ok(true) => sent += 1,
-            Ok(false) => {}
+            Ok(Sent::Yes) => sent += 1,
+            Ok(Sent::Done) => {}
+            Ok(Sent::Waiting) => {
+                held.insert(d.regular_gift_id.clone());
+            }
             // Reported; the row stays as it is and is tried next run.
             Err(Failed::Retry(e) | Failed::Permanent(e)) => {
+                held.insert(d.regular_gift_id.clone());
                 crate::observe::error(&format!(
                     "regular-terms-sync: {tenant} change {}: {e}",
                     d.term_id
@@ -123,52 +135,106 @@ async fn one(
     Ok(sent)
 }
 
+/// What sending one row came to.
+enum Sent {
+    /// GoCardless has it now.
+    Yes,
+    /// Nothing more to do for it (finished, refused for good, or its gift
+    /// ended).
+    Done,
+    /// Not yet (no subscription yet, or another run took it): its gift's
+    /// later rows wait too.
+    Waiting,
+}
+
 /// Whether `t` needs a new subscription after `before` (the terms
 /// GoCardless runs): a new frequency, day or month.
 fn new_schedule(before: &TermView, t: &TermView) -> bool {
     (before.frequency, before.day_of_month, before.month) != (t.frequency, t.day_of_month, t.month)
 }
 
-/// Send one due row. Whether it was sent now.
-async fn send(org: &Org, gc: &GoCardless, d: &DueTerm, today: &str) -> Result<bool, Failed> {
+/// GoCardless said no to this request itself (a 4xx other than a rate
+/// limit): no retry mends it. A refused token, an outage or a garbled
+/// answer is retried.
+fn refused_for_good(e: &CallError) -> bool {
+    matches!(e, CallError::Refused { status, .. } if *status < 500 && *status != 429)
+}
+
+/// GoCardless refused the row for good: back to `scheduled` with why,
+/// for staff to edit or withdraw; the job tries again only once it is
+/// edited (review M6).
+async fn refused(org: &Org, t: &TermView, why: String) -> Result<Sent, Failed> {
+    let (tid, version) = (t.id.clone(), t.terms_version);
+    org.write(move |ctx| {
+        terms::update_sync(ctx, &tid, None, |s| {
+            s.state = SyncState::Scheduled;
+            s.sent_at = None;
+            s.error = Some(why);
+            s.error_terms_version = Some(version);
+        })?;
+        Ok(())
+    })
+    .await?;
+    Ok(Sent::Done)
+}
+
+/// Send one due row.
+async fn send(org: &Org, gc: &GoCardless, d: &DueTerm, today: &str) -> Result<Sent, Failed> {
     let (rid, tid) = (d.regular_gift_id.clone(), d.term_id.clone());
     let (facts, chain) = org
         .read(move |c| Ok((regular::facts(c, &rid)?, terms::chain(c, &rid)?)))
         .await?;
     let (Some(facts), Some(t)) = (facts, chain.iter().find(|t| t.id == tid).cloned()) else {
-        return Ok(false);
+        return Ok(Sent::Done);
     };
-    // Waiting for its first subscription (the donor hasn't signed yet).
-    let Some(sub) = facts.mandate.subscription_id.clone() else {
-        return Ok(false);
-    };
-    // What GoCardless runs before this row.
-    let Some(before) = chain
+    // What GoCardless runs before this row: never a row still being
+    // sent.
+    let before = chain
         .iter()
         .rfind(|r| {
             r.is_live()
                 && r.id != t.id
-                && r.status != TermStatus::Scheduled
+                && matches!(r.status, TermStatus::Applied | TermStatus::Sent)
                 && r.effective_on <= t.effective_on
         })
-        .cloned()
-    else {
-        return Ok(false);
-    };
-    let s = sub.clone();
-    let amended = org.read(move |c| terms::amendments(c, &s)).await?;
+        .cloned();
     // The subscription a new one replaces: the one the row before ran
     // under (on a retry, the regular gift's may be the new one already).
     let old = before
-        .subscription_id
-        .clone()
-        .unwrap_or_else(|| sub.clone());
-    let recreate = new_schedule(&before, &t)
-        || (t.status == TermStatus::Scheduled && amended >= terms::AMENDMENT_LIMIT);
+        .as_ref()
+        .and_then(|b| b.subscription_id.clone())
+        .or_else(|| facts.mandate.subscription_id.clone());
+    if facts.mandate.status().is_ended() {
+        // Ended while the job was sending it: undo a new subscription it
+        // made, and finish the row (review M5, L5).
+        if t.status == TermStatus::Sending {
+            if let Some(made) = &t.subscription_id
+                && Some(made) != old.as_ref()
+            {
+                gc.api.cancel_subscription(org.token()?, made).await?;
+            }
+            mark_sent(org, &t.id).await?;
+        }
+        return Ok(Sent::Done);
+    }
+    // Waiting for its first subscription (the donor hasn't signed yet).
+    let (Some(sub), Some(before), Some(old)) = (facts.mandate.subscription_id.clone(), before, old)
+    else {
+        return Ok(Sent::Waiting);
+    };
+    let s = old.clone();
+    let amended = org.read(move |c| terms::amendments(c, &s)).await?;
+    let recreate = match t.status {
+        TermStatus::Scheduled => new_schedule(&before, &t) || amended >= terms::AMENDMENT_LIMIT,
+        // Taken already: a new subscription was (being) made unless the
+        // row runs under the old one.
+        _ => t.subscription_id.as_deref() != Some(old.as_str()),
+    };
     let mut t = t;
     if t.status == TermStatus::Scheduled {
         // Take it: from now staff can't edit or withdraw it. If its
-        // payment exists already at the old terms, it starts on the next.
+        // payment exists already at the old terms (or on the old
+        // schedule), it starts on the next.
         let (rid, tid, sb) = (facts.id.clone(), t.id.clone(), sub.clone());
         let now = contracts::now_ms();
         let taken = org
@@ -179,7 +245,7 @@ async fn send(org: &Org, gc: &GoCardless, d: &DueTerm, today: &str) -> Result<bo
                     return Ok(None);
                 }
                 let moved = match terms::payment_on_or_after(conn, &rid, &current.effective_on)? {
-                    Some((date, amount)) if amount != current.amount => {
+                    Some((date, amount)) if amount != current.amount || recreate => {
                         terms_rules::next_due(&current.rules(), &date, 1).pop()
                     }
                     _ => None,
@@ -188,6 +254,8 @@ async fn send(org: &Org, gc: &GoCardless, d: &DueTerm, today: &str) -> Result<bo
                     s.state = SyncState::Sending;
                     s.sent_at = Some(now);
                     s.subscription_id = (!recreate).then_some(sb);
+                    s.error = None;
+                    s.error_terms_version = None;
                     if moved.is_some() {
                         s.applies_from = moved;
                     }
@@ -196,34 +264,73 @@ async fn send(org: &Org, gc: &GoCardless, d: &DueTerm, today: &str) -> Result<bo
             })
             .await?;
         let Some(taken) = taken else {
-            return Ok(false);
+            return Ok(Sent::Waiting);
         };
         t = taken;
     }
-    let token = org.token()?.to_owned();
-    if !recreate && t.subscription_id.is_some() {
-        let at = gc.api.get_subscription(&token, &sub).await?;
-        if at.amount != t.amount {
-            match gc.api.update_subscription(&token, &sub, t.amount).await {
-                Ok(_) => {}
-                Err(CallError::Refused {
-                    reason: Some(reason),
-                    ..
-                }) if reason == "number_of_subscription_amendments_exceeded" => {
-                    return replace(org, gc, &facts, &t, &old, today).await;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-        mark_sent(org, &t.id).await?;
-        return Ok(true);
+    if recreate {
+        return replace(org, gc, &facts, &t, &old, today).await;
     }
-    replace(org, gc, &facts, &t, &old, today).await
+    let token = org.token()?.to_owned();
+    let at = match gc.api.get_subscription(&token, &sub).await {
+        Ok(at) => at,
+        Err(e) if refused_for_good(&e) => {
+            return refused(org, &t, format!("GoCardless: {e}")).await;
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if at.amount != t.amount {
+        match gc.api.update_subscription(&token, &sub, t.amount).await {
+            Ok(_) => {}
+            Err(CallError::Refused {
+                reason: Some(reason),
+                ..
+            }) if reason == "number_of_subscription_amendments_exceeded" => {
+                // A new subscription after all: the row is taken under the
+                // old one, so say it isn't before replacing.
+                let tid = t.id.clone();
+                org.write(move |ctx| {
+                    terms::update_sync(ctx, &tid, None, |s| s.subscription_id = None)?;
+                    Ok(())
+                })
+                .await?;
+                return replace(org, gc, &facts, &t, &old, today).await;
+            }
+            Err(e) if refused_for_good(&e) => {
+                return refused(org, &t, format!("GoCardless: {e}")).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    mark_sent(org, &t.id).await?;
+    Ok(Sent::Yes)
+}
+
+/// The first date the new subscription charges: the row's own payment
+/// date on its schedule (never a weekend-moved one: GoCardless takes
+/// `start_date` on `day_of_month`), and never sooner than GoCardless
+/// could (`today` + 5 days, about 3 working days).
+fn start_date(t: &TermView, today: &str) -> String {
+    let rules = t.rules();
+    let own = terms_rules::month_index(&t.effective_on)
+        .map(|m| terms_rules::day_in(m, t.day_of_month))
+        .unwrap_or_else(|| t.effective_on.clone());
+    let earliest = terms_rules::add_days(today, 5).unwrap_or_default();
+    if own >= earliest {
+        return own;
+    }
+    let day_before = terms_rules::add_days(&earliest, -1).unwrap_or_default();
+    terms_rules::next_due(&rules, &day_before, 1)
+        .pop()
+        .unwrap_or(own)
 }
 
 /// A new subscription on the same mandate from the row's date (once,
 /// whatever the retries: the key is the row's), recorded as the regular
-/// gift's and the row's, then the old one cancelled.
+/// gift's and the row's; then the old one cancelled; only then is the row
+/// `sent` (review H1: a cancel that fails leaves it `sending`, and the
+/// next run cancels again until the old one is gone). If the gift ended
+/// meanwhile, the new one is cancelled instead (review M5).
 async fn replace(
     org: &Org,
     gc: &GoCardless,
@@ -231,29 +338,26 @@ async fn replace(
     t: &TermView,
     old: &str,
     today: &str,
-) -> Result<bool, Failed> {
+) -> Result<Sent, Failed> {
     let token = org.token()?.to_owned();
+    // Read again: a payment may have moved it since (review L4).
+    let tid = t.id.clone();
+    let Some(t) = org.read(move |c| terms::get_term(c, &tid)).await? else {
+        return Ok(Sent::Done);
+    };
     let mandate = match &facts.mandate.mandate_id {
         Some(md) => md.clone(),
         // Adopted from GoCardless: the subscription knows its mandate.
-        None => gc
-            .api
-            .get_subscription(&token, old)
-            .await?
-            .mandate
-            .ok_or_else(|| Failed::Permanent("the subscription names no mandate".into()))?,
+        None => match gc.api.get_subscription(&token, old).await?.mandate {
+            Some(md) => md,
+            None => {
+                return refused(org, &t, "the subscription names no mandate".into()).await;
+            }
+        },
     };
-    // Never a start before GoCardless could charge.
-    let earliest = terms_rules::add_days(today, 3).unwrap_or_default();
-    let start = if t.effective_on < earliest {
-        terms_rules::next_due(&t.rules(), &earliest, 1)
-            .pop()
-            .unwrap_or_else(|| t.effective_on.clone())
-    } else {
-        t.effective_on.clone()
-    };
+    let start = start_date(&t, today);
     let name = format!("Regular gift {}", giving::format_pence(t.amount));
-    let new = gc
+    let made = gc
         .api
         .create_subscription(
             &token,
@@ -274,29 +378,51 @@ async fn replace(
                 key: Some(&t.id),
             },
         )
-        .await?;
+        .await;
+    let new = match made {
+        Ok(new) => new,
+        Err(e) if refused_for_good(&e) => {
+            return refused(org, &t, format!("GoCardless: {e}")).await;
+        }
+        Err(e) => return Err(e.into()),
+    };
     let (rid, tid, sb) = (facts.id.clone(), t.id.clone(), new.clone());
     let moved = (start != t.effective_on).then_some(start);
-    org.write(move |ctx| {
-        regular::update_mandate(ctx, &rid, None, Source::System, None, |m| {
-            m.subscription_id = Some(sb.clone())
-        })?;
-        terms::update_sync(ctx, &tid, None, |s| {
-            s.subscription_id = Some(sb);
-            if s.state == SyncState::Sending {
-                s.state = SyncState::Sent;
+    let ended = org
+        .write(move |ctx| {
+            let now = regular::facts(ctx.tx.read(), &rid)?.ok_or(ContractError::NotFound)?;
+            if now.mandate.status().is_ended() {
+                return Ok(true);
             }
-            if moved.is_some() {
-                s.applies_from = moved;
-            }
-        })?;
-        Ok(())
-    })
-    .await?;
-    if old != new {
-        gc.api.cancel_subscription(&token, old).await?;
+            regular::update_mandate(ctx, &rid, None, Source::System, None, |m| {
+                m.subscription_id = Some(sb.clone())
+            })?;
+            terms::update_sync(ctx, &tid, None, |s| {
+                s.subscription_id = Some(sb);
+                if moved.is_some() {
+                    s.applies_from = moved;
+                }
+            })?;
+            Ok(false)
+        })
+        .await?;
+    if ended {
+        gc.api.cancel_subscription(&token, &new).await?;
+        mark_sent(org, &t.id).await?;
+        return Ok(Sent::Done);
     }
-    Ok(true)
+    if old != new {
+        match gc.api.cancel_subscription(&token, old).await {
+            Ok(()) => {}
+            // It can't be cancelled by us (gone at GoCardless): reported.
+            Err(e) if refused_for_good(&e) => crate::observe::error(&format!(
+                "regular-terms-sync: old subscription {old} not cancelled: {e}"
+            )),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    mark_sent(org, &t.id).await?;
+    Ok(Sent::Yes)
 }
 
 async fn mark_sent(org: &Org, term: &str) -> Result<(), Failed> {

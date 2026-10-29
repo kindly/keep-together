@@ -303,7 +303,14 @@ fn a_row_is_edited_or_withdrawn_only_while_scheduled() {
     .unwrap();
     // Edited while scheduled.
     let done = tx_at(&w.a, "2026-11-02", |ctx| {
-        edit_terms(ctx, &row, 0, upgrade(&w, "2026-12-05", 1300), Source::Ui)
+        edit_terms(
+            ctx,
+            &row,
+            0,
+            Some(1),
+            upgrade(&w, "2026-12-05", 1300),
+            Source::Ui,
+        )
     })
     .unwrap();
     assert_eq!(done.counter, 1);
@@ -316,7 +323,14 @@ fn a_row_is_edited_or_withdrawn_only_while_scheduled() {
     })
     .unwrap();
     let err = tx_at(&w.a, "2026-11-22", |ctx| {
-        edit_terms(ctx, &row, 1, upgrade(&w, "2026-12-05", 1400), Source::Ui)
+        edit_terms(
+            ctx,
+            &row,
+            1,
+            Some(1),
+            upgrade(&w, "2026-12-05", 1400),
+            Source::Ui,
+        )
     })
     .unwrap_err();
     assert_eq!(rejected(err), "term_sent");
@@ -332,7 +346,16 @@ fn a_row_is_edited_or_withdrawn_only_while_scheduled() {
     .unwrap();
     // A later change must come after the sent row's date.
     let err = tx_at(&w.a, "2026-11-22", |ctx| {
-        change_terms(ctx, &id, None, upgrade(&w, "2026-11-30", 1500), Source::Ui)
+        change_terms(
+            ctx,
+            &id,
+            None,
+            TermChange {
+                day_of_month: Some(28),
+                ..upgrade(&w, "2026-11-28", 1500)
+            },
+            Source::Ui,
+        )
     })
     .unwrap_err();
     assert_eq!(rejected(err), "term_too_early");
@@ -358,7 +381,14 @@ fn restoring_a_scheduled_rows_revision_works_and_a_sent_rows_is_refused() {
     })
     .unwrap();
     tx_at(&w.a, "2026-11-02", |ctx| {
-        edit_terms(ctx, &row, 0, upgrade(&w, "2026-12-05", 1500), Source::Ui)
+        edit_terms(
+            ctx,
+            &row,
+            0,
+            Some(1),
+            upgrade(&w, "2026-12-05", 1500),
+            Source::Ui,
+        )
     })
     .unwrap();
     let first: i64 = read(&w.a, |c| {
@@ -848,4 +878,124 @@ fn the_report_sums_by_code_detail_and_category_and_values_upgrades() {
         report(c, "2026-09", "2026-12", By::Code, "2027-02-10")
     });
     assert!(r.upgrades.is_empty());
+}
+
+/// Review M1, M2: a change starts on one of its payment dates, still to
+/// come, on create and on edit alike.
+#[test]
+fn a_change_starts_on_a_payment_date_still_to_come() {
+    let w = world();
+    let id = regular(&w);
+    let err = tx_at(&w.a, "2026-11-01", |ctx| {
+        change_terms(ctx, &id, None, upgrade(&w, "2026-12-10", 1200), Source::Ui)
+    })
+    .unwrap_err();
+    assert_eq!(rejected(err), "invalid effectiveFrom");
+    let row = tx_at(&w.a, "2026-11-01", |ctx| {
+        change_terms(ctx, &id, None, upgrade(&w, "2026-12-05", 1200), Source::Ui)
+    })
+    .unwrap();
+    for date in ["2026-10-05", "2026-12-10"] {
+        let err = tx_at(&w.a, "2026-11-02", |ctx| {
+            edit_terms(ctx, &row, 0, None, upgrade(&w, date, 1200), Source::Ui)
+        })
+        .unwrap_err();
+        assert_eq!(rejected(err), "invalid effectiveFrom", "{date}");
+    }
+}
+
+/// Review M3: an edit that changes the code needs the code's version, and
+/// a code set meanwhile is a stale refusal, never overwritten.
+#[test]
+fn an_edit_never_overwrites_a_code_set_meanwhile() {
+    let w = world();
+    let id = regular(&w);
+    let row = tx_at(&w.a, "2026-11-01", |ctx| {
+        change_terms(ctx, &id, None, upgrade(&w, "2026-12-05", 1200), Source::Ui)
+    })
+    .unwrap();
+    // B sets the code to Street (code v2).
+    tx_at(&w.a, "2026-11-02", |ctx| {
+        set_code(ctx, &row, 1, Some(w.street.clone()), Source::Ui)
+    })
+    .unwrap();
+    // A, still on code v1, saves with the phone code.
+    let err = tx_at(&w.a, "2026-11-03", |ctx| {
+        edit_terms(
+            ctx,
+            &row,
+            0,
+            Some(1),
+            upgrade(&w, "2026-12-05", 1300),
+            Source::Ui,
+        )
+    })
+    .unwrap_err();
+    assert!(matches!(err, ContractError::Stale { .. }), "{err:?}");
+    let err = tx_at(&w.a, "2026-11-03", |ctx| {
+        edit_terms(
+            ctx,
+            &row,
+            0,
+            None,
+            upgrade(&w, "2026-12-05", 1300),
+            Source::Ui,
+        )
+    })
+    .unwrap_err();
+    assert_eq!(rejected(err), "invalid codeExpected");
+    let c = chain(&w, &id);
+    let t = c.iter().find(|t| t.id == row).unwrap();
+    assert_eq!(
+        (t.amount, t.change_code_id.as_deref()),
+        (1200, Some(w.street.as_str()))
+    );
+}
+
+/// Review L2: only amount changes count towards GoCardless's 10.
+#[test]
+fn a_change_of_split_alone_is_no_amendment() {
+    let w = world();
+    let id = regular(&w);
+    tx_at(&w.a, "2026-09-02", |ctx| {
+        let first = terms::chain(ctx.tx.read(), &id)?[0].id.clone();
+        update_sync(ctx, &first, None, |s| {
+            s.subscription_id = Some("SB1".into())
+        })
+    })
+    .unwrap();
+    let send = |row: &str| {
+        tx_at(&w.a, "2026-11-21", |ctx| {
+            update_sync(ctx, row, None, |s| {
+                s.state = SyncState::Sent;
+                s.subscription_id = Some("SB1".into());
+            })
+        })
+        .unwrap();
+    };
+    let up = tx_at(&w.a, "2026-11-01", |ctx| {
+        change_terms(ctx, &id, None, upgrade(&w, "2026-12-05", 1200), Source::Ui)
+    })
+    .unwrap();
+    send(&up);
+    let moved = tx_at(&w.a, "2026-11-22", |ctx| {
+        change_terms(
+            ctx,
+            &id,
+            None,
+            TermChange {
+                allocations: Some(vec![TermAllocationRow {
+                    key: None,
+                    source_code_id: w.phone.clone(),
+                    amount: 1200,
+                }]),
+                change_code_id: None,
+                ..upgrade(&w, "2027-01-05", 1200)
+            },
+            Source::Ui,
+        )
+    })
+    .unwrap();
+    send(&moved);
+    assert_eq!(read(&w.a, |c| terms::amendments(c, "SB1")), 1);
 }

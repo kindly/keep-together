@@ -12,6 +12,11 @@ export type EditTerms = {
  */
 expected: number, 
 /**
+ * The row's `codeVersion` as last read: needed when `changeCodeId`
+ * changes the code (a code set meanwhile is then `409 stale`).
+ */
+codeExpected?: number, 
+/**
  * ISO date: the first payment at the new terms (pick from the
  * regular gift's `upcoming` dates).
  */

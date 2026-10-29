@@ -124,13 +124,29 @@ export function changeKind(
   return 'unchanged'
 }
 
-/** `YYYY-MM-DD` (or `YYYY-MM`) as a month count. */
+/** `YYYY-MM-DD` (or `YYYY-MM`) as a month count; digits and dashes only. */
 export function monthIndex(date: string): number | undefined {
+  if (!/^\d{4}-\d{2}(-|$)/.test(date)) return undefined
   const y = Number(date.slice(0, 4))
   const m = Number(date.slice(5, 7))
-  if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12)
-    return undefined
+  if (m < 1 || m > 12) return undefined
   return y * 12 + m - 1
+}
+
+/** Days after its day a charge may move (weekends, bank holidays). */
+export const ROLL_DAYS = 4
+
+/**
+ * Whether `date` is one of `t`'s payment dates: its day (or up to
+ * ROLL_DAYS after), in its month when yearly.
+ */
+export function isDueDate(t: Terms, date: string): boolean {
+  const index = monthIndex(date)
+  const day = Number(date.slice(8, 10))
+  if (index === undefined || date.length !== 10 || !Number.isInteger(day))
+    return false
+  const inMonth = t.frequency === 'monthly' || t.month === (index % 12) + 1
+  return inMonth && day >= t.dayOfMonth && day <= t.dayOfMonth + ROLL_DAYS
 }
 
 export function monthLabel(index: number): string {

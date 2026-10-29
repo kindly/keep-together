@@ -72,7 +72,15 @@ Nobody splits one recurring gift across several sources as we do.
    (idempotency key `keep-sub-{term id}`) and cancels the old one. If the
    payment it was meant for already exists at the old amount, the row
    moves to the next payment (`applies_from`) and staff see the new date.
-   GoCardless sends the donor the advance notice.
+   GoCardless sends the donor the advance notice. A donor is never left
+   with two live subscriptions or one we don't know of: a row is `sent`
+   only once the old subscription is cancelled (a failed cancel is
+   retried), a gift ended mid-send has the new one cancelled, a gift's
+   later changes wait for an earlier one still in flight, and cancelling
+   a regular gift that shares its mandate (one adopted) cancels only its
+   own subscription. A change GoCardless refuses for good goes back to
+   staff to edit or withdraw. A change starts on one of the new terms'
+   payment dates, still to come.
 6. **Each payment copies the split in force on its scheduled date**
    (`scheduled_on`: the charge date GoCardless first gave it, kept through
    retries), with the newest layer absorbing any difference in the amount

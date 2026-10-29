@@ -6,6 +6,8 @@ import {
   changeKind,
   downgradeSplit,
   expectedPeriods,
+  isDueDate,
+  monthIndex,
   nextDue,
   splitForCollected,
   termInForce,
@@ -154,5 +156,19 @@ describe('regular gift terms', () => {
       '2027-01-05',
     ])
     expect(nextDue(t, '2026-10-04', 1)).toEqual(['2026-10-05'])
+  })
+
+  test('a change starts on one of its payment dates', () => {
+    const t = terms('2026-12-05', 1200, [])
+    expect(isDueDate(t, '2026-12-05')).toBe(true)
+    expect(isDueDate(t, '2026-12-07')).toBe(true)
+    expect(isDueDate(t, '2026-12-10')).toBe(false)
+    expect(isDueDate(t, '2026-12-04')).toBe(false)
+    const yearly: Terms = { ...t, frequency: 'yearly', month: 3 }
+    expect(isDueDate(yearly, '2027-03-05')).toBe(true)
+    expect(isDueDate(yearly, '2027-04-05')).toBe(false)
+    expect(monthIndex('2026/05')).toBeUndefined()
+    expect(monthIndex('+026-05')).toBeUndefined()
+    expect(monthIndex('2026-05')).toBe(monthIndex('2026-05-01'))
   })
 })

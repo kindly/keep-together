@@ -17,4 +17,10 @@ sentAt: number | null,
  * The payment it really starts on (ISO), when it missed the one it
  * was meant for.
  */
-appliesFrom: string | null, };
+appliesFrom: string | null, 
+/**
+ * Why GoCardless refused it for good (it went back to `scheduled`
+ * for staff to edit or withdraw), and the `termsVersion` it was
+ * refused at: the job tries again only once the row is edited.
+ */
+error: string | null, errorTermsVersion: number | null, };

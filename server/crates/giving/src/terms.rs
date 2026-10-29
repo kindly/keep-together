@@ -611,6 +611,14 @@ pub struct SyncPayload {
     /// The payment it really starts on (ISO), when it missed the one it
     /// was meant for.
     pub applies_from: Option<String>,
+    /// Why GoCardless refused it for good (it went back to `scheduled`
+    /// for staff to edit or withdraw), and the `termsVersion` it was
+    /// refused at: the job tries again only once the row is edited.
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub error_terms_version: Option<i64>,
 }
 
 /// The slice as stored, plus whether staff withdrew the row.
@@ -646,7 +654,8 @@ impl Contract for RegularGiftTermSync {
     fn load(&self, tx: &OrgTx, id: &str) -> Result<SyncSliceState, ContractError> {
         tx.read()
             .prepare_cached(
-                "SELECT state, subscription_id, sent_at, applies_from, withdrawn
+                "SELECT state, subscription_id, sent_at, applies_from, withdrawn, sync_error,
+                     sync_error_terms_version
                  FROM regular_gift_terms WHERE id = ?1",
             )?
             .query_row([id], |r| {
@@ -656,6 +665,8 @@ impl Contract for RegularGiftTermSync {
                         subscription_id: r.get(1)?,
                         sent_at: r.get(2)?,
                         applies_from: r.get(3)?,
+                        error: r.get(5)?,
+                        error_terms_version: r.get(6)?,
                     },
                     withdrawn: r.get(4)?,
                 })
@@ -704,7 +715,7 @@ impl Contract for RegularGiftTermSync {
         let s = &next.sync;
         tx.prepare_cached(
             "UPDATE regular_gift_terms SET state = ?2, subscription_id = ?3, sent_at = ?4,
-                 applies_from = ?5
+                 applies_from = ?5, sync_error = ?6, sync_error_terms_version = ?7
              WHERE id = ?1",
         )?
         .execute(params![
@@ -712,7 +723,9 @@ impl Contract for RegularGiftTermSync {
             s.state.as_str(),
             s.subscription_id,
             s.sent_at,
-            s.applies_from
+            s.applies_from,
+            s.error,
+            s.error_terms_version
         ])?;
         Ok(())
     }
@@ -863,6 +876,8 @@ pub struct TermView {
     pub subscription_id: Option<String>,
     #[ts(type = "number | null")]
     pub sent_at: Option<i64>,
+    /// Why GoCardless refused it for good, if it did: edit or withdraw it.
+    pub sync_error: Option<String>,
     pub change_code_id: Option<String>,
     pub change_code: Option<String>,
     /// From the live row before (withdrawn rows: from the row before them
@@ -909,7 +924,8 @@ impl TermView {
 
 const VIEW_COLUMNS: &str = "id, regular_gift_id, effective_from, applies_from, amount, frequency, \
      day_of_month, month, note, origin, state, withdrawn, subscription_id, sent_at, \
-     change_code_id, entered_by, entered_at, terms_version, sync_version, code_version";
+     change_code_id, entered_by, entered_at, terms_version, sync_version, code_version, \
+     sync_error";
 
 fn view_row(r: &Row) -> rusqlite::Result<TermView> {
     let effective_from: String = r.get(2)?;
@@ -945,6 +961,7 @@ fn view_row(r: &Row) -> rusqlite::Result<TermView> {
         status,
         subscription_id: r.get(12)?,
         sent_at: r.get(13)?,
+        sync_error: r.get(20)?,
         uncoded: origin == Origin::Gocardless && change_code_id.is_none() && !withdrawn,
         change_code_id,
         change_code: None,
@@ -1033,15 +1050,18 @@ pub fn get_term(conn: &Connection, id: &str) -> rusqlite::Result<Option<TermView
 }
 
 /// Amount changes GoCardless has had on subscription `sb`: the rows that
-/// run under it, less the one that made it.
+/// run under it whose amount differs from the row before (a change of
+/// split alone sends nothing).
 pub fn amendments(conn: &Connection, sb: &str) -> rusqlite::Result<i64> {
-    let n: i64 = conn
+    let amounts: Vec<i64> = conn
         .prepare_cached(
-            "SELECT count(*) FROM regular_gift_terms
-             WHERE subscription_id = ?1 AND withdrawn = 0 AND state <> 'scheduled'",
+            "SELECT amount FROM regular_gift_terms
+             WHERE subscription_id = ?1 AND withdrawn = 0 AND state <> 'scheduled'
+             ORDER BY coalesce(applies_from, effective_from), seq",
         )?
-        .query_row([sb], |r| r.get(0))?;
-    Ok((n - 1).max(0))
+        .query_map([sb], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(amounts.windows(2).filter(|w| w[0] != w[1]).count() as i64)
 }
 
 /// The regular gift a subscription belongs to, now or before: its
@@ -1075,17 +1095,21 @@ pub struct DueTerm {
 }
 
 /// Rows to send on `today` (ISO): scheduled, live, of a regular gift that
-/// hasn't ended, taking effect within [`SEND_AHEAD_DAYS`]; and every row
-/// the job started sending and didn't finish.
+/// hasn't ended, taking effect within [`SEND_AHEAD_DAYS`], not refused
+/// for good at their present terms; and every row the job started
+/// sending and didn't finish, whatever became of its gift (the job
+/// finishes or undoes what it began).
 pub fn due(conn: &Connection, today: &str) -> rusqlite::Result<Vec<DueTerm>> {
     let horizon = terms_rules::add_days(today, SEND_AHEAD_DAYS).unwrap_or_else(|| today.into());
     conn.prepare_cached(
         "SELECT t.id, t.regular_gift_id FROM regular_gift_terms t
          JOIN regular_gifts g ON g.id = t.regular_gift_id
-         WHERE t.withdrawn = 0 AND g.status IN ('pending', 'active')
-           AND ((t.state = 'scheduled' AND coalesce(t.applies_from, t.effective_from) <= ?1)
+         WHERE t.withdrawn = 0
+           AND ((t.state = 'scheduled' AND g.status IN ('pending', 'active')
+                 AND coalesce(t.applies_from, t.effective_from) <= ?1
+                 AND t.sync_error_terms_version IS NOT t.terms_version)
                 OR t.state = 'sending')
-         ORDER BY coalesce(t.applies_from, t.effective_from), t.seq",
+         ORDER BY t.regular_gift_id, coalesce(t.applies_from, t.effective_from), t.seq",
     )?
     .query_map([horizon], |r| {
         Ok(DueTerm {
@@ -1144,6 +1168,8 @@ pub fn create_first_row(
             subscription_id,
             sent_at: None,
             applies_from: None,
+            error: None,
+            error_terms_version: None,
         },
         Exec::update(&id, Some(0), Source::System).in_group(group),
     )?;
@@ -1195,7 +1221,14 @@ fn change_payload(
     regular_gift_id: &str,
     change: &TermChange,
     except: Option<&str>,
+    today: &str,
 ) -> Result<TermsPayload, ContractError> {
+    if is_iso_date(&change.effective_from) && change.effective_from.as_str() <= today {
+        return Err(ContractError::invalid(
+            "effectiveFrom",
+            "A change takes effect from a payment still to come",
+        ));
+    }
     let chain = chain(conn, regular_gift_id)?;
     let before = chain
         .iter()
@@ -1217,6 +1250,17 @@ fn change_payload(
         month,
         split: vec![],
     };
+    // The chain's two readings (a payment's split by date, expected by
+    // month) agree only on the schedule's own dates.
+    if is_iso_date(&change.effective_from)
+        && !terms_rules::is_due_date(&new, &change.effective_from)
+    {
+        return Err(ContractError::invalid(
+            "effectiveFrom",
+            "Pick one of the payment dates: the new terms' day (or a few days after, \
+             where a weekend or bank holiday moved it)",
+        ));
+    }
     let code = change.change_code_id.as_deref().filter(|c| !c.is_empty());
     let allocations = match &change.allocations {
         Some(rows) => rows.clone(),
@@ -1296,13 +1340,7 @@ pub fn change_terms(
         return Err(ContractError::NotFound);
     }
     let today = terms_rules::date_of_ms(ctx.at);
-    if is_iso_date(&change.effective_from) && change.effective_from.as_str() <= today.as_str() {
-        return Err(ContractError::invalid(
-            "effectiveFrom",
-            "A change takes effect from a payment still to come",
-        ));
-    }
-    let payload = change_payload(conn, regular_gift_id, &change, None)?;
+    let payload = change_payload(conn, regular_gift_id, &change, None, &today)?;
     let group = command_group(ctx, &change_group_name(&payload))?;
     let exec = match id {
         Some(id) => Exec::create_with_id(id, source),
@@ -1323,17 +1361,35 @@ pub fn change_terms(
 }
 
 /// Staff edit a scheduled row (`expected`: its `termsVersion`), and its
-/// code if the change names one, in one command group.
+/// code if the change names another (`code_expected`: its `codeVersion`,
+/// needed then, so a code set meanwhile is a `409`, never overwritten),
+/// in one command group.
 pub fn edit_terms(
     ctx: &Ctx,
     term_id: &str,
     expected: i64,
+    code_expected: Option<i64>,
     change: TermChange,
     source: Source,
 ) -> Result<Executed, ContractError> {
     let conn = ctx.tx.read();
     let current = get_term(conn, term_id)?.ok_or(ContractError::NotFound)?;
-    let payload = change_payload(conn, &current.regular_gift_id, &change, Some(term_id))?;
+    let today = terms_rules::date_of_ms(ctx.at);
+    let payload = change_payload(
+        conn,
+        &current.regular_gift_id,
+        &change,
+        Some(term_id),
+        &today,
+    )?;
+    let new_code =
+        change.change_code_id.is_some() && change.change_code_id != current.change_code_id;
+    if new_code && code_expected.is_none() {
+        return Err(ContractError::invalid(
+            "codeExpected",
+            "Say which code version you changed (codeVersion)",
+        ));
+    }
     let group = command_group(ctx, &change_group_name(&payload))?;
     let done = execute(
         ctx,
@@ -1341,14 +1397,14 @@ pub fn edit_terms(
         payload,
         Exec::update(term_id, Some(expected), source).in_group(&group),
     )?;
-    if change.change_code_id.is_some() && change.change_code_id != current.change_code_id {
+    if new_code {
         execute(
             ctx,
             &REGULAR_GIFT_TERM_CODE,
             CodePayload {
                 change_code_id: change.change_code_id,
             },
-            Exec::update(term_id, None, source).in_group(&group),
+            Exec::update(term_id, code_expected, source).in_group(&group),
         )?;
     }
     Ok(done)
@@ -1461,6 +1517,15 @@ pub fn record_outside_change(
     if before.amount == amount {
         return Ok(None);
     }
+    // What we sent on this subscription before it, GoCardless had: the
+    // change made in its dashboard came after (review M7). A row still
+    // being sent is left to the job.
+    for t in chain
+        .iter()
+        .filter(|t| t.status == TermStatus::Sent && t.subscription_id.as_deref() == Some(sb))
+    {
+        update_sync(ctx, &t.id, None, |s| s.state = SyncState::Applied)?;
+    }
     let split = terms_rules::split_for_collected(&before.split(), amount);
     let latest = chain
         .iter()
@@ -1514,6 +1579,8 @@ pub fn record_outside_change(
             subscription_id: Some(sb.to_owned()),
             sent_at: None,
             applies_from: None,
+            error: None,
+            error_terms_version: None,
         },
         Exec::update(&id, Some(0), Source::System).in_group(&group),
     )?;
@@ -1633,6 +1700,8 @@ CREATE TABLE regular_gift_terms (
     subscription_id TEXT,
     sent_at INTEGER,
     applies_from TEXT,
+    sync_error TEXT,
+    sync_error_terms_version INTEGER,
     terms_version INTEGER NOT NULL DEFAULT 0,
     sync_version INTEGER NOT NULL DEFAULT 0,
     code_version INTEGER NOT NULL DEFAULT 0
