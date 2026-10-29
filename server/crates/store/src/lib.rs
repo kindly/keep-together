@@ -9,6 +9,7 @@
 mod checkpoint;
 mod conn;
 mod events;
+pub mod files;
 mod migrate;
 mod org;
 mod platform;
@@ -194,6 +195,12 @@ impl Store {
         self.dir.join("orgs").join(format!("{}.db", id.as_str()))
     }
 
+    /// `files/<tenant-id>.db`: its own directory, never `orgs/`, where
+    /// every `*.db` is taken for an org file (g1q1).
+    fn files_path(&self, id: &TenantId) -> PathBuf {
+        self.dir.join("files").join(format!("{}.db", id.as_str()))
+    }
+
     /// Create a tenant: its `platform.db` row and its org file (stamped
     /// with its id, migrated). The row commits only if the file was made;
     /// the handle is cached only once the row has committed, and the file
@@ -219,6 +226,7 @@ impl Store {
         let tenant = self.platform.insert_tenant(&id, slug, name, |tx| {
             let db = OrgDb::create(
                 &path,
+                &self.files_path(&id),
                 &id,
                 &self.org_migrations,
                 self.readers,
@@ -282,6 +290,7 @@ impl Store {
         }
         let db = Arc::new(OrgDb::open(
             &self.org_path(id),
+            &self.files_path(id),
             id,
             &self.org_migrations,
             self.readers,
@@ -434,7 +443,7 @@ fn close_if_unused(slot: &Slot, closed: &mut Vec<Arc<OrgDb>>) -> bool {
     }
 }
 
-fn remove_db_files(path: &Path) {
+pub(crate) fn remove_db_files(path: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let mut p = path.as_os_str().to_owned();
         p.push(suffix);
@@ -712,6 +721,127 @@ mod tests {
         job.join().unwrap();
         passed.sort();
         assert!(passed[passed.len() / 2] <= 2, "steps passed: {passed:?}");
+    }
+
+    #[test]
+    fn the_files_db_is_made_at_the_first_put_stamped_and_per_org() {
+        use crate::files::{CAP_BYTES, FilesError};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let a = store.create_tenant("alpha", "Alpha").unwrap();
+        let b = store.create_tenant("beta", "Beta").unwrap();
+        let a_db = store.org(&a.id).unwrap();
+        // No scan yet: no file, and reading makes none.
+        assert!(a_db.files_if_any().unwrap().is_none());
+        let files_dir = tmp.path().join("files");
+        assert!(!files_dir.join(format!("{}.db", a.id)).exists());
+
+        let page = b"a page".to_vec();
+        let put = a_db
+            .files()
+            .unwrap()
+            .put(&page, "image/jpeg", 1, CAP_BYTES)
+            .unwrap();
+        assert!(put.new);
+        assert_eq!(put.sha256, crate::files::sha256_hex(&page));
+        assert!(files_dir.join(format!("{}.db", a.id)).exists());
+        // Never under orgs/: the boot migration takes every *.db there.
+        assert_eq!(migrate::org_files(tmp.path()).unwrap().len(), 2);
+        // Idempotent by content.
+        let again = a_db
+            .files()
+            .unwrap()
+            .put(&page, "image/jpeg", 2, CAP_BYTES)
+            .unwrap();
+        assert!(!again.new);
+        assert_eq!(a_db.files().unwrap().usage().unwrap(), page.len() as i64);
+        let got = a_db.files().unwrap().get(&put.sha256).unwrap().unwrap();
+        assert_eq!(
+            (got.bytes, got.content_type.as_str()),
+            (page.clone(), "image/jpeg")
+        );
+
+        // B holds nothing of A's, even by the same key, and asking makes
+        // B no file.
+        let b_db = store.org(&b.id).unwrap();
+        assert!(b_db.files_if_any().unwrap().is_none());
+        b_db.files()
+            .unwrap()
+            .put(b"other", "image/jpeg", 1, CAP_BYTES)
+            .unwrap();
+        assert!(b_db.files().unwrap().get(&put.sha256).unwrap().is_none());
+
+        // The cap: a new blob past it is refused, one already held isn't.
+        let tight = page.len() as i64 + 3;
+        let refused = a_db.files().unwrap().put(b"four", "image/jpeg", 3, tight);
+        assert!(matches!(refused, Err(FilesError::Full { .. })));
+        assert!(
+            a_db.files()
+                .unwrap()
+                .put(&page, "image/jpeg", 3, tight)
+                .is_ok()
+        );
+
+        // Closed with the org's handle, reopened from disk.
+        drop((a_db, b_db));
+        drop(store);
+        let store = self::store(tmp.path());
+        let a_db = store.org(&a.id).unwrap();
+        assert!(
+            a_db.files_if_any()
+                .unwrap()
+                .unwrap()
+                .get(&put.sha256)
+                .unwrap()
+                .is_some()
+        );
+
+        // A's files db copied over B's is refused, like an org file.
+        drop(a_db);
+        drop(store);
+        std::fs::copy(
+            files_dir.join(format!("{}.db", a.id)),
+            files_dir.join(format!("{}.db", b.id)),
+        )
+        .unwrap();
+        let store = self::store(tmp.path());
+        assert!(matches!(
+            store.org(&b.id).unwrap().files_if_any(),
+            Err(StoreError::WrongFile { .. })
+        ));
+    }
+
+    #[test]
+    fn delete_unreferenced_keeps_referenced_and_recently_put_blobs() {
+        use crate::files::CAP_BYTES;
+        use std::collections::HashSet;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store(tmp.path());
+        let a = store.create_tenant("alpha", "Alpha").unwrap();
+        let files = store.org(&a.id).unwrap().files().unwrap();
+        let old_kept = files.put(b"kept", "image/jpeg", 100, CAP_BYTES).unwrap();
+        let old_orphan = files.put(b"orphan", "image/jpeg", 100, CAP_BYTES).unwrap();
+        let fresh = files.put(b"fresh", "image/jpeg", 1_000, CAP_BYTES).unwrap();
+        // An old blob put again just now (a write in flight) is fresh.
+        let reput = files.put(b"reput", "image/jpeg", 100, CAP_BYTES).unwrap();
+        files.put(b"reput", "image/jpeg", 1_000, CAP_BYTES).unwrap();
+        let before = files.changes().unwrap();
+        let referenced: HashSet<String> = [old_kept.sha256.clone()].into();
+        let gone = files.delete_unreferenced(&referenced, 500).unwrap();
+        assert_eq!(gone, vec![old_orphan.sha256.clone()]);
+        for kept in [&old_kept, &fresh, &reput] {
+            assert!(files.get(&kept.sha256).unwrap().is_some());
+        }
+        assert!(files.get(&old_orphan.sha256).unwrap().is_none());
+        assert_eq!(files.changes().unwrap(), before + 1);
+        // Nothing to delete: the counter stays.
+        assert!(
+            files
+                .delete_unreferenced(&referenced, 500)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(files.changes().unwrap(), before + 1);
     }
 
     #[test]

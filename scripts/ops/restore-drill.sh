@@ -21,8 +21,10 @@
 # 1. Seed a 10k org ("drill", the perf generator's people) with the `seed`
 #    bin inside the machine, then take a snapshot pass at once
 #    (`keep-snapshot run`) rather than wait for the hourly job.
-# 2. Record counts: tenants, and per org contacts, revisions and a set of
-#    search matches (FTS), read straight from the files with sqlite3.
+# 2. Record counts: tenants, and per org contacts, revisions, a set of
+#    search matches (FTS) and its files db's blobs (scanned pages), read
+#    straight from the files with sqlite3. An org's two files are
+#    restored together or the counts differ.
 # 3. Per source:
 #    a. litestream only: set the machine to `--restart no`, start a loop
 #       that commits one row a time to drill/marks.db, then crash:
@@ -95,11 +97,12 @@ if [[ ${1:-} == local ]]; then
     secs=$(grep -o 'restore: all files [0-9.]*s' "$log" | grep -o '[0-9.]*s$' || echo '?')
     files=$(grep -c '^restore: ok ' "$log" || true)
     contacts=$(grep -o 'contacts=[0-9]*' "$log" | awk -F= '{ n += $2 } END { print n + 0 }')
+    blobs=$(grep -o 'blobs=[0-9]*' "$log" | awk -F= '{ n += $2 } END { print n + 0 }')
     fast=yes
     awk -v t="${secs%s}" 'BEGIN { exit !(t != "?" && t < 60) }' || { fast=no; pass=0; }
     result=PASS
     ((status == 0)) || { result="FAIL (restore.sh exit $status)"; pass=0; }
-    echo "  $source: $result, $files files, $contacts contacts, all files in $secs (< 60 s: $fast)"
+    echo "  $source: $result, $files files, $contacts contacts, $blobs scanned pages, all files in $secs (< 60 s: $fast)"
   done
   if [[ -e $WORK/litestream/platform.db && -e $WORK/snapshot/platform.db ]]; then
     t() { sqlite3 -readonly "$1/platform.db" 'SELECT id FROM tenants ORDER BY id' | sha256sum; }

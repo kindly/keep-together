@@ -579,3 +579,73 @@ async fn a_snapshot_restore_rotates_each_orgs_recovery_generation() {
         .unwrap();
     assert_eq!(n, 3);
 }
+
+/// An org's files db (`files/<id>.db`, scanned pages) is snapshotted
+/// daily when it changed, never hourly (g2q2), plus monthly; and comes
+/// back with its org on a restore. An org with no files db has none to
+/// restore and is not missing.
+#[tokio::test]
+async fn the_files_db_is_snapshotted_daily_when_changed_and_restored_with_its_org() {
+    let w = world();
+    let cap = store::files::CAP_BYTES;
+    let put = |bytes: &[u8]| {
+        w.store
+            .org(&w.a.id)
+            .unwrap()
+            .files()
+            .unwrap()
+            .put(bytes, "image/jpeg", 1, cap)
+            .unwrap()
+    };
+    let page = put(b"page one");
+    let files = format!("files-{}", w.a.id.as_str());
+    let report = w.job.run_once(NOON).await.unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    let tiers = |r: &api::backup::RunReport| {
+        r.uploaded
+            .iter()
+            .find(|(n, _)| *n == files)
+            .map(|(_, t)| t.clone())
+    };
+    assert_eq!(tiers(&report), Some(vec![Tier::Daily, Tier::Monthly]));
+    // B never scanned: no files db, nothing listed for it.
+    assert!(
+        !report
+            .uploaded
+            .iter()
+            .any(|(n, _)| *n == format!("files-{}", w.b.id.as_str()))
+    );
+    // Changed again the same day: not until tomorrow, and never hourly.
+    put(b"page two");
+    let later = datetime!(2026-10-24 15:00 UTC);
+    assert_eq!(tiers(&w.job.run_once(later).await.unwrap()), None);
+    let tomorrow = datetime!(2026-10-25 00:10 UTC);
+    assert_eq!(
+        tiers(&w.job.run_once(tomorrow).await.unwrap()),
+        Some(vec![Tier::Daily])
+    );
+    // Unchanged: nothing the day after.
+    let after = datetime!(2026-10-26 00:10 UTC);
+    assert_eq!(tiers(&w.job.run_once(after).await.unwrap()), None);
+
+    let target = tempfile::tempdir().unwrap();
+    let restored = api::backup::restore_latest(w.bucket.as_ref(), "test", target.path(), LATER)
+        .await
+        .unwrap();
+    assert!(restored.missing.is_empty(), "{:?}", restored.missing);
+    assert!(restored.files.iter().any(
+        |(n, k, _)| *n == files && *k == key(Tier::Daily, "test", &files, tomorrow).to_string()
+    ));
+    let store = open(target.path());
+    let a = store.org(&w.a.id).unwrap().files_if_any().unwrap().unwrap();
+    assert!(a.get(&page.sha256).unwrap().is_some());
+    assert_eq!(a.changes().unwrap(), 2);
+    assert!(
+        store
+            .org(&w.b.id)
+            .unwrap()
+            .files_if_any()
+            .unwrap()
+            .is_none()
+    );
+}

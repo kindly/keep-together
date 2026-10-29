@@ -21,6 +21,13 @@
 //! So the newest state of every file is always in the bucket: in the
 //! hourly tier for 48 h, the daily for 30 d, then the monthly.
 //!
+//! An organisation's **files db** (`files/<tenant-id>.db`, scanned pages:
+//! `store::files`) is a source too, named `files-<tenant-id>`, with no
+//! hourly tier (plan `declaration-scans.sv`, g2q2): it can reach 2 GB and
+//! its blobs never change, so it is copied at most daily, when its change
+//! counter moved since the last daily copy, plus the monthly. Litestream
+//! covers the hours in between.
+//!
 //! What was uploaded is recorded in `platform.db` (`snapshots`). The job
 //! never holds a transaction across two files.
 //!
@@ -212,10 +219,18 @@ impl crate::jobs::Job for SnapshotJob {
     }
 }
 
-/// One source file: `platform.db` or an org file named by its tenant id.
+/// One source file: `platform.db`, an org file named by its tenant id,
+/// or an org's files db (`files-<tenant id>`).
 struct Source {
     name: String,
     path: PathBuf,
+}
+
+/// The snapshot name of an organisation's files db.
+const FILES_PREFIX: &str = "files-";
+
+fn is_files(name: &str) -> bool {
+    name.starts_with(FILES_PREFIX)
 }
 
 /// A `snapshots` row.
@@ -255,7 +270,12 @@ impl SnapshotJob {
             if !listed {
                 listed = true;
                 let dir = dir.clone();
-                sources = off(move || org_sources(&dir)).await?;
+                sources = off(move || {
+                    let mut all = org_sources(&dir)?;
+                    all.extend(files_sources(&dir)?);
+                    Ok(all)
+                })
+                .await?;
                 sources.reverse(); // popped from the end: sorted order
             }
         }
@@ -270,11 +290,17 @@ impl SnapshotJob {
         let prepared = off(move || {
             let revision = if name == PLATFORM {
                 None
+            } else if is_files(&name) {
+                Some(files_changes(&path)?)
             } else {
                 Some(latest_revision(&path)?)
             };
             let ledger = ledger_row(&ledger_path, &name)?;
-            let tiers = due(&ledger, revision, now);
+            let mut tiers = due(&ledger, revision, now);
+            if is_files(&name) {
+                // Daily at most (g2q2).
+                tiers.retain(|t| *t != Tier::Hourly);
+            }
             if tiers.is_empty() {
                 return Ok::<_, String>(None);
             }
@@ -352,6 +378,32 @@ fn org_sources(data_dir: &Path) -> Result<Vec<Source>, String> {
     Ok(orgs)
 }
 
+/// Every `files/<32 hex>.db`, sorted, as `files-<id>`. An org that never
+/// scanned has none.
+fn files_sources(data_dir: &Path) -> Result<Vec<Source>, String> {
+    let mut files = vec![];
+    let entries = match std::fs::read_dir(data_dir.join("files")) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(files),
+        Err(e) => return Err(e.to_string()),
+    };
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let id = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".db"));
+        if let Some(id) = id.filter(|id| is_tenant_id(id)) {
+            files.push(Source {
+                name: format!("{FILES_PREFIX}{id}"),
+                path: path.clone(),
+            });
+        }
+    }
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(files)
+}
+
 fn is_tenant_id(s: &str) -> bool {
     s.len() == 32
         && s.bytes()
@@ -377,6 +429,13 @@ fn latest_revision(path: &Path) -> Result<i64, String> {
             r.get(0)
         })
         .map_err(|e| format!("read revisions of {}: {e}", path.display()))
+}
+
+/// A files db's change counter (`store::files`): it has no revisions.
+fn files_changes(path: &Path) -> Result<i64, String> {
+    open_read_only(path)?
+        .query_row("SELECT seq FROM changes WHERE id = 1", [], |r| r.get(0))
+        .map_err(|e| format!("read changes of {}: {e}", path.display()))
 }
 
 /// The ledger: `snapshots` in `platform.db` (platform migration 2), which
@@ -506,7 +565,8 @@ fn copy_and_compress(path: &Path, tmp_dir: &Path, name: &str) -> Result<Vec<u8>,
 /// What [`restore_latest`] did.
 #[derive(Debug, Default)]
 pub struct Restored {
-    /// `(name, key, bytes on disk)` for every file put back.
+    /// `(name, key, bytes on disk)` for every file put back (an org's
+    /// files db as `files-<id>`).
     pub files: Vec<(String, String, u64)>,
     /// Orgs `platform.db` lists that have no usable snapshot. Everything
     /// else was restored; whether to boot without them is the caller's
@@ -537,6 +597,11 @@ const FUTURE_SKEW: time::Duration = time::Duration::minutes(10);
 ///   still restored.
 /// - Each restored org file gets a new recovery generation
 ///   (`events::rotate_generation`), so event cursors from before reset.
+/// - Each org's files db comes back from its own newest good copy, if
+///   the bucket holds one: an org that never scanned has none, so none
+///   is not `missing`. A files db is daily, so it may be up to a day
+///   older than its org file: pages committed since point at no blob
+///   (the image route answers 404) until Litestream's copy is used.
 pub async fn restore_latest(
     bucket: &dyn ObjectStore,
     env: &str,
@@ -550,6 +615,7 @@ pub async fn restore_latest(
         ));
     }
     std::fs::create_dir_all(data_dir.join("orgs")).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(data_dir.join("files")).map_err(|e| e.to_string())?;
     let mut out = Restored::default();
     let candidates = candidate_keys(bucket, env, now, &mut out.passed_over).await?;
     let no_keys = vec![];
@@ -590,9 +656,16 @@ pub async fn restore_latest(
                         .map_err(|e| format!("recovery generation: {e}"))
                 })
                 .await?;
-                out.files.push((id, key, size))
+                out.files.push((id.clone(), key, size))
             }
-            None => out.missing.push(id),
+            None => out.missing.push(id.clone()),
+        }
+        let name = format!("{FILES_PREFIX}{id}");
+        if let Some(keys) = candidates.get(name.as_str()) {
+            let target = data_dir.join("files").join(format!("{id}.db"));
+            if let Some((key, size)) = fetch_newest_good(bucket, keys, &target, &mut out).await {
+                out.files.push((name, key, size));
+            }
         }
     }
     Ok(out)

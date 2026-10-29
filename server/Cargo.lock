@@ -2717,6 +2717,7 @@ dependencies = [
  "rusqlite",
  "rusqlite_migration",
  "serde",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",

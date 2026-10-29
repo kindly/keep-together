@@ -9,7 +9,8 @@
 #   KEEP_REPLICA_PREFIX
 #     set by the entrypoint: KEEP_ENV, plus a per-deploy part on staging.
 #
-# Replica layout: <prefix>/platform.db/… and <prefix>/orgs/<tenant-id>.db/…
+# Replica layout: <prefix>/platform.db/…, <prefix>/orgs/<tenant-id>.db/…
+# and <prefix>/files/<tenant-id>.db/… (an org's files db: scanned pages).
 # scripts/ops/restore.sh restores from exactly these paths.
 
 # Prometheus metrics, scraped by Fly ([metrics] in fly.staging.toml).
@@ -47,6 +48,21 @@ dbs:
       type: s3
       bucket: ${LITESTREAM_BUCKET}
       path: ${KEEP_REPLICA_PREFIX}/orgs
+      region: eu-west-2
+      access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+      secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+      sync-interval: 1s
+
+  # Every org's files db (store::files: scanned Gift Aid declarations),
+  # made at an org's first scan, so watched like orgs/. Its own directory:
+  # never under orgs/, where every *.db is taken for an org file.
+  - dir: /data/files
+    pattern: "*.db"
+    watch: true
+    replica:
+      type: s3
+      bucket: ${LITESTREAM_BUCKET}
+      path: ${KEEP_REPLICA_PREFIX}/files
       region: eu-west-2
       access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
       secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}

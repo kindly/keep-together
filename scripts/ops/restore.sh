@@ -2,6 +2,8 @@
 # restore.sh litestream|snapshot <data-dir>
 #
 # Put platform.db and every org it lists back into an empty data dir,
+# each org's files db (files/<id>.db, scanned pages) with it when a
+# backup holds one (an org that never scanned has none: not missing),
 # rotate each org's recovery generation, then check each file (PRAGMA
 # integrity_check) and print its row counts.
 # Timings go to stdout as `restore: <what> <seconds>s`, which the drill
@@ -30,7 +32,7 @@ DATA=${2:?usage: restore.sh litestream|snapshot <data-dir>}
 ENV_NAME=${KEEP_ENV:?KEEP_ENV is required}
 
 [ ! -e "$DATA/platform.db" ] || { echo "restore: $DATA/platform.db exists; restore only into an empty dir" >&2; exit 1; }
-mkdir -p "$DATA/orgs"
+mkdir -p "$DATA/orgs" "$DATA/files"
 now() { date +%s.%N; }
 secs() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 started=$(now)
@@ -64,6 +66,9 @@ litestream)
   # shellcheck disable=SC2086
   printf '%s\n' $ids | grep -v '^$' |
     xargs -r -P 4 -I{} litestream restore -if-replica-exists -o "$DATA/orgs/{}.db" "$replica/orgs/{}.db"
+  # shellcheck disable=SC2086
+  printf '%s\n' $ids | grep -v '^$' |
+    xargs -r -P 4 -I{} litestream restore -if-replica-exists -o "$DATA/files/{}.db" "$replica/files/{}.db"
   for id in $ids; do
     [ -e "$DATA/orgs/$id.db" ] || echo "MISSING org $id: no replica"
   done
@@ -104,7 +109,7 @@ done
 
 # Checks: every restored file is intact; row counts for the record.
 fail=0
-for db in "$DATA/platform.db" "$DATA"/orgs/*.db "$DATA"/drill/*.db; do
+for db in "$DATA/platform.db" "$DATA"/orgs/*.db "$DATA"/files/*.db "$DATA"/drill/*.db; do
   [ -e "$db" ] || continue
   check=$(sqlite3 -readonly "$db" 'PRAGMA integrity_check' 2>&1 | head -1)
   if [ "$check" != ok ]; then
@@ -114,10 +119,11 @@ for db in "$DATA/platform.db" "$DATA"/orgs/*.db "$DATA"/drill/*.db; do
   fi
   case $db in
   */platform.db) counts=$(sqlite3 -readonly "$db" "SELECT 'tenants=' || count(*) FROM tenants") ;;
+  */files/*.db) counts=$(sqlite3 -readonly "$db" "SELECT 'blobs=' || count(*) || ' bytes=' || coalesce(sum(size), 0) FROM blobs") ;;
   */drill/marks.db) counts=$(sqlite3 -readonly "$db" "SELECT 'marks=' || count(*) || ' max=' || coalesce(max(i), 0) FROM marks") ;;
   *) counts=$(sqlite3 -readonly "$db" "SELECT 'contacts=' || count(*) FROM contacts; SELECT 'revisions=' || count(*) FROM revisions" | tr '\n' ' ') ;;
   esac
-  echo "restore: ok $(basename "$db") $counts"
+  echo "restore: ok $(basename "$(dirname "$db")")/$(basename "$db") $counts"
 done
 echo "restore: checked $(secs "$started")s"
 [ "$fail" = 0 ] || exit 1
