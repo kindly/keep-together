@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { STATUS_LABELS, isReceived } from '../lib/domain/gift-status'
 import type { Id } from '../lib/domain/ids'
 import { useContactGifts } from '../lib/data'
 import { METHOD_LABELS, formatDay, formatPence } from '../lib/gifts'
@@ -7,8 +8,10 @@ import { useTenant } from '../lib/tenant'
 
 /**
  * A contact's gifts, newest date first, a page at a time like the
- * contacts list (cash gifts step 5), each a link to its gift. A void
- * gift is struck through and marked; an individual's gift says whether a
+ * contacts list (cash gifts step 5), each a link to its gift. Every
+ * payment attempt is listed (ADR 0025): one that isn't money received
+ * (pending, failed, charged back, void…) is struck through and marked
+ * with its status; an individual's received gift says whether a
  * declaration covers it (derived from their Gift Aid declarations, the
  * same subscription as the Gift Aid panel's).
  */
@@ -35,9 +38,9 @@ export function ContactGifts({
       ) : (
         <ul className="divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
           {gifts.rows.map((g) => {
-            const isVoid = g.status === 'void'
+            const received = isReceived(g.status)
             const covered =
-              individual && !isVoid && giftCoverage(declarations, g)
+              individual && received && giftCoverage(declarations, g)
             return (
               <li key={g._id} className="text-sm">
                 <Link
@@ -49,7 +52,7 @@ export function ContactGifts({
                     {formatDay(g.receivedOn)}
                   </span>
                   <span
-                    className={`w-24 shrink-0 ${isVoid ? 'text-neutral-500 line-through' : ''}`}
+                    className={`w-24 shrink-0 ${received ? '' : 'text-neutral-500 line-through'}`}
                   >
                     {formatPence(g.amount)}
                   </span>
@@ -58,7 +61,14 @@ export function ContactGifts({
                     {' · '}
                     {g.allocations.map((a) => a.code ?? '?').join(', ')}
                   </span>
-                  {isVoid && <span className="text-xs text-red-700">void</span>}
+                  {!received && (
+                    <span
+                      data-status={g.status}
+                      className={`text-xs ${g.status === 'pending' ? 'text-amber-700' : 'text-red-700'}`}
+                    >
+                      {STATUS_LABELS[g.status]}
+                    </span>
+                  )}
                   {covered && (
                     <span
                       title="Covered by a Gift Aid declaration"

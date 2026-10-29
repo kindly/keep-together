@@ -364,3 +364,55 @@ test('staff, who can’t see the claim, are told both cases', () => {
     'Voided while in a Gift Aid claim: it can’t be un-voided while the claim holds it. If the claim has gone to HMRC, the next claim pays the tax back.',
   )
 })
+
+// ADR 0025: every payment attempt is a gift; one that isn't money
+// received shows as what it is, never as money in.
+
+test('a pending Direct Debit gift shows as pending, struck through, not claimable yet', () => {
+  gift = makeGift({
+    method: 'direct_debit',
+    status: 'pending',
+    provider: 'gocardless',
+    voidReason: 'Not collected yet (GoCardless)',
+  })
+  render()
+  const status = el.querySelector('[data-testid="gift-status"]')!
+  expect(status.textContent).toBe('pending')
+  expect(el.querySelector('h1 .line-through')?.textContent).toBe('£20.00')
+  expect(el.textContent).toContain('Pending: not collected yet.')
+  expect(el.querySelector('[data-testid="gift-coverage"]')?.textContent).toBe(
+    'None until the money is received',
+  )
+})
+
+test('a charged-back gift says so and why; staff may still void it', async () => {
+  gift = makeGift({
+    method: 'direct_debit',
+    status: 'charged_back',
+    provider: 'gocardless',
+    voidReason: 'Charged back (GoCardless): disputed',
+    statusVersion: 4,
+  })
+  render()
+  expect(el.querySelector('[data-testid="gift-status"]')?.textContent).toBe(
+    'charged back',
+  )
+  expect(el.querySelector('[data-testid="void-reason"]')?.textContent).toBe(
+    ' Why: Charged back (GoCardless): disputed',
+  )
+  expect(button(el, 'Unvoid')).toBeUndefined()
+  await click(button(el, 'Void'))
+  expect(dialog().textContent).toContain('Void this gift?')
+})
+
+test('unvoiding a provider gift gives it its payment’s status', async () => {
+  gift = makeGift({
+    method: 'direct_debit',
+    status: 'void',
+    provider: 'gocardless',
+    statusVersion: 2,
+  })
+  render()
+  await click(button(el, 'Unvoid'))
+  expect(dialog().textContent).toContain('It takes its payment’s status again')
+})
