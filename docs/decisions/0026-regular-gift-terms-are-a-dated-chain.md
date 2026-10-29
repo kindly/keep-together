@@ -105,7 +105,7 @@ Nobody splits one recurring gift across several sources as we do.
 
 ## Consequences
 
-- Org schema step 19 rebuilds `regular_gifts` without its old term
+- Org schema step 20 rebuilds `regular_gifts` without its old term
   columns (`amount`, `frequency`, `day_of_month`, `month`,
   `source_code_id`; `terms_version` becomes `setup_version`) and backfills
   one applied terms row per regular gift from them (`effective_from`: its

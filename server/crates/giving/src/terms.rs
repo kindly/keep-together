@@ -1092,6 +1092,8 @@ pub fn regular_gift_of_subscription(
 pub struct DueTerm {
     pub term_id: String,
     pub regular_gift_id: String,
+    /// Taken already: the job is finishing it.
+    pub sending: bool,
 }
 
 /// Rows to send on `today` (ISO): scheduled, live, of a regular gift that
@@ -1102,7 +1104,7 @@ pub struct DueTerm {
 pub fn due(conn: &Connection, today: &str) -> rusqlite::Result<Vec<DueTerm>> {
     let horizon = terms_rules::add_days(today, SEND_AHEAD_DAYS).unwrap_or_else(|| today.into());
     conn.prepare_cached(
-        "SELECT t.id, t.regular_gift_id FROM regular_gift_terms t
+        "SELECT t.id, t.regular_gift_id, t.state = 'sending' FROM regular_gift_terms t
          JOIN regular_gifts g ON g.id = t.regular_gift_id
          WHERE t.withdrawn = 0
            AND ((t.state = 'scheduled' AND g.status IN ('pending', 'active')
@@ -1115,6 +1117,7 @@ pub fn due(conn: &Connection, today: &str) -> rusqlite::Result<Vec<DueTerm>> {
         Ok(DueTerm {
             term_id: r.get(0)?,
             regular_gift_id: r.get(1)?,
+            sending: r.get(2)?,
         })
     })?
     .collect()
@@ -1637,10 +1640,10 @@ pub fn payment_on_or_after(
     .optional()
 }
 
-/// The org-schema step for the dated chain (ADR 0026), after
-/// `giving::MIGRATION_UNIFIED`. Run with foreign keys deferred (it
-/// rebuilds `regular_gifts`, which payments, gifts and requests point
-/// at):
+/// Org schema step 20, the dated chain (ADR 0026), after Gift Aid's
+/// declaration scans (19) and `giving::MIGRATION_UNIFIED` (18). Run
+/// with foreign keys deferred (it rebuilds `regular_gifts`, which
+/// payments, gifts and requests point at):
 /// - `regular_gifts` loses its terms (amount, frequency, day, month,
 ///   code); `terms_version` becomes `setup_version`;
 /// - `regular_gift_terms` and `regular_gift_term_allocations`, with one

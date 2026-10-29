@@ -66,7 +66,7 @@ pub async fn sync_all(
     let mut sent = 0;
     let mut errors = Vec::new();
     for tenant in connected_tenants(&store).await? {
-        match one(&store, &gc, &tenant, today).await {
+        match one(&store, &gc, &tenant, today, true).await {
             Ok(n) => sent += n,
             Err(e) => errors.push(format!("{tenant}: {e}")),
         }
@@ -78,19 +78,23 @@ pub async fn sync_all(
     }
 }
 
-/// The same for one organisation (after a change is saved).
+/// The same for one organisation. `finish_sending`: also finish rows a
+/// run took and didn't finish (the hourly job's work); after a change is
+/// saved only what is newly due is sent, and a gift with a row still
+/// being sent is left to the job.
 pub async fn sync_tenant(
     store: Arc<Store>,
     gc: Arc<GoCardless>,
     tenant: TenantId,
     today: &str,
+    finish_sending: bool,
 ) -> Result<usize, String> {
     let _run = gc.terms_syncing.lock().await;
     let connected = connected_tenants(&store).await?;
     if !connected.contains(&tenant) {
         return Ok(0);
     }
-    one(&store, &gc, &tenant, today).await
+    one(&store, &gc, &tenant, today, finish_sending).await
 }
 
 async fn one(
@@ -98,6 +102,7 @@ async fn one(
     gc: &Arc<GoCardless>,
     tenant: &TenantId,
     today: &str,
+    finish_sending: bool,
 ) -> Result<usize, String> {
     let org = open_org(store, gc, tenant)
         .await
@@ -114,6 +119,10 @@ async fn one(
     let mut held: HashSet<String> = HashSet::new();
     for d in due {
         if held.contains(&d.regular_gift_id) {
+            continue;
+        }
+        if d.sending && !finish_sending {
+            held.insert(d.regular_gift_id.clone());
             continue;
         }
         match send(&org, gc, &d, today).await {

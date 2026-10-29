@@ -3013,6 +3013,7 @@ impl T {
             self.gc.clone(),
             self.w.alpha.id.clone(),
             day,
+            true,
         )
         .await
         .unwrap()

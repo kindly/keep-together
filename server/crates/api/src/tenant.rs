@@ -279,7 +279,8 @@ impl Tenant {
         let (store, id) = (self.store.clone(), self.tenant_id.clone());
         tokio::spawn(async move {
             let today = giving::terms_rules::date_of_ms(contracts::now_ms());
-            if let Err(e) = crate::gocardless::terms_sync::sync_tenant(store, gc, id, &today).await
+            if let Err(e) =
+                crate::gocardless::terms_sync::sync_tenant(store, gc, id, &today, false).await
             {
                 crate::observe::error(&format!("regular-terms-sync: {e}"));
             }

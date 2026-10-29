@@ -1014,7 +1014,7 @@ fn the_unified_gifts_step_gives_every_payment_one_gift_with_its_status() {
     assert!(plan.contains("gifts_unclaimed"), "{plan}");
 }
 
-/// Step 19 (ADR 0026): every regular gift gets exactly one applied row,
+/// Step 20 (ADR 0026): every regular gift gets exactly one applied row,
 /// its split the old amount to the old code, in force from its first
 /// payment's charge date (or the day it was set up); the old columns are
 /// gone and `scheduled_on` is filled.
