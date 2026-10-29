@@ -29,6 +29,7 @@ use giving::types::{GiftView, Provider};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::Params;
 use crate::gocardless::client::{CallError, NewPayment, Prefill};
 use crate::gocardless::{ConnectStart, GoCardless, GoCardlessStatus};
 use crate::{ApiError, Body, IdParam, Tenant};
@@ -54,6 +55,8 @@ pub fn router() -> Router {
             post(withdraw_terms),
         )
         .route("/regular-gifts/{id}/terms/{termId}/code", post(code_terms))
+        .route("/regular-gifts/{id}/expected", get(expected))
+        .route("/reports/expected", get(expected_report))
         .route(
             "/gocardless/unknown-subscriptions",
             get(unknown_subscriptions),
@@ -1096,3 +1099,72 @@ const MONTH_NAMES: [&str; 12] = [
     "november",
     "december",
 ];
+
+// ── expected against actual (ADR 0026) ─────────────────────────────────────
+
+/// `?from=YYYY-MM&to=YYYY-MM` (default: the 12 months to this one) and,
+/// for the report, `by=code|detail|category` (default code).
+#[derive(Deserialize)]
+pub struct ExpectedQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub by: Option<giving::expected::By>,
+}
+
+/// The months asked for, checked: `YYYY-MM`, `from` no later than `to`,
+/// at most ten years.
+fn months(q: &ExpectedQuery) -> Result<(String, String), ApiError> {
+    use giving::terms_rules::{month_index, month_label};
+    let now = month_index(&today()).unwrap_or_default();
+    let parse = |field: &str, v: &Option<String>, default: i32| -> Result<i32, ApiError> {
+        match v {
+            None => Ok(default),
+            Some(m) => month_index(m)
+                .filter(|_| m.len() == 7)
+                .ok_or_else(|| ContractError::invalid(field, "Months are YYYY-MM").into()),
+        }
+    };
+    let to = parse("to", &q.to, now)?;
+    let from = parse("from", &q.from, to - 11)?;
+    if from > to || to - from >= 120 {
+        return Err(
+            ContractError::invalid("from", "From comes before to, at most ten years").into(),
+        );
+    }
+    Ok((month_label(from), month_label(to)))
+}
+
+/// `GET regular-gifts/{id}/expected?from&to` → `ExpectedRow[]`: each
+/// period's expected amount and split from the chain, and what happened
+/// (collected, pending, failed, cancelled, missing, upcoming). Any
+/// member; the card shows the default 12.
+async fn expected(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+    Params(q): Params<ExpectedQuery>,
+) -> Result<Json<Vec<giving::expected::ExpectedRow>>, ApiError> {
+    t.gocardless()?;
+    let (from, to) = months(&q)?;
+    t.read(move |r| {
+        giving::expected::for_regular_gift(r, &id, &from, &to, &today())?.ok_or(ApiError::NotFound)
+    })
+    .await
+    .map(Json)
+}
+
+/// `GET reports/expected?from&to&by` → `ExpectedReport`: expected,
+/// received, failed (arrears), missing and pending by code, detail or
+/// category; upgrade value by the code credited (annualised, with the
+/// monthly figure), from the first payment collected at the new amount;
+/// upgrades not realised. Any member.
+async fn expected_report(
+    Extension(t): Extension<Tenant>,
+    Params(q): Params<ExpectedQuery>,
+) -> Result<Json<giving::expected::ExpectedReport>, ApiError> {
+    t.gocardless()?;
+    let (from, to) = months(&q)?;
+    let by = q.by.unwrap_or(giving::expected::By::Code);
+    t.read(move |r| Ok(giving::expected::report(r, &from, &to, by, &today())?))
+        .await
+        .map(Json)
+}

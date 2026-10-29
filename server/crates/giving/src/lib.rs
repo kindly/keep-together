@@ -12,6 +12,7 @@
 //! fails on a gifts read that neither uses it nor says, in a
 //! `/* any status: … */` comment, why it reads every status.
 
+pub mod expected;
 pub mod gift;
 pub mod queries;
 pub mod regular;

@@ -350,7 +350,10 @@ way, as whoever started them, in only the orgs `platform.db`'s
 `pending_jobs` names; one field failing is reported and the rest carry
 on), and `scan-pairing-sweep`, `scan-orphan-sweep` and
 `scan-discard-purge` (daily: Declaration scans, below). F2's hourly snapshot
-registers the same way. A job's first run is `first_after()` after boot
+registers the same way. With GoCardless on: `gocardless-events` (30 s),
+`gocardless-catchup` (daily) and `regular-terms-sync` (hourly, first
+run 10 minutes after boot; also run for one organisation after a terms
+change is saved). A job's first run is `first_after()` after boot
 (default: one period), so the snapshot needn't wait an hour after every
 deploy.
 
@@ -366,6 +369,7 @@ keep [--data <dir>] dev seed-riverside        # KEEP_ENV=dev (or staging, creden
 keep [--data <dir>] giftaid-xml <slug> <claim-id>   # a claim's HMRC XML on stdout, IRmark on stderr
 keep giftaid-xml --hmrc-sample                # HMRC's sample data: their GAValidSample.xml, byte for byte
 keep [--data <dir>] giving-consistency <slug>       # provider payments vs their gifts (ADR 0025); exit 1 on any
+keep [--data <dir>] expected <slug> <YYYY-MM>       # each regular gift's expected payment that month against what happened (ADR 0026)
 ```
 
 `keep sql` opens the org file `SQLITE_OPEN_READ_ONLY` with `query_only`,
@@ -744,8 +748,8 @@ CHECK in place) with foreign keys deferred and checked after, carrying
 every column and index it has by then, Gift Aid claims' void reason,
 claim lock and partial indexes included.
 
-Regular gifts (`giving::regular`): the terms (`giving.regularGift`,
-fixed once set up), where it stands at GoCardless
+Regular gifts (`giving::regular`): the set-up (`giving.regularGift` v2:
+the donor; its terms are a dated chain, below), where it stands at GoCardless
 (`giving.regularGiftMandate`: status `pending → active →
 cancelled/failed`, billing request and hosted link, mandate and
 subscription ids, why it ended), and one `giving.directDebitPayment` (v2)
@@ -820,7 +824,67 @@ being missed); then a processing run handles them.
 | `POST …/contacts/{id}/instant-payment` | `InstantPayment {amount, sourceCodeId, description?, clientKey}` → `InstantPaymentLink {requestId, billingRequestId, flowUrl, flowExpiresAt}`: an Instant Bank Pay request (a payment request, no mandate; the group switches Instant Bank Pay on in GoCardless) and its hosted page; only the request (who asked) is stored here; staff |
 | `GET …/gocardless/unmatched` | `UnmatchedPayment[]`: payments nobody could be matched to (no gift), newest first, at most 500; any member |
 | `POST …/gocardless/unmatched/{id}/match` | `MatchPayment {expected, contactId, sourceCodeId}` → `MatchedPayment {giftId, gift}`: the contact's gift, with GoCardless's amount, date and status; staff; `409 stale`; `422 rejected already_matched` |
-| `POST …/regular-gifts/{id}/cancel` | `{expected}` → cancels the mandate (or the unsigned billing request; one the donor fulfilled meanwhile: the mandate it made) at GoCardless, then `cancelled` "Cancelled by staff" (or GoCardless's reason, if its webhook landed first); staff |
+| `POST …/regular-gifts/{id}/cancel` | `{expected}` → cancels the mandate (or the unsigned billing request; one the donor fulfilled meanwhile: the mandate it made) at GoCardless, then `cancelled` "Cancelled by staff" (or GoCardless's reason, if its webhook landed first), its scheduled changes withdrawn; staff |
+
+### Regular gift terms (ADR 0026)
+
+A regular gift's amount, schedule and split by source code are a dated
+chain (`giving::terms`, plan `factory/plans/regular-gift-terms.sv`):
+`regular_gift_terms`, one row per change, in force from the first
+payment it governs (`effectiveFrom`, or `appliesFrom` when it missed
+that payment: `effectiveOn` is what the chain reads), with its split
+(`regular_gift_term_allocations`, child rows, oldest money first,
+summing to the amount). Set-up writes row 1 (one code, applied). A row
+is three slices: `giving.regularGiftTerms` (`termsVersion`: terms,
+split, note, withdrawn; staff edit or withdraw only while `scheduled`,
+else `422 rejected term_sent`), `giving.regularGiftTermSync`
+(`syncVersion`, the system's: `scheduled → sending → sent → applied`,
+subscription, `sentAt`, `appliesFrom`) and `giving.regularGiftTermCode`
+(`codeVersion`: the code credited with the change, at any state). The
+pure rules (`giving::terms_rules`, twin `src/lib/domain/regular-terms.ts`)
+move a split by layers, never dividing: an upgrade's difference to the
+code that won it, a downgrade off the newest money first, a payment's
+different amount on the newest layer. Each payment's gift copies the
+split in force on its `scheduledOn` (the charge date GoCardless first
+gave it, kept through retries: its period).
+
+Sending (`api::gocardless::terms_sync`, job `regular-terms-sync`): a
+scheduled row is taken (`sending`) 14 days before it takes effect; if
+its payment exists already at the old terms it moves to the next one
+(`appliesFrom`); an amount on the same schedule is a `PUT
+subscriptions/{id}`; a new day, frequency or month, or a change past
+GoCardless's 10 per subscription (counted from the chain), makes a new
+subscription on the same mandate from the effective date (idempotency
+key `keep-sub-{term id}`), which becomes the regular gift's, and
+cancels the old one (whose `cancelled` event then ends nothing; its
+payments stay instalments). Then `sent`; GoCardless's
+`subscriptions.amended`, or the first payment at the new terms, makes
+it `applied`. An `amended` we didn't send records a row from the next
+payment, `origin: gocardless`, noted "changed in GoCardless", uncoded
+(`changeNotCoded` on the regular gift until staff code it). A payment
+from a subscription nobody here set up, on a mandate we know, is a
+one-off gift; the subscription is listed to adopt.
+
+Expected against actual (`giving::expected`) is derived, never stored:
+periods are months (a yearly row's in its month), from the regular
+gift's first payment's period (active with none yet: its first row) to
+its cancellation. Statuses: `collected`, `pending`, `failed` (arrears:
+failed, charged back, refunded), `cancelled`, `missing` (no payment once
+due), `upcoming`.
+
+| route | |
+|---|---|
+| `GET …/regular-gifts/{id}` | `RegularGiftView`: as before, plus the chain (`terms: TermView[]`, withdrawn rows included, each with `changeKind`: `setup \| upgrade \| downgrade \| schedule \| reallocation \| unchanged`), `allocations` (the split in force), `scheduled` (the next change still to send), `changeNotCoded`, and `upcoming: {chargeDate, amount, changeable}[]` (GoCardless's forecast while connected, else the chain's; `changeable`: more than a week off and not created yet). `setupVersion` replaces `termsVersion` |
+| `POST …/regular-gifts/{id}/terms` | `ChangeTerms {effectiveFrom, amount, frequency?, dayOfMonth?, month?, changeCodeId?, allocations?, note?, clientKey?}` → `RegularGiftSaved`: a scheduled row, a sync run started; staff. Without `allocations` the split is the row before's, moved; an upgrade needs `changeCodeId` (`422 invalid`); a new frequency needs `allocations`; `effectiveFrom` after today, after the last row GoCardless has (`term_too_early`), on no other live row's day (`term_clash`); an ended gift: `regular_gift_ended` |
+| `POST …/regular-gifts/{id}/terms/{termId}` | `EditTerms {expected (termsVersion), …ChangeTerms}` → `RegularGiftSaved`; staff; scheduled only (`term_sent`); `409 stale` |
+| `POST …/regular-gifts/{id}/terms/{termId}/withdraw` | `{expected}` (termsVersion) → `RegularGiftSaved`; staff; scheduled only |
+| `POST …/regular-gifts/{id}/terms/{termId}/code` | `CodeTerms {expected (codeVersion), changeCodeId}` → `RegularGiftSaved`; staff; any state |
+| `GET …/regular-gifts/{id}/expected?from&to` | `ExpectedRow[] {period, dueOn, expected, split, termId, status, giftId, amount}`, months `YYYY-MM` (default the 12 to this one, at most 120); any member |
+| `GET …/reports/expected?from&to&by=code\|detail\|category` | `ExpectedReport {lines, total, upgrades, notRealised}`: per group `expected`, `received` (the matched gifts' own allocations), `failed`, `missing`, `pending`; `upgrades` by the code credited (`annual` = change in annual value, `monthly` beside it, counted in the period of the first payment collected at the new amount); `notRealised`: upgrades taking effect in range that never collected; any member |
+| `GET …/gocardless/unknown-subscriptions` | `UnknownSubscription[] {subscriptionId, mandateId, contactId, payments, lastAmount, lastChargeDate}`; any member |
+| `POST …/gocardless/unknown-subscriptions/{id}/adopt` | `{sourceCodeId, clientKey}` → `RegularGiftSaved`: active, the subscription its own, row 1 applied from GoCardless's terms from its next payment; nothing sent to GoCardless; staff; `422 rejected unsupported_schedule` (weekly, a day past the 28th) |
+
+Every row is financial history (rule 3): erasure keeps the chain.
 
 The fake (`KEEP_GOCARDLESS=fake`, `api::gocardless::fake`) answers the
 calls the client makes in GoCardless's shapes, hosts the consent page and
@@ -833,8 +897,13 @@ a subscription's next `payment`, a stranger's payment
 `{calls, status?, path?, delay_ms?}`; `webhooks/hold` and
 `webhooks/release?reverse`) drive the rest, and its consent page can pick
 an existing account. Beyond D2's calls it answers `POST payments` (a
-one-off), `GET events` (newest first, `created_at[gte]`, `after`) and
-Instant Bank Pay requests, whose page is "Pay by bank" (the payment it
+one-off), `GET events` (newest first, `created_at[gte]`, `after`),
+`PUT subscriptions/{id}` (the amount, at most 10 times, with an
+`amended` event), `GET subscriptions/{id}` with `upcoming_payments`
+(and `subscriptions.payment_created` with each simulated payment; the
+simulators `subscriptions/{id}/amend?amount=` and
+`mandates/{id}/subscription?amount=` are changes made in GoCardless's
+dashboard) and Instant Bank Pay requests, whose page is "Pay by bank" (the payment it
 makes carries no metadata: only the request's `fulfilled` event names
 it). `api/tests/gocardless.rs` and `qc/flows/gocardless.spec.ts` run on
 it.

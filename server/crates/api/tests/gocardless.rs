@@ -3536,3 +3536,69 @@ async fn another_organisation_never_sees_or_changes_a_regular_gifts_terms() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert_eq!(t.term(&id, &from).await["status"], "scheduled");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn expected_against_actual_reads_stay_in_their_organisation() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    t.collected(&id, &sub).await;
+    let from = today()[..7].to_owned();
+    let to = giving::terms_rules::add_days(&today(), 400).unwrap()[..7].to_owned();
+    let range = format!("from={from}&to={to}");
+    let rows = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/regular-gifts/{id}/expected?{range}"),
+        &t.val,
+        None,
+    )
+    .await;
+    let rows = rows.as_array().unwrap();
+    assert!(
+        rows.iter()
+            .any(|r| r["status"] == "pending" || r["status"] == "collected"),
+        "{rows:?}"
+    );
+    let report = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/reports/expected?{range}&by=detail"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert!(
+        report["total"]["expected"].as_i64().unwrap() > 0,
+        "{report}"
+    );
+    // B: A's regular gift is 404 and its report holds nothing of A's.
+    let (s, _) =
+        t.w.call(
+            "GET",
+            &format!("/api/t/beta/regular-gifts/{id}/expected"),
+            &t.bob,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let theirs = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/beta/reports/expected?{range}"),
+        &t.bob,
+        None,
+    )
+    .await;
+    assert_eq!(theirs["lines"], json!([]));
+    assert_eq!(theirs["total"]["expected"], 0);
+    // Bad months are refused.
+    let (s, _) =
+        t.w.call(
+            "GET",
+            "/api/t/alpha/reports/expected?from=2026-13",
+            &t.val,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}

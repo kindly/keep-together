@@ -660,3 +660,192 @@ fn a_frequency_change_needs_its_split_and_never_divides() {
         giving::terms_rules::ChangeKind::Schedule
     );
 }
+
+// ── expected against actual ────────────────────────────────────────────────
+
+fn pay_as(w: &World, regular: &str, pm: &str, amount: i64, date: &str, status: PaymentStatus) {
+    tx_at(&w.a, date, |ctx| {
+        record_payment(
+            ctx,
+            PaymentReport {
+                payment_id: pm.into(),
+                amount,
+                charge_date: date.into(),
+                status,
+                reason: None,
+                mandate_id: None,
+                subscription_id: Some("SB1".into()),
+            },
+            PaymentOwner::Regular(regular.to_owned()),
+        )
+    })
+    .unwrap();
+}
+
+/// £10 from September 2026, upgraded by phone to £12 from December:
+/// September and October collected, November failed, December missing,
+/// January collected at £12.
+fn upgraded(w: &World) -> String {
+    let id = regular(w);
+    tx_at(&w.a, "2026-09-01", |ctx| {
+        giving::regular::update_mandate(ctx, &id, None, Source::System, None, |m| {
+            m.status = Some(RegularStatus::Active);
+            m.subscription_id = Some("SB1".into());
+        })
+    })
+    .unwrap();
+    let row = tx_at(&w.a, "2026-11-01", |ctx| {
+        change_terms(ctx, &id, None, upgrade(w, "2026-12-05", 1200), Source::Ui)
+    })
+    .unwrap();
+    tx_at(&w.a, "2026-11-21", |ctx| {
+        update_sync(ctx, &row, None, |s| {
+            s.state = SyncState::Sent;
+            s.subscription_id = Some("SB1".into());
+        })
+    })
+    .unwrap();
+    pay_as(w, &id, "PM9", 1000, "2026-09-05", PaymentStatus::Confirmed);
+    pay_as(w, &id, "PM10", 1000, "2026-10-05", PaymentStatus::Confirmed);
+    pay_as(w, &id, "PM11", 1000, "2026-11-05", PaymentStatus::Failed);
+    pay_as(w, &id, "PM1", 1200, "2027-01-05", PaymentStatus::Confirmed);
+    id
+}
+
+#[test]
+fn expected_follows_the_chain_with_arrears_and_missing_months() {
+    use giving::expected::{PeriodStatus, for_regular_gift};
+    let w = world();
+    let id = upgraded(&w);
+    let rows = read(&w.a, |c| {
+        for_regular_gift(c, &id, "2026-08", "2027-02", "2027-02-10")
+    })
+    .unwrap();
+    let got: Vec<(&str, i64, PeriodStatus)> = rows
+        .iter()
+        .map(|r| (r.period.as_str(), r.expected, r.status))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("2026-09", 1000, PeriodStatus::Collected),
+            ("2026-10", 1000, PeriodStatus::Collected),
+            ("2026-11", 1000, PeriodStatus::Failed),
+            ("2026-12", 1200, PeriodStatus::Missing),
+            ("2027-01", 1200, PeriodStatus::Collected),
+            ("2027-02", 1200, PeriodStatus::Missing),
+        ]
+    );
+    assert_eq!(
+        rows[4]
+            .split
+            .iter()
+            .map(|s| (s.source_code_id.clone(), s.amount))
+            .collect::<Vec<_>>(),
+        [(w.street.clone(), 1000), (w.phone.clone(), 200)]
+    );
+    // Cancelled on 20 January: nothing expected from February.
+    tx_at(&w.a, "2027-01-20", |ctx| {
+        end_regular_gift(ctx, &id, None, RegularStatus::Cancelled, None, Source::Ui)
+    })
+    .unwrap();
+    let rows = read(&w.a, |c| {
+        for_regular_gift(c, &id, "2026-08", "2027-04", "2027-04-10")
+    })
+    .unwrap();
+    assert_eq!(rows.last().unwrap().period, "2027-01");
+}
+
+#[test]
+fn the_report_sums_by_code_detail_and_category_and_values_upgrades() {
+    use giving::expected::{By, report};
+    let w = world();
+    upgraded(&w);
+    // Another donor's upgrade, sent to GoCardless, then the donor
+    // cancelled before its first payment. (One still scheduled would be
+    // withdrawn by the cancellation: never an upgrade at all.)
+    let other = regular(&w);
+    let row = tx_at(&w.a, "2026-11-01", |ctx| {
+        change_terms(
+            ctx,
+            &other,
+            None,
+            upgrade(&w, "2027-01-05", 1500),
+            Source::Ui,
+        )
+    })
+    .unwrap();
+    tx_at(&w.a, "2026-12-22", |ctx| {
+        update_sync(ctx, &row, None, |s| s.state = SyncState::Sent)
+    })
+    .unwrap();
+    tx_at(&w.a, "2026-12-23", |ctx| {
+        end_regular_gift(
+            ctx,
+            &other,
+            None,
+            RegularStatus::Cancelled,
+            None,
+            Source::Ui,
+        )
+    })
+    .unwrap();
+    let r = read(&w.a, |c| {
+        report(c, "2026-09", "2027-01", By::Code, "2027-02-10")
+    });
+    let line = |code: &str| {
+        r.lines
+            .iter()
+            .find(|l| l.id.as_deref() == Some(code))
+            .unwrap()
+    };
+    let street = line(&w.street);
+    assert_eq!(
+        (
+            street.expected,
+            street.received,
+            street.failed,
+            street.missing
+        ),
+        (5000, 3000, 1000, 1000)
+    );
+    let phone = line(&w.phone);
+    assert_eq!(
+        (phone.expected, phone.received, phone.missing),
+        (400, 200, 200)
+    );
+    assert_eq!(r.total.expected, 5400);
+    // £2 a month more, credited to the phone code: £24 a year.
+    assert_eq!(r.upgrades.len(), 1);
+    let up = &r.upgrades[0];
+    assert_eq!(
+        (up.id.as_deref(), up.upgrades, up.annual, up.monthly),
+        (Some(w.phone.as_str()), 1, 2400, 200)
+    );
+    assert_eq!(r.not_realised.len(), 1);
+    assert_eq!(r.not_realised[0].regular_gift_id, other);
+    assert!(r.not_realised[0].ended);
+    assert_eq!(r.not_realised[0].annual, 6000);
+    // By category: Street and Online.
+    let r = read(&w.a, |c| {
+        report(c, "2026-09", "2027-01", By::Category, "2027-02-10")
+    });
+    let labels: Vec<(&str, i64)> = r
+        .lines
+        .iter()
+        .map(|l| (l.label.as_str(), l.expected))
+        .collect();
+    assert!(
+        labels.contains(&("Street", 5000)) && labels.contains(&("Online", 400)),
+        "{labels:?}"
+    );
+    let r = read(&w.a, |c| {
+        report(c, "2026-09", "2027-01", By::Detail, "2027-02-10")
+    });
+    assert_eq!(r.lines.len(), 2);
+    // Before the upgrade's first collected payment, it isn't counted.
+    let r = read(&w.a, |c| {
+        report(c, "2026-09", "2026-12", By::Code, "2027-02-10")
+    });
+    assert!(r.upgrades.is_empty());
+}
