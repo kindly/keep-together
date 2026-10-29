@@ -5,7 +5,8 @@ import type { RegularGiftSaved } from '../../src/lib/data/rust-types/RegularGift
 import type { RegularGiftView } from '../../src/lib/data/rust-types/RegularGiftView'
 import { GIFT_ROUTE, recorder } from './gift.helpers'
 
-// GoCardless on the fake (factory/plans/gocardless.sv, D1 and D2), until
+// GoCardless on the fake (factory/plans/gocardless.sv, D1 and D2; ADR
+// 0025: every payment is one gift, following its status), until
 // D3 builds its pages: functional, not timed. The browser goes through
 // the pages GoCardless would host (the fake's consent page and the
 // donor's sign-up page) and lands back on the group's settings; set-up
@@ -137,28 +138,33 @@ test.describe('GoCardless (fake)', { annotation: GIFT_ROUTE }, () => {
     await simulate(page, `mandates/${signed.mandateId}/activate`)
     await settled(page, slug, made.id, (v) => v.status === 'active')
 
-    // A payment: nothing until GoCardless confirms it, then a gift.
+    // A payment: its gift at once, pending (not money received) until
+    // GoCardless confirms it; then the same gift, received.
     const { payment } = await simulate(
       page,
       `subscriptions/${signed.subscriptionId}/payment`,
     )
     const pending = await settled(page, slug, made.id, (v) =>
-      v.payments.some((p) => p.paymentId === payment),
+      v.payments.some((p) => p.paymentId === payment && p.giftId !== null),
     )
-    expect(pending.payments[0].giftId).toBeNull()
+    const giftId = pending.payments[0].giftId!
+    await page.goto(`/t/${slug}/gifts/${giftId}`)
+    await expect(page.getByTestId('gift-status')).toHaveText('pending')
     await simulate(page, `payments/${payment}/confirm`)
     const paid = await settled(
       page,
       slug,
       made.id,
-      (v) => v.payments[0]?.giftId != null,
+      (v) => v.payments[0]?.status === 'confirmed',
     )
-    await page.goto(`/t/${slug}/gifts/${paid.payments[0].giftId}`)
+    expect(paid.payments[0].giftId).toBe(giftId)
+    await page.goto(`/t/${slug}/gifts/${giftId}`)
     await expect(page.getByText('Direct Debit', { exact: true })).toBeVisible()
     await expect(page.getByText('£12.50').first()).toBeVisible()
     await expect(page.getByText(payment!)).toBeVisible()
+    await expect(page.getByTestId('gift-status')).toHaveCount(0)
 
-    // The next one fails: shown, no gift.
+    // The next one fails: shown, its gift failed.
     const next = await simulate(
       page,
       `subscriptions/${signed.subscriptionId}/payment`,
@@ -170,7 +176,10 @@ test.describe('GoCardless (fake)', { annotation: GIFT_ROUTE }, () => {
       made.id,
       (v) => v.lastFailure?.paymentId === next.payment,
     )
-    expect(failed.lastFailure!.giftId).toBeNull()
+    const failedGift = failed.lastFailure!.giftId
+    expect(failedGift).not.toBeNull()
+    await page.goto(`/t/${slug}/gifts/${failedGift}`)
+    await expect(page.getByTestId('gift-status')).toHaveText('failed')
 
     // The donor's bank cancels the mandate: the regular gift ends.
     await simulate(page, `mandates/${signed.mandateId}/cancel`)
