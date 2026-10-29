@@ -431,3 +431,18 @@ pub fn by_client_key(conn: &Connection, client_key: &str) -> rusqlite::Result<Op
         .query_row([client_key], |r| r.get(0))
         .optional()
 }
+
+/// Every gift of `contact_id` that is money received, as `(id, received
+/// on)`, oldest first: what a declaration's evidence retention counts
+/// (Gift Aid scans: "covered no gift for 7 years"). One indexed read.
+pub fn received_gifts(
+    conn: &Connection,
+    contact_id: &str,
+) -> rusqlite::Result<Vec<(String, String)>> {
+    conn.prepare_cached(&format!(
+        "SELECT id, received_on FROM gifts WHERE contact_id = ?1 AND {RECEIVED}
+         ORDER BY received_on, seq"
+    ))?
+    .query_map([contact_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+    .collect()
+}

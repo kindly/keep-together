@@ -18,6 +18,7 @@ pub mod declarations;
 pub mod hmrc;
 pub mod irmark;
 pub mod rules;
+pub mod scans;
 pub mod schedule;
 pub mod types;
 pub mod warnings;
@@ -78,6 +79,9 @@ ALTER TABLE gift_aid_declarations ADD COLUMN details_version INTEGER NOT NULL DE
 
 pub use claims::{CLAIM, CLAIM_STATUS, MIGRATION as MIGRATION_CLAIMS};
 pub use hmrc::HMRC_DETAILS;
+pub use scans::{
+    MIGRATION as MIGRATION_SCANS, RETENTION as SCAN_RETENTION, REVIEW as SCAN_REVIEW, SCAN,
+};
 
 /// Every contract restore may meet in an org file's Gift Aid history.
 /// The claim contracts refuse a restore (a claim only moves forward).
@@ -90,6 +94,9 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &CLAIM,
         &CLAIM_STATUS,
         &HMRC_DETAILS,
+        &SCAN,
+        &SCAN_REVIEW,
+        &SCAN_RETENTION,
     ])
 });
 
