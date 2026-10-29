@@ -3,7 +3,7 @@
 <sv-prose id="b1">
 ## Design tree
 
-*Round 1 confirmed 2026-10-29, all as suggested. Round 2 is open below; its questions are marked* (g2…).
+*Confirmed by the human 2026-10-29 (rounds 1–2 all as suggested, round 3 approved). Ready for a builder once `feat/unified-gifts` has merged.*
 
 - **The terms are a dated chain** *(g1q1)*. A regular gift has a chain of term rows. Each row holds the amount, frequency, day (and month), and a split by source code in pence that sums to the amount, in force from the first payment it governs. Nothing is overwritten: a change adds a row.
   - **Setting a gift up** writes its first row, with one code for the whole amount, as now.
@@ -20,13 +20,12 @@
   - **A failed payment** stays expected and unpaid (arrears). **Cancellation** ends what is expected from then on *(g1q10)*.
 - **Upgrade value is reported annualised** (monthly delta × 12), with the monthly figure beside it *(g1q8)*.
 - **Pause is later** *(g1q12)*.
-- *Open in round 2:*
-  - changes made directly in GoCardless (g2q1);
-  - when an upgrade starts counting (g2q2);
-  - bulk uplifts (g2q3);
-  - who can change terms (g2q4);
-  - what the regular-gift card shows of expected vs actual (g2q5);
-  - a payment from a subscription we didn't make (g2q6).
+- **Changes made in GoCardless itself** *(g2q1)*. An `amended` we didn't send is recorded as a row from the next payment GoCardless creates. It has no change code and the note "changed in GoCardless". The difference goes on (or comes off) the newest layer, and the gift is flagged "change not coded" until staff pick a code.
+- **An upgrade counts from its first collected payment at the new amount** *(g2q2)*. One that never collected shows as "not realised".
+- **One gift at a time**: bulk uplifts and agency imports come later *(g2q3)*.
+- **Staff and admins change terms**; viewers never do *(g2q4)*.
+- **The regular-gift card shows the last 12 periods** *(g2q5)*: expected, what happened, and any scheduled change.
+- **A payment from a subscription we didn't create**, on a known mandate, is a one-off gift, not expected *(g2q6)*. The unknown subscription is listed for staff to adopt as a new regular gift or leave.
 </sv-prose>
 
 <sv-prose id="b2">
@@ -72,7 +71,7 @@ Nobody splits one recurring gift across several *sources* the way we do (ADR 002
   - The terms: `amount`, `frequency`, `day_of_month`, `month`.
   - What staff record: `change_code_id` (the version credited with the change, or NULL), `note`, `entered_by`, `entered_at`.
   - Sync, system-owned: `state` (`scheduled | sent | applied | withdrawn`), `subscription_id` (the GoCardless subscription it runs under), `sent_at`, `applies_from` (the payment it really starts on, when the change missed its intended one).
-  - Counters: `terms_version`, `sync_version`.
+  - Counters: `terms_version`, `sync_version`, `code_version`.
   - Index: `(regular_gift_id, effective_from)`.
 - `regular_gift_term_allocations`: `id`, `term_id`, `position`, `source_code_id`, `amount`.
   - Child rows with ids (ADR 0014). `position` is the layer order, oldest money first.
@@ -88,8 +87,9 @@ Nobody splits one recurring gift across several *sources* the way we do (ADR 002
 | Contract | Slice | Counter | Writes |
 |---|---|---|---|
 | `giving.regularGift` **v2** | contact, client key, set-up facts | `terms_version` → renamed `setup_version` | Created with its first terms row in one command group. An upcaster turns v1 revisions (which held the terms) into v2 plus the first row's payload. |
-| `giving.regularGiftTerms` (new) | one terms row: dates, amount, schedule, allocations (children), change code, note | `terms_version` | Created by staff (a change) or by set-up. It can be **edited or withdrawn only while `scheduled`**; once sent it is immutable (`term_sent`). Tier-1: allocations sum to the amount; every code goes through `sources::mark_used`; `effective_from` is after the last sent row's. |
+| `giving.regularGiftTerms` (new) | one terms row: dates, amount, schedule, allocations (children), note | `terms_version` | Created by staff (a change) or by set-up. It can be **edited or withdrawn only while `scheduled`**; once sent it is immutable (`term_sent`). Tier-1: allocations sum to the amount; every code goes through `sources::mark_used`; `effective_from` is after the last sent row's. |
 | `giving.regularGiftTermSync` (new) | `state`, `subscription_id`, `sent_at`, `applies_from` | `sync_version` | Written only by the system (the sync job, webhook processing). `applies_from` is the first payment it really governs: the staff's `effective_from`, or a later one if the change missed its payment. The chain reads `applies_from` when set, so the two contracts share no field. |
+| `giving.regularGiftTermCode` (new) | `change_code_id` only | `code_version` | Staff, at any state, so a change made in GoCardless can be coded later and a wrong code fixed. A change is entered as both slices in one command group, as `contacts.create` does. A new code goes through `mark_used`. |
 | `giving.regularGiftMandate` | unchanged; `subscription_id` is now "the current one" | `mandate_version` | Recreating a subscription sets the new id. |
 | `giving.gift` / `giving.status` | unchanged; `scheduled_on` is provider-sourced, set by processing | as now | Payments copy the split in force (pure rule `split_for_collected`). |
 
@@ -129,15 +129,18 @@ Each step is one builder session, run in order unless marked **parallel**. All o
      - amends, or recreates with `start_date` = the effective date and idempotency key `keep-sub-{term id}`;
      - moves the row to the next payment if its target already exists;
      - otherwise marks it `sent`. The `amended` event, or the first payment at the new amount, marks it `applied`.
+   - Processing: an `amended` we didn't send records a row (`changed in GoCardless`, no code, flagged "change not coded" until staff set its code through `giving.regularGiftTermCode`). A payment from an unknown subscription on a known mandate becomes a one-off gift, and the subscription is listed (`GET …/gocardless/unknown-subscriptions`; adopt = a new regular gift whose first row is applied from the subscription's terms).
    - Routes: `POST /api/t/{slug}/regular-gifts/{id}/terms` (a change); `PUT …/terms/{termId}` (`expected`, while scheduled); `POST …/terms/{termId}/withdraw`; `GET …/regular-gifts/{id}` gains the chain and the upcoming dates.
    - Isolation tests for each route.
 5. **Expected vs actual reads** (**parallel** with 4 once 3 is in):
    - `giving::expected` turns the chain plus the gifts matched by `scheduled_on` into rows per period: expected, completed, failed, cancelled, missing.
-   - Routes: by regular gift, and a report by code, detail or category over a period range, with the upgrade value (annualised and monthly) by change code.
+   - Routes: by regular gift, and a report by code, detail or category over a period range, with the upgrade value (annualised and monthly) by change code, counted from the first collected payment at the new amount, and "not realised" upgrades separately.
    - A `keep expected <slug> <month>` check.
 6. **SPA** (with or after the D3 screens):
    - On the regular-gift card, "Change amount or schedule": new total, the code that won it, effective payment picked from the upcoming dates, and the split shown and editable.
-   - Also on the card: the terms history and a scheduled change you can edit or withdraw.
+   - Also on the card: the terms history, a scheduled change you can edit or withdraw, the "change not coded" flag with its code picker, and the last 12 periods of expected vs actual.
+   - Settings or GoCardless page: unknown subscriptions to adopt or leave.
+   - Staff and admins see the change button; viewers don't.
    - A report page for expected vs actual and upgrades.
    - QC flow: the change dialog is repeatable (100 ms).
 7. **Tighten:** a later schema step drops the old columns from `regular_gifts`, once nothing reads them (a grep test).
@@ -162,10 +165,13 @@ Each step is one builder session, run in order unless marked **parallel**. All o
   - The 11th change recreates the subscription on the same mandate, and so does a frequency or day change. Recreating is idempotent across job retries.
   - A change too late for its payment moves to the next one, with `applies_from` set and `effective_from` kept.
   - A cancelled gift's scheduled rows are withdrawn.
+  - An `amended` we didn't send records an uncoded row, and coding it clears the flag.
+  - A payment from an unknown subscription is a one-off gift and lists the subscription. Adopting it makes a regular gift without creating a subscription.
+  - A viewer's change is refused (403).
 - **Expected:**
   - The months before and after an upgrade.
   - A failed month shows as arrears, a missing month as missing, and nothing is expected after cancellation.
-  - The report sums by code, detail and category. Upgrade value is £24 a year for the example.
+  - The report sums by code, detail and category. Upgrade value is £24 a year for the example, and an upgrade cancelled before its first payment is "not realised".
 - **Isolation:** for every new route, org B never sees A's terms, and A's regular-gift and term ids under B's slug are 404.
 - **Schema:** the backfill fixture gives exactly one applied row per regular gift, with a split equal to its amount. `scheduled_on` is filled. There is still no `REAL` column.
 </sv-prose>
@@ -306,6 +312,20 @@ Round 1 came back all as suggested. These are the questions it opened.
 
 <sv-ask id="g2fin" round="2" role="close">
 Round 2: changes from outside, when upgrades count, bulk, permissions, the card. Send when done.
+</sv-ask>
+
+<sv-prose id="b9">
+## Round 3: confirm
+
+Round 2 came back all as suggested. Its answers are folded into the design tree, the steps (4–6) and the tests.
+
+One addition from round 2: a row's change code gets its own slice, `giving.regularGiftTermCode`, editable at any state. A change made in GoCardless can then be coded after it was sent, and the code shares no field with the staff or sync contracts. Every other field of a sent row stays fixed.
+
+Nothing is left open. Approve to hand this to a builder once unified gifts has merged, or choose revise and say what to change.
+</sv-prose>
+
+<sv-ask id="g3fin" round="3" role="close">
+Confirm the plan: design tree, contracts and tables, steps 1–7, tests.
 </sv-ask>
 
 </sv-page>
