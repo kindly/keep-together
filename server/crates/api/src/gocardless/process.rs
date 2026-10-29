@@ -679,7 +679,8 @@ async fn record_fetched(
 }
 
 /// Whose payment `p` is: a regular gift's instalment (its subscription,
-/// or a mandate of ours with no tag when the subscription is ours), our
+/// or a subscription payment on its mandate before the subscription id
+/// is recorded), our
 /// tagged one-off (the donor and code must be this organisation's), a
 /// one-off on a mandate we know (that regular gift's donor and code), or
 /// nobody yet.
@@ -697,6 +698,14 @@ async fn owner_of(
         Some(md) => identify_mandate(org, gc, md).await?,
         None => None,
     };
+    // A subscription payment on our mandate before its subscription id
+    // is on record here: that regular gift's own instalment.
+    if p.subscription.is_some()
+        && let Some(found) = &on_mandate
+        && found.mandate.subscription_id.is_none()
+    {
+        return Ok(PaymentOwner::Regular(found.id.clone()));
+    }
     if let Some(tag) = p.one_off.clone() {
         let fallback = on_mandate.as_ref().map(|f| f.terms.source_code_id.clone());
         let owner = org

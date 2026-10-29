@@ -2723,3 +2723,40 @@ async fn a_dropped_webhook_is_recovered_by_the_catch_up() {
     assert_eq!(again[0].missed, 0);
     t.consistent("alpha");
 }
+
+/// A subscription payment on our mandate that arrives before the
+/// subscription's id is on record here (GoCardless refused to answer the
+/// create, say) is that regular gift's instalment, not a one-off.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subscription_payment_before_its_subscription_is_recorded_is_an_instalment() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1000, "path": "subscriptions", "status": 422 }),
+    )
+    .await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let mandate = v["mandateId"].as_str().unwrap().to_owned();
+    assert_eq!(v["subscriptionId"], Value::Null);
+    let pm = t
+        .simulate(&format!(
+            "mandates/{mandate}/payment?amount=1000&subscription=SBELSEWHERE"
+        ))
+        .await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let row = payment(&v, &pm);
+    let g = t.gift(row["giftId"].as_str().unwrap()).await;
+    assert_eq!(g["regularGiftId"], id.as_str());
+    t.fake_post("outage", json!({ "calls": 0 })).await;
+    t.consistent("alpha");
+}

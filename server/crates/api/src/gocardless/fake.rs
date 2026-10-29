@@ -28,8 +28,9 @@
 //!   and expire cancel its subscriptions too, as GoCardless does);
 //! - `simulate/subscriptions/{id}/payment`: the subscription's next
 //!   payment (`pending_submission`), answering `{payment}`;
-//! - `simulate/mandates/{id}/payment?amount=`: a one-off on the mandate
-//!   with no metadata (as if taken in GoCardless's dashboard);
+//! - `simulate/mandates/{id}/payment?amount=&subscription=`: a one-off on
+//!   the mandate with no metadata (as if taken in GoCardless's
+//!   dashboard), or naming a subscription;
 //! - `simulate/organisations/{OR…}/payment?amount=`: a payment from a
 //!   stranger (a new customer and mandate we never asked for), answering
 //!   `{payment, mandate}`;
@@ -1709,6 +1710,8 @@ async fn list_events(
 #[derive(Deserialize)]
 struct Amount {
     amount: Option<i64>,
+    /// A subscription to name in the payment's links.
+    subscription: Option<String>,
 }
 
 /// A one-off on mandate `id` with no metadata: as if taken in
@@ -1736,7 +1739,10 @@ async fn simulate_mandate_payment(
             "pending_submission",
             json!("One-off"),
             json!({}),
-            json!({ "mandate": id }),
+            match &q.subscription {
+                Some(sb) => json!({ "mandate": id, "subscription": sb }),
+                None => json!({ "mandate": id }),
+            },
         );
         (event, payment)
     };
