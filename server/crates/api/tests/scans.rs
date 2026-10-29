@@ -1366,6 +1366,10 @@ async fn uploads_past_the_slots_in_flight_are_busy() {
     assert_eq!(phone.open(&w).await.status, StatusCode::OK);
     drop(held);
     assert_eq!(phone.new_scan(&w, photo(1)).await.status, StatusCode::OK);
+    // Every upload, answered or refused, gave its slot back.
+    let refused = phone.new_scan(&w, b"not an image".to_vec()).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(limits.in_flight(), 0);
 }
 
 /// The data volume's reserve: an upload that would eat into it is
@@ -1423,4 +1427,42 @@ async fn the_configured_cap_is_the_one_enforced_and_shown() {
     let val = w.login("val@alpha.org").await;
     let (s, _) = w.call("GET", "/api/t/alpha/files-usage", &val, None).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// A password change keeps the session it was made from, which a pairing
+/// hangs from: it ends the user's pairings anyway (R2-L1).
+#[tokio::test]
+async fn a_password_change_ends_the_users_pairings() {
+    let w = world();
+    let (sam, id, token) = staff_sitting(&w).await;
+    let mut phone = Phone::new(&token);
+    assert_eq!(phone.open(&w).await.status, StatusCode::OK);
+    let sam_id = w.store.platform().upsert_user("sam@alpha.org").unwrap().0;
+    let old = "correct horse battery staple 1";
+    w.store
+        .platform()
+        .with_write(|tx| ::auth::accounts::set_password(tx, sam_id, old, contracts::now_ms()))
+        .unwrap();
+    let (s, out) = w
+        .call(
+            "POST",
+            "/api/auth/account/password",
+            &sam,
+            Some(json!({ "current": old, "new": "another long passphrase 2" })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(phone.open(&w).await.status, StatusCode::GONE);
+    let why: String = w
+        .store
+        .platform()
+        .with_read(|c| {
+            c.query_row(
+                "SELECT ended_why FROM scan_pairings WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(why, "password_changed");
 }

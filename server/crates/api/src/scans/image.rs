@@ -72,14 +72,27 @@ static PERMITS: Permits = Permits {
 
 struct Permit;
 
+/// How long an upload waits for the decoder before it is refused
+/// (`503 busy`): the slots bound the queue, this bounds the wait.
+pub const PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl Permit {
-    fn take() -> Self {
+    fn take(wait: std::time::Duration) -> Result<Self, ApiError> {
+        let deadline = std::time::Instant::now() + wait;
         let mut free = PERMITS.free.lock().unwrap_or_else(|e| e.into_inner());
         while *free == 0 {
-            free = PERMITS.freed.wait(free).unwrap_or_else(|e| e.into_inner());
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(ApiError::Busy);
+            }
+            free = PERMITS
+                .freed
+                .wait_timeout(free, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
         }
         *free -= 1;
-        Permit
+        Ok(Permit)
     }
 }
 
@@ -127,7 +140,7 @@ pub fn reencode(raw: &[u8]) -> Result<Processed, ApiError> {
             MAX_PIXELS / 1_000_000
         )));
     }
-    let _permit = Permit::take();
+    let _permit = Permit::take(PERMIT_WAIT)?;
     let decoded = image::DynamicImage::from_decoder(decoder)
         .map_err(|_| refused("The image can't be read"))?;
     let mut grey = decoded.to_luma8();
@@ -289,6 +302,19 @@ mod tests {
             panic!("{err:?}")
         };
         assert!(problems[0].message.contains("too large"), "{problems:?}");
+    }
+
+    /// While the decoder is busy, an upload waits at most its time, then
+    /// is refused (`busy`), never queued for ever.
+    #[test]
+    fn waiting_for_the_decoder_times_out_busy() {
+        let held = Permit::take(PERMIT_WAIT).unwrap();
+        let started = std::time::Instant::now();
+        let refused = Permit::take(std::time::Duration::from_millis(50));
+        assert!(matches!(refused, Err(ApiError::Busy)));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+        drop(held);
+        assert!(Permit::take(std::time::Duration::from_millis(50)).is_ok());
     }
 
     fn crc32(bytes: &[u8]) -> u32 {

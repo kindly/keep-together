@@ -24,6 +24,7 @@ use giftaid::scans::{self as domain, MAX_PAGE_BYTES, MAX_PAGES, Status};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::limits::HeldSlot;
 use super::{
     DEV_DEVICE_COOKIE, DEVICE_COOKIE, HARD_CAP_MS, Live, MAX_UPLOADS, Purpose, Target, Uploaded,
     Use,
@@ -246,6 +247,7 @@ struct PageParams {
 async fn new_scan(
     State(state): State<AppState>,
     Extension(live): Extension<Live>,
+    Extension(slot): Extension<HeldSlot>,
     Path(TokenParam { token }): Path<TokenParam>,
     Params(keys): Params<Keys>,
     headers: HeaderMap,
@@ -255,6 +257,7 @@ async fn new_scan(
     receive(
         &state,
         live,
+        slot,
         token,
         &headers,
         Target::New { id: keys.id },
@@ -268,6 +271,7 @@ async fn new_scan(
 async fn add_page(
     State(state): State<AppState>,
     Extension(live): Extension<Live>,
+    Extension(slot): Extension<HeldSlot>,
     Path(PageParams { token, scan_id }): Path<PageParams>,
     Params(keys): Params<Keys>,
     headers: HeaderMap,
@@ -278,12 +282,13 @@ async fn add_page(
         scan_id,
         page_id: keys.page_id,
     };
-    receive(&state, live, token, &headers, target, body).await
+    receive(&state, live, slot, token, &headers, target, body).await
 }
 
 async fn receive(
     state: &AppState,
     checked: Live,
+    slot: HeldSlot,
     token: String,
     headers: &HeaderMap,
     target: Target,
@@ -295,7 +300,10 @@ async fn receive(
         return Err(ApiError::Gone);
     }
     let (store, limits) = (state.store.clone(), state.scans.clone());
+    let slot = slot.take();
     let out = blocking(move || {
+        // Held until the work ends, whether or not anyone still waits.
+        let _slot = slot;
         let left = super::take_upload(&store, &live.pairing.id)?;
         let db = store.org(&live.tenant)?;
         let page = super::store_page(&db, &body, &limits)?;

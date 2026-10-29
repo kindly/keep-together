@@ -77,6 +77,11 @@ impl ScanLimits {
         })
     }
 
+    /// Uploads holding a slot now.
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::Acquire)
+    }
+
     /// This cap instead (bytes of blobs per org).
     pub fn with_cap(mut self, cap_bytes: i64) -> Self {
         self.cap_bytes = cap_bytes;
@@ -131,6 +136,26 @@ impl ScanLimits {
 /// An upload's place among [`MAX_IN_FLIGHT`].
 #[derive(Debug)]
 pub struct Slot(Arc<AtomicUsize>);
+
+/// The request's [`Slot`], in its extensions: `api::body` takes it before
+/// the body is read; the upload's handler moves it into its blocking work
+/// ([`HeldSlot::take`]), so it is freed when the decode and the write end,
+/// not when the client hangs up (a dropped request drops its future, but
+/// not a `spawn_blocking` already running). A request that never reaches
+/// the handler frees it with its extensions.
+#[derive(Clone, Debug)]
+pub struct HeldSlot(Arc<std::sync::Mutex<Option<Slot>>>);
+
+impl HeldSlot {
+    pub fn new(slot: Slot) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Some(slot))))
+    }
+
+    /// The slot, to move into the work.
+    pub fn take(&self) -> Option<Slot> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
 
 impl Drop for Slot {
     fn drop(&mut self) {
@@ -220,6 +245,27 @@ mod tests {
         assert!(matches!(limits.take_slot(), Err(ApiError::Busy)));
         drop(held);
         assert!(limits.take_slot().is_ok());
+    }
+
+    /// The handler takes the slot out of the request and moves it into
+    /// its blocking work: dropping the request (the client hung up) then
+    /// frees nothing; the work ending does.
+    #[test]
+    fn a_held_slot_lives_with_the_work_not_the_request() {
+        let limits = ScanLimits::default();
+        let held = HeldSlot::new(limits.take_slot().unwrap());
+        let in_request = held.clone();
+        let work = held.take().expect("the handler takes it");
+        drop(held);
+        drop(in_request); // the request and its extensions are gone
+        assert_eq!(limits.in_flight(), 1);
+        let worker = std::thread::spawn(move || drop(work));
+        worker.join().unwrap();
+        assert_eq!(limits.in_flight(), 0);
+        // A request that never reached its handler frees it with itself.
+        let unused = HeldSlot::new(limits.take_slot().unwrap());
+        drop(unused);
+        assert_eq!(limits.in_flight(), 0);
     }
 
     #[test]

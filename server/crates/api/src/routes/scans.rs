@@ -18,6 +18,7 @@ use store::Role;
 use ts_rs::TS;
 
 use super::Params;
+use crate::scans::limits::HeldSlot;
 use crate::scans::phone::Keys;
 use crate::scans::{Pairing, Purpose, Target, Uploaded};
 use crate::{ApiError, Body, IdParam, Tenant};
@@ -157,11 +158,12 @@ async fn inbox(Extension(t): Extension<Tenant>) -> Result<Json<Vec<ScanView>>, A
 /// draft, `via: direct`.
 async fn upload(
     Extension(t): Extension<Tenant>,
+    Extension(slot): Extension<HeldSlot>,
     Params(keys): Params<Keys>,
     body: Bytes,
 ) -> Result<Json<Uploaded>, ApiError> {
     let keys = keys.checked()?;
-    t.upload_scan_page(Target::New { id: keys.id }, body)
+    t.upload_scan_page(Target::New { id: keys.id }, body, slot.take())
         .await
         .map(Json)
 }
@@ -170,6 +172,7 @@ async fn upload(
 /// page of a direct draft.
 async fn upload_page(
     Extension(t): Extension<Tenant>,
+    Extension(slot): Extension<HeldSlot>,
     Path(IdParam { id }): Path<IdParam>,
     Params(keys): Params<Keys>,
     body: Bytes,
@@ -184,7 +187,9 @@ async fn upload_page(
         scan_id: id,
         page_id: keys.page_id,
     };
-    t.upload_scan_page(target, body).await.map(Json)
+    t.upload_scan_page(target, body, slot.take())
+        .await
+        .map(Json)
 }
 
 /// `GET scans/{id}`

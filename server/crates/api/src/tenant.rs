@@ -402,6 +402,7 @@ impl Tenant {
         &self,
         target: crate::scans::Target,
         raw: axum::body::Bytes,
+        slot: Option<crate::scans::limits::Slot>,
     ) -> Result<crate::scans::Uploaded, ApiError> {
         if self.role < Role::Staff {
             return Err(ApiError::Forbidden);
@@ -409,6 +410,8 @@ impl Tenant {
         let (db, limits) = (self.db.clone(), self.scan_limits.clone());
         let (user, timing, check) = (self.user, self.timing.clone(), self.recheck());
         blocking(move || {
+            // Held until the work ends, whether or not anyone still waits.
+            let _slot = slot;
             check()?;
             let start = Instant::now();
             let page = crate::scans::store_page(&db, &raw, &limits)?;

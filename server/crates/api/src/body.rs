@@ -49,19 +49,24 @@ pub async fn buffer(State(state): State<AppState>, mut req: Request, next: Next)
             return e.into_response();
         }
     }
-    let path = req.uri().path();
+    let path = req.uri().path().to_owned();
+    let path = path.as_str();
     let post = req.method() == axum::http::Method::POST;
     let phone = path.starts_with(crate::scans::phone::PREFIX);
-    // A scan upload holds one of the few slots from before its body is
-    // read until it is answered (`scans::limits`).
-    let _slot = if post && (phone || is_tenant_upload(path)) {
+    // A scan upload takes one of the few slots before its body is read;
+    // its handler moves it into the blocking work, which holds it to the
+    // end (`scans::limits::HeldSlot`).
+    let slot = if post && (phone || is_tenant_upload(path)) {
         match state.scans.take_slot() {
-            Ok(slot) => Some(slot),
+            Ok(slot) => Some(crate::scans::limits::HeldSlot::new(slot)),
             Err(e) => return e.into_response(),
         }
     } else {
         None
     };
+    if let Some(slot) = slot {
+        req.extensions_mut().insert(slot);
+    }
     let limit = if path.starts_with("/api/auth/") {
         AUTH_BODY_LIMIT
     } else if phone && !post {
