@@ -31,6 +31,16 @@
 //! What was uploaded is recorded in `platform.db` (`snapshots`). The job
 //! never holds a transaction across two files.
 //!
+//! **Nothing is held whole in memory** (a files db can be 2 GB; a machine
+//! has 512 MB): the copy and its zstd are files under `snapshots-tmp/`,
+//! compressed stream to stream, and the upload's body is the compressed
+//! file memory-mapped, clean file-backed pages the kernel can drop, never
+//! the heap. It stays one create-only `PUT` (`If-None-Match: *`): the
+//! bucket policy refuses a write without it, multipart uploads included,
+//! and a multipart complete could overwrite. S3 takes up to 5 GB in one
+//! `PUT`. A restore streams the download to a file, then decompresses
+//! file to file.
+//!
 //! Also here: what `/healthz` reports about backups ([`health`]): the age
 //! of the last snapshot and Litestream's replication lag, read from its
 //! control socket (`GET /list`, `last_sync_at` per database).
@@ -304,19 +314,39 @@ impl SnapshotJob {
             if tiers.is_empty() {
                 return Ok::<_, String>(None);
             }
-            let bytes = copy_and_compress(&path, &tmp_dir, &name)?;
-            Ok(Some((tiers, revision, bytes)))
+            let compressed = copy_and_compress(&path, &tmp_dir, &name)?;
+            Ok(Some((tiers, revision, compressed)))
         })
         .await?;
-        let Some((tiers, revision, bytes)) = prepared else {
+        let Some((tiers, revision, compressed)) = prepared else {
             return Ok(vec![]);
         };
-        // Create-only: a key that exists (a second pass in the same
-        // minute) is left alone and that tier stays due for the next run.
-        // Nothing the app holds can replace a stored snapshot.
-        let payload = PutPayload::from(bytes);
+        let uploaded = self.upload(source, now, &tiers, &compressed).await;
+        let _ = std::fs::remove_file(&compressed);
+        let uploaded = uploaded?;
+        if uploaded.is_empty() {
+            return Ok(vec![]);
+        }
+        let ledger_path = platform_path(&self.config.data_dir);
+        let (name, recorded) = (source.name.clone(), uploaded.clone());
+        off(move || record(&ledger_path, &name, revision, &recorded, now)).await?;
+        Ok(uploaded)
+    }
+
+    /// Upload the compressed copy at `compressed` under each tier's key.
+    /// Create-only: a key that exists (a second pass in the same minute)
+    /// is left alone and that tier stays due for the next run. Nothing the
+    /// app holds can replace a stored snapshot.
+    async fn upload(
+        &self,
+        source: &Source,
+        now: OffsetDateTime,
+        tiers: &[Tier],
+        compressed: &Path,
+    ) -> Result<Vec<Tier>, String> {
+        let payload = mapped(compressed)?;
         let mut uploaded = vec![];
-        for tier in &tiers {
+        for tier in tiers {
             let key = key(*tier, &self.config.env, &source.name, now);
             let opts = PutOptions {
                 mode: PutMode::Create,
@@ -333,14 +363,20 @@ impl SnapshotJob {
                 Err(e) => return Err(format!("upload {key}: {e}")),
             }
         }
-        if uploaded.is_empty() {
-            return Ok(vec![]);
-        }
-        let ledger_path = platform_path(&self.config.data_dir);
-        let (name, recorded) = (source.name.clone(), uploaded.clone());
-        off(move || record(&ledger_path, &name, revision, &recorded, now)).await?;
         Ok(uploaded)
     }
+}
+
+/// A file as an upload's body without reading it into the heap: its
+/// pages, mapped read-only (the mapping lives as long as the payload).
+fn mapped(path: &Path) -> Result<PutPayload, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    // Safety: the file is this job's own temp file under `snapshots-tmp/`,
+    // written and closed before this and removed only after the upload;
+    // nothing truncates it while mapped.
+    let map =
+        unsafe { memmap2::Mmap::map(&file) }.map_err(|e| format!("map {}: {e}", path.display()))?;
+    Ok(PutPayload::from(bytes::Bytes::from_owner(map)))
 }
 
 /// Blocking SQLite and file work, off the async runtime.
@@ -537,12 +573,16 @@ fn record(
     Ok(())
 }
 
-/// `VACUUM INTO` a temp file, `integrity_check` it, zstd it. The temp
-/// file is removed whatever happens.
-fn copy_and_compress(path: &Path, tmp_dir: &Path, name: &str) -> Result<Vec<u8>, String> {
+/// `VACUUM INTO` a temp file, `integrity_check` it, then zstd it file to
+/// file (streamed: a few MB of buffers whatever the size). Returns the
+/// compressed file, which the caller removes; the uncompressed copy is
+/// removed whatever happens.
+fn copy_and_compress(path: &Path, tmp_dir: &Path, name: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(tmp_dir).map_err(|e| e.to_string())?;
     let tmp = tmp_dir.join(format!("{name}.db"));
+    let compressed = tmp_dir.join(format!("{name}.db.zst"));
     let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&compressed);
     let out = (|| {
         open_read_only(path)?
             .execute("VACUUM INTO ?1", [tmp.to_string_lossy()])
@@ -553,10 +593,18 @@ fn copy_and_compress(path: &Path, tmp_dir: &Path, name: &str) -> Result<Vec<u8>,
         if check != "ok" {
             return Err(format!("integrity_check of the copy: {check}"));
         }
-        let file = std::fs::File::open(&tmp).map_err(|e| e.to_string())?;
-        zstd::encode_all(file, 9).map_err(|e| e.to_string())
+        let from = std::fs::File::open(&tmp).map_err(|e| e.to_string())?;
+        let to = std::fs::File::create(&compressed).map_err(|e| e.to_string())?;
+        let mut to = std::io::BufWriter::new(to);
+        zstd::stream::copy_encode(from, &mut to, 9).map_err(|e| e.to_string())?;
+        use std::io::Write;
+        to.flush().map_err(|e| e.to_string())?;
+        Ok(compressed.clone())
     })();
     let _ = std::fs::remove_file(&tmp);
+    if out.is_err() {
+        let _ = std::fs::remove_file(&compressed);
+    }
     out
 }
 
@@ -735,35 +783,62 @@ async fn fetch_newest_good(
     None
 }
 
-/// Download, decompress to `<target>.restoring`, `integrity_check`, then
-/// rename into place. Returns the restored size.
+/// Download to `<target>.zst` (streamed), decompress to
+/// `<target>.restoring` (file to file), `integrity_check`, then rename
+/// into place. Returns the restored size. Neither the download nor the
+/// file is held in memory.
 async fn fetch_into(
     bucket: &dyn ObjectStore,
     key: &ObjectPath,
     target: &Path,
 ) -> Result<u64, String> {
-    let bytes = bucket
-        .get(key)
-        .await
-        .map_err(|e| format!("get: {e}"))?
-        .bytes()
-        .await
-        .map_err(|e| format!("read: {e}"))?;
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let download = target.with_extension("db.zst");
+    let fetched = async {
+        let mut stream = bucket
+            .get(key)
+            .await
+            .map_err(|e| format!("get: {e}"))?
+            .into_stream();
+        let mut file = tokio::fs::File::create(&download)
+            .await
+            .map_err(|e| e.to_string())?;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("read: {e}"))?;
+            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        }
+        file.flush().await.map_err(|e| e.to_string())
+    }
+    .await;
+    if let Err(e) = fetched {
+        let _ = std::fs::remove_file(&download);
+        return Err(e);
+    }
     let target = target.to_path_buf();
     off(move || {
         let partial = target.with_extension("db.restoring");
         let result = (|| {
-            let raw = zstd::decode_all(&bytes[..]).map_err(|e| format!("decompress: {e}"))?;
-            std::fs::write(&partial, &raw).map_err(|e| e.to_string())?;
+            let from = std::fs::File::open(&download).map_err(|e| e.to_string())?;
+            let to = std::fs::File::create(&partial).map_err(|e| e.to_string())?;
+            let mut to = std::io::BufWriter::new(to);
+            zstd::stream::copy_decode(from, &mut to).map_err(|e| format!("decompress: {e}"))?;
+            use std::io::Write;
+            to.flush().map_err(|e| e.to_string())?;
+            drop(to);
             let check: String = open_read_only(&partial)?
                 .query_row("PRAGMA integrity_check", [], |r| r.get(0))
                 .map_err(|e| format!("integrity_check: {e}"))?;
             if check != "ok" {
                 return Err(format!("integrity_check: {check}"));
             }
+            let size = std::fs::metadata(&partial)
+                .map_err(|e| e.to_string())?
+                .len();
             std::fs::rename(&partial, &target).map_err(|e| e.to_string())?;
-            Ok(raw.len() as u64)
+            Ok(size)
         })();
+        let _ = std::fs::remove_file(&download);
         if result.is_err() {
             let _ = std::fs::remove_file(&partial);
         }

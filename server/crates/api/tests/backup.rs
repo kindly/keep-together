@@ -649,3 +649,97 @@ async fn the_files_db_is_snapshotted_daily_when_changed_and_restored_with_its_or
             .is_none()
     );
 }
+
+/// The highest `RssAnon` (heap and other anonymous memory, in bytes) a
+/// child reached, sampled every few ms until it exits; and its status.
+/// File-backed pages (the mapped upload body, the page cache) are left
+/// out: the kernel drops those under pressure, so they don't OOM a
+/// machine.
+fn peak_anon(mut cmd: std::process::Command) -> (u64, std::process::ExitStatus) {
+    let mut child = cmd
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let status_path = format!("/proc/{}/status", child.id());
+    let mut peak = 0u64;
+    loop {
+        if let Ok(status) = std::fs::read_to_string(&status_path)
+            && let Some(kb) = status
+                .lines()
+                .find_map(|l| l.strip_prefix("RssAnon:"))
+                .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+        {
+            peak = peak.max(kb * 1024);
+        }
+        if let Some(status) = child.try_wait().unwrap() {
+            return (peak, status);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// A files db bigger than the memory budget snapshots and restores in
+/// that budget (machines have 512 MB; a files db may hold 2 GB): the
+/// copy, its zstd, the upload and the download are all streamed or
+/// mapped, never held whole on the heap.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_files_db_larger_than_the_memory_budget_snapshots_and_restores_within_it() {
+    const BUDGET: u64 = 64 << 20;
+    const BLOBS: usize = 160; // 1 MB each, incompressible: 160 MB
+    // On disk under target/, not the system temp dir (often a small
+    // tmpfs, itself memory).
+    let tmp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let data = tmp.path().join("data");
+    let bucket = tmp.path().join("bucket");
+    let store = open(&data);
+    let a = store.create_tenant("alpha", "Alpha").unwrap();
+    let files = store.org(&a.id).unwrap().files().unwrap();
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    for _ in 0..BLOBS {
+        let blob: Vec<u8> = (0..(1 << 20) / 8)
+            .flat_map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x.to_le_bytes()
+            })
+            .collect();
+        files
+            .put(&blob, "image/jpeg", 1, store::files::CAP_BYTES)
+            .unwrap();
+    }
+    let size = files.usage().unwrap() as u64;
+    assert!(size > 2 * BUDGET, "{size}");
+    drop(files);
+    drop(store);
+
+    let snapshot = |cmd: &str, dir: &Path| {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_keep-snapshot"));
+        c.env_clear()
+            .env(
+                "KEEP_SNAPSHOT_BUCKET",
+                format!("file://{}", bucket.display()),
+            )
+            .env("KEEP_ENV", "test")
+            .args([cmd, "--data"])
+            .arg(dir);
+        let (peak, status) = peak_anon(c);
+        assert!(status.success(), "keep-snapshot {cmd}: {status}");
+        peak
+    };
+    let peak = snapshot("run", &data);
+    assert!(
+        peak < BUDGET,
+        "snapshot run peaked at {} MB of heap",
+        peak >> 20
+    );
+
+    let restored = tmp.path().join("restored");
+    let peak = snapshot("restore", &restored);
+    assert!(peak < BUDGET, "restore peaked at {} MB of heap", peak >> 20);
+    let store = open(&restored);
+    let files = store.org(&a.id).unwrap().files_if_any().unwrap().unwrap();
+    assert_eq!(files.usage().unwrap() as u64, size);
+}
