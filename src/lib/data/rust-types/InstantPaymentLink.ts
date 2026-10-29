@@ -7,4 +7,9 @@ export type InstantPaymentLink = {
 /**
  * Our record of the request (who asked): the form's `clientKey`.
  */
-requestId: string, billingRequestId: string, flowUrl: string, flowExpiresAt: string | null, };
+requestId: string, billingRequestId: string, 
+/**
+ * What the link charges, in pence: the request's as first recorded
+ * under this key (a retry's own amount is ignored).
+ */
+amount: bigint, flowUrl: string, flowExpiresAt: string | null, };

@@ -21,6 +21,7 @@ const fill = (to: string, params: Record<string, string> = {}) =>
   to.replace(/\$(\w+)/g, (_, k: string) => params[k])
 
 let params: Record<string, string> = {}
+let routeSearch: Record<string, unknown> = {}
 // The browser history, reduced: entries of path and state. Links mark the
 // current one (aria-current, as the router does), push it or replace it;
 // the mobile drawer pushes its own entry, and back pops.
@@ -85,6 +86,7 @@ vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (options: object) => ({
     options,
     useParams: () => use(TabParams) ?? params,
+    useSearch: () => routeSearch,
   }),
   // Other props pass through, as a menu item's role does (asChild). The
   // current page is marked as the router marks it: by prefix, or exactly.
@@ -135,11 +137,14 @@ vi.mock('@tanstack/react-router', () => ({
   Navigate: ({
     to,
     params: p,
+    search: q,
   }: {
     to: string
     params?: Record<string, string>
+    search?: Record<string, string>
   }) => {
-    navigated.push(fill(to, p))
+    const query = new URLSearchParams(q).toString()
+    navigated.push(fill(to, p) + (query && `?${query}`))
     return null
   },
   // The page; Record a gift's autofocuses its first field, as the real one.
@@ -201,10 +206,12 @@ vi.mock('../lib/data', async (original) => {
     useAuthState: () => ({ email: 'a@example.org' }),
     useOpened: () => opened,
     useOrgEvents: () => {},
+    useGoCardlessStatus: () => gocardless,
   }
 })
 
 let gifts: Array<RecentGift> = []
+let gocardless: { enabled: boolean } | undefined
 vi.mock('../lib/gifts', async (original) => ({
   ...(await original<typeof GiftsLib>()),
   useMyRecentGifts: (enabled = true) => (enabled ? gifts : undefined),
@@ -243,6 +250,8 @@ beforeEach(() => {
   params = { slug: 'alpha' }
   tenants = [group('alpha')]
   gifts = []
+  gocardless = undefined
+  routeSearch = {}
   navigated.length = 0
   opened.mockReset().mockResolvedValue(null)
   signOut.mockReset().mockResolvedValue(undefined)
@@ -457,6 +466,45 @@ test('the Donations menu: Record a gift, then my recent gifts, each a link', asy
   ])
 })
 
+test('with GoCardless on, the Donations menu lists Unmatched payments for staff', async () => {
+  gocardless = { enabled: true }
+  const items = async () => {
+    await page(import('./t.$slug'))
+    const trigger = [...el.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Donations ▾',
+    )!
+    await act(async () => {
+      trigger.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+      )
+    })
+    return [
+      ...document.querySelectorAll('[role="menu"] [role="menuitem"]'),
+    ].map((i) => [i.textContent, i.getAttribute('href')])
+  }
+  tenants = [group('alpha', { role: 'staff' })]
+  expect((await items()).slice(0, 2)).toEqual([
+    ['Record a gift', '/t/alpha/gifts/new'],
+    ['Unmatched payments', '/t/alpha/gocardless/unmatched'],
+  ])
+  act(() => root.unmount())
+  document.body.innerHTML = ''
+  el = document.createElement('div')
+  document.body.append(el)
+  root = createRoot(el)
+  // A viewer: neither; and nothing while GoCardless is off.
+  tenants = [group('alpha', { role: 'viewer' })]
+  expect((await items()).map(([t]) => t)).not.toContain('Unmatched payments')
+})
+
+test('back from GoCardless’s consent page: Settings opens its tab, with how it went', async () => {
+  routeSearch = { gocardless: 'connected' }
+  await page(import('./t.$slug.settings.index'))
+  expect(navigated).toEqual([
+    '/t/alpha/settings/gocardless?gocardless=connected',
+  ])
+})
+
 test('the Donations menu has no Record a gift for a viewer', async () => {
   tenants = [group('alpha', { role: 'viewer' })]
   await page(import('./t.$slug'))
@@ -603,6 +651,7 @@ test('this build serves every list tab: Settings opens on Fields', async () => {
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
+    ['GoCardless', '/t/alpha/settings/gocardless'],
     ['Scans storage', '/t/alpha/settings/storage'],
     ['Members', '/t/alpha/settings/members'],
     ['Switch group', '/t/alpha/settings/groups'],
@@ -625,6 +674,7 @@ test('settings: the first tab is Fields once every list is ported', async () => 
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
+    ['GoCardless', '/t/alpha/settings/gocardless'],
     ['Scans storage', '/t/alpha/settings/storage'],
     ['Members', '/t/alpha/settings/members'],
     ['Your account', '/account'],

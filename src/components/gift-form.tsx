@@ -671,11 +671,14 @@ export function DonorSearch({
   onPick,
   inputRef,
   id,
+  existingOnly = false,
   ...invalid
 }: {
   onPick: (donor: DonorChoice) => void
   inputRef?: Ref<HTMLInputElement>
   id?: string
+  /** Matches only: no "New person" or "New organisation". */
+  existingOnly?: boolean
   'aria-invalid'?: true
   'aria-describedby'?: string
 }) {
@@ -703,8 +706,12 @@ export function DonorSearch({
           // Never marked from an older term's answer.
           numberMatch: fresh && found?.numberMatch === row._id,
         })),
-        { kind: 'new', contactKind: 'individual' },
-        { kind: 'new', contactKind: 'organization' },
+        ...(existingOnly
+          ? []
+          : ([
+              { kind: 'new', contactKind: 'individual' },
+              { kind: 'new', contactKind: 'organization' },
+            ] as const)),
       ]
     : []
   const shown = open && options.length > 0

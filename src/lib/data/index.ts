@@ -139,3 +139,24 @@ export type {
   ScanPurpose,
   ScanView,
 } from './rust/scans'
+export {
+  useDirectDebitWrites,
+  useGoCardlessAdmin,
+  useGoCardlessStatus,
+  useMatchPayment,
+  useRegularGiftForecast,
+  useRegularGifts,
+  useUnmatchedPayments,
+} from './rust/gocardless'
+export type {
+  DirectDebitPayment,
+  GoCardlessStatus,
+  InstantPaymentLink,
+  OneOffStarted,
+  RegularGift,
+  RegularGiftFrequency,
+  Term,
+  TermShareView,
+  UnmatchedPayment,
+  Upcoming,
+} from './rust/gocardless'

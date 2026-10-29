@@ -577,6 +577,9 @@ pub struct OneOffStarted {
     /// Our record of the request (who asked): the form's `clientKey`.
     pub request_id: String,
     pub payment_id: String,
+    /// What GoCardless was asked to collect, in pence: the request's as
+    /// first recorded under this key (a retry's own amount is ignored).
+    pub amount: i64,
     pub status: String,
     pub charge_date: String,
 }
@@ -713,6 +716,7 @@ async fn one_off(
     Ok(Json(OneOffStarted {
         request_id: req.client_key,
         payment_id: p.id,
+        amount: asked.amount,
         status: p.status,
         charge_date: p.charge_date,
     }))
@@ -779,6 +783,9 @@ pub struct InstantPaymentLink {
     /// Our record of the request (who asked): the form's `clientKey`.
     pub request_id: String,
     pub billing_request_id: String,
+    /// What the link charges, in pence: the request's as first recorded
+    /// under this key (a retry's own amount is ignored).
+    pub amount: i64,
     pub flow_url: String,
     pub flow_expires_at: Option<String>,
 }
@@ -859,6 +866,7 @@ async fn instant_payment(
     Ok(Json(InstantPaymentLink {
         request_id: req.client_key,
         billing_request_id: request.id,
+        amount: asked.amount,
         flow_url: flow.authorisation_url,
         flow_expires_at: flow.expires_at,
     }))

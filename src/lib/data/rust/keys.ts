@@ -89,6 +89,27 @@ export const keys = {
   deletableScans: (slug: string, today: string) =>
     ['t', slug, 'scans', 'deletable', today] as const,
   filesUsage: (slug: string) => ['t', slug, 'scans', 'usage'] as const,
+  /**
+   * Direct Debit (GoCardless D3): the connection, a contact's regular
+   * gifts, one regular gift, the unmatched payments. One prefix, so an
+   * event from any of its tables refetches whatever shows one.
+   */
+  gocardless: (slug: string) => ['t', slug, 'gocardless'] as const,
+  gocardlessStatus: (slug: string) =>
+    ['t', slug, 'gocardless', 'status'] as const,
+  regularGifts: (slug: string, contactId: string) =>
+    ['t', slug, 'gocardless', 'contact', contactId] as const,
+  /** Every contact's regular gifts (each with its latest payments). */
+  regularGiftLists: (slug: string) =>
+    ['t', slug, 'gocardless', 'contact'] as const,
+  /**
+   * One regular gift's next payments, as GoCardless forecasts them (its
+   * single read, which asks GoCardless): outside `gocardless`, so no
+   * event makes every open card call GoCardless; it lapses instead.
+   */
+  regularGiftForecast: (slug: string, id: string) =>
+    ['t', slug, 'gocardlessForecast', id] as const,
+  unmatched: (slug: string) => ['t', slug, 'gocardless', 'unmatched'] as const,
   /** The charity's HMRC details (Settings). */
   hmrcDetails: (slug: string) => ['t', slug, 'hmrcDetails'] as const,
 }

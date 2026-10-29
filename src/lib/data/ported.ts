@@ -54,6 +54,9 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/scans/$scanId',
   '/t/$slug/scans/deletable',
   '/t/$slug/settings/storage',
+  // GoCardless D3: Settings › GoCardless and the unmatched payments.
+  '/t/$slug/settings/gocardless',
+  '/t/$slug/gocardless/unmatched',
 ]
 
 const ported = new Set<string>(PORTED)

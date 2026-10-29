@@ -3,7 +3,7 @@ import { useState } from 'react'
 import type { ComponentProps } from 'react'
 import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
 import type { RecentGift } from '../lib/gifts'
-import { FEATURES } from '../lib/data'
+import { FEATURES, useGoCardlessStatus } from '../lib/data'
 import { STATUS_LABELS, isReceived } from '../lib/domain/gift-status'
 import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
 import {
@@ -49,6 +49,7 @@ export const DONATIONS = {
   label: 'Donations',
   record: 'Record a gift',
   recent: 'My recent gifts',
+  unmatched: 'Unmatched payments',
   loading: 'Loading…',
   none: 'None yet.',
 } as const
@@ -155,11 +156,29 @@ export function GiftAidMenu() {
 }
 
 /**
- * Who may record a gift, and the caller's last 10 gifts: fetched only
- * while `open` (undefined until then, and while loading).
+ * Who may record a gift, whether the Direct Debit work lists are theirs
+ * (staff and admins, while GoCardless is on here), and the caller's
+ * last 10 gifts: fetched only while `open` (undefined until then, and
+ * while loading).
  */
 export function useDonations(open: boolean) {
-  return { canWrite: useCanWrite(), gifts: useMyRecentGifts(open) }
+  const canWrite = useCanWrite()
+  const directDebit = useGoCardlessStatus()?.enabled === true && canWrite
+  return { canWrite, directDebit, gifts: useMyRecentGifts(open) }
+}
+
+/** "Unmatched payments" (GoCardless): payments to match to a contact. */
+export function UnmatchedAction(props: AnchorProps) {
+  const tenant = useTenant()
+  return (
+    <Link
+      to="/t/$slug/gocardless/unmatched"
+      params={{ slug: tenant.slug }}
+      {...props}
+    >
+      {DONATIONS.unmatched}
+    </Link>
+  )
 }
 
 /**
@@ -215,12 +234,13 @@ export function RecentGifts() {
 }
 
 /**
- * The header's Donations ▾: "Record a gift" (staff and admins), then the
- * caller's last 10 gifts. Fetched only while open.
+ * The header's Donations ▾: "Record a gift" and, with GoCardless on,
+ * "Unmatched payments" (staff and admins), then the caller's last 10
+ * gifts. Fetched only while open.
  */
 export function DonationsMenu() {
   const [open, setOpen] = useState(false)
-  const { canWrite, gifts } = useDonations(open)
+  const { canWrite, directDebit, gifts } = useDonations(open)
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger className="text-sm whitespace-nowrap hover:underline data-[state=open]:underline">
@@ -232,6 +252,11 @@ export function DonationsMenu() {
             <DropdownMenuItem asChild>
               <RecordGiftAction />
             </DropdownMenuItem>
+            {directDebit && (
+              <DropdownMenuItem asChild>
+                <UnmatchedAction />
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
           </>
         )}

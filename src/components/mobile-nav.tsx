@@ -14,6 +14,7 @@ import {
   GiftAidEntryLink,
   GiftLink,
   RecordGiftAction,
+  UnmatchedAction,
   useDonations,
   useGiftAidEntries,
 } from './gift-nav'
@@ -263,13 +264,15 @@ function GiftAid({ follow }: { follow: Follow }) {
 function Donations({ follow }: { follow: Follow }) {
   const { slug } = useTenant()
   const onDonations = useRouterState({
-    select: (s) => s.location.pathname.startsWith(`/t/${slug}/gifts/`),
+    select: (s) =>
+      s.location.pathname.startsWith(`/t/${slug}/gifts/`) ||
+      s.location.pathname.startsWith(`/t/${slug}/gocardless/`),
   })
   const [open, setOpen] = useState(() => onDonations || stored() === true)
   useEffect(() => {
     if (onDonations) store(true)
   }, [onDonations])
-  const { canWrite, gifts } = useDonations(open)
+  const { canWrite, directDebit, gifts } = useDonations(open)
   const id = useId()
   const toggle = () => {
     store(!open)
@@ -295,6 +298,7 @@ function Donations({ follow }: { follow: Follow }) {
       </button>
       <div id={id} hidden={!open} className="pl-3">
         {canWrite && <RecordGiftAction className={item} {...follow} />}
+        {directDebit && <UnmatchedAction className={item} {...follow} />}
         <p className={heading}>{DONATIONS.recent}</p>
         {gifts === undefined ? (
           <p className="px-3 py-2 text-sm text-neutral-500">
