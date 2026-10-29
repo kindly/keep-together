@@ -48,6 +48,12 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/giftaid/new',
   '/t/$slug/giftaid/$claimId',
   '/t/$slug/settings/hmrc',
+  // Declaration scans step 4: Scans to match, a scan's review, the "can
+  // be deleted" report, and Settings › Scans storage.
+  '/t/$slug/scans/',
+  '/t/$slug/scans/$scanId',
+  '/t/$slug/scans/deletable',
+  '/t/$slug/settings/storage',
 ]
 
 const ported = new Set<string>(PORTED)

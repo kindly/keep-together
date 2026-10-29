@@ -80,12 +80,15 @@ test.describe(
         before: async () => {
           await page.goto(`/t/${users.a.slug}/contacts`)
           await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
-        },
-        action: () =>
-          page
+          await page
             .getByRole('navigation', { name: 'Main' })
-            .getByRole('link', { name: 'Gift Aid' })
-            .click(),
+            .getByRole('button', { name: 'Gift Aid' })
+            .click()
+          await expect(
+            page.getByRole('menuitem', { name: 'Claims' }),
+          ).toBeVisible()
+        },
+        action: () => page.getByRole('menuitem', { name: 'Claims' }).click(),
         server: true,
         until: () =>
           document.querySelector('main h1')?.textContent ===
@@ -114,7 +117,15 @@ test.describe(
         const nav = staff.getByRole('navigation', { name: 'Main' })
         await staff.goto(`/t/${users.staff.slug}/contacts`)
         await expect(nav.getByRole('link', { name: 'Contacts' })).toBeVisible()
-        await expect(nav.getByRole('link', { name: 'Gift Aid' })).toHaveCount(0)
+        // Staff have Gift Aid ▾ for the scans, with no claims in it.
+        await nav.getByRole('button', { name: 'Gift Aid' }).click()
+        await expect(
+          staff.getByRole('menuitem', { name: 'Scans to match' }),
+        ).toBeVisible()
+        await expect(
+          staff.getByRole('menuitem', { name: 'Claims' }),
+        ).toHaveCount(0)
+        await staff.keyboard.press('Escape')
         await staff.goto(`/t/${users.staff.slug}/giftaid`)
         await expect(
           staff.getByText('Gift Aid claims are for the group’s admins.'),

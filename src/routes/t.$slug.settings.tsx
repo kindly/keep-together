@@ -20,7 +20,8 @@ const activeTab = 'border-neutral-900 font-medium text-neutral-900'
 
 /**
  * Settings: one tab per child route, every one visible to every member
- * but HMRC details (admins: it is the Gift Aid claims' settings).
+ * but HMRC details (admins: it is the Gift Aid claims' settings) and
+ * Scans storage (staff and admins: the scans are theirs).
  * Each list's tab opens with its admin-only switch, and is editable by
  * whoever may manage that list (read-only for the rest). The backend
  * enforces it. Then the account's own: Switch group (only for people in
@@ -32,7 +33,8 @@ function SettingsLayout() {
   const navigate = useNavigate()
   const tenants = useMyTenants()
   const several = (tenants?.length ?? 0) > 1
-  const admin = tenants?.find((t) => t.slug === slug)?.role === 'admin'
+  const role = tenants?.find((t) => t.slug === slug)?.role
+  const admin = role === 'admin'
   return (
     <main className="mx-auto flex max-w-4xl flex-col gap-6 p-6">
       <h1 className="text-xl font-semibold">Settings</h1>
@@ -62,6 +64,16 @@ function SettingsLayout() {
               activeProps={{ className: activeTab }}
             >
               HMRC details
+            </Link>
+          )}
+          {role !== undefined && role !== 'viewer' && (
+            <Link
+              to="/t/$slug/settings/storage"
+              params={{ slug }}
+              className={tab}
+              activeProps={{ className: activeTab }}
+            >
+              Scans storage
             </Link>
           )}
           <Link

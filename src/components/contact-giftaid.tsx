@@ -20,6 +20,7 @@ import {
 import type { Declaration } from '../lib/giftaid'
 import { useCanWrite, useTenant } from '../lib/tenant'
 import { ConfirmDialog } from './confirm-dialog'
+import { DeclarationScanLine, ScanWithPhone } from './scans'
 import { localToday } from './source-code-picker'
 
 const AT = new Intl.DateTimeFormat([], {
@@ -40,7 +41,10 @@ const small =
  * never have been recorded, with a reason, after a confirm. What was
  * declared is never edited; the snapshot is ("Edit details": completed
  * when Gift Aid was ticked before staff had the address, or a typo
- * fixed), each change listed under the declaration.
+ * fixed), each change listed under the declaration. A paper form's
+ * scan shows as "✓ scan held" (anyone) and opens for staff and admins;
+ * "Scan with phone" scans a form to record or to match (declaration
+ * scans step 4).
  */
 export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
   const canWrite = useCanWrite()
@@ -99,6 +103,9 @@ export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
           ))}
         </ul>
       )}
+      {/* A paper form to record, or the scan for one recorded already
+          (declaration scans, g2q3). */}
+      <ScanWithPhone purpose="contact" contactId={contactId} />
       {canWrite &&
         cancellable &&
         (cancelling ? (
@@ -217,6 +224,9 @@ function DeclarationCard({
           </ul>
         )}
       </div>
+      {d.method === 'paperForm' && (
+        <DeclarationScanLine declarationId={d._id} />
+      )}
       {d.detailsVersion > 0 && <DetailsChanges id={d._id} name={name} />}
       {canWrite &&
         !voided &&

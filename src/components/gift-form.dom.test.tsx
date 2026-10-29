@@ -57,6 +57,7 @@ vi.mock('@tanstack/react-query', async (original) => ({
 }))
 vi.mock('../lib/tenant', () => ({
   useTenant: () => ({ _id: 'tenantA', slug: 'alpha' }),
+  useCanWrite: () => true,
 }))
 vi.mock('@tanstack/react-router', () => ({
   Link: ({

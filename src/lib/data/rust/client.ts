@@ -72,7 +72,7 @@ export function tenantPath(slug: string, ...parts: Array<string>): string {
 }
 
 async function call<T>(
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<T> {
@@ -111,3 +111,5 @@ export const get = <T>(path: string, query?: URLSearchParams) =>
 
 export const post = <T>(path: string, body: unknown = {}) =>
   call<T>('POST', path, body)
+
+export const del = <T>(path: string) => call<T>('DELETE', path)

@@ -91,6 +91,7 @@ vi.mock('@tanstack/react-router', () => ({
   Link: ({
     to,
     params: p,
+    search,
     children,
     activeOptions,
     activeProps: _,
@@ -100,13 +101,17 @@ vi.mock('@tanstack/react-router', () => ({
   }: {
     to: string
     params?: Record<string, string>
+    search?: Record<string, unknown>
     children: ReactNode
-    activeOptions?: { exact?: boolean }
+    activeOptions?: { exact?: boolean; includeSearch?: boolean }
     activeProps?: object
     replace?: boolean
     onClick?: (e: MouseEvent) => void
   }) => {
-    const href = fill(to, p)
+    const query = new URLSearchParams(
+      Object.entries(search ?? {}).map(([k, v]) => [k, String(v)]),
+    ).toString()
+    const href = fill(to, p) + (query && `?${query}`)
     const here = useEntry().path
     const active = activeOptions?.exact
       ? here === href
@@ -265,23 +270,62 @@ const links = (scope: ParentNode = el) =>
   ])
 const text = () => el.textContent
 
-test('header: the group name leads home, then Contacts · Donations ▾ · Gift Aid · Settings', async () => {
+test('header: the group name leads home, then Contacts · Donations ▾ · Gift Aid ▾ · Settings', async () => {
   await page(import('./t.$slug'))
   const nav = el.querySelector('nav[aria-label="Main"]')!
   expect(links(nav)).toEqual([
     ['Alpha', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
-    // G3: admins only.
-    ['Gift Aid', '/t/alpha/giftaid'],
     ['Settings', '/t/alpha/settings'],
   ])
   expect(nav.textContent).toContain('Donations ▾')
+  expect(nav.textContent).toContain('Gift Aid ▾')
   // The glyph is decoration: the button's name is just "Donations".
   const trigger = [...nav.querySelectorAll('button')].find((b) =>
     b.textContent.startsWith('Donations'),
   )!
   expect(trigger.querySelector('[aria-hidden="true"]')?.textContent).toBe('▾')
   expect(nav.textContent).not.toContain('keep-together')
+})
+
+/** The header's Gift Aid ▾ items, opened; null with no menu. */
+async function giftAidItems() {
+  const trigger = [...el.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Gift Aid ▾',
+  )
+  if (!trigger) return null
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+    )
+  })
+  return [...document.querySelectorAll('[role="menu"] [role="menuitem"]')].map(
+    (i) => [i.textContent, i.getAttribute('href')],
+  )
+}
+
+test('the Gift Aid menu: claims and the deletable report for admins, scans for staff too, nothing for a viewer', async () => {
+  await page(import('./t.$slug'))
+  expect(await giftAidItems()).toEqual([
+    ['Claims', '/t/alpha/giftaid'],
+    ['Scans to match', '/t/alpha/scans'],
+    ['Scan a stack with phone', '/t/alpha/scans?sitting=true'],
+    ['Scans that can be deleted', '/t/alpha/scans/deletable'],
+  ])
+  act(() => root.unmount())
+  document.body.innerHTML = ''
+  el = document.createElement('div')
+  document.body.append(el)
+  root = createRoot(el)
+  tenants = [group('alpha', { role: 'staff' })]
+  await page(import('./t.$slug'))
+  expect(await giftAidItems()).toEqual([
+    ['Scans to match', '/t/alpha/scans'],
+    ['Scan a stack with phone', '/t/alpha/scans?sitting=true'],
+  ])
+  tenants = [group('alpha', { role: 'viewer' })]
+  await page(import('./t.$slug'))
+  expect(await giftAidItems()).toBeNull()
 })
 
 test('Gift Aid claims and HMRC details are for admins: staff and viewers see neither', async () => {
@@ -296,6 +340,8 @@ test('Gift Aid claims and HMRC details are for admins: staff and viewers see nei
     ])
     await page(import('./t.$slug.settings'))
     expect(text()).not.toContain('HMRC details')
+    // Scans storage: staff (their scans), not a viewer.
+    expect(text().includes('Scans storage')).toBe(role === 'staff')
   }
 })
 
@@ -524,13 +570,12 @@ test('being ported: the header has Contacts, Donations and Settings, nothing unp
   expect(links(nav)).toEqual([
     ['Alpha', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
-    // G3: Gift Aid claims, for an admin.
-    ['Gift Aid', '/t/alpha/giftaid'],
     // A3: Settings (it holds Sign out) and "last used".
     ['Settings', '/t/alpha/settings'],
   ])
-  // B2: Donations ▾ (a menu, not a link).
+  // B2: Donations ▾ (a menu, not a link); G3 and scans: Gift Aid ▾.
   expect(nav.textContent).toContain('Donations')
+  expect(nav.textContent).toContain('Gift Aid ▾')
   expect(opened).toHaveBeenCalledExactlyOnceWith('alpha')
   expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
 })
@@ -545,6 +590,7 @@ test('this build serves every list tab: Settings opens on Fields', async () => {
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
+    ['Scans storage', '/t/alpha/settings/storage'],
     ['Members', '/t/alpha/settings/members'],
     ['Switch group', '/t/alpha/settings/groups'],
     ['Your account', '/account'],
@@ -566,6 +612,7 @@ test('settings: the first tab is Fields once every list is ported', async () => 
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
+    ['Scans storage', '/t/alpha/settings/storage'],
     ['Members', '/t/alpha/settings/members'],
     ['Your account', '/account'],
   ])
@@ -662,8 +709,11 @@ test('the drawer lists every destination, Donations flattened, then the account'
   expect(shown(d)).toEqual([
     ['Home', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
-    // G3: admins only, as in the header.
-    ['Gift Aid', '/t/alpha/giftaid'],
+    // Gift Aid's entries, flat: the claims and the report for admins.
+    ['Claims', '/t/alpha/giftaid'],
+    ['Scans to match', '/t/alpha/scans'],
+    ['Scan a stack with phone', '/t/alpha/scans?sitting=true'],
+    ['Scans that can be deleted', '/t/alpha/scans/deletable'],
     ['Settings', '/t/alpha/settings'],
     ['Your accounta@example.org', '/account'],
   ])
@@ -674,7 +724,10 @@ test('the drawer lists every destination, Donations flattened, then the account'
     ['Record a gift', '/t/alpha/gifts/new'],
     ['£1,234.56Acme Ltd23 Oct 2026', '/t/alpha/gifts/g2'],
     ['£20.00Jo Bloggsvoid23 Oct 2026', '/t/alpha/gifts/g1'],
-    ['Gift Aid', '/t/alpha/giftaid'],
+    ['Claims', '/t/alpha/giftaid'],
+    ['Scans to match', '/t/alpha/scans'],
+    ['Scan a stack with phone', '/t/alpha/scans?sitting=true'],
+    ['Scans that can be deleted', '/t/alpha/scans/deletable'],
     ['Settings', '/t/alpha/settings'],
     ['Your accounta@example.org', '/account'],
   ])
@@ -687,12 +740,14 @@ test('the drawer lists every destination, Donations flattened, then the account'
   expect(d.querySelector('button[aria-label="Close menu"]')).not.toBeNull()
 })
 
-test('the drawer has Gift Aid for admins only, as the header does: not for staff', async () => {
+test('the drawer has Gift Aid claims for admins only, as the header does: staff get the scans', async () => {
   tenants = [group('alpha', { role: 'staff' })]
   const d = await openDrawer()
   expect(shown(d).map(([name]) => name)).toEqual([
     'Home',
     'Contacts',
+    'Scans to match',
+    'Scan a stack with phone',
     'Settings',
     'Your accounta@example.org',
   ])
@@ -701,7 +756,7 @@ test('the drawer has Gift Aid for admins only, as the header does: not for staff
 test('the drawer: a viewer has no Record a gift, and no gifts says so', async () => {
   tenants = [group('alpha', { role: 'viewer' })]
   const d = await openDrawer()
-  // Nor Gift Aid: admins only.
+  // Nor Gift Aid: claims are admins', scans staff's and admins'.
   expect(d.textContent).not.toContain('Gift Aid')
   await toggleDonations()
   expect(d.textContent).not.toContain('Record a gift')

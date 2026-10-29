@@ -93,6 +93,11 @@ const INVALIDATES: Partial<
   // events (`giving.claimLock`).
   gift_aid_claims: (slug) => [keys.giftaid(slug)],
   gift_aid_hmrc_details: (slug) => [keys.hmrcDetails(slug)],
+  // Declaration scans: the inbox, a scan, a sitting's stack (its pairing
+  // state rides along: claimed, uploads), a declaration's "scan held",
+  // the report and the files usage. An accept that records a declaration
+  // comes as a `gift_aid_declarations` event too.
+  declaration_scans: (slug) => [keys.scans(slug)],
 }
 
 /**

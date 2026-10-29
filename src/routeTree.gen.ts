@@ -27,6 +27,9 @@ import { Route as TSlugGiftaidClaimIdRouteImport } from './routes/t.$slug.giftai
 import { Route as TSlugGiftaidNewRouteImport } from './routes/t.$slug.giftaid.new'
 import { Route as TSlugGiftsGiftIdRouteImport } from './routes/t.$slug.gifts.$giftId'
 import { Route as TSlugGiftsNewRouteImport } from './routes/t.$slug.gifts.new'
+import { Route as TSlugScansIndexRouteImport } from './routes/t.$slug.scans.index'
+import { Route as TSlugScansScanIdRouteImport } from './routes/t.$slug.scans.$scanId'
+import { Route as TSlugScansDeletableRouteImport } from './routes/t.$slug.scans.deletable'
 import { Route as TSlugSettingsIndexRouteImport } from './routes/t.$slug.settings.index'
 import { Route as TSlugSettingsFieldsRouteImport } from './routes/t.$slug.settings.fields'
 import { Route as TSlugSettingsGroupsRouteImport } from './routes/t.$slug.settings.groups'
@@ -34,6 +37,7 @@ import { Route as TSlugSettingsHmrcRouteImport } from './routes/t.$slug.settings
 import { Route as TSlugSettingsIdentifiersRouteImport } from './routes/t.$slug.settings.identifiers'
 import { Route as TSlugSettingsMembersRouteImport } from './routes/t.$slug.settings.members'
 import { Route as TSlugSettingsSourcesRouteImport } from './routes/t.$slug.settings.sources'
+import { Route as TSlugSettingsStorageRouteImport } from './routes/t.$slug.settings.storage'
 import { Route as TSlugSettingsTagsRouteImport } from './routes/t.$slug.settings.tags'
 
 const IndexRoute = IndexRouteImport.update({
@@ -126,6 +130,21 @@ const TSlugGiftsNewRoute = TSlugGiftsNewRouteImport.update({
   path: '/gifts/new',
   getParentRoute: () => TSlugRoute,
 } as any)
+const TSlugScansIndexRoute = TSlugScansIndexRouteImport.update({
+  id: '/scans/',
+  path: '/scans/',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugScansScanIdRoute = TSlugScansScanIdRouteImport.update({
+  id: '/scans/$scanId',
+  path: '/scans/$scanId',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugScansDeletableRoute = TSlugScansDeletableRouteImport.update({
+  id: '/scans/deletable',
+  path: '/scans/deletable',
+  getParentRoute: () => TSlugRoute,
+} as any)
 const TSlugSettingsIndexRoute = TSlugSettingsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -162,6 +181,11 @@ const TSlugSettingsSourcesRoute = TSlugSettingsSourcesRouteImport.update({
   path: '/sources',
   getParentRoute: () => TSlugSettingsRoute,
 } as any)
+const TSlugSettingsStorageRoute = TSlugSettingsStorageRouteImport.update({
+  id: '/storage',
+  path: '/storage',
+  getParentRoute: () => TSlugSettingsRoute,
+} as any)
 const TSlugSettingsTagsRoute = TSlugSettingsTagsRouteImport.update({
   id: '/tags',
   path: '/tags',
@@ -185,15 +209,19 @@ export interface FileRoutesByFullPath {
   '/t/$slug/giftaid/new': typeof TSlugGiftaidNewRoute
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
+  '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
+  '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
   '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
+  '/t/$slug/settings/storage': typeof TSlugSettingsStorageRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
   '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
+  '/t/$slug/scans/': typeof TSlugScansIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -210,15 +238,19 @@ export interface FileRoutesByTo {
   '/t/$slug/giftaid/new': typeof TSlugGiftaidNewRoute
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
+  '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
+  '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
   '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
+  '/t/$slug/settings/storage': typeof TSlugSettingsStorageRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts': typeof TSlugContactsIndexRoute
   '/t/$slug/giftaid': typeof TSlugGiftaidIndexRoute
+  '/t/$slug/scans': typeof TSlugScansIndexRoute
   '/t/$slug/settings': typeof TSlugSettingsIndexRoute
 }
 export interface FileRoutesById {
@@ -239,15 +271,19 @@ export interface FileRoutesById {
   '/t/$slug/giftaid/new': typeof TSlugGiftaidNewRoute
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
+  '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
+  '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
   '/t/$slug/settings/identifiers': typeof TSlugSettingsIdentifiersRoute
   '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
+  '/t/$slug/settings/storage': typeof TSlugSettingsStorageRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
   '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
+  '/t/$slug/scans/': typeof TSlugScansIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
 }
 export interface FileRouteTypes {
@@ -269,15 +305,19 @@ export interface FileRouteTypes {
     | '/t/$slug/giftaid/new'
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
+    | '/t/$slug/scans/$scanId'
+    | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/hmrc'
     | '/t/$slug/settings/identifiers'
     | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
+    | '/t/$slug/settings/storage'
     | '/t/$slug/settings/tags'
     | '/t/$slug/contacts/'
     | '/t/$slug/giftaid/'
+    | '/t/$slug/scans/'
     | '/t/$slug/settings/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -294,15 +334,19 @@ export interface FileRouteTypes {
     | '/t/$slug/giftaid/new'
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
+    | '/t/$slug/scans/$scanId'
+    | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/hmrc'
     | '/t/$slug/settings/identifiers'
     | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
+    | '/t/$slug/settings/storage'
     | '/t/$slug/settings/tags'
     | '/t/$slug/contacts'
     | '/t/$slug/giftaid'
+    | '/t/$slug/scans'
     | '/t/$slug/settings'
   id:
     | '__root__'
@@ -322,15 +366,19 @@ export interface FileRouteTypes {
     | '/t/$slug/giftaid/new'
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
+    | '/t/$slug/scans/$scanId'
+    | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/hmrc'
     | '/t/$slug/settings/identifiers'
     | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
+    | '/t/$slug/settings/storage'
     | '/t/$slug/settings/tags'
     | '/t/$slug/contacts/'
     | '/t/$slug/giftaid/'
+    | '/t/$slug/scans/'
     | '/t/$slug/settings/'
   fileRoutesById: FileRoutesById
 }
@@ -471,6 +519,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugGiftsNewRouteImport
       parentRoute: typeof TSlugRoute
     }
+    '/t/$slug/scans/': {
+      id: '/t/$slug/scans/'
+      path: '/scans'
+      fullPath: '/t/$slug/scans/'
+      preLoaderRoute: typeof TSlugScansIndexRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/scans/$scanId': {
+      id: '/t/$slug/scans/$scanId'
+      path: '/scans/$scanId'
+      fullPath: '/t/$slug/scans/$scanId'
+      preLoaderRoute: typeof TSlugScansScanIdRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/scans/deletable': {
+      id: '/t/$slug/scans/deletable'
+      path: '/scans/deletable'
+      fullPath: '/t/$slug/scans/deletable'
+      preLoaderRoute: typeof TSlugScansDeletableRouteImport
+      parentRoute: typeof TSlugRoute
+    }
     '/t/$slug/settings/': {
       id: '/t/$slug/settings/'
       path: '/'
@@ -520,6 +589,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugSettingsSourcesRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
+    '/t/$slug/settings/storage': {
+      id: '/t/$slug/settings/storage'
+      path: '/storage'
+      fullPath: '/t/$slug/settings/storage'
+      preLoaderRoute: typeof TSlugSettingsStorageRouteImport
+      parentRoute: typeof TSlugSettingsRoute
+    }
     '/t/$slug/settings/tags': {
       id: '/t/$slug/settings/tags'
       path: '/tags'
@@ -553,6 +629,7 @@ interface TSlugSettingsRouteChildren {
   TSlugSettingsIdentifiersRoute: typeof TSlugSettingsIdentifiersRoute
   TSlugSettingsMembersRoute: typeof TSlugSettingsMembersRoute
   TSlugSettingsSourcesRoute: typeof TSlugSettingsSourcesRoute
+  TSlugSettingsStorageRoute: typeof TSlugSettingsStorageRoute
   TSlugSettingsTagsRoute: typeof TSlugSettingsTagsRoute
   TSlugSettingsIndexRoute: typeof TSlugSettingsIndexRoute
 }
@@ -564,6 +641,7 @@ const TSlugSettingsRouteChildren: TSlugSettingsRouteChildren = {
   TSlugSettingsIdentifiersRoute: TSlugSettingsIdentifiersRoute,
   TSlugSettingsMembersRoute: TSlugSettingsMembersRoute,
   TSlugSettingsSourcesRoute: TSlugSettingsSourcesRoute,
+  TSlugSettingsStorageRoute: TSlugSettingsStorageRoute,
   TSlugSettingsTagsRoute: TSlugSettingsTagsRoute,
   TSlugSettingsIndexRoute: TSlugSettingsIndexRoute,
 }
@@ -581,7 +659,10 @@ interface TSlugRouteChildren {
   TSlugContactsNewRoute: typeof TSlugContactsNewRoute
   TSlugGiftsGiftIdRoute: typeof TSlugGiftsGiftIdRoute
   TSlugGiftsNewRoute: typeof TSlugGiftsNewRoute
+  TSlugScansScanIdRoute: typeof TSlugScansScanIdRoute
+  TSlugScansDeletableRoute: typeof TSlugScansDeletableRoute
   TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
+  TSlugScansIndexRoute: typeof TSlugScansIndexRoute
 }
 
 const TSlugRouteChildren: TSlugRouteChildren = {
@@ -593,7 +674,10 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugContactsNewRoute: TSlugContactsNewRoute,
   TSlugGiftsGiftIdRoute: TSlugGiftsGiftIdRoute,
   TSlugGiftsNewRoute: TSlugGiftsNewRoute,
+  TSlugScansScanIdRoute: TSlugScansScanIdRoute,
+  TSlugScansDeletableRoute: TSlugScansDeletableRoute,
   TSlugContactsIndexRoute: TSlugContactsIndexRoute,
+  TSlugScansIndexRoute: TSlugScansIndexRoute,
 }
 
 const TSlugRouteWithChildren = TSlugRoute._addFileChildren(TSlugRouteChildren)

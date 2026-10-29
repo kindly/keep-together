@@ -74,6 +74,21 @@ export const keys = {
     ['t', slug, 'giftaid', 'one', id] as const,
   claimPreview: (slug: string, periodEnd: string) =>
     ['t', slug, 'giftaid', 'preview', periodEnd] as const,
+  /**
+   * Declaration scans: "Scans to match", a scan, a sitting's stack, a
+   * declaration's scans, the "can be deleted" report, files usage. One
+   * prefix, so a `declaration_scans` event refetches whatever shows one.
+   */
+  scans: (slug: string) => ['t', slug, 'scans'] as const,
+  scanInbox: (slug: string) => ['t', slug, 'scans', 'inbox'] as const,
+  scan: (slug: string, id: string) => ['t', slug, 'scans', 'one', id] as const,
+  scanPairing: (slug: string, id: string) =>
+    ['t', slug, 'scans', 'pairing', id] as const,
+  declarationScans: (slug: string, declarationId: string) =>
+    ['t', slug, 'scans', 'declaration', declarationId] as const,
+  deletableScans: (slug: string, today: string) =>
+    ['t', slug, 'scans', 'deletable', today] as const,
+  filesUsage: (slug: string) => ['t', slug, 'scans', 'usage'] as const,
   /** The charity's HMRC details (Settings). */
   hmrcDetails: (slug: string) => ['t', slug, 'hmrcDetails'] as const,
 }

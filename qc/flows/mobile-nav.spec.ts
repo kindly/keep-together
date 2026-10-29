@@ -168,9 +168,10 @@ test(
   },
 )
 
-// Gift Aid claims G3: the drawer's Gift Aid, admins only, as the header's.
+// Gift Aid claims G3: the drawer's Gift Aid claims, admins only, as the
+// header's; declaration scans: its scans entries, for staff too.
 test(
-  'phone: the drawer goes to Gift Aid for an admin; staff have none',
+  'phone: the drawer goes to Gift Aid claims for an admin; staff have only the scans',
   {
     annotation: [{ type: 'route', description: '/t/$slug/giftaid/' }],
   },
@@ -180,7 +181,7 @@ test(
     const { menu, drawer } = parts(page)
     await page.goto(`/t/${slug}/contacts`)
     await menu.click()
-    await drawer.getByRole('link', { name: 'Gift Aid' }).click()
+    await drawer.getByRole('link', { name: 'Claims' }).click()
     await expect(page).toHaveURL(`/t/${slug}/giftaid`)
     await expect(
       page.getByRole('heading', { level: 1, name: 'Gift Aid claims' }),
@@ -200,8 +201,12 @@ test(
       await expect(
         other.drawer.getByRole('link', { name: 'Contacts' }),
       ).toBeVisible()
+      // Staff get Gift Aid's scans, not its claims.
       await expect(
-        other.drawer.getByRole('link', { name: 'Gift Aid' }),
+        other.drawer.getByRole('link', { name: 'Scans to match' }),
+      ).toBeVisible()
+      await expect(
+        other.drawer.getByRole('link', { name: 'Claims' }),
       ).toHaveCount(0)
     } finally {
       await staff.context().close()
