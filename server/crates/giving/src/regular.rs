@@ -1906,17 +1906,22 @@ pub struct UnknownSubscription {
 /// run under, newest payment first, at most [`UNMATCHED_LIMIT`].
 pub fn unknown_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<UnknownSubscription>> {
     conn.prepare_cached(
-        "SELECT p.subscription_id, max(p.mandate_id), count(*),
+        "WITH unknown AS (
+             SELECT p.subscription_id AS sb, max(p.mandate_id) AS mandate, count(*) AS n,
+                 max(p.charge_date) AS last, max(p.seq) AS latest
+             FROM direct_debit_payments p INDEXED BY direct_debit_payments_by_subscription
+             WHERE p.subscription_id IS NOT NULL AND p.regular_gift_id IS NULL
+               AND NOT EXISTS (SELECT 1 FROM regular_gifts r
+                               WHERE r.subscription_id = p.subscription_id)
+               AND NOT EXISTS (SELECT 1 FROM regular_gift_terms t
+                               WHERE t.subscription_id = p.subscription_id)
+             GROUP BY p.subscription_id)
+         SELECT u.sb, u.mandate, u.n,
              (SELECT q.amount FROM direct_debit_payments q
-              WHERE q.subscription_id = p.subscription_id ORDER BY q.charge_date DESC LIMIT 1),
-             max(p.charge_date),
-             (SELECT r.contact_id FROM regular_gifts r WHERE r.mandate_id = max(p.mandate_id))
-         FROM direct_debit_payments p
-         WHERE p.subscription_id IS NOT NULL AND p.regular_gift_id IS NULL
-           AND NOT EXISTS (SELECT 1 FROM regular_gifts r WHERE r.subscription_id = p.subscription_id)
-           AND NOT EXISTS (SELECT 1 FROM regular_gift_terms t
-                           WHERE t.subscription_id = p.subscription_id)
-         GROUP BY p.subscription_id ORDER BY max(p.seq) DESC LIMIT ?1",
+              WHERE q.subscription_id = u.sb ORDER BY q.charge_date DESC, q.seq DESC LIMIT 1),
+             u.last,
+             (SELECT r.contact_id FROM regular_gifts r WHERE r.mandate_id = u.mandate)
+         FROM unknown u ORDER BY u.latest DESC LIMIT ?1",
     )?
     .query_map([UNMATCHED_LIMIT as i64], |r| {
         Ok(UnknownSubscription {

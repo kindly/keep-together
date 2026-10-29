@@ -44,6 +44,11 @@ async fn ok(w: &World, method: &str, path: &str, cookie: &str, body: Option<Valu
 
 /// A new full source code (version) under a seeded category.
 async fn source_code(w: &World, slug: &str, cookie: &str) -> String {
+    named_code(w, slug, cookie, "Direct").await
+}
+
+/// The same, named.
+async fn named_code(w: &World, slug: &str, cookie: &str, name: &str) -> String {
     let tree = ok(w, "GET", &format!("/api/t/{slug}/sources"), cookie, None).await;
     let category = tree["parts"]
         .as_array()
@@ -57,7 +62,7 @@ async fn source_code(w: &World, slug: &str, cookie: &str) -> String {
         "POST",
         &format!("/api/t/{slug}/sources"),
         cookie,
-        Some(json!({ "parentId": category, "name": "Direct", "isActive": true })),
+        Some(json!({ "parentId": category, "name": name, "isActive": true })),
     )
     .await;
     made["versionId"].as_str().unwrap().to_owned()
@@ -2735,7 +2740,8 @@ async fn a_dropped_webhook_is_recovered_by_the_catch_up() {
     let caught = api::gocardless::catchup::catch_up(t.w.store.clone(), t.gc.clone())
         .await
         .unwrap();
-    assert_eq!(caught[0].missed, 1, "{caught:?}");
+    // The payment's `created` and the subscription's `payment_created`.
+    assert_eq!(caught[0].missed, 2, "{caught:?}");
     t.settle().await;
     let gifts = t.gifts_of("alpha", &t.val, &jo).await;
     assert_eq!(gifts.len(), 1);
@@ -2991,4 +2997,542 @@ async fn catch_up_never_lists_with_another_accounts_token() {
         .unwrap();
     assert!(caught.is_empty(), "{caught:?}");
     assert_eq!(t.fake.calls("GET events"), 0);
+}
+
+// ── regular gift terms (ADR 0026) ──────────────────────────────────────────
+
+fn today() -> String {
+    giving::terms_rules::date_of_ms(contracts::now_ms())
+}
+
+impl T {
+    /// Run `regular-terms-sync` for alpha as if it were `day`.
+    async fn sync_terms(&self, day: &str) -> usize {
+        api::gocardless::terms_sync::sync_tenant(
+            self.w.store.clone(),
+            self.gc.clone(),
+            self.w.alpha.id.clone(),
+            day,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A change to regular gift `id` as `cookie`: (status, answer).
+    async fn change(&self, id: &str, cookie: &str, body: Value) -> (StatusCode, Value) {
+        self.w
+            .call(
+                "POST",
+                &format!("/api/t/alpha/regular-gifts/{id}/terms"),
+                cookie,
+                Some(body),
+            )
+            .await
+    }
+
+    /// The upcoming payment dates the card offers, later than `after`.
+    async fn upcoming_after(&self, id: &str, after: &str) -> Vec<String> {
+        let v = self.regular("alpha", &self.val, id).await;
+        v["upcoming"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["chargeDate"].as_str().unwrap().to_owned())
+            .filter(|d| d.as_str() > after)
+            .collect()
+    }
+
+    /// Regular gift `id`'s row starting `from`.
+    async fn term(&self, id: &str, from: &str) -> Value {
+        let v = self.regular("alpha", &self.val, id).await;
+        v["terms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["effectiveFrom"] == from)
+            .unwrap_or_else(|| panic!("no row from {from} in {v}"))
+            .clone()
+    }
+}
+
+fn days_before(date: &str, days: i64) -> String {
+    giving::terms_rules::add_days(date, -days).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_amount_change_is_sent_once_when_due_and_none_before() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    let phone = named_code(&t.w, "alpha", &t.ann, "Phone").await;
+    let from = t
+        .upcoming_after(&id, &giving::terms_rules::add_days(&today(), 20).unwrap())
+        .await[0]
+        .clone();
+    let (s, out) = t
+        .change(
+            &id,
+            &t.sam,
+            json!({ "effectiveFrom": from, "amount": 1200, "changeCodeId": phone }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let row = t.term(&id, &from).await;
+    assert_eq!(row["status"], "scheduled");
+    assert_eq!(row["changeKind"], "upgrade");
+    assert_eq!(
+        row["allocations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| (a["sourceCodeId"].clone(), a["amount"].clone()))
+            .collect::<Vec<_>>(),
+        [(json!(t.code), json!(1000)), (json!(phone), json!(200))]
+    );
+    // Not due yet: nothing sent.
+    assert_eq!(t.sync_terms(&today()).await, 0);
+    assert_eq!(t.fake.calls("PUT subscriptions"), 0);
+    // A fortnight before: one PUT, and none again.
+    assert_eq!(t.sync_terms(&days_before(&from, 14)).await, 1);
+    assert_eq!(t.fake.calls("PUT subscriptions"), 1);
+    assert_eq!(t.sync_terms(&days_before(&from, 13)).await, 0);
+    assert_eq!(t.fake.calls("PUT subscriptions"), 1);
+    assert_eq!(t.fake.resource(&sub).unwrap()["amount"], 1200);
+    // GoCardless's `amended` applies it; staff can't touch it now.
+    t.settle().await;
+    let row = t.term(&id, &from).await;
+    assert_eq!(row["status"], "applied", "{row}");
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!(
+                "/api/t/alpha/regular-gifts/{id}/terms/{}/withdraw",
+                row["id"].as_str().unwrap()
+            ),
+            &t.sam,
+            Some(json!({ "expected": row["termsVersion"] })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "term_sent");
+    // Not "changed in GoCardless": it was ours.
+    assert_eq!(
+        t.regular("alpha", &t.val, &id).await["changeNotCoded"],
+        false
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scheduled_change_is_edited_or_withdrawn_and_a_viewer_never_changes_terms() {
+    let t = setup().await;
+    let (_, id, _) = t.active().await;
+    let from = t
+        .upcoming_after(&id, &giving::terms_rules::add_days(&today(), 20).unwrap())
+        .await[0]
+        .clone();
+    let body = json!({ "effectiveFrom": from, "amount": 800 });
+    let (s, _) = t.change(&id, &t.val, body.clone()).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, out) = t.change(&id, &t.sam, body).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let row = t.term(&id, &from).await;
+    assert_eq!(row["changeKind"], "downgrade");
+    let term = row["id"].as_str().unwrap().to_owned();
+    let edit = |expected: Value| json!({ "expected": expected, "effectiveFrom": from, "amount": 900, "note": "kept on" });
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/regular-gifts/{id}/terms/{term}"),
+            &t.sam,
+            Some(edit(json!(99))),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{out}");
+    let saved = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/terms/{term}"),
+        &t.sam,
+        Some(edit(row["termsVersion"].clone())),
+    )
+    .await;
+    let row = t.term(&id, &from).await;
+    assert_eq!(
+        (row["amount"].clone(), row["note"].clone()),
+        (json!(900), json!("kept on"))
+    );
+    assert_eq!(saved["view"]["scheduled"]["id"], term);
+    ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/terms/{term}/withdraw"),
+        &t.sam,
+        Some(json!({ "expected": row["termsVersion"] })),
+    )
+    .await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert!(v["scheduled"].is_null());
+    assert_eq!(t.term(&id, &from).await["status"], "withdrawn");
+    // Withdrawn: never sent.
+    assert_eq!(t.sync_terms(&days_before(&from, 1)).await, 0);
+    assert_eq!(t.fake.calls("PUT subscriptions"), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_eleventh_change_makes_a_new_subscription_on_the_same_mandate_once() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    let mandate = t.regular("alpha", &t.val, &id).await["mandateId"].clone();
+    // Ten amount changes in GoCardless's dashboard: each one a row.
+    for amount in 1001..=1010 {
+        t.simulate(&format!("subscriptions/{sub}/amend?amount={amount}"))
+            .await;
+        t.settle().await;
+    }
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["terms"].as_array().unwrap().len(), 11);
+    assert_eq!(v["changeNotCoded"], true);
+    // The eleventh is ours: a new subscription.
+    let later = v["terms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["effectiveOn"].as_str().unwrap().to_owned())
+        .max()
+        .unwrap();
+    let from = t.upcoming_after(&id, &later).await[0].clone();
+    let phone = named_code(&t.w, "alpha", &t.ann, "Phone").await;
+    let (s, out) = t
+        .change(
+            &id,
+            &t.sam,
+            json!({ "effectiveFrom": from, "amount": 1500, "changeCodeId": phone }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let before = t.fake.ids("subscriptions").len();
+    assert_eq!(t.sync_terms(&days_before(&from, 14)).await, 1);
+    assert_eq!(t.fake.calls("PUT subscriptions"), 0, "no 11th PUT");
+    assert_eq!(t.fake.ids("subscriptions").len(), before + 1);
+    let v = t.regular("alpha", &t.val, &id).await;
+    let new = v["subscriptionId"].as_str().unwrap().to_owned();
+    assert_ne!(new, sub);
+    let made = t.fake.resource(&new).unwrap();
+    assert_eq!(
+        (
+            made["links"]["mandate"].clone(),
+            made["amount"].clone(),
+            made["start_date"].clone()
+        ),
+        (mandate, json!(1500), json!(from))
+    );
+    assert_eq!(t.fake.resource(&sub).unwrap()["status"], "cancelled");
+    assert_eq!(t.term(&id, &from).await["subscriptionId"], new);
+    // The old subscription's cancellation doesn't end the regular gift.
+    t.settle().await;
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "active");
+    // Its first payment at £15 applies the row.
+    let pm = t.simulate(&format!("subscriptions/{new}/payment")).await["payment"].clone();
+    t.settle().await;
+    let row = t.term(&id, &from).await;
+    assert_eq!(row["status"], "applied");
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(payment(&v, pm.as_str().unwrap())["scheduledOn"], from);
+    t.consistent("alpha");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_collection_day_makes_a_new_subscription_and_a_retry_makes_it_once() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    let from = t
+        .upcoming_after(&id, &giving::terms_rules::add_days(&today(), 20).unwrap())
+        .await[0]
+        .clone();
+    let moved = format!("{}20", &from[..8]);
+    let (s, out) = t
+        .change(
+            &id,
+            &t.sam,
+            json!({ "effectiveFrom": moved, "amount": 1000, "dayOfMonth": 20 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(t.term(&id, &moved).await["changeKind"], "schedule");
+    let before = t.fake.ids("subscriptions").len();
+    // GoCardless doesn't answer the first try: the row stays the job's.
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "status": 500, "path": "subscriptions" }),
+    )
+    .await;
+    assert_eq!(t.sync_terms(&days_before(&moved, 14)).await, 0);
+    assert_eq!(t.term(&id, &moved).await["status"], "sending");
+    // The retry makes it once.
+    assert_eq!(t.sync_terms(&days_before(&moved, 14)).await, 1);
+    assert_eq!(t.sync_terms(&days_before(&moved, 13)).await, 0);
+    assert_eq!(t.fake.ids("subscriptions").len(), before + 1);
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_ne!(v["subscriptionId"], sub);
+    assert_eq!(
+        t.fake
+            .resource(v["subscriptionId"].as_str().unwrap())
+            .unwrap()["day_of_month"],
+        20
+    );
+    assert_eq!(t.term(&id, &moved).await["status"], "sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_too_late_for_its_payment_moves_to_the_next_one() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    // GoCardless has made the next payment, at £10, already.
+    let pm = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"].clone();
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let due = payment(&v, pm.as_str().unwrap())["chargeDate"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let phone = named_code(&t.w, "alpha", &t.ann, "Phone").await;
+    let (s, out) = t
+        .change(
+            &id,
+            &t.sam,
+            json!({ "effectiveFrom": due, "amount": 1200, "changeCodeId": phone }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    // Due within a fortnight of today, the run the save started may have
+    // sent it already: either way, it is sent once.
+    t.sync_terms(&days_before(&due, 14)).await;
+    assert_eq!(t.fake.calls("PUT subscriptions"), 1);
+    let row = t.term(&id, &due).await;
+    // (GoCardless's `amended` may have applied it already.)
+    assert!(
+        row["status"] == "sent" || row["status"] == "applied",
+        "{row}"
+    );
+    assert_eq!(row["effectiveFrom"], due, "kept");
+    let applies = row["appliesFrom"].as_str().unwrap().to_owned();
+    assert!(applies > due, "{row}");
+    // The card shows it from then; the payment made already keeps £10.
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["scheduled"], Value::Null);
+    assert_eq!(payment(&v, pm.as_str().unwrap())["amount"], 1000);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_amount_changed_in_gocardless_is_recorded_uncoded_until_staff_code_it() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    t.simulate(&format!("subscriptions/{sub}/amend?amount=1500"))
+        .await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["changeNotCoded"], true);
+    let row = v["terms"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(
+        (
+            row["amount"].clone(),
+            row["note"].clone(),
+            row["status"].clone(),
+            row["origin"].clone()
+        ),
+        (
+            json!(1500),
+            json!("changed in GoCardless"),
+            json!("applied"),
+            json!("gocardless")
+        )
+    );
+    assert_eq!(row["allocations"][0]["amount"], 1500);
+    let phone = named_code(&t.w, "alpha", &t.ann, "Phone").await;
+    let saved = ok(
+        &t.w,
+        "POST",
+        &format!(
+            "/api/t/alpha/regular-gifts/{id}/terms/{}/code",
+            row["id"].as_str().unwrap()
+        ),
+        &t.sam,
+        Some(json!({ "expected": row["codeVersion"], "changeCodeId": phone })),
+    )
+    .await;
+    assert_eq!(saved["view"]["changeNotCoded"], false);
+    // A replayed event records nothing more.
+    t.settle().await;
+    assert_eq!(
+        t.regular("alpha", &t.val, &id).await["terms"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_payment_from_an_unknown_subscription_is_a_one_off_and_can_be_adopted() {
+    let t = setup().await;
+    let (jo, id, _) = t.active().await;
+    let mandate = t.regular("alpha", &t.val, &id).await["mandateId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other = t
+        .fake_post(
+            &format!("mandates/{mandate}/subscription?amount=500"),
+            json!({}),
+        )
+        .await["subscription"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("subscriptions/{other}/payment")).await;
+    t.settle().await;
+    let gifts = t.gifts_of("alpha", &t.val, &jo).await;
+    let one_off = gifts.iter().find(|g| g["amount"] == 500).unwrap();
+    assert!(one_off["regularGiftId"].is_null(), "{one_off}");
+    let listed = ok(
+        &t.w,
+        "GET",
+        "/api/t/alpha/gocardless/unknown-subscriptions",
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(listed[0]["subscriptionId"], other);
+    assert_eq!(listed[0]["contactId"], jo);
+    // Beta never sees it, nor adopts it.
+    let theirs = ok(
+        &t.w,
+        "GET",
+        "/api/t/beta/gocardless/unknown-subscriptions",
+        &t.bob,
+        None,
+    )
+    .await;
+    assert_eq!(theirs, json!([]));
+    let adopt = json!({ "sourceCodeId": t.code, "clientKey": contracts::new_id() });
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/beta/gocardless/unknown-subscriptions/{other}/adopt"),
+            &t.bob,
+            Some(json!({ "sourceCodeId": t.beta_code, "clientKey": contracts::new_id() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/gocardless/unknown-subscriptions/{other}/adopt"),
+            &t.val,
+            Some(adopt.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let subscriptions = t.fake.ids("subscriptions").len();
+    let saved = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/gocardless/unknown-subscriptions/{other}/adopt"),
+        &t.sam,
+        Some(adopt),
+    )
+    .await;
+    let v = &saved["view"];
+    assert_eq!(
+        (
+            v["status"].clone(),
+            v["subscriptionId"].clone(),
+            v["amount"].clone(),
+            v["contactId"].clone()
+        ),
+        (json!("active"), json!(other), json!(500), json!(jo))
+    );
+    assert_eq!(v["terms"][0]["status"], "applied");
+    assert_eq!(
+        t.fake.ids("subscriptions").len(),
+        subscriptions,
+        "none made"
+    );
+    let listed = ok(
+        &t.w,
+        "GET",
+        "/api/t/alpha/gocardless/unknown-subscriptions",
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(listed, json!([]));
+    // Its next payment is an instalment.
+    let pm = t.simulate(&format!("subscriptions/{other}/payment")).await["payment"].clone();
+    t.settle().await;
+    let adopted = t.regular("alpha", &t.val, v["id"].as_str().unwrap()).await;
+    payment(&adopted, pm.as_str().unwrap());
+    t.consistent("alpha");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_organisation_never_sees_or_changes_a_regular_gifts_terms() {
+    let t = setup().await;
+    let (_, id, _) = t.active().await;
+    t.connect("beta", &t.bob).await;
+    let from = t
+        .upcoming_after(&id, &giving::terms_rules::add_days(&today(), 20).unwrap())
+        .await[0]
+        .clone();
+    let (s, out) = t
+        .change(&id, &t.sam, json!({ "effectiveFrom": from, "amount": 900 }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let row = t.term(&id, &from).await;
+    let term = row["id"].as_str().unwrap();
+    let body = json!({ "expected": 0, "effectiveFrom": from, "amount": 800, "changeCodeId": null });
+    for (path, body) in [
+        (
+            format!("regular-gifts/{id}/terms"),
+            json!({ "effectiveFrom": from, "amount": 800 }),
+        ),
+        (format!("regular-gifts/{id}/terms/{term}"), body.clone()),
+        (
+            format!("regular-gifts/{id}/terms/{term}/withdraw"),
+            json!({ "expected": 0 }),
+        ),
+        (
+            format!("regular-gifts/{id}/terms/{term}/code"),
+            json!({ "expected": 0, "changeCodeId": null }),
+        ),
+    ] {
+        let (s, out) =
+            t.w.call("POST", &format!("/api/t/beta/{path}"), &t.bob, Some(body))
+                .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}: {out}");
+    }
+    let (s, _) =
+        t.w.call(
+            "GET",
+            &format!("/api/t/beta/regular-gifts/{id}"),
+            &t.bob,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // A row of A's under another of A's regular gifts is 404 too.
+    let jo2 = t.contact("alpha", &t.sam).await;
+    let other = t.set_up("alpha", &t.sam, &jo2, &t.code).await["id"].clone();
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!(
+                "/api/t/alpha/regular-gifts/{}/terms/{term}/withdraw",
+                other.as_str().unwrap()
+            ),
+            &t.sam,
+            Some(json!({ "expected": 0 })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(t.term(&id, &from).await["status"], "scheduled");
 }

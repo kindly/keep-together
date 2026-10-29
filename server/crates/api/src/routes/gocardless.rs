@@ -20,10 +20,11 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contracts::{Contract, ContractError, Source};
 use giving::regular::{
-    self, Frequency, MandatePayload, RegularGiftView, RegularStatus, SetUp, UnmatchedPayment,
-    prepare_setup,
+    self, Frequency, MandatePayload, RegularGiftView, RegularStatus, SetUp, UnknownSubscription,
+    UnmatchedPayment, prepare_setup,
 };
 use giving::requests::{ProviderRequestPayload, RequestKind, record_request, set_provider_ref};
+use giving::terms::{self, TermChange};
 use giving::types::{GiftView, Provider};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -46,6 +47,21 @@ pub fn router() -> Router {
         .route("/contacts/{id}/instant-payment", post(instant_payment))
         .route("/gocardless/unmatched", get(unmatched))
         .route("/gocardless/unmatched/{id}/match", post(match_payment))
+        .route("/regular-gifts/{id}/terms", post(change_terms))
+        .route("/regular-gifts/{id}/terms/{termId}", post(edit_terms))
+        .route(
+            "/regular-gifts/{id}/terms/{termId}/withdraw",
+            post(withdraw_terms),
+        )
+        .route("/regular-gifts/{id}/terms/{termId}/code", post(code_terms))
+        .route(
+            "/gocardless/unknown-subscriptions",
+            get(unknown_subscriptions),
+        )
+        .route(
+            "/gocardless/unknown-subscriptions/{id}/adopt",
+            post(adopt_subscription),
+        )
 }
 
 /// `GET gocardless`: on or off here, and this organisation's connection.
@@ -124,19 +140,54 @@ async fn by_contact(
     .map(Json)
 }
 
-/// `GET regular-gifts/{id}`
+/// `GET regular-gifts/{id}`: with its chain, and `upcoming`: the next
+/// payments to pick a change's date from, GoCardless's own forecast
+/// while connected with a subscription (else the chain's projection),
+/// each marked whether a change sent now can still reach it.
 async fn one(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
 ) -> Result<Json<RegularGiftView>, ApiError> {
     let gc = t.gocardless()?;
     let owned = t.gocardless_owned().await?;
-    t.read(move |r| {
-        let v = regular::get_regular(r, &id, &today())?.ok_or(ApiError::NotFound)?;
-        Ok(with_connection(v, owned && gc.token(r)?.is_some()))
-    })
-    .await
-    .map(Json)
+    let g = gc.clone();
+    let (v, token) = t
+        .read(move |r| {
+            let v = regular::get_regular(r, &id, &today())?.ok_or(ApiError::NotFound)?;
+            let token = g.token(r)?.filter(|_| owned);
+            Ok((v, token))
+        })
+        .await?;
+    let forecast = match (&token, &v.subscription_id, v.status.is_ended()) {
+        (Some(token), Some(sb), false) => gc.api.get_subscription(token, sb).await.ok(),
+        _ => None,
+    };
+    let (rid, connected) = (v.id.clone(), token.is_some());
+    let out = t
+        .read(move |r| {
+            let day = today();
+            let upcoming = match forecast {
+                Some(sub) => sub
+                    .upcoming
+                    .into_iter()
+                    .map(|(charge_date, amount)| {
+                        Ok(regular::UpcomingPayment {
+                            changeable: regular::changeable(r, &rid, &day, &charge_date)?,
+                            charge_date,
+                            amount,
+                        })
+                    })
+                    .collect::<rusqlite::Result<_>>()?,
+                None if v.status.is_ended() => vec![],
+                None => regular::projected_upcoming(r, &rid, &day, 10)?,
+            };
+            Ok(RegularGiftView {
+                upcoming,
+                ..with_connection(v, connected)
+            })
+        })
+        .await?;
+    Ok(Json(out))
 }
 
 /// `POST contacts/{id}/regular-gifts`: what staff choose; the contact is
@@ -771,3 +822,277 @@ async fn instant_payment(
         flow_expires_at: flow.expires_at,
     }))
 }
+
+// ── terms (ADR 0026) ───────────────────────────────────────────────────────
+
+/// `regular-gifts/{id}/terms/{termId}…`.
+#[derive(Deserialize)]
+pub struct TermParam {
+    pub id: String,
+    #[serde(rename = "termId")]
+    pub term_id: String,
+}
+
+/// `POST regular-gifts/{id}/terms`: a change from a date.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ChangeTerms {
+    #[serde(flatten)]
+    pub change: TermChange,
+    /// 32 lower-case hex, the form's own: the new row's id, so a retry
+    /// is `409 duplicate`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub client_key: Option<String>,
+}
+
+/// `POST regular-gifts/{id}/terms/{termId}`: the row as now wanted, while
+/// it is scheduled.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct EditTerms {
+    /// The row's `termsVersion` as last read.
+    #[ts(type = "number")]
+    pub expected: i64,
+    #[serde(flatten)]
+    pub change: TermChange,
+}
+
+/// `POST …/terms/{termId}/code`.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CodeTerms {
+    /// The row's `codeVersion` as last read.
+    #[ts(type = "number")]
+    pub expected: i64,
+    pub change_code_id: Option<String>,
+}
+
+/// The row `term_id` of regular gift `id` (here), or `404`.
+fn term_of(r: &rusqlite::Connection, id: &str, term_id: &str) -> Result<(), ApiError> {
+    match terms::get_term(r, term_id)? {
+        Some(t) if t.regular_gift_id == id => Ok(()),
+        _ => Err(ApiError::NotFound),
+    }
+}
+
+/// `POST regular-gifts/{id}/terms {effectiveFrom, amount, frequency?,
+/// dayOfMonth?, month?, changeCodeId?, allocations?, note?, clientKey?}`
+/// → `RegularGiftSaved`: a new row, scheduled, sent to GoCardless when it
+/// falls due (a run starts now). Staff. An upgrade needs `changeCodeId`
+/// (the difference goes to it); without `allocations` the split is the
+/// row before's, moved newest money first. `422 rejected`:
+/// `regular_gift_ended`, `term_too_early`, `term_clash`.
+async fn change_terms(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+    Body(req): Body<ChangeTerms>,
+) -> Result<Json<RegularGiftSaved>, ApiError> {
+    t.gocardless()?;
+    if req
+        .client_key
+        .as_deref()
+        .is_some_and(|k| !contracts::is_client_id(k))
+    {
+        return Err(ContractError::invalid("clientKey", "32 lower-case hex characters").into());
+    }
+    let out = t
+        .write(move |ctx| {
+            terms::change_terms(ctx, &id, req.client_key.as_deref(), req.change, Source::Ui)?;
+            saved(ctx, &id)
+        })
+        .await?;
+    t.gocardless_sync_terms();
+    Ok(Json(out))
+}
+
+/// `POST regular-gifts/{id}/terms/{termId} {expected, …change}` →
+/// `RegularGiftSaved`. Staff; only while scheduled (`422 rejected
+/// term_sent`); `409 stale`.
+async fn edit_terms(
+    Extension(t): Extension<Tenant>,
+    Path(TermParam { id, term_id }): Path<TermParam>,
+    Body(req): Body<EditTerms>,
+) -> Result<Json<RegularGiftSaved>, ApiError> {
+    t.gocardless()?;
+    let out = t
+        .write(move |ctx| {
+            term_of(ctx.tx.read(), &id, &term_id)?;
+            terms::edit_terms(ctx, &term_id, req.expected, req.change, Source::Ui)?;
+            saved(ctx, &id)
+        })
+        .await?;
+    t.gocardless_sync_terms();
+    Ok(Json(out))
+}
+
+/// `POST …/terms/{termId}/withdraw {expected}` (the row's
+/// `termsVersion`) → `RegularGiftSaved`. Staff; only while scheduled.
+async fn withdraw_terms(
+    Extension(t): Extension<Tenant>,
+    Path(TermParam { id, term_id }): Path<TermParam>,
+    Body(req): Body<Expected>,
+) -> Result<Json<RegularGiftSaved>, ApiError> {
+    t.gocardless()?;
+    let out = t
+        .write(move |ctx| {
+            term_of(ctx.tx.read(), &id, &term_id)?;
+            terms::withdraw(ctx, &term_id, Some(req.expected), Source::Ui, None)?;
+            saved(ctx, &id)
+        })
+        .await?;
+    Ok(Json(out))
+}
+
+/// `POST …/terms/{termId}/code {expected, changeCodeId}` →
+/// `RegularGiftSaved`: the code credited with a change, at any state (a
+/// change made in GoCardless is "not coded" until then). Staff.
+async fn code_terms(
+    Extension(t): Extension<Tenant>,
+    Path(TermParam { id, term_id }): Path<TermParam>,
+    Body(req): Body<CodeTerms>,
+) -> Result<Json<RegularGiftSaved>, ApiError> {
+    t.gocardless()?;
+    let out = t
+        .write(move |ctx| {
+            term_of(ctx.tx.read(), &id, &term_id)?;
+            terms::set_code(ctx, &term_id, req.expected, req.change_code_id, Source::Ui)?;
+            saved(ctx, &id)
+        })
+        .await?;
+    Ok(Json(out))
+}
+
+/// `GET gocardless/unknown-subscriptions`: subscriptions payments came
+/// from that no regular gift here runs under (made in GoCardless's
+/// dashboard): their payments are one-off gifts. Any member.
+async fn unknown_subscriptions(
+    Extension(t): Extension<Tenant>,
+) -> Result<Json<Vec<UnknownSubscription>>, ApiError> {
+    t.gocardless()?;
+    t.read(|r| Ok(regular::unknown_subscriptions(r)?))
+        .await
+        .map(Json)
+}
+
+/// `POST gocardless/unknown-subscriptions/{id}/adopt`.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AdoptSubscription {
+    /// The code the whole amount goes to.
+    pub source_code_id: String,
+    /// 32 lower-case hex: the new regular gift's id.
+    pub client_key: String,
+}
+
+/// `POST gocardless/unknown-subscriptions/{id}/adopt {sourceCodeId,
+/// clientKey}` → `RegularGiftSaved`: the subscription becomes a regular
+/// gift of its mandate's donor, active, its first row GoCardless's terms
+/// from its next payment. Nothing is sent to GoCardless (it is collecting
+/// already); its earlier payments stay one-off gifts. Staff. Not listed:
+/// `404`; a schedule we don't keep (weekly, a day past the 28th): `422
+/// rejected unsupported_schedule`.
+async fn adopt_subscription(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id: sb }): Path<IdParam>,
+    Body(req): Body<AdoptSubscription>,
+) -> Result<Json<RegularGiftSaved>, ApiError> {
+    let gc = t.gocardless()?;
+    let owned = t.gocardless_owned().await?;
+    if !contracts::is_client_id(&req.client_key) {
+        return Err(ContractError::invalid("clientKey", "32 lower-case hex characters").into());
+    }
+    let (g, s) = (gc.clone(), sb.clone());
+    let (token, contact) = t
+        .read(move |r| {
+            let listed = regular::unknown_subscriptions(r)?
+                .into_iter()
+                .find(|u| u.subscription_id == s)
+                .ok_or(ApiError::NotFound)?;
+            let contact = listed.contact_id.ok_or_else(|| {
+                ApiError::from(ContractError::rejected(
+                    "unknown_contact",
+                    "Its mandate isn’t one of a donor’s here",
+                ))
+            })?;
+            let token = g.token(r)?.filter(|_| owned).ok_or_else(not_connected)?;
+            Ok((token, contact))
+        })
+        .await?;
+    let sub = gc
+        .api
+        .get_subscription(&token, &sb)
+        .await
+        .map_err(|e| provider(&t.slug, e))?;
+    let unsupported = || {
+        ApiError::from(ContractError::rejected(
+            "unsupported_schedule",
+            "Only monthly or yearly subscriptions on days 1 to 28 can be adopted",
+        ))
+    };
+    let frequency = match sub.interval_unit.as_str() {
+        "monthly" => Frequency::Monthly,
+        "yearly" => Frequency::Yearly,
+        _ => return Err(unsupported()),
+    };
+    let day = sub
+        .day_of_month
+        .filter(|d| (1..=28).contains(d))
+        .ok_or_else(unsupported)?;
+    let month = match frequency {
+        Frequency::Monthly => None,
+        Frequency::Yearly => Some(
+            sub.month
+                .as_deref()
+                .and_then(|m| MONTH_NAMES.iter().position(|x| *x == m))
+                .map(|i| i as u8 + 1)
+                .ok_or_else(unsupported)?,
+        ),
+    };
+    let from = sub
+        .upcoming
+        .first()
+        .map(|(d, _)| d.clone())
+        .unwrap_or_else(today);
+    let out = t
+        .write(move |ctx| {
+            let id = regular::adopt_subscription(
+                ctx,
+                &req.client_key,
+                &sb,
+                SetUp {
+                    contact_id: contact,
+                    amount: sub.amount,
+                    frequency,
+                    day_of_month: day,
+                    month,
+                    source_code_id: req.source_code_id,
+                    client_key: Some(req.client_key.clone()),
+                },
+                &from,
+                Source::Ui,
+            )?;
+            saved(ctx, &id)
+        })
+        .await?;
+    Ok(Json(out))
+}
+
+const MONTH_NAMES: [&str; 12] = [
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];

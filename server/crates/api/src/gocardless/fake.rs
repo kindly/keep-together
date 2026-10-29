@@ -21,16 +21,26 @@
 //!
 //! API beyond the client's D2 calls: `POST payments` (a one-off on a
 //! mandate), `GET events` (`created_at[gte]`, `limit`, `after`: newest
-//! first, as GoCardless lists).
+//! first, as GoCardless lists), `PUT subscriptions/{id}` (the amount
+//! only, at most 10 times: then `number_of_subscription_amendments_exceeded`;
+//! a `subscriptions.amended` event), and `GET subscriptions/{id}` with
+//! `upcoming_payments` (its next 10 charge dates from its day, or its
+//! `start_date`, three days out at the earliest).
 //!
 //! Scenario simulators (like the sandbox's), `POST`, answering JSON:
 //! - `simulate/mandates/{id}/{activate|fail|cancel|expire}` (fail, cancel
 //!   and expire cancel its subscriptions too, as GoCardless does);
 //! - `simulate/subscriptions/{id}/payment`: the subscription's next
-//!   payment (`pending_submission`), answering `{payment}`;
+//!   payment (`pending_submission`), answering `{payment}`, with its
+//!   `payments.created` and `subscriptions.payment_created` events;
+//! - `simulate/subscriptions/{id}/amend?amount=`: an amount changed in
+//!   GoCardless's dashboard (its `subscriptions.amended` event);
 //! - `simulate/mandates/{id}/payment?amount=&subscription=`: a one-off on
 //!   the mandate with no metadata (as if taken in GoCardless's
 //!   dashboard), or naming a subscription;
+//! - `simulate/mandates/{id}/subscription?amount=`: a monthly
+//!   subscription on the mandate on the 5th, made in GoCardless's
+//!   dashboard (no metadata, no webhook), answering `{subscription}`;
 //! - `simulate/organisations/{OR…}/payment?amount=`: a payment from a
 //!   stranger (a new customer and mandate we never asked for), answering
 //!   `{payment, mandate}`;
@@ -91,6 +101,8 @@ struct World {
     calls: HashMap<String, usize>,
     /// Every event made, delivered or not, oldest first: `GET events`.
     events: Vec<(String, Value)>,
+    /// Amount changes per subscription (GoCardless allows 10).
+    amendments: HashMap<String, u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -391,7 +403,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
         )
         .route("/billing_request_flows", post(create_flow))
         .route("/subscriptions", post(create_subscription))
-        .route("/subscriptions/{id}", get(get_resource))
+        .route(
+            "/subscriptions/{id}",
+            get(get_subscription).put(update_subscription),
+        )
         .route(
             "/subscriptions/{id}/actions/cancel",
             post(cancel_subscription),
@@ -419,6 +434,10 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
             "/simulate/mandates/{id}/payment",
             post(simulate_mandate_payment),
         )
+        .route(
+            "/simulate/mandates/{id}/subscription",
+            post(simulate_mandate_subscription),
+        )
         .route("/simulate/mandates/{id}/{action}", post(simulate_mandate))
         .route(
             "/simulate/organisations/{org}/payment",
@@ -428,6 +447,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
             "/simulate/subscriptions/{id}/payment",
             post(simulate_payment),
         )
+        .route("/simulate/subscriptions/{id}/amend", post(simulate_amend))
         .route(
             "/simulate/payments/{id}/{action}",
             post(simulate_payment_action),
@@ -1215,6 +1235,7 @@ async fn create_subscription(
         "interval": 1,
         "day_of_month": day,
         "month": s.get("month").cloned().unwrap_or(Value::Null),
+        "start_date": s.get("start_date").cloned().unwrap_or(Value::Null),
         "name": s.get("name").cloned().unwrap_or(Value::Null),
         "metadata": s.get("metadata").cloned().unwrap_or(json!({})),
         "links": { "mandate": mandate }
@@ -1442,7 +1463,11 @@ async fn simulate_payment(
             "created_at": now_iso(),
             "amount": sub.body["amount"],
             "currency": "GBP",
-            "charge_date": q.charge_date.clone().unwrap_or_else(|| today_plus(3 + 31 * charged)),
+            "charge_date": q.charge_date.clone().unwrap_or_else(|| {
+                upcoming(&sub.body, charged as usize + 1)
+                    .pop()
+                    .unwrap_or_else(|| today_plus(3 + 31 * charged))
+            }),
             "status": "pending_submission",
             "description": sub.body["name"],
             "metadata": {},
@@ -1465,10 +1490,220 @@ async fn simulate_payment(
             "payment_created",
             "Payment created by a subscription.",
         );
-        (event, payment)
+        let created = Fake::event(
+            &mut w,
+            &sub.org,
+            "subscriptions",
+            "payment_created",
+            json!({ "payment": payment, "subscription": id }),
+            "payment_created",
+            "Payment created by a subscription.",
+        );
+        (vec![event, created], payment)
     };
-    let delivered = fake.deliver(vec![event]).await;
+    let delivered = fake.deliver(event).await;
     simulated(delivered, json!({ "payment": payment }))
+}
+
+/// A subscription's next `n` charge dates from three days out (or its
+/// `start_date`, if later), on its day of the month (and month, yearly).
+fn upcoming(sub: &Value, n: usize) -> Vec<String> {
+    let earliest = today_plus(3);
+    let start = sub["start_date"]
+        .as_str()
+        .filter(|d| *d > earliest.as_str())
+        .unwrap_or(&earliest)
+        .to_owned();
+    let day = sub["day_of_month"].as_i64().unwrap_or(1);
+    let yearly = sub["interval_unit"] == "yearly";
+    let month = sub["month"]
+        .as_str()
+        .and_then(|m| MONTHS.iter().position(|x| *x == m).map(|i| i as i64 + 1));
+    let (mut y, mut m): (i64, i64) = (
+        start[0..4].parse().unwrap_or(2026),
+        start[5..7].parse().unwrap_or(1),
+    );
+    let mut out = Vec::new();
+    while out.len() < n && y < 9999 {
+        let date = format!("{y:04}-{m:02}-{day:02}");
+        if date >= start && (!yearly || Some(m) == month) {
+            out.push(date);
+        }
+        m += 1;
+        if m > 12 {
+            m = 1;
+            y += 1;
+        }
+    }
+    out
+}
+
+const MONTHS: [&str; 12] = [
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];
+
+/// `GET subscriptions/{id}`: the caller's own, with `upcoming_payments`.
+async fn get_subscription(
+    State(fake): State<Arc<Fake>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let org = match caller(&fake, &headers) {
+        Ok(org) => org,
+        Err(r) => return r,
+    };
+    let w = fake.world();
+    let Some(r) = w
+        .resources
+        .get(&id)
+        .filter(|r| r.org == org && r.kind == "subscriptions")
+    else {
+        return not_found();
+    };
+    let mut body = r.body.clone();
+    let charged = w
+        .resources
+        .values()
+        .filter(|p| p.kind == "payments" && p.body["links"]["subscription"] == id.as_str())
+        .count();
+    let upcoming: Vec<Value> = if body["status"] == "active" {
+        upcoming(&body, charged + 10)
+            .into_iter()
+            .skip(charged)
+            .map(|d| json!({ "charge_date": d, "amount": body["amount"] }))
+            .collect()
+    } else {
+        vec![]
+    };
+    body["upcoming_payments"] = Value::Array(upcoming);
+    Json(json!({ "subscriptions": body })).into_response()
+}
+
+/// Change a subscription's amount, as `PUT subscriptions/{id}` or
+/// GoCardless's dashboard does: refused when not active or after 10
+/// changes; else its `amended` event (`origin`: `api` or `dashboard`).
+#[allow(clippy::result_large_err)]
+fn amend(w: &mut World, org: &str, id: &str, amount: i64, origin: &str) -> Result<Value, Response> {
+    let Some(r) = w
+        .resources
+        .get(id)
+        .filter(|r| r.org == org && r.kind == "subscriptions")
+        .cloned()
+    else {
+        return Err(not_found());
+    };
+    if r.body["status"] != "active" {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_state",
+            "subscription_not_active",
+            "The subscription is not active",
+            json!({}),
+        ));
+    }
+    if amount <= 0 {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_failed",
+            "invalid_subscription",
+            "amount is invalid",
+            json!({}),
+        ));
+    }
+    let done = w.amendments.get(id).copied().unwrap_or(0);
+    if done >= 10 {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_failed",
+            "number_of_subscription_amendments_exceeded",
+            "The subscription amount has already been changed 10 times",
+            json!({}),
+        ));
+    }
+    w.amendments.insert(id.to_owned(), done + 1);
+    let body = {
+        let r = w.resources.get_mut(id).expect("checked above");
+        r.body["amount"] = json!(amount);
+        r.body.clone()
+    };
+    let mut e = Fake::event(
+        w,
+        org,
+        "subscriptions",
+        "amended",
+        json!({ "subscription": id }),
+        "subscription_amended",
+        "Subscription amount has been amended.",
+    );
+    e["details"]["origin"] = json!(origin);
+    Ok(json!({ "subscription": body, "event": e }))
+}
+
+/// `PUT subscriptions/{id} {subscriptions: {amount}}`.
+async fn update_subscription(
+    State(fake): State<Arc<Fake>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let org = match caller(&fake, &headers) {
+        Ok(org) => org,
+        Err(r) => return r,
+    };
+    let amount = body
+        .pointer("/subscriptions/amount")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let done = {
+        let mut w = fake.world();
+        amend(&mut w, &org, &id, amount, "api")
+    };
+    match done {
+        Ok(v) => {
+            fake.deliver(vec![v["event"].clone()]).await;
+            Json(json!({ "subscriptions": v["subscription"] })).into_response()
+        }
+        Err(r) => r,
+    }
+}
+
+#[derive(Deserialize)]
+struct Amend {
+    amount: i64,
+}
+
+/// `simulate/subscriptions/{id}/amend?amount=`: someone changed it in
+/// GoCardless's dashboard.
+async fn simulate_amend(
+    State(fake): State<Arc<Fake>>,
+    Path(id): Path<String>,
+    Query(q): Query<Amend>,
+) -> Response {
+    let done = {
+        let mut w = fake.world();
+        let Some(org) = w.resources.get(&id).map(|r| r.org.clone()) else {
+            return not_found();
+        };
+        amend(&mut w, &org, &id, q.amount, "dashboard")
+    };
+    match done {
+        Ok(v) => {
+            let delivered = fake.deliver(vec![v["event"].clone()]).await;
+            simulated(delivered, json!({ "subscription": id }))
+        }
+        Err(r) => r,
+    }
 }
 
 #[derive(Deserialize)]
@@ -1748,6 +1983,49 @@ async fn simulate_mandate_payment(
     };
     let delivered = fake.deliver(vec![event]).await;
     simulated(delivered, json!({ "payment": payment }))
+}
+
+/// A subscription someone made in GoCardless's dashboard on mandate `id`:
+/// monthly on the 5th, no metadata.
+async fn simulate_mandate_subscription(
+    State(fake): State<Arc<Fake>>,
+    Path(id): Path<String>,
+    Query(q): Query<Amount>,
+) -> Response {
+    let mut w = fake.world();
+    let Some(org) = w
+        .resources
+        .get(&id)
+        .filter(|r| r.kind == "mandates")
+        .map(|r| r.org.clone())
+    else {
+        return not_found();
+    };
+    let sb = w.id("SB");
+    let body = json!({
+        "id": sb,
+        "created_at": now_iso(),
+        "amount": q.amount.unwrap_or(500),
+        "currency": "GBP",
+        "status": "active",
+        "interval_unit": "monthly",
+        "interval": 1,
+        "day_of_month": 5,
+        "month": null,
+        "start_date": null,
+        "name": "Made in the dashboard",
+        "metadata": {},
+        "links": { "mandate": id }
+    });
+    w.resources.insert(
+        sb.clone(),
+        Resource {
+            org,
+            kind: "subscriptions",
+            body,
+        },
+    );
+    Json(json!({ "subscription": sb })).into_response()
 }
 
 /// A payment from a stranger to account `org`: a customer and an active

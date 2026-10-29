@@ -204,6 +204,10 @@ async fn main() {
             store: store.clone(),
             gc: gc.clone(),
         });
+        jobs.register(api::gocardless::terms_sync::TermsSyncJob {
+            store: store.clone(),
+            gc: gc.clone(),
+        });
     }
     let state = AppState::new(store, dev_auth)
         .with_scan_limits(Arc::new(scan_limits))

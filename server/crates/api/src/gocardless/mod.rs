@@ -49,6 +49,7 @@ pub mod client;
 pub mod fake;
 pub mod oauth;
 pub mod process;
+pub mod terms_sync;
 pub mod webhook;
 
 use std::sync::Arc;
@@ -104,6 +105,8 @@ pub struct GoCardless {
     settings_key: SettingsKey,
     /// One processing run at a time ([`process::process_pending`]).
     pub(crate) processing: tokio::sync::Mutex<()>,
+    /// One terms sync at a time ([`terms_sync`]).
+    pub(crate) terms_syncing: tokio::sync::Mutex<()>,
     /// One OAuth connect at a time ([`oauth::callback`]).
     pub(crate) connecting: tokio::sync::Mutex<()>,
     /// Regular gifts whose subscription GoCardless keeps refusing on a
@@ -219,6 +222,7 @@ pub fn from_vars(
         redirect_uri,
         settings_key,
         processing: tokio::sync::Mutex::new(()),
+        terms_syncing: tokio::sync::Mutex::new(()),
         connecting: tokio::sync::Mutex::new(()),
         sweep_waits: std::sync::Mutex::new(std::collections::HashMap::new()),
         fake,

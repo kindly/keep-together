@@ -269,6 +269,23 @@ impl Tenant {
             .is_some())
     }
 
+    /// Send this organisation's due terms changes to GoCardless now, in
+    /// the background (after a change is saved; `regular-terms-sync`
+    /// runs hourly too).
+    pub fn gocardless_sync_terms(&self) {
+        let Some(gc) = self.gocardless.clone() else {
+            return;
+        };
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        tokio::spawn(async move {
+            let today = giving::terms_rules::date_of_ms(contracts::now_ms());
+            if let Err(e) = crate::gocardless::terms_sync::sync_tenant(store, gc, id, &today).await
+            {
+                crate::observe::error(&format!("regular-terms-sync: {e}"));
+            }
+        });
+    }
+
     /// Put this organisation's parked GoCardless events back in the queue
     /// (admin) and start a run.
     pub async fn gocardless_retry_failed(
