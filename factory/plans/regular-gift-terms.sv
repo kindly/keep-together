@@ -3,7 +3,7 @@
 <sv-prose id="b1">
 ## Design tree
 
-*Draft: round 1 is open below. Each point is my proposal until a round settles it, and the round-1 question that settles it is named.*
+*Round 1 confirmed 2026-10-29, all as suggested. Round 2 is open below; its questions are marked* (g2…).
 
 - **The terms are a dated chain** *(g1q1)*. A regular gift has a chain of term rows. Each row holds the amount, frequency, day (and month), and a split by source code in pence that sums to the amount, in force from the first payment it governs. Nothing is overwritten: a change adds a row.
   - **Setting a gift up** writes its first row, with one code for the whole amount, as now.
@@ -20,6 +20,13 @@
   - **A failed payment** stays expected and unpaid (arrears). **Cancellation** ends what is expected from then on *(g1q10)*.
 - **Upgrade value is reported annualised** (monthly delta × 12), with the monthly figure beside it *(g1q8)*.
 - **Pause is later** *(g1q12)*.
+- *Open in round 2:*
+  - changes made directly in GoCardless (g2q1);
+  - when an upgrade starts counting (g2q2);
+  - bulk uplifts (g2q3);
+  - who can change terms (g2q4);
+  - what the regular-gift card shows of expected vs actual (g2q5);
+  - a payment from a subscription we didn't make (g2q6).
 </sv-prose>
 
 <sv-prose id="b2">
@@ -251,6 +258,54 @@ Twelve questions. Every one has my recommendation pre-selected; change only what
 
 <sv-ask id="g1fin" round="1" role="close">
 Round 1: the shape of the chain, upgrades and downgrades, getting changes to GoCardless, and the expected side. Send when done.
+</sv-ask>
+
+<sv-prose id="b8">
+## Round 2
+
+Round 1 came back all as suggested. These are the questions it opened.
+</sv-prose>
+
+<sv-ask id="g2q1" round="2">
+**A change made directly in GoCardless.** Someone edits the amount in the GoCardless dashboard and we get `subscriptions.amended`, a change we didn't send.
+- * Record it automatically as a new row from the next payment GoCardless creates, with no change code and the note "changed in GoCardless"; the difference goes to (or comes off) the newest layer; the regular gift is flagged "change not coded" until staff pick a code
+- Same, but don't flag it
+- Don't record it: the expected side shows the gap until staff enter the change by hand
+</sv-ask>
+
+<sv-ask id="g2q2" round="2">
+**When an upgrade counts in the upgrade report.** A change can be entered in November for December, then the donor cancels before paying.
+- * From its first collected payment at the new amount: an upgrade that never collected shows as "not realised", separately
+- From the day it was entered
+- From its effective date, collected or not
+</sv-ask>
+
+<sv-ask id="g2q3" round="2">
+**Bulk changes** (an annual uplift: ask every donor for +£1 and apply it to those who agree, or a list of upgrades from a telephone agency).
+- * Later: one gift at a time now; a bulk tool (or an import of agency results) once this is built
+- Include a bulk change in this plan
+</sv-ask>
+
+<sv-ask id="g2q4" round="2">
+**Who can change a regular gift's terms.**
+- * Staff and admins, as for setting one up; viewers never
+- Admins only
+</sv-ask>
+
+<sv-ask id="g2q5" round="2">
+**Expected vs actual on the regular-gift card.**
+- * The last 12 periods: expected amount, what happened (collected, failed, missing, cancelled), and the scheduled change if any. The full history is in the report
+- Nothing on the card: the report only
+</sv-ask>
+
+<sv-ask id="g2q6" round="2">
+**A payment from a subscription we didn't create** on a known mandate (someone made a second subscription in the GoCardless dashboard).
+- * Record it as a one-off gift on the mandate's contact (as the unified-gifts build does for one-offs), not expected, and list the unknown subscription for staff to adopt as a new regular gift or leave
+- Adopt it as a new regular gift automatically, uncoded
+</sv-ask>
+
+<sv-ask id="g2fin" round="2" role="close">
+Round 2: changes from outside, when upgrades count, bulk, permissions, the card. Send when done.
 </sv-ask>
 
 </sv-page>
