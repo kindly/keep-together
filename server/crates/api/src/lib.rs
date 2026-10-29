@@ -14,6 +14,7 @@ pub mod jobs;
 pub mod observe;
 pub mod reset;
 pub mod routes;
+pub mod scans;
 pub mod schema;
 pub mod static_files;
 pub mod tenant;
@@ -180,6 +181,7 @@ pub fn app(state: AppState, domain: Router) -> Router {
             post(gocardless::webhook::receive),
         )
         .merge(auth::routes())
+        .merge(scans::phone::router())
         .nest("/api/t/{slug}", tenant_routes);
     if let Some(fake) = fake {
         router = router.nest(gocardless::FAKE_PREFIX, gocardless::fake::router(fake));

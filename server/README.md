@@ -23,7 +23,7 @@ Env (`api`):
 
 | var | default | |
 |---|---|---|
-| `KEEP_DATA_DIR` | `data` | `platform.db`, `orgs/`, `premigrate/` |
+| `KEEP_DATA_DIR` | `data` | `platform.db`, `orgs/`, `files/`, `premigrate/` |
 | `KEEP_BIND` | `127.0.0.1` | Fly sets `0.0.0.0` |
 | `KEEP_PORT` | `8787` | |
 | `KEEP_MAX_OPEN_ORGS` | `64` | org files kept open beyond those in use |
@@ -64,7 +64,7 @@ parameter is ignored and both columns measure the words index.)
 
 | crate | owns |
 |---|---|
-| `store` | `platform.db` (tenants, users, memberships, sessions, snapshots) and `orgs/<tenant-id>.db`; pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`, no `ATTACH`); per file one writer behind a fair mutex + a read-only reader pool + a checkpointer thread, none under Litestream (no checkpoint in a commit: `docs/ops.md`); locks waited for by 1 ms polls; the handle LRU; boot migration; each file's event channel |
+| `store` | `platform.db` (tenants, users, memberships, sessions, snapshots), `orgs/<tenant-id>.db` and each org's files db `files/<tenant-id>.db` (`store::files`: immutable blobs by SHA-256, opened with the org's handle, 2 GB cap); pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`, no `ATTACH`); per file one writer behind a fair mutex + a read-only reader pool + a checkpointer thread, none under Litestream (no checkpoint in a commit: `docs/ops.md`); locks waited for by 1 ms polls; the handle LRU; boot migration; each file's event channel |
 | `contracts` | the **only write path**: `transact`, `Contract`, `execute`, revisions, command groups, restore through upcasters, child-row reconcile, events |
 | `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history |
 | `sources`, `giving`, `giftaid`, `comms` | domain crates: source codes, gifts (and their Gift Aid claim lock), Gift Aid declarations and claims (HMRC's schedule and claim XML), email suppressions |
@@ -127,6 +127,7 @@ request, an SSE stream) is never closed.
   | 401 | `unauthenticated` | no valid session |
   | 403 | `forbidden` | not a member / unknown slug / role too low / dev auth off |
   | 404 | `not_found` | |
+  | 410 | `gone` | a phone pairing's link ended, timed out or never was (`/api/scan/{token}`) |
   | 409 | `stale` | `{contract, counter, current}` |
   | 409 | `duplicate` | `{id}`: create with a pre-generated id that exists |
   | 422 | `invalid` | `{problems: [{field, message}]}`: unstorable input, including a malformed body |
@@ -343,7 +344,8 @@ transaction; one org's failure doesn't stop the others. Running now:
 reset links, old invites) and `field-retire` (1 min: retires left part
 way, as whoever started them, in only the orgs `platform.db`'s
 `pending_jobs` names; one field failing is reported and the rest carry
-on); F2's hourly snapshot
+on), `scan-pairing-sweep`, `scan-orphan-sweep` and `scan-discard-purge`
+(daily: Declaration scans, below); F2's hourly snapshot
 registers the same way. A job's first run is `first_after()` after boot
 (default: one period), so the snapshot needn't wait an hour after every
 deploy.
@@ -587,6 +589,95 @@ Routes under `/api/t/{slug}`, **admin only** (reads too):
 | `GET giftaid/claims/{id}/schedule?format=excel\|libreoffice` | HMRC's Gift Aid schedule (`.ods`), filled from HMRC's own template (`giftaid/assets/hmrc`); ready or later |
 | `GET giftaid/claims/{id}/xml` | the claim as HMRC's R68 XML, IRmark stamped (`X-IRmark`: base32), generated and never sent; ready or later; `422 rejected`: `missing_hmrc_details`, `org_name` |
 | `GET giftaid/hmrc-details` · `POST giftaid/hmrc-details {expected?, …}` | `HmrcDetailsView {…, version, warnings}`: HMRC reference, regulator and number, the authorised official (name, postcode, phone); stored as typed, what HMRC would refuse is a warning |
+## Declaration scans
+
+Plan `factory/plans/declaration-scans.sv` (confirmed 2026-10-29); ADR
+0024's amendment (an organisation is two files). Staff on a laptop scan
+paper Gift Aid declarations with a phone that isn't signed in. HMRC
+3.7.2: the image is the record, not the typed fields.
+
+**Storage.** Page images are blobs in the org's files db
+(`files/<tenant-id>.db`, `store::files`): SHA-256 keys, immutable, 2 GB
+per org (`422 rejected files_full` past it). The org file holds
+`declaration_scans` and their `declaration_scan_pages` (`giftaid::scans`,
+org schema step 19). Three contracts partition a scan:
+`giftaid.scan` (via, pairing, who and when, the pages; edited only as a
+draft), `giftaid.scanReview` (accept onto a `paperForm` declaration of the
+contact on screen that isn't void and holds no other scan, or discard;
+once) and `giftaid.scanRetention` (the images went: a discard after 30
+days, the admin's report, erasure; the row stays). None can be restored.
+Accepting writes nothing on the declaration (declarations stay
+create-only) and never changes coverage (rule 1). Uploads go blob first,
+then the contract; deletions go contract first, then blob. A daily sweep
+removes blobs no live page names that were put over a day ago, and
+nothing it removes was put in the last hour.
+
+**Pairing** (`api::scans`): `POST scan-pairings` (staff or admin, a
+sign-in or step-up within the hour) makes a 256-bit token. Only its
+SHA-256 is kept, in `platform.db` (`scan_pairings`: tenant, user, the
+laptop's session, purpose, expiry, device, uploads). The QR code holds
+`/scan.html#<token>`: the token is in the fragment, so no page request or
+`Referer` carries it. The phone page reads it from `location.hash` and
+calls `/api/scan/{token}`. A pairing is live while it isn't ended, is
+under 2 h old and was used in the last 15 min, its laptop session is
+live, and its user is still staff or admin of the org. Triggers on
+`auth_sessions` end it whenever its session row goes (sign-out,
+revoke-all, expiry, removal) and follow a token rotation (step-up). The
+first `GET` claims it for that device. The device cookie is `__Host-kt_scan`,
+`kt_scan` on a loopback host: `HttpOnly; SameSite=Strict; Secure`, 256
+bits, stored hashed. Another device gets `403 forbidden`. Dead, unknown
+or malformed: `410 gone`. An upload's token and cookie are checked before
+its body is read (`api::body`), and the body is held to 1 MB. Each page
+uploaded counts towards 300 per pairing (`422 rejected upload_limit`).
+The token is never logged, and Sentry events have `/api/scan/<token>` and
+any 64-hex run redacted.
+
+**Upload pipeline** (`api::scans::image`): JPEG or PNG by magic bytes
+only. Over 6000 px a side or 24 MP in the header is refused before
+decoding (decompression bombs), and the decoder runs under `image::Limits`,
+two at a time. The page is greyscaled, its long side capped at 1754 px
+(A4 at 150 dpi) and re-encoded as JPEG from raw pixels, so no EXIF or GPS
+survives. Quality steps 80 → 50 until it fits 400 KB; still over is `422
+invalid`. Not an image or unreadable: `422 invalid {field: "image"}`.
+
+The phone's routes (outside the tenant prefix; `ScanSitting`, `ScanUploaded`):
+
+| route | |
+|---|---|
+| `GET /api/scan/{token}` | claims the link for this device (sets the device cookie if it has none) or reopens it → `ScanSitting {orgName, purpose, expiresAt, idleExpiresAt, uploadsLeft, maxPages, maxPageBytes, scans: [{id, pages, open}]}`, `Cache-Control: no-store`; another device `403`; dead `410` |
+| `POST /api/scan/{token}/scans?id=` | body: one page's image (raw bytes, any content type) → `ScanUploaded {scanId, pages, uploadsLeft}`: a new draft. `id` (32 hex, optional) is the phone's key: a retry with it answers the same scan |
+| `POST /api/scan/{token}/scans/{scanId}/pages?pageId=` | body: the next page → `ScanUploaded`; only onto one of this sitting's drafts (else `404`); `pageId` (32 hex, optional): a retry adds nothing; a 7th page `422 rejected page_limit` |
+
+Under `/api/t/{slug}` (types in `src/lib/data/rust-types/`; live updates
+are `declaration_scans` events on the org's stream):
+
+| route | |
+|---|---|
+| `POST scan-pairings {purpose: stack\|contact\|gift}` | `ScanPairingStarted {pairing: ScanPairingView, path}`: `path` is `/scan.html#<token>`, shown once. Staff or admin; a viewer `403`; no recent sign-in `403 step_up_required` |
+| `GET scan-pairings/{id}` | `ScanPairingView {id, purpose, startedBy, createdAt, expiresAt, idleExpiresAt, claimed, endedAt, uploads, scans: ScanView[]}`: the sitting's stack; staff or admin |
+| `DELETE scan-pairings/{id}` | ends it now (the phone gets `410`) → `ScanPairingView` |
+| `GET scans` | `ScanView[]`, "Scans to match": every draft, oldest first (≤ 500); staff or admin |
+| `POST scans?id=` · `POST scans/{id}/pages?pageId=` | a signed-in phone's upload (`via: direct`), as the phone routes → `ScanUploaded` (`uploadsLeft: null`) |
+| `GET scans/{id}` | `ScanView {id, status: draft\|accepted\|discarded, via, pairingId, scannedBy, scannedAt, declarationId, reviewedBy, reviewedAt, discardReason, imageDeletedAt, deletionReason, pages: [{id, pageNo, width, height, size}], scanVersion, reviewVersion, retentionVersion}`; staff or admin |
+| `GET scans/{id}/pages/{n}` | the page's image: `image/jpeg`, `Cache-Control: private, max-age=3600`, `nosniff`; no such page or its images gone `404`; staff or admin |
+| `POST scans/{id}/reorder {expected, order}` | `expected` = `scanVersion`; `order` = the page ids to keep, in order (≥ 1) → `ScanView`; reviewed `422 rejected not_draft` |
+| `POST scans/{id}/merge {expected, from, fromExpected}` | `from`'s pages appended here, `from` discarded ("Merged into another scan"), one group; `expected` = this `scanVersion`, `fromExpected` = `from`'s `reviewVersion` → `ScanView` |
+| `POST scans/{id}/accept {expected, contactId, match}` | `expected` = `reviewVersion`; `match` = `{kind: "existing", declarationId}` or `{kind: "new", declaration: DeclarationPayload}` (recorded in the same command group: both or neither) → `ScanAccepted {declarationId, scan}`; `422 rejected`: `not_paper_form`, `voided_declaration`, `unknown_declaration` (not the contact's), `declaration_has_scan`, `reviewed` |
+| `POST scans/{id}/discard {expected, reason?}` | → `ScanView`; images go after 30 days, the row stays |
+| `POST scans/{id}/delete-images {expected}` | admin within the step-up hour; `expected` = `retentionVersion`; only a scan in the report (`422 rejected retention_running` otherwise) → `ScanView`; the image is unreachable at once, its blob goes after |
+| `GET giftaid/scans/deletable?today` | admin within the step-up hour: `DeletableScan[] {scan, contactId, declarationMadeOn, lastCoveredOn}`, accepted scans whose declaration covered no gift (money received) for 7 years, counted from its last covered gift or, with none, from when it was made |
+| `GET giftaid/{id}/scans` | `DeclarationScans {held: [{id, scannedAt, reviewedAt, imagesHeld}], scans: ScanView[] \| null}`: any member sees "✓ scan held" and when; `scans` for staff and admins only |
+| `GET files-usage` | `FilesUsage {bytes, capBytes}` (Settings) |
+
+Not built here (later steps or plans): the SPA (step 4) and `scan.html`
+(step 5, its own Vite entry; the api serves it like the SPA); erasure and
+org deletion (`giftaid::scans::erasure_deletes` says what they must do:
+keep a scan whose declaration covers a claimed gift, admin-only, until its
+retention ends; delete the rest); viewer-only-once-erased image access
+(admins only after erasure), which needs erasure's flag on the contact.
+Pairing state (claimed, ended) is not an org event: the laptop refetches
+`scan-pairings/{id}` on `declaration_scans` events and on a timer.
+
 ## GoCardless (Direct Debit)
 
 `api::gocardless`, plan `factory/plans/gocardless.sv` (D1, D2, round 2:

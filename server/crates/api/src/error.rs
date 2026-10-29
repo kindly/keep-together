@@ -27,6 +27,10 @@ pub enum ApiError {
     StepUpRequired,
     /// 404
     NotFound,
+    /// 410: a phone pairing's link has ended (or never was: the two look
+    /// the same, so a token can't be probed). Start a new one on the
+    /// laptop.
+    Gone,
     /// 409: the slice changed since the caller read `expected`. `current`
     /// is the slice's state now; merge it and retry with `counter`.
     Stale {
@@ -63,6 +67,7 @@ impl ApiError {
             ApiError::Unauthenticated => StatusCode::UNAUTHORIZED,
             ApiError::Forbidden | ApiError::StepUpRequired => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::Gone => StatusCode::GONE,
             ApiError::Stale { .. } | ApiError::Duplicate { .. } => StatusCode::CONFLICT,
             ApiError::Invalid { .. } | ApiError::Rejected { .. } => {
                 StatusCode::UNPROCESSABLE_ENTITY

@@ -98,6 +98,7 @@ pub const PLATFORM_SCHEMAS: &[PlatformSchema] = &[
     crate::jobs::SCHEMA,
     crate::address::SCHEMA,
     crate::gocardless::SCHEMA,
+    crate::scans::SCHEMA,
 ];
 
 /// A new organisation's reference data, in its file's first transaction

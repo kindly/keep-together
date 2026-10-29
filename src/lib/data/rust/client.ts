@@ -30,6 +30,8 @@ export function describe(error: ApiError): string {
       return 'Confirm it’s you first'
     case 'not_found':
       return 'Not found'
+    case 'gone':
+      return 'This link has ended: start a new one'
     case 'stale':
       return 'Changed by someone else'
     case 'duplicate':

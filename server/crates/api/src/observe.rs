@@ -39,13 +39,19 @@ fn scrub(mut event: Event<'static>) -> Event<'static> {
         req.headers.clear();
         req.query_string = None;
         req.env.clear();
+        // A phone pairing's token is in its path (`/api/scan/{token}`).
+        if let Some(url) = req.url.as_mut() {
+            let path = redact_scan_tokens(url.path());
+            url.set_path(&path);
+        }
     }
-    event.message = event.message.map(|m| redact_emails(&m));
+    let redact = |m: &str| redact_scan_tokens(&redact_emails(m));
+    event.message = event.message.map(|m| redact(&m));
     for exception in event.exception.values.iter_mut() {
-        exception.value = exception.value.as_deref().map(redact_emails);
+        exception.value = exception.value.as_deref().map(redact);
     }
     for crumb in event.breadcrumbs.values.iter_mut() {
-        crumb.message = crumb.message.as_deref().map(redact_emails);
+        crumb.message = crumb.message.as_deref().map(redact);
         crumb.data.clear();
     }
     event.extra.clear();
@@ -78,11 +84,48 @@ fn redact_emails(text: &str) -> String {
     out
 }
 
+/// Every `/api/scan/<token>` becomes `/api/scan/[token]`, and any other
+/// 64-hex run (a token's shape) `[token]`.
+pub fn redact_scan_tokens(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        if run.len() == 64 {
+            out.push_str("[token]");
+        } else {
+            out.push_str(run);
+        }
+        run.clear();
+    };
+    for c in text.chars() {
+        if c.is_ascii_hexdigit() {
+            run.push(c);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use sentry::protocol::{Exception, Request, User};
 
     use super::*;
+
+    #[test]
+    fn scan_tokens_are_redacted() {
+        let token = "ab".repeat(32);
+        assert_eq!(
+            redact_scan_tokens(&format!("GET /api/scan/{token}/scans x")),
+            "GET /api/scan/[token]/scans x"
+        );
+        // A 32-hex id is no token.
+        let id = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0";
+        assert_eq!(redact_scan_tokens(id), id);
+    }
 
     #[test]
     fn emails_are_redacted() {

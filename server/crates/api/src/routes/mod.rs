@@ -15,6 +15,7 @@ mod notes;
 mod preferences;
 pub mod qc_seed;
 mod relationships;
+mod scans;
 mod sources;
 
 use axum::Router;
@@ -41,6 +42,7 @@ pub fn router() -> Router {
         .merge(giftaid::router())
         .merge(giftaid_claims::router())
         .merge(gocardless::router())
+        .merge(scans::router())
 }
 
 /// A query string whose rejection is an [`ApiError::Invalid`], like

@@ -396,7 +396,13 @@ fn a_draft_reorders_and_removes_its_pages_and_a_reviewed_scan_cant() {
     });
     assert_eq!(reason(empty.unwrap_err()), "invalid");
     tx(&w.a, |ctx| {
-        scans::set_pages(ctx, &id, s.scan_version, std::slice::from_ref(&first), Source::Ui)
+        scans::set_pages(
+            ctx,
+            &id,
+            s.scan_version,
+            std::slice::from_ref(&first),
+            Source::Ui,
+        )
     })
     .unwrap();
     assert_eq!(w.get(&id).pages.len(), 1);

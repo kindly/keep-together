@@ -1161,6 +1161,16 @@ pub fn add_page(
             counter,
         });
     }
+    if let Some(id) = page.id.as_deref() {
+        let taken: bool = ctx.tx.read().query_row(
+            "SELECT EXISTS (SELECT 1 FROM declaration_scan_pages WHERE id = ?1)",
+            [id],
+            |r| r.get(0),
+        )?;
+        if taken {
+            return Err(ContractError::Duplicate { id: id.to_owned() });
+        }
+    }
     let mut payload = current.payload;
     payload.pages.push(page);
     execute(ctx, &SCAN, payload, Exec::update(scan_id, None, source))

@@ -346,6 +346,127 @@ impl Tenant {
         Ok(GoCardlessStatus::new(gc.mode, None))
     }
 
+    // ── declaration scans (`crate::scans`) ─────────────────────────────────
+
+    /// Start a phone pairing for this session (staff or admin, a sign-in
+    /// or step-up within the hour). The token is in the answer only.
+    pub async fn start_scan_pairing(
+        &self,
+        purpose: crate::scans::Purpose,
+    ) -> Result<(crate::scans::Pairing, String), ApiError> {
+        if self.role < Role::Staff {
+            return Err(ApiError::Forbidden);
+        }
+        self.require_step_up()?;
+        blocking(self.recheck()).await?;
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        let (user, session) = (self.user, self.session_id.clone());
+        blocking(move || {
+            crate::scans::start(&store, &id, user, &session, purpose, contracts::now_ms())
+        })
+        .await
+    }
+
+    /// One of this organisation's pairings (any staff member's), or
+    /// `404`: another organisation's id reads as unknown.
+    pub async fn scan_pairing(&self, id: String) -> Result<crate::scans::Pairing, ApiError> {
+        let (store, tenant) = (self.store.clone(), self.tenant_id.clone());
+        blocking(move || {
+            crate::scans::by_id(&store, &id)?
+                .filter(|p| p.tenant_id == tenant.as_str())
+                .ok_or(ApiError::NotFound)
+        })
+        .await
+    }
+
+    /// End one of this organisation's pairings (the laptop's "Done").
+    pub async fn end_scan_pairing(&self, id: String) -> Result<crate::scans::Pairing, ApiError> {
+        if self.role < Role::Staff {
+            return Err(ApiError::Forbidden);
+        }
+        let pairing = self.scan_pairing(id).await?;
+        let store = self.store.clone();
+        blocking(move || {
+            crate::scans::end(&store, &pairing.id, "ended", contracts::now_ms())?;
+            crate::scans::by_id(&store, &pairing.id)?.ok_or(ApiError::NotFound)
+        })
+        .await
+    }
+
+    /// A signed-in phone's upload (`via: direct`, staff or admin): the
+    /// image re-encoded into this organisation's files db, then the
+    /// scan's contract as this user.
+    pub async fn upload_scan_page(
+        &self,
+        target: crate::scans::Target,
+        raw: axum::body::Bytes,
+    ) -> Result<crate::scans::Uploaded, ApiError> {
+        if self.role < Role::Staff {
+            return Err(ApiError::Forbidden);
+        }
+        let db = self.db.clone();
+        let (user, timing, check) = (self.user, self.timing.clone(), self.recheck());
+        blocking(move || {
+            check()?;
+            let start = Instant::now();
+            let page = crate::scans::store_page(&db, &raw, contracts::now_ms())?;
+            let scan_id = crate::scans::upload(&db, user, None, target, page)?;
+            let pages = crate::scans::page_count(&db, &scan_id)?;
+            timing.add_db(start.elapsed());
+            Ok::<_, ApiError>(crate::scans::Uploaded {
+                scan_id,
+                pages,
+                uploads_left: None,
+            })
+        })
+        .await
+    }
+
+    /// A page's image from this organisation's files db, if its page row
+    /// names it and its images haven't gone. Staff and admins only.
+    pub async fn scan_page_image(
+        &self,
+        scan_id: String,
+        page_no: i64,
+    ) -> Result<Option<store::files::Blob>, ApiError> {
+        if self.role < Role::Staff {
+            return Err(ApiError::Forbidden);
+        }
+        let db = self.db.clone();
+        blocking(move || {
+            let sha = db.read(|r| giftaid::scans::page_blob(r, &scan_id, page_no))?;
+            let Some(sha) = sha else {
+                return Ok(None);
+            };
+            match db.files_if_any()? {
+                Some(files) => Ok::<_, ApiError>(files.get(&sha)?),
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
+    /// Bytes this organisation's files db holds (Settings), and its cap.
+    pub async fn files_usage(&self) -> Result<i64, ApiError> {
+        let db = self.db.clone();
+        blocking(move || match db.files_if_any()? {
+            Some(files) => Ok::<_, ApiError>(files.usage()?),
+            None => Ok(0),
+        })
+        .await
+    }
+
+    /// After a scan's images were recorded as gone (committed): the blobs
+    /// no page names any more. Blobs put within the last hour stay (a
+    /// write in flight); the daily sweep takes them.
+    pub async fn sweep_scan_blobs(&self) -> Result<usize, ApiError> {
+        let db = self.db.clone();
+        blocking(move || {
+            crate::scans::sweep_blobs(&db, contracts::now_ms() - crate::scans::PUT_GRACE_MS)
+        })
+        .await
+    }
+
     /// This organisation's committed changes as SSE, resuming after
     /// `Last-Event-ID` if given (see [`crate::events`]).
     pub async fn events(
