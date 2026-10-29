@@ -33,6 +33,7 @@ import {
   matchable,
   movePage,
 } from '../lib/domain/scans'
+import { RustApiError } from '../lib/data/rust/client'
 import { HMRC_MODEL_WORDING_VERSION } from '../lib/domain/warnings'
 import {
   SCOPE_LABELS,
@@ -208,31 +209,40 @@ function ScanSitting({
   const [error, setError] = useState<string | null>(null)
   const [notStarted, setNotStarted] = useState(false)
   const [closing, setClosing] = useState(false)
+  const [stuck, setStuck] = useState(false)
   const [reviewing, setReviewing] = useState<string | null>(null)
-  const pairing = useScanPairing(started?.id ?? null).data
-  // What the cleanup and `pagehide` end: the pairing this dialog holds,
-  // until it is known to have ended.
+  const pairingQuery = useScanPairing(started?.id ?? null)
+  const pairing = pairingQuery.data
+  // What the cleanup and `pagehide` end: a pairing this dialog started,
+  // until it is known to have ended. Never a resumed one: that may be
+  // another tab's live sitting (its idle limit is the backstop).
   const live = useRef<string | null>(null)
   const mounted = useRef(false)
   useEffect(() => {
-    live.current =
-      started && pairing?.endedAt === null ? started.id : live.current
     if (pairing && pairing.endedAt !== null && live.current === pairing.id)
       live.current = null
-  }, [started, pairing])
+  }, [pairing])
+  const refetch = pairingQuery.refetch
   useEffect(() => {
     mounted.current = true
     const leave = () => {
       if (live.current) endScanPairingNow(slug, live.current)
       live.current = null
     }
+    // Back from the back-forward cache: `pagehide` ended the link, so
+    // read it again rather than show a dead code until the next poll.
+    const back = (e: PageTransitionEvent) => {
+      if (e.persisted) void refetch()
+    }
     window.addEventListener('pagehide', leave)
+    window.addEventListener('pageshow', back)
     return () => {
       mounted.current = false
       window.removeEventListener('pagehide', leave)
+      window.removeEventListener('pageshow', back)
       leave()
     }
-  }, [slug])
+  }, [slug, refetch])
 
   function begin() {
     setError(null)
@@ -273,15 +283,29 @@ function ScanSitting({
     setStarted(null)
     begin()
   }
-  /** End the live link; false (the error shown) if the server refused. */
+  /**
+   * End the live link; false (the error shown, "Close anyway" offered) if
+   * it failed. Signed out (401), no longer allowed (403) or gone (404)
+   * count as ended: sign-out and demotion end the pairings themselves.
+   */
   async function endLink(): Promise<boolean> {
     const id = live.current
     if (!id) return true
+    // Already read as ended (timed out, signed out elsewhere).
+    if (pairing?.id === id && pairing.endedAt !== null) {
+      live.current = null
+      return true
+    }
     try {
       await end(id)
       live.current = null
       return true
     } catch (err) {
+      if (err instanceof RustApiError && [401, 403, 404].includes(err.status)) {
+        live.current = null
+        return true
+      }
+      setStuck(true)
       setError(
         refusal(
           err,
@@ -327,6 +351,21 @@ function ScanSitting({
             {error}
           </p>
         )}
+        {stuck && (
+          // Offline, say: the link's 15-minute idle limit ends it anyway.
+          <button
+            type="button"
+            className={`${small} self-start`}
+            onClick={onClose}
+          >
+            Close anyway
+          </button>
+        )}
+        {/* One status region for both views, so the switch to "ended"
+            is announced. Changes of state only, not the minutes. */}
+        <p role="status" className="sr-only">
+          {pairing && LINK_STATE[linkState(pairing, Date.now()).kind]}
+        </p>
         {reviewing ? (
           <>
             <button
@@ -411,15 +450,9 @@ function SittingLink({
   const linkId = useId()
   const [copied, setCopied] = useState<'yes' | 'no' | null>(null)
   const state = pairing ? linkState(pairing, now) : null
-  const announce = (
-    <p role="status" className="sr-only">
-      {state && LINK_STATE[state.kind]}
-    </p>
-  )
   if (state?.kind === 'ended' || (state && path === null))
     return (
       <div className="flex flex-col gap-2 text-sm text-neutral-700">
-        {announce}
         <p data-testid="scan-link-state">
           {state.kind === 'ended'
             ? 'This link has ended.'
@@ -472,7 +505,6 @@ function SittingLink({
             <p role="alert">Couldn’t copy: select the link and copy it.</p>
           )}
         </div>
-        {announce}
         <p data-testid="scan-link-state" className="text-neutral-700">
           {state === null
             ? 'Starting…'

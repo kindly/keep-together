@@ -24,6 +24,7 @@ const writes = {
 const start = vi.fn()
 const end = vi.fn()
 const endNow = vi.fn()
+const refetchPairing = vi.fn()
 const snapshot = vi.fn()
 let pairing: ScanPairingView | undefined
 let scan: ScanView | null
@@ -47,7 +48,7 @@ vi.mock('../lib/data', () => ({
   useMembers: () => [{ userId: 1, name: 'Jo Staff' }],
   useScan: () => ({ isPending: false, error: null, data: scan }),
   useScanInbox: () => ({ data: [] }),
-  useScanPairing: () => ({ data: pairing }),
+  useScanPairing: () => ({ data: pairing, refetch: refetchPairing }),
   useScanWrites: () => writes,
   useStartScanPairing: () => start,
 }))
@@ -130,6 +131,7 @@ beforeEach(() => {
   })
   end.mockReset().mockResolvedValue({})
   endNow.mockReset()
+  refetchPairing.mockReset().mockResolvedValue({})
   snapshot.mockReset().mockResolvedValue({
     firstName: 'Jo',
     lastName: 'Bloggs',
@@ -410,6 +412,7 @@ test('leaving the page, or the tab going, ends the link without Done', async () 
   expect(endNow).toHaveBeenCalledTimes(1)
 
   endNow.mockReset()
+  refetchPairing.mockReset().mockResolvedValue({})
   await render(<ScanWithPhone purpose="stack" />)
   await click(button('Scan with phone'))
   await render(null)
@@ -446,11 +449,19 @@ test('a resumed sitting starts nothing, shows its stack, and offers a new link',
   expect(
     document.querySelectorAll('[data-testid="sitting-scan"]'),
   ).toHaveLength(1)
-  // A new link ends the old one first.
+  // A resumed link may be another tab's live sitting: never ended from
+  // here, by a new link or by leaving.
   await click(button('Start a new link'))
-  expect(end).toHaveBeenCalledWith('p1')
   expect(start).toHaveBeenCalledWith('stack')
   expect(started).toHaveBeenCalledWith('p1')
+  expect(end).not.toHaveBeenCalled()
+
+  // (Leaving ends the new link this dialog started, not a resumed one.)
+  await render(null)
+  endNow.mockReset()
+  await render(<ScanWithPhone purpose="stack" initialOpen resume="p7" />)
+  await render(null)
+  expect(endNow).not.toHaveBeenCalled()
 })
 
 test('a click outside doesn’t end the sitting; Esc while reviewing goes back', async () => {
@@ -469,4 +480,38 @@ test('a click outside doesn’t end the sitting; Esc while reviewing goes back',
   })
   expect(text()).toContain('Scans from this sitting')
   expect(end).not.toHaveBeenCalled()
+})
+
+test('signed out or the pairing gone counts as ended; offline offers Close anyway', async () => {
+  const { RustApiError } = await import('../lib/data/rust/client')
+  pairing = pairingView()
+  let closed = 0
+  await render(<ScanWithPhone purpose="stack" onClose={() => (closed += 1)} />)
+  await click(button('Scan with phone'))
+  end.mockRejectedValueOnce(new RustApiError(401, { kind: 'unauthenticated' }))
+  await click(button('Done'))
+  expect(closed).toBe(1)
+
+  await click(button('Scan with phone'))
+  end.mockRejectedValue(new RustApiError(0, { kind: 'internal' }))
+  await click(button('Done'))
+  expect(closed).toBe(1)
+  expect(text()).toContain('Could not end the link')
+  await click(button('Close anyway'))
+  expect(closed).toBe(2)
+})
+
+test('back from the back-forward cache, the link is read again', async () => {
+  pairing = pairingView()
+  await render(<ScanWithPhone purpose="stack" />)
+  await click(button('Scan with phone'))
+  const shown = (persisted: boolean) => {
+    const e = new Event('pageshow') as PageTransitionEvent
+    Object.defineProperty(e, 'persisted', { value: persisted })
+    return act(async () => window.dispatchEvent(e))
+  }
+  await shown(false)
+  expect(refetchPairing).not.toHaveBeenCalled()
+  await shown(true)
+  expect(refetchPairing).toHaveBeenCalledOnce()
 })
