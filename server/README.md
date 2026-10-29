@@ -686,8 +686,8 @@ are `declaration_scans` events on the org's stream):
 The phone's page is `scan.html` with `src/scan/` (step 5): its own Vite
 entry with none of the app's bundle, served from `dist/` like the SPA.
 
-Not built here (later steps or plans): the SPA's laptop side (step 4);
-the phone page for a signed-in phone (`POST scans` under the tenant); erasure and
+Not built here (later steps or plans): the phone page for a signed-in
+phone (`POST scans` under the tenant); erasure and
 org deletion (`giftaid::scans::erasure_deletes` says what they must do:
 keep a scan whose declaration covers a claimed gift, admin-only, until its
 retention ends; delete the rest); viewer-only-once-erased image access
