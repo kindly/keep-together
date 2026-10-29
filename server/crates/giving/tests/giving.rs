@@ -50,6 +50,7 @@ fn migrations() -> Migrations<'static> {
         // On an empty file: no rows for the rebuild to carry.
         M::up(giving::MIGRATION_DIRECT_DEBIT),
         M::up(giving::MIGRATION_UNIFIED),
+        M::up(giving::terms::MIGRATION),
     ])
 }
 
@@ -1550,8 +1551,8 @@ fn a_claimed_gift_that_stops_counting_is_paid_back_whatever_the_reason() {
 #[test]
 fn an_unmatched_payment_is_adopted_by_its_regular_gift() {
     use giving::regular::{
-        Frequency, GiftChange, MandatePayload, PaymentOwner, PaymentReport, PaymentStatus,
-        RegularGiftPayload, create_regular_gift, record_payment,
+        Frequency, GiftChange, MandatePayload, PaymentOwner, PaymentReport, PaymentStatus, SetUp,
+        create_regular_gift, record_payment,
     };
     let w = world();
     let regular = contracts::new_id();
@@ -1559,7 +1560,7 @@ fn an_unmatched_payment_is_adopted_by_its_regular_gift() {
         create_regular_gift(
             ctx,
             &regular,
-            RegularGiftPayload {
+            SetUp {
                 contact_id: w.jo.clone(),
                 amount: 1000,
                 frequency: Frequency::Monthly,
@@ -1580,6 +1581,7 @@ fn an_unmatched_payment_is_adopted_by_its_regular_gift() {
         status: PaymentStatus::Pending,
         reason: None,
         mandate_id: Some("MD1".into()),
+        subscription_id: None,
     };
     let first = tx(&w.a, |ctx| {
         record_payment(ctx, report.clone(), PaymentOwner::Unmatched)

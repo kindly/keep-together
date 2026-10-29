@@ -42,6 +42,7 @@ fn migrations() -> Migrations<'static> {
         // On an empty file: no rows for the rebuild to carry.
         M::up(giving::MIGRATION_DIRECT_DEBIT),
         M::up(giving::MIGRATION_UNIFIED),
+        M::up(giving::terms::MIGRATION),
     ])
 }
 

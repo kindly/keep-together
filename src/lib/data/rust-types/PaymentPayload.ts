@@ -31,4 +31,13 @@ reason: string | null,
  * Its gift (one for the payment's whole life); none while unmatched.
  * Set once.
  */
-giftId: string | null, };
+giftId: string | null, 
+/**
+ * The charge date GoCardless first gave it (ISO): its period, kept
+ * through retries. Set once.
+ */
+scheduledOn: string | null, 
+/**
+ * The subscription it was created by, if any.
+ */
+subscriptionId: string | null, };

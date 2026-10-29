@@ -86,7 +86,7 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
     let Some(mut state) = conn
         .prepare_cached(
             "SELECT contact_id, received_on, amount, method, reference, entered_by, entered_at,
-                    claim_id, provider, provider_payment_id, regular_gift_id
+                    claim_id, provider, provider_payment_id, regular_gift_id, scheduled_on
              FROM gifts WHERE id = ?1 /* any status: one gift */",
         )?
         .query_row([id], |r| {
@@ -99,7 +99,12 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
                     reference: r.get(4)?,
                     allocations: vec![],
                     client_key: None,
-                    origin: origin(r.get::<_, Option<String>>(8)?, r.get(9)?, r.get(10)?),
+                    origin: origin(
+                        r.get::<_, Option<String>>(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                        r.get(11)?,
+                    ),
                 },
                 entered_by: r.get(5)?,
                 entered_at: r.get(6)?,
@@ -122,11 +127,13 @@ pub(crate) fn origin(
     provider: Option<String>,
     payment_id: Option<String>,
     regular_gift_id: Option<String>,
+    scheduled_on: Option<String>,
 ) -> Option<ProviderRef> {
     Some(ProviderRef {
         provider: Provider::parse(provider.as_deref()?)?,
         payment_id: payment_id?,
         regular_gift_id,
+        scheduled_on,
     })
 }
 
@@ -177,8 +184,8 @@ fn check_new_codes(
 
 impl Contract for Gift {
     const NAME: &'static str = "giving.gift";
-    /// v2: `origin` (ADR 0025).
-    const VERSION: u32 = 2;
+    /// v2: `origin` (ADR 0025); v3: `origin.scheduledOn` (ADR 0026).
+    const VERSION: u32 = 3;
     const ENTITY: &'static str = TABLE;
     const COUNTER: &'static str = "gift_version";
     const PROJECTIONS: &'static [&'static str] = &[ALLOCATION_INDEX];
@@ -314,8 +321,8 @@ impl Contract for Gift {
             tx.prepare_cached(
                 "INSERT INTO gifts (id, contact_id, received_on, amount, method, reference,
                      status, entered_by, entered_at, client_key, provider, provider_payment_id,
-                     regular_gift_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                     regular_gift_id, scheduled_on)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?
             .execute(params![
                 id,
@@ -330,7 +337,8 @@ impl Contract for Gift {
                 g.client_key,
                 o.map(|o| o.provider.as_str()),
                 o.map(|o| &o.payment_id),
-                o.and_then(|o| o.regular_gift_id.as_ref())
+                o.and_then(|o| o.regular_gift_id.as_ref()),
+                o.and_then(|o| o.scheduled_on.as_ref())
             ])?;
             return write_allocations(tx, id, &[], &g.allocations);
         };
@@ -357,10 +365,10 @@ impl Contract for Gift {
         write_allocations(tx, id, &before.gift.allocations, &g.allocations)
     }
 
-    /// v1 had no origin: the same JSON reads as v2 (none: a save keeps
-    /// the gift's own).
+    /// v1 had no origin (none: a save keeps the gift's own), v2's origin
+    /// no `scheduledOn` (none): the same JSON reads as v3.
     fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
-        (from == 1).then_some(payload)
+        (from == 1 || from == 2).then_some(payload)
     }
 
     fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {

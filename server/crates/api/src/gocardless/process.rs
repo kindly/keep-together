@@ -143,6 +143,13 @@ impl Event {
             .ok_or_else(|| Failed::Permanent(format!("no links.{name}")))
     }
 
+    /// Who caused it (`details.origin`: `api` for a call, ours or
+    /// another app's; else GoCardless, the customer, the bank or its
+    /// dashboard).
+    fn origin(&self) -> Option<&str> {
+        self.details.get("origin").and_then(Value::as_str)
+    }
+
     /// GoCardless's human description of why, when there is one.
     fn reason(&self) -> Option<String> {
         self.details
@@ -153,13 +160,13 @@ impl Event {
 }
 
 /// One organisation's file and its token, for the handlers.
-struct Org {
-    db: Arc<OrgDb>,
-    token: Option<String>,
+pub(super) struct Org {
+    pub(super) db: Arc<OrgDb>,
+    pub(super) token: Option<String>,
 }
 
 impl Org {
-    async fn read<T: Send + 'static>(
+    pub(super) async fn read<T: Send + 'static>(
         &self,
         f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T> + Send + 'static,
     ) -> Result<T, Failed> {
@@ -170,7 +177,7 @@ impl Org {
             .map_err(Failed::from)
     }
 
-    async fn write<T: Send + 'static>(
+    pub(super) async fn write<T: Send + 'static>(
         &self,
         f: impl FnOnce(&Ctx) -> Result<T, ContractError> + Send + 'static,
     ) -> Result<T, Failed> {
@@ -184,13 +191,13 @@ impl Org {
     /// The organisation owns its account's mapping (only those get an
     /// `Org`), so a missing token is a connect still landing, never a
     /// settled state: try again, never set the event aside.
-    fn token(&self) -> Result<&str, Failed> {
+    pub(super) fn token(&self) -> Result<&str, Failed> {
         self.token
             .as_deref()
             .ok_or_else(|| Failed::Retry("connected, but no token in its file yet".into()))
     }
 
-    async fn facts_by(
+    pub(super) async fn facts_by(
         &self,
         column: &'static str,
         value: &str,
@@ -455,12 +462,21 @@ async fn handle(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str, 
                 _ => Ok("ignored"),
             }
         }
+        // Only the regular gift's current subscription ends it: one a
+        // change replaced (a new frequency or day) was cancelled by us.
         ("subscriptions", "cancelled" | "finished") => {
             let sb = ev.need("subscription")?;
             let Some(found) = org.facts_by("subscription_id", sb).await? else {
                 return Ok("unknown_resource");
             };
             end(org, &found.id, RegularStatus::Cancelled, ev.reason()).await
+        }
+        ("subscriptions", "amended") => {
+            let by_api = ev.origin() == Some("api");
+            amended(org, gc, ev.need("subscription")?, by_api).await
+        }
+        ("subscriptions", "payment_created") => {
+            record_fetched(org, gc, ev.need("payment")?, None, None).await
         }
         ("payments", _) => payment(org, gc, ev).await,
         _ => Ok("ignored"),
@@ -570,7 +586,11 @@ async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'s
     if found.mandate.status().is_ended() {
         return Ok("done");
     }
-    let t = &found.terms;
+    // The terms GoCardless is to run: the chain's latest it has (row 1
+    // for a new gift).
+    let Some(t) = found.current.clone() else {
+        return Ok("done");
+    };
     let name = format!("Regular gift {}", giving::format_pence(t.amount));
     let subscription = gc
         .api
@@ -586,18 +606,24 @@ async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'s
                     .and_then(|m| MONTHS.get(usize::from(m).wrapping_sub(1)).copied()),
                 name: &name,
                 regular_gift: id,
+                start_date: None,
+                key: None,
             },
         )
         .await?;
     // Checked again in the write's own transaction: if the regular gift
     // ended while GoCardless was answering (staff cancelled, the mandate
     // went), the subscription is recorded and cancelled at once.
-    let (rid, sb) = (id.to_owned(), subscription.clone());
+    let (rid, sb, tid) = (id.to_owned(), subscription.clone(), t.id.clone());
     let ended = org
         .write(move |ctx| {
             let now = regular::facts(ctx.tx.read(), &rid)?.ok_or(ContractError::NotFound)?;
             update_mandate(ctx, &rid, None, Source::System, None, |m| {
-                m.subscription_id = Some(sb)
+                m.subscription_id = Some(sb.clone())
+            })?;
+            // The row it was made from runs under it.
+            giving::terms::update_sync(ctx, &tid, None, |s| {
+                s.subscription_id.get_or_insert(sb);
             })?;
             Ok(now.mandate.status().is_ended())
         })
@@ -607,6 +633,64 @@ async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'s
             .cancel_subscription(org.token()?, &subscription)
             .await?;
     }
+    Ok("done")
+}
+
+/// A subscription's amount changed (ADR 0026). A change we sent at that
+/// amount is applied. A change by API call that isn't ours to apply (a
+/// replay, a late event) records nothing: we never guess from the amount
+/// now (review M7). Otherwise someone changed it in GoCardless: a row
+/// from its next payment, uncoded, the difference on the newest layer.
+async fn amended(
+    org: &Org,
+    gc: &GoCardless,
+    sb: &str,
+    by_api: bool,
+) -> Result<&'static str, Failed> {
+    let id = sb.to_owned();
+    let Some(regular) = org
+        .read(move |c| giving::terms::regular_gift_of_subscription(c, &id))
+        .await?
+    else {
+        return Ok("unknown_resource");
+    };
+    let sub = gc.api.get_subscription(org.token()?, sb).await?;
+    let sb = sb.to_owned();
+    org.write(move |ctx| {
+        let chain = giving::terms::chain(ctx.tx.read(), &regular)?;
+        let ours: Vec<&giving::terms::TermView> = chain
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t.status,
+                    giving::terms::TermStatus::Sending | giving::terms::TermStatus::Sent
+                ) && t.subscription_id.as_deref() == Some(sb.as_str())
+                    && t.amount == sub.amount
+            })
+            .collect();
+        if !ours.is_empty() {
+            for t in ours {
+                giving::terms::update_sync(ctx, &t.id, None, |s| {
+                    s.state = giving::terms::SyncState::Applied
+                })?;
+            }
+            return Ok(());
+        }
+        if by_api {
+            return Ok(());
+        }
+        // Not ours: from GoCardless's next payment (or the chain's).
+        let today = giving::terms_rules::date_of_ms(ctx.at);
+        let from = match sub.upcoming.first() {
+            Some((date, _)) => date.clone(),
+            None => giving::terms::current_at_provider(&chain)
+                .and_then(|t| giving::terms_rules::next_due(&t.rules(), &today, 1).pop())
+                .unwrap_or(today),
+        };
+        giving::terms::record_outside_change(ctx, &regular, &sb, sub.amount, &from)?;
+        Ok(())
+    })
+    .await?;
     Ok("done")
 }
 
@@ -668,6 +752,7 @@ async fn record_fetched(
         status,
         reason,
         mandate_id: p.mandate,
+        subscription_id: p.subscription,
     };
     let change = org
         .write(move |ctx| regular::record_payment(ctx, report, owner))
@@ -689,10 +774,14 @@ async fn owner_of(
     gc: &GoCardless,
     p: &super::client::Payment,
 ) -> Result<PaymentOwner, Failed> {
-    if let Some(sb) = &p.subscription
-        && let Some(found) = org.facts_by("subscription_id", sb).await?
+    // Its regular gift's subscription, now or before a change replaced
+    // it (ADR 0026).
+    if let Some(sb) = p.subscription.clone()
+        && let Some(id) = org
+            .read(move |c| giving::terms::regular_gift_of_subscription(c, &sb))
+            .await?
     {
-        return Ok(PaymentOwner::Regular(found.id));
+        return Ok(PaymentOwner::Regular(id));
     }
     let on_mandate = match &p.mandate {
         Some(md) => identify_mandate(org, gc, md).await?,
@@ -707,7 +796,7 @@ async fn owner_of(
         return Ok(PaymentOwner::Regular(found.id.clone()));
     }
     if let Some(tag) = p.one_off.clone() {
-        let fallback = on_mandate.as_ref().map(|f| f.terms.source_code_id.clone());
+        let fallback = on_mandate.as_ref().and_then(|f| f.code());
         let owner = org
             .read(move |c| {
                 if contacts::donors::kind_of(c, &tag.contact)?.is_none() {
@@ -728,22 +817,22 @@ async fn owner_of(
             return Ok(owner);
         }
     }
-    Ok(match on_mandate {
-        Some(found) => PaymentOwner::OneOff {
-            contact_id: found.terms.contact_id,
-            source_code_id: found.terms.source_code_id,
-            request: None,
+    Ok(
+        match on_mandate.and_then(|f| Some((f.code()?, f.contact_id))) {
+            Some((source_code_id, contact_id)) => PaymentOwner::OneOff {
+                contact_id,
+                source_code_id,
+                request: None,
+            },
+            None => PaymentOwner::Unmatched,
         },
-        None => PaymentOwner::Unmatched,
-    })
+    )
 }
 
-/// Every connected organisation's regular gifts with a mandate, no
-/// subscription and not ended get their subscription. Failures are
-/// reported and tried again on the next run.
-async fn sweep(store: &Arc<Store>, gc: &Arc<GoCardless>) -> Result<(), String> {
+/// The organisations that own their GoCardless account's mapping.
+pub(super) async fn connected_tenants(store: &Arc<Store>) -> Result<Vec<TenantId>, String> {
     let s = store.clone();
-    let connected: Vec<TenantId> = crate::blocking(move || {
+    crate::blocking(move || {
         let ids: Vec<String> = s.platform().with_read(|c| {
             c.prepare("SELECT tenant_id FROM gocardless_connections")?
                 .query_map([], |r| r.get(0))?
@@ -758,21 +847,36 @@ async fn sweep(store: &Arc<Store>, gc: &Arc<GoCardless>) -> Result<(), String> {
         )
     })
     .await
-    .map_err(|e| format!("{e:?}"))?;
+    .map_err(|e| format!("{e:?}"))
+}
+
+/// Open `tenant`'s file with its token (only an organisation that owns
+/// its account's mapping uses the token in its file).
+pub(super) async fn open_org(
+    store: &Arc<Store>,
+    gc: &Arc<GoCardless>,
+    tenant: &TenantId,
+) -> Result<Org, crate::ApiError> {
+    let (s, g, t) = (store.clone(), gc.clone(), tenant.clone());
+    crate::blocking(move || {
+        let db = s.org(&t)?;
+        let token = match super::connection(&s, &t)? {
+            Some(_) => db.read(|r| g.token(r))?,
+            None => None,
+        };
+        Ok::<_, crate::ApiError>(Org { db, token })
+    })
+    .await
+}
+
+/// Every connected organisation's regular gifts with a mandate, no
+/// subscription and not ended get their subscription. Failures are
+/// reported and tried again on the next run.
+async fn sweep(store: &Arc<Store>, gc: &Arc<GoCardless>) -> Result<(), String> {
+    let connected = connected_tenants(store).await?;
     let mut errors = Vec::new();
     for tenant in connected {
-        let (s, g, t) = (store.clone(), gc.clone(), tenant.clone());
-        let opened = crate::blocking(move || {
-            let db = s.org(&t)?;
-            // Only an organisation that owns its account's mapping uses
-            // the token in its file.
-            let token = match super::connection(&s, &t)? {
-                Some(_) => db.read(|r| g.token(r))?,
-                None => None,
-            };
-            Ok::<_, crate::ApiError>(Org { db, token })
-        })
-        .await;
+        let opened = open_org(store, gc, &tenant).await;
         let org = match opened {
             Ok(org) => org,
             Err(e) => {

@@ -11,6 +11,7 @@
 //! keep giftaid-xml <slug> <claim-id>
 //! keep giftaid-xml --hmrc-sample
 //! keep giving-consistency <slug>
+//! keep expected <slug> <YYYY-MM>
 //! ```
 
 use std::path::PathBuf;
@@ -27,7 +28,8 @@ const USAGE: &str = "usage:
   keep [--data <dir>] dev seed-riverside   (KEEP_ENV=dev|staging)
   keep [--data <dir>] giftaid-xml <slug> <claim-id>   (the claim's XML on stdout, IRmark on stderr)
   keep giftaid-xml --hmrc-sample                      (HMRC's sample data: their GAValidSample.xml)
-  keep [--data <dir>] giving-consistency <slug>       (provider payments vs their gifts; exit 1 on any)";
+  keep [--data <dir>] giving-consistency <slug>       (provider payments vs their gifts; exit 1 on any)
+  keep [--data <dir>] expected <slug> <YYYY-MM>       (each regular gift's expected payment that month against what happened)";
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
     eprintln!("{msg}");
@@ -171,6 +173,15 @@ fn main() -> ExitCode {
                     println!("{p}");
                 }
                 fail(format!("{slug}: {} inconsistencies", problems.len()))
+            }
+            Err(e) => fail(e),
+        },
+        ["expected", slug, month] => match cli::giving::expected(&data, slug, month) {
+            Ok(lines) => {
+                for l in lines {
+                    println!("{l}");
+                }
+                ExitCode::SUCCESS
             }
             Err(e) => fail(e),
         },

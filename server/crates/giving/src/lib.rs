@@ -12,11 +12,14 @@
 //! fails on a gifts read that neither uses it nor says, in a
 //! `/* any status: … */` comment, why it reads every status.
 
+pub mod expected;
 pub mod gift;
 pub mod queries;
 pub mod regular;
 pub mod requests;
 pub mod rules;
+pub mod terms;
+pub mod terms_rules;
 pub mod types;
 
 use std::sync::LazyLock;
@@ -128,6 +131,9 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &CLAIM_LOCK,
         &REGULAR_GIFT,
         &REGULAR_GIFT_MANDATE,
+        &terms::REGULAR_GIFT_TERMS,
+        &terms::REGULAR_GIFT_TERM_SYNC,
+        &terms::REGULAR_GIFT_TERM_CODE,
         &DIRECT_DEBIT_PAYMENT,
         &requests::PROVIDER_REQUEST,
     ])

@@ -226,8 +226,30 @@ pub struct NewSubscription<'a> {
     /// Yearly: `january` … `december`.
     pub month: Option<&'static str>,
     pub name: &'a str,
-    /// Our regular gift's id, as metadata and in the idempotency key.
+    /// Our regular gift's id, as metadata and (unless `key` is given) in
+    /// the idempotency key.
     pub regular_gift: &'a str,
+    /// The first charge date (YYYY-MM-DD); none: GoCardless's earliest.
+    pub start_date: Option<&'a str>,
+    /// What makes it once whatever the retries: a terms row's id when a
+    /// change makes a new subscription (ADR 0026); none: the regular
+    /// gift's.
+    pub key: Option<&'a str>,
+}
+
+/// A subscription as GoCardless has it now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Subscription {
+    pub id: String,
+    pub status: String,
+    pub amount: i64,
+    pub interval_unit: String,
+    pub day_of_month: Option<u8>,
+    /// Yearly: `january` … `december`.
+    pub month: Option<String>,
+    pub mandate: Option<String>,
+    /// GoCardless's own forecast: up to 10 (charge date, amount).
+    pub upcoming: Vec<(String, i64)>,
 }
 
 /// The donor's name to prefill on the hosted page.
@@ -577,19 +599,51 @@ impl Api {
         if let Some(month) = s.month {
             sub["month"] = Value::String(month.into());
         }
+        if let Some(date) = s.start_date {
+            sub["start_date"] = Value::String(date.into());
+        }
         let v = self
             .create_once(
                 token,
                 "subscriptions",
                 "subscriptions",
                 json!({ "subscriptions": sub }),
-                &format!("keep-sub-{}", s.regular_gift),
+                &format!("keep-sub-{}", s.key.unwrap_or(s.regular_gift)),
             )
             .await?;
         v.get("id")
             .and_then(Value::as_str)
             .map(str::to_owned)
             .ok_or_else(|| CallError::Malformed("subscription id".into()))
+    }
+
+    /// A subscription's terms and GoCardless's next payments.
+    pub async fn get_subscription(&self, token: &str, id: &str) -> Result<Subscription, CallError> {
+        let v = self
+            .call(Method::GET, token, &["subscriptions", id], None, None)
+            .await?;
+        subscription(v.get("subscriptions").unwrap_or(&Value::Null))
+    }
+
+    /// Change a subscription's amount (the only term GoCardless lets
+    /// change; at most 10 times: then `Refused {reason:
+    /// number_of_subscription_amendments_exceeded}`).
+    pub async fn update_subscription(
+        &self,
+        token: &str,
+        id: &str,
+        amount: i64,
+    ) -> Result<Subscription, CallError> {
+        let v = self
+            .call(
+                Method::PUT,
+                token,
+                &["subscriptions", id],
+                Some(json!({ "subscriptions": { "amount": amount } })),
+                None,
+            )
+            .await?;
+        subscription(v.get("subscriptions").unwrap_or(&Value::Null))
     }
 
     /// Cancel a mandate: GoCardless cancels its subscriptions and pending
@@ -755,6 +809,43 @@ fn payment(p: &Value) -> Result<Payment, CallError> {
         mandate: link("mandate"),
         subscription: link("subscription"),
         one_off: OneOffTag::from(p.get("metadata")),
+    })
+}
+
+fn subscription(v: &Value) -> Result<Subscription, CallError> {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    let amount = |v: &Value| v.as_i64().or_else(|| v.as_str()?.parse().ok());
+    Ok(Subscription {
+        id: text("id").ok_or_else(|| CallError::Malformed("subscription id".into()))?,
+        status: text("status").unwrap_or_default(),
+        amount: v
+            .get("amount")
+            .and_then(amount)
+            .ok_or_else(|| CallError::Malformed("subscription amount".into()))?,
+        interval_unit: text("interval_unit").unwrap_or_default(),
+        day_of_month: v
+            .get("day_of_month")
+            .and_then(|d| d.as_u64().or_else(|| d.as_str()?.parse().ok()))
+            .and_then(|d| u8::try_from(d).ok()),
+        month: text("month"),
+        mandate: v
+            .pointer("/links/mandate")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        upcoming: v
+            .get("upcoming_payments")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(|p| {
+                        Some((
+                            p.get("charge_date")?.as_str()?.to_owned(),
+                            p.get("amount").and_then(amount)?,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 

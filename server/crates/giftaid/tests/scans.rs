@@ -43,6 +43,7 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::MIGRATION_DIRECT_DEBIT),
         M::up(giving::MIGRATION_UNIFIED),
         M::up(giftaid::MIGRATION_SCANS),
+        M::up(giving::terms::MIGRATION),
     ])
 }
 

@@ -4,4 +4,8 @@ import type { DirectDebitPaymentStatus } from "./DirectDebitPaymentStatus";
 /**
  * One provider payment as the regular gift's card shows it.
  */
-export type DirectDebitPaymentRow = { id: string, paymentId: string, amount: number, chargeDate: string, status: DirectDebitPaymentStatus, reason: string | null, giftId: string | null, };
+export type DirectDebitPaymentRow = { id: string, paymentId: string, amount: number, chargeDate: string, 
+/**
+ * The date it was first scheduled: its period.
+ */
+scheduledOn: string | null, status: DirectDebitPaymentStatus, reason: string | null, giftId: string | null, };

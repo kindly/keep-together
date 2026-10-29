@@ -144,6 +144,13 @@ impl Contract for ProviderRequest {
         command: &Command,
     ) -> Result<RequestState, ContractError> {
         let Some(current) = current else {
+            // A new request (never one on record from before the cap).
+            if p.amount > crate::rules::ONE_OFF_MAX {
+                return Err(ContractError::invalid(
+                    "amount",
+                    crate::rules::ONE_OFF_MAX_MESSAGE,
+                ));
+            }
             return Ok(RequestState {
                 request: p.clone(),
                 requested_by: command.actor,
