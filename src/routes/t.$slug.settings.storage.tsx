@@ -27,7 +27,12 @@ function Storage() {
     <section className="flex max-w-lg flex-col gap-3">
       <h2 className="text-lg font-medium">Scans storage</h2>
       {usage.error ? (
-        <ReadRefused error={usage.error} retry={usage.refetch} />
+        <ReadRefused
+          error={usage.error}
+          retry={usage.refetch}
+          forbidden="Scans storage is for the group’s staff and admins."
+          failed="Scans storage couldn’t load."
+        />
       ) : usage.data === undefined ? (
         <p className="text-sm text-neutral-500">Loading…</p>
       ) : (

@@ -1,4 +1,4 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useRouterState } from '@tanstack/react-router'
 import { useState } from 'react'
 import type { ComponentProps } from 'react'
 import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
@@ -120,13 +120,27 @@ export function GiftAidEntryLink({
   )
 }
 
-/** The header's Gift Aid ▾: the caller's entries; nothing with none. */
+/**
+ * The header's Gift Aid ▾: the caller's entries; nothing with none. On
+ * a Gift Aid page (claims or scans) it is marked, as a link to it was.
+ */
 export function GiftAidMenu() {
   const entries = useGiftAidEntries()
+  const { slug } = useTenant()
+  const here = useRouterState({
+    select: (s) =>
+      [`/t/${slug}/giftaid`, `/t/${slug}/scans`].some(
+        (p) =>
+          s.location.pathname === p || s.location.pathname.startsWith(`${p}/`),
+      ),
+  })
   if (entries.length === 0) return null
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger className="text-sm whitespace-nowrap hover:underline data-[state=open]:underline">
+      <DropdownMenuTrigger
+        data-current={here || undefined}
+        className="text-sm whitespace-nowrap hover:underline data-[current]:font-medium data-[current]:underline data-[state=open]:underline"
+      >
         {GIFT_AID.label} <span aria-hidden="true">▾</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-64">

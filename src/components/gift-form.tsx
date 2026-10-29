@@ -559,17 +559,20 @@ export function GiftForm() {
                 </p>
               )}
               {/* The form in hand, scanned now and matched to the
-                  declaration this save records (declaration scans g2q3). */}
-              <div className="flex flex-col gap-1">
-                <ScanWithPhone
-                  purpose="gift"
-                  contactId={existingId ?? undefined}
-                />
-                <p className="text-xs text-neutral-500">
-                  Scans wait in Scans to match: once the gift is saved, match
-                  them to its paper declaration there or on the donor’s page.
-                </p>
-              </div>
+                  declaration this save records (declaration scans g2q3):
+                  only a paper form's, as only that can hold a scan. */}
+              {draft.declarationMethod === 'paperForm' && (
+                <div className="flex flex-col gap-1">
+                  <ScanWithPhone
+                    purpose="gift"
+                    contactId={existingId ?? undefined}
+                  />
+                  <p className="text-xs text-neutral-500">
+                    Scans wait in Scans to match: once the gift is saved, match
+                    them to its paper declaration there or on the donor’s page.
+                  </p>
+                </div>
+              )}
               {onFile && existingId ? (
                 <p className="text-sm text-neutral-700">
                   Declared under their home address: {onFile.line1},{' '}

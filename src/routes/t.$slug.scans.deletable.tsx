@@ -22,7 +22,8 @@ export const Route = createFileRoute('/t/$slug/scans/deletable')({
  */
 function Deletable() {
   const admin = useIsAdmin()
-  const report = useDeletableScans(localToday())
+  // Admins only: anyone else is told, with no refused read behind it.
+  const report = useDeletableScans(localToday(), admin)
   if (!admin)
     return (
       <main className="mx-auto max-w-lg p-6">
@@ -37,7 +38,12 @@ function Deletable() {
         images; a record that the scan existed, and who deleted it, stays.
       </p>
       {report.error ? (
-        <ReadRefused error={report.error} retry={report.refetch} />
+        <ReadRefused
+          error={report.error}
+          retry={report.refetch}
+          forbidden="This report is for the group’s admins."
+          failed="The report couldn’t load."
+        />
       ) : report.data === undefined ? (
         <p className="text-sm text-neutral-500">Loading…</p>
       ) : report.data.length === 0 ? (

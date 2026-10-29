@@ -23,6 +23,7 @@ const writes = {
 }
 const start = vi.fn()
 const end = vi.fn()
+const endNow = vi.fn()
 const snapshot = vi.fn()
 let pairing: ScanPairingView | undefined
 let scan: ScanView | null
@@ -35,8 +36,9 @@ let canWrite = true
 vi.mock('../lib/data', () => ({
   fetchContactSnapshot: (...a: Array<unknown>) => snapshot(...a),
   scanLink: (path: string) => `https://keep.test${path}`,
-  scanPageUrl: (slug: string, id: string, n: number) =>
-    `/api/t/${slug}/scans/${id}/pages/${n}`,
+  endScanPairingNow: (...a: Array<unknown>) => endNow(...a),
+  scanPageUrl: (slug: string, id: string, n: number, page: string) =>
+    `/api/t/${slug}/scans/${id}/pages/${n}?p=${page}`,
   useAuthState: () => ({ method: 'password' }),
   useContactSearch: () => undefined,
   useDeclarations: () => ({ declarations, currentId: null }),
@@ -127,6 +129,7 @@ beforeEach(() => {
     path: '/scan.html#tok',
   })
   end.mockReset().mockResolvedValue({})
+  endNow.mockReset()
   snapshot.mockReset().mockResolvedValue({
     firstName: 'Jo',
     lastName: 'Bloggs',
@@ -152,6 +155,16 @@ const render = (node: React.ReactNode) => act(async () => root.render(node))
 const button = (name: string) =>
   [...document.querySelectorAll('button')].find((b) => b.textContent === name)!
 const click = (b: HTMLElement) => act(async () => b.click())
+async function type(input: HTMLInputElement, value: string) {
+  const set = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  )!.set!
+  await act(async () => {
+    set.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
 const text = () => document.body.textContent
 
 test('a viewer has no "Scan with phone"', async () => {
@@ -231,18 +244,23 @@ test('accept records a new paper declaration as written on the form, with the sc
     />,
   )
   const madeOn = document.querySelector<HTMLInputElement>('input[type="date"]')!
-  expect(madeOn.value).toMatch(/^\d{4}-\d{2}-\d{2}$/)
-  await act(async () =>
-    document
-      .querySelector<HTMLFormElement>('form[aria-label="Match the scan"]')!
-      .requestSubmit(),
-  )
+  // Never assumed to be today: the form's own date decides coverage.
+  expect(madeOn.value).toBe('')
+  const form = document.querySelector<HTMLFormElement>(
+    'form[aria-label="Match the scan"]',
+  )!
+  // Required: the browser holds the submit until it is filled in.
+  expect(madeOn.required).toBe(true)
+  await act(async () => form.requestSubmit())
+  expect(writes.accept).not.toHaveBeenCalled()
+  await type(madeOn, '2026-03-03')
+  await act(async () => form.requestSubmit())
   expect(writes.accept).toHaveBeenCalledWith(scan, 'c1', {
     kind: 'new',
     declaration: {
       contactId: 'c1',
       scope: 'futureAndPast4y',
-      madeOn: madeOn.value,
+      madeOn: '2026-03-03',
       method: 'paperForm',
       wordingVersion: 'hmrc-2016-04',
       firstName: 'Jo',
@@ -351,4 +369,104 @@ test('anyone sees "✓ scan held"; only staff and admins can open it', async () 
   await render(<DeclarationScanLine declarationId="d1" />)
   await click(button('View scan'))
   expect(document.querySelectorAll('img[alt^="Scan, page"]')).toHaveLength(2)
+})
+
+test('a page’s image URL names the page, so a reorder never shows a cached one', async () => {
+  await render(<ScanReview scanId="s1" onDone={() => {}} />)
+  expect(
+    [...document.querySelectorAll('img[alt^="Scan, page"]')].map((i) =>
+      i.getAttribute('src'),
+    ),
+  ).toEqual([
+    '/api/t/alpha/scans/s1/pages/1?p=pg1',
+    '/api/t/alpha/scans/s1/pages/2?p=pg2',
+  ])
+})
+
+test('Done that fails to end the link stays open and says so', async () => {
+  pairing = pairingView()
+  let closed = false
+  await render(
+    <ScanWithPhone purpose="stack" onClose={() => (closed = true)} />,
+  )
+  await click(button('Scan with phone'))
+  end.mockRejectedValueOnce(new Error('offline'))
+  await click(button('Done'))
+  expect(closed).toBe(false)
+  expect(text()).toContain('Could not end the link')
+  await click(button('Done'))
+  expect(end).toHaveBeenCalledTimes(2)
+  expect(closed).toBe(true)
+})
+
+test('leaving the page, or the tab going, ends the link without Done', async () => {
+  pairing = pairingView()
+  await render(<ScanWithPhone purpose="stack" />)
+  await click(button('Scan with phone'))
+  await act(async () => window.dispatchEvent(new Event('pagehide')))
+  expect(endNow).toHaveBeenCalledExactlyOnceWith('alpha', 'p1')
+  // Unmounted (navigated away) after a pagehide: nothing ended twice.
+  await render(null)
+  expect(endNow).toHaveBeenCalledTimes(1)
+
+  endNow.mockReset()
+  await render(<ScanWithPhone purpose="stack" />)
+  await click(button('Scan with phone'))
+  await render(null)
+  expect(endNow).toHaveBeenCalledExactlyOnceWith('alpha', 'p1')
+})
+
+test('a start that answers after the dialog closed is ended at once', async () => {
+  let answer!: (v: unknown) => void
+  start.mockReturnValueOnce(new Promise((r) => (answer = r)))
+  await render(<ScanWithPhone purpose="stack" />)
+  await click(button('Scan with phone'))
+  await click(button('Done'))
+  expect(end).not.toHaveBeenCalled()
+  await act(async () =>
+    answer({ pairing: pairingView({ id: 'p9' }), path: '/scan.html#t9' }),
+  )
+  expect(endNow).toHaveBeenCalledExactlyOnceWith('alpha', 'p9')
+})
+
+test('a resumed sitting starts nothing, shows its stack, and offers a new link', async () => {
+  pairing = pairingView({ scans: [scanView()] })
+  const started = vi.fn()
+  await render(
+    <ScanWithPhone
+      purpose="stack"
+      initialOpen
+      resume="p1"
+      onStarted={started}
+    />,
+  )
+  expect(start).not.toHaveBeenCalled()
+  expect(document.querySelector('svg[aria-label^="QR code"]')).toBeNull()
+  expect(text()).toContain('can’t be shown again')
+  expect(
+    document.querySelectorAll('[data-testid="sitting-scan"]'),
+  ).toHaveLength(1)
+  // A new link ends the old one first.
+  await click(button('Start a new link'))
+  expect(end).toHaveBeenCalledWith('p1')
+  expect(start).toHaveBeenCalledWith('stack')
+  expect(started).toHaveBeenCalledWith('p1')
+})
+
+test('a click outside doesn’t end the sitting; Esc while reviewing goes back', async () => {
+  pairing = pairingView({ scans: [scanView()] })
+  await render(<ScanWithPhone purpose="contact" />)
+  await click(button('Scan with phone'))
+  await click(button('Review'))
+  await act(async () => {
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+  })
+  expect(text()).toContain('Scans from this sitting')
+  expect(end).not.toHaveBeenCalled()
 })

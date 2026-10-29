@@ -5,6 +5,7 @@ import {
   section,
   uniqueName,
 } from './contact.helpers'
+import { today } from './gift.helpers'
 import type { Page } from '@playwright/test'
 
 // Declaration scans step 4, the laptop side: "Scans to match" from the
@@ -58,7 +59,9 @@ async function reviewing(page: Page, slug: string, lastName: string) {
   ).toBeVisible()
   await page.getByLabel('Find the donor by name or number').fill(lastName)
   await page.getByRole('button', { name: new RegExp(lastName) }).click()
-  await expect(page.getByLabel('Date on the form')).toBeVisible()
+  // The form's own date: never assumed to be today.
+  await expect(page.getByLabel('Date on the form')).toHaveValue('')
+  await page.getByLabel('Date on the form').fill(today())
   await expect(page.getByLabel('Last name')).toHaveValue(lastName)
   return scanId
 }

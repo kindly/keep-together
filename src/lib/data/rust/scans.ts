@@ -38,14 +38,39 @@ export type {
 /** How often a live pairing is read again, for what no event says. */
 export const PAIRING_POLL_MS = 15_000
 
-/** A page's image, for an `<img>` (the session cookie rides along). */
-export function scanPageUrl(slug: string, scanId: string, pageNo: number) {
-  return apiUrl(tenantPath(slug, 'scans', scanId, 'pages', String(pageNo)))
+/**
+ * A page's image, for an `<img>` (the session cookie rides along). The
+ * route is by position, cached for an hour, and a reorder renumbers the
+ * pages: the page's id in the query (which the server ignores) makes each
+ * page its own URL, so the browser never shows another page's cached
+ * image at that position.
+ */
+export function scanPageUrl(
+  slug: string,
+  scanId: string,
+  pageNo: number,
+  pageId: string,
+) {
+  const path = tenantPath(slug, 'scans', scanId, 'pages', String(pageNo))
+  return `${apiUrl(path)}?p=${encodeURIComponent(pageId)}`
 }
 
 /** The phone's link for a pairing's `path` (`/scan.html#<token>`). */
 export function scanLink(path: string, origin = window.location.origin) {
   return `${origin}${path}`
+}
+
+/**
+ * End a pairing as the page goes (`pagehide`, an unmount): a `keepalive`
+ * request the browser finishes after the page has gone. Nothing waits on
+ * it; the server's idle limit is the backstop.
+ */
+export function endScanPairingNow(slug: string, id: string) {
+  void fetch(apiUrl(tenantPath(slug, 'scan-pairings', id)), {
+    method: 'DELETE',
+    credentials: 'include',
+    keepalive: true,
+  }).catch(() => {})
 }
 
 /** Start a pairing: staff or admin, a sign-in within the hour. */
@@ -131,10 +156,11 @@ export function useDeclarationScans(declarationId: string) {
 }
 
 /** The "can be deleted" report (admins, a sign-in within the hour). */
-export function useDeletableScans(today: string) {
+export function useDeletableScans(today: string, enabled = true) {
   const { slug } = useTenant()
   return useQuery({
     queryKey: keys.deletableScans(slug, today),
+    enabled,
     queryFn: () =>
       get<Array<DeletableScan>>(
         tenantPath(slug, 'giftaid', 'scans', 'deletable'),

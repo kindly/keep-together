@@ -1,8 +1,9 @@
 import { Link } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { encode } from 'uqr'
 import {
+  endScanPairingNow,
   fetchContactSnapshot,
   scanLink,
   scanPageUrl,
@@ -116,12 +117,17 @@ export function QrCode({ value, label }: { value: string; label: string }) {
  * "Scan with phone": opens the sitting (a pairing, its QR code and its
  * stack). Staff and admins; nothing for a viewer. `contactId`: the
  * contact on screen, whose declarations a scan is matched to by default.
+ * `resume`: a pairing this tab started before (the stack page keeps it
+ * in its URL), shown again instead of starting a second; `onStarted`
+ * hears each new one.
  */
 export function ScanWithPhone({
   purpose,
   contactId,
   label = 'Scan with phone',
   initialOpen = false,
+  resume,
+  onStarted,
   onClose,
   className = small,
 }: {
@@ -129,6 +135,8 @@ export function ScanWithPhone({
   contactId?: Id<'contacts'>
   label?: string
   initialOpen?: boolean
+  resume?: string
+  onStarted?: (pairingId: string) => void
   onClose?: () => void
   className?: string
 }) {
@@ -148,6 +156,8 @@ export function ScanWithPhone({
         <ScanSitting
           purpose={purpose}
           contactId={contactId}
+          resume={resume}
+          onStarted={onStarted}
           onClose={() => {
             setOpen(false)
             onClose?.()
@@ -158,60 +168,165 @@ export function ScanWithPhone({
   )
 }
 
+type Started = { id: string; path: string | null }
+
 /**
  * A sitting in a dialog: it starts a pairing as it opens (after "Confirm
  * it's you" when the sign-in is over an hour old), then shows the QR code
  * and the link to copy, whether a phone holds it and when it ends, and
  * the scans as they arrive (each `declaration_scans` event refetches
  * them). "Review" opens one beside the declaration form, in place.
- * Closing ends the link; unmatched scans wait in "Scans to match".
+ *
+ * The link never outlives the dialog: "Done" ends it and stays open
+ * saying so if that fails; leaving the dialog any other way (the page
+ * navigated away, the tab closed or reloaded) ends it with a `keepalive`
+ * request; a start that answers after the dialog has gone is ended at
+ * once. A click outside doesn't close it (a stray one mid-stack would cut
+ * the phone off); Esc while reviewing goes back to the stack. Unmatched
+ * scans wait in "Scans to match".
  */
 function ScanSitting({
   purpose,
   contactId,
+  resume,
+  onStarted,
   onClose,
 }: {
   purpose: ScanPurpose
   contactId?: Id<'contacts'>
+  resume?: string
+  onStarted?: (pairingId: string) => void
   onClose: () => void
 }) {
+  const { slug } = useTenant()
   const start = useStartScanPairing()
   const end = useEndScanPairing()
   const stepUp = useStepUp()
-  const [started, setStarted] = useState<{ id: string; path: string } | null>(
-    null,
+  const [started, setStarted] = useState<Started | null>(
+    resume ? { id: resume, path: null } : null,
   )
   const [error, setError] = useState<string | null>(null)
+  const [notStarted, setNotStarted] = useState(false)
+  const [closing, setClosing] = useState(false)
   const [reviewing, setReviewing] = useState<string | null>(null)
   const pairing = useScanPairing(started?.id ?? null).data
-  // Once per sitting: React's development double mount keeps the ref.
-  const asked = useRef(false)
+  // What the cleanup and `pagehide` end: the pairing this dialog holds,
+  // until it is known to have ended.
+  const live = useRef<string | null>(null)
+  const mounted = useRef(false)
   useEffect(() => {
-    if (asked.current) return
-    asked.current = true
+    live.current =
+      started && pairing?.endedAt === null ? started.id : live.current
+    if (pairing && pairing.endedAt !== null && live.current === pairing.id)
+      live.current = null
+  }, [started, pairing])
+  useEffect(() => {
+    mounted.current = true
+    const leave = () => {
+      if (live.current) endScanPairingNow(slug, live.current)
+      live.current = null
+    }
+    window.addEventListener('pagehide', leave)
+    return () => {
+      mounted.current = false
+      window.removeEventListener('pagehide', leave)
+      leave()
+    }
+  }, [slug])
+
+  function begin() {
+    setError(null)
+    setNotStarted(false)
+    let got = false
     stepUp
       .run(async () => {
         const s = await start(purpose)
+        got = true
+        if (!mounted.current) {
+          // Closed while it started: nobody will see its code.
+          endScanPairingNow(slug, s.pairing.id)
+          return
+        }
+        live.current = s.pairing.id
         setStarted({ id: s.pairing.id, path: s.path })
+        onStarted?.(s.pairing.id)
+      })
+      .then(() => {
+        // "Confirm it's you" was cancelled: say so, and offer it again.
+        if (!got && mounted.current) setNotStarted(true)
       })
       .catch((err: unknown) =>
         setError(refusal(err, 'Could not start scanning: try again', '')),
       )
+  }
+  // Once per sitting: React's development double mount keeps the ref.
+  const asked = useRef(false)
+  useEffect(() => {
+    if (asked.current || resume) return
+    asked.current = true
+    begin()
   }, [])
-  function close() {
-    if (started && pairing?.endedAt === null)
-      void end(started.id).catch(() => {})
-    onClose()
+
+  /** End the shown link, if live, then start a new one. */
+  async function restart() {
+    if (live.current && !(await endLink())) return
+    setStarted(null)
+    begin()
+  }
+  /** End the live link; false (the error shown) if the server refused. */
+  async function endLink(): Promise<boolean> {
+    const id = live.current
+    if (!id) return true
+    try {
+      await end(id)
+      live.current = null
+      return true
+    } catch (err) {
+      setError(
+        refusal(
+          err,
+          'Could not end the link, so the phone may still send scans: try Done again',
+          '',
+        ),
+      )
+      return false
+    }
+  }
+  async function done() {
+    setClosing(true)
+    const ended = await endLink()
+    setClosing(false)
+    if (ended) onClose()
   }
   return (
-    <Dialog open onOpenChange={(open) => !open && close()}>
-      <DialogContent aria-describedby={undefined}>
+    <Dialog open onOpenChange={(open) => !open && void done()}>
+      <DialogContent
+        aria-describedby={undefined}
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => {
+          if (!reviewing) return
+          e.preventDefault()
+          setReviewing(null)
+        }}
+      >
         <div className="flex items-baseline justify-between gap-2">
           <DialogTitle>
             {reviewing ? 'Review scan' : 'Scan with phone'}
           </DialogTitle>
-          <DialogClose className={small}>Done</DialogClose>
+          <button
+            type="button"
+            className={small}
+            disabled={closing}
+            onClick={() => void done()}
+          >
+            Done
+          </button>
         </div>
+        {error && (
+          <p role="alert" className="text-sm text-red-700">
+            {error}
+          </p>
+        )}
         {reviewing ? (
           <>
             <button
@@ -230,12 +345,21 @@ function ScanSitting({
         ) : (
           <>
             {stepUp.form}
-            {error && (
-              <p role="alert" className="text-sm text-red-700">
-                {error}
+            {notStarted && (
+              <p className="flex flex-wrap items-baseline gap-2 text-sm">
+                Scanning didn’t start: confirm it’s you to show the code.
+                <button type="button" className={small} onClick={begin}>
+                  Try again
+                </button>
               </p>
             )}
-            {started && <SittingLink path={started.path} pairing={pairing} />}
+            {started && (
+              <SittingLink
+                path={started.path}
+                pairing={pairing}
+                onRestart={() => void restart()}
+              />
+            )}
             {/* On the record-gift page the declaration doesn't exist
                 until the gift is saved: its scans are matched after. */}
             {pairing && (
@@ -261,35 +385,65 @@ function useNow(ms: number) {
   return now
 }
 
+const LINK_STATE = {
+  waiting: 'Waiting for the phone.',
+  connected: '✓ A phone is connected.',
+  ended: 'This link has ended.',
+} as const
+
 /**
  * The QR code and the link (to copy into a phone's browser by hand), and
  * where the link stands. The token is in the link's fragment: never sent
- * to the server in a page request.
+ * to the server in a page request. `path` is null for a sitting resumed
+ * after a reload: its code was shown once and isn't kept. Only a change
+ * of state is announced, not the minutes ticking down.
  */
 function SittingLink({
   path,
   pairing,
+  onRestart,
 }: {
-  path: string
+  path: string | null
   pairing: ScanPairingView | undefined
+  onRestart: () => void
 }) {
   const now = useNow(30_000)
-  const link = scanLink(path)
-  const [copied, setCopied] = useState(false)
+  const linkId = useId()
+  const [copied, setCopied] = useState<'yes' | 'no' | null>(null)
   const state = pairing ? linkState(pairing, now) : null
-  if (state?.kind === 'ended')
+  const announce = (
+    <p role="status" className="sr-only">
+      {state && LINK_STATE[state.kind]}
+    </p>
+  )
+  if (state?.kind === 'ended' || (state && path === null))
     return (
-      <p role="status" className="text-sm text-neutral-700">
-        This link has ended. Close this and choose “Scan with phone” again to
-        scan more.
-      </p>
+      <div className="flex flex-col gap-2 text-sm text-neutral-700">
+        {announce}
+        <p data-testid="scan-link-state">
+          {state.kind === 'ended'
+            ? 'This link has ended.'
+            : 'This sitting’s code was shown before the page reloaded and can’t be shown again.'}{' '}
+          Its scans are below.
+        </p>
+        <button
+          type="button"
+          className={`${small} self-start`}
+          onClick={onRestart}
+        >
+          Start a new link
+        </button>
+      </div>
     )
+  if (path === null) return <p className="text-sm text-neutral-500">Loading…</p>
+  const link = scanLink(path)
   async function copy() {
     try {
       await navigator.clipboard.writeText(link)
-      setCopied(true)
+      setCopied('yes')
     } catch {
-      setCopied(false)
+      // No clipboard (plain HTTP, or refused): the field is selectable.
+      setCopied('no')
     }
   }
   return (
@@ -300,30 +454,31 @@ function SittingLink({
           Point the phone’s camera at the code and open the link. No sign-in is
           needed on the phone; only that phone can use the link.
         </p>
-        <label className="flex flex-col gap-1 text-xs text-neutral-600">
-          Or open this link on the phone
+        <div className="flex flex-col gap-1 text-xs text-neutral-600">
+          <label htmlFor={linkId}>Or open this link on the phone</label>
           <span className="flex gap-2">
             <input
+              id={linkId}
               readOnly
               value={link}
               onFocus={(e) => e.target.select()}
               className={`${field} min-w-0 flex-1 font-mono text-xs`}
             />
             <button type="button" className={small} onClick={() => void copy()}>
-              {copied ? 'Copied' : 'Copy link'}
+              {copied === 'yes' ? 'Copied' : 'Copy link'}
             </button>
           </span>
-        </label>
-        <p
-          role="status"
-          data-testid="scan-link-state"
-          className="text-neutral-700"
-        >
+          {copied === 'no' && (
+            <p role="alert">Couldn’t copy: select the link and copy it.</p>
+          )}
+        </div>
+        {announce}
+        <p data-testid="scan-link-state" className="text-neutral-700">
           {state === null
             ? 'Starting…'
             : state.kind === 'connected'
-              ? `✓ A phone is connected. The link ends ${endsIn(state.endsAt, now)} if nothing is sent.`
-              : `Waiting for the phone. The link ends ${endsIn(state.endsAt, now)}.`}
+              ? `${LINK_STATE.connected} The link ends ${endsIn(state.endsAt, now)} if nothing is sent.`
+              : `${LINK_STATE.waiting} The link ends ${endsIn(state.endsAt, now)}.`}
         </p>
       </div>
     </div>
@@ -347,12 +502,17 @@ function SittingStack({
       <h3 className="text-sm font-medium">
         Scans from this sitting{scans.length > 0 && ` (${scans.length})`}
       </h3>
+      {/* Always mounted, so the first scan is announced as it comes. */}
+      <p aria-live="polite" className="sr-only">
+        {scans.length > 0 &&
+          `${scans.length} ${scans.length === 1 ? 'scan' : 'scans'} received`}
+      </p>
       {scans.length === 0 ? (
         <p className="text-sm text-neutral-500">
           None yet: they appear here as the phone sends them.
         </p>
       ) : (
-        <ul aria-live="polite" className="flex flex-wrap gap-3">
+        <ul className="flex flex-wrap gap-3">
           {scans.map((s) => (
             <li
               key={s.id}
@@ -391,7 +551,7 @@ export function ScanThumb({ scan }: { scan: ScanView }) {
     )
   return (
     <img
-      src={scanPageUrl(slug, scan.id, Number(first.pageNo))}
+      src={scanPageUrl(slug, scan.id, Number(first.pageNo), first.id)}
       alt=""
       loading="lazy"
       className="h-24 w-full border border-neutral-200 bg-neutral-100 object-contain"
@@ -510,7 +670,7 @@ export function ScanPages({
     <section aria-label="Pages" className="flex flex-col gap-3">
       <ol className="flex flex-col gap-3">
         {scan.pages.map((p, i) => {
-          const url = scanPageUrl(slug, scan.id, Number(p.pageNo))
+          const url = scanPageUrl(slug, scan.id, Number(p.pageNo), p.id)
           const which = `page ${i + 1} of ${count}`
           return (
             <li key={p.id} className="flex flex-col gap-1">
@@ -571,7 +731,12 @@ export function ScanPages({
   )
 }
 
-const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+/** The local day of an instant, YYYY-MM-DD (not UTC's: 00:30 BST is today). */
+const isoDay = (ms: number) => {
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
 
 /**
  * "Add pages from another scan": a form's later pages sent as a scan of
@@ -673,6 +838,8 @@ function MatchForm({
     e.preventDefault()
     if (!contact) return setError('Choose whose declaration this is')
     if (choice === 'new' && !draft) return
+    if (choice === 'new' && !draft!.madeOn)
+      return setError('Enter the date written on the form')
     setError(null)
     setSaving(true)
     try {
@@ -891,7 +1058,9 @@ function DeclarationChoice({
     fetchContactSnapshot(slug, contactId, today)
       .then((snapshot) => {
         if (live)
-          onDraft({ ...snapshot, scope: 'futureAndPast4y', madeOn: today })
+          // No date until it is read off the form: the date decides which
+          // gifts it covers (rule 1), so today is never assumed.
+          onDraft({ ...snapshot, scope: 'futureAndPast4y', madeOn: '' })
       })
       .catch(() => {
         if (live) setError('Could not read the contact’s name and address')

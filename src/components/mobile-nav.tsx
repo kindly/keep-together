@@ -238,11 +238,12 @@ function store(open: boolean) {
  * are fetched only while it is open.
  */
 /**
- * Gift Aid's entries under a heading, flat (four at most): the claims,
- * "Scans to match", a stack sitting, the "can be deleted" report.
+ * Gift Aid's entries under a heading, flat: the claims, "Scans to match",
+ * the "can be deleted" report. Not the stack sitting: on a phone it would
+ * show the phone a QR code of itself.
  */
 function GiftAid({ follow }: { follow: Follow }) {
-  const entries = useGiftAidEntries()
+  const entries = useGiftAidEntries().filter((e) => e.key !== 'stack')
   if (entries.length === 0) return null
   return (
     <section aria-label={GIFT_AID.label}>

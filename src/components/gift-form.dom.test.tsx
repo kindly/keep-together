@@ -309,6 +309,18 @@ test('the tick: staff ticked by default, explained; an address on file is used',
   )
   // No address fields to half-type over it.
   expect(giftAid()!.querySelectorAll('input[type="text"]')).toHaveLength(0)
+  // Only a paper form can hold a scan: no "Scan with phone" until it is one.
+  const scanButton = () =>
+    [...giftAid()!.querySelectorAll('button')].some(
+      (b) => b.textContent === 'Scan with phone',
+    )
+  expect(scanButton()).toBe(false)
+  const method = selects[1]
+  await act(async () => {
+    method.value = 'paperForm'
+    method.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  expect(scanButton()).toBe(true)
 })
 
 test('the tick with no address on file: half typed blocks the save', async () => {

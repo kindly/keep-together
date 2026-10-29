@@ -4,13 +4,23 @@ import { ReadRefused } from '../components/claims-ui'
 import { useMembers, useScanInbox } from '../lib/data'
 import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
 
-type Search = { sitting?: boolean }
+/**
+ * `sitting`: `true` opens a new sitting on arrival (the Gift Aid menu's
+ * "Scan a stack"); once it has started, its pairing id replaces it, so a
+ * reload shows that sitting again rather than starting a second.
+ */
+type Search = { sitting?: true | string }
+
+const PAIRING_ID = /^[0-9a-f]{32}$/
 
 export const Route = createFileRoute('/t/$slug/scans/')({
   component: ScansToMatch,
-  // The Gift Aid menu's "Scan a stack" opens the sitting on arrival.
   validateSearch: (s: Record<string, unknown>): Search =>
-    s.sitting === true || s.sitting === 'true' ? { sitting: true } : {},
+    s.sitting === true || s.sitting === 'true'
+      ? { sitting: true }
+      : typeof s.sitting === 'string' && PAIRING_ID.test(s.sitting)
+        ? { sitting: s.sitting }
+        : {},
 })
 
 const AT = new Intl.DateTimeFormat([], {
@@ -53,9 +63,18 @@ function ScansToMatch() {
           <ScanWithPhone
             purpose="stack"
             label="Scan a stack with phone"
-            initialOpen={sitting === true}
+            initialOpen={sitting !== undefined}
+            resume={typeof sitting === 'string' ? sitting : undefined}
+            onStarted={(id) =>
+              void navigate({
+                to: '/t/$slug/scans',
+                params: { slug: tenant.slug },
+                search: { sitting: id },
+                replace: true,
+              })
+            }
             onClose={() =>
-              sitting &&
+              sitting !== undefined &&
               void navigate({
                 to: '/t/$slug/scans',
                 params: { slug: tenant.slug },
@@ -81,7 +100,14 @@ function Inbox() {
       ? ''
       : (members?.find((m) => String(m.userId) === String(id))?.name ?? '…')
   if (inbox.error)
-    return <ReadRefused error={inbox.error} retry={inbox.refetch} />
+    return (
+      <ReadRefused
+        error={inbox.error}
+        retry={inbox.refetch}
+        forbidden="Declaration scans are for the group’s staff and admins."
+        failed="Scans to match couldn’t load."
+      />
+    )
   if (inbox.data === undefined)
     return <p className="text-sm text-neutral-500">Loading…</p>
   if (inbox.data.length === 0)

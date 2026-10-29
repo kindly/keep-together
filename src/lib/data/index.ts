@@ -116,6 +116,7 @@ export type {
 } from './rust/claims'
 export {
   PAIRING_POLL_MS,
+  endScanPairingNow,
   scanLink,
   scanPageUrl,
   useDeclarationScans,

@@ -328,6 +328,19 @@ test('the Gift Aid menu: claims and the deletable report for admins, scans for s
   expect(await giftAidItems()).toBeNull()
 })
 
+test('the Gift Aid menu is marked on its pages, as its link was', async () => {
+  const trigger = () =>
+    [...el.querySelectorAll('nav[aria-label="Main"] button')].find(
+      (b) => b.textContent === 'Gift Aid ▾',
+    )!
+  hist.reset('/t/alpha/scans/s1')
+  await page(import('./t.$slug'))
+  expect(trigger().hasAttribute('data-current')).toBe(true)
+  hist.reset('/t/alpha/contacts')
+  await page(import('./t.$slug'))
+  expect(trigger().hasAttribute('data-current')).toBe(false)
+})
+
 test('Gift Aid claims and HMRC details are for admins: staff and viewers see neither', async () => {
   for (const role of ['staff', 'viewer'] as const) {
     tenants = [group('alpha', { role })]
@@ -709,10 +722,10 @@ test('the drawer lists every destination, Donations flattened, then the account'
   expect(shown(d)).toEqual([
     ['Home', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
-    // Gift Aid's entries, flat: the claims and the report for admins.
+    // Gift Aid's entries, flat: the claims and the report for admins. No
+    // stack sitting: a phone would show a QR code of itself.
     ['Claims', '/t/alpha/giftaid'],
     ['Scans to match', '/t/alpha/scans'],
-    ['Scan a stack with phone', '/t/alpha/scans?sitting=true'],
     ['Scans that can be deleted', '/t/alpha/scans/deletable'],
     ['Settings', '/t/alpha/settings'],
     ['Your accounta@example.org', '/account'],
@@ -726,7 +739,6 @@ test('the drawer lists every destination, Donations flattened, then the account'
     ['£20.00Jo Bloggsvoid23 Oct 2026', '/t/alpha/gifts/g1'],
     ['Claims', '/t/alpha/giftaid'],
     ['Scans to match', '/t/alpha/scans'],
-    ['Scan a stack with phone', '/t/alpha/scans?sitting=true'],
     ['Scans that can be deleted', '/t/alpha/scans/deletable'],
     ['Settings', '/t/alpha/settings'],
     ['Your accounta@example.org', '/account'],
@@ -747,7 +759,6 @@ test('the drawer has Gift Aid claims for admins only, as the header does: staff 
     'Home',
     'Contacts',
     'Scans to match',
-    'Scan a stack with phone',
     'Settings',
     'Your accounta@example.org',
   ])
