@@ -1,4 +1,4 @@
-<sv-page label="plan: declaration scans" category="plans">
+<sv-page label="plan: declaration scans" category="archive">
 
 <sv-prose id="b1">
 # Plan: scanned paper Gift Aid declarations (phone pairing)
