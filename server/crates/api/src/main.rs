@@ -72,6 +72,11 @@ async fn main() {
         !(dev_auth && api::auth::dev_auth_refused(std::env::var("KEEP_ENV").ok().as_deref()))
     );
     let qc = qc_access();
+    let scan_limits = api::scans::limits::ScanLimits::from_vars(|name| std::env::var(name).ok())
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2)
+        });
     let address = api::address::from_vars(|name| std::env::var(name).ok()).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2)
@@ -201,6 +206,7 @@ async fn main() {
         });
     }
     let state = AppState::new(store, dev_auth)
+        .with_scan_limits(Arc::new(scan_limits))
         .with_auth(auth)
         .with_qc(qc)
         .with_address(address)

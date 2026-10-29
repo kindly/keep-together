@@ -227,6 +227,18 @@ compresses it with zstd and uploads it to
 The newest state of every file is always in the bucket: hourly for two
 days, then daily, then monthly.
 
+Snapshots and restores never hold a file in memory (a files db can
+reach 2 GB; machines have 512 MB). The copy and its zstd are files under
+`snapshots-tmp/`. The upload's body is the compressed file
+memory-mapped, still one create-only `PUT`, which the bucket policy
+requires. A restore streams the download to a file and decompresses
+file to file. The snapshot job needs free disk for a copy plus its
+`.zst` of the largest file, which is why scan uploads keep a reserve
+free on the volume (`KEEP_FILES_DISK_RESERVE_BYTES`, `server/README.md`).
+Uploads past it answer `507 storage_full`. **The volumes are 1 GB while
+an org's cap is 2 GB (`KEEP_FILES_CAP_BYTES`): size the volume or the
+cap before scanning goes live.**
+
 An org's files db (`files/<id>.db`) is snapshotted as
 `files-<tenant-id>`, **daily at most**: at the first run of a UTC day
 when its change counter moved since the last daily copy, and monthly
@@ -235,6 +247,9 @@ never change, so hourly copies would be waste; Litestream covers the
 hours in between. A snapshot restore can therefore bring a files db back
 up to a day older than its org file: pages scanned since point at no
 image (404) until a Litestream restore or point-in-time copy fills them.
+`restore.sh` prints `restore: WARNING org <id>: N scanned page(s) without
+their image` when that happens, and the drill's census counts them
+(`<slug>.files.missing`).
 
 **Nothing the app holds can remove or replace a snapshot.**
 - Every upload is create-only (`If-None-Match: *`). The bucket policy

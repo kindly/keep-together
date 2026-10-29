@@ -7,8 +7,9 @@
 #   census        one "<key> <value>" line per fact, sorted: tenants; per
 #                 org (by slug) contacts, revisions, the match count of a
 #                 few search terms (FTS), and its files db's blobs and
-#                 bytes and the hash of its keys (0 when it has none). The
-#                 drill diffs it, so a restore must bring both files back.
+#                 bytes and the hash of its keys (0 when it has none), and
+#                 its pages with no image there. The drill diffs it, so a
+#                 restore must bring both files back.
 #   has-org SLUG  prints 1 if the org exists, else 0.
 #   marks         the write-loss probe: commits one row at a time to
 #                 drill/marks.db (Litestream replicates drill/ like orgs/;
@@ -28,6 +29,19 @@ DATA=${KEEP_DATA_DIR:-/data}
 MARKS=$DATA/drill/marks.db
 TERMS="smith gmail jo* london 07700"
 q() { sqlite3 -readonly "$@"; }
+# Pages of an org's scans whose image isn't in its files db (a files db
+# restored from an older copy than its org file): `missing_pages <org file>
+# <files db>`. Empty when the org file predates scans.
+missing_pages() {
+  has=$(sqlite3 -readonly "$1" "SELECT count(*) FROM sqlite_master WHERE name = 'declaration_scan_pages'")
+  [ "$has" = 1 ] || return 0
+  held="SELECT p.sha256 FROM declaration_scan_pages p JOIN declaration_scans s ON s.id = p.scan_id WHERE s.image_deleted_at IS NULL"
+  if [ -e "$2" ]; then
+    sqlite3 -readonly "$1" "ATTACH '$2' AS f; SELECT count(*) FROM ($held) WHERE sha256 NOT IN (SELECT sha256 FROM f.blobs)"
+  else
+    sqlite3 -readonly "$1" "SELECT count(*) FROM ($held)"
+  fi
+}
 
 case ${1:-} in
 census)
@@ -42,6 +56,7 @@ census)
           echo "$slug.search.$t $(q "$f" "SELECT count(*) FROM contact_search_words WHERE contact_search_words MATCH '$t'")"
         done
         files=$DATA/files/$id.db
+        echo "$slug.files.missing $(missing_pages "$f" "$files")"
         if [ -e "$files" ]; then
           echo "$slug.files.blobs $(q "$files" 'SELECT count(*) FROM blobs')"
           echo "$slug.files.bytes $(q "$files" 'SELECT coalesce(sum(size), 0) FROM blobs')"

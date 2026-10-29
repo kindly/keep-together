@@ -91,6 +91,9 @@ pub async fn change_password(
             let s = reread(tx, &s, now, |s| s.stage == Stage::Full)?;
             accounts::set_password(tx, s.user, &req.new, now).map_err(ApiError::internal)?;
             sessions::revoke_others(tx, s.user, &s.id)?;
+            // Phone pairings too, this session's included (the device
+            // may be what prompted the change).
+            crate::scans::end_all_of_user(tx, s.user, "password_changed", now)?;
             accounts::void_resets(tx, s.user, now)?;
             accounts::log(tx, now, "password_changed", Some(s.user), "self", None, "")?;
             Ok(())
@@ -215,6 +218,9 @@ pub async fn sign_out_others(
         st.store.platform().with_write(|tx| {
             let s = reread(tx, &s, now, |s| s.stage == Stage::Full)?;
             let n = sessions::revoke_others(tx, s.user, &s.id)?;
+            // And every phone pairing of the user, this session's
+            // included: an unknown phone is what this button is for.
+            crate::scans::end_all_of_user(tx, s.user, "signed_out_others", now)?;
             accounts::log(
                 tx,
                 now,

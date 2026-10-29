@@ -44,6 +44,8 @@ pub struct AppState {
     pub address: Option<Arc<address::Lookup>>,
     /// `KEEP_GOCARDLESS` ([`gocardless`]); off when `None`.
     pub gocardless: Option<Arc<gocardless::GoCardless>>,
+    /// Scan uploads' cap, disk reserve and slots ([`scans::limits`]).
+    pub scans: Arc<scans::limits::ScanLimits>,
 }
 
 impl AppState {
@@ -57,7 +59,13 @@ impl AppState {
             qc: None,
             address: None,
             gocardless: None,
+            scans: Arc::default(),
         }
+    }
+
+    pub fn with_scan_limits(mut self, limits: Arc<scans::limits::ScanLimits>) -> Self {
+        self.scans = limits;
+        self
     }
 
     pub fn with_gocardless(mut self, gc: Option<Arc<gocardless::GoCardless>>) -> Self {

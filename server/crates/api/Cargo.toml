@@ -39,6 +39,7 @@ tower.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 memmap2 = "0.9"
 bytes = "1.12"
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

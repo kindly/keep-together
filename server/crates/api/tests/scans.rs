@@ -660,6 +660,8 @@ async fn isolation_between_two_organisations() {
         "the same page, stored once in each file"
     );
 
+    // Every scan route under B's slug with A's ids: 404, strictly (a
+    // well-formed body, so nothing can answer `invalid` before it looks).
     for (method, path, body) in [
         ("GET", format!("/api/t/beta/scans/{scan}"), None),
         ("GET", format!("/api/t/beta/scans/{scan}/pages/1"), None),
@@ -677,22 +679,51 @@ async fn isolation_between_two_organisations() {
         (
             "POST",
             format!("/api/t/beta/scans/{scan}/reorder"),
-            Some(json!({ "expected": 1, "order": [] })),
+            Some(json!({ "expected": 0, "order": ["0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1"] })),
         ),
         (
             "POST",
             format!("/api/t/beta/scans/{scan}/delete-images"),
             Some(json!({ "expected": 0 })),
         ),
+        (
+            "POST",
+            format!("/api/t/beta/scans/{scan}/accept"),
+            Some(
+                json!({ "expected": 0, "contactId": "0190f0c0a0b0c0d0e0f0a0b0c0d0e0a1",
+                "match": { "kind": "existing", "declarationId": "0190f0c0a0b0c0d0e0f0a0b0c0d0e0a2" } }),
+            ),
+        ),
+        // Merge both ways: A's scan as the target, and as the source.
+        (
+            "POST",
+            format!("/api/t/beta/scans/{scan}/merge"),
+            Some(json!({ "expected": 0, "from": b_scan, "fromExpected": 0 })),
+        ),
+        (
+            "POST",
+            format!("/api/t/beta/scans/{b_scan}/merge"),
+            Some(json!({ "expected": 0, "from": scan, "fromExpected": 0 })),
+        ),
     ] {
         let (s, out) = w.call(method, &path, &bob, body).await;
-        assert!(
-            s == StatusCode::NOT_FOUND
-                || (s == StatusCode::UNPROCESSABLE_ENTITY && out["kind"] == "invalid"),
-            "{method} {path}: {s} {out}"
+        assert_eq!(
+            (s, &out["kind"]),
+            (StatusCode::NOT_FOUND, &json!("not_found")),
+            "{method} {path}: {out}"
         );
-        assert_ne!(s, StatusCode::OK);
     }
+    // B's own draft is untouched by the merge attempts.
+    let (_, b_one) = w
+        .call("GET", &format!("/api/t/beta/scans/{b_scan}"), &bob, None)
+        .await;
+    assert_eq!(
+        (
+            b_one["status"].clone(),
+            b_one["pages"].as_array().unwrap().len()
+        ),
+        (json!("draft"), 1)
+    );
     // A page onto A's scan from B's signed-in phone: 404, nothing added.
     let r = send(
         &w,
@@ -724,6 +755,43 @@ async fn isolation_between_two_organisations() {
     let opened = b_phone.open(&w).await;
     assert_eq!(opened.json["orgName"], "Beta");
     assert_eq!(opened.json["scans"], json!([]));
+
+    // A's scan accepted onto an old declaration: in A's "can be deleted"
+    // report, never in B's; its declaration's scans are 404 under B.
+    let jo = contact(&w, &sam).await;
+    let (s, out) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/scans/{scan}/accept"),
+            &sam,
+            Some(json!({ "expected": 0, "contactId": jo,
+                "match": { "kind": "new", "declaration": declaration(&jo, "2015-01-01", "paperForm") } })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let decl = out["declarationId"].as_str().unwrap().to_owned();
+    let ann = w.login("ann@alpha.org").await;
+    let report = "/api/t/{slug}/giftaid/scans/deletable?today=2026-10-29";
+    let (_, a_report) = w
+        .call("GET", &report.replace("{slug}", "alpha"), &ann, None)
+        .await;
+    assert_eq!(a_report[0]["scan"]["id"], scan);
+    let (s, b_report) = w
+        .call("GET", &report.replace("{slug}", "beta"), &bob, None)
+        .await;
+    assert_eq!((s, b_report), (StatusCode::OK, json!([])));
+    let (s, out) = w
+        .call(
+            "GET",
+            &format!("/api/t/beta/giftaid/{decl}/scans"),
+            &bob,
+            None,
+        )
+        .await;
+    assert_eq!(
+        (s, &out["kind"]),
+        (StatusCode::NOT_FOUND, &json!("not_found"))
+    );
 }
 
 async fn contact(w: &World, cookie: &str) -> String {
@@ -1221,4 +1289,138 @@ fn the_binary_never_logs_a_pairing_token() {
         !logged.contains(&token[..16]),
         "part of the token was logged:\n{logged}"
     );
+}
+
+/// "Sign out other sessions" keeps this session, which a pairing hangs
+/// from: it ends the user's pairings anyway (an unknown phone is what the
+/// button is for).
+#[tokio::test]
+async fn signing_out_other_sessions_ends_the_users_pairings() {
+    let w = world();
+    let (sam, id, token) = staff_sitting(&w).await;
+    let mut phone = Phone::new(&token);
+    assert_eq!(phone.open(&w).await.status, StatusCode::OK);
+    let out = send(
+        &w,
+        "POST",
+        "/api/auth/account/sessions/sign-out-others",
+        Some(&sam),
+        HttpBody::empty(),
+    )
+    .await;
+    assert!(out.status.is_success(), "{} {}", out.status, out.json);
+    assert_eq!(phone.open(&w).await.status, StatusCode::GONE);
+    let why: String = w
+        .store
+        .platform()
+        .with_read(|c| {
+            c.query_row(
+                "SELECT ended_why FROM scan_pairings WHERE id = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(why, "signed_out_others");
+    // The laptop stays signed in, and can pair again.
+    let (s, _) = w.call("GET", "/api/t/alpha/scans", &sam, None).await;
+    assert_eq!(s, StatusCode::OK);
+    pair(&w, &sam, "alpha").await;
+}
+
+fn with_limits(w: &mut World, limits: Arc<scans::limits::ScanLimits>) {
+    w.app = api::app(
+        api::AppState::new(w.store.clone(), true).with_scan_limits(limits),
+        api::routes::router(),
+    );
+}
+
+/// Uploads past the slots in flight are refused before their bodies are
+/// read (`503 busy`), and stored nothing.
+#[tokio::test]
+async fn uploads_past_the_slots_in_flight_are_busy() {
+    let mut w = world();
+    let limits = Arc::new(scans::limits::ScanLimits::default());
+    with_limits(&mut w, limits.clone());
+    let (sam, _, token) = staff_sitting(&w).await;
+    let mut phone = Phone::new(&token);
+    phone.open(&w).await;
+    let held: Vec<_> = (0..scans::limits::MAX_IN_FLIGHT)
+        .map(|_| limits.take_slot().unwrap())
+        .collect();
+    let busy = phone.new_scan(&w, photo(1)).await;
+    assert_eq!(
+        (busy.status, &busy.json["kind"]),
+        (StatusCode::SERVICE_UNAVAILABLE, &json!("busy"))
+    );
+    let busy = send(
+        &w,
+        "POST",
+        "/api/t/alpha/scans",
+        Some(&sam),
+        HttpBody::from(photo(1)),
+    )
+    .await;
+    assert_eq!(busy.status, StatusCode::SERVICE_UNAVAILABLE);
+    // Reads aren't uploads.
+    assert_eq!(phone.open(&w).await.status, StatusCode::OK);
+    drop(held);
+    assert_eq!(phone.new_scan(&w, photo(1)).await.status, StatusCode::OK);
+}
+
+/// The data volume's reserve: an upload that would eat into it is
+/// refused (`507 storage_full`) and stores nothing.
+#[tokio::test]
+async fn an_upload_into_the_disk_reserve_is_refused() {
+    let mut w = world();
+    let limits = scans::limits::ScanLimits::default().with_disk_reserve(u64::MAX / 4);
+    with_limits(&mut w, Arc::new(limits));
+    let (sam, _, token) = staff_sitting(&w).await;
+    let mut phone = Phone::new(&token);
+    phone.open(&w).await;
+    let full = phone.new_scan(&w, photo(1)).await;
+    assert_eq!(
+        (full.status, &full.json["kind"]),
+        (StatusCode::INSUFFICIENT_STORAGE, &json!("storage_full"))
+    );
+    let full = send(
+        &w,
+        "POST",
+        "/api/t/alpha/scans",
+        Some(&sam),
+        HttpBody::from(photo(1)),
+    )
+    .await;
+    assert_eq!(full.status, StatusCode::INSUFFICIENT_STORAGE);
+    let (_, usage) = w.call("GET", "/api/t/alpha/files-usage", &sam, None).await;
+    assert_eq!(usage["bytes"], 0);
+}
+
+/// `KEEP_FILES_CAP_BYTES`: the per-org cap is the configured one, and
+/// Settings shows it.
+#[tokio::test]
+async fn the_configured_cap_is_the_one_enforced_and_shown() {
+    let mut w = world();
+    let limits = scans::limits::ScanLimits::default()
+        .with_cap(1)
+        .with_disk_reserve(0);
+    with_limits(&mut w, Arc::new(limits));
+    let sam = w.login("sam@alpha.org").await;
+    let full = send(
+        &w,
+        "POST",
+        "/api/t/alpha/scans",
+        Some(&sam),
+        HttpBody::from(photo(1)),
+    )
+    .await;
+    assert_eq!(
+        (full.status, &full.json["reason"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("files_full"))
+    );
+    let (_, usage) = w.call("GET", "/api/t/alpha/files-usage", &sam, None).await;
+    assert_eq!(usage["capBytes"], 1);
+    let val = w.login("val@alpha.org").await;
+    let (s, _) = w.call("GET", "/api/t/alpha/files-usage", &val, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 }

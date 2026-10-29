@@ -3,13 +3,16 @@
 //!
 //! - Only JPEG and PNG are decoded, recognised by their bytes (never by
 //!   a header the client sets).
-//! - The size is read from the header before anything is decoded, and
-//!   refused past [`MAX_SIDE`] a side or [`MAX_PIXELS`] in all: a
-//!   decompression bomb is a small file that claims a huge image, and
-//!   is refused there. The decoder also runs under `image::Limits` (its
-//!   own dimension and allocation caps), in case a header lies.
-//! - At most [`DECODES`] decodes run at once, so a burst of uploads can't
-//!   take the machine's memory.
+//! - The size and pixel format are read from the header before anything
+//!   is decoded, and refused past [`MAX_SIDE`] a side, [`MAX_PIXELS`] in
+//!   all, or [`MAX_DECODED_BYTES`] decoded (a 16-bit PNG decodes to twice
+//!   an 8-bit one's size): a decompression bomb is a small file that
+//!   claims a huge image, and is refused there. The decoder also runs
+//!   under `image::Limits` (its own dimension and allocation caps), in
+//!   case a header lies.
+//! - [`DECODES`] decode runs at a time (about 80 MB at the caps, on a
+//!   512 MB machine); how many uploads may wait for it is bounded before
+//!   their bodies are read (`crate::scans::UploadSlots`).
 //! - Greyscale (an exact replica keeps a faint tick or signature that a
 //!   1-bit threshold could drop), the long side capped at [`LONG_SIDE`]
 //!   (150 dpi A4), encoded from raw pixels, so no EXIF, GPS or other
@@ -29,12 +32,16 @@ use crate::error::ApiError;
 
 /// The longest side an upload may claim.
 pub const MAX_SIDE: u32 = 6000;
-/// Pixels an upload may claim (24 MP: more than a phone photo of A4).
-pub const MAX_PIXELS: u64 = 24_000_000;
+/// Pixels an upload may claim (16 MP: the phone page sends 1240 × 1754;
+/// this leaves room for a signed-in phone's photo).
+pub const MAX_PIXELS: u64 = 16_000_000;
+/// The decoded image an upload may claim, in bytes (16 MP of 8-bit
+/// RGBA).
+pub const MAX_DECODED_BYTES: u64 = 64 << 20;
 /// The long side of a stored page: A4 at 150 dpi.
 pub const LONG_SIDE: u32 = 1754;
 /// Decodes at once.
-pub const DECODES: usize = 2;
+pub const DECODES: usize = 1;
 /// JPEG qualities tried in turn.
 const QUALITIES: [u8; 4] = [80, 70, 60, 50];
 
@@ -98,23 +105,30 @@ pub fn reencode(raw: &[u8]) -> Result<Processed, ApiError> {
         let mut limits = Limits::default();
         limits.max_image_width = Some(MAX_SIDE);
         limits.max_image_height = Some(MAX_SIDE);
-        // RGBA at the pixel cap, and the decoder's own buffers.
-        limits.max_alloc = Some(MAX_PIXELS * 4 + (64 << 20));
+        // The decoded cap, and the decoder's own buffers.
+        limits.max_alloc = Some(MAX_DECODED_BYTES + (16 << 20));
         r.limits(limits);
         r
     };
-    let (w, h) = reader()
-        .into_dimensions()
+    let decoder = reader()
+        .into_decoder()
         .map_err(|_| refused("The image can't be read"))?;
-    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || u64::from(w) * u64::from(h) > MAX_PIXELS
+    let (w, h) = image::ImageDecoder::dimensions(&decoder);
+    let decoded_bytes = image::ImageDecoder::total_bytes(&decoder);
+    if w == 0
+        || h == 0
+        || w > MAX_SIDE
+        || h > MAX_SIDE
+        || u64::from(w) * u64::from(h) > MAX_PIXELS
+        || decoded_bytes > MAX_DECODED_BYTES
     {
         return Err(refused(format!(
-            "The image is too large (at most {MAX_SIDE} pixels a side)"
+            "The image is too large (at most {MAX_SIDE} pixels a side, {} MP)",
+            MAX_PIXELS / 1_000_000
         )));
     }
     let _permit = Permit::take();
-    let decoded = reader()
-        .decode()
+    let decoded = image::DynamicImage::from_decoder(decoder)
         .map_err(|_| refused("The image can't be read"))?;
     let mut grey = decoded.to_luma8();
     drop(decoded);
@@ -239,11 +253,42 @@ mod tests {
         let err = reencode(&png).unwrap_err();
         assert!(matches!(err, ApiError::Invalid { .. }), "{err:?}");
         // Under the side cap but over the pixel cap.
-        let wide = page(5000, 5000);
+        let wide = page(4500, 4500);
         assert!(matches!(
             reencode(&jpeg(&wide)),
             Err(ApiError::Invalid { .. })
         ));
+    }
+
+    /// A 16-bit RGB PNG within the pixel cap still decodes past the
+    /// byte cap: refused from its header.
+    #[test]
+    fn a_16_bit_png_past_the_decoded_cap_is_refused() {
+        let (w, h) = (3000u32, 4000u32); // 12 MP, 72 MB as 16-bit RGB
+        let mut png = Vec::new();
+        png.extend(b"\x89PNG\r\n\x1a\n");
+        let mut ihdr = Vec::new();
+        ihdr.extend(w.to_be_bytes());
+        ihdr.extend(h.to_be_bytes());
+        ihdr.extend([16, 2, 0, 0, 0]); // 16-bit truecolour
+        png.extend((ihdr.len() as u32).to_be_bytes());
+        let mut chunk = b"IHDR".to_vec();
+        chunk.extend(&ihdr);
+        let crc = crc32(&chunk);
+        png.extend(&chunk);
+        png.extend(crc.to_be_bytes());
+        // An empty IDAT and IEND: the decoder reads up to the first IDAT
+        // before it says what the image is.
+        for name in [&b"IDAT"[..], b"IEND"] {
+            png.extend(0u32.to_be_bytes());
+            png.extend(name);
+            png.extend(crc32(name).to_be_bytes());
+        }
+        let err = reencode(&png).unwrap_err();
+        let ApiError::Invalid { problems } = err else {
+            panic!("{err:?}")
+        };
+        assert!(problems[0].message.contains("too large"), "{problems:?}");
     }
 
     fn crc32(bytes: &[u8]) -> u32 {

@@ -43,6 +43,8 @@ Env (`api`):
 | `KEEP_ADDRESS_LOOKUP_DAILY_CEILING` | `2000` | lookups across the platform per UTC day: then `503 lookup_unavailable` |
 | `KEEP_GOCARDLESS` | `off` | Direct Debit (`api::gocardless`; "GoCardless" below): `fake` (a GoCardless mock mounted on this server at `/api/fake-gocardless`, no network; `KEEP_ENV=prod` refuses it), `sandbox` (`prod` refuses it), `live` (only with `KEEP_ENV=prod`). Any other value stops the boot |
 | `KEEP_GOCARDLESS_CLIENT_ID`, `KEEP_GOCARDLESS_CLIENT_SECRET`, `KEEP_GOCARDLESS_WEBHOOK_SECRET` | unset | the partner app's OAuth client and webhook secret; `sandbox`/`live` stop the boot without them (`scripts/fly/gocardless-secrets.sh`). Never logged, never in a URL or an error |
+| `KEEP_FILES_CAP_BYTES` | `2000000000` | bytes of scanned pages an organisation's files db may hold (`422 rejected files_full` past it) |
+| `KEEP_FILES_DISK_RESERVE_BYTES` | see `api::scans::limits` | free bytes the data volume keeps after a scan upload (`507 storage_full` otherwise). Default: twice the largest database on the volume (the snapshot's copy and its `.zst`), and deployed (`prod`/`staging`) at least a quarter of the volume. `0` turns the guard off |
 | `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`; on dev under `KEEP_AUTH_POLICY=relaxed` a missing password is `riverside` and a missing TOTP is none) |
 
 The 10k measurement (`scripts/perf-search10k-rs/`):
@@ -136,6 +138,8 @@ request, an SSE stream) is never closed.
   | 429 | `lookup_cap` | the organisation's address lookups for the month are used up |
   | 503 | `lookup_unavailable` | the address lookup provider is down, slow (5 s), out of credit, or the daily ceiling is reached |
   | 503 | `gocardless_unavailable` | GoCardless didn't answer or failed; nothing changed here |
+  | 503 | `busy` | too many scan uploads in flight (8); nothing stored; send it again |
+  | 507 | `storage_full` | the data volume is down to its reserve; no scan stored |
   | 500 | `internal` | details only in the server log |
 
   Tier-2 warnings (ADR 0015) aren't errors: they ride along in read
@@ -622,20 +626,26 @@ calls `/api/scan/{token}`. A pairing is live while it isn't ended, is
 under 2 h old and was used in the last 15 min, its laptop session is
 live, and its user is still staff or admin of the org. Triggers on
 `auth_sessions` end it whenever its session row goes (sign-out,
-revoke-all, expiry, removal) and follow a token rotation (step-up). The
+revoke-all, expiry, removal) and follow a token rotation (step-up);
+"sign out other sessions" and a password change end all the user's
+pairings, this session's too. The
 first `GET` claims it for that device. The device cookie is `__Host-kt_scan`,
 `kt_scan` on a loopback host: `HttpOnly; SameSite=Strict; Secure`, 256
 bits, stored hashed. Another device gets `403 forbidden`. Dead, unknown
 or malformed: `410 gone`. An upload's token and cookie are checked before
-its body is read (`api::body`), and the body is held to 1 MB. Each page
+its body is read (`api::body`), and the body is held to 1 MB (0 on the
+phone's `GET`). At most 8 uploads are in flight across the process,
+counted before their bodies are read (`503 busy` past that), and an
+upload that would take the data volume below its reserve is refused
+(`507 storage_full`; `KEEP_FILES_DISK_RESERVE_BYTES`). Each page
 uploaded counts towards 300 per pairing (`422 rejected upload_limit`).
 The token is never logged, and Sentry events have `/api/scan/<token>` and
 any 64-hex run redacted.
 
 **Upload pipeline** (`api::scans::image`): JPEG or PNG by magic bytes
-only. Over 6000 px a side or 24 MP in the header is refused before
-decoding (decompression bombs), and the decoder runs under `image::Limits`,
-two at a time. The page is greyscaled, its long side capped at 1754 px
+only. Over 6000 px a side, 16 MP or 64 MB decoded (a 16-bit PNG counts
+double) in the header is refused before decoding (decompression bombs),
+and the decoder runs under `image::Limits`, one at a time. The page is greyscaled, its long side capped at 1754 px
 (A4 at 150 dpi) and re-encoded as JPEG from raw pixels, so no EXIF or GPS
 survives. Quality steps 80 → 50 until it fits 400 KB; still over is `422
 invalid`. Not an image or unreadable: `422 invalid {field: "image"}`.
@@ -667,7 +677,7 @@ are `declaration_scans` events on the org's stream):
 | `POST scans/{id}/delete-images {expected}` | admin within the step-up hour; `expected` = `retentionVersion`; only a scan in the report (`422 rejected retention_running` otherwise) → `ScanView`; the image is unreachable at once, its blob goes after |
 | `GET giftaid/scans/deletable?today` | admin within the step-up hour: `DeletableScan[] {scan, contactId, declarationMadeOn, lastCoveredOn}`, accepted scans whose declaration covered no gift (money received) for 7 years, counted from its last covered gift or, with none, from when it was made |
 | `GET giftaid/{id}/scans` | `DeclarationScans {held: [{id, scannedAt, reviewedAt, imagesHeld}], scans: ScanView[] \| null}`: any member sees "✓ scan held" and when; `scans` for staff and admins only |
-| `GET files-usage` | `FilesUsage {bytes, capBytes}` (Settings) |
+| `GET files-usage` | `FilesUsage {bytes, capBytes}` (Settings); staff and admins |
 
 Not built here (later steps or plans): the SPA (step 4) and `scan.html`
 (step 5, its own Vite entry; the api serves it like the SPA); erasure and

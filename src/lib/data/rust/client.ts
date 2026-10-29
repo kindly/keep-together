@@ -48,6 +48,10 @@ export function describe(error: ApiError): string {
       return 'Lookup unavailable: type the address'
     case 'gocardless_unavailable':
       return 'GoCardless isn’t answering: try again'
+    case 'busy':
+      return 'Busy: try again in a moment'
+    case 'storage_full':
+      return 'The server is out of space: contact us'
     case 'internal':
       return 'Could not save'
   }

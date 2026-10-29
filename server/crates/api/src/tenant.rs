@@ -48,6 +48,8 @@ pub struct Tenant {
     address: Option<Arc<crate::address::Lookup>>,
     /// `KEEP_GOCARDLESS`, for [`Tenant::gocardless`] and the connection.
     gocardless: Option<Arc<crate::gocardless::GoCardless>>,
+    /// Scan uploads' cap and disk reserve.
+    scan_limits: Arc<crate::scans::limits::ScanLimits>,
 }
 
 impl Tenant {
@@ -404,12 +406,12 @@ impl Tenant {
         if self.role < Role::Staff {
             return Err(ApiError::Forbidden);
         }
-        let db = self.db.clone();
+        let (db, limits) = (self.db.clone(), self.scan_limits.clone());
         let (user, timing, check) = (self.user, self.timing.clone(), self.recheck());
         blocking(move || {
             check()?;
             let start = Instant::now();
-            let page = crate::scans::store_page(&db, &raw, contracts::now_ms())?;
+            let page = crate::scans::store_page(&db, &raw, &limits)?;
             let scan_id = crate::scans::upload(&db, user, None, target, page)?;
             let pages = crate::scans::page_count(&db, &scan_id)?;
             timing.add_db(start.elapsed());
@@ -447,13 +449,14 @@ impl Tenant {
     }
 
     /// Bytes this organisation's files db holds (Settings), and its cap.
-    pub async fn files_usage(&self) -> Result<i64, ApiError> {
+    pub async fn files_usage(&self) -> Result<(i64, i64), ApiError> {
         let db = self.db.clone();
-        blocking(move || match db.files_if_any()? {
+        let used = blocking(move || match db.files_if_any()? {
             Some(files) => Ok::<_, ApiError>(files.usage()?),
             None => Ok(0),
         })
-        .await
+        .await?;
+        Ok((used, self.scan_limits.cap_bytes))
     }
 
     /// After a scan's images were recorded as gone (committed): the blobs
@@ -541,6 +544,7 @@ pub(crate) async fn middleware(
             session_id: session.id.clone(),
             address: state.address.clone(),
             gocardless: state.gocardless.clone(),
+            scan_limits: state.scans.clone(),
         })
     }
     .await;
@@ -616,6 +620,7 @@ mod tests {
             session_id: ::auth::secret::hash(&token),
             address: None,
             gocardless: None,
+            scan_limits: Arc::default(),
         };
         let write = || tenant.write(|_ctx| Ok(()));
         assert!(write().await.is_ok());

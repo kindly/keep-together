@@ -33,6 +33,19 @@ ENV_NAME=${KEEP_ENV:?KEEP_ENV is required}
 
 [ ! -e "$DATA/platform.db" ] || { echo "restore: $DATA/platform.db exists; restore only into an empty dir" >&2; exit 1; }
 mkdir -p "$DATA/orgs" "$DATA/files"
+# Pages of an org's scans whose image isn't in its files db (a files db
+# restored from an older copy than its org file): `missing_pages <org file>
+# <files db>`. Empty when the org file predates scans.
+missing_pages() {
+  has=$(sqlite3 -readonly "$1" "SELECT count(*) FROM sqlite_master WHERE name = 'declaration_scan_pages'")
+  [ "$has" = 1 ] || return 0
+  held="SELECT p.sha256 FROM declaration_scan_pages p JOIN declaration_scans s ON s.id = p.scan_id WHERE s.image_deleted_at IS NULL"
+  if [ -e "$2" ]; then
+    sqlite3 -readonly "$1" "ATTACH '$2' AS f; SELECT count(*) FROM ($held) WHERE sha256 NOT IN (SELECT sha256 FROM f.blobs)"
+  else
+    sqlite3 -readonly "$1" "SELECT count(*) FROM ($held)"
+  fi
+}
 now() { date +%s.%N; }
 secs() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 started=$(now)
@@ -124,6 +137,16 @@ for db in "$DATA/platform.db" "$DATA"/orgs/*.db "$DATA"/files/*.db "$DATA"/drill
   *) counts=$(sqlite3 -readonly "$db" "SELECT 'contacts=' || count(*) FROM contacts; SELECT 'revisions=' || count(*) FROM revisions" | tr '\n' ' ') ;;
   esac
   echo "restore: ok $(basename "$(dirname "$db")")/$(basename "$db") $counts"
+done
+# Scanned pages whose image didn't come back (a files db restored from an
+# older copy than its org file: snapshots copy files dbs daily). Reported,
+# not fatal: the rows are the record, the images may be in an older or
+# newer backup.
+for db in "$DATA"/orgs/*.db; do
+  [ -e "$db" ] || continue
+  id=$(basename "$db" .db)
+  n=$(missing_pages "$db" "$DATA/files/$id.db")
+  [ -z "$n" ] || [ "$n" = 0 ] || echo "restore: WARNING org $id: $n scanned page(s) without their image"
 done
 echo "restore: checked $(secs "$started")s"
 [ "$fail" = 0 ] || exit 1

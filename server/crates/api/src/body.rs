@@ -50,9 +50,24 @@ pub async fn buffer(State(state): State<AppState>, mut req: Request, next: Next)
         }
     }
     let path = req.uri().path();
+    let post = req.method() == axum::http::Method::POST;
+    let phone = path.starts_with(crate::scans::phone::PREFIX);
+    // A scan upload holds one of the few slots from before its body is
+    // read until it is answered (`scans::limits`).
+    let _slot = if post && (phone || is_tenant_upload(path)) {
+        match state.scans.take_slot() {
+            Ok(slot) => Some(slot),
+            Err(e) => return e.into_response(),
+        }
+    } else {
+        None
+    };
     let limit = if path.starts_with("/api/auth/") {
         AUTH_BODY_LIMIT
-    } else if path.starts_with(crate::scans::phone::PREFIX) || is_tenant_scans(path) {
+    } else if phone && !post {
+        // The phone's only other route is its `GET`: no body.
+        0
+    } else if phone || is_tenant_scans(path) {
         crate::scans::UPLOAD_BODY_LIMIT
     } else {
         BODY_LIMIT
@@ -76,6 +91,19 @@ pub async fn buffer(State(state): State<AppState>, mut req: Request, next: Next)
                 .await
         }
     }
+}
+
+/// `/api/t/{slug}/scans` and `/api/t/{slug}/scans/{id}/pages`: a
+/// signed-in phone's uploads.
+fn is_tenant_upload(path: &str) -> bool {
+    let Some((_, rest)) = path
+        .strip_prefix("/api/t/")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    matches!(parts.as_slice(), ["scans"] | ["scans", _, "pages"])
 }
 
 /// `/api/t/{slug}/scans…`: the signed-in phone's uploads and the scan

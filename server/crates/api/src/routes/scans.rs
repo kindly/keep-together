@@ -484,11 +484,11 @@ pub struct FilesUsage {
     pub cap_bytes: i64,
 }
 
-/// `GET files-usage`: how much of the organisation's 2 GB its scans use
-/// (Settings).
+/// `GET files-usage`: how much of the organisation's cap (2 GB unless
+/// `KEEP_FILES_CAP_BYTES` says) its scans use (Settings); staff and
+/// admins.
 async fn files_usage(Extension(t): Extension<Tenant>) -> Result<Json<FilesUsage>, ApiError> {
-    Ok(Json(FilesUsage {
-        bytes: t.files_usage().await?,
-        cap_bytes: store::files::CAP_BYTES,
-    }))
+    require_staff(&t)?;
+    let (bytes, cap_bytes) = t.files_usage().await?;
+    Ok(Json(FilesUsage { bytes, cap_bytes }))
 }

@@ -294,11 +294,11 @@ async fn receive(
     if live.pairing.id != checked.pairing.id {
         return Err(ApiError::Gone);
     }
-    let store = state.store.clone();
+    let (store, limits) = (state.store.clone(), state.scans.clone());
     let out = blocking(move || {
         let left = super::take_upload(&store, &live.pairing.id)?;
         let db = store.org(&live.tenant)?;
-        let page = super::store_page(&db, &body, contracts::now_ms())?;
+        let page = super::store_page(&db, &body, &limits)?;
         let scan_id = super::upload(
             &db,
             live.pairing.user_id,

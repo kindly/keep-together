@@ -15,7 +15,9 @@
 //! A pairing is live while all of these hold ([`resolve`]):
 //! - not ended (the laptop's `DELETE`, or its session gone: sign-out,
 //!   revoke-all, expiry; `platform.db` triggers on `auth_sessions` end it
-//!   in the same transaction, whatever deleted the row);
+//!   in the same transaction, whatever deleted the row; and "sign out
+//!   other sessions" or a password change end all the user's pairings,
+//!   the current session's too: [`end_all_of_user`]);
 //! - under [`HARD_CAP_MS`] old and used within [`IDLE_MS`];
 //! - its user still staff or admin of the org;
 //! - opened by this device: the first `GET` claims it with an
@@ -35,10 +37,12 @@
 //! other way: `giftaid.scanRetention` commits, then the blobs go.
 
 pub mod image;
+pub mod limits;
 pub mod phone;
 
 use std::collections::HashSet;
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,11 +51,12 @@ use contracts::Source;
 use giftaid::scans::{self as domain, DeletionReason, Page, Via};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use store::files::{CAP_BYTES, FilesError};
+use store::files::FilesError;
 use store::{OrgDb, PlatformSchema, Role, Store, StoreError, TenantId, UserId};
 use ts_rs::TS;
 
 use crate::error::ApiError;
+use limits::ScanLimits;
 
 /// A pairing ends this long after it was started, however busy (g1q6's
 /// "hard cap of about 2 hours").
@@ -243,6 +248,23 @@ pub fn end(store: &Store, id: &str, why: &str, now: i64) -> Result<(), StoreErro
     Ok(())
 }
 
+/// End every live pairing of `user`, inside the caller's `platform.db`
+/// transaction: "sign out other sessions" and a password change, which
+/// keep the session a pairing hangs from (the triggers cover every
+/// session deleted). Returns how many ended.
+pub fn end_all_of_user(
+    tx: &rusqlite::Connection,
+    user: i64,
+    why: &str,
+    now: i64,
+) -> rusqlite::Result<usize> {
+    tx.execute(
+        "UPDATE scan_pairings SET ended_at = ?2, ended_why = ?3
+         WHERE user_id = ?1 AND ended_at IS NULL",
+        params![user, now, why],
+    )
+}
+
 /// Why a phone's request is refused.
 #[derive(Debug)]
 pub enum Refused {
@@ -421,13 +443,28 @@ pub fn sweep(store: &Store, now: i64) -> Result<usize, StoreError> {
 
 // ── the upload path ───────────────────────────────────────────────────────
 
-/// Decode, re-encode and put one page's image in `db`'s files db.
-/// Blocking. The page row is the caller's to commit.
-pub fn store_page(db: &OrgDb, raw: &[u8], now: i64) -> Result<Page, ApiError> {
+/// Decode, re-encode and put one page's image in `db`'s files db, if the
+/// data volume has room for it ([`limits`]). Blocking. The page row is
+/// the caller's to commit.
+pub fn store_page(db: &OrgDb, raw: &[u8], limits: &ScanLimits) -> Result<Page, ApiError> {
     let processed = image::reencode(raw)?;
+    // `orgs/<id>.db` → the data dir.
+    let data_dir = db
+        .path()
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| ApiError::internal("an org file outside a data dir"))?;
+    limits.check_disk(data_dir, processed.bytes.len() as u64)?;
+    // Stamped after the re-encode (which may have waited for the
+    // decoder): the sweep's grace counts from here.
     let put = db
         .files()?
-        .put(&processed.bytes, "image/jpeg", now, CAP_BYTES)
+        .put(
+            &processed.bytes,
+            "image/jpeg",
+            contracts::now_ms(),
+            limits.cap_bytes,
+        )
         .map_err(|e| match e {
             FilesError::Full { .. } => ApiError::Rejected {
                 reason: "files_full".into(),
