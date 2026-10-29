@@ -1034,7 +1034,17 @@ fn the_terms_step_backfills_one_applied_row_per_regular_gift() {
     )
     .unwrap();
     org_migrations().to_latest(&mut conn).unwrap();
-    type Row = (String, String, i64, String, String, i64, String, i64, String);
+    type Row = (
+        String,
+        String,
+        i64,
+        String,
+        String,
+        i64,
+        String,
+        i64,
+        String,
+    );
     let rows: Vec<Row> = conn
         .prepare(
             "SELECT t.regular_gift_id, t.effective_from, t.amount, t.frequency, t.state,

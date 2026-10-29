@@ -1551,8 +1551,8 @@ fn a_claimed_gift_that_stops_counting_is_paid_back_whatever_the_reason() {
 #[test]
 fn an_unmatched_payment_is_adopted_by_its_regular_gift() {
     use giving::regular::{
-        Frequency, GiftChange, MandatePayload, PaymentOwner, PaymentReport, PaymentStatus,
-        SetUp, create_regular_gift, record_payment,
+        Frequency, GiftChange, MandatePayload, PaymentOwner, PaymentReport, PaymentStatus, SetUp,
+        create_regular_gift, record_payment,
     };
     let w = world();
     let regular = contracts::new_id();

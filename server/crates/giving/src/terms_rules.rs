@@ -45,16 +45,15 @@ pub struct Terms {
 
 /// The total of a split, `None` past `i64`.
 pub fn total(split: &[Share]) -> Option<i64> {
-    split.iter().try_fold(0i64, |sum, s| sum.checked_add(s.amount))
+    split
+        .iter()
+        .try_fold(0i64, |sum, s| sum.checked_add(s.amount))
 }
 
 /// The row in force on `date` (ISO): the last whose `effective_on` is on
 /// or before it. `chain` is in effective order.
 pub fn term_in_force<'a>(chain: &'a [Terms], date: &str) -> Option<&'a Terms> {
-    chain
-        .iter()
-        .rev()
-        .find(|t| t.effective_on.as_str() <= date)
+    chain.iter().rev().find(|t| t.effective_on.as_str() <= date)
 }
 
 /// A new total of `new_amount`, at least the split's: the difference goes
@@ -207,7 +206,11 @@ pub fn add_days(date: &str, days: i64) -> Option<String> {
 
 /// A month count as `YYYY-MM`.
 pub fn month_label(index: i32) -> String {
-    format!("{:04}-{:02}", index.div_euclid(12), index.rem_euclid(12) + 1)
+    format!(
+        "{:04}-{:02}",
+        index.div_euclid(12),
+        index.rem_euclid(12) + 1
+    )
 }
 
 /// Day `day` of month `index`, as an ISO date (days 1–28: every month
@@ -352,7 +355,10 @@ mod tests {
     #[test]
     fn a_payment_copies_the_split_with_the_newest_layer_absorbing_the_difference() {
         let split = [Share::new(STREET, 1000), Share::new(TEL, 200)];
-        assert_eq!(split_for_collected(&split, 1000), [Share::new(STREET, 1000)]);
+        assert_eq!(
+            split_for_collected(&split, 1000),
+            [Share::new(STREET, 1000)]
+        );
         assert_eq!(
             split_for_collected(&split, 1300),
             [Share::new(STREET, 1000), Share::new(TEL, 300)]
@@ -468,13 +474,19 @@ mod tests {
             ["2026-11-05", "2026-12-05", "2027-01-05"]
         );
         assert_eq!(next_due(&t, "2026-10-04", 1), ["2026-10-05"]);
-        assert_eq!(month_label(month_index("2026-12-31").unwrap() + 1), "2027-01");
+        assert_eq!(
+            month_label(month_index("2026-12-31").unwrap() + 1),
+            "2027-01"
+        );
     }
 
     #[test]
     fn dates_count_in_days() {
         assert_eq!(day_number("1970-01-01"), Some(0));
-        assert_eq!(date_of_day(day_number("2024-02-28").unwrap() + 1), "2024-02-29");
+        assert_eq!(
+            date_of_day(day_number("2024-02-28").unwrap() + 1),
+            "2024-02-29"
+        );
         assert_eq!(add_days("2026-12-05", -14).as_deref(), Some("2026-11-21"));
         assert_eq!(add_days("2026-12-25", 10).as_deref(), Some("2027-01-04"));
         assert_eq!(date_of_ms(1_793_000_000_000), "2026-10-26");

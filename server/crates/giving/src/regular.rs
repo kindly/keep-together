@@ -1765,10 +1765,14 @@ fn view_row(r: &Row) -> rusqlite::Result<RegularGiftView> {
 
 /// Fill a view's chain and payments; `today` (ISO) picks the row in
 /// force.
-fn fill(conn: &Connection, mut v: RegularGiftView, today: &str) -> rusqlite::Result<RegularGiftView> {
+fn fill(
+    conn: &Connection,
+    mut v: RegularGiftView,
+    today: &str,
+) -> rusqlite::Result<RegularGiftView> {
     v.terms = crate::terms::chain(conn, &v.id)?;
-    if let Some(now) = crate::terms::in_force(&v.terms, today)
-        .or_else(|| v.terms.iter().find(|t| t.is_live()))
+    if let Some(now) =
+        crate::terms::in_force(&v.terms, today).or_else(|| v.terms.iter().find(|t| t.is_live()))
     {
         v.amount = now.amount;
         v.frequency = now.frequency;
@@ -1859,8 +1863,8 @@ pub fn projected_upcoming(
     let rules = crate::terms::live_rules(&chain);
     let mut out = Vec::new();
     for date in crate::terms_rules::next_due(&now.rules(), today, n) {
-        let amount = crate::terms_rules::term_in_force(&rules, &date)
-            .map_or(now.amount, |t| t.amount);
+        let amount =
+            crate::terms_rules::term_in_force(&rules, &date).map_or(now.amount, |t| t.amount);
         out.push(UpcomingPayment {
             changeable: changeable(conn, id, today, &date)?,
             charge_date: date,
@@ -1990,7 +1994,6 @@ pub fn adopt_subscription(
     )?;
     Ok(id)
 }
-
 
 /// The org-schema step for Direct Debit (GoCardless D2), after
 /// `giving::MIGRATION_CLAIM_LOCK` (Gift Aid claims' step 16): the rebuild

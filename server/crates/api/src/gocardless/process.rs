@@ -737,14 +737,16 @@ async fn owner_of(
             return Ok(owner);
         }
     }
-    Ok(match on_mandate.and_then(|f| Some((f.code()?, f.contact_id))) {
-        Some((source_code_id, contact_id)) => PaymentOwner::OneOff {
-            contact_id,
-            source_code_id,
-            request: None,
+    Ok(
+        match on_mandate.and_then(|f| Some((f.code()?, f.contact_id))) {
+            Some((source_code_id, contact_id)) => PaymentOwner::OneOff {
+                contact_id,
+                source_code_id,
+                request: None,
+            },
+            None => PaymentOwner::Unmatched,
         },
-        None => PaymentOwner::Unmatched,
-    })
+    )
 }
 
 /// Every connected organisation's regular gifts with a mandate, no

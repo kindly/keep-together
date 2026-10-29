@@ -184,7 +184,10 @@ pub fn prepare_terms_row(mut p: TermsPayload) -> Result<TermsPayload, ContractEr
         .as_ref()
         .is_some_and(|n| n.chars().count() > NOTE_MAX)
     {
-        problems.push(Problem::new("note", format!("At most {NOTE_MAX} characters")));
+        problems.push(Problem::new(
+            "note",
+            format!("At most {NOTE_MAX} characters"),
+        ));
     }
     crate::regular::schedule_problems(
         p.amount,
@@ -209,7 +212,10 @@ pub fn prepare_terms_row(mut p: TermsPayload) -> Result<TermsPayload, ContractEr
     if keys.len() != p.allocations.len() {
         problems.push(Problem::new("allocations", "Duplicate row key"));
     }
-    if p.allocations.iter().any(|a| a.amount <= 0 || a.amount > PENCE_MAX) {
+    if p.allocations
+        .iter()
+        .any(|a| a.amount <= 0 || a.amount > PENCE_MAX)
+    {
         problems.push(Problem::new("allocations", "Each share must be over £0"));
     } else {
         let total = p
@@ -512,7 +518,9 @@ impl Contract for RegularGiftTerms {
         write_allocations(
             tx,
             id,
-            before.map(|b| b.terms.allocations.as_slice()).unwrap_or(&[]),
+            before
+                .map(|b| b.terms.allocations.as_slice())
+                .unwrap_or(&[]),
             &t.allocations,
         )
     }
@@ -570,7 +578,8 @@ fn write_allocations(
             ));
         }
     }
-    let mut delete = tx.prepare_cached("DELETE FROM regular_gift_term_allocations WHERE id = ?1")?;
+    let mut delete =
+        tx.prepare_cached("DELETE FROM regular_gift_term_allocations WHERE id = ?1")?;
     for a in &rows.removed {
         delete.execute([a.id()])?;
     }
@@ -626,7 +635,10 @@ impl Contract for RegularGiftTermSync {
 
     fn prepare(&self, p: SyncPayload) -> Result<SyncPayload, ContractError> {
         if p.applies_from.as_deref().is_some_and(|d| !is_iso_date(d)) {
-            return Err(ContractError::invalid("appliesFrom", "Dates are YYYY-MM-DD"));
+            return Err(ContractError::invalid(
+                "appliesFrom",
+                "Dates are YYYY-MM-DD",
+            ));
         }
         Ok(p)
     }
@@ -918,7 +930,9 @@ fn view_row(r: &Row) -> rusqlite::Result<TermView> {
     Ok(TermView {
         id: r.get(0)?,
         regular_gift_id: r.get(1)?,
-        effective_on: applies_from.clone().unwrap_or_else(|| effective_from.clone()),
+        effective_on: applies_from
+            .clone()
+            .unwrap_or_else(|| effective_from.clone()),
         effective_from,
         applies_from,
         amount: r.get(4)?,
@@ -1550,7 +1564,9 @@ pub fn payment_on_or_after(
          WHERE regular_gift_id = ?1 AND scheduled_on >= ?2
          ORDER BY scheduled_on DESC, seq DESC LIMIT 1",
     )?
-    .query_row(params![regular_gift_id, date], |r| Ok((r.get(0)?, r.get(1)?)))
+    .query_row(params![regular_gift_id, date], |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })
     .optional()
 }
 
