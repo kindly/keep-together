@@ -30,6 +30,8 @@ export function describe(error: ApiError): string {
       return 'Confirm it’s you first'
     case 'not_found':
       return 'Not found'
+    case 'gone':
+      return 'This link has ended: start a new one'
     case 'stale':
       return 'Changed by someone else'
     case 'duplicate':
@@ -46,6 +48,10 @@ export function describe(error: ApiError): string {
       return 'Lookup unavailable: type the address'
     case 'gocardless_unavailable':
       return 'GoCardless isn’t answering: try again'
+    case 'busy':
+      return 'Busy: try again in a moment'
+    case 'storage_full':
+      return 'The server is out of space: contact us'
     case 'internal':
       return 'Could not save'
   }

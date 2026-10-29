@@ -14,6 +14,7 @@ pub mod jobs;
 pub mod observe;
 pub mod reset;
 pub mod routes;
+pub mod scans;
 pub mod schema;
 pub mod static_files;
 pub mod tenant;
@@ -43,6 +44,8 @@ pub struct AppState {
     pub address: Option<Arc<address::Lookup>>,
     /// `KEEP_GOCARDLESS` ([`gocardless`]); off when `None`.
     pub gocardless: Option<Arc<gocardless::GoCardless>>,
+    /// Scan uploads' cap, disk reserve and slots ([`scans::limits`]).
+    pub scans: Arc<scans::limits::ScanLimits>,
 }
 
 impl AppState {
@@ -56,7 +59,13 @@ impl AppState {
             qc: None,
             address: None,
             gocardless: None,
+            scans: Arc::default(),
         }
+    }
+
+    pub fn with_scan_limits(mut self, limits: Arc<scans::limits::ScanLimits>) -> Self {
+        self.scans = limits;
+        self
     }
 
     pub fn with_gocardless(mut self, gc: Option<Arc<gocardless::GoCardless>>) -> Self {
@@ -180,6 +189,7 @@ pub fn app(state: AppState, domain: Router) -> Router {
             post(gocardless::webhook::receive),
         )
         .merge(auth::routes())
+        .merge(scans::phone::router())
         .nest("/api/t/{slug}", tenant_routes);
     if let Some(fake) = fake {
         router = router.nest(gocardless::FAKE_PREFIX, gocardless::fake::router(fake));

@@ -217,6 +217,28 @@ const FIXTURES: &[&str] = &[
      VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d8', 'one_off', 'gocardless',
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 2500,
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', NULL, 'PM000012', 1, 4050, 2);",
+    // 19: declaration scans: one accepted onto the v12 declaration with
+    // two pages, one discarded draft whose images went, one draft from a
+    // phone pairing
+    "INSERT INTO declaration_scans (id, via, pairing_id, scanned_by, scanned_at, status,
+         declaration_id, reviewed_by, reviewed_at, discard_reason, image_deleted_at,
+         deletion_reason, deleted_by, scan_version, review_version, retention_version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0c5', 'phone', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c6', 1,
+         5000, 'accepted', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c1', 1, 5100, NULL, NULL, NULL, NULL,
+         2, 1, 0),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0c7', 'direct', NULL, 2, 5200, 'discarded', NULL, 2,
+         5300, 'blurred', 9000, 'discarded', NULL, 1, 1, 1),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0c8', 'phone', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c6', 1,
+         5400, 'draft', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 0, 0);
+     INSERT INTO declaration_scan_pages (id, scan_id, page_no, sha256, width, height, size)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b5', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c5', 1,
+         'aa00000000000000000000000000000000000000000000000000000000000001', 1240, 1754, 180000),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b6', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c5', 2,
+         'aa00000000000000000000000000000000000000000000000000000000000002', 1240, 1754, 150000),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b7', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c7', 1,
+         'aa00000000000000000000000000000000000000000000000000000000000003', 1240, 1754, 90000),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0b8', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0c8', 1,
+         'aa00000000000000000000000000000000000000000000000000000000000004', 1240, 1754, 200000);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";

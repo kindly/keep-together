@@ -10,6 +10,7 @@ parking_lot.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
 serde.workspace = true
+sha2 = "0.10"
 ts-rs.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

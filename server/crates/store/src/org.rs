@@ -15,6 +15,7 @@ use tokio::sync::broadcast;
 use crate::checkpoint::{self, Checkpointer};
 use crate::conn::{self, ReaderPool};
 use crate::events::OrgEvent;
+use crate::files::FilesDb;
 use crate::{StoreError, TenantId};
 
 /// The stamp every org file carries, outside the migrated schema, so a
@@ -37,6 +38,11 @@ pub struct OrgDb {
     readers: ReaderPool,
     events: broadcast::Sender<OrgEvent>,
     checkpointer: Checkpointer,
+    tenant: TenantId,
+    /// `files/<tenant-id>.db`, opened (or made) at first use and closed
+    /// with this handle: the org's LRU slot holds both.
+    files_path: PathBuf,
+    files: Mutex<Option<Arc<FilesDb>>>,
 }
 
 /// Check the stamp on an open connection.
@@ -58,6 +64,7 @@ pub(crate) fn check_stamp(conn: &Connection, path: &Path, id: &TenantId) -> Resu
 impl OrgDb {
     pub(crate) fn create(
         path: &Path,
+        files_path: &Path,
         id: &TenantId,
         migrations: &Migrations<'static>,
         readers: usize,
@@ -74,7 +81,7 @@ impl OrgDb {
         conn.execute_batch(STAMP_TABLE)?;
         conn.execute("INSERT INTO _org (tenant_id) VALUES (?1)", [id.as_str()])?;
         drop(conn);
-        Self::open(path, id, migrations, readers, checkpointer)
+        Self::open(path, files_path, id, migrations, readers, checkpointer)
     }
 
     /// Open a stamped file. Pending migrations run here too (a file that
@@ -83,6 +90,7 @@ impl OrgDb {
     /// checkpointer thread (`store::checkpoint`).
     pub(crate) fn open(
         path: &Path,
+        files_path: &Path,
         id: &TenantId,
         migrations: &Migrations<'static>,
         readers: usize,
@@ -112,11 +120,39 @@ impl OrgDb {
             readers: ReaderPool::open(path, readers)?,
             events: broadcast::channel(EVENT_BUFFER).0,
             checkpointer: Checkpointer::start(path, page_size, checkpointer)?,
+            tenant: id.clone(),
+            files_path: files_path.to_path_buf(),
+            files: Mutex::new(None),
         })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// This organisation's files db, made (stamped, migrated) if it has
+    /// none yet. The api's way to put a blob.
+    pub fn files(&self) -> Result<Arc<FilesDb>, StoreError> {
+        self.files_db(true).map(|f| f.expect("created"))
+    }
+
+    /// This organisation's files db if it has one: reads and sweeps never
+    /// make one.
+    pub fn files_if_any(&self) -> Result<Option<Arc<FilesDb>>, StoreError> {
+        self.files_db(false)
+    }
+
+    fn files_db(&self, create: bool) -> Result<Option<Arc<FilesDb>>, StoreError> {
+        let mut files = self.files.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(f) = files.as_ref() {
+            return Ok(Some(f.clone()));
+        }
+        if !create && !self.files_path.exists() {
+            return Ok(None);
+        }
+        let opened = Arc::new(FilesDb::open(&self.files_path, &self.tenant, create, 2)?);
+        *files = Some(opened.clone());
+        Ok(Some(opened))
     }
 
     /// Run `f` in a `BEGIN IMMEDIATE` transaction on the writer: commit on

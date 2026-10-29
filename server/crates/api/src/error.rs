@@ -27,6 +27,10 @@ pub enum ApiError {
     StepUpRequired,
     /// 404
     NotFound,
+    /// 410: a phone pairing's link has ended (or never was: the two look
+    /// the same, so a token can't be probed). Start a new one on the
+    /// laptop.
+    Gone,
     /// 409: the slice changed since the caller read `expected`. `current`
     /// is the slice's state now; merge it and retry with `counter`.
     Stale {
@@ -53,6 +57,12 @@ pub enum ApiError {
     /// 503: GoCardless can't be reached or failed; nothing was changed
     /// here. Try again.
     GocardlessUnavailable,
+    /// 503: too many scan uploads at once; nothing was stored. Send it
+    /// again in a moment (the same `id`/`pageId`).
+    Busy,
+    /// 507: the server's disk is too full to take another scan; nothing
+    /// was stored. Contact us.
+    StorageFull,
     /// 500. Details go to the server log, not the client.
     Internal,
 }
@@ -63,14 +73,16 @@ impl ApiError {
             ApiError::Unauthenticated => StatusCode::UNAUTHORIZED,
             ApiError::Forbidden | ApiError::StepUpRequired => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::Gone => StatusCode::GONE,
             ApiError::Stale { .. } | ApiError::Duplicate { .. } => StatusCode::CONFLICT,
             ApiError::Invalid { .. } | ApiError::Rejected { .. } => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             ApiError::RateLimited | ApiError::LookupCap => StatusCode::TOO_MANY_REQUESTS,
-            ApiError::LookupUnavailable | ApiError::GocardlessUnavailable => {
+            ApiError::LookupUnavailable | ApiError::GocardlessUnavailable | ApiError::Busy => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
+            ApiError::StorageFull => StatusCode::INSUFFICIENT_STORAGE,
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

@@ -29,7 +29,7 @@ PLATFORM=$DATA/platform.db
 IMAGE=${FLY_IMAGE_REF:-local}
 log() { echo "entrypoint: $*" >&2; }
 
-mkdir -p "$DATA/orgs" "$DATA/drill"
+mkdir -p "$DATA/orgs" "$DATA/files" "$DATA/drill"
 
 # Where Litestream replicates (litestream.yml) and restores from. A reset
 # environment gets a fresh prefix per deploy, so a wiped database never
@@ -50,6 +50,10 @@ put_in_place() { # source fallback missing
   for f in "$DATA"/restoring/orgs/*.db; do
     [ -e "$f" ] || continue # no orgs: the glob stayed literal
     mv "$f" "$DATA/orgs/"
+  done
+  for f in "$DATA"/restoring/files/*.db; do
+    [ -e "$f" ] || continue # no files dbs: the glob stayed literal
+    mv "$f" "$DATA/files/"
   done
   if [ -e "$DATA/restoring/drill/marks.db" ]; then
     mv "$DATA/restoring/drill/marks.db" "$DATA/drill/"
@@ -123,11 +127,11 @@ if [ -n "${KEEP_RESET_SEED:-}" ]; then
     log "new deploy ($IMAGE): wiping $DATA for the $KEEP_RESET_SEED seed"
     # Litestream's own state for platform.db goes too: kept beside a new
     # file, it points at LTX files the old one wrote and replication stops
-    # ("open ltx file … no such file"). The orgs' and drill's are inside
-    # their directories.
+    # ("open ltx file … no such file"). The orgs', files' and drill's are
+    # inside their directories.
     rm -rf "$PLATFORM" "$PLATFORM-wal" "$PLATFORM-shm" "$DATA/.platform.db-litestream" \
-      "$DATA/orgs" "$DATA/drill" "$DATA/snapshots-tmp" "$DATA/.restored"
-    mkdir -p "$DATA/orgs" "$DATA/drill"
+      "$DATA/orgs" "$DATA/files" "$DATA/drill" "$DATA/snapshots-tmp" "$DATA/.restored"
+    mkdir -p "$DATA/orgs" "$DATA/files" "$DATA/drill"
     echo "$IMAGE" >"$DATA/.image"
   fi
 fi

@@ -54,6 +54,9 @@ pub fn org_migrations() -> Migrations<'static> {
         // widened and the provider columns (a rebuild), Direct Debit
         // payments rebuilt, one gift per payment backfilled
         M::up_with_hook("", rebuild_with_deferred_keys(giving::MIGRATION_UNIFIED)),
+        // 19: scanned Gift Aid declarations and their pages (the images
+        // are in the org's files db: `store::files`)
+        M::up(giftaid::MIGRATION_SCANS),
     ])
 }
 
@@ -95,6 +98,7 @@ pub const PLATFORM_SCHEMAS: &[PlatformSchema] = &[
     crate::jobs::SCHEMA,
     crate::address::SCHEMA,
     crate::gocardless::SCHEMA,
+    crate::scans::SCHEMA,
 ];
 
 /// A new organisation's reference data, in its file's first transaction

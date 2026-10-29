@@ -50,11 +50,12 @@ fn a_release_adding_auth_is_copied_first_and_rolls_back() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let platform = dir.join("platform.db");
-    // The previous release: every platform schema but auth's.
+    // The previous release: every platform schema but auth's (and the
+    // scans', which came later and builds on it: triggers on its sessions).
     let before: Vec<_> = schema::PLATFORM_SCHEMAS
         .iter()
         .copied()
-        .filter(|s| s.name != "auth")
+        .filter(|s| !matches!(s.name, "auth" | "scans"))
         .collect();
     let s = open(dir, &before);
     s.create_tenant("alpha", "Alpha").unwrap();
@@ -159,7 +160,7 @@ fn step_3_seals_totp_secrets_and_drops_unpeppered_codes() {
     let mut before: Vec<_> = schema::PLATFORM_SCHEMAS
         .iter()
         .copied()
-        .filter(|s| s.name != "auth")
+        .filter(|s| !matches!(s.name, "auth" | "scans"))
         .collect();
     before.push(v2);
     let s = open(dir, &before);

@@ -19,7 +19,7 @@ a few scripts. The process tree inside the machine:
 
 ```
 entrypoint.sh            restore an empty volume, reset staging, then exec
-└─ litestream replicate  replicates /data/platform.db and /data/orgs/*.db to S3
+└─ litestream replicate  replicates /data/platform.db, /data/orgs/*.db and /data/files/*.db to S3
    └─ api                serves /api, /healthz and the SPA on :8080
                          runs the hourly snapshot job
 ```
@@ -35,6 +35,7 @@ Data on the volume (`/data`):
 |---|---|
 | `platform.db` | tenants, users, memberships, sessions, the snapshot ledger |
 | `orgs/<tenant-id>.db` | one organisation, named by its 32-hex tenant id |
+| `files/<tenant-id>.db` | that organisation's files db: scanned pages as immutable blobs (`store::files`), made at its first scan, stamped with its tenant id, capped at 2 GB. **An organisation is both files**: moving or restoring one means both (ADR 0024 amendment) |
 | `premigrate/` | the `VACUUM INTO` copies taken before a boot migration (F1); `scripts/ops/rollback-migration.sh <data> [--apply]` puts them back |
 | `snapshots-tmp/` | the snapshot job's scratch copies, removed after each file |
 | `drill/` | the restore drill's write-loss probe, only during a drill |
@@ -185,8 +186,8 @@ Two copies, independent of each other.
 
 **Litestream** (continuous). Bucket `keep-litestream-<keep-prod
 account>` in `keep-prod`, eu-west-2, versioned, SSE-S3, public access
-blocked. Layout: `<prefix>/platform.db/…` and
-`<prefix>/orgs/<tenant-id>.db/…`. The prefix is `prod` for prod. Staging
+blocked. Layout: `<prefix>/platform.db/…`,
+`<prefix>/orgs/<tenant-id>.db/…` and `<prefix>/files/<tenant-id>.db/…`. The prefix is `prod` for prod. Staging
 gets `staging/<deployment>` because its reset recreates every file on
 each deploy, and a fresh file must not meet the previous one's replica.
 It syncs every second, takes a full snapshot daily and keeps 7 days, so
@@ -225,6 +226,30 @@ compresses it with zstd and uploads it to
 
 The newest state of every file is always in the bucket: hourly for two
 days, then daily, then monthly.
+
+Snapshots and restores never hold a file in memory (a files db can
+reach 2 GB; machines have 512 MB). The copy and its zstd are files under
+`snapshots-tmp/`. The upload's body is the compressed file
+memory-mapped, still one create-only `PUT`, which the bucket policy
+requires. A restore streams the download to a file and decompresses
+file to file. The snapshot job needs free disk for a copy plus its
+`.zst` of the largest file, which is why scan uploads keep a reserve
+free on the volume (`KEEP_FILES_DISK_RESERVE_BYTES`, `server/README.md`).
+Uploads past it answer `507 storage_full`. **The volumes are 1 GB while
+an org's cap is 2 GB (`KEEP_FILES_CAP_BYTES`): size the volume or the
+cap before scanning goes live.**
+
+An org's files db (`files/<id>.db`) is snapshotted as
+`files-<tenant-id>`, **daily at most**: at the first run of a UTC day
+when its change counter moved since the last daily copy, and monthly
+(plan `declaration-scans.sv`, g2q2). It can reach 2 GB and its blobs
+never change, so hourly copies would be waste; Litestream covers the
+hours in between. A snapshot restore can therefore bring a files db back
+up to a day older than its org file: pages scanned since point at no
+image (404) until a Litestream restore or point-in-time copy fills them.
+`restore.sh` prints `restore: WARNING org <id>: N scanned page(s) without
+their image` when that happens, and the drill's census counts them
+(`<slug>.files.missing`).
 
 **Nothing the app holds can remove or replace a snapshot.**
 - Every upload is create-only (`If-None-Match: *`). The bucket policy
@@ -390,7 +415,8 @@ sqlite3 -readonly /data/pit/<id>.db 'PRAGMA integrity_check'
 ```
 
 To put one org back: stop the machine, replace `orgs/<id>.db` (and
-delete its `-wal`/`-shm`), start it. The file carries its tenant id, so
+delete its `-wal`/`-shm`), and its files db `files/<id>.db` the same way
+(replica `…/files/<id>.db`, snapshot `files-<id>`), start it. The file carries its tenant id, so
 it only opens under its own name. A snapshot works the same way:
 download `<tier>/<env>/<id>/<stamp>.db.zst` with the AWS CLI and
 `zstd -d` it.
@@ -408,7 +434,9 @@ human against `keep-staging`. It:
 1. seeds a 10k org (`drill`, the perf generator's people, through the
    `seed` bin) and takes a snapshot pass;
 2. records counts with `drill.sh census`: tenants, and per org contacts,
-   revisions and the matches of five search terms;
+   revisions, the matches of five search terms, and its files db's
+   blobs, bytes and a hash of their keys, so an org whose files db didn't
+   come back with it fails the diff;
 3. per source, destroys the machine and its volume, creates an empty
    volume and redeploys the same image, so the entrypoint restores. For
    Litestream it first sets the machine to `--restart no` (an update that

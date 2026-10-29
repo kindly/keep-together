@@ -385,6 +385,10 @@ pub fn standard(store: &Arc<Store>) -> Jobs {
         .register(SessionPurge(store.clone()))
         .register(WalWatch::new(store.clone()))
         // B1: retires left part way.
-        .register(crate::routes::fields::FieldRetire(store.clone()));
+        .register(crate::routes::fields::FieldRetire(store.clone()))
+        // Declaration scans: pairings, orphan blobs, discarded images.
+        .register(crate::scans::PairingSweep(store.clone()))
+        .register(crate::scans::OrphanSweep(store.clone()))
+        .register(crate::scans::DiscardPurge(store.clone()));
     jobs
 }
