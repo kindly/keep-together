@@ -475,8 +475,9 @@ impl Tenant {
         .await
     }
 
-    /// Bytes this organisation's files db holds (Settings), and its cap.
-    pub async fn files_usage(&self) -> Result<(i64, i64), ApiError> {
+    /// Bytes this organisation's files db holds (Settings), and its cap
+    /// if it has one.
+    pub async fn files_usage(&self) -> Result<(i64, Option<i64>), ApiError> {
         let db = self.db.clone();
         let used = blocking(move || match db.files_if_any()? {
             Some(files) => Ok::<_, ApiError>(files.usage()?),

@@ -197,7 +197,9 @@ the record (Chapter 3, 3.7.2).
   deletion commits the row first, then deletes the blob. A sweep never
   removes a blob put in the last hour, so a write in flight is safe.
 - **Capped at 2 GB per organisation.** Past the cap a new blob is
-  refused; Settings shows the usage.
+  refused; Settings shows the usage. *(2026-10-29, the human: no cap
+  just yet. `KEEP_FILES_CAP_BYTES` unset means none; the data volume's
+  reserve is the only stop, with disk alerts before it.)*
 - **Backups cover both files.** Litestream replicates `files/` like
   `orgs/`. The snapshot job copies a files db at most daily, when it
   changed (it can be 2 GB and never changes in place), then at the daily

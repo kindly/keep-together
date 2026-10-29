@@ -243,18 +243,19 @@ test.describe(
   },
 )
 
-test('Settings › Scans storage shows the group’s usage of its 2 GB', async ({
+test('Settings › Scans storage shows the group’s usage (no cap by default)', async ({
   page,
   users,
 }) => {
   test.info().annotations.push(STORAGE)
   await page.goto(`/t/${users.a.slug}/settings/storage`)
   await expect(page.getByTestId('files-usage')).toHaveText(
-    / of 2 GB \(\d+%\) used$/,
+    /^[\d.]+ (B|KB|MB|GB) used$/,
   )
+  // No cap, so no meter of it and no "nearly full".
   await expect(
     page.getByRole('meter', { name: 'Scans storage used' }),
-  ).toBeVisible()
+  ).toHaveCount(0)
 })
 
 test('the "can be deleted" report opens for an admin', async ({

@@ -35,7 +35,7 @@ Data on the volume (`/data`):
 |---|---|
 | `platform.db` | tenants, users, memberships, sessions, the snapshot ledger |
 | `orgs/<tenant-id>.db` | one organisation, named by its 32-hex tenant id |
-| `files/<tenant-id>.db` | that organisation's files db: scanned pages as immutable blobs (`store::files`), made at its first scan, stamped with its tenant id, capped at 2 GB. **An organisation is both files**: moving or restoring one means both (ADR 0024 amendment) |
+| `files/<tenant-id>.db` | that organisation's files db: scanned pages as immutable blobs (`store::files`), made at its first scan, stamped with its tenant id, no cap (unless `KEEP_FILES_CAP_BYTES` sets one). **An organisation is both files**: moving or restoring one means both (ADR 0024 amendment) |
 | `premigrate/` | the `VACUUM INTO` copies taken before a boot migration (F1); `scripts/ops/rollback-migration.sh <data> [--apply]` puts them back |
 | `snapshots-tmp/` | the snapshot job's scratch copies, removed after each file |
 | `drill/` | the restore drill's write-loss probe, only during a drill |

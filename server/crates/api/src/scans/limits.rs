@@ -1,5 +1,6 @@
 //! The scan upload's settings and guards: the per-org files cap
-//! (`KEEP_FILES_CAP_BYTES`), the data volume's reserve
+//! (`KEEP_FILES_CAP_BYTES`; unset, the default: no cap), the data
+//! volume's reserve
 //! (`KEEP_FILES_DISK_RESERVE_BYTES`) and the bound on uploads in flight.
 //!
 //! **Disk.** `/data` is one volume for every org: `platform.db`, the org
@@ -27,28 +28,20 @@ use crate::error::ApiError;
 /// Scan uploads in flight at once, across the process.
 pub const MAX_IN_FLIGHT: usize = 8;
 
-/// The scan settings, in [`crate::AppState`].
-#[derive(Debug)]
+/// The scan settings, in [`crate::AppState`]. The default: no cap, the
+/// default reserve, not deployed.
+#[derive(Debug, Default)]
 pub struct ScanLimits {
-    /// Bytes of blobs an org's files db may hold.
-    pub cap_bytes: i64,
+    /// Bytes of blobs an org's files db may hold; `None`: no cap (the
+    /// default, until a group's scans need one), the disk reserve the only
+    /// stop.
+    pub cap_bytes: Option<i64>,
     /// Free bytes the data volume keeps after an upload; `None`: the
     /// default (module docs).
     pub disk_reserve: Option<u64>,
     /// The default reserve includes a quarter of the volume.
     pub deployed: bool,
     in_flight: Arc<AtomicUsize>,
-}
-
-impl Default for ScanLimits {
-    fn default() -> Self {
-        Self {
-            cap_bytes: store::files::CAP_BYTES,
-            disk_reserve: None,
-            deployed: false,
-            in_flight: Arc::default(),
-        }
-    }
 }
 
 impl ScanLimits {
@@ -65,10 +58,9 @@ impl ScanLimits {
                     .map_err(|_| format!("{name}={v:?} is not a number of bytes")),
             }
         };
-        let cap_bytes = match bytes("KEEP_FILES_CAP_BYTES")? {
-            Some(cap) => i64::try_from(cap).map_err(|_| "KEEP_FILES_CAP_BYTES is too large")?,
-            None => store::files::CAP_BYTES,
-        };
+        let cap_bytes = bytes("KEEP_FILES_CAP_BYTES")?
+            .map(|cap| i64::try_from(cap).map_err(|_| "KEEP_FILES_CAP_BYTES is too large"))
+            .transpose()?;
         Ok(Self {
             cap_bytes,
             disk_reserve: bytes("KEEP_FILES_DISK_RESERVE_BYTES")?,
@@ -84,7 +76,7 @@ impl ScanLimits {
 
     /// This cap instead (bytes of blobs per org).
     pub fn with_cap(mut self, cap_bytes: i64) -> Self {
-        self.cap_bytes = cap_bytes;
+        self.cap_bytes = Some(cap_bytes);
         self
     }
 
@@ -258,7 +250,7 @@ mod tests {
         let none = ScanLimits::from_vars(vars(&[])).unwrap();
         assert_eq!(
             (none.cap_bytes, none.disk_reserve, none.deployed),
-            (store::files::CAP_BYTES, None, false)
+            (None, None, false)
         );
         let set = ScanLimits::from_vars(vars(&[
             ("KEEP_FILES_CAP_BYTES", "500000000"),
@@ -268,7 +260,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (set.cap_bytes, set.disk_reserve, set.deployed),
-            (500_000_000, Some(0), true)
+            (Some(500_000_000), Some(0), true)
         );
         assert!(ScanLimits::from_vars(vars(&[("KEEP_FILES_CAP_BYTES", "2GB")])).is_err());
         assert!(ScanLimits::from_vars(vars(&[("KEEP_FILES_DISK_RESERVE_BYTES", "-1")])).is_err());

@@ -43,7 +43,7 @@ Env (`api`):
 | `KEEP_ADDRESS_LOOKUP_DAILY_CEILING` | `2000` | lookups across the platform per UTC day: then `503 lookup_unavailable` |
 | `KEEP_GOCARDLESS` | `off` | Direct Debit (`api::gocardless`; "GoCardless" below): `fake` (a GoCardless mock mounted on this server at `/api/fake-gocardless`, no network; `KEEP_ENV=prod` refuses it), `sandbox` (`prod` refuses it), `live` (only with `KEEP_ENV=prod`). Any other value stops the boot |
 | `KEEP_GOCARDLESS_CLIENT_ID`, `KEEP_GOCARDLESS_CLIENT_SECRET`, `KEEP_GOCARDLESS_WEBHOOK_SECRET` | unset | the partner app's OAuth client and webhook secret; `sandbox`/`live` stop the boot without them (`scripts/fly/gocardless-secrets.sh`). Never logged, never in a URL or an error |
-| `KEEP_FILES_CAP_BYTES` | `2000000000` | bytes of scanned pages an organisation's files db may hold (`422 rejected files_full` past it) |
+| `KEEP_FILES_CAP_BYTES` | unset: no cap | bytes of scanned pages an organisation's files db may hold (`422 rejected files_full` past it). Unset, none: the volume's reserve (`507`) is the only stop (human, 2026-10-29) |
 | `KEEP_FILES_DISK_RESERVE_BYTES` | see `api::scans::limits` | free bytes the data volume keeps after a scan upload (`507 storage_full` otherwise). Default: twice the largest database on the volume (the snapshot's copy and its `.zst`), and deployed (`prod`/`staging`) at least a quarter of the volume. `0` turns the guard off |
 | `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`; on dev under `KEEP_AUTH_POLICY=relaxed` a missing password is `riverside` and a missing TOTP is none) |
 
@@ -66,7 +66,7 @@ parameter is ignored and both columns measure the words index.)
 
 | crate | owns |
 |---|---|
-| `store` | `platform.db` (tenants, users, memberships, sessions, snapshots), `orgs/<tenant-id>.db` and each org's files db `files/<tenant-id>.db` (`store::files`: immutable blobs by SHA-256, opened with the org's handle, 2 GB cap); pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`, no `ATTACH`); per file one writer behind a fair mutex + a read-only reader pool + a checkpointer thread, none under Litestream (no checkpoint in a commit: `docs/ops.md`); locks waited for by 1 ms polls; the handle LRU; boot migration; each file's event channel |
+| `store` | `platform.db` (tenants, users, memberships, sessions, snapshots), `orgs/<tenant-id>.db` and each org's files db `files/<tenant-id>.db` (`store::files`: immutable blobs by SHA-256, opened with the org's handle, capped only if `KEEP_FILES_CAP_BYTES` says); pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`, no `ATTACH`); per file one writer behind a fair mutex + a read-only reader pool + a checkpointer thread, none under Litestream (no checkpoint in a commit: `docs/ops.md`); locks waited for by 1 ms polls; the handle LRU; boot migration; each file's event channel |
 | `contracts` | the **only write path**: `transact`, `Contract`, `execute`, revisions, command groups, restore through upcasters, child-row reconcile, events |
 | `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history |
 | `sources`, `giving`, `giftaid`, `comms` | domain crates: source codes, gifts (and their Gift Aid claim lock), Gift Aid declarations and claims (HMRC's schedule and claim XML), email suppressions |
@@ -607,8 +607,9 @@ paper Gift Aid declarations with a phone that isn't signed in. HMRC
 3.7.2: the image is the record, not the typed fields.
 
 **Storage.** Page images are blobs in the org's files db
-(`files/<tenant-id>.db`, `store::files`): SHA-256 keys, immutable, 2 GB
-per org (`422 rejected files_full` past it). The org file holds
+(`files/<tenant-id>.db`, `store::files`): SHA-256 keys, immutable, no cap
+per org unless `KEEP_FILES_CAP_BYTES` sets one (`422 rejected
+files_full` past it). The org file holds
 `declaration_scans` and their `declaration_scan_pages` (`giftaid::scans`,
 org schema step 19). Three contracts partition a scan:
 `giftaid.scan` (via, pairing, who and when, the pages; edited only as a

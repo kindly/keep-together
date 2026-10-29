@@ -231,7 +231,8 @@ async fn a_phone_claims_the_link_uploads_and_the_laptop_sees_the_stack() {
     // Usage for Settings.
     let (_, usage) = w.call("GET", "/api/t/alpha/files-usage", &sam, None).await;
     assert!(usage["bytes"].as_i64().unwrap() > 0);
-    assert_eq!(usage["capBytes"], store::files::CAP_BYTES);
+    // No cap unless KEEP_FILES_CAP_BYTES sets one.
+    assert_eq!(usage["capBytes"], Value::Null);
 }
 
 #[tokio::test]
@@ -510,7 +511,9 @@ async fn uploads_are_limited_before_and_after_the_body() {
         (over.status, &over.json["reason"]),
         (StatusCode::UNPROCESSABLE_ENTITY, &json!("upload_limit"))
     );
-    // The org past its 2 GB: a new blob is refused, "contact us".
+    // No cap by default: an org already holding 2 GB still takes a new
+    // page (the disk reserve is the only stop; a set cap is
+    // `the_configured_cap_is_the_one_enforced_and_shown`).
     platform_exec(
         &w,
         "UPDATE scan_pairings SET uploads = 0 WHERE id = ?1",
@@ -521,17 +524,14 @@ async fn uploads_are_limited_before_and_after_the_body() {
     conn.execute(
         "INSERT INTO blobs (sha256, bytes, content_type, size, created_at, last_put_at)
          VALUES ('ff', x'00', 'image/jpeg', ?1, 0, 0)",
-        [store::files::CAP_BYTES],
+        [2_000_000_000_i64],
     )
     .unwrap();
     drop(conn);
-    let full = phone.new_scan(&w, photo(9)).await;
-    assert_eq!(
-        (full.status, &full.json["reason"]),
-        (StatusCode::UNPROCESSABLE_ENTITY, &json!("files_full"))
-    );
+    let taken = phone.new_scan(&w, photo(9)).await;
+    assert_eq!(taken.status, StatusCode::OK, "{}", taken.json);
     let (_, inbox) = w.call("GET", "/api/t/alpha/scans", &sam, None).await;
-    assert_eq!(inbox.as_array().unwrap().len(), 1);
+    assert_eq!(inbox.as_array().unwrap().len(), 2);
 }
 
 /// A dead token's upload is answered without its body being read: a body

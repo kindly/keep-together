@@ -36,6 +36,14 @@ test('the usage warns from 90% and is full at the cap', () => {
   expect(full.text).toBe('2.1 GB of 2 GB (100%)')
 })
 
+test('with no cap, the usage is the bytes alone, never nearly full', () => {
+  expect(describeUsage({ bytes: 5_300_000_000, capBytes: null })).toEqual({
+    text: '5.3 GB',
+    share: null,
+    level: 'ok',
+  })
+})
+
 test('a link waits for a phone, is held by one, then ends at the sooner limit', () => {
   const p = {
     claimed: false,

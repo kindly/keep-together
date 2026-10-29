@@ -14,8 +14,11 @@
 //!   commits the row; a deletion commits the row first, then the blob goes
 //!   ([`FilesDb::delete_unreferenced`], which never touches a blob put in
 //!   the last `put_before`).
-//! - **Capped.** [`CAP_BYTES`] per organisation: a put that would pass it
-//!   is refused ([`FilesError::Full`]); a blob already held never is.
+//! - **Capped if the caller says**: [`FilesDb::put`] takes the
+//!   organisation's cap, or none (the default, `KEEP_FILES_CAP_BYTES`
+//!   unset: the data volume's reserve is then the only stop). A put that
+//!   would pass a cap is refused ([`FilesError::Full`]); a blob already
+//!   held never is.
 //! - **Created lazily**, at the first put: an organisation that never
 //!   scanned has no files db, and reads find nothing.
 //! - **Its own migrations** ([`migrations`]), append-only, run on open.
@@ -30,9 +33,6 @@ use sha2::{Digest, Sha256};
 
 use crate::conn::{self, ReaderPool};
 use crate::{StoreError, TenantId};
-
-/// At most this many bytes of blobs per organisation (g1q7): 2 GB.
-pub const CAP_BYTES: i64 = 2_000_000_000;
 
 /// The stamp, outside the migrated schema (as `_org` on an org file).
 const STAMP_TABLE: &str = "CREATE TABLE IF NOT EXISTS _files (tenant_id TEXT NOT NULL)";
@@ -64,7 +64,7 @@ pub fn migrations() -> Migrations<'static> {
 pub enum FilesError {
     #[error(transparent)]
     Store(#[from] StoreError),
-    /// The organisation's files db would pass [`CAP_BYTES`].
+    /// The organisation's files db would pass its cap.
     #[error("the organisation's files are at their cap ({used} of {cap} bytes)")]
     Full { used: i64, cap: i64 },
 }
@@ -159,7 +159,7 @@ impl FilesDb {
 
     /// Store `bytes` under their SHA-256, unless already held. Refused
     /// with [`FilesError::Full`] if a new blob would take the file past
-    /// `cap`. Idempotent: putting the same bytes again stores nothing new
+    /// `cap` (`None`: no cap). Idempotent: putting the same bytes again stores nothing new
     /// but marks the blob as just put, so a sweep running beside the
     /// write that will reference it keeps it.
     pub fn put(
@@ -167,7 +167,7 @@ impl FilesDb {
         bytes: &[u8],
         content_type: &str,
         now: i64,
-        cap: i64,
+        cap: Option<i64>,
     ) -> Result<Put, FilesError> {
         let sha256 = sha256_hex(bytes);
         let size = bytes.len() as i64;
@@ -187,7 +187,9 @@ impl FilesDb {
         }
         let used: i64 =
             tx.query_row("SELECT coalesce(sum(size), 0) FROM blobs", [], |r| r.get(0))?;
-        if used + size > cap {
+        if let Some(cap) = cap
+            && used + size > cap
+        {
             return Err(FilesError::Full { used, cap });
         }
         tx.execute(
@@ -224,7 +226,7 @@ impl FilesDb {
         })?)
     }
 
-    /// Bytes of blobs held (what [`CAP_BYTES`] counts).
+    /// Bytes of blobs held (what a cap counts).
     pub fn usage(&self) -> Result<i64, StoreError> {
         Ok(self.readers.with(|conn| {
             conn.query_row("SELECT coalesce(sum(size), 0) FROM blobs", [], |r| r.get(0))

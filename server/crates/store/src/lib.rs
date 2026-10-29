@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn the_files_db_is_made_at_the_first_put_stamped_and_per_org() {
-        use crate::files::{CAP_BYTES, FilesError};
+        use crate::files::FilesError;
         let tmp = tempfile::tempdir().unwrap();
         let store = store(tmp.path());
         let a = store.create_tenant("alpha", "Alpha").unwrap();
@@ -740,7 +740,7 @@ mod tests {
         let put = a_db
             .files()
             .unwrap()
-            .put(&page, "image/jpeg", 1, CAP_BYTES)
+            .put(&page, "image/jpeg", 1, None)
             .unwrap();
         assert!(put.new);
         assert_eq!(put.sha256, crate::files::sha256_hex(&page));
@@ -751,7 +751,7 @@ mod tests {
         let again = a_db
             .files()
             .unwrap()
-            .put(&page, "image/jpeg", 2, CAP_BYTES)
+            .put(&page, "image/jpeg", 2, None)
             .unwrap();
         assert!(!again.new);
         assert_eq!(a_db.files().unwrap().usage().unwrap(), page.len() as i64);
@@ -767,18 +767,21 @@ mod tests {
         assert!(b_db.files_if_any().unwrap().is_none());
         b_db.files()
             .unwrap()
-            .put(b"other", "image/jpeg", 1, CAP_BYTES)
+            .put(b"other", "image/jpeg", 1, None)
             .unwrap();
         assert!(b_db.files().unwrap().get(&put.sha256).unwrap().is_none());
 
         // The cap: a new blob past it is refused, one already held isn't.
         let tight = page.len() as i64 + 3;
-        let refused = a_db.files().unwrap().put(b"four", "image/jpeg", 3, tight);
+        let refused = a_db
+            .files()
+            .unwrap()
+            .put(b"four", "image/jpeg", 3, Some(tight));
         assert!(matches!(refused, Err(FilesError::Full { .. })));
         assert!(
             a_db.files()
                 .unwrap()
-                .put(&page, "image/jpeg", 3, tight)
+                .put(&page, "image/jpeg", 3, Some(tight))
                 .is_ok()
         );
 
@@ -813,18 +816,17 @@ mod tests {
 
     #[test]
     fn delete_unreferenced_keeps_referenced_and_recently_put_blobs() {
-        use crate::files::CAP_BYTES;
         use std::collections::HashSet;
         let tmp = tempfile::tempdir().unwrap();
         let store = store(tmp.path());
         let a = store.create_tenant("alpha", "Alpha").unwrap();
         let files = store.org(&a.id).unwrap().files().unwrap();
-        let old_kept = files.put(b"kept", "image/jpeg", 100, CAP_BYTES).unwrap();
-        let old_orphan = files.put(b"orphan", "image/jpeg", 100, CAP_BYTES).unwrap();
-        let fresh = files.put(b"fresh", "image/jpeg", 1_000, CAP_BYTES).unwrap();
+        let old_kept = files.put(b"kept", "image/jpeg", 100, None).unwrap();
+        let old_orphan = files.put(b"orphan", "image/jpeg", 100, None).unwrap();
+        let fresh = files.put(b"fresh", "image/jpeg", 1_000, None).unwrap();
         // An old blob put again just now (a write in flight) is fresh.
-        let reput = files.put(b"reput", "image/jpeg", 100, CAP_BYTES).unwrap();
-        files.put(b"reput", "image/jpeg", 1_000, CAP_BYTES).unwrap();
+        let reput = files.put(b"reput", "image/jpeg", 100, None).unwrap();
+        files.put(b"reput", "image/jpeg", 1_000, None).unwrap();
         let before = files.changes().unwrap();
         let referenced: HashSet<String> = [old_kept.sha256.clone()].into();
         let gone = files.delete_unreferenced(&referenced, 500).unwrap();

@@ -485,12 +485,13 @@ async fn by_declaration(
 pub struct FilesUsage {
     #[ts(type = "number")]
     pub bytes: i64,
-    #[ts(type = "number")]
-    pub cap_bytes: i64,
+    /// `null`: no cap (`KEEP_FILES_CAP_BYTES` unset, the default).
+    #[ts(type = "number | null")]
+    pub cap_bytes: Option<i64>,
 }
 
-/// `GET files-usage`: how much of the organisation's cap (2 GB unless
-/// `KEEP_FILES_CAP_BYTES` says) its scans use (Settings); staff and
+/// `GET files-usage`: how much its scans use (Settings), and the
+/// organisation's cap if `KEEP_FILES_CAP_BYTES` sets one; staff and
 /// admins.
 async fn files_usage(Extension(t): Extension<Tenant>) -> Result<Json<FilesUsage>, ApiError> {
     require_staff(&t)?;
