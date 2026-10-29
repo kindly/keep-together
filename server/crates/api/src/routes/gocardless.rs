@@ -561,8 +561,10 @@ pub struct OneOffStarted {
     pub charge_date: String,
 }
 
-/// Refuse what can't be sent: an amount out of range, a malformed date or
-/// key; then the code must be a live one of ours.
+/// Refuse what can't be sent: an amount out of range or over £1,000
+/// (`giving::rules::ONE_OFF_MAX`, for everyone: more is a bank
+/// transfer), a malformed date or key; then the code must be a live one
+/// of ours.
 fn check_one_off(
     r: &rusqlite::Connection,
     amount: i64,
@@ -575,6 +577,11 @@ fn check_one_off(
         problems.push(contracts::Problem::new(
             "amount",
             "The amount must be over £0",
+        ));
+    } else if amount > giving::rules::ONE_OFF_MAX {
+        problems.push(contracts::Problem::new(
+            "amount",
+            giving::rules::ONE_OFF_MAX_MESSAGE,
         ));
     }
     if charge_date.is_some_and(|d| !giving::rules::is_iso_date(d)) {

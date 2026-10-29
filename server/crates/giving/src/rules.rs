@@ -18,6 +18,16 @@ pub const PENCE_MAX: i64 = (1 << 53) - 1;
 /// imports and seeds use their own keys.
 pub const CLIENT_KEY_MAX: usize = 200;
 
+/// The most staff may charge a donor once through GoCardless (a one-off
+/// on a mandate, an Instant Bank Pay link): £1,000. More is a bank
+/// transfer: a mistyped amount on a Direct Debit is the donor's money
+/// gone before anyone notices. For everyone, admins included.
+pub const ONE_OFF_MAX: i64 = 100_000;
+
+/// The refusal for a one-off over [`ONE_OFF_MAX`].
+pub const ONE_OFF_MAX_MESSAGE: &str =
+    "At most £1,000 can be taken this way: for more, ask the donor for a bank transfer";
+
 /// Longest void reason kept.
 pub const VOID_REASON_MAX: usize = 1000;
 

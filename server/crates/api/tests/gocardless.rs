@@ -3602,3 +3602,72 @@ async fn expected_against_actual_reads_stay_in_their_organisation() {
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+/// The human's cap: staff (admins too) take at most £1,000 once through
+/// GoCardless; more is a bank transfer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_one_off_charge_over_a_thousand_pounds_is_refused_for_everyone() {
+    let t = setup().await;
+    let (_, id, _) = t.active().await;
+    for (cookie, amount) in [(&t.sam, 100_001), (&t.ann, 250_000)] {
+        let (s, out) =
+            t.w.call(
+                "POST",
+                &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+                cookie,
+                Some(json!({
+                    "amount": amount, "sourceCodeId": t.code, "clientKey": contracts::new_id()
+                })),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+        assert_eq!(out["problems"][0]["field"], "amount");
+        assert!(
+            out["problems"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("bank transfer"),
+            "{out}"
+        );
+    }
+    assert_eq!(t.fake.calls("POST payments"), 0);
+    // £1,000 exactly is fine.
+    ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+        &t.sam,
+        Some(
+            json!({ "amount": 100_000, "sourceCodeId": t.code, "clientKey": contracts::new_id() }),
+        ),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_instant_bank_pay_link_over_a_thousand_pounds_is_refused_for_everyone() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    for cookie in [&t.sam, &t.ann] {
+        let (s, out) =
+            t.w.call(
+                "POST",
+                &format!("/api/t/alpha/contacts/{jo}/instant-payment"),
+                cookie,
+                Some(json!({
+                    "amount": 100_001, "sourceCodeId": t.code, "clientKey": contracts::new_id()
+                })),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+        assert!(
+            out["problems"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("bank transfer"),
+            "{out}"
+        );
+    }
+    assert_eq!(t.fake.calls("POST billing_requests"), 0);
+}
