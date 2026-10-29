@@ -97,7 +97,9 @@ Nobody splits one recurring gift across several sources as we do.
    (`subscriptions.amended` we didn't send) is recorded as a row from the
    next payment, uncoded, noted "changed in GoCardless", the difference
    on the newest layer, and the regular gift is flagged "change not coded"
-   until staff code it. A payment from a subscription we didn't create, on
+   until staff code it. Only a change GoCardless reports as not made by
+   an API call is recorded this way: one by API that isn't ours (another
+   app's) is not, since a replay of our own looks the same. A payment from a subscription we didn't create, on
    a known mandate, is a one-off gift, and the subscription is listed for
    staff to adopt as a new regular gift.
 

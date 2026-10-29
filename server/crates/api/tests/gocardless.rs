@@ -4034,3 +4034,181 @@ async fn an_instant_bank_pay_link_of_exactly_a_thousand_pounds_is_fine() {
     )
     .await;
 }
+
+// ── review round 2 ─────────────────────────────────────────────────────────
+
+/// alpha's GoCardless token, as the api holds it.
+fn alpha_token(t: &T) -> String {
+    let db = t.w.store.org(&t.w.alpha.id).unwrap();
+    db.read(|r| Ok::<_, rusqlite::Error>(t.gc.token(r).unwrap()))
+        .unwrap()
+        .unwrap()
+}
+
+/// A day-20 change from the gift's first upcoming date a few weeks out:
+/// a new subscription when sent. Its effective date.
+async fn day_change(t: &T, id: &str, amount: i64) -> String {
+    let from = t
+        .upcoming_after(id, &giving::terms_rules::add_days(&today(), 20).unwrap())
+        .await[0]
+        .clone();
+    let moved = format!("{}20", &from[..8]);
+    let (s, out) = t
+        .change(
+            id,
+            &t.sam,
+            json!({ "effectiveFrom": moved, "amount": amount, "dayOfMonth": 20 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    moved
+}
+
+/// Round 2, R1: the old subscription's cancel fails, then the gift ends
+/// (the donor cancels the new subscription): the next run cancels the
+/// old one too. No live subscription is left.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gift_that_ends_mid_recreate_leaves_no_live_subscription() {
+    let t = setup().await;
+    let (_, id, old) = t.active().await;
+    let mandate = t.regular("alpha", &t.val, &id).await["mandateId"].clone();
+    let moved = day_change(&t, &id, 1000).await;
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "status": 503, "path": "actions/cancel" }),
+    )
+    .await;
+    t.sync_terms(&days_before(&moved, 14)).await;
+    assert_eq!(t.term(&id, &moved).await["status"], "sending");
+    let new = t.regular("alpha", &t.val, &id).await["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(new, old);
+    // The donor cancels the new subscription: the gift ends, the mandate
+    // stays.
+    t.gc.api
+        .cancel_subscription(&alpha_token(&t), &new)
+        .await
+        .unwrap();
+    t.settle().await;
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "cancelled");
+    assert_eq!(t.fake.resource(&old).unwrap()["status"], "active");
+    t.sync_terms(&days_before(&moved, 14)).await;
+    assert!(live_subscriptions(&t, &mandate).is_empty());
+    assert_eq!(t.fake.resource(&old).unwrap()["status"], "cancelled");
+    assert_eq!(t.term(&id, &moved).await["status"], "sent");
+}
+
+/// Round 2, R2: the process dies after GoCardless made the new
+/// subscription and before we recorded it; then the gift ends. The next
+/// run finds it again by the row's key and cancels it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_between_create_and_write_is_recovered_by_the_key_and_cancelled() {
+    let t = setup().await;
+    let (_, id, old) = t.active().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let mandate = v["mandateId"].clone();
+    let moved = day_change(&t, &id, 1000).await;
+    // The job takes the row, and the create's answer never comes back.
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "status": 500, "path": "subscriptions" }),
+    )
+    .await;
+    t.sync_terms(&days_before(&moved, 14)).await;
+    let row = t.term(&id, &moved).await;
+    assert_eq!(
+        (row["status"].clone(), row["subscriptionId"].clone()),
+        (json!("sending"), Value::Null)
+    );
+    // ... though GoCardless did make it (the crash): under the row's key.
+    let token = alpha_token(&t);
+    let lost =
+        t.gc.api
+            .create_subscription(
+                &token,
+                &api::gocardless::client::NewSubscription {
+                    mandate: mandate.as_str().unwrap(),
+                    amount: 1000,
+                    interval_unit: "monthly",
+                    day_of_month: 20,
+                    month: None,
+                    name: "Regular gift £10",
+                    regular_gift: &id,
+                    start_date: Some(&moved),
+                    key: Some(row["id"].as_str().unwrap()),
+                },
+            )
+            .await
+            .unwrap();
+    // The gift ends (its old subscription cancelled), the mandate lives.
+    t.gc.api.cancel_subscription(&token, &old).await.unwrap();
+    t.settle().await;
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "cancelled");
+    assert_eq!(t.fake.resource(&lost).unwrap()["status"], "active");
+    t.sync_terms(&days_before(&moved, 14)).await;
+    assert_eq!(t.fake.resource(&lost).unwrap()["status"], "cancelled");
+    assert!(live_subscriptions(&t, &mandate).is_empty());
+}
+
+/// Round 2, R3: an adopted gift whose subscription a change replaced
+/// (no payments on the new one yet) still shares the mandate: cancelling
+/// the donor's first gift never kills it.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_the_original_gift_never_kills_an_adopted_one_on_the_mandate() {
+    let t = setup().await;
+    let (_, id, first_sub) = t.active().await;
+    let mandate = t.regular("alpha", &t.val, &id).await["mandateId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other = t
+        .fake_post(
+            &format!("mandates/{mandate}/subscription?amount=500"),
+            json!({}),
+        )
+        .await["subscription"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("subscriptions/{other}/payment")).await;
+    t.settle().await;
+    let adopted = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/gocardless/unknown-subscriptions/{other}/adopt"),
+        &t.sam,
+        Some(json!({ "sourceCodeId": t.code, "clientKey": contracts::new_id() })),
+    )
+    .await["view"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The adopted gift moves to day 20: a new subscription, no payments.
+    let moved = day_change(&t, &adopted, 500).await;
+    t.sync_terms(&days_before(&moved, 14)).await;
+    let replaced = t.regular("alpha", &t.val, &adopted).await["subscriptionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(replaced, other);
+    // Cancel the first gift.
+    let v = t.regular("alpha", &t.val, &id).await;
+    ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/cancel"),
+        &t.sam,
+        Some(json!({ "expected": v["mandateVersion"] })),
+    )
+    .await;
+    t.settle().await;
+    assert_eq!(t.fake.resource(&first_sub).unwrap()["status"], "cancelled");
+    assert_ne!(t.fake.resource(&mandate).unwrap()["status"], "cancelled");
+    assert_eq!(t.fake.resource(&replaced).unwrap()["status"], "active");
+    assert_eq!(
+        t.regular("alpha", &t.val, &adopted).await["status"],
+        "active"
+    );
+}

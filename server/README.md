@@ -864,7 +864,10 @@ cancelled: a cancel that fails leaves it `sending`, and the next run
 cancels again. A gift that ended mid-send has the new subscription
 cancelled. GoCardless refusing a row for good (a 4xx) puts it back to
 `scheduled` with `syncError`, for staff to edit or withdraw; it isn't
-tried again until edited. Then `sent`; GoCardless's
+tried again until edited, and the gift's later rows wait for it. A
+gift that ends while a new subscription is in flight has both the new
+one (found again by the row's key if its id was lost) and the old one
+cancelled. Then `sent`; GoCardless's
 `subscriptions.amended`, or the first payment at the new terms, makes
 it `applied`. An `amended` by API call that isn't ours to apply (a
 replay, a late event) records nothing; one from elsewhere

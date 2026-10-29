@@ -1918,15 +1918,21 @@ pub fn unknown_subscription(
 }
 
 /// Whether a regular gift other than `id`, not ended, collects on mandate
-/// `md`: its own mandate, or (adopted) a subscription whose payments were
-/// taken on it. Cancelling the mandate would end that one too.
+/// `md`: its own mandate, or (adopted) a subscription any row of its
+/// chain ran under whose payments were taken on it (its first one had
+/// payments to be adopted at all, so a subscription made since by a
+/// change, with none yet, still counts). Cancelling the mandate would
+/// end that one too.
 pub fn others_on_mandate(conn: &Connection, id: &str, md: &str) -> rusqlite::Result<bool> {
     conn.prepare_cached(
         "SELECT 1 FROM regular_gifts r
          WHERE r.id <> ?1 AND r.status IN ('pending', 'active')
            AND (r.mandate_id = ?2
                 OR EXISTS (SELECT 1 FROM direct_debit_payments p
-                           WHERE p.subscription_id = r.subscription_id AND p.mandate_id = ?2))",
+                           WHERE p.subscription_id = r.subscription_id AND p.mandate_id = ?2)
+                OR EXISTS (SELECT 1 FROM regular_gift_terms t
+                           JOIN direct_debit_payments p ON p.subscription_id = t.subscription_id
+                           WHERE t.regular_gift_id = r.id AND p.mandate_id = ?2))",
     )?
     .exists(params![id, md])
 }

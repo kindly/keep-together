@@ -175,7 +175,8 @@ async fn refused(org: &Org, t: &TermView, why: String) -> Result<Sent, Failed> {
         Ok(())
     })
     .await?;
-    Ok(Sent::Done)
+    // Its later rows wait: they would run on terms GoCardless never had.
+    Ok(Sent::Waiting)
 }
 
 /// Send one due row.
@@ -207,15 +208,43 @@ async fn send(org: &Org, gc: &GoCardless, d: &DueTerm, today: &str) -> Result<Se
     if facts.mandate.status().is_ended() {
         // Ended while the job was sending it: undo a new subscription it
         // made, and finish the row (review M5, L5).
-        if t.status == TermStatus::Sending {
-            if let Some(made) = &t.subscription_id
-                && Some(made) != old.as_ref()
-            {
-                gc.api.cancel_subscription(org.token()?, made).await?;
+        // A new subscription in flight (the row isn't under the old one):
+        // cancel it, found again by the row's key if a crash lost its id
+        // (round 2, R2), and the old one too, which a failed cancel may
+        // have left live (R1).
+        if t.status == TermStatus::Sending && t.subscription_id != old {
+            let token = org.token()?.to_owned();
+            let made = match &t.subscription_id {
+                Some(made) => Some(made.clone()),
+                None => match old.as_deref() {
+                    Some(o) => match create(gc, &token, &facts, &t, o, &t.effective_on).await? {
+                        Some(Ok(made)) => Some(made),
+                        // Nothing was made, and the mandate takes none now.
+                        Some(Err(e)) if refused_for_good(&e) => None,
+                        Some(Err(e)) => return Err(e.into()),
+                        None => None,
+                    },
+                    None => None,
+                },
+            };
+            for sb in made.iter().chain(old.iter()) {
+                gc.api.cancel_subscription(&token, sb).await?;
             }
+        }
+        if t.status == TermStatus::Sending {
             mark_sent(org, &t.id).await?;
         }
         return Ok(Sent::Done);
+    }
+    // An earlier row GoCardless refused, back with staff: this one waits
+    // for it (round 2).
+    if chain.iter().any(|r| {
+        r.status == TermStatus::Scheduled
+            && r.sync_error.is_some()
+            && r.id != t.id
+            && r.effective_on <= t.effective_on
+    }) {
+        return Ok(Sent::Waiting);
     }
     // Waiting for its first subscription (the donor hasn't signed yet).
     let (Some(sub), Some(before), Some(old)) = (facts.mandate.subscription_id.clone(), before, old)
@@ -325,6 +354,51 @@ fn start_date(t: &TermView, today: &str) -> String {
         .unwrap_or(own)
 }
 
+/// Make (or, with the row's key, find again) the row's new subscription
+/// on the gift's mandate (an adopted gift's: the one `old` names),
+/// starting `start`. `None`: no mandate to make it on.
+async fn create(
+    gc: &GoCardless,
+    token: &str,
+    facts: &regular::RegularFacts,
+    t: &TermView,
+    old: &str,
+    start: &str,
+) -> Result<Option<Result<String, CallError>>, Failed> {
+    let mandate = match &facts.mandate.mandate_id {
+        Some(md) => md.clone(),
+        // Adopted from GoCardless: the subscription knows its mandate.
+        None => match gc.api.get_subscription(token, old).await?.mandate {
+            Some(md) => md,
+            None => return Ok(None),
+        },
+    };
+    let name = format!("Regular gift {}", giving::format_pence(t.amount));
+    Ok(Some(
+        gc.api
+            .create_subscription(
+                token,
+                &NewSubscription {
+                    mandate: &mandate,
+                    amount: t.amount,
+                    interval_unit: t.frequency.as_str(),
+                    day_of_month: t.day_of_month,
+                    month: match t.frequency {
+                        Frequency::Monthly => None,
+                        Frequency::Yearly => t
+                            .month
+                            .and_then(|m| MONTHS.get(usize::from(m).wrapping_sub(1)).copied()),
+                    },
+                    name: &name,
+                    regular_gift: &facts.id,
+                    start_date: Some(start),
+                    key: Some(&t.id),
+                },
+            )
+            .await,
+    ))
+}
+
 /// A new subscription on the same mandate from the row's date (once,
 /// whatever the retries: the key is the row's), recorded as the regular
 /// gift's and the row's; then the old one cancelled; only then is the row
@@ -345,40 +419,17 @@ async fn replace(
     let Some(t) = org.read(move |c| terms::get_term(c, &tid)).await? else {
         return Ok(Sent::Done);
     };
-    let mandate = match &facts.mandate.mandate_id {
-        Some(md) => md.clone(),
-        // Adopted from GoCardless: the subscription knows its mandate.
-        None => match gc.api.get_subscription(&token, old).await?.mandate {
-            Some(md) => md,
-            None => {
-                return refused(org, &t, "the subscription names no mandate".into()).await;
-            }
-        },
+    // Once made (a retry), it starts where it was made to start: never
+    // computed again (review round 2).
+    let start = if t.subscription_id.is_some() {
+        t.effective_on.clone()
+    } else {
+        start_date(&t, today)
     };
-    let start = start_date(&t, today);
-    let name = format!("Regular gift {}", giving::format_pence(t.amount));
-    let made = gc
-        .api
-        .create_subscription(
-            &token,
-            &NewSubscription {
-                mandate: &mandate,
-                amount: t.amount,
-                interval_unit: t.frequency.as_str(),
-                day_of_month: t.day_of_month,
-                month: match t.frequency {
-                    Frequency::Monthly => None,
-                    Frequency::Yearly => t
-                        .month
-                        .and_then(|m| MONTHS.get(usize::from(m).wrapping_sub(1)).copied()),
-                },
-                name: &name,
-                regular_gift: &facts.id,
-                start_date: Some(&start),
-                key: Some(&t.id),
-            },
-        )
-        .await;
+    let made = match create(gc, &token, facts, &t, old, &start).await? {
+        Some(made) => made,
+        None => return refused(org, &t, "the subscription names no mandate".into()).await,
+    };
     let new = match made {
         Ok(new) => new,
         Err(e) if refused_for_good(&e) => {

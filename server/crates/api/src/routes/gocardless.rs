@@ -456,6 +456,8 @@ async fn cancel(
         // Another regular gift (one adopted) collects on the same mandate:
         // stop only this one's subscription.
         (Some(_), _, Some(sb)) if shared => gc.api.cancel_subscription(&token, sb).await,
+        // Nothing of its own collects yet: leave the shared mandate be.
+        (Some(_), _, None) if shared => Ok(()),
         (Some(md), _, _) => gc.api.cancel_mandate(&token, md).await,
         // Adopted from GoCardless: no mandate of its own, its
         // subscription is what collects (review H2).
