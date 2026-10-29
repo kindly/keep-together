@@ -23,6 +23,8 @@ const STORAGE = { type: 'route', description: '/t/$slug/settings/storage' }
 
 /** A new one-page draft scan in `slug`, as a signed-in phone sends one. */
 async function uploadScan(page: Page, slug: string): Promise<string> {
+  // The fetch is relative to the SPA's origin: a fresh page has none yet.
+  if (!page.url().startsWith('http')) await page.goto(`/t/${slug}/scans`)
   return page.evaluate(async (s) => {
     const canvas = document.createElement('canvas')
     canvas.width = 620

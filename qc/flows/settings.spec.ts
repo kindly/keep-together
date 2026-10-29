@@ -314,11 +314,13 @@ test.describe('settings for staff and viewers', () => {
       await other.goto(`/t/${user.slug}/contacts`)
       await other.getByRole('link', { name: 'Settings', exact: true }).click()
       await other.waitForURL(new RegExp(`${fieldsPath(user.slug)}$`))
-      // A4's Members and Your account follow the lists.
+      // A4's Members and Your account follow the lists; Scans storage
+      // (declaration scans) is for staff and admins, not viewers.
       await expect(tabs(other).getByRole('link')).toHaveText([
         'Fields',
         'Identifier types',
         'Source codes',
+        ...(role === 'staff' ? ['Scans storage'] : []),
         'Members',
         'Your account',
       ])
