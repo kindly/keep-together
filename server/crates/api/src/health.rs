@@ -1,5 +1,7 @@
 //! `GET /healthz`: 200 when the server can serve, 503 when it can't. Fly's
-//! health check and the 15-minute monitor call it.
+//! health check and the 15-minute monitor call it. Besides the db, it
+//! reports what the monitor judges: WAL backlog, backups, and the data
+//! volume's free and total bytes.
 
 use axum::Json;
 use axum::extract::State;
@@ -20,6 +22,15 @@ pub async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>)
     // take the only machine out of Fly's rotation. The 15-minute monitor
     // (`.github/workflows/health.yml`) judges these fields.
     body["backup"] = serde_json::to_value(crate::backup::health().await).unwrap_or_default();
+    // Reported, never judged here either: a full disk is the monitor's to
+    // raise (free under 20%, louder under 10%), and `ok` stays about
+    // whether the server can serve. Counts only, never the path.
+    let (free, total) = match crate::scans::limits::volume(state.store.dir()) {
+        Ok((free, total)) => (json!(free), json!(total)),
+        Err(_) => (Value::Null, Value::Null),
+    };
+    body["diskFreeBytes"] = free;
+    body["diskTotalBytes"] = total;
     let ok = db_ok;
     body["ok"] = json!(ok);
     let status = if ok {

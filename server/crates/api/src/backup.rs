@@ -180,6 +180,8 @@ pub struct RunReport {
 
 pub struct SnapshotJob {
     config: SnapshotConfig,
+    /// The UTC day whose usage line ([`usage_line`]) is logged.
+    usage_logged: Mutex<Option<time::Date>>,
 }
 
 impl crate::jobs::Job for SnapshotJob {
@@ -201,7 +203,17 @@ impl crate::jobs::Job for SnapshotJob {
 
     fn run(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
         Box::pin(async move {
-            let report = self.run_once(OffsetDateTime::now_utc()).await?;
+            let now = OffsetDateTime::now_utc();
+            let first_today = {
+                let mut day = self.usage_logged.lock().unwrap();
+                let first = *day != Some(now.date());
+                *day = Some(now.date());
+                first
+            };
+            if first_today {
+                eprintln!("{}", usage_line(&self.config.data_dir));
+            }
+            let report = self.run_once(now).await?;
             let failed = report.failed.len();
             if let Some(state) = HEALTH.get() {
                 *state.last_run.lock().unwrap() = Some(report.clone());
@@ -229,6 +241,20 @@ impl crate::jobs::Job for SnapshotJob {
     }
 }
 
+/// The daily line of what the data volume holds, so growth can be read
+/// from the log: org files and files dbs (count, bytes), and the volume.
+pub fn usage_line(data_dir: &Path) -> String {
+    let u = crate::scans::limits::data_usage(data_dir);
+    let volume = match crate::scans::limits::volume(data_dir) {
+        Ok((free, total)) => format!("{free} of {total} bytes free"),
+        Err(e) => format!("unreadable ({e})"),
+    };
+    format!(
+        "data usage: {} org files {} bytes, {} files dbs {} bytes; volume {volume}",
+        u.org_files, u.org_bytes, u.files_dbs, u.files_bytes
+    )
+}
+
 /// One source file: `platform.db`, an org file named by its tenant id,
 /// or an org's files db (`files-<tenant id>`).
 struct Source {
@@ -254,7 +280,10 @@ struct Ledger {
 
 impl SnapshotJob {
     pub fn new(config: SnapshotConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            usage_logged: Mutex::new(None),
+        }
     }
 
     /// Snapshot what's due at `now`. Errors only if the data dir can't be

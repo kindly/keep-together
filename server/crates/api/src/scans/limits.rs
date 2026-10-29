@@ -165,7 +165,9 @@ impl Drop for Slot {
 
 /// `(free bytes for an unprivileged writer, total bytes)` of the volume
 /// holding `path`.
-fn volume(path: &Path) -> std::io::Result<(u64, u64)> {
+/// The volume holding `path`: (bytes free to this process, bytes in
+/// all), from `statvfs`.
+pub fn volume(path: &Path) -> std::io::Result<(u64, u64)> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
@@ -189,6 +191,42 @@ fn volume(path: &Path) -> std::io::Result<(u64, u64)> {
 
 /// The largest database on the data volume: `platform.db`, any org file
 /// or files db (what one snapshot copies at once).
+/// What the data dir's organisations hold: their org files and files dbs
+/// (each counted by its `.db`; bytes include the `-wal` and `-shm`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DataUsage {
+    pub org_files: u64,
+    pub org_bytes: u64,
+    pub files_dbs: u64,
+    pub files_bytes: u64,
+}
+
+/// [`DataUsage`] of `data_dir`, by listing `orgs/` and `files/`. A
+/// directory not there yet counts nothing.
+pub fn data_usage(data_dir: &Path) -> DataUsage {
+    let tally = |dir: &str| {
+        let (mut dbs, mut bytes) = (0, 0);
+        if let Ok(entries) = std::fs::read_dir(data_dir.join(dir)) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "db") {
+                    dbs += 1;
+                }
+                bytes += std::fs::metadata(&path).map_or(0, |m| m.len());
+            }
+        }
+        (dbs, bytes)
+    };
+    let (org_files, org_bytes) = tally("orgs");
+    let (files_dbs, files_bytes) = tally("files");
+    DataUsage {
+        org_files,
+        org_bytes,
+        files_dbs,
+        files_bytes,
+    }
+}
+
 fn largest_file(data_dir: &Path) -> u64 {
     let size = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
     let mut largest = size(&data_dir.join("platform.db"));

@@ -165,8 +165,10 @@ request, an SSE stream) is never closed.
   rotated by `restore.sh` and `rollback-migration.sh`: a file put back
   from a copy reuses revision ids, so a tab's old cursor must not replay
   from them. Keep-alive comment every 20 s.
-- **Health.** `GET /healthz` (no session) → `{ok, db, …}`; 503 when the
-  data dir can't be read.
+- **Health.** `GET /healthz` (no session) → `{ok, db, walBacklogBytes,
+  diskFreeBytes, diskTotalBytes, backup}`; 503 when the data dir can't be
+  read. The disk and backup fields are reported, never judged here:
+  `.github/workflows/health.yml` judges them (docs/ops.md, Monitoring).
 - **Timing.** Every `/api` response has
   `Server-Timing: platform;dur=…, db;dur=…, total;dur=…` (ms).
   `platform` = session + membership lookup, `db` = time inside org-file
