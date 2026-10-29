@@ -41,8 +41,10 @@
 //! - in `platform.db` ([`SCHEMA`]): which GoCardless organisation is which
 //!   of ours (webhooks name theirs), the single-use OAuth `state`s, and
 //!   every webhook event by id, until a job has handled it in its org file
-//!   ([`process`]).
+//!   ([`process`]), and the nightly catch-up's cursor per account
+//!   ([`catchup`]).
 
+pub mod catchup;
 pub mod client;
 pub mod fake;
 pub mod oauth;
@@ -305,6 +307,16 @@ pub const SCHEMA: PlatformSchema = PlatformSchema {
              tenant_id TEXT NOT NULL REFERENCES tenants (id),
              at INTEGER NOT NULL,
              PRIMARY KEY (organisation_id, tenant_id)
+         ) STRICT;",
+        // 2: the nightly catch-up's cursor per connected organisation
+        // (`catchup`): events read up to `since` (RFC 3339) for that
+        // account, and what the last run found
+        "CREATE TABLE gocardless_catchup (
+             tenant_id TEXT PRIMARY KEY REFERENCES tenants (id),
+             organisation_id TEXT NOT NULL,
+             since TEXT NOT NULL,
+             last_run_at INTEGER NOT NULL,
+             last_found INTEGER NOT NULL
          ) STRICT;",
     ],
 };

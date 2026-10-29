@@ -14,13 +14,25 @@
 //!   with a code; Cancel with `error=access_denied`;
 //! - `GET flow/{BRF…}`: the donor's Direct Debit sign-up; Set up makes a
 //!   customer and a mandate (`pending_submission`) and fulfils the
-//!   billing request.
+//!   billing request. For an Instant Bank Pay request (a payment request,
+//!   no mandate) it is "Pay by bank": a customer and a `confirmed`
+//!   payment, which (unlike the request) carries no metadata, so only the
+//!   billing request's `fulfilled` event names its donor.
+//!
+//! API beyond the client's D2 calls: `POST payments` (a one-off on a
+//! mandate), `GET events` (`created_at[gte]`, `limit`, `after`: newest
+//! first, as GoCardless lists).
 //!
 //! Scenario simulators (like the sandbox's), `POST`, answering JSON:
 //! - `simulate/mandates/{id}/{activate|fail|cancel|expire}` (fail, cancel
 //!   and expire cancel its subscriptions too, as GoCardless does);
 //! - `simulate/subscriptions/{id}/payment`: the subscription's next
 //!   payment (`pending_submission`), answering `{payment}`;
+//! - `simulate/mandates/{id}/payment?amount=`: a one-off on the mandate
+//!   with no metadata (as if taken in GoCardless's dashboard);
+//! - `simulate/organisations/{OR…}/payment?amount=`: a payment from a
+//!   stranger (a new customer and mandate we never asked for), answering
+//!   `{payment, mandate}`;
 //! - `simulate/payments/{id}/{retry|submit|confirm|fail|charge_back|cancel_chargeback}`
 //!   (`retry?charge_date=`: a new charge date);
 //! - `GET simulate/webhooks`: what was delivered (ids, statuses).
@@ -76,6 +88,8 @@ struct World {
     outage: Option<Outage>,
     /// API requests answered, by `"<METHOD> <resource>"`.
     calls: HashMap<String, usize>,
+    /// Every event made, delivered or not, oldest first: `GET events`.
+    events: Vec<(String, Value)>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -189,7 +203,7 @@ impl Fake {
     ) -> Value {
         let mut links = links;
         links["organisation"] = Value::String(org.to_owned());
-        json!({
+        let event = json!({
             "id": w.id("EV"),
             "created_at": now_iso(),
             "resource_type": resource_type,
@@ -202,7 +216,54 @@ impl Fake {
             },
             "metadata": {},
             "resource_metadata": {}
-        })
+        });
+        w.events.push((org.to_owned(), event.clone()));
+        event
+    }
+
+    /// A new payment of `org`'s, `pending_submission` (or `status`), and
+    /// its `created` event.
+    #[allow(clippy::too_many_arguments)]
+    fn new_payment(
+        w: &mut World,
+        org: &str,
+        amount: i64,
+        charge_date: String,
+        status: &str,
+        description: Value,
+        metadata: Value,
+        links: Value,
+    ) -> (String, Value) {
+        let payment = w.id("PM");
+        let body = json!({
+            "id": payment,
+            "created_at": now_iso(),
+            "amount": amount,
+            "currency": "GBP",
+            "charge_date": charge_date,
+            "status": status,
+            "description": description,
+            "metadata": metadata,
+            "links": links
+        });
+        w.resources.insert(
+            payment.clone(),
+            Resource {
+                org: org.to_owned(),
+                kind: "payments",
+                body,
+            },
+        );
+        let event = Fake::event(
+            w,
+            org,
+            "payments",
+            "created",
+            json!({ "payment": payment }),
+            "payment_created",
+            "Payment created.",
+        );
+        (payment, event)
     }
 
     /// Deliver `events` in one signed webhook; whether it got a 2xx.
@@ -336,7 +397,9 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
         )
         .route("/mandates/{id}", get(get_resource))
         .route("/mandates/{id}/actions/cancel", post(cancel_mandate))
+        .route("/payments", post(create_payment))
         .route("/payments/{id}", get(get_resource))
+        .route("/events", get(list_events))
         .layer(axum::middleware::from_fn_with_state(fake.clone(), gate));
     Router::new()
         .route("/connect/oauth/authorize", get(authorize))
@@ -351,7 +414,15 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
         .nest("/api", api)
         .route("/flow/{id}", get(flow_page))
         .route("/flow/{id}/complete", post(complete_flow))
+        .route(
+            "/simulate/mandates/{id}/payment",
+            post(simulate_mandate_payment),
+        )
         .route("/simulate/mandates/{id}/{action}", post(simulate_mandate))
+        .route(
+            "/simulate/organisations/{org}/payment",
+            post(simulate_stranger_payment),
+        )
         .route(
             "/simulate/subscriptions/{id}/payment",
             post(simulate_payment),
@@ -689,16 +760,18 @@ async fn create_billing_request(
         Err(r) => return r,
     };
     let req = body.get("billing_requests").cloned().unwrap_or(Value::Null);
-    if req
-        .pointer("/mandate_request/currency")
-        .and_then(Value::as_str)
-        != Some("GBP")
-    {
+    let instant = req.get("payment_request").is_some();
+    let currency = if instant {
+        "/payment_request/currency"
+    } else {
+        "/mandate_request/currency"
+    };
+    if req.pointer(currency).and_then(Value::as_str) != Some("GBP") {
         return error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "validation_failed",
             "invalid_currency",
-            "mandate_request.currency must be GBP here",
+            "the request's currency must be GBP here",
             json!({}),
         );
     }
@@ -708,18 +781,29 @@ async fn create_billing_request(
         Err(r) => return r,
     };
     let id = w.id("BRQ");
-    let br = json!({
+    let mut br = json!({
         "id": id,
         "created_at": now_iso(),
         "status": "pending",
-        "mandate_request": {
-            "scheme": req.pointer("/mandate_request/scheme").cloned().unwrap_or(json!("bacs")),
-            "currency": "GBP",
-            "metadata": req.pointer("/mandate_request/metadata").cloned().unwrap_or(json!({}))
-        },
         "metadata": req.get("metadata").cloned().unwrap_or(json!({})),
         "links": {}
     });
+    if instant {
+        br["payment_request"] = json!({
+            "amount": req.pointer("/payment_request/amount").cloned().unwrap_or(json!(0)),
+            "currency": "GBP",
+            "description": req.pointer("/payment_request/description").cloned()
+                .unwrap_or(Value::Null),
+            "scheme": "faster_payments",
+            "metadata": req.pointer("/payment_request/metadata").cloned().unwrap_or(json!({}))
+        });
+    } else {
+        br["mandate_request"] = json!({
+            "scheme": req.pointer("/mandate_request/scheme").cloned().unwrap_or(json!("bacs")),
+            "currency": "GBP",
+            "metadata": req.pointer("/mandate_request/metadata").cloned().unwrap_or(json!({}))
+        });
+    }
     w.resources.insert(
         id.clone(),
         Resource {
@@ -880,6 +964,25 @@ async fn flow_page(State(fake): State<Arc<Fake>>, Path(id): Path<String>) -> Res
                 .unwrap_or(""),
         )
     };
+    if let Some(amount) = fake
+        .resource(br)
+        .and_then(|b| b.pointer("/payment_request/amount").and_then(Value::as_i64))
+    {
+        return page(
+            "Pay by bank",
+            &format!(
+                "<form method=\"post\" action=\"{id}/complete\">\
+                 <p>Pay <strong data-amount>{amount}</strong> pence from your bank.</p>\
+                 <label>First name <input name=\"given_name\" value=\"{}\"></label>\
+                 <label>Last name <input name=\"family_name\" value=\"{}\"></label>\
+                 <p>(Not really: this is the fake.)</p>\
+                 <button>Pay</button></form>",
+                pre("given_name"),
+                pre("family_name")
+            ),
+        )
+        .into_response();
+    }
     page(
         "Set up a Direct Debit",
         &format!(
@@ -926,63 +1029,114 @@ async fn complete_flow(
             return page("Already done", "<p>This sign-up is already complete.</p>")
                 .into_response();
         }
-        let customer = w.id("CU");
-        let mandate = w.id("MD");
-        w.resources.insert(
-            customer.clone(),
-            Resource {
-                org: org.clone(),
-                kind: "customers",
-                body: json!({
-                    "id": customer, "given_name": c.given_name, "family_name": c.family_name
-                }),
-            },
-        );
-        let metadata = w
+        if let Some(request) = w
             .resources
             .get(&br)
-            .and_then(|r| r.body.pointer("/mandate_request/metadata").cloned())
-            .unwrap_or(json!({}));
-        w.resources.insert(
-            mandate.clone(),
-            Resource {
-                org: org.clone(),
-                kind: "mandates",
-                body: json!({
-                    "id": mandate, "status": "pending_submission", "scheme": "bacs",
-                    "next_possible_charge_date": today_plus(5),
-                    // GoCardless copies the mandate request's metadata.
-                    "metadata": metadata,
-                    "links": { "customer": customer }
-                }),
-            },
-        );
-        if let Some(r) = w.resources.get_mut(&br) {
-            r.body["status"] = json!("fulfilled");
-            r.body["links"] = json!({ "customer": customer, "mandate_request_mandate": mandate });
-        }
-        let fulfilled = Fake::event(
-            &mut w,
-            &org,
-            "billing_requests",
-            "fulfilled",
-            json!({ "billing_request": br, "customer": customer,
+            .and_then(|r| r.body.get("payment_request").cloned())
+        {
+            // Instant Bank Pay: paid at once; the payment carries no
+            // metadata, the request's `fulfilled` event names it.
+            let customer = w.id("CU");
+            let (payment, created) = Fake::new_payment(
+                &mut w,
+                &org,
+                request["amount"].as_i64().unwrap_or(0),
+                today_plus(0),
+                "confirmed",
+                request["description"].clone(),
+                json!({}),
+                json!({ "customer": customer }),
+            );
+            if let Some(r) = w.resources.get_mut(&br) {
+                r.body["status"] = json!("fulfilled");
+                r.body["links"] =
+                    json!({ "customer": customer, "payment_request_payment": payment });
+            }
+            let fulfilled = Fake::event(
+                &mut w,
+                &org,
+                "billing_requests",
+                "fulfilled",
+                json!({ "billing_request": br, "customer": customer,
+                        "payment_request_payment": payment }),
+                "billing_request_fulfilled",
+                "This billing request has been fulfilled, and the resources have been created.",
+            );
+            (vec![created, fulfilled], payment)
+        } else {
+            let customer = w.id("CU");
+            let mandate = w.id("MD");
+            w.resources.insert(
+                customer.clone(),
+                Resource {
+                    org: org.clone(),
+                    kind: "customers",
+                    body: json!({
+                        "id": customer, "given_name": c.given_name, "family_name": c.family_name
+                    }),
+                },
+            );
+            let metadata = w
+                .resources
+                .get(&br)
+                .and_then(|r| r.body.pointer("/mandate_request/metadata").cloned())
+                .unwrap_or(json!({}));
+            w.resources.insert(
+                mandate.clone(),
+                Resource {
+                    org: org.clone(),
+                    kind: "mandates",
+                    body: json!({
+                        "id": mandate, "status": "pending_submission", "scheme": "bacs",
+                        "next_possible_charge_date": today_plus(5),
+                        // GoCardless copies the mandate request's metadata.
+                        "metadata": metadata,
+                        "links": { "customer": customer }
+                    }),
+                },
+            );
+            if let Some(r) = w.resources.get_mut(&br) {
+                r.body["status"] = json!("fulfilled");
+                r.body["links"] =
+                    json!({ "customer": customer, "mandate_request_mandate": mandate });
+            }
+            let fulfilled = Fake::event(
+                &mut w,
+                &org,
+                "billing_requests",
+                "fulfilled",
+                json!({ "billing_request": br, "customer": customer,
                     "mandate_request_mandate": mandate }),
-            "billing_request_fulfilled",
-            "This billing request has been fulfilled, and the resources have been created.",
-        );
-        let created = Fake::event(
-            &mut w,
-            &org,
-            "mandates",
-            "created",
-            json!({ "mandate": mandate }),
-            "mandate_created",
-            "Mandate created via the API.",
-        );
-        (vec![fulfilled, created], mandate)
+                "billing_request_fulfilled",
+                "This billing request has been fulfilled, and the resources have been created.",
+            );
+            let created = Fake::event(
+                &mut w,
+                &org,
+                "mandates",
+                "created",
+                json!({ "mandate": mandate }),
+                "mandate_created",
+                "Mandate created via the API.",
+            );
+            (vec![fulfilled, created], mandate)
+        }
     };
     let delivered = fake.deliver(events).await;
+    if mandate.starts_with("PM") {
+        return page(
+            "Paid",
+            &format!(
+                "<p>Thank you: paid.</p><p>Payment <code data-payment>{mandate}</code>{}</p>",
+                if delivered {
+                    ""
+                } else {
+                    " (the webhook didn’t land)"
+                }
+            ),
+        )
+        .into_response();
+    }
     page(
         "Direct Debit set up",
         &format!(
@@ -1400,4 +1554,233 @@ async fn webhooks(State(fake): State<Arc<Fake>>) -> Response {
         .map(|(body, landed)| json!({ "body": body, "delivered": landed }))
         .collect();
     Json(out).into_response()
+}
+
+/// `POST payments`: a one-off on one of the caller's mandates (not
+/// ended), `pending_submission`, charged on `charge_date` or a few days
+/// out; its `created` event is delivered.
+async fn create_payment(
+    State(fake): State<Arc<Fake>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let org = match caller(&fake, &headers) {
+        Ok(org) => org,
+        Err(r) => return r,
+    };
+    let req = body.get("payments").cloned().unwrap_or(Value::Null);
+    if req.get("currency").and_then(Value::as_str) != Some("GBP") {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_failed",
+            "invalid_currency",
+            "currency must be GBP here",
+            json!({}),
+        );
+    }
+    let amount = req.get("amount").and_then(Value::as_i64).unwrap_or(0);
+    if amount <= 0 {
+        return error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_failed",
+            "invalid_amount",
+            "amount must be a positive integer",
+            json!({}),
+        );
+    }
+    let mandate = req
+        .pointer("/links/mandate")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let (body, event) = {
+        let mut w = fake.world();
+        match w.resources.get(&mandate) {
+            Some(r) if r.org == org && r.kind == "mandates" => {
+                if matches!(
+                    r.body["status"].as_str(),
+                    Some("cancelled" | "failed" | "expired" | "blocked")
+                ) {
+                    return error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "invalid_state",
+                        "mandate_is_inactive",
+                        "The mandate is not active",
+                        json!({}),
+                    );
+                }
+            }
+            _ => return not_found(),
+        }
+        let key = match idempotent(&mut w, &org, &headers) {
+            Ok(key) => key,
+            Err(r) => return r,
+        };
+        let (payment, event) = Fake::new_payment(
+            &mut w,
+            &org,
+            amount,
+            req.get("charge_date")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| today_plus(3)),
+            "pending_submission",
+            req.get("description").cloned().unwrap_or(Value::Null),
+            req.get("metadata").cloned().unwrap_or(json!({})),
+            json!({ "mandate": mandate }),
+        );
+        if let Some(key) = key {
+            w.idempotency.insert((org, key), payment.clone());
+        }
+        (w.resources[&payment].body.clone(), event)
+    };
+    fake.deliver(vec![event]).await;
+    (StatusCode::CREATED, Json(json!({ "payments": body }))).into_response()
+}
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    #[serde(rename = "created_at[gte]")]
+    created_at_gte: Option<String>,
+    limit: Option<usize>,
+    after: Option<String>,
+}
+
+fn instant(s: &str) -> Option<time::OffsetDateTime> {
+    time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+}
+
+/// `GET events`: the caller's events, newest first, from `after` (the
+/// last id of the previous page), at most `limit` (≤ 500).
+async fn list_events(
+    State(fake): State<Arc<Fake>>,
+    headers: HeaderMap,
+    Query(q): Query<EventsQuery>,
+) -> Response {
+    let org = match caller(&fake, &headers) {
+        Ok(org) => org,
+        Err(r) => return r,
+    };
+    let since = q.created_at_gte.as_deref().and_then(instant);
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let w = fake.world();
+    let mine: Vec<&Value> = w
+        .events
+        .iter()
+        .rev()
+        .filter(|(o, _)| *o == org)
+        .map(|(_, e)| e)
+        .filter(|e| {
+            since.is_none_or(|since| {
+                e["created_at"]
+                    .as_str()
+                    .and_then(instant)
+                    .is_some_and(|at| at >= since)
+            })
+        })
+        .collect();
+    let start = match &q.after {
+        Some(after) => mine
+            .iter()
+            .position(|e| e["id"] == after.as_str())
+            .map_or(mine.len(), |i| i + 1),
+        None => 0,
+    };
+    let page: Vec<Value> = mine[start..]
+        .iter()
+        .take(limit)
+        .map(|e| (*e).clone())
+        .collect();
+    let more = start + page.len() < mine.len();
+    let after = more
+        .then(|| {
+            page.last()
+                .and_then(|e| e["id"].as_str())
+                .map(str::to_owned)
+        })
+        .flatten();
+    Json(json!({
+        "events": page,
+        "meta": { "cursors": { "before": Value::Null, "after": after }, "limit": limit }
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct Amount {
+    amount: Option<i64>,
+}
+
+/// A one-off on mandate `id` with no metadata: as if taken in
+/// GoCardless's dashboard.
+async fn simulate_mandate_payment(
+    State(fake): State<Arc<Fake>>,
+    Path(id): Path<String>,
+    Query(q): Query<Amount>,
+) -> Response {
+    let (event, payment) = {
+        let mut w = fake.world();
+        let Some(org) = w
+            .resources
+            .get(&id)
+            .filter(|r| r.kind == "mandates")
+            .map(|r| r.org.clone())
+        else {
+            return not_found();
+        };
+        let (payment, event) = Fake::new_payment(
+            &mut w,
+            &org,
+            q.amount.unwrap_or(2500),
+            today_plus(3),
+            "pending_submission",
+            json!("One-off"),
+            json!({}),
+            json!({ "mandate": id }),
+        );
+        (event, payment)
+    };
+    let delivered = fake.deliver(vec![event]).await;
+    simulated(delivered, json!({ "payment": payment }))
+}
+
+/// A payment from a stranger to account `org`: a customer and an active
+/// mandate we never asked for, and a payment on it.
+async fn simulate_stranger_payment(
+    State(fake): State<Arc<Fake>>,
+    Path(org): Path<String>,
+    Query(q): Query<Amount>,
+) -> Response {
+    let (event, payment, mandate) = {
+        let mut w = fake.world();
+        if !w.tokens.values().any(|o| *o == org) {
+            return not_found();
+        }
+        let customer = w.id("CU");
+        let mandate = w.id("MD");
+        w.resources.insert(
+            mandate.clone(),
+            Resource {
+                org: org.clone(),
+                kind: "mandates",
+                body: json!({
+                    "id": mandate, "status": "active", "scheme": "bacs", "metadata": {},
+                    "links": { "customer": customer }
+                }),
+            },
+        );
+        let (payment, event) = Fake::new_payment(
+            &mut w,
+            &org,
+            q.amount.unwrap_or(1500),
+            today_plus(3),
+            "pending_submission",
+            json!("From a stranger"),
+            json!({}),
+            json!({ "mandate": mandate }),
+        );
+        (event, payment, mandate)
+    };
+    let delivered = fake.deliver(vec![event]).await;
+    simulated(delivered, json!({ "payment": payment, "mandate": mandate }))
 }

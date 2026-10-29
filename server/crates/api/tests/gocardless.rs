@@ -2322,3 +2322,404 @@ async fn another_group_connecting_the_account_never_gets_the_kept_events() {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+impl T {
+    /// `slug`'s gifts for `contact`, newest first.
+    async fn gifts_of(&self, slug: &str, cookie: &str, contact: &str) -> Vec<Value> {
+        ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/{slug}/contacts/{contact}/gifts"),
+            cookie,
+            None,
+        )
+        .await["rows"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+}
+
+/// ADR 0025: a one-off on a mandate we know (taken in GoCardless's
+/// dashboard, no subscription) is a gift from the mandate's donor,
+/// allocated to its regular gift's code, but not an instalment: no
+/// regular gift, and not on the regular gift's payments.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_one_off_on_a_known_mandate_is_its_donors_gift_not_an_instalment() {
+    let t = setup().await;
+    let (jo, id, _) = t.active().await;
+    let mandate = t.regular("alpha", &t.val, &id).await["mandateId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let pm = t
+        .simulate(&format!("mandates/{mandate}/payment?amount=2500"))
+        .await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.settle().await;
+    let gifts = t.gifts_of("alpha", &t.val, &jo).await;
+    assert_eq!(gifts.len(), 1);
+    let g = &gifts[0];
+    assert_eq!(
+        (
+            g["amount"].clone(),
+            g["status"].clone(),
+            g["providerPaymentId"].clone(),
+            g["regularGiftId"].clone(),
+            g["allocations"][0]["sourceCodeId"].clone()
+        ),
+        (
+            json!(2500),
+            json!("pending"),
+            json!(pm),
+            Value::Null,
+            json!(t.code)
+        )
+    );
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert!(v["payments"].as_array().unwrap().is_empty(), "{v}");
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    assert_eq!(
+        t.gift(g["id"].as_str().unwrap()).await["status"],
+        "completed"
+    );
+    t.consistent("alpha");
+}
+
+/// ADR 0025: a payment nobody here can be matched to (a stranger's
+/// mandate) is kept with no gift and listed; staff match it to a contact
+/// and a code, which makes its gift with GoCardless's facts, and later
+/// events move that gift. Viewers can't match; beta never sees alpha's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stranger_payment_is_kept_unmatched_until_staff_match_it() {
+    let t = setup().await;
+    let status = t.connect("alpha", &t.ann).await;
+    let org = status["organisationId"].as_str().unwrap().to_owned();
+    let jo = t.contact("alpha", &t.sam).await;
+    let pm = t
+        .simulate(&format!("organisations/{org}/payment?amount=1500"))
+        .await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.settle().await;
+    assert!(
+        t.events()
+            .iter()
+            .any(|(_, _, o)| o.as_deref() == Some("unmatched")),
+        "{:?}",
+        t.events()
+    );
+    let listed = ok(
+        &t.w,
+        "GET",
+        "/api/t/alpha/gocardless/unmatched",
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    let row = listed[0].clone();
+    assert_eq!(
+        (
+            row["paymentId"].clone(),
+            row["amount"].clone(),
+            row["status"].clone()
+        ),
+        (json!(pm), json!(1500), json!("pending"))
+    );
+    let id = row["id"].as_str().unwrap().to_owned();
+    t.consistent("alpha");
+
+    // Beta sees none of it, and alpha's payment is 404 under beta.
+    t.connect("beta", &t.bob).await;
+    let theirs = ok(
+        &t.w,
+        "GET",
+        "/api/t/beta/gocardless/unmatched",
+        &t.bob,
+        None,
+    )
+    .await;
+    assert_eq!(theirs, json!([]));
+    let body = json!({ "expected": row["version"], "contactId": jo, "sourceCodeId": t.code });
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/beta/gocardless/unmatched/{id}/match"),
+            &t.bob,
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // A viewer can't match it.
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/gocardless/unmatched/{id}/match"),
+            &t.val,
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // A stale version is 409.
+    let mut stale = body.clone();
+    stale["expected"] = json!(row["version"].as_i64().unwrap() + 1);
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/gocardless/unmatched/{id}/match"),
+            &t.sam,
+            Some(stale),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{out}");
+
+    let matched = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/gocardless/unmatched/{id}/match"),
+        &t.sam,
+        Some(body.clone()),
+    )
+    .await;
+    let gift = matched["giftId"].as_str().unwrap().to_owned();
+    assert_eq!(
+        (
+            matched["gift"]["contactId"].clone(),
+            matched["gift"]["amount"].clone(),
+            matched["gift"]["status"].clone(),
+            matched["gift"]["regularGiftId"].clone()
+        ),
+        (json!(jo), json!(1500), json!("pending"), Value::Null)
+    );
+    let listed = ok(
+        &t.w,
+        "GET",
+        "/api/t/alpha/gocardless/unmatched",
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(listed, json!([]));
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/gocardless/unmatched/{id}/match"),
+            &t.sam,
+            Some(body),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "already_matched");
+
+    // GoCardless collects it: the matched gift follows.
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    assert_eq!(t.gift(&gift).await["status"], "completed");
+    t.consistent("alpha");
+}
+
+/// ADR 0025, staff one-offs: charging a regular gift's mandate once makes
+/// a GoCardless payment tagged with the donor and code, and nothing here
+/// until GoCardless's event, which makes the gift (pending). A retry with
+/// the same key takes it once. No live mandate: refused; a viewer: 403;
+/// alpha's regular gift under beta: 404.
+#[tokio::test(flavor = "multi_thread")]
+async fn staff_charge_a_mandate_once_and_the_gift_comes_from_gocardless() {
+    let t = setup().await;
+    let (jo, id, _) = t.active().await;
+    let key = contracts::new_id();
+    let body = json!({ "amount": 3000, "sourceCodeId": t.code, "clientKey": key });
+    t.fake_post("webhooks/hold", json!({})).await;
+    let started = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+        &t.sam,
+        Some(body.clone()),
+    )
+    .await;
+    let pm = started["paymentId"].as_str().unwrap().to_owned();
+    assert_eq!(started["status"], "pending_submission");
+    let tag = t.fake.resource(&pm).unwrap()["metadata"].clone();
+    assert_eq!(
+        tag,
+        json!({ "keep_contact": jo, "keep_source_code": t.code })
+    );
+    // Never optimistic: no gift before GoCardless's event.
+    t.settle().await;
+    assert!(t.gifts_of("alpha", &t.val, &jo).await.is_empty());
+    t.fake_post("webhooks/release", json!({})).await;
+    t.settle().await;
+    let gifts = t.gifts_of("alpha", &t.val, &jo).await;
+    assert_eq!(gifts.len(), 1);
+    assert_eq!(
+        (
+            gifts[0]["amount"].clone(),
+            gifts[0]["status"].clone(),
+            gifts[0]["providerPaymentId"].clone(),
+            gifts[0]["regularGiftId"].clone()
+        ),
+        (json!(3000), json!("pending"), json!(pm), Value::Null)
+    );
+    // The same key again: the same payment.
+    let again = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+        &t.sam,
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(again["paymentId"], pm.as_str());
+    assert_eq!(t.fake.ids("payments").len(), 1);
+
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+            &t.val,
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+            &t.sam,
+            Some(
+                json!({ "amount": 0, "sourceCodeId": t.code, "clientKey": "nope",
+                         "chargeDate": "soon" }),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["problems"].as_array().unwrap().len(), 3, "{out}");
+    // A regular gift still waiting for its donor has no mandate.
+    let waiting = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!(
+                "/api/t/alpha/regular-gifts/{}/one-off",
+                waiting["id"].as_str().unwrap()
+            ),
+            &t.sam,
+            Some(json!({ "amount": 500, "sourceCodeId": t.code,
+                         "clientKey": contracts::new_id() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "no_mandate");
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/beta/regular-gifts/{id}/one-off"),
+            &t.bob,
+            Some(json!({ "amount": 500, "sourceCodeId": t.beta_code,
+                         "clientKey": contracts::new_id() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    t.consistent("alpha");
+}
+
+/// ADR 0025, Instant Bank Pay: staff get a hosted link for a contact with
+/// no mandate; when the donor pays, the payment (which carries no tag of
+/// ours) is matched through its billing request and becomes the
+/// contact's gift. Alpha's contact under beta: 404.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_instant_bank_pay_link_becomes_the_contacts_gift_when_paid() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let link = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{jo}/instant-payment"),
+        &t.sam,
+        Some(json!({ "amount": 4000, "sourceCodeId": t.code,
+                     "clientKey": contracts::new_id() })),
+    )
+    .await;
+    let br = link["billingRequestId"].as_str().unwrap();
+    assert_eq!(
+        t.fake.resource(br).unwrap()["payment_request"]["metadata"],
+        json!({ "keep_contact": jo, "keep_source_code": t.code })
+    );
+    assert!(t.gifts_of("alpha", &t.val, &jo).await.is_empty());
+    t.sign(link["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let gifts = t.gifts_of("alpha", &t.val, &jo).await;
+    assert_eq!(gifts.len(), 1, "{gifts:?}");
+    assert_eq!(
+        (
+            gifts[0]["amount"].clone(),
+            gifts[0]["status"].clone(),
+            gifts[0]["regularGiftId"].clone(),
+            gifts[0]["allocations"][0]["sourceCodeId"].clone()
+        ),
+        (json!(4000), json!("completed"), Value::Null, json!(t.code))
+    );
+    let listed = ok(
+        &t.w,
+        "GET",
+        "/api/t/alpha/gocardless/unmatched",
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(listed, json!([]), "matched through its billing request");
+    t.consistent("alpha");
+
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/beta/contacts/{jo}/instant-payment"),
+            &t.bob,
+            Some(json!({ "amount": 4000, "sourceCodeId": t.beta_code,
+                         "clientKey": contracts::new_id() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// The nightly catch-up: a payment whose webhook never came is found in
+/// GoCardless's events, stored, counted as missed, and becomes its gift;
+/// a second run finds nothing new.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_webhook_is_recovered_by_the_catch_up() {
+    let t = setup().await;
+    let (jo, _, sub) = t.active().await;
+    let first = api::gocardless::catchup::catch_up(t.w.store.clone(), t.gc.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].missed, 0, "every webhook landed: {first:?}");
+    assert!(first[0].read > 0);
+
+    // The webhook is lost (held and never released).
+    t.fake_post("webhooks/hold", json!({})).await;
+    t.simulate(&format!("subscriptions/{sub}/payment")).await;
+    t.settle().await;
+    assert!(t.gifts_of("alpha", &t.val, &jo).await.is_empty());
+
+    let caught = api::gocardless::catchup::catch_up(t.w.store.clone(), t.gc.clone())
+        .await
+        .unwrap();
+    assert_eq!(caught[0].missed, 1, "{caught:?}");
+    t.settle().await;
+    let gifts = t.gifts_of("alpha", &t.val, &jo).await;
+    assert_eq!(gifts.len(), 1);
+    assert_eq!(gifts[0]["status"], "pending");
+    let again = api::gocardless::catchup::catch_up(t.w.store.clone(), t.gc.clone())
+        .await
+        .unwrap();
+    assert_eq!(again[0].missed, 0);
+    t.consistent("alpha");
+}
