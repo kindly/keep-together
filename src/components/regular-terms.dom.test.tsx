@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { ExpectedPeriodRow, RegularGift, Term } from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
 import { RegularGiftTerms } from './regular-terms'
 
 // Regular-gift terms on the card (regular-gift terms step 6): "Change
@@ -331,6 +332,7 @@ test('an edited split must add up to the new amount', async () => {
   await type(amount(), '12')
   await choose(starts(), '2026-12-01')
   await click(button('Edit split', dialog()))
+  await click(dialog().querySelector('[data-picker="Code that won it"]'))
   const lines = dialog().querySelectorAll('[data-testid="split-line"]')
   // The upgrade's £2 layer, its code not picked yet.
   expect(byTestId('change-problem')).toBe('Pick a code for every line')
@@ -493,4 +495,79 @@ test('the last 12 periods: read once opened, each with what happened', async () 
     ['2026-10', 'Failed (arrears)'],
     ['2026-09', 'Collected'],
   ])
+})
+
+const stale = () => new RustApiError(409, { kind: 'stale' } as never)
+
+test('a 409 on withdraw: the retry sends the row’s counter as read again', async () => {
+  const g = gift({ terms: [term({}), SCHEDULED], scheduled: SCHEDULED })
+  render(g)
+  await click(button('Withdraw change'))
+  writes.withdraw.mockRejectedValueOnce(stale())
+  await click(
+    button('Withdraw change', document.querySelector('[role="alertdialog"]')!),
+  )
+  expect(writes.withdraw).toHaveBeenLastCalledWith('r1', 't1', 2)
+  // The chain read again: someone edited the change (terms version 3).
+  const edited = { ...SCHEDULED, termsVersion: 3, amount: 1300n }
+  render({ ...g, terms: [term({}), edited], scheduled: edited })
+  await click(
+    button('Withdraw change', document.querySelector('[role="alertdialog"]')!),
+  )
+  expect(writes.withdraw).toHaveBeenLastCalledWith('r1', 't1', 3)
+})
+
+test('a 409 on edit or code: the retry sends the current counters, the typing kept', async () => {
+  const g = gift({ terms: [term({}), SCHEDULED], scheduled: SCHEDULED })
+  render(g)
+  await click(button('Edit change'))
+  await type(amount(), '13')
+  writes.edit.mockRejectedValueOnce(stale())
+  await act(async () => dialog().querySelector('form')!.requestSubmit())
+  const moved = { ...SCHEDULED, termsVersion: 5 }
+  render({ ...g, terms: [term({}), moved], scheduled: moved })
+  expect(amount()?.value).toBe('13')
+  await act(async () => dialog().querySelector('form')!.requestSubmit())
+  expect(writes.edit.mock.calls[1][2]).toMatchObject({
+    expected: 5,
+    amount: 1300n,
+  })
+  act(() => root.unmount())
+  root = createRoot(el)
+  render(g)
+  await click(el.querySelector('summary'))
+  await click(button('Change code'))
+  await click(dialog().querySelector('[data-picker="Code that won it"]'))
+  writes.code.mockRejectedValueOnce(stale())
+  await act(async () => dialog().querySelector('form')!.requestSubmit())
+  const recoded = { ...SCHEDULED, codeVersion: 7 }
+  render({ ...g, terms: [term({}), recoded], scheduled: recoded })
+  await act(async () => dialog().querySelector('form')!.requestSubmit())
+  expect(writes.code).toHaveBeenLastCalledWith('r1', 't1', 7, 'v2')
+})
+
+test('a change sent to GoCardless meanwhile can no longer be edited, and says so', async () => {
+  const g = gift({ terms: [term({}), SCHEDULED], scheduled: SCHEDULED })
+  render(g)
+  await click(button('Edit change'))
+  expect(button('Save change', dialog())).toBeDefined()
+  const sent = { ...SCHEDULED, status: 'sent' as const }
+  render({ ...g, terms: [term({}), sent], scheduled: sent })
+  expect(
+    dialog().querySelector('[data-testid="term-unchangeable"]'),
+  ).not.toBeNull()
+  expect(dialog().textContent).toContain('sent to GoCardless meanwhile')
+  expect(button('Save change', dialog())).toBeUndefined()
+})
+
+test('an upgrade with an edited split still needs the code that won it, as the server says', async () => {
+  render(gift())
+  await click(button('Change amount or schedule'))
+  await type(amount(), '12')
+  await choose(starts(), '2026-12-01')
+  await click(button('Edit split', dialog()))
+  const lines = dialog().querySelectorAll('[data-testid="split-line"]')
+  await click(lines[1].querySelector('[data-picker="Code 2"]'))
+  expect(byTestId('change-problem')).toBe('Pick the code that won the upgrade')
+  expect(submitButton()?.disabled).toBe(true)
 })

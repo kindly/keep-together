@@ -78,13 +78,25 @@ export function splitText(
 /** What the card adds for terms: the change button, history, periods. */
 export function RegularGiftTerms({ gift }: { gift: RegularGift }) {
   const canWrite = useCanWrite()
+  // A row's dialog holds its id and reads the row from the chain as it
+  // now is: after a 409 (the chain read again) a retry sends the current
+  // counters, and a row sent to GoCardless meanwhile is said to be.
   const [dialog, setDialog] = useState<
     | { kind: 'change' }
-    | { kind: 'edit'; term: Term }
-    | { kind: 'withdraw'; term: Term }
-    | { kind: 'code'; term: Term }
+    | { kind: 'edit' | 'withdraw' | 'code'; termId: string }
     | null
   >(null)
+  const term =
+    dialog && dialog.kind !== 'change'
+      ? gift.terms.find((t) => t.id === dialog.termId)
+      : undefined
+  const open = (kind: 'edit' | 'withdraw' | 'code') => (t: Term) =>
+    setDialog({ kind, termId: t.id })
+  const close = () => setDialog(null)
+  // Edit and withdraw only while it waits to be sent.
+  const unchangeable =
+    (dialog?.kind === 'edit' || dialog?.kind === 'withdraw') &&
+    term?.status !== 'scheduled'
   const ended = isEnded(gift)
   const uncoded = gift.terms.filter((t) => t.uncoded)
   return (
@@ -103,7 +115,7 @@ export function RegularGiftTerms({ gift }: { gift: RegularGift }) {
             <button
               type="button"
               className="underline"
-              onClick={() => setDialog({ kind: 'code', term: uncoded[0] })}
+              onClick={() => open('code')(uncoded[0])}
             >
               Pick code
             </button>
@@ -114,8 +126,8 @@ export function RegularGiftTerms({ gift }: { gift: RegularGift }) {
         <ScheduledChange
           term={gift.scheduled}
           canWrite={canWrite && !ended}
-          onEdit={(term) => setDialog({ kind: 'edit', term })}
-          onWithdraw={(term) => setDialog({ kind: 'withdraw', term })}
+          onEdit={open('edit')}
+          onWithdraw={open('withdraw')}
         />
       )}
       {canWrite && !ended && (
@@ -130,31 +142,39 @@ export function RegularGiftTerms({ gift }: { gift: RegularGift }) {
       <TermsHistory
         gift={gift}
         canWrite={canWrite}
-        onEdit={(term) => setDialog({ kind: 'edit', term })}
-        onWithdraw={(term) => setDialog({ kind: 'withdraw', term })}
-        onCode={(term) => setDialog({ kind: 'code', term })}
+        onEdit={open('edit')}
+        onWithdraw={open('withdraw')}
+        onCode={open('code')}
       />
       <ExpectedPeriods gift={gift} />
-      {(dialog?.kind === 'change' || dialog?.kind === 'edit') && (
-        <ChangeDialog
-          gift={gift}
-          editing={dialog.kind === 'edit' ? dialog.term : undefined}
-          onClose={() => setDialog(null)}
-        />
-      )}
-      {dialog?.kind === 'withdraw' && (
-        <WithdrawDialog
-          gift={gift}
-          term={dialog.term}
-          onClose={() => setDialog(null)}
-        />
-      )}
-      {dialog?.kind === 'code' && (
-        <CodeDialog
-          gift={gift}
-          term={dialog.term}
-          onClose={() => setDialog(null)}
-        />
+      {unchangeable ? (
+        <DialogFrame
+          title="This change can’t be changed now"
+          description={
+            term?.status === 'withdrawn'
+              ? 'Someone has withdrawn it meanwhile.'
+              : 'It has been sent to GoCardless meanwhile: it can no longer be edited or withdrawn. Make a new change instead.'
+          }
+          onClose={close}
+        >
+          <span data-testid="term-unchangeable" />
+        </DialogFrame>
+      ) : (
+        <>
+          {(dialog?.kind === 'change' || (dialog?.kind === 'edit' && term)) && (
+            <ChangeDialog
+              gift={gift}
+              editing={dialog.kind === 'edit' ? term : undefined}
+              onClose={close}
+            />
+          )}
+          {dialog?.kind === 'withdraw' && term && (
+            <WithdrawDialog gift={gift} term={term} onClose={close} />
+          )}
+          {dialog?.kind === 'code' && term && (
+            <CodeDialog gift={gift} term={term} onClose={close} />
+          )}
+        </>
       )}
     </div>
   )
@@ -507,7 +527,7 @@ function ChangeDialog({
       ? null
       : !effectiveFrom
         ? 'Pick the payment it starts on'
-        : kind === 'upgrade' && !code && !edited
+        : kind === 'upgrade' && !code
           ? 'Pick the code that won the upgrade'
           : kind === 'unchanged'
             ? 'That is no change'

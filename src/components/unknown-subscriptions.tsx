@@ -26,7 +26,8 @@ export function UnknownSubscriptions() {
   const { slug } = useTenant()
   const list = useUnknownSubscriptions()
   const canWrite = useCanWrite()
-  const [adopting, setAdopting] = useState<UnknownSubscription | null>(null)
+  // By id: the dialog reads the row from the list as it now is.
+  const [adopting, setAdopting] = useState<string | null>(null)
   const section = (
     <section
       aria-labelledby="unknown-subscriptions"
@@ -84,7 +85,7 @@ export function UnknownSubscriptions() {
                     <button
                       type="button"
                       className={small}
-                      onClick={() => setAdopting(s)}
+                      onClick={() => setAdopting(s.subscriptionId)}
                     >
                       Adopt
                     </button>
@@ -104,7 +105,7 @@ export function UnknownSubscriptions() {
       {list?.length ? section : null}
       {adopting && (
         <AdoptDialog
-          subscription={adopting}
+          listed={list?.find((s) => s.subscriptionId === adopting)}
           onClose={() => setAdopting(null)}
         />
       )}
@@ -114,12 +115,16 @@ export function UnknownSubscriptions() {
 
 /** Adopt: the code the whole amount goes to, then the regular gift. */
 function AdoptDialog({
-  subscription,
+  listed,
   onClose,
 }: {
-  subscription: UnknownSubscription
+  /** As the list now has it; gone once adopted (by anyone). */
+  listed: UnknownSubscription | undefined
   onClose: () => void
 }) {
+  // The row as first opened, for the description once it has gone.
+  const [opened] = useState(listed)
+  const subscription = listed ?? opened
   const { slug } = useTenant()
   const writes = useTermsWrites()
   const keyFor = useRequestKey()
@@ -129,12 +134,12 @@ function AdoptDialog({
   const [made, setMade] = useState<RegularGift | null>(null)
   async function submit(e: FormEvent) {
     e.preventDefault()
-    if (!code) return
+    if (!code || !listed) return
     setBusy(true)
     setError(null)
     try {
       setMade(
-        await writes.adopt(subscription.subscriptionId, {
+        await writes.adopt(listed.subscriptionId, {
           sourceCodeId: code.id,
           clientKey: keyFor({ sourceCodeId: code.id }),
         }),
@@ -147,6 +152,7 @@ function AdoptDialog({
       setBusy(false)
     }
   }
+  if (!subscription) return null
   return (
     <DialogFrame
       title="Adopt this subscription"
@@ -165,6 +171,12 @@ function AdoptDialog({
             Open the contact
           </Link>
         </p>
+      ) : // Gone while our own adopt is in flight is ours landing.
+      listed === undefined && !busy ? (
+        <p role="status" data-testid="adopt-gone" className="text-sm">
+          Someone else has adopted this subscription already: it is no longer
+          listed.
+        </p>
       ) : (
         <form
           aria-label="Adopt this subscription"
@@ -179,7 +191,7 @@ function AdoptDialog({
           )}
           <button
             type="submit"
-            disabled={!code || busy}
+            disabled={!code || !listed || busy}
             className={`${primary} self-start`}
           >
             {busy ? 'Adopting…' : 'Adopt'}

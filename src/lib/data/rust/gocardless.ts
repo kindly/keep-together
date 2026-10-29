@@ -533,7 +533,13 @@ export function useUnknownSubscriptions():
 export function useTermsWrites() {
   const { slug } = useTenant()
   const qc = useQueryClient()
-  const write = async (id: string, path: Array<string>, body: unknown) => {
+  const write = async (
+    id: string,
+    path: Array<string>,
+    body: unknown,
+    /** The amounts may change: read the forecast (a GoCardless call) again. */
+    forecast = true,
+  ) => {
     try {
       const done = await post<RegularGiftSaved>(
         tenantPath(slug, 'regular-gifts', id, ...path),
@@ -541,9 +547,10 @@ export function useTermsWrites() {
       )
       // The expected periods and GoCardless's forecast follow the chain.
       void qc.invalidateQueries({ queryKey: keys.expected(slug, id) })
-      void qc.invalidateQueries({
-        queryKey: keys.regularGiftForecast(slug, id),
-      })
+      if (forecast)
+        void qc.invalidateQueries({
+          queryKey: keys.regularGiftForecast(slug, id),
+        })
       return landRegularGift(qc, slug, done.view)
     } catch (err) {
       // Someone else's change won: read the chain again before saying so.
@@ -577,10 +584,16 @@ export function useTermsWrites() {
       expected: number,
       changeCodeId: string | null,
     ) =>
-      write(id, ['terms', termId, 'code'], {
-        expected,
-        changeCodeId,
-      } satisfies CodeTerms),
+      write(
+        id,
+        ['terms', termId, 'code'],
+        {
+          expected,
+          changeCodeId,
+        } satisfies CodeTerms,
+        // A code changes no amount: no GoCardless call for the forecast.
+        false,
+      ),
     adopt: async (subscriptionId: string, args: AdoptSubscription) => {
       try {
         const done = await post<RegularGiftSaved>(

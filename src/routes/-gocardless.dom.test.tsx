@@ -485,3 +485,16 @@ test('unmatched: our own match landing never says someone else matched it', asyn
   expect(dialog().textContent).toContain('Matched to Dee Debit.')
   expect(dialog().querySelector('[data-testid="match-gone"]')).toBeNull()
 })
+
+test('subscriptions set up elsewhere: adopted by someone else meanwhile is said, no Adopt', async () => {
+  unknown = [SUB]
+  await unmatchedPage()
+  await click(button('Adopt', el.querySelector('[data-subscription="SB9"]')!))
+  unknown = []
+  await unmatchedPage()
+  const dialog = document.querySelector('[role="dialog"]')!
+  expect(
+    dialog.querySelector('[data-testid="adopt-gone"]')?.textContent,
+  ).toContain('adopted this subscription already')
+  expect(button('Adopt', dialog)).toBeUndefined()
+})
