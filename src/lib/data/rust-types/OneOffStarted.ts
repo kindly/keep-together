@@ -7,4 +7,9 @@ export type OneOffStarted = {
 /**
  * Our record of the request (who asked): the form's `clientKey`.
  */
-requestId: string, paymentId: string, status: string, chargeDate: string, };
+requestId: string, paymentId: string, 
+/**
+ * What GoCardless was asked to collect, in pence: the request's as
+ * first recorded under this key (a retry's own amount is ignored).
+ */
+amount: bigint, status: string, chargeDate: string, };

@@ -99,8 +99,16 @@ export const keys = {
     ['t', slug, 'gocardless', 'status'] as const,
   regularGifts: (slug: string, contactId: string) =>
     ['t', slug, 'gocardless', 'contact', contactId] as const,
-  regularGift: (slug: string, id: string) =>
-    ['t', slug, 'gocardless', 'one', id] as const,
+  /** Every contact's regular gifts (each with its latest payments). */
+  regularGiftLists: (slug: string) =>
+    ['t', slug, 'gocardless', 'contact'] as const,
+  /**
+   * One regular gift's next payments, as GoCardless forecasts them (its
+   * single read, which asks GoCardless): outside `gocardless`, so no
+   * event makes every open card call GoCardless; it lapses instead.
+   */
+  regularGiftForecast: (slug: string, id: string) =>
+    ['t', slug, 'gocardlessForecast', id] as const,
   unmatched: (slug: string) => ['t', slug, 'gocardless', 'unmatched'] as const,
   /** The charity's HMRC details (Settings). */
   hmrcDetails: (slug: string) => ['t', slug, 'hmrcDetails'] as const,

@@ -1,10 +1,10 @@
 import { Link } from '@tanstack/react-router'
-import { useMemo, useState } from 'react'
+import { useId, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import {
   useDirectDebitWrites,
   useGoCardlessStatus,
-  useRegularGift,
+  useRegularGiftForecast,
   useRegularGifts,
 } from '../lib/data'
 import type {
@@ -12,7 +12,7 @@ import type {
   RegularGift,
   RegularGiftFrequency,
 } from '../lib/data'
-import { newKey } from '../lib/contact-form-state'
+import { useRequestKey } from '../lib/request-key'
 import {
   DAYS_OF_MONTH,
   PAYMENT_LABELS,
@@ -167,9 +167,10 @@ export function RegularGiftCard({
   connected: boolean
   children?: (gift: RegularGift) => ReactNode
 }) {
-  // Both refetch on the same events; the single read has the forecast.
-  const own = useRegularGift(listed.id, !isEnded(listed))
-  const gift = own ?? listed
+  // The list is the card (refetched on its events); GoCardless's
+  // forecast of its next payments comes from its own read.
+  const forecast = useRegularGiftForecast(listed.id, !isEnded(listed))
+  const gift = forecast ? { ...listed, upcoming: forecast } : listed
   const canWrite = useCanWrite()
   const [dialog, setDialog] = useState<'oneOff' | 'cancel' | null>(null)
   const ended = isEnded(gift)
@@ -537,22 +538,31 @@ export function AmountField({
   problem: string | null
   label?: string
 }) {
+  const id = useId()
+  // The problem is the field's description, not part of its name, and
+  // said politely: not as an alert on every keystroke.
   return (
-    <label className="flex flex-col gap-1 text-sm">
-      {label}
-      <input
-        inputMode="decimal"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-invalid={problem ? true : undefined}
-        className={`${field} w-32`}
-      />
-      {problem && (
-        <span role="alert" className="text-xs text-red-700">
-          {problem}
-        </span>
-      )}
-    </label>
+    <div className="flex flex-col gap-1 text-sm">
+      <label className="flex flex-col gap-1">
+        {label}
+        <input
+          inputMode="decimal"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          aria-invalid={problem ? true : undefined}
+          aria-describedby={`${id}-problem`}
+          className={`${field} w-32`}
+        />
+      </label>
+      <span
+        id={`${id}-problem`}
+        aria-live="polite"
+        data-testid="amount-problem"
+        className="text-xs text-red-700 empty:hidden"
+      >
+        {problem}
+      </span>
+    </div>
   )
 }
 
@@ -570,20 +580,29 @@ export function DialogFrame({
   title,
   description,
   onClose,
+  busy = false,
   children,
 }: {
   title: string
   description: string
   onClose: () => void
+  /**
+   * A request is in flight: the dialog stays open (Escape, the overlay
+   * and Close do nothing), so its answer (a link, what was taken) is
+   * never lost.
+   */
+  busy?: boolean
   children: ReactNode
 }) {
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent className="md:max-w-lg">
         <DialogTitle>{title}</DialogTitle>
         <DialogDescription>{description}</DialogDescription>
         {children}
-        <DialogClose className={`${small} self-end`}>Close</DialogClose>
+        <DialogClose disabled={busy} className={`${small} self-end`}>
+          Close
+        </DialogClose>
       </DialogContent>
     </Dialog>
   )
@@ -626,7 +645,7 @@ function SetUpDialog({
 }) {
   const writes = useDirectDebitWrites()
   // One key for the dialog: a retry is the same regular gift.
-  const clientKey = useMemo(newKey, [])
+  const keyFor = useRequestKey()
   const [amount, setAmount] = useState('')
   const [frequency, setFrequency] = useState<RegularGiftFrequency>('monthly')
   const [day, setDay] = useState(1)
@@ -645,15 +664,15 @@ function SetUpDialog({
     setBusy(true)
     setError(null)
     try {
+      const asked = {
+        amount: pence,
+        frequency,
+        dayOfMonth: day,
+        ...(frequency === 'yearly' && { month }),
+        sourceCodeId: code.id,
+      }
       setMade(
-        await writes.setUp(contactId, {
-          amount: pence,
-          frequency,
-          dayOfMonth: day,
-          ...(frequency === 'yearly' && { month }),
-          sourceCodeId: code.id,
-          clientKey,
-        }),
+        await writes.setUp(contactId, { ...asked, clientKey: keyFor(asked) }),
       )
     } catch (err) {
       setError(refusal(err, 'Couldn’t set it up', 'Changed by someone else'))
@@ -667,6 +686,7 @@ function SetUpDialog({
       title="Set up Direct Debit"
       description="GoCardless makes a page for the donor to sign up on. Nothing is collected until their mandate is active."
       onClose={onClose}
+      busy={busy}
     >
       {made ? (
         <div className="flex flex-col gap-2 text-sm">
@@ -773,7 +793,7 @@ function OneOffDialog({
   onClose: () => void
 }) {
   const writes = useDirectDebitWrites()
-  const clientKey = useMemo(newKey, [])
+  const keyFor = useRequestKey()
   const [amount, setAmount] = useState('')
   const [chargeDate, setChargeDate] = useState('')
   const [code, setCode] = useState<PickedCode | null>(
@@ -800,13 +820,21 @@ function OneOffDialog({
     setBusy(true)
     setError(null)
     try {
-      const started = await writes.oneOff(gift.id, {
+      const asked = {
         amount: pence,
         ...(chargeDate && { chargeDate }),
         sourceCodeId: code.id,
-        clientKey,
+      }
+      const started = await writes.oneOff(gift.id, {
+        ...asked,
+        clientKey: keyFor(asked),
       })
-      setDone({ chargeDate: started.chargeDate, amount: pence })
+      // What GoCardless was asked for, as the server says: never the
+      // amount typed.
+      setDone({
+        chargeDate: started.chargeDate,
+        amount: BigInt(started.amount),
+      })
     } catch (err) {
       setError(
         refusal(err, 'Couldn’t take the payment', 'Changed by someone else'),
@@ -821,6 +849,7 @@ function OneOffDialog({
       title="Take a one-off payment"
       description="GoCardless collects it once on this donor’s Direct Debit and emails them first. For more than £1,000, ask for a bank transfer."
       onClose={onClose}
+      busy={busy}
     >
       {done ? (
         <p role="status" className="text-sm">
@@ -876,7 +905,7 @@ function InstantPayDialog({
   onClose: () => void
 }) {
   const writes = useDirectDebitWrites()
-  const clientKey = useMemo(newKey, [])
+  const keyFor = useRequestKey()
   const [amount, setAmount] = useState('')
   const [description, setDescription] = useState('')
   const [code, setCode] = useState<PickedCode | null>(null)
@@ -885,6 +914,7 @@ function InstantPayDialog({
   const [link, setLink] = useState<{
     url: string
     expires: string | null
+    amount: bigint
   } | null>(null)
   const problem = oneOffProblem(amount)
   const pence = parsePounds(amount)
@@ -896,13 +926,20 @@ function InstantPayDialog({
     setBusy(true)
     setError(null)
     try {
-      const made = await writes.instantPayment(contactId, {
+      const asked = {
         amount: pence,
         sourceCodeId: code.id,
         ...(description.trim() && { description: description.trim() }),
-        clientKey,
+      }
+      const made = await writes.instantPayment(contactId, {
+        ...asked,
+        clientKey: keyFor(asked),
       })
-      setLink({ url: made.flowUrl, expires: made.flowExpiresAt })
+      setLink({
+        url: made.flowUrl,
+        expires: made.flowExpiresAt,
+        amount: BigInt(made.amount),
+      })
     } catch (err) {
       setError(
         refusal(err, 'Couldn’t make the link', 'Changed by someone else'),
@@ -917,11 +954,12 @@ function InstantPayDialog({
       title="Instant Bank Pay link"
       description="A page where the donor pays once, straight from their bank. The group switches Instant Bank Pay on in GoCardless first. For more than £1,000, ask for a bank transfer."
       onClose={onClose}
+      busy={busy}
     >
       {link ? (
         <div className="flex flex-col gap-2 text-sm">
           <p role="status">
-            Send the donor this link
+            Send the donor this link to pay {formatPence(link.amount)}
             {link.expires &&
               ` (it works until ${formatDay(link.expires.slice(0, 10))})`}
             . The gift shows once they have paid.

@@ -302,3 +302,36 @@ test('unmatched: matched by someone else meanwhile is said plainly', async () =>
     'This payment has been matched already',
   )
 })
+
+test('unmatched: after a 409 the dialog matches against the row read again', async () => {
+  unmatched = [PAYMENT]
+  await unmatchedPage()
+  await click(button('Match to contact'))
+  const dialog = () => document.querySelector('[role="dialog"]')!
+  await click(button('Find Dee', dialog()))
+  await click(button('Pick a code', dialog()))
+  match.mockRejectedValueOnce(new RustApiError(409, { kind: 'stale' } as never))
+  await act(async () => dialog().querySelector('form')!.requestSubmit())
+  expect(dialog().querySelector('[role="alert"]')?.textContent).toContain(
+    'the list has been read again',
+  )
+  // The list's refetch brings the payment's new version.
+  unmatched = [{ ...PAYMENT, version: 5 }]
+  await unmatchedPage()
+  match.mockResolvedValueOnce('g9')
+  await act(async () => dialog().querySelector('form')!.requestSubmit())
+  expect(match.mock.calls[1][0]).toMatchObject({ id: 'u1', version: 5 })
+})
+
+test('unmatched: matched by someone else, the dialog says so and offers no Match', async () => {
+  unmatched = [PAYMENT]
+  await unmatchedPage()
+  await click(button('Match to contact'))
+  unmatched = []
+  await unmatchedPage()
+  const dialog = document.querySelector('[role="dialog"]')!
+  expect(
+    dialog.querySelector('[data-testid="match-gone"]')?.textContent,
+  ).toContain('matched this payment already')
+  expect(button('Match', dialog)).toBeUndefined()
+})

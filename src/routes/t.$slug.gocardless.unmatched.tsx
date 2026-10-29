@@ -31,7 +31,9 @@ export const Route = createFileRoute('/t/$slug/gocardless/unmatched')({
 function UnmatchedPayments() {
   const list = useUnmatchedPayments()
   const canWrite = useCanWrite()
-  const [matching, setMatching] = useState<UnmatchedPayment | null>(null)
+  // The payment by id: the dialog reads its row from the list, so a list
+  // read again (after a 409) gives it the current version.
+  const [matching, setMatching] = useState<string | null>(null)
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-6 p-6">
       <header>
@@ -96,7 +98,7 @@ function UnmatchedPayments() {
                       <button
                         type="button"
                         className={small}
-                        onClick={() => setMatching(p)}
+                        onClick={() => setMatching(p.id)}
                       >
                         Match to contact
                       </button>
@@ -108,8 +110,12 @@ function UnmatchedPayments() {
           </table>
         </div>
       )}
-      {matching && (
-        <MatchDialog payment={matching} onClose={() => setMatching(null)} />
+      {matching && list.data && (
+        <MatchDialog
+          id={matching}
+          payment={list.data.find((p) => p.id === matching)}
+          onClose={() => setMatching(null)}
+        />
       )}
     </main>
   )
@@ -117,12 +123,17 @@ function UnmatchedPayments() {
 
 /** Find the contact, pick the code: the payment's gift is made. */
 function MatchDialog({
-  payment,
+  id,
+  payment: listed,
   onClose,
 }: {
-  payment: UnmatchedPayment
+  id: string
+  /** As the list now has it; gone once matched (by anyone). */
+  payment: UnmatchedPayment | undefined
   onClose: () => void
 }) {
+  // The row as first opened, for the description once it has gone.
+  const [opened] = useState(listed)
   const { slug } = useTenant()
   const match = useMatchPayment()
   const [donor, setDonor] = useState<Extract<
@@ -133,7 +144,8 @@ function MatchDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [giftId, setGiftId] = useState<string | null>(null)
-  const ready = donor !== null && code !== null && !busy
+  const payment = listed ?? opened
+  const ready = listed !== undefined && donor !== null && code !== null && !busy
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -141,7 +153,7 @@ function MatchDialog({
     setBusy(true)
     setError(null)
     try {
-      setGiftId(await match(payment, donor.id, code.id))
+      setGiftId(await match(listed, donor.id, code.id))
     } catch (err) {
       setError(
         refusal(
@@ -155,11 +167,13 @@ function MatchDialog({
     }
   }
 
+  if (!payment) return null
   return (
     <DialogFrame
       title="Match to contact"
       description={`${formatPence(payment.amount)} on ${formatDay(payment.chargeDate)} (${payment.paymentId}). Its gift takes GoCardless’s amount, date and status.`}
       onClose={onClose}
+      busy={busy}
     >
       {giftId ? (
         <p role="status" className="text-sm">
@@ -172,6 +186,10 @@ function MatchDialog({
             Open the gift
           </Link>
         </p>
+      ) : listed === undefined ? (
+        <p role="status" data-testid="match-gone" className="text-sm">
+          Someone else has matched this payment already: it is no longer listed.
+        </p>
       ) : (
         <form
           aria-label="Match to contact"
@@ -179,7 +197,7 @@ function MatchDialog({
           className="flex flex-col gap-3"
         >
           <div className="flex flex-col gap-1 text-sm">
-            <span>Contact</span>
+            <label htmlFor={`${id}-donor`}>Contact</label>
             {donor ? (
               <span className="flex items-baseline gap-2">
                 <span data-testid="match-donor">{donor.displayName}</span>
@@ -193,6 +211,7 @@ function MatchDialog({
               </span>
             ) : (
               <DonorSearch
+                id={`${id}-donor`}
                 existingOnly
                 onPick={(d) => d.kind === 'existing' && setDonor(d)}
               />

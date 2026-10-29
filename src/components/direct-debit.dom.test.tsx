@@ -33,8 +33,8 @@ const writes = {
 vi.mock('../lib/data', () => ({
   useGoCardlessStatus: () => status,
   useRegularGifts: () => gifts,
-  // The card's own read: as listed.
-  useRegularGift: () => undefined,
+  // GoCardless's forecast: none (the list's upcoming stands).
+  useRegularGiftForecast: () => undefined,
   useDirectDebitWrites: () => writes,
 }))
 vi.mock('../lib/tenant', () => ({
@@ -334,6 +334,7 @@ test('a one-off over £1,000 is refused in the form: ask for a bank transfer', a
   writes.oneOff.mockResolvedValue({
     requestId: 'k',
     paymentId: 'PM9',
+    amount: 100_000,
     status: 'pending_submission',
     chargeDate: '2026-11-04',
   })
@@ -359,6 +360,7 @@ test('an Instant Bank Pay link: the same cap, then the link to send', async () =
   writes.instantPayment.mockResolvedValue({
     requestId: 'k',
     billingRequestId: 'BRQ9',
+    amount: 2500,
     flowUrl: 'https://pay.example/ibp/9',
     flowExpiresAt: null,
   })
@@ -371,6 +373,7 @@ test('an Instant Bank Pay link: the same cap, then the link to send', async () =
     dialog().querySelector<HTMLInputElement>('input[aria-label="Payment link"]')
       ?.value,
   ).toBe('https://pay.example/ibp/9')
+  expect(dialog().textContent).toContain('this link to pay £25.00')
 })
 
 test('cancel asks first, then cancels against the mandate version shown', async () => {
@@ -383,4 +386,100 @@ test('cancel asks first, then cancels against the mandate version shown', async 
   expect(writes.cancel).not.toHaveBeenCalled()
   await click(button('Cancel Direct Debit', ask))
   expect(writes.cancel).toHaveBeenCalledWith('r1', 3)
+})
+
+test('a one-off retried after a failure: the same key only if nothing changed; the amount shown is the server’s', async () => {
+  gifts = [gift()]
+  render()
+  await click(button('Take a one-off payment'))
+  await type(amountInput(), '100')
+  writes.oneOff.mockRejectedValueOnce(new Error('GoCardless down'))
+  await submit()
+  expect(dialog().querySelector('[role="alert"]')?.textContent).toBe(
+    'Couldn’t take the payment',
+  )
+  // The same request again: the same key (GoCardless takes it once).
+  writes.oneOff.mockRejectedValueOnce(new Error('GoCardless down'))
+  await submit()
+  const keys = () =>
+    writes.oneOff.mock.calls.map(
+      (c) => (c[1] as { clientKey: string }).clientKey,
+    )
+  expect(keys()[1]).toBe(keys()[0])
+  // Changed: a new key, so the server doesn't send the first request.
+  await type(amountInput(), '50')
+  writes.oneOff.mockResolvedValueOnce({
+    requestId: 'k',
+    paymentId: 'PM9',
+    amount: 5000,
+    status: 'pending_submission',
+    chargeDate: '2026-11-04',
+  })
+  await submit()
+  expect(keys()[2]).not.toBe(keys()[0])
+  expect(writes.oneOff.mock.calls[2][1]).toMatchObject({ amount: 5000n })
+  expect(dialog().textContent).toContain('collect £50.00 on 4 Nov 2026')
+})
+
+test('the one-off says what the server asked GoCardless for, not what was typed', async () => {
+  gifts = [gift()]
+  render()
+  await click(button('Take a one-off payment'))
+  await type(amountInput(), '50')
+  writes.oneOff.mockResolvedValue({
+    requestId: 'k',
+    paymentId: 'PM9',
+    amount: 10_000,
+    status: 'pending_submission',
+    chargeDate: '2026-11-04',
+  })
+  await submit()
+  expect(dialog().textContent).toContain('collect £100.00')
+  expect(dialog().textContent).not.toContain('£50.00')
+})
+
+test('a dialog stays open while its request is in flight: the link is never lost', async () => {
+  let answer!: (l: object) => void
+  writes.instantPayment.mockReturnValue(new Promise((done) => (answer = done)))
+  render()
+  await click(button('Instant Bank Pay link'))
+  await click(button('Pick a code', dialog()))
+  await type(amountInput(), '25')
+  await submit()
+  const close = button('Close', dialog())!
+  expect(close.disabled).toBe(true)
+  await act(async () => {
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    )
+  })
+  expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+  await act(async () =>
+    answer({
+      requestId: 'k',
+      billingRequestId: 'BRQ9',
+      amount: 2500,
+      flowUrl: 'https://pay.example/ibp/9',
+      flowExpiresAt: null,
+    }),
+  )
+  expect(
+    dialog().querySelector<HTMLInputElement>('input[aria-label="Payment link"]')
+      ?.value,
+  ).toBe('https://pay.example/ibp/9')
+})
+
+test('an amount’s problem describes the field, politely, outside its name', async () => {
+  gifts = [gift()]
+  render()
+  await click(button('Take a one-off payment'))
+  await type(amountInput(), '1500')
+  const input = amountInput()!
+  const problem = document.getElementById(
+    input.getAttribute('aria-describedby')!,
+  )!
+  expect(problem.textContent).toBe(ONE_OFF_MAX_MESSAGE)
+  expect(problem.getAttribute('aria-live')).toBe('polite')
+  expect(problem.getAttribute('role')).toBeNull()
+  expect(input.closest('label')?.textContent).toBe('Amount (£)')
 })

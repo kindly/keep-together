@@ -121,9 +121,6 @@ export const regularGiftFromWire = (v: RegularGiftView): RegularGift => ({
   payments: v.payments.map(paymentFromWire),
 })
 
-const isNotFound = (err: unknown) =>
-  err instanceof RustApiError && err.status === 404
-
 // ── reads ──────────────────────────────────────────────────────────────────
 
 /**
@@ -158,27 +155,26 @@ export function useRegularGifts(
 }
 
 /**
- * One regular gift with GoCardless's next payments (only this read asks
- * GoCardless for them); null for an unknown id, undefined while loading.
+ * One regular gift's next payments as GoCardless forecasts them (its
+ * single read, the one that asks GoCardless): read when a live card
+ * shows, kept five minutes, and refetched by no event, so activity
+ * elsewhere never costs a GoCardless call per open card. A terms write
+ * refetches it (the amounts change). Undefined while loading.
  */
-export function useRegularGift(
+export function useRegularGiftForecast(
   id: string,
   enabled = true,
-): RegularGift | null | undefined {
+): Array<Upcoming> | undefined {
   const { slug } = useTenant()
   return useQuery({
-    queryKey: keys.regularGift(slug, id),
+    queryKey: keys.regularGiftForecast(slug, id),
     enabled,
-    queryFn: async () => {
-      try {
-        return regularGiftFromWire(
-          await get<RegularGiftView>(tenantPath(slug, 'regular-gifts', id)),
-        )
-      } catch (err) {
-        if (isNotFound(err)) return null
-        throw err
-      }
-    },
+    staleTime: 5 * 60_000,
+    retry: false,
+    queryFn: async () =>
+      regularGiftFromWire(
+        await get<RegularGiftView>(tenantPath(slug, 'regular-gifts', id)),
+      ).upcoming,
   }).data
 }
 
@@ -204,10 +200,19 @@ export function useUnmatchedPayments(): {
 
 // ── writes ─────────────────────────────────────────────────────────────────
 
+/** Whether `was` has seen a change `next` hasn't: a counter of it is ahead. */
+function newer(was: RegularGift, next: RegularGift): boolean {
+  return (
+    was.setupVersion > next.setupVersion ||
+    was.mandateVersion > next.mandateVersion
+  )
+}
+
 /**
- * A regular gift as the server read it back after a write: into its own
- * read and its contact's list, replacing what was there (never an answer
- * older than what is shown: the event refetch follows).
+ * A regular gift as the server read it back after a write: into its
+ * contact's list, replacing what was there, unless the list already
+ * holds a newer state (an event's refetch landed first): then that
+ * stays. Not on the list yet: the list is read again.
  */
 export function landRegularGift(
   qc: QueryClient,
@@ -215,18 +220,12 @@ export function landRegularGift(
   view: RegularGiftView,
 ): RegularGift {
   const gift = regularGiftFromWire(view)
-  qc.setQueryData(keys.regularGift(slug, gift.id), (was?: RegularGift | null) =>
-    // The single read has GoCardless's forecast; a write's answer may not.
-    was && gift.upcoming.length === 0
-      ? { ...gift, upcoming: was.upcoming }
-      : gift,
-  )
   const list = keys.regularGifts(slug, gift.contactId)
   const listed = qc.getQueryData<Array<RegularGift>>(list)
   if (listed?.some((g) => g.id === gift.id))
     qc.setQueryData(
       list,
-      listed.map((g) => (g.id === gift.id ? gift : g)),
+      listed.map((g) => (g.id === gift.id && !newer(g, gift) ? gift : g)),
     )
   else void qc.invalidateQueries({ queryKey: list })
   return gift
@@ -268,6 +267,17 @@ export function useDirectDebitWrites() {
   const { slug } = useTenant()
   const qc = useQueryClient()
   const saved = (done: RegularGiftSaved) => landRegularGift(qc, slug, done.view)
+  // Someone else's change won: read the regular gifts again before
+  // saying so, so a retry sends their counter, event or no event.
+  const fresh = async <T>(call: Promise<T>): Promise<T> => {
+    try {
+      return await call
+    } catch (err) {
+      if (err instanceof RustApiError && err.error.kind === 'stale')
+        await qc.invalidateQueries({ queryKey: keys.regularGiftLists(slug) })
+      throw err
+    }
+  }
   return {
     setUp: async (contactId: string, args: SetUpArgs) =>
       saved(
@@ -278,16 +288,20 @@ export function useDirectDebitWrites() {
       ),
     newLink: async (id: string, expected: number) =>
       saved(
-        await post<RegularGiftSaved>(
-          tenantPath(slug, 'regular-gifts', id, 'link'),
-          { expected },
+        await fresh(
+          post<RegularGiftSaved>(
+            tenantPath(slug, 'regular-gifts', id, 'link'),
+            { expected },
+          ),
         ),
       ),
     cancel: async (id: string, expected: number) =>
       saved(
-        await post<RegularGiftSaved>(
-          tenantPath(slug, 'regular-gifts', id, 'cancel'),
-          { expected },
+        await fresh(
+          post<RegularGiftSaved>(
+            tenantPath(slug, 'regular-gifts', id, 'cancel'),
+            { expected },
+          ),
         ),
       ),
     /** The gift follows from GoCardless's events (pending at first). */

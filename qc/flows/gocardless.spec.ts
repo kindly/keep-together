@@ -98,6 +98,11 @@ test.describe('GoCardless (fake)', { annotation: GIFT_ROUTE }, () => {
       `/api/t/${slug}/gocardless`,
     )
     expect(connected.connected).toBe(true)
+    // Connected again just now (not left as it was), to the account held.
+    if (status.organisationId !== null)
+      expect(connected.organisationId).toBe(status.organisationId)
+    if (status.connectedAt !== null)
+      expect(connected.connectedAt!).toBeGreaterThan(status.connectedAt)
 
     // Staff set up £12.50 a month; the donor signs on the hosted page.
     const r = await recorder(instance, users.a, slug)

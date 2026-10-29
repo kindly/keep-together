@@ -4213,3 +4213,56 @@ async fn cancelling_the_original_gift_never_kills_an_adopted_one_on_the_mandate(
         "active"
     );
 }
+
+/// UI review H1: a one-off or Instant Bank Pay answer says what
+/// GoCardless was asked for, which under a reused key is the first
+/// request's: a form that changed its amount and kept its key would
+/// otherwise confirm an amount nobody charged. (The SPA mints a new key
+/// whenever the form's request changes.)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_under_the_same_key_answers_the_amount_first_asked() {
+    let t = setup().await;
+    let (jo, id, _) = t.active().await;
+    let key = contracts::new_id();
+    let first = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+        &t.sam,
+        Some(json!({ "amount": 3000, "sourceCodeId": t.code, "clientKey": key })),
+    )
+    .await;
+    assert_eq!(first["amount"], 3000);
+    let changed = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+        &t.sam,
+        Some(json!({ "amount": 5000, "sourceCodeId": t.code, "clientKey": key })),
+    )
+    .await;
+    assert_eq!(
+        (changed["paymentId"].clone(), changed["amount"].clone()),
+        (first["paymentId"].clone(), json!(3000))
+    );
+
+    let key = contracts::new_id();
+    let link = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{jo}/instant-payment"),
+        &t.sam,
+        Some(json!({ "amount": 4000, "sourceCodeId": t.code, "clientKey": key })),
+    )
+    .await;
+    assert_eq!(link["amount"], 4000);
+    let again = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{jo}/instant-payment"),
+        &t.sam,
+        Some(json!({ "amount": 2500, "sourceCodeId": t.code, "clientKey": key })),
+    )
+    .await;
+    assert_eq!(again["amount"], 4000);
+}

@@ -144,7 +144,7 @@ export {
   useGoCardlessAdmin,
   useGoCardlessStatus,
   useMatchPayment,
-  useRegularGift,
+  useRegularGiftForecast,
   useRegularGifts,
   useUnmatchedPayments,
 } from './rust/gocardless'

@@ -86,8 +86,9 @@ const INVALIDATES: Partial<
   // B2: a gift shows on its page, its contact's panel and my recent gifts;
   // a declaration changes coverage there and on the Gift Aid panel. The
   // record-gift save's contact writes come as `contacts` events.
-  // A regular gift's card lists its payments' gifts (GoCardless D3).
-  gifts: (slug) => [keys.gifts(slug), keys.gocardless(slug)],
+  // A regular gift's card lists its payments' gifts (GoCardless D3):
+  // the contacts' lists only, which never call GoCardless.
+  gifts: (slug) => [keys.gifts(slug), keys.regularGiftLists(slug)],
   gift_aid_declarations: (slug) => [keys.declarations(slug), keys.gifts(slug)],
   // G3: a claim shows in the list, on its page and in every preview
   // (its gifts are no longer eligible). Its gifts' locks come as `gifts`
