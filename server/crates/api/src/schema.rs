@@ -50,6 +50,10 @@ pub fn org_migrations() -> Migrations<'static> {
             "",
             rebuild_with_deferred_keys(giving::MIGRATION_DIRECT_DEBIT),
         ),
+        // 18: gifts are every payment attempt (ADR 0025): `gifts.status`
+        // widened and the provider columns (a rebuild), Direct Debit
+        // payments rebuilt, one gift per payment backfilled
+        M::up_with_hook("", rebuild_with_deferred_keys(giving::MIGRATION_UNIFIED)),
     ])
 }
 

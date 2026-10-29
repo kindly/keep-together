@@ -369,6 +369,19 @@ impl T {
             .as_u16()
     }
 
+    /// ADR 0025's consistency check: every matched payment of `slug` has
+    /// exactly one gift agreeing with it.
+    fn consistent(&self, slug: &str) {
+        let tenant = if slug == "alpha" {
+            &self.w.alpha
+        } else {
+            &self.w.beta
+        };
+        let db = self.w.store.org(&tenant.id).unwrap();
+        let problems = db.read(|r| giving::regular::consistency(r)).unwrap();
+        assert!(problems.is_empty(), "{slug}: {problems:?}");
+    }
+
     fn events(&self) -> Vec<(String, Option<String>, Option<String>)> {
         self.w
             .store
@@ -590,7 +603,7 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     t.settle().await;
     assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "active");
 
-    // A payment is made: pending, no gift.
+    // A payment is made: its gift at once, pending (not money received).
     let pm = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
         .as_str()
         .unwrap()
@@ -598,7 +611,7 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     t.settle().await;
     let v = t.regular("alpha", &t.val, &id).await;
     assert_eq!(v["payments"][0]["status"], "pending");
-    assert_eq!(v["payments"][0]["giftId"], Value::Null);
+    let gift = v["payments"][0]["giftId"].as_str().unwrap().to_owned();
     let gifts = ok(
         &t.w,
         "GET",
@@ -607,14 +620,30 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
         None,
     )
     .await;
-    assert_eq!(gifts["rows"].as_array().unwrap().len(), 0);
+    assert_eq!(gifts["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        (
+            gifts["rows"][0]["id"].clone(),
+            gifts["rows"][0]["status"].clone(),
+            gifts["rows"][0]["provider"].clone(),
+            gifts["rows"][0]["providerPaymentId"].clone(),
+            gifts["rows"][0]["regularGiftId"].clone()
+        ),
+        (
+            json!(gift),
+            json!("pending"),
+            json!("gocardless"),
+            json!(pm),
+            json!(id)
+        )
+    );
 
-    // Confirmed: the gift.
+    // Confirmed: the same gift, completed.
     t.simulate(&format!("payments/{pm}/confirm")).await;
     t.settle().await;
     let v = t.regular("alpha", &t.val, &id).await;
     assert_eq!(v["payments"][0]["status"], "confirmed");
-    let gift = v["payments"][0]["giftId"].as_str().unwrap().to_owned();
+    assert_eq!(v["payments"][0]["giftId"], gift.as_str());
     let g = ok(
         &t.w,
         "GET",
@@ -690,7 +719,8 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
     assert_eq!(out["reason"], "direct_debit_by_hand");
 
-    // The next payment fails: no gift, shown on the regular gift.
+    // The next payment fails: its gift failed (never money received),
+    // shown on the regular gift.
     let pm2 = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
         .as_str()
         .unwrap()
@@ -699,7 +729,14 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     t.settle().await;
     let v = t.regular("alpha", &t.val, &id).await;
     assert_eq!(v["lastFailure"]["paymentId"], pm2.as_str());
-    assert_eq!(v["lastFailure"]["giftId"], Value::Null);
+    let failed = t.gift(v["lastFailure"]["giftId"].as_str().unwrap()).await;
+    assert_eq!(failed["status"], "failed");
+    assert!(
+        failed["voidReason"]
+            .as_str()
+            .unwrap()
+            .contains("insufficient funds")
+    );
     assert!(
         v["lastFailure"]["reason"]
             .as_str()
@@ -707,8 +744,8 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
             .contains("insufficient funds")
     );
 
-    // The first is charged back: its gift void, with the reason; then the
-    // chargeback is cancelled: un-void.
+    // The first is charged back: its gift charged back, with the reason;
+    // then the chargeback is cancelled: completed again.
     t.simulate(&format!("payments/{pm}/charge_back")).await;
     t.settle().await;
     let g = ok(
@@ -719,7 +756,7 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
         None,
     )
     .await;
-    assert_eq!(g["status"], "void");
+    assert_eq!(g["status"], "charged_back");
     let v = t.regular("alpha", &t.val, &id).await;
     let first = v["payments"]
         .as_array()
@@ -751,6 +788,18 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     )
     .await;
     assert_eq!(g["status"], "completed");
+
+    // Two payments, two gifts, each matching its payment.
+    let gifts = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/gifts"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(gifts["rows"].as_array().unwrap().len(), 2);
+    t.consistent("alpha");
 
     // The donor's bank cancels the mandate: the regular gift ends.
     t.simulate(&format!("mandates/{mandate}/cancel")).await;
@@ -1039,7 +1088,7 @@ fn a_routing_read_that_fails_fails_the_batch() {
 /// late failure). The gift goes void with the reason; if a retry is then
 /// collected, the same gift counts again (one payment id, one gift).
 #[tokio::test(flavor = "multi_thread")]
-async fn a_late_failure_voids_the_gift_and_a_collected_retry_restores_it() {
+async fn a_late_failure_fails_the_gift_and_a_collected_retry_completes_it() {
     let t = setup().await;
     let (jo, id, sub) = t.active().await;
     let (pm, gift) = t.collected(&id, &sub).await;
@@ -1047,7 +1096,14 @@ async fn a_late_failure_voids_the_gift_and_a_collected_retry_restores_it() {
 
     t.simulate(&format!("payments/{pm}/fail")).await;
     t.settle().await;
-    assert_eq!(t.gift(&gift).await["status"], "void");
+    let g = t.gift(&gift).await;
+    assert_eq!(g["status"], "failed");
+    assert!(
+        g["voidReason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Failed (GoCardless): ")
+    );
     let v = t.regular("alpha", &t.val, &id).await;
     let row = payment(&v, &pm);
     assert_eq!(row["status"], "failed");
@@ -1065,16 +1121,15 @@ async fn a_late_failure_voids_the_gift_and_a_collected_retry_restores_it() {
         None,
     )
     .await;
-    assert!(
-        history
-            .to_string()
-            .contains("failed after it was collected"),
-        "{history}"
-    );
+    assert!(history.to_string().contains("failed"), "{history}");
 
     t.simulate(&format!("payments/{pm}/confirm")).await;
     t.settle().await;
-    assert_eq!(t.gift(&gift).await["status"], "completed");
+    let g = t.gift(&gift).await;
+    assert_eq!(
+        (g["status"].clone(), g["voidReason"].clone()),
+        (json!("completed"), Value::Null)
+    );
     let gifts = ok(
         &t.w,
         "GET",
@@ -1088,13 +1143,15 @@ async fn a_late_failure_voids_the_gift_and_a_collected_retry_restores_it() {
         1,
         "never a second gift"
     );
+    t.consistent("alpha");
 }
 
-/// Reviewer M4: a gift staff voided stays void when a chargeback on it is
-/// cancelled; and staff can't un-void a charged-back gift (the money went
-/// back to the donor).
+/// Reviewer M4, under ADR 0025: a gift staff voided stays void whatever
+/// its payment does next; staff can't make a charged-back gift completed
+/// (its status is GoCardless's); and un-voiding a provider gift gives it
+/// its payment's status, not "completed".
 #[tokio::test(flavor = "multi_thread")]
-async fn a_staff_void_outlives_a_cancelled_chargeback_and_returned_money_stays_void() {
+async fn a_staff_void_outlives_the_payment_and_a_provider_status_is_the_providers() {
     let t = setup().await;
     let (_, id, sub) = t.active().await;
 
@@ -1114,12 +1171,13 @@ async fn a_staff_void_outlives_a_cancelled_chargeback_and_returned_money_stays_v
         .await;
     t.settle().await;
     assert_eq!(t.gift(&gift).await["status"], "void", "staff's void kept");
+    t.consistent("alpha");
 
     let (pm2, gift2) = t.collected(&id, &sub).await;
     t.simulate(&format!("payments/{pm2}/charge_back")).await;
     t.settle().await;
     let g = t.gift(&gift2).await;
-    assert_eq!(g["status"], "void");
+    assert_eq!(g["status"], "charged_back");
     let (s, out) =
         t.w.call(
             "POST",
@@ -1129,12 +1187,37 @@ async fn a_staff_void_outlives_a_cancelled_chargeback_and_returned_money_stays_v
         )
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
-    assert_eq!(out["reason"], "direct_debit_returned");
-    // The system still restores it when the chargeback is cancelled.
+    assert_eq!(out["reason"], "provider_status");
+    // Voided by staff, then un-voided: charged back again, with why.
+    let v = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{gift2}/status"),
+        &t.sam,
+        Some(json!({ "expected": g["statusVersion"], "status": "void", "reason": "test" })),
+    )
+    .await;
+    let v = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{gift2}/status"),
+        &t.sam,
+        Some(json!({ "expected": v["counter"], "status": "completed" })),
+    )
+    .await;
+    assert_eq!(v["view"]["status"], "charged_back");
+    assert!(
+        v["view"]["voidReason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Charged back (GoCardless)")
+    );
+    // The system completes it when the chargeback is cancelled.
     t.simulate(&format!("payments/{pm2}/cancel_chargeback"))
         .await;
     t.settle().await;
     assert_eq!(t.gift(&gift2).await["status"], "completed");
+    t.consistent("alpha");
 }
 
 /// Codex 4 and reviewer L3: a mandate's events can overtake its billing
@@ -1703,10 +1786,11 @@ impl T {
 }
 
 /// A Direct Debit gift already claimed for Gift Aid, then charged back
-/// or failed late: voided with GoCardless's reason (a claimed gift needs
-/// one), and the next claim pays its tax back (an adjustment). Its void
-/// is final, so if the money comes back after all it is recorded again,
-/// as a new gift: one completed gift per payment.
+/// or failed late: its status follows GoCardless with GoCardless's reason
+/// (a claimed gift needs one), it keeps the amount and date it was
+/// claimed on, and the next claim pays its tax back (an adjustment). If
+/// the money comes back before that claim, the same gift is completed
+/// again and nothing is repaid: one gift per payment.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not_refused() {
     let t = setup().await;
@@ -1747,7 +1831,7 @@ async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not
     t.simulate(&format!("payments/{pm}/charge_back")).await;
     t.settle().await;
     let g = t.gift(&gift).await;
-    assert_eq!(g["status"], "void");
+    assert_eq!(g["status"], "charged_back");
     let reason = g["voidReason"].as_str().unwrap();
     assert!(
         reason.starts_with("Charged back (GoCardless): "),
@@ -1764,24 +1848,20 @@ async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not
         t.events()
     );
 
-    // The chargeback is cancelled: the claimed void stays, a new gift
-    // records the money.
+    // The chargeback is cancelled before the next claim: the same gift,
+    // completed and still claimed, and nothing to pay back.
     t.simulate(&format!("payments/{pm}/cancel_chargeback"))
         .await;
     t.settle().await;
-    assert_eq!(t.gift(&gift).await["status"], "void");
-    let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
-    let again = row["giftId"].as_str().unwrap().to_owned();
-    assert_ne!(again, gift);
-    let g = t.gift(&again).await;
+    let g = t.gift(&gift).await;
     assert_eq!(
-        (
-            g["status"].clone(),
-            g["reference"].clone(),
-            g["claimId"].clone()
-        ),
-        (json!("completed"), json!(pm), Value::Null)
+        (g["status"].clone(), g["claimId"].clone()),
+        (json!("completed"), claim["id"].clone())
     );
+    let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
+    assert_eq!(row["giftId"], gift.as_str());
+    assert_eq!(t.adjustments().await, json!([]));
+    t.consistent("alpha");
 
     // A later payment, claimed, then failed late: the same.
     let pm2 = t.simulate(&pay(3)).await["payment"]
@@ -1799,14 +1879,26 @@ async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not
     t.simulate(&format!("payments/{pm2}/fail")).await;
     t.settle().await;
     let g = t.gift(&gift2).await;
-    assert_eq!(g["status"], "void");
+    assert_eq!(g["status"], "failed");
     assert!(
         g["voidReason"]
             .as_str()
             .unwrap()
-            .starts_with("Failed after it was collected (GoCardless): ")
+            .starts_with("Failed (GoCardless): ")
     );
     assert!(t.adjustments().await.to_string().contains(gift2.as_str()));
+    // A retry on another day while claimed: the gift keeps the date it was
+    // claimed on; the payment row has the new one.
+    let claimed_on = g["receivedOn"].clone();
+    t.simulate(&format!("payments/{pm2}/retry?charge_date={}", uk_day(4)))
+        .await;
+    t.settle().await;
+    let g = t.gift(&gift2).await;
+    assert_eq!(
+        (g["status"].clone(), g["receivedOn"].clone()),
+        (json!("pending"), claimed_on)
+    );
+    t.consistent("alpha");
 }
 
 impl T {
@@ -1938,10 +2030,10 @@ async fn switching_accounts_keeps_the_old_accounts_events_for_switching_back() {
 }
 
 /// Second review L-a: a gift is dated when GoCardless collected the money,
-/// which decides its tax year. A late failure retried and collected on
-/// another day is a new gift on that day; the failed attempt's stays void.
+/// which decides its tax year. Under ADR 0025 a late failure retried and
+/// collected on another day is the same gift, moved to that day.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_retry_collected_on_another_day_is_a_gift_on_that_day() {
+async fn a_retry_collected_on_another_day_moves_the_same_gift_to_that_day() {
     let t = setup().await;
     let (jo, id, sub) = t.active().await;
     let first_day = uk_day(-2);
@@ -1955,32 +2047,33 @@ async fn a_retry_collected_on_another_day_is_a_gift_on_that_day() {
         .to_owned();
     t.simulate(&format!("payments/{pm}/confirm")).await;
     t.settle().await;
-    let first = payment(&t.regular("alpha", &t.val, &id).await, &pm)["giftId"]
+    let gift = payment(&t.regular("alpha", &t.val, &id).await, &pm)["giftId"]
         .as_str()
         .unwrap()
         .to_owned();
     t.simulate(&format!("payments/{pm}/fail")).await;
     t.settle().await;
-    assert_eq!(t.gift(&first).await["status"], "void");
+    assert_eq!(t.gift(&gift).await["status"], "failed");
 
     let retry_day = uk_day(5);
     t.simulate(&format!("payments/{pm}/retry?charge_date={retry_day}"))
         .await;
+    t.settle().await;
+    let g = t.gift(&gift).await;
+    assert_eq!(
+        (g["status"].clone(), g["receivedOn"].clone()),
+        (json!("pending"), json!(retry_day))
+    );
     t.simulate(&format!("payments/{pm}/confirm")).await;
     t.settle().await;
     let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
     assert_eq!(row["chargeDate"], retry_day.as_str());
-    let again = row["giftId"].as_str().unwrap().to_owned();
-    assert_ne!(again, first);
-    let g = t.gift(&again).await;
+    assert_eq!(row["giftId"], gift.as_str());
+    let g = t.gift(&gift).await;
     assert_eq!(
         (g["status"].clone(), g["receivedOn"].clone()),
-        (json!("completed"), json!(retry_day))
-    );
-    let f = t.gift(&first).await;
-    assert_eq!(
-        (f["status"].clone(), f["receivedOn"].clone()),
-        (json!("void"), json!(first_day))
+        (json!("completed"), json!(retry_day)),
+        "dated the day the money was collected"
     );
     let gifts = ok(
         &t.w,
@@ -1990,56 +2083,12 @@ async fn a_retry_collected_on_another_day_is_a_gift_on_that_day() {
         None,
     )
     .await;
-    let completed = gifts["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|g| g["status"] == "completed")
-        .count();
-    assert_eq!(completed, 1, "one completed gift per payment");
-}
-
-/// Second review L-b: a Direct Debit gift whose payment was recorded
-/// again as another gift (a retry on another day here; or a claimed void
-/// whose claim was later deleted) can't be un-voided: a clear 422, not
-/// the unique index's 500.
-#[tokio::test(flavor = "multi_thread")]
-async fn un_voiding_a_gift_whose_payment_was_recorded_again_is_refused_clearly() {
-    let t = setup().await;
-    let (_, id, sub) = t.active().await;
-    let pm = t
-        .simulate(&format!(
-            "subscriptions/{sub}/payment?charge_date={}",
-            uk_day(-2)
-        ))
-        .await["payment"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    t.simulate(&format!("payments/{pm}/confirm")).await;
-    t.settle().await;
-    let first = payment(&t.regular("alpha", &t.val, &id).await, &pm)["giftId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    t.simulate(&format!("payments/{pm}/fail")).await;
-    t.settle().await;
-    t.simulate(&format!("payments/{pm}/retry?charge_date={}", uk_day(5)))
-        .await;
-    t.simulate(&format!("payments/{pm}/confirm")).await;
-    t.settle().await;
-    let g = t.gift(&first).await;
-    assert_eq!(g["status"], "void");
-    let (s, out) =
-        t.w.call(
-            "POST",
-            &format!("/api/t/alpha/gifts/{first}/status"),
-            &t.sam,
-            Some(json!({ "expected": g["statusVersion"], "status": "completed" })),
-        )
-        .await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
-    assert_eq!(out["reason"], "direct_debit_recorded_again");
+    assert_eq!(
+        gifts["rows"].as_array().unwrap().len(),
+        1,
+        "one gift per payment"
+    );
+    t.consistent("alpha");
 }
 
 /// Second review L-c: a disconnect and another group's connect to the same

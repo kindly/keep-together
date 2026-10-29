@@ -49,6 +49,7 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::MIGRATION_CLAIM_LOCK),
         // On an empty file: no rows for the rebuild to carry.
         M::up(giving::MIGRATION_DIRECT_DEBIT),
+        M::up(giving::MIGRATION_UNIFIED),
     ])
 }
 
@@ -224,6 +225,7 @@ impl World {
             reference: None,
             allocations: vec![row(&self.street.version, amount)],
             client_key: None,
+            origin: None,
         }
     }
 
@@ -1376,4 +1378,167 @@ fn claim_reads() {
     assert!(read(&w.a, |c| Ok(giving::voided_in_claim(c, CLAIM_B)?)).is_empty());
     // B's file has none of it.
     assert!(read(&w.b, |c| Ok(giving::voided_in_claims(c)?)).is_empty());
+}
+
+/// Set a gift's status as the system (a provider's word), with `reason`.
+fn provider_says(w: &World, id: &str, status: Status, reason: Option<&str>) {
+    tx(&w.a, |ctx| {
+        execute(
+            ctx,
+            &STATUS,
+            StatusPayload {
+                status,
+                reason: reason.map(str::to_owned),
+            },
+            Exec::update(id, None, Source::System),
+        )
+    })
+    .unwrap();
+}
+
+/// ADR 0025, never optimistic: pending, failed, cancelled, refunded,
+/// charged-back and void gifts count for nothing. Income
+/// (`received_total`) and Gift Aid's eligibility reads (`unclaimed_*`)
+/// see only the completed gift, and a claim can't take the others.
+#[test]
+fn only_money_received_counts_as_income_or_can_be_claimed() {
+    let w = world();
+    let received = w.create(w.gift(1000)).unwrap();
+    let mut others = vec![];
+    for (i, status) in [
+        Status::Pending,
+        Status::Failed,
+        Status::Cancelled,
+        Status::Refunded,
+        Status::ChargedBack,
+        Status::Void,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = w.create(w.gift(100 * (i as i64 + 1))).unwrap();
+        provider_says(&w, &id, status, Some("not collected"));
+        others.push((id, status));
+    }
+    let mut early = w.gift(5000);
+    early.received_on = "2020-01-01".into();
+    let old_pending = w.create(early).unwrap();
+    provider_says(&w, &old_pending, Status::Pending, None);
+
+    assert_eq!(
+        read(&w.a, |c| Ok(giving::received_total(
+            c,
+            "2026-01-01",
+            "2026-12-31"
+        )?)),
+        1000,
+        "income is the completed gift alone"
+    );
+    let claimable = read(&w.a, |c| {
+        Ok(giving::unclaimed_between(c, "2022-01-01", "2026-12-31")?)
+    });
+    assert_eq!(
+        claimable.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(),
+        [received.as_str()]
+    );
+    assert_eq!(
+        read(&w.a, |c| Ok(giving::unclaimed_before(c, "2022-01-01")?)),
+        0,
+        "a pending gift isn't even too old to claim"
+    );
+    for (id, status) in &others {
+        let refused = reason(lock(&w, id, CLAIM_A).unwrap_err());
+        let expected = if *status == Status::Void {
+            "void_gift"
+        } else {
+            "not_received"
+        };
+        assert_eq!(refused, expected, "{status:?}");
+    }
+    lock(&w, &received, CLAIM_A).unwrap();
+    // Every status is listed, marked: none hidden.
+    let page = read(&w.a, |c| giving::by_contact(c, &w.jo, None, 50));
+    assert_eq!(page.rows.len(), 8);
+}
+
+/// Staff set completed or void, never a provider's status; on a gift
+/// entered by hand there is no other.
+#[test]
+fn staff_set_completed_or_void_only() {
+    let w = world();
+    let id = w.create(w.gift(1000)).unwrap();
+    for status in [
+        Status::Pending,
+        Status::Failed,
+        Status::Cancelled,
+        Status::Refunded,
+        Status::ChargedBack,
+    ] {
+        let err = tx(&w.a, |ctx| {
+            giving::set_status(ctx, &id, 1, status, None, Source::Ui)
+        })
+        .unwrap_err();
+        assert_eq!(reason(err), "provider_status", "{status:?}");
+    }
+    tx(&w.a, |ctx| {
+        giving::set_status(ctx, &id, 1, Status::Void, None, Source::Ui)
+    })
+    .unwrap();
+}
+
+/// ADR 0025 decision 5: a claimed gift whose money stops counting, for
+/// any reason (charged back, failed late, cancelled, refunded), is what
+/// the next claim pays back, with the provider's reason; one whose money
+/// comes back before then is owed nothing. It keeps its claimed amount
+/// and date throughout.
+#[test]
+fn a_claimed_gift_that_stops_counting_is_paid_back_whatever_the_reason() {
+    let w = world();
+    let mut ids = vec![];
+    for status in [
+        Status::ChargedBack,
+        Status::Failed,
+        Status::Cancelled,
+        Status::Refunded,
+    ] {
+        let id = w.create(w.gift(1000)).unwrap();
+        lock(&w, &id, CLAIM_A).unwrap();
+        provider_says(&w, &id, status, Some("the bank said so"));
+        ids.push(id);
+    }
+    let owed = read(&w.a, |c| Ok(giving::voided_in_claims(c)?));
+    assert_eq!(
+        owed.iter().map(|v| v.id.clone()).collect::<Vec<_>>(),
+        ids,
+        "each is paid back"
+    );
+    assert!(
+        owed.iter()
+            .all(|v| v.void_reason.as_deref() == Some("the bank said so"))
+    );
+    // Stopping counting needs a reason while claimed.
+    let id = w.create(w.gift(300)).unwrap();
+    lock(&w, &id, CLAIM_A).unwrap();
+    let err = tx(&w.a, |ctx| {
+        execute(
+            ctx,
+            &STATUS,
+            StatusPayload {
+                status: Status::ChargedBack,
+                reason: None,
+            },
+            Exec::update(&id, None, Source::System),
+        )
+    })
+    .unwrap_err();
+    assert_eq!(reason(err), "void_reason_required");
+    // A chargeback cancelled: completed again, nothing owed.
+    provider_says(&w, &ids[0], Status::Completed, None);
+    let owed = read(&w.a, |c| Ok(giving::voided_in_claim(c, CLAIM_A)?));
+    assert!(!owed.iter().any(|v| v.id == ids[0]));
+    let g = read(&w.a, |c| Ok(giving::get(c, &ids[0])?)).unwrap().gift;
+    assert_eq!(
+        (g.status, g.void_reason, g.claim_id.as_deref()),
+        (Status::Completed, None, Some(CLAIM_A))
+    );
 }

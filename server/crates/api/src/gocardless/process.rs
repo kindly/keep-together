@@ -24,8 +24,9 @@
 //! What each event does (actions from GoCardless's event pages):
 //! - billing request `fulfilled`: the mandate its mandate request made is
 //!   linked, and the subscription created on it (once: the idempotency
-//!   key is the regular gift's); `cancelled`: a regular gift with no
-//!   mandate yet is cancelled;
+//!   key is the regular gift's); for an Instant Bank Pay request of ours,
+//!   the payment it made is recorded as its donor's one-off; `cancelled`:
+//!   a regular gift with no mandate yet is cancelled;
 //! - mandate `active`: the regular gift is active; `failed`/`blocked`: it
 //!   failed; `cancelled`/`expired`: it ended; `replaced`: it follows the
 //!   new mandate. A mandate we don't know yet is identified by the
@@ -33,23 +34,28 @@
 //!   can overtake one another), never by making its subscription;
 //! - subscription `cancelled`/`finished`: it ended;
 //! - payment (any action): the payment is fetched and its *current*
-//!   status recorded ([`giving::regular::record_payment`]): a gift only
-//!   once `confirmed`, void on a chargeback, un-void if that's cancelled.
+//!   status recorded ([`giving::regular::record_payment`], ADR 0025): one
+//!   gift per payment from the first event, following its status (money
+//!   received only once `confirmed`). Whose it is: a subscription of a
+//!   regular gift (an instalment); else our one-off tag (a payment staff
+//!   took, an Instant Bank Pay payment); else a mandate we know (a
+//!   one-off its donor gave, allocated to that regular gift's code); else
+//!   nobody yet: stored unmatched, with no gift, for staff to match.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use contracts::{ContractError, Ctx, Source};
 use giving::regular::{
-    self, PaymentReport, PaymentStatus, RegularFacts, RegularStatus, end_regular_gift,
-    update_mandate,
+    self, GiftChange, PaymentOwner, PaymentReport, PaymentStatus, RegularFacts, RegularStatus,
+    end_regular_gift, update_mandate,
 };
 use rusqlite::params;
 use serde_json::Value;
 use store::{OrgDb, Store, TenantId};
 
 use super::GoCardless;
-use super::client::{CallError, NewSubscription};
+use super::client::{CallError, NewSubscription, OneOffTag};
 use crate::jobs::Job;
 
 /// Tries before an event is parked (and reported): with [`backoff`],
@@ -393,7 +399,7 @@ async fn handle(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str, 
         ("billing_requests", "fulfilled") => {
             let br = ev.need("billing_request")?;
             let Some(found) = org.facts_by("billing_request_id", br).await? else {
-                return Ok("unknown_resource");
+                return instant_payment(org, gc, br).await;
             };
             fulfilled(org, gc, found).await
         }
@@ -607,22 +613,47 @@ async fn ensure_subscription(org: &Org, gc: &GoCardless, id: &str) -> Result<&'s
 /// A payment event: fetch the payment and record its current status.
 async fn payment(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str, Failed> {
     let pm = ev.need("payment")?;
-    let p = gc.api.get_payment(org.token()?, pm).await?;
-    let mut found = None;
-    if let Some(sb) = &p.subscription {
-        found = org.facts_by("subscription_id", sb).await?;
-    }
-    if found.is_none()
-        && let Some(md) = &p.mandate
-    {
-        found = identify_mandate(org, gc, md).await?;
-    }
-    let Some(found) = found else {
+    let reason = match ev.action.as_str() {
+        "failed" | "charged_back" | "cancelled" | "late_failure_settled" => ev.reason(),
+        _ => None,
+    };
+    record_fetched(org, gc, pm, None, reason).await
+}
+
+/// An Instant Bank Pay request fulfilled: the payment it made is its
+/// donor's one-off, whatever GoCardless copied onto the payment.
+async fn instant_payment(org: &Org, gc: &GoCardless, br: &str) -> Result<&'static str, Failed> {
+    let request = gc.api.get_billing_request(org.token()?, br).await?;
+    let (Some(pm), Some(tag)) = (request.payment, request.one_off) else {
         return Ok("unknown_resource");
     };
+    record_fetched(org, gc, &pm, Some(tag), None).await
+}
+
+/// Fetch payment `pm` and record its current status, owned as
+/// [`owner_of`] works out (`tag`: the one-off tag of the request that
+/// made it, when the payment itself may not carry it; `reason`: the
+/// event's, for a failure or chargeback).
+async fn record_fetched(
+    org: &Org,
+    gc: &GoCardless,
+    pm: &str,
+    tag: Option<OneOffTag>,
+    reason: Option<String>,
+) -> Result<&'static str, Failed> {
+    let mut p = gc.api.get_payment(org.token()?, pm).await?;
     if p.currency != "GBP" {
+        // Gifts are pence sterling: say so, never drop it unheard.
+        crate::observe::warning(&format!(
+            "gocardless payment {} is in {}, not GBP: not recorded",
+            p.id, p.currency
+        ));
         return Ok("ignored");
     }
+    if p.one_off.is_none() {
+        p.one_off = tag;
+    }
+    let owner = owner_of(org, gc, &p).await?;
     let status = match p.status.as_str() {
         "confirmed" | "paid_out" => PaymentStatus::Confirmed,
         "failed" => PaymentStatus::Failed,
@@ -630,21 +661,70 @@ async fn payment(org: &Org, gc: &GoCardless, ev: &Event) -> Result<&'static str,
         "cancelled" | "customer_approval_denied" => PaymentStatus::Cancelled,
         _ => PaymentStatus::Pending,
     };
-    let reason = match ev.action.as_str() {
-        "failed" | "charged_back" | "cancelled" | "late_failure_settled" => ev.reason(),
-        _ => None,
-    };
     let report = PaymentReport {
         payment_id: p.id,
         amount: p.amount,
         charge_date: p.charge_date,
         status,
         reason,
+        mandate_id: p.mandate,
     };
-    let id = found.id;
-    org.write(move |ctx| regular::record_payment(ctx, &id, report))
+    let change = org
+        .write(move |ctx| regular::record_payment(ctx, report, owner))
         .await?;
-    Ok("done")
+    Ok(match change {
+        GiftChange::Unmatched => "unmatched",
+        _ => "done",
+    })
+}
+
+/// Whose payment `p` is: a regular gift's instalment (its subscription,
+/// or a mandate of ours with no tag when the subscription is ours), our
+/// tagged one-off (the donor and code must be this organisation's), a
+/// one-off on a mandate we know (that regular gift's donor and code), or
+/// nobody yet.
+async fn owner_of(
+    org: &Org,
+    gc: &GoCardless,
+    p: &super::client::Payment,
+) -> Result<PaymentOwner, Failed> {
+    if let Some(sb) = &p.subscription
+        && let Some(found) = org.facts_by("subscription_id", sb).await?
+    {
+        return Ok(PaymentOwner::Regular(found.id));
+    }
+    let on_mandate = match &p.mandate {
+        Some(md) => identify_mandate(org, gc, md).await?,
+        None => None,
+    };
+    if let Some(tag) = p.one_off.clone() {
+        let fallback = on_mandate.as_ref().map(|f| f.terms.source_code_id.clone());
+        let owner = org
+            .read(move |c| {
+                if contacts::donors::kind_of(c, &tag.contact)?.is_none() {
+                    return Ok(None);
+                }
+                let code = match tag.source_code {
+                    Some(code) if sources::describe(c, &code)?.is_some() => Some(code),
+                    _ => fallback,
+                };
+                Ok(code.map(|source_code_id| PaymentOwner::OneOff {
+                    contact_id: tag.contact,
+                    source_code_id,
+                }))
+            })
+            .await?;
+        if let Some(owner) = owner {
+            return Ok(owner);
+        }
+    }
+    Ok(match on_mandate {
+        Some(found) => PaymentOwner::OneOff {
+            contact_id: found.terms.contact_id,
+            source_code_id: found.terms.source_code_id,
+        },
+        None => PaymentOwner::Unmatched,
+    })
 }
 
 /// Every connected organisation's regular gifts with a mandate, no

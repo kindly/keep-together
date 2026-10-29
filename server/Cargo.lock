@@ -401,6 +401,7 @@ dependencies = [
  "contacts",
  "contracts",
  "giftaid",
+ "giving",
  "platform",
  "rusqlite",
  "seed",

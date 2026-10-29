@@ -123,6 +123,35 @@ pub struct BillingRequest {
     pub status: String,
     /// The mandate made from its mandate request, once fulfilled.
     pub mandate: Option<String>,
+    /// The payment made from its payment request (Instant Bank Pay), once
+    /// fulfilled.
+    pub payment: Option<String>,
+    /// Ours, if we made it for a one-off: the donor and code
+    /// (`metadata.keep_contact`, `keep_source_code`).
+    pub one_off: Option<OneOffTag>,
+}
+
+/// A one-off's donor and source code, as metadata on what we create
+/// (a payment, an Instant Bank Pay request): our contact and code ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OneOffTag {
+    pub contact: String,
+    pub source_code: Option<String>,
+}
+
+impl OneOffTag {
+    fn from(metadata: Option<&Value>) -> Option<Self> {
+        let m = metadata?;
+        let text = |k: &str| m.get(k).and_then(Value::as_str).map(str::to_owned);
+        Some(Self {
+            contact: text("keep_contact")?,
+            source_code: text("keep_source_code"),
+        })
+    }
+
+    fn metadata(contact: &str, source_code: &str) -> Value {
+        json!({ "keep_contact": contact, "keep_source_code": source_code })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,6 +178,31 @@ pub struct Payment {
     pub status: String,
     pub mandate: Option<String>,
     pub subscription: Option<String>,
+    /// Ours, if we took it as a one-off (or GoCardless copied it from our
+    /// Instant Bank Pay request).
+    pub one_off: Option<OneOffTag>,
+}
+
+/// A one-off payment to take on a mandate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewPayment<'a> {
+    pub mandate: &'a str,
+    pub amount: i64,
+    /// YYYY-MM-DD; none: the earliest GoCardless can.
+    pub charge_date: Option<&'a str>,
+    pub description: &'a str,
+    pub contact: &'a str,
+    pub source_code: &'a str,
+    /// Our key for it: the idempotency key (a retry makes it once).
+    pub key: &'a str,
+}
+
+/// One page of `GET /events`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventPage {
+    pub events: Vec<Value>,
+    /// Pass as `after` for the next page; none at the end.
+    pub after: Option<String>,
 }
 
 /// A subscription to create on a mandate.
@@ -456,6 +510,42 @@ impl Api {
         })
     }
 
+    /// An Instant Bank Pay request: a billing request with a payment
+    /// request only (GBP; no mandate), tagged with our donor and code so
+    /// the payment it makes names them. Created once per `key`.
+    pub async fn create_instant_payment_request(
+        &self,
+        token: &str,
+        amount: i64,
+        description: &str,
+        contact: &str,
+        source_code: &str,
+        key: &str,
+    ) -> Result<BillingRequest, CallError> {
+        let tag = OneOffTag::metadata(contact, source_code);
+        let body = json!({
+            "billing_requests": {
+                "payment_request": {
+                    "amount": amount,
+                    "currency": "GBP",
+                    "description": description,
+                    "metadata": tag
+                },
+                "metadata": tag
+            }
+        });
+        let v = self
+            .create_once(
+                token,
+                "billing_requests",
+                "billing_requests",
+                body,
+                &format!("keep-ibp-{key}"),
+            )
+            .await?;
+        billing_request(&v)
+    }
+
     // ── subscriptions, mandates, payments ──────────────────────────────────
 
     /// A subscription for our regular gift; created once whatever the
@@ -552,32 +642,110 @@ impl Api {
         }
     }
 
+    /// Take a one-off payment on a mandate, tagged with our donor and
+    /// code; created once per key. Its id and status.
+    pub async fn create_payment(
+        &self,
+        token: &str,
+        p: &NewPayment<'_>,
+    ) -> Result<Payment, CallError> {
+        let mut body = json!({
+            "amount": p.amount,
+            "currency": "GBP",
+            "description": p.description,
+            "metadata": OneOffTag::metadata(p.contact, p.source_code),
+            "links": { "mandate": p.mandate }
+        });
+        if let Some(date) = p.charge_date {
+            body["charge_date"] = Value::String(date.into());
+        }
+        let v = self
+            .create_once(
+                token,
+                "payments",
+                "payments",
+                json!({ "payments": body }),
+                &format!("keep-pm-{}", p.key),
+            )
+            .await?;
+        payment(&v)
+    }
+
+    /// One page of the account's events created at or after
+    /// `created_at_gte` (RFC 3339), at most `limit`, from `after` (the
+    /// previous page's cursor).
+    pub async fn list_events(
+        &self,
+        token: &str,
+        created_at_gte: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<EventPage, CallError> {
+        let mut url = Self::url(&self.base, &["events"]);
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("created_at[gte]", created_at_gte);
+            q.append_pair("limit", &limit.to_string());
+            if let Some(after) = after {
+                q.append_pair("after", after);
+            }
+        }
+        let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| CallError::Malformed("a token that isn't a header value".into()))?;
+        auth.set_sensitive(true);
+        let response = self
+            .http
+            .get(url)
+            .header(AUTHORIZATION, auth)
+            .header("GoCardless-Version", VERSION)
+            .send()
+            .await
+            .map_err(Self::unreachable)?;
+        let v = Self::read(response).await?;
+        let events = v
+            .get("events")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| CallError::Malformed("no events in the answer".into()))?;
+        Ok(EventPage {
+            events,
+            after: v
+                .pointer("/meta/cursors/after")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
+    }
+
     pub async fn get_payment(&self, token: &str, id: &str) -> Result<Payment, CallError> {
         let v = self
             .call(Method::GET, token, &["payments", id], None, None)
             .await?;
-        let p = v.get("payments").unwrap_or(&Value::Null);
-        let text = |k: &str| p.get(k).and_then(Value::as_str).map(str::to_owned);
-        let link = |k: &str| {
-            p.pointer(&format!("/links/{k}"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        };
-        let amount = p
-            .get("amount")
-            .and_then(|a| a.as_i64().or_else(|| a.as_str()?.parse().ok()))
-            .ok_or_else(|| CallError::Malformed("payment amount".into()))?;
-        Ok(Payment {
-            id: text("id").ok_or_else(|| CallError::Malformed("payment id".into()))?,
-            amount,
-            currency: text("currency").unwrap_or_default(),
-            charge_date: text("charge_date")
-                .ok_or_else(|| CallError::Malformed("payment charge date".into()))?,
-            status: text("status").unwrap_or_default(),
-            mandate: link("mandate"),
-            subscription: link("subscription"),
-        })
+        payment(v.get("payments").unwrap_or(&Value::Null))
     }
+}
+
+fn payment(p: &Value) -> Result<Payment, CallError> {
+    let text = |k: &str| p.get(k).and_then(Value::as_str).map(str::to_owned);
+    let link = |k: &str| {
+        p.pointer(&format!("/links/{k}"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    let amount = p
+        .get("amount")
+        .and_then(|a| a.as_i64().or_else(|| a.as_str()?.parse().ok()))
+        .ok_or_else(|| CallError::Malformed("payment amount".into()))?;
+    Ok(Payment {
+        id: text("id").ok_or_else(|| CallError::Malformed("payment id".into()))?,
+        amount,
+        currency: text("currency").unwrap_or_default(),
+        charge_date: text("charge_date")
+            .ok_or_else(|| CallError::Malformed("payment charge date".into()))?,
+        status: text("status").unwrap_or_default(),
+        mandate: link("mandate"),
+        subscription: link("subscription"),
+        one_off: OneOffTag::from(p.get("metadata")),
+    })
 }
 
 fn billing_request(v: &Value) -> Result<BillingRequest, CallError> {
@@ -589,5 +757,10 @@ fn billing_request(v: &Value) -> Result<BillingRequest, CallError> {
             .pointer("/links/mandate_request_mandate")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        payment: v
+            .pointer("/links/payment_request_payment")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        one_off: OneOffTag::from(v.get("metadata")),
     })
 }

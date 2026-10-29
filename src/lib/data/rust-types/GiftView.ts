@@ -2,6 +2,7 @@
 import type { AllocationView } from "./AllocationView";
 import type { GiftDonor } from "./GiftDonor";
 import type { GiftMethod } from "./GiftMethod";
+import type { GiftProvider } from "./GiftProvider";
 import type { GiftStatus } from "./GiftStatus";
 
 /**
@@ -11,9 +12,15 @@ import type { GiftStatus } from "./GiftStatus";
  */
 export type GiftView = { contact: GiftDonor | null, id: string, contactId: string, receivedOn: string, amount: number, method: GiftMethod, reference: string | null, allocations: Array<AllocationView>, status: GiftStatus, 
 /**
- * Why it was voided, when a reason was given.
+ * Why it doesn't count (voided, failed, charged back…), when a
+ * reason was given.
  */
 voidReason: string | null, 
+/**
+ * The provider it came from (none: entered by hand), its payment id
+ * and the regular gift it was collected for (none: a one-off).
+ */
+provider: GiftProvider | null, providerPaymentId: string | null, regularGiftId: string | null, 
 /**
  * The Gift Aid claim it is in: amount, date and donor locked.
  */

@@ -635,6 +635,7 @@ fn gifts(
                     amount: g.amount,
                 }],
                 client_key: None,
+                origin: None,
             },
             Source::Seed,
             Some(group),

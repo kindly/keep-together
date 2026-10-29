@@ -198,6 +198,7 @@ mod tests {
             reference: None,
             allocations: vec![row("v", amount)],
             client_key: None,
+            origin: None,
         }
     }
 
@@ -338,6 +339,7 @@ mod tests {
                 amount: 1000,
             }],
             client_key: None,
+            origin: None,
         };
         assert!(prepare_gift(base()).is_ok());
         let fields = |p| match prepare_gift(p) {

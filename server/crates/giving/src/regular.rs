@@ -12,15 +12,17 @@
 //!   link, the mandate and subscription ids, why it ended;
 //!   `mandate_version`), written by the system and by a staff cancel;
 //! - a Direct Debit payment (`direct_debit_payments`), one per GoCardless
-//!   payment, `giving.directDebitPayment` (`version`): its amount, charge
-//!   date, status and reason, and the gift it became.
+//!   payment, `giving.directDebitPayment` (`version`): the provider's raw
+//!   record (amount, charge date, status and reason, the mandate and
+//!   regular gift) and its gift.
 //!
-//! Money is never optimistic: a payment becomes a gift only once
-//! GoCardless says it is `confirmed` ([`record_payment`]), with the
-//! payment id as the gift's reference (unique, so a replayed event can't
-//! give twice). A charged-back payment voids its gift; a cancelled
-//! chargeback un-voids it. A failed payment makes no gift and shows on
-//! the regular gift.
+//! ADR 0025: each payment is one gift for its whole life, made when we
+//! first hear of it and following it ([`record_payment`]): `pending`
+//! until GoCardless collects it, `completed` once it says `confirmed`
+//! (only then money received), `failed`, `cancelled` or `charged_back`
+//! after. One gift per payment (`(provider, provider_payment_id)` is
+//! unique), so a replayed event can't give twice. A payment we can't tie
+//! to a donor is kept with no gift and listed for staff to match.
 
 use contracts::{
     Command, CommandGroup, Contract, ContractError, Ctx, Exec, Executed, OrgTx, Problem, Source,
@@ -31,7 +33,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::rules::{CLIENT_KEY_MAX, PENCE_MAX, format_pence, is_iso_date};
-use crate::types::{AllocationRow, GiftPayload, Method, Status};
+use crate::types::{
+    AllocationRow, GiftPayload, Method, Provider, ProviderRef, Status, StatusPayload,
+};
 
 pub const TABLE: &str = "regular_gifts";
 pub const PAYMENTS: &str = "direct_debit_payments";
@@ -649,15 +653,38 @@ pub fn facts_by(
 
 // ── payments ───────────────────────────────────────────────────────────────
 
-/// `giving.directDebitPayment`: one provider payment of a regular gift.
+impl PaymentStatus {
+    /// The status its gift has: the gift follows its payment (ADR 0025).
+    pub fn gift_status(self) -> Status {
+        match self {
+            PaymentStatus::Pending => Status::Pending,
+            PaymentStatus::Confirmed => Status::Completed,
+            PaymentStatus::Failed => Status::Failed,
+            PaymentStatus::ChargedBack => Status::ChargedBack,
+            PaymentStatus::Cancelled => Status::Cancelled,
+        }
+    }
+}
+
+/// [`PaymentStatus::gift_status`] in SQL, over a payment row `p`.
+const GIFT_STATUS_OF_PAYMENT: &str =
+    "CASE p.status WHEN 'confirmed' THEN 'completed' ELSE p.status END";
+
+/// `giving.directDebitPayment` (v2): one GoCardless payment, as GoCardless
+/// reports it: the provider's raw record beside its gift.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct PaymentPayload {
     /// GoCardless's payment id (`PM…`); fixed.
     pub payment_id: String,
-    /// Fixed.
-    pub regular_gift_id: String,
+    /// The regular gift it was collected for; none for a one-off, or a
+    /// payment not matched to a donor. Fixed.
+    #[serde(default)]
+    pub regular_gift_id: Option<String>,
+    /// The mandate it was taken on (none: Instant Bank Pay).
+    #[serde(default)]
+    pub mandate_id: Option<String>,
     #[ts(type = "number")]
     pub amount: i64,
     /// ISO date it is (or was) collected.
@@ -665,24 +692,21 @@ pub struct PaymentPayload {
     pub status: PaymentStatus,
     /// Why it failed or was charged back (the provider's description).
     pub reason: Option<String>,
-    /// The gift it became, once confirmed.
+    /// Its gift (one for the payment's whole life); none while unmatched.
+    /// Set once.
     pub gift_id: Option<String>,
-    /// Whether that gift is void because of this payment (a chargeback, a
-    /// late failure, a cancellation), so the payment's recovery may
-    /// un-void it. A gift staff voided themselves stays theirs.
-    #[serde(default)]
-    pub gift_voided: bool,
 }
 
 pub struct DirectDebitPayment;
 pub static DIRECT_DEBIT_PAYMENT: DirectDebitPayment = DirectDebitPayment;
 
+const PAYMENT_COLUMNS: &str =
+    "payment_id, regular_gift_id, mandate_id, amount, charge_date, status, reason, gift_id";
+
 fn load_payment(conn: &Connection, id: &str) -> rusqlite::Result<Option<PaymentPayload>> {
-    conn.prepare_cached(
-        "SELECT payment_id, regular_gift_id, amount, charge_date, status, reason, gift_id,
-             gift_voided
-         FROM direct_debit_payments WHERE id = ?1",
-    )?
+    conn.prepare_cached(&format!(
+        "SELECT {PAYMENT_COLUMNS} FROM direct_debit_payments WHERE id = ?1"
+    ))?
     .query_row([id], payment_row)
     .optional()
 }
@@ -691,18 +715,44 @@ fn payment_row(r: &Row) -> rusqlite::Result<PaymentPayload> {
     Ok(PaymentPayload {
         payment_id: r.get(0)?,
         regular_gift_id: r.get(1)?,
-        amount: r.get(2)?,
-        charge_date: r.get(3)?,
-        status: PaymentStatus::parse(&r.get::<_, String>(4)?),
-        reason: r.get(5)?,
-        gift_id: r.get(6)?,
-        gift_voided: r.get(7)?,
+        mandate_id: r.get(2)?,
+        amount: r.get(3)?,
+        charge_date: r.get(4)?,
+        status: PaymentStatus::parse(&r.get::<_, String>(5)?),
+        reason: r.get(6)?,
+        gift_id: r.get(7)?,
     })
+}
+
+/// The payment row for GoCardless's payment id: its row id and payload.
+fn payment_by_provider_id(
+    conn: &Connection,
+    payment_id: &str,
+) -> rusqlite::Result<Option<(String, PaymentPayload)>> {
+    conn.prepare_cached(&format!(
+        "SELECT id, {PAYMENT_COLUMNS} FROM direct_debit_payments WHERE payment_id = ?1"
+    ))?
+    .query_row([payment_id], |r| {
+        let p = PaymentPayload {
+            payment_id: r.get(1)?,
+            regular_gift_id: r.get(2)?,
+            mandate_id: r.get(3)?,
+            amount: r.get(4)?,
+            charge_date: r.get(5)?,
+            status: PaymentStatus::parse(&r.get::<_, String>(6)?),
+            reason: r.get(7)?,
+            gift_id: r.get(8)?,
+        };
+        Ok((r.get(0)?, p))
+    })
+    .optional()
 }
 
 impl Contract for DirectDebitPayment {
     const NAME: &'static str = "giving.directDebitPayment";
-    const VERSION: u32 = 1;
+    /// v2: `mandateId`; `regularGiftId` optional; no `giftVoided`
+    /// (ADR 0025).
+    const VERSION: u32 = 2;
     const ENTITY: &'static str = PAYMENTS;
     const COUNTER: &'static str = "version";
     type Payload = PaymentPayload;
@@ -741,14 +791,22 @@ impl Contract for DirectDebitPayment {
         _: &Command,
     ) -> Result<PaymentPayload, ContractError> {
         if let Some(current) = current
-            && (current.payment_id != p.payment_id || current.regular_gift_id != p.regular_gift_id)
+            && (current.payment_id != p.payment_id
+                || current.regular_gift_id != p.regular_gift_id
+                || (current.gift_id.is_some() && current.gift_id != p.gift_id))
         {
             return Err(ContractError::rejected(
                 "identity_immutable",
-                "A payment’s provider id and regular gift can’t change",
+                "A payment’s provider id, regular gift and gift can’t change",
             ));
         }
         Ok(p.clone())
+    }
+
+    /// v1 had `giftVoided` (ignored now) and always a regular gift: the
+    /// same JSON reads as v2.
+    fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
+        (from == 1).then_some(payload)
     }
 
     fn write(
@@ -767,35 +825,35 @@ impl Contract for DirectDebitPayment {
                 return Err(ContractError::Duplicate { id });
             }
             tx.prepare_cached(
-                "INSERT INTO direct_debit_payments (id, payment_id, regular_gift_id, amount,
-                     charge_date, status, reason, gift_id, gift_voided)
+                "INSERT INTO direct_debit_payments (id, payment_id, regular_gift_id, mandate_id,
+                     amount, charge_date, status, reason, gift_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?
             .execute(params![
                 id,
                 next.payment_id,
                 next.regular_gift_id,
+                next.mandate_id,
                 next.amount,
                 next.charge_date,
                 next.status.as_str(),
                 next.reason,
-                next.gift_id,
-                next.gift_voided
+                next.gift_id
             ])?;
         } else {
             tx.prepare_cached(
-                "UPDATE direct_debit_payments SET amount = ?2, charge_date = ?3, status = ?4,
-                     reason = ?5, gift_id = ?6, gift_voided = ?7
+                "UPDATE direct_debit_payments SET mandate_id = ?2, amount = ?3, charge_date = ?4,
+                     status = ?5, reason = ?6, gift_id = ?7
                  WHERE id = ?1",
             )?
             .execute(params![
                 id,
+                next.mandate_id,
                 next.amount,
                 next.charge_date,
                 next.status.as_str(),
                 next.reason,
-                next.gift_id,
-                next.gift_voided
+                next.gift_id
             ])?;
         }
         Ok(())
@@ -812,80 +870,124 @@ pub struct PaymentReport {
     /// Why, for a failure or chargeback; kept from an earlier report when
     /// this one has none.
     pub reason: Option<String>,
+    /// The mandate it was taken on, if any.
+    pub mandate_id: Option<String>,
+}
+
+/// Whose a payment is, as the provider glue worked it out. A payment
+/// already on record keeps the regular gift it was recorded for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaymentOwner {
+    /// An instalment of this regular gift: its donor and code.
+    Regular(String),
+    /// A one-off from this donor (a payment on a mandate we know but no
+    /// subscription, one staff took, or an Instant Bank Pay link),
+    /// allocated to this code.
+    OneOff {
+        contact_id: String,
+        source_code_id: String,
+    },
+    /// Nobody we know: stored with no gift, listed for staff to match.
+    Unmatched,
 }
 
 /// What [`record_payment`] did to the gifts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GiftChange {
     None,
+    /// The payment's gift, made now.
     Recorded(String),
-    Voided(String),
-    Unvoided(String),
+    /// Its gift brought up to date.
+    Updated(String),
+    /// Stored with no gift: nobody to give it to yet.
+    Unmatched,
 }
 
-/// Bring the payment `report` describes up to date for the regular gift
-/// `regular_id`, in the caller's transaction, as the system. The rule:
-/// a payment's gift counts exactly while GoCardless says the money is
-/// collected.
-/// - First sight: the payment row.
-/// - `confirmed` with no gift yet: a gift (`direct_debit`, the payment id
-///   as reference, the charge date, all of it to the regular gift's code).
-/// - `chargedBack`, `failed` or `cancelled` after that (a chargeback, a
-///   Bacs late failure): its gift void, with the reason as the gift's
-///   `void_reason` (so a gift in a Gift Aid claim can be voided, and the
-///   next claim pays its tax back), and the payment marks the void as its
-///   own (`giftVoided`).
-/// - `confirmed` again after that (a cancelled chargeback, a retry that
-///   was collected): the same gift un-voided, if the money is dated as it
-///   was (a gift is dated when GoCardless collected it: that date decides
-///   its tax year for Gift Aid and income); a new gift on the new date if
-///   a retry was collected another day; and a new gift if the voided one
-///   is in a Gift Aid claim (whose void is final). At most one completed
-///   gift per payment, ever. A gift staff voided themselves is left void.
+/// "collected", "failed", "charged back": what a payment's status says.
+fn said(status: PaymentStatus) -> &'static str {
+    match status {
+        PaymentStatus::Pending => "pending",
+        PaymentStatus::Confirmed => "collected",
+        PaymentStatus::Failed => "failed",
+        PaymentStatus::ChargedBack => "charged back",
+        PaymentStatus::Cancelled => "cancelled",
+    }
+}
+
+/// Why the gift doesn't count, from GoCardless: "Charged back
+/// (GoCardless): the customer disputed…". None for money received.
+fn gift_reason(status: PaymentStatus, reason: Option<&str>) -> Option<String> {
+    if status.gift_status().is_received() {
+        return None;
+    }
+    let what = match status {
+        PaymentStatus::Pending => "Not collected yet",
+        PaymentStatus::Failed => "Failed",
+        PaymentStatus::ChargedBack => "Charged back",
+        _ => "Cancelled",
+    };
+    Some(match reason {
+        Some(r) => format!("{what} (GoCardless): {r}"),
+        None => format!("{what} (GoCardless)"),
+    })
+}
+
+/// Bring the payment `report` describes up to date, and its gift with it,
+/// in the caller's transaction, as the system (ADR 0025): one gift per
+/// payment for its whole life, following the payment.
+/// - First sight: the payment row, and (if `owner` names a donor) its
+///   gift: `direct_debit`, the payment id as reference and origin, dated
+///   the charge date, all of it to the regular gift's (or the one-off's)
+///   code, with the payment's status.
+/// - Later reports: the same gift takes the payment's status (with
+///   GoCardless's reason when it doesn't count), and its amount and date
+///   (the date the money was collected decides its tax year), except
+///   that a gift in a Gift Aid claim keeps the amount and date it was
+///   claimed on (its status still follows: a claimed gift that stops
+///   counting is paid back by the next claim), and a gift staff voided
+///   stays void.
+/// - A payment on record with no gift (unmatched) gets one once `owner`
+///   names a donor.
 ///
 /// A report that changes nothing writes nothing, so a replayed event is a
 /// no-op.
 pub fn record_payment(
     ctx: &Ctx,
-    regular_id: &str,
     report: PaymentReport,
+    owner: PaymentOwner,
+) -> Result<GiftChange, ContractError> {
+    record(ctx, report, owner, None)
+}
+
+fn record(
+    ctx: &Ctx,
+    report: PaymentReport,
+    owner: PaymentOwner,
+    staff: Option<(i64, Source)>,
 ) -> Result<GiftChange, ContractError> {
     let conn = ctx.tx.read();
-    let Some(regular) = facts(conn, regular_id)? else {
-        return Err(ContractError::NotFound);
-    };
-    let held: Option<(String, PaymentPayload)> = conn
-        .prepare_cached(
-            "SELECT id, payment_id, regular_gift_id, amount, charge_date, status, reason,
-                 gift_id, gift_voided
-             FROM direct_debit_payments WHERE payment_id = ?1",
-        )?
-        .query_row([&report.payment_id], |r| {
-            let p = PaymentPayload {
-                payment_id: r.get(1)?,
-                regular_gift_id: r.get(2)?,
-                amount: r.get(3)?,
-                charge_date: r.get(4)?,
-                status: PaymentStatus::parse(&r.get::<_, String>(5)?),
-                reason: r.get(6)?,
-                gift_id: r.get(7)?,
-                gift_voided: r.get(8)?,
-            };
-            Ok((r.get(0)?, p))
-        })
-        .optional()?;
-    if let Some((_, p)) = &held
-        && p.regular_gift_id != regular_id
-    {
-        return Err(ContractError::rejected(
-            "payment_elsewhere",
-            "This payment belongs to another regular gift",
-        ));
-    }
+    let held = payment_by_provider_id(conn, &report.payment_id)?;
     let before = held.as_ref().map(|(_, p)| p.clone());
+    let regular_id = match (&before, &owner) {
+        (Some(b), PaymentOwner::Regular(id))
+            if b.regular_gift_id.as_ref().is_some_and(|r| r != id) =>
+        {
+            return Err(ContractError::rejected(
+                "payment_elsewhere",
+                "This payment belongs to another regular gift",
+            ));
+        }
+        (Some(b), _) => b.regular_gift_id.clone(),
+        (None, PaymentOwner::Regular(id)) => Some(id.clone()),
+        (None, _) => None,
+    };
     let mut next = PaymentPayload {
         payment_id: report.payment_id.clone(),
-        regular_gift_id: regular_id.to_owned(),
+        regular_gift_id: regular_id.clone(),
+        mandate_id: report
+            .mandate_id
+            .clone()
+            .or_else(|| before.as_ref().and_then(|b| b.mandate_id.clone())),
         amount: report.amount,
         charge_date: report.charge_date.clone(),
         status: report.status,
@@ -894,184 +996,402 @@ pub fn record_payment(
             .clone()
             .or_else(|| before.as_ref().and_then(|b| b.reason.clone())),
         gift_id: before.as_ref().and_then(|b| b.gift_id.clone()),
-        gift_voided: before.as_ref().is_some_and(|b| b.gift_voided),
     };
-    if before.as_ref() == Some(&next) {
+    // Who the gift is for and its code, while the payment has none.
+    let donor: Option<(String, String)> = if next.gift_id.is_some() {
+        None
+    } else if let Some(id) = &regular_id {
+        let regular = facts(conn, id)?.ok_or(ContractError::NotFound)?;
+        Some((regular.terms.contact_id, regular.terms.source_code_id))
+    } else if let PaymentOwner::OneOff {
+        contact_id,
+        source_code_id,
+    } = &owner
+    {
+        Some((contact_id.clone(), source_code_id.clone()))
+    } else {
+        None
+    };
+    if before.as_ref() == Some(&next) && donor.is_none() {
         return Ok(GiftChange::None);
     }
-    let was = before.as_ref().map(|b| b.status);
-    let described = match &next.gift_id {
-        Some(id) => crate::describe_gift(conn, id)?,
-        None => None,
-    };
-    let gift_status = described.as_ref().map(|g| g.status);
-    // A gift is dated when GoCardless collected the money: a retry
-    // collected on another day is another gift.
-    let same_day = described
-        .as_ref()
-        .is_some_and(|g| g.received_on == report.charge_date);
-    // A gift in a Gift Aid claim can be voided (with a reason: the next
-    // claim pays the tax back) but never un-voided.
-    let claimed = match &next.gift_id {
-        Some(id) => conn
-            .prepare_cached("SELECT claim_id IS NOT NULL FROM gifts WHERE id = ?1")?
-            .query_row([id], |r| r.get::<_, bool>(0))
-            .optional()?
-            .unwrap_or(false),
-        None => false,
-    };
+
     let amount = format_pence(report.amount);
     let because = next
         .reason
         .as_deref()
+        .filter(|_| !report.status.gift_status().is_received())
         .map(|r| format!(": {r}"))
         .unwrap_or_default();
-    // What happens to the gift, and the command group that says why.
-    enum Act {
-        Record,
-        /// Void, with this reason (the gift's `void_reason`).
-        Void(String),
-        Unvoid,
-        Nothing,
-    }
-    let (act, group_name) = match (report.status, &next.gift_id) {
-        (PaymentStatus::Confirmed, None) => {
-            (Act::Record, format!("Direct Debit {amount} confirmed"))
-        }
-        (PaymentStatus::Confirmed, Some(_))
-            if next.gift_voided && gift_status == Some(Status::Void) =>
-        {
-            let name = if was == Some(PaymentStatus::ChargedBack) {
-                format!("Direct Debit {amount} chargeback cancelled")
-            } else {
-                format!("Direct Debit {amount} collected after all")
-            };
-            if claimed {
-                // Its void went to HMRC as an adjustment and is final: the
-                // money is recorded again, as a new gift.
-                (Act::Record, format!("{name}, recorded again"))
-            } else if !same_day {
-                // Collected on another day (a retry): a new gift on that
-                // day, which decides its tax year; the failed attempt's
-                // gift stays void.
-                (
-                    Act::Record,
-                    format!("{name} on {}, recorded again", report.charge_date),
-                )
-            } else {
-                (Act::Unvoid, name)
-            }
-        }
-        (
-            PaymentStatus::ChargedBack | PaymentStatus::Failed | PaymentStatus::Cancelled,
-            Some(_),
-        ) if gift_status == Some(Status::Completed) => {
-            let what = match report.status {
-                PaymentStatus::ChargedBack => "Charged back",
-                PaymentStatus::Failed => "Failed after it was collected",
-                _ => "Cancelled after it was collected",
-            };
-            (
-                Act::Void(format!("{what} (GoCardless){because}")),
-                format!("Direct Debit {amount} {}{because}", what.to_lowercase()),
-            )
-        }
-        (PaymentStatus::ChargedBack, _) => (
-            Act::Nothing,
-            format!("Direct Debit {amount} charged back{because}"),
-        ),
-        _ => (Act::Nothing, String::new()),
-    };
-    let group = if group_name.is_empty() {
-        None
-    } else {
-        Some(command_group(ctx, &group_name)?)
-    };
+    let target = report.status.gift_status();
+    let reason = gift_reason(report.status, next.reason.as_deref());
 
     let mut change = GiftChange::None;
-    match act {
-        Act::Record => {
-            // A gift made by an earlier attempt whose payment row didn't
-            // land is found by its reference, never made twice: one
-            // completed gift per payment.
-            let existing: Option<String> = conn
-                .prepare_cached(
-                    "SELECT id FROM gifts WHERE method = 'direct_debit' AND reference = ?1
-                         AND status = 'completed'",
-                )?
-                .query_row([&report.payment_id], |r| r.get(0))
-                .optional()?;
-            let gift = match existing {
-                Some(id) => id,
-                None => crate::create_gift(
-                    ctx,
-                    GiftPayload {
-                        contact_id: regular.terms.contact_id.clone(),
-                        received_on: report.charge_date.clone(),
-                        amount: report.amount,
-                        method: Method::DirectDebit,
-                        reference: Some(report.payment_id.clone()),
-                        allocations: vec![AllocationRow {
-                            key: None,
-                            source_code_id: regular.terms.source_code_id.clone(),
-                            amount: report.amount,
-                        }],
-                        client_key: None,
-                    },
-                    Source::System,
-                    group.as_ref(),
-                )?,
-            };
-            change = GiftChange::Recorded(gift.clone());
-            next.gift_id = Some(gift);
-            next.gift_voided = false;
-        }
-        Act::Void(reason) => {
-            let gift = next.gift_id.clone().unwrap_or_default();
-            unvoid_or_void(ctx, &gift, Status::Void, Some(reason), group.as_ref())?;
-            next.gift_voided = true;
-            change = GiftChange::Voided(gift);
-        }
-        Act::Unvoid => {
-            let gift = next.gift_id.clone().unwrap_or_default();
-            unvoid_or_void(ctx, &gift, Status::Completed, None, group.as_ref())?;
-            next.gift_voided = false;
-            change = GiftChange::Unvoided(gift);
-        }
-        Act::Nothing => {}
+    if let Some((contact_id, code)) = donor {
+        let name = match staff {
+            Some(_) => format!("Direct Debit {amount} matched to a donor"),
+            None => format!("Direct Debit {amount} {}{because}", said(report.status)),
+        };
+        let group = command_group(ctx, &name)?;
+        let gift = crate::create_provider_gift(
+            ctx,
+            GiftPayload {
+                contact_id,
+                received_on: report.charge_date.clone(),
+                amount: report.amount,
+                method: Method::DirectDebit,
+                reference: Some(report.payment_id.clone()),
+                allocations: vec![AllocationRow {
+                    key: None,
+                    source_code_id: code,
+                    amount: report.amount,
+                }],
+                client_key: None,
+                origin: Some(ProviderRef {
+                    provider: Provider::Gocardless,
+                    payment_id: report.payment_id.clone(),
+                    regular_gift_id: regular_id.clone(),
+                }),
+            },
+            target,
+            reason,
+            &group,
+        )?;
+        next.gift_id = Some(gift.clone());
+        change = GiftChange::Recorded(gift);
+        let exec = match (&held, staff) {
+            (None, _) => Exec::create(Source::System),
+            (Some((id, _)), Some((expected, source))) => Exec::update(id, Some(expected), source),
+            (Some((id, _)), None) => Exec::update(id, None, Source::System),
+        };
+        execute(ctx, &DIRECT_DEBIT_PAYMENT, next, exec.in_group(&group))?;
+        return Ok(change);
     }
 
+    let group = command_group(
+        ctx,
+        &format!("Direct Debit {amount} {}{because}", said(report.status)),
+    )?;
+    if let Some(gift) = next.gift_id.clone() {
+        if sync_gift(ctx, &gift, &report, target, reason, &group)? {
+            change = GiftChange::Updated(gift);
+        }
+    } else {
+        change = GiftChange::Unmatched;
+    }
     let exec = match &held {
         None => Exec::create(Source::System),
         Some((id, _)) => Exec::update(id, None, Source::System),
     };
-    let exec = match &group {
-        Some(g) => exec.in_group(g),
-        None => exec,
-    };
-    execute(ctx, &DIRECT_DEBIT_PAYMENT, next, exec)?;
+    execute(ctx, &DIRECT_DEBIT_PAYMENT, next, exec.in_group(&group))?;
     Ok(change)
 }
 
-fn unvoid_or_void(
+/// The payment's gift takes its amount, date and status, unless a claim
+/// holds the amount and date or staff voided it. Whether it changed.
+fn sync_gift(
     ctx: &Ctx,
     gift: &str,
-    status: Status,
+    report: &PaymentReport,
+    target: Status,
     reason: Option<String>,
-    group: Option<&CommandGroup>,
-) -> Result<(), ContractError> {
-    let exec = Exec::update(gift, None, Source::System);
-    let exec = match group {
-        Some(g) => exec.in_group(g),
-        None => exec,
+    group: &CommandGroup,
+) -> Result<bool, ContractError> {
+    let conn = ctx.tx.read();
+    let Some((status, claimed)) = conn
+        .prepare_cached(
+            "SELECT status, claim_id IS NOT NULL FROM gifts WHERE id = ?1
+             /* any status: one gift */",
+        )?
+        .query_row([gift], |r| {
+            Ok((Status::parse(&r.get::<_, String>(0)?), r.get::<_, bool>(1)?))
+        })
+        .optional()?
+    else {
+        return Err(ContractError::NotFound);
     };
-    execute(
+    let mut changed = false;
+    if !claimed {
+        let current = crate::get(conn, gift)?.ok_or(ContractError::NotFound)?.gift;
+        if current.amount != report.amount || current.received_on != report.charge_date {
+            // One allocation takes the whole amount; a split staff made is
+            // kept when the amount is the same.
+            let allocations = if current.amount == report.amount {
+                current
+                    .allocations
+                    .iter()
+                    .map(|a| AllocationRow {
+                        key: Some(a.key.clone()),
+                        source_code_id: a.source_code_id.clone(),
+                        amount: a.amount,
+                    })
+                    .collect()
+            } else {
+                current
+                    .allocations
+                    .first()
+                    .map(|a| AllocationRow {
+                        key: Some(a.key.clone()),
+                        source_code_id: a.source_code_id.clone(),
+                        amount: report.amount,
+                    })
+                    .into_iter()
+                    .collect()
+            };
+            execute(
+                ctx,
+                &crate::GIFT,
+                GiftPayload {
+                    contact_id: current.contact_id,
+                    received_on: report.charge_date.clone(),
+                    amount: report.amount,
+                    method: current.method,
+                    reference: current.reference,
+                    allocations,
+                    client_key: None,
+                    origin: None,
+                },
+                Exec::update(gift, None, Source::System).in_group(group),
+            )?;
+            changed = true;
+        }
+    }
+    // A void is staff's: it outlives what the provider says next.
+    if status != Status::Void {
+        let held_reason: Option<String> = conn
+            .prepare_cached(
+                "SELECT void_reason FROM gifts WHERE id = ?1 /* any status: one gift */",
+            )?
+            .query_row([gift], |r| r.get(0))?;
+        if status != target || (!target.is_received() && held_reason != reason) {
+            execute(
+                ctx,
+                &crate::STATUS,
+                StatusPayload {
+                    status: target,
+                    reason,
+                },
+                Exec::update(gift, None, Source::System).in_group(group),
+            )?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+/// Staff match an unmatched payment (row `id`, `expected` its version) to
+/// a donor: its gift is made, with the payment's facts and status,
+/// allocated to `source_code_id` (which must be live). Its id.
+pub fn match_payment(
+    ctx: &Ctx,
+    id: &str,
+    expected: i64,
+    contact_id: &str,
+    source_code_id: &str,
+    source: Source,
+) -> Result<String, ContractError> {
+    let conn = ctx.tx.read();
+    let (p, version): (PaymentPayload, i64) = conn
+        .prepare_cached(&format!(
+            "SELECT {PAYMENT_COLUMNS}, version FROM direct_debit_payments WHERE id = ?1"
+        ))?
+        .query_row([id], |r| Ok((payment_row(r)?, r.get(8)?)))
+        .optional()?
+        .ok_or(ContractError::NotFound)?;
+    if p.gift_id.is_some() || p.regular_gift_id.is_some() {
+        return Err(ContractError::rejected(
+            "already_matched",
+            "This payment is already a donor’s gift",
+        ));
+    }
+    if version != expected {
+        return Err(ContractError::Stale {
+            contract: DirectDebitPayment::NAME,
+            counter: version,
+            current: serde_json::to_value(&p).unwrap_or_default(),
+        });
+    }
+    if contacts::donors::kind_of(conn, contact_id)?.is_none() {
+        return Err(ContractError::rejected(
+            "unknown_contact",
+            "Contact must exist",
+        ));
+    }
+    match sources::describe(conn, source_code_id)? {
+        None => {
+            return Err(ContractError::rejected(
+                "unknown_source_code",
+                "The source code must be a full code (category, detail and version)",
+            ));
+        }
+        Some(code) if !code.is_active => {
+            return Err(ContractError::rejected(
+                "archived_source_code",
+                format!("{} is archived: choose another", code.code),
+            ));
+        }
+        Some(_) => {}
+    }
+    let report = PaymentReport {
+        payment_id: p.payment_id.clone(),
+        amount: p.amount,
+        charge_date: p.charge_date.clone(),
+        status: p.status,
+        reason: p.reason.clone(),
+        mandate_id: p.mandate_id.clone(),
+    };
+    match record(
         ctx,
-        &crate::STATUS,
-        crate::types::StatusPayload { status, reason },
-        exec,
-    )?;
-    Ok(())
+        report,
+        PaymentOwner::OneOff {
+            contact_id: contact_id.to_owned(),
+            source_code_id: source_code_id.to_owned(),
+        },
+        Some((expected, source)),
+    )? {
+        GiftChange::Recorded(gift) => Ok(gift),
+        _ => Err(ContractError::rejected(
+            "already_matched",
+            "This payment is already a donor’s gift",
+        )),
+    }
+}
+
+/// The status a provider payment gives its gift now, and the provider's
+/// reason: what un-voiding the gift restores. None: no payment row.
+pub fn payment_status_of_gift(
+    conn: &Connection,
+    gift_id: &str,
+) -> rusqlite::Result<Option<(Status, Option<String>)>> {
+    conn.prepare_cached("SELECT status, reason FROM direct_debit_payments WHERE gift_id = ?1")?
+        .query_row([gift_id], |r| {
+            let status = PaymentStatus::parse(&r.get::<_, String>(0)?);
+            let reason: Option<String> = r.get(1)?;
+            Ok((status.gift_status(), gift_reason(status, reason.as_deref())))
+        })
+        .optional()
+}
+
+/// A payment we couldn't tie to a donor, as staff see it to match it.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UnmatchedPayment {
+    pub id: String,
+    pub payment_id: String,
+    pub mandate_id: Option<String>,
+    #[ts(type = "number")]
+    pub amount: i64,
+    pub charge_date: String,
+    pub status: PaymentStatus,
+    pub reason: Option<String>,
+    /// Pass as `expected` to match it.
+    #[ts(type = "number")]
+    pub version: i64,
+}
+
+/// The most unmatched payments one read lists (newest first).
+pub const UNMATCHED_LIMIT: usize = 500;
+
+/// Payments with no gift: nobody to give them to yet. Newest first.
+pub fn unmatched(conn: &Connection) -> rusqlite::Result<Vec<UnmatchedPayment>> {
+    conn.prepare_cached(
+        "SELECT id, payment_id, mandate_id, amount, charge_date, status, reason, version
+         FROM direct_debit_payments INDEXED BY direct_debit_payments_unmatched
+         WHERE gift_id IS NULL ORDER BY seq DESC LIMIT ?1",
+    )?
+    .query_map([UNMATCHED_LIMIT as i64], |r| {
+        Ok(UnmatchedPayment {
+            id: r.get(0)?,
+            payment_id: r.get(1)?,
+            mandate_id: r.get(2)?,
+            amount: r.get(3)?,
+            charge_date: r.get(4)?,
+            status: PaymentStatus::parse(&r.get::<_, String>(5)?),
+            reason: r.get(6)?,
+            version: r.get(7)?,
+        })
+    })?
+    .collect()
+}
+
+/// The regular gift (if any) whose mandate is `mandate_id`.
+pub fn by_mandate(conn: &Connection, mandate_id: &str) -> rusqlite::Result<Option<RegularFacts>> {
+    facts_by(conn, "mandate_id", mandate_id)
+}
+
+/// Every way a provider payment and the gifts disagree (ADR 0025,
+/// decision 7): a matched payment without exactly one gift, a gift
+/// whose amount, date or status isn't its payment's (a claimed gift keeps
+/// its claimed amount and date; a staff void stands), or a provider gift
+/// with no payment. Empty when consistent. Read-only.
+pub fn consistency(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut problems: Vec<String> = conn
+        .prepare(&format!(
+            "SELECT p.payment_id,
+                 (SELECT count(*) FROM gifts g WHERE g.provider = 'gocardless'
+                      AND g.provider_payment_id = p.payment_id /* any status: the payment's */),
+                 g.id, g.amount, g.received_on, g.status, g.claim_id IS NOT NULL,
+                 p.gift_id, p.amount, p.charge_date, {GIFT_STATUS_OF_PAYMENT},
+                 p.regular_gift_id IS NOT NULL
+             FROM direct_debit_payments p
+             LEFT JOIN gifts g ON g.provider = 'gocardless'
+                 AND g.provider_payment_id = p.payment_id /* any status: the payment's */
+             ORDER BY p.seq"
+        ))?
+        .query_map([], |r| {
+            let payment: String = r.get(0)?;
+            let count: i64 = r.get(1)?;
+            let gift: Option<String> = r.get(2)?;
+            let linked: Option<String> = r.get(7)?;
+            let matched = linked.is_some() || r.get::<_, bool>(11)?;
+            Ok(if count != 1 {
+                (count != 0 || matched)
+                    .then(|| format!("payment {payment}: {count} gifts, not one"))
+            } else if gift != linked {
+                Some(format!(
+                    "payment {payment}: its gift is {}, but {} names it",
+                    linked.as_deref().unwrap_or("none"),
+                    gift.as_deref().unwrap_or("none")
+                ))
+            } else {
+                let (amount, date, status, claimed): (i64, String, String, bool) =
+                    (r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?);
+                let (p_amount, p_date, p_status): (i64, String, String) =
+                    (r.get(8)?, r.get(9)?, r.get(10)?);
+                if !claimed && (amount != p_amount || date != p_date) {
+                    Some(format!(
+                        "payment {payment}: gift is {amount}p on {date}, payment {p_amount}p on {p_date}"
+                    ))
+                } else if status != p_status && status != "void" {
+                    Some(format!(
+                        "payment {payment}: gift is {status}, payment says {p_status}"
+                    ))
+                } else {
+                    None
+                }
+            })
+        })?
+        .filter_map(Result::transpose)
+        .collect::<rusqlite::Result<_>>()?;
+    let orphans: Vec<String> = conn
+        .prepare(
+            "SELECT g.id, g.provider_payment_id FROM gifts g
+             WHERE g.provider = 'gocardless' AND g.provider_payment_id IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM direct_debit_payments p
+                               WHERE p.payment_id = g.provider_payment_id)
+             /* any status: every provider gift */",
+        )?
+        .query_map([], |r| {
+            Ok(format!(
+                "gift {}: payment {} isn't on record",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    problems.extend(orphans);
+    Ok(problems)
 }
 
 // ── reads ──────────────────────────────────────────────────────────────────
@@ -1311,6 +1631,143 @@ CREATE INDEX direct_debit_payments_by_regular_gift
 -- giving.status reads a gift's payment on every void and un-void.
 CREATE INDEX direct_debit_payments_by_gift ON direct_debit_payments (gift_id)
     WHERE gift_id IS NOT NULL;
+";
+
+/// Org schema step 18 (ADR 0025: gifts are every payment attempt), after
+/// [`MIGRATION_DIRECT_DEBIT`]. Run with foreign keys deferred (it
+/// rebuilds two tables others point at):
+/// - `gifts.status` widens to every attempt's status, and a gift names
+///   its provider, provider payment (unique per provider) and regular
+///   gift; `gifts_claimed_void` becomes `gifts_claimed_uncounted` (a
+///   claimed gift that stopped counting, whatever the reason), and the
+///   Direct Debit reference index gives way to the provider pair;
+/// - `direct_debit_payments`: the regular gift is optional (one-offs,
+///   unmatched payments), the mandate is kept, `gift_voided` goes, and a
+///   gift belongs to one payment;
+/// - every existing payment gets exactly one gift: one confirmed under D2
+///   keeps its gift, which takes the payment's status (a void staff made
+///   stays void); one never confirmed gets a new gift with its status, to
+///   its regular gift's code; a D2 gift a retry superseded (void) keeps
+///   its provider, out of the unique pair.
+pub const MIGRATION_UNIFIED: &str = "
+CREATE TABLE gifts_widen AS SELECT * FROM gifts;
+CREATE TABLE payments_widen AS SELECT * FROM direct_debit_payments;
+DROP TABLE direct_debit_payments;
+DROP TABLE gifts;
+CREATE TABLE gifts (
+    seq INTEGER PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    contact_id TEXT NOT NULL REFERENCES contacts (id),
+    received_on TEXT NOT NULL,
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    method TEXT NOT NULL CHECK (method IN ('cash', 'card', 'direct_debit')),
+    reference TEXT,
+    status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed', 'failed',
+        'cancelled', 'refunded', 'charged_back', 'void')),
+    entered_by INTEGER,
+    entered_at INTEGER NOT NULL,
+    client_key TEXT UNIQUE,
+    gift_version INTEGER NOT NULL DEFAULT 0,
+    status_version INTEGER NOT NULL DEFAULT 0,
+    void_reason TEXT,
+    claim_id TEXT,
+    claim_lock_version INTEGER NOT NULL DEFAULT 0,
+    provider TEXT CHECK (provider IN ('gocardless', 'stripe')),
+    provider_payment_id TEXT CHECK (provider_payment_id IS NULL OR provider IS NOT NULL),
+    regular_gift_id TEXT REFERENCES regular_gifts (id)
+) STRICT;
+INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, reference, status,
+    entered_by, entered_at, client_key, gift_version, status_version, void_reason, claim_id,
+    claim_lock_version)
+SELECT seq, id, contact_id, received_on, amount, method, reference, status, entered_by,
+    entered_at, client_key, gift_version, status_version, void_reason, claim_id,
+    claim_lock_version
+FROM gifts_widen;
+DROP TABLE gifts_widen;
+
+-- A D2 payment's gift takes the payment's status (a staff void stays).
+UPDATE gifts SET
+    provider = 'gocardless',
+    provider_payment_id = (SELECT p.payment_id FROM payments_widen p WHERE p.gift_id = gifts.id),
+    regular_gift_id = (SELECT p.regular_gift_id FROM payments_widen p WHERE p.gift_id = gifts.id),
+    status = (SELECT CASE
+                  WHEN gifts.status = 'void' AND p.gift_voided = 0 THEN 'void'
+                  WHEN p.status = 'confirmed' THEN 'completed'
+                  ELSE p.status END
+              FROM payments_widen p WHERE p.gift_id = gifts.id)
+WHERE id IN (SELECT gift_id FROM payments_widen WHERE gift_id IS NOT NULL);
+-- A gift a retry superseded: void, its provider kept, no payment id.
+UPDATE gifts SET
+    provider = 'gocardless',
+    regular_gift_id = (SELECT p.regular_gift_id FROM payments_widen p
+                       WHERE p.payment_id = gifts.reference)
+WHERE method = 'direct_debit' AND provider IS NULL;
+-- A payment never confirmed: its gift now, with its status.
+INSERT INTO gifts (id, contact_id, received_on, amount, method, reference, status, void_reason,
+    entered_by, entered_at, provider, provider_payment_id, regular_gift_id)
+SELECT lower(hex(randomblob(16))), r.contact_id, p.charge_date, p.amount, 'direct_debit',
+    p.payment_id, CASE p.status WHEN 'confirmed' THEN 'completed' ELSE p.status END,
+    CASE WHEN p.status = 'confirmed' THEN NULL ELSE p.reason END, NULL,
+    CAST(strftime('%s', 'now') AS INTEGER) * 1000, 'gocardless', p.payment_id,
+    p.regular_gift_id
+FROM payments_widen p JOIN regular_gifts r ON r.id = p.regular_gift_id
+WHERE p.gift_id IS NULL
+ORDER BY p.seq;
+INSERT INTO gift_allocations (id, gift_id, position, source_code_id, amount)
+SELECT lower(hex(randomblob(16))), g.id, 0, r.source_code_id, g.amount
+FROM gifts g JOIN regular_gifts r ON r.id = g.regular_gift_id
+WHERE g.provider_payment_id IN (SELECT payment_id FROM payments_widen WHERE gift_id IS NULL);
+INSERT INTO gift_allocation_index (allocation_id, gift_id, contact_id, source_code_id,
+    detail_id, category_id, received_on, amount, status)
+SELECT a.id, g.id, g.contact_id, a.source_code_id, d.id, d.parent_id, g.received_on, a.amount,
+    g.status
+FROM gift_allocations a
+JOIN gifts g ON g.id = a.gift_id
+JOIN source_codes v ON v.id = a.source_code_id
+JOIN source_codes d ON d.id = v.parent_id
+WHERE g.provider_payment_id IN (SELECT payment_id FROM payments_widen WHERE gift_id IS NULL);
+UPDATE gift_allocation_index SET status = (SELECT g.status FROM gifts g
+                                           WHERE g.id = gift_allocation_index.gift_id)
+WHERE gift_id IN (SELECT gift_id FROM payments_widen WHERE gift_id IS NOT NULL);
+
+CREATE INDEX gifts_by_contact ON gifts (contact_id, received_on, seq);
+CREATE INDEX gifts_by_entered_by ON gifts (entered_by, seq);
+CREATE INDEX gifts_unclaimed ON gifts (received_on)
+    WHERE claim_id IS NULL AND status = 'completed';
+CREATE INDEX gifts_claimed_uncounted ON gifts (claim_id)
+    WHERE claim_id IS NOT NULL AND status <> 'completed';
+CREATE UNIQUE INDEX gifts_by_provider_payment ON gifts (provider, provider_payment_id)
+    WHERE provider_payment_id IS NOT NULL;
+CREATE INDEX gifts_by_regular_gift ON gifts (regular_gift_id, received_on)
+    WHERE regular_gift_id IS NOT NULL;
+
+CREATE TABLE direct_debit_payments (
+    seq INTEGER PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    payment_id TEXT NOT NULL UNIQUE,
+    regular_gift_id TEXT REFERENCES regular_gifts (id),
+    mandate_id TEXT,
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    charge_date TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('pending', 'confirmed', 'failed', 'charged_back', 'cancelled')),
+    reason TEXT,
+    gift_id TEXT UNIQUE REFERENCES gifts (id),
+    version INTEGER NOT NULL DEFAULT 0
+) STRICT;
+INSERT INTO direct_debit_payments (seq, id, payment_id, regular_gift_id, mandate_id, amount,
+    charge_date, status, reason, gift_id, version)
+SELECT p.seq, p.id, p.payment_id, p.regular_gift_id, r.mandate_id, p.amount, p.charge_date,
+    p.status, p.reason,
+    (SELECT g.id FROM gifts g WHERE g.provider = 'gocardless'
+         AND g.provider_payment_id = p.payment_id),
+    p.version
+FROM payments_widen p LEFT JOIN regular_gifts r ON r.id = p.regular_gift_id;
+DROP TABLE payments_widen;
+CREATE INDEX direct_debit_payments_by_regular_gift
+    ON direct_debit_payments (regular_gift_id, charge_date, seq);
+CREATE INDEX direct_debit_payments_unmatched ON direct_debit_payments (seq)
+    WHERE gift_id IS NULL;
 ";
 
 #[cfg(test)]
