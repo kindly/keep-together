@@ -10,6 +10,7 @@
 //! keep dev seed-riverside
 //! keep giftaid-xml <slug> <claim-id>
 //! keep giftaid-xml --hmrc-sample
+//! keep giving-consistency <slug>
 //! ```
 
 use std::path::PathBuf;
@@ -25,7 +26,8 @@ const USAGE: &str = "usage:
   keep [--data <dir>] dev seed-demo [--slug <slug>] [--admin-email <email>]
   keep [--data <dir>] dev seed-riverside   (KEEP_ENV=dev|staging)
   keep [--data <dir>] giftaid-xml <slug> <claim-id>   (the claim's XML on stdout, IRmark on stderr)
-  keep giftaid-xml --hmrc-sample                      (HMRC's sample data: their GAValidSample.xml)";
+  keep giftaid-xml --hmrc-sample                      (HMRC's sample data: their GAValidSample.xml)
+  keep [--data <dir>] giving-consistency <slug>       (provider payments vs their gifts; exit 1 on any)";
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
     eprintln!("{msg}");
@@ -159,6 +161,19 @@ fn main() -> ExitCode {
         }
         ["giftaid-xml", "--hmrc-sample"] => print_xml(cli::giftaid::sample_xml()),
         ["giftaid-xml", slug, claim] => print_xml(cli::giftaid::claim_xml(&data, slug, claim)),
+        ["giving-consistency", slug] => match cli::giving::consistency(&data, slug) {
+            Ok(problems) if problems.is_empty() => {
+                println!("{slug}: every provider payment has one gift that agrees with it");
+                ExitCode::SUCCESS
+            }
+            Ok(problems) => {
+                for p in &problems {
+                    println!("{p}");
+                }
+                fail(format!("{slug}: {} inconsistencies", problems.len()))
+            }
+            Err(e) => fail(e),
+        },
         ["dev", "seed-riverside"] => {
             let seeded = cli::tenant::open(&data)
                 .map_err(|e| e.to_string())

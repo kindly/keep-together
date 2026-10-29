@@ -367,6 +367,7 @@ pub fn record_gift(
         reference: req.reference,
         allocations: req.allocations,
         client_key: Some(req.client_key.clone()),
+        origin: None,
     };
     let group = command_group(ctx, &giving::gift_group_name(ctx.tx.read(), &gift)?)?;
 

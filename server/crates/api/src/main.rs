@@ -195,6 +195,10 @@ async fn main() {
             store: store.clone(),
             gc: gc.clone(),
         });
+        jobs.register(api::gocardless::catchup::CatchUpJob {
+            store: store.clone(),
+            gc: gc.clone(),
+        });
     }
     let state = AppState::new(store, dev_auth)
         .with_auth(auth)

@@ -2,7 +2,7 @@
 
 /**
  * How a gift was paid: by hand, on a card reader we don't drive (yet), or
- * by Direct Debit (a GoCardless payment GoCardless confirmed: recorded by
- * the system, never by hand).
+ * by Direct Debit (a GoCardless payment: recorded by the system from
+ * GoCardless's events, never by hand).
  */
 export type GiftMethod = "cash" | "card" | "direct_debit";

@@ -11,7 +11,7 @@ use sources::CodeDescription;
 
 use crate::gift::load_allocations;
 use crate::types::{
-    AllocationView, GiftDonor, GiftPage, GiftRow, GiftView, Method, RecentGift, Status,
+    AllocationView, GiftDonor, GiftPage, GiftRow, GiftView, Method, Provider, RecentGift, Status,
 };
 
 /// Gifts in "my recent gifts" (the menu and the group home page).
@@ -41,7 +41,8 @@ impl Codes {
 }
 
 const GIFT_COLUMNS: &str = "id, contact_id, received_on, amount, method, reference, status, \
-     entered_by, entered_at, gift_version, status_version, seq, void_reason, claim_id";
+     entered_by, entered_at, gift_version, status_version, seq, void_reason, claim_id, provider, \
+     provider_payment_id, regular_gift_id";
 
 fn gift_row(r: &rusqlite::Row) -> rusqlite::Result<(GiftRow, i64)> {
     Ok((
@@ -56,6 +57,12 @@ fn gift_row(r: &rusqlite::Row) -> rusqlite::Result<(GiftRow, i64)> {
             status: Status::parse(&r.get::<_, String>(6)?),
             void_reason: r.get(12)?,
             claim_id: r.get(13)?,
+            provider: r
+                .get::<_, Option<String>>(14)?
+                .as_deref()
+                .and_then(Provider::parse),
+            provider_payment_id: r.get(15)?,
+            regular_gift_id: r.get(16)?,
             entered_by: r.get(7)?,
             entered_at: r.get(8)?,
             gift_version: r.get(9)?,
@@ -92,7 +99,8 @@ pub fn my_recent(conn: &Connection, user: i64) -> rusqlite::Result<Vec<RecentGif
     let rows: Vec<RecentGift> = conn
         .prepare_cached(
             "SELECT id, entered_at, contact_id, amount, received_on, method, status
-             FROM gifts WHERE entered_by = ?1 ORDER BY seq DESC LIMIT ?2",
+             FROM gifts WHERE entered_by = ?1 ORDER BY seq DESC LIMIT ?2
+             /* any status: the list marks each */",
         )?
         .query_map(params![user, RECENT_LIMIT as i64], |r| {
             Ok(RecentGift {
@@ -144,7 +152,7 @@ pub fn by_contact(
         .prepare_cached(&format!(
             "SELECT {GIFT_COLUMNS} FROM gifts
              WHERE contact_id = ?1 AND (received_on, seq) < (?2, ?3)
-             ORDER BY received_on DESC, seq DESC LIMIT ?4"
+             ORDER BY received_on DESC, seq DESC LIMIT ?4 /* any status: the list marks each */"
         ))?
         .query_map(params![contact_id, date, seq, limit as i64 + 1], gift_row)?
         .collect::<rusqlite::Result<_>>()?;
@@ -175,7 +183,9 @@ pub fn by_contact(
 /// allocation's code. `None` for an unknown id.
 pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftView>> {
     let found = conn
-        .prepare_cached(&format!("SELECT {GIFT_COLUMNS} FROM gifts WHERE id = ?1"))?
+        .prepare_cached(&format!(
+            "SELECT {GIFT_COLUMNS} FROM gifts WHERE id = ?1 /* any status: one gift */"
+        ))?
         .query_row([id], gift_row);
     let mut gift = match found {
         Ok((g, _)) => g,

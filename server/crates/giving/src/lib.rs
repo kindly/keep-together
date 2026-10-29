@@ -5,10 +5,17 @@
 //! INTEGER pence (rule 7). Gifts are never deleted (rule 3).
 //!
 //! Other modules read a gift only through [`describe_gift`].
+//!
+//! `gifts` is every payment attempt (ADR 0025): only those with status
+//! `completed` are money received. Every read that counts money (income,
+//! reports, Gift Aid) filters with [`RECEIVED`]; `api/tests/schema.rs`
+//! fails on a gifts read that neither uses it nor says, in a
+//! `/* any status: … */` comment, why it reads every status.
 
 pub mod gift;
 pub mod queries;
 pub mod regular;
+pub mod requests;
 pub mod rules;
 pub mod types;
 
@@ -24,10 +31,21 @@ pub use queries::{
     BY_CONTACT_LIMIT, HISTORY_PAGE_LIMIT, RECENT_LIMIT, by_contact, get, history, my_recent,
 };
 pub use regular::{
-    DIRECT_DEBIT_PAYMENT, MIGRATION_DIRECT_DEBIT, REGULAR_GIFT, REGULAR_GIFT_MANDATE,
+    DIRECT_DEBIT_PAYMENT, MIGRATION_DIRECT_DEBIT, MIGRATION_UNIFIED, REGULAR_GIFT,
+    REGULAR_GIFT_MANDATE,
 };
 pub use rules::{ALLOCATION_LIMIT, CLIENT_KEY_MAX, PENCE_MAX, format_pence};
-pub use types::{ClaimLockPayload, GiftPayload, Status, StatusPayload};
+pub use types::{ClaimLockPayload, GiftPayload, Provider, ProviderRef, Status, StatusPayload};
+
+/// Money received: the one filter income, reports, dashboards and Gift
+/// Aid put on `gifts` (ADR 0025). Pending, failed, cancelled, refunded,
+/// charged-back and void gifts count for nothing. Spliced into SQL with
+/// `format!` (`… WHERE {RECEIVED} AND …`); the partial index
+/// `gifts_unclaimed` is on the same words.
+pub const RECEIVED: &str = "status = 'completed'";
+/// Its negation, in the words of the partial index
+/// `gifts_claimed_uncounted` (claimed gifts that stopped counting).
+pub const NOT_RECEIVED: &str = "status <> 'completed'";
 
 /// The org-schema step this crate owns, after `sources::MIGRATION` and
 /// the contacts tables. `seq` is entry order ("my recent gifts", newest
@@ -111,6 +129,7 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &REGULAR_GIFT,
         &REGULAR_GIFT_MANDATE,
         &DIRECT_DEBIT_PAYMENT,
+        &requests::PROVIDER_REQUEST,
     ])
 });
 
@@ -163,6 +182,35 @@ pub fn create_gift(
     Ok(id)
 }
 
+/// A provider's gift (its payment, first heard of), in the caller's
+/// transaction, as the system: `giving.gift` with its origin, then
+/// `giving.status` with the payment's status (and the provider's reason
+/// when that isn't money received), under `group`. One per payment: a
+/// payment that has a gift is `Duplicate`.
+pub fn create_provider_gift(
+    ctx: &Ctx,
+    payload: GiftPayload,
+    status: Status,
+    reason: Option<String>,
+    group: &CommandGroup,
+) -> Result<String, ContractError> {
+    debug_assert!(payload.origin.is_some());
+    let id = execute(
+        ctx,
+        &GIFT,
+        payload,
+        Exec::create(Source::System).in_group(group),
+    )?
+    .id;
+    execute(
+        ctx,
+        &STATUS,
+        StatusPayload { status, reason },
+        Exec::update(&id, Some(0), Source::System).in_group(group),
+    )?;
+    Ok(id)
+}
+
 /// Void or un-void. Re-sending the current status is a no-op that answers
 /// the counter as it is. `reason`: why it is void (needed when the gift
 /// is in a Gift Aid claim).
@@ -178,7 +226,7 @@ pub fn set_status(
         .tx
         .read()
         .query_row(
-            "SELECT status, status_version FROM gifts WHERE id = ?1",
+            "SELECT status, status_version FROM gifts WHERE id = ?1 /* any status: one gift */",
             [id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -219,8 +267,9 @@ pub fn lock_for_claim(
     )
 }
 
-/// The claim lets the gift go (a draft deleted, a claim rejected). A gift
-/// another claim holds is left alone and refused.
+/// The claim lets the gift go (a draft deleted, a claim rejected); a
+/// provider's gift then takes its payment's amount and date again. A
+/// gift another claim holds is left alone and refused.
 pub fn release_from_claim(
     ctx: &Ctx,
     gift_id: &str,
@@ -231,17 +280,23 @@ pub fn release_from_claim(
     let held: Option<Option<String>> = ctx
         .tx
         .read()
-        .prepare_cached("SELECT claim_id FROM gifts WHERE id = ?1")?
+        .prepare_cached("SELECT claim_id FROM gifts WHERE id = ?1 /* any status: one gift */")?
         .query_row([gift_id], |r| r.get(0))
         .optional()?;
     match held {
         None => Err(ContractError::NotFound),
-        Some(Some(c)) if c == claim_id => execute(
-            ctx,
-            &CLAIM_LOCK,
-            ClaimLockPayload { claim_id: None },
-            Exec::update(gift_id, None, source).in_group(group),
-        ),
+        Some(Some(c)) if c == claim_id => {
+            let done = execute(
+                ctx,
+                &CLAIM_LOCK,
+                ClaimLockPayload { claim_id: None },
+                Exec::update(gift_id, None, source).in_group(group),
+            )?;
+            // A provider gift's payment may have moved while the claim
+            // held its amount and date (review L4): it follows again.
+            regular::resync_gift(ctx, gift_id, group)?;
+            Ok(done)
+        }
         Some(_) => Err(ContractError::rejected(
             "not_in_claim",
             "The gift isn't in this claim",
@@ -258,18 +313,18 @@ pub struct ClaimableGift {
     pub amount: i64,
 }
 
-/// Completed gifts no claim holds, received `from` ..= `to` (ISO dates),
-/// oldest first. One indexed range read (`gifts_unclaimed`).
+/// Gifts received (money in) no claim holds, received `from` ..= `to`
+/// (ISO dates), oldest first. One indexed range read (`gifts_unclaimed`).
 pub fn unclaimed_between(
     conn: &Connection,
     from: &str,
     to: &str,
 ) -> rusqlite::Result<Vec<ClaimableGift>> {
-    conn.prepare_cached(
+    conn.prepare_cached(&format!(
         "SELECT id, contact_id, received_on, amount FROM gifts INDEXED BY gifts_unclaimed
-         WHERE claim_id IS NULL AND status = 'completed' AND received_on BETWEEN ?1 AND ?2
-         ORDER BY received_on, seq",
-    )?
+         WHERE claim_id IS NULL AND {RECEIVED} AND received_on BETWEEN ?1 AND ?2
+         ORDER BY received_on, seq"
+    ))?
     .query_map([from, to], |r| {
         Ok(ClaimableGift {
             id: r.get(0)?,
@@ -281,17 +336,28 @@ pub fn unclaimed_between(
     .collect()
 }
 
-/// Unclaimed completed gifts received before `before`: how many, for
+/// Unclaimed gifts received (money in) before `before`: how many, for
 /// "too old to claim".
 pub fn unclaimed_before(conn: &Connection, before: &str) -> rusqlite::Result<i64> {
-    conn.prepare_cached(
+    conn.prepare_cached(&format!(
         "SELECT count(*) FROM gifts INDEXED BY gifts_unclaimed
-         WHERE claim_id IS NULL AND status = 'completed' AND received_on < ?1",
-    )?
+         WHERE claim_id IS NULL AND {RECEIVED} AND received_on < ?1"
+    ))?
     .query_row([before], |r| r.get(0))
 }
 
-/// A claimed gift voided since: the claim that holds it and why.
+/// Income: the money received on gifts dated `from` ..= `to` (ISO
+/// dates), in pence. What every total of giving is made of.
+pub fn received_total(conn: &Connection, from: &str, to: &str) -> rusqlite::Result<i64> {
+    conn.prepare_cached(&format!(
+        "SELECT coalesce(sum(amount), 0) FROM gifts
+         WHERE {RECEIVED} AND received_on BETWEEN ?1 AND ?2"
+    ))?
+    .query_row([from, to], |r| r.get(0))
+}
+
+/// A claimed gift that no longer counts (voided, or its payment charged
+/// back, failed or cancelled since): the claim that holds it and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VoidedClaimedGift {
     pub id: String,
@@ -299,16 +365,16 @@ pub struct VoidedClaimedGift {
     pub void_reason: Option<String>,
 }
 
-/// The void gifts `claim_id` holds (`gifts_claimed_void`, one claim's
-/// range).
+/// The gifts `claim_id` holds that no longer count
+/// (`gifts_claimed_uncounted`, one claim's range).
 pub fn voided_in_claim(
     conn: &Connection,
     claim_id: &str,
 ) -> rusqlite::Result<Vec<VoidedClaimedGift>> {
-    conn.prepare_cached(
-        "SELECT id, claim_id, void_reason FROM gifts INDEXED BY gifts_claimed_void
-         WHERE claim_id = ?1 AND status = 'void' ORDER BY seq",
-    )?
+    conn.prepare_cached(&format!(
+        "SELECT id, claim_id, void_reason FROM gifts INDEXED BY gifts_claimed_uncounted
+         WHERE claim_id = ?1 AND {NOT_RECEIVED} ORDER BY seq"
+    ))?
     .query_map([claim_id], |r| {
         Ok(VoidedClaimedGift {
             id: r.get(0)?,
@@ -319,12 +385,13 @@ pub fn voided_in_claim(
     .collect()
 }
 
-/// Every void gift a claim still holds (`gifts_claimed_void`).
+/// Every gift a claim still holds that no longer counts
+/// (`gifts_claimed_uncounted`).
 pub fn voided_in_claims(conn: &Connection) -> rusqlite::Result<Vec<VoidedClaimedGift>> {
-    conn.prepare_cached(
-        "SELECT id, claim_id, void_reason FROM gifts INDEXED BY gifts_claimed_void
-         WHERE claim_id IS NOT NULL AND status = 'void' ORDER BY seq",
-    )?
+    conn.prepare_cached(&format!(
+        "SELECT id, claim_id, void_reason FROM gifts INDEXED BY gifts_claimed_uncounted
+         WHERE claim_id IS NOT NULL AND {NOT_RECEIVED} ORDER BY seq"
+    ))?
     .query_map([], |r| {
         Ok(VoidedClaimedGift {
             id: r.get(0)?,
@@ -345,7 +412,9 @@ pub struct GiftFacts {
 }
 
 pub fn describe_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftFacts>> {
-    conn.prepare_cached("SELECT contact_id, received_on, status FROM gifts WHERE id = ?1")?
+    conn.prepare_cached(
+        "SELECT contact_id, received_on, status FROM gifts WHERE id = ?1 /* any status: one gift */",
+    )?
         .query_row([id], |r| {
             Ok(GiftFacts {
                 contact_id: r.get(0)?,
@@ -358,7 +427,7 @@ pub fn describe_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<Gif
 
 /// The gift a form's `clientKey` already saved, or `None`.
 pub fn by_client_key(conn: &Connection, client_key: &str) -> rusqlite::Result<Option<String>> {
-    conn.prepare_cached("SELECT id FROM gifts WHERE client_key = ?1")?
+    conn.prepare_cached("SELECT id FROM gifts WHERE client_key = ?1 /* any status: the key's */")?
         .query_row([client_key], |r| r.get(0))
         .optional()
 }

@@ -41,6 +41,7 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::MIGRATION_CLAIM_LOCK),
         // On an empty file: no rows for the rebuild to carry.
         M::up(giving::MIGRATION_DIRECT_DEBIT),
+        M::up(giving::MIGRATION_UNIFIED),
     ])
 }
 
@@ -170,6 +171,7 @@ fn gift_for(db: &OrgDb, contact_id: &str, date: &str, void: bool) -> String {
                     amount: 2000,
                 }],
                 client_key: None,
+                origin: None,
             },
             Source::Ui,
             None,

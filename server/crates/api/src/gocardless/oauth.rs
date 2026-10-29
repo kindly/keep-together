@@ -133,11 +133,12 @@ pub async fn callback(
             // working. This group gets nothing.
             let (store, g) = (state.store.clone(), gc.clone());
             let access = token.access_token.clone();
+            let account = token.organisation_id.clone();
             let h = holder.clone();
             let sealed = blocking(move || {
                 let db = store.org(&h)?;
                 contracts::transact(&db, None, |ctx| {
-                    g.put_token(ctx, &access, Source::System)
+                    g.put_token(ctx, &access, &account, Source::System)
                         .map_err(crate::ApiError::from)
                 })
             })
@@ -163,11 +164,12 @@ pub async fn callback(
     // another account's, is kept to revoke.
     let (store, tenant, g) = (state.store.clone(), row.tenant.clone(), gc.clone());
     let access = token.access_token.clone();
+    let account = token.organisation_id.clone();
     let sealed = blocking(move || {
         let db = store.org(&tenant)?;
         let old = db.read(|r| g.token(r))?;
         contracts::transact(&db, Some(user), |ctx| {
-            g.put_token(ctx, &access, Source::Ui)
+            g.put_token(ctx, &access, &account, Source::Ui)
                 .map_err(crate::ApiError::from)
         })?;
         Ok::<_, crate::ApiError>(old)

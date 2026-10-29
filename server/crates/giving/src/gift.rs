@@ -4,6 +4,11 @@
 //! `giving.status` (`status_version`). Both rebuild the allocation
 //! projection. Gifts are never deleted (rule 3: a mistake is void).
 //!
+//! A provider's gift (ADR 0025: one per payment, for its whole life) is
+//! the system's in what the provider says: method, amount, date,
+//! reference and status follow the payment; staff may correct its split
+//! across codes, or void it as a mistake.
+//!
 //! A gift is editable whatever its status, void included, until a Gift
 //! Aid claim takes it (`giving.claimLock`, the third slice, its own
 //! counter `claim_lock_version`). Then BOTH other contracts' applies
@@ -22,7 +27,10 @@ use serde::Serialize;
 use sources::{describe, mark_used};
 
 use crate::rules::{prepare_gift, prepare_status};
-use crate::types::{AllocationRow, ClaimLockPayload, GiftPayload, Method, Status, StatusPayload};
+use crate::types::{
+    AllocationRow, ClaimLockPayload, GiftPayload, Method, Provider, ProviderRef, Status,
+    StatusPayload,
+};
 
 pub const TABLE: &str = "gifts";
 /// The projection both contracts rebuild.
@@ -37,7 +45,7 @@ impl ChildRow for AllocationRow {
 /// The `giving.gift` slice as stored, plus what no payload carries: who
 /// entered it and when (set on create, preserved by every save and
 /// restore), and whether this command is a restore or the system's (a
-/// Direct Debit payment). Only the payload is serialised (a stale
+/// provider's payment). Only the payload is serialised (a stale
 /// refusal's `current`).
 #[derive(Clone, Debug, Serialize)]
 pub struct GiftState {
@@ -78,8 +86,8 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
     let Some(mut state) = conn
         .prepare_cached(
             "SELECT contact_id, received_on, amount, method, reference, entered_by, entered_at,
-                    claim_id
-             FROM gifts WHERE id = ?1",
+                    claim_id, provider, provider_payment_id, regular_gift_id
+             FROM gifts WHERE id = ?1 /* any status: one gift */",
         )?
         .query_row([id], |r| {
             Ok(GiftState {
@@ -91,6 +99,7 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
                     reference: r.get(4)?,
                     allocations: vec![],
                     client_key: None,
+                    origin: origin(r.get::<_, Option<String>>(8)?, r.get(9)?, r.get(10)?),
                 },
                 entered_by: r.get(5)?,
                 entered_at: r.get(6)?,
@@ -107,6 +116,20 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
     Ok(Some(state))
 }
 
+/// A provider gift's origin from its columns (a D2 gift a retry
+/// superseded has a provider but no payment id: no origin).
+pub(crate) fn origin(
+    provider: Option<String>,
+    payment_id: Option<String>,
+    regular_gift_id: Option<String>,
+) -> Option<ProviderRef> {
+    Some(ProviderRef {
+        provider: Provider::parse(provider.as_deref()?)?,
+        payment_id: payment_id?,
+        regular_gift_id,
+    })
+}
+
 /// What was given: donor, date, amount, method, card reference and the
 /// split across source codes. `contactId` is fixed at create (g3q2).
 /// A create whose `clientKey` is already on a gift is `Duplicate` with
@@ -119,7 +142,7 @@ pub static GIFT: Gift = Gift;
 /// marks it used. Codes the gift already carries are kept as they are,
 /// even once archived, as `contacts.acquisition` does; a restore may
 /// bring one back (it was assigned before, so it is already marked). A
-/// Direct Debit payment's gift (the system's) takes its regular gift's
+/// provider's gift (the system's) takes its regular gift's
 /// code even once archived: the code was checked when the regular gift
 /// was set up, and the money came in all the same.
 fn check_new_codes(
@@ -154,7 +177,8 @@ fn check_new_codes(
 
 impl Contract for Gift {
     const NAME: &'static str = "giving.gift";
-    const VERSION: u32 = 1;
+    /// v2: `origin` (ADR 0025).
+    const VERSION: u32 = 2;
     const ENTITY: &'static str = TABLE;
     const COUNTER: &'static str = "gift_version";
     const PROJECTIONS: &'static [&'static str] = &[ALLOCATION_INDEX];
@@ -177,10 +201,10 @@ impl Contract for Gift {
     ) -> Result<GiftState, ContractError> {
         let system = command.source == Source::System;
         let Some(current) = current else {
-            if p.method == Method::DirectDebit && !system {
+            if (p.method == Method::DirectDebit || p.origin.is_some()) && !system {
                 return Err(ContractError::rejected(
                     "direct_debit_by_hand",
-                    "Direct Debit gifts are recorded when GoCardless confirms the payment",
+                    "Direct Debit gifts are recorded from GoCardless’s payments",
                 ));
             }
             return Ok(GiftState {
@@ -207,12 +231,22 @@ impl Contract for Gift {
                  If it was wrong, void it with a reason and record it again",
             ));
         }
-        // What GoCardless collected is fixed: the split across codes is
-        // the only thing to correct on a Direct Debit gift (void it if it
-        // shouldn't count).
+        // The origin never changes; a save may leave it out.
+        if p.origin.is_some() && p.origin != current.gift.origin {
+            return Err(ContractError::rejected(
+                "identity_immutable",
+                "A gift’s provider payment can’t change",
+            ));
+        }
+        // What the provider says is the system's: the split across codes
+        // is the only thing staff correct on a provider's gift (void it if
+        // it shouldn't count).
         let (was, now) = (&current.gift, p);
-        let dd = was.method == Method::DirectDebit || now.method == Method::DirectDebit;
+        let dd = was.method == Method::DirectDebit
+            || now.method == Method::DirectDebit
+            || was.origin.is_some();
         if dd
+            && !system
             && (was.method != now.method
                 || was.amount != now.amount
                 || was.received_on != now.received_on
@@ -226,6 +260,7 @@ impl Contract for Gift {
         Ok(GiftState {
             gift: GiftPayload {
                 client_key: None,
+                origin: current.gift.origin.clone(),
                 ..p.clone()
             },
             restoring: command.source == Source::Restore,
@@ -245,22 +280,22 @@ impl Contract for Gift {
         let Some(before) = before else {
             if let Some(key) = g.client_key.as_deref() {
                 let existing: Option<String> = tx
-                    .prepare_cached("SELECT id FROM gifts WHERE client_key = ?1")?
+                    .prepare_cached(
+                        "SELECT id FROM gifts WHERE client_key = ?1 /* any status: the key's */",
+                    )?
                     .query_row([key], |r| r.get(0))
                     .optional()?;
                 if let Some(id) = existing {
                     return Err(ContractError::Duplicate { id });
                 }
             }
-            if g.method == Method::DirectDebit
-                && let Some(payment) = g.reference.as_deref()
-            {
+            if let Some(o) = &g.origin {
                 let existing: Option<String> = tx
                     .prepare_cached(
-                        "SELECT id FROM gifts WHERE method = 'direct_debit' AND reference = ?1
-                             AND status = 'completed'",
+                        "SELECT id FROM gifts WHERE provider = ?1 AND provider_payment_id = ?2
+                         /* any status: one gift per payment */",
                     )?
-                    .query_row([payment], |r| r.get(0))
+                    .query_row(params![o.provider.as_str(), o.payment_id], |r| r.get(0))
                     .optional()?;
                 if let Some(id) = existing {
                     return Err(ContractError::Duplicate { id });
@@ -273,10 +308,14 @@ impl Contract for Gift {
                 ));
             }
             check_new_codes(tx, next, &HashSet::new())?;
+            // A provider's gift starts pending: its status is set next,
+            // in the same command group ([`crate::create_provider_gift`]).
+            let o = g.origin.as_ref();
             tx.prepare_cached(
                 "INSERT INTO gifts (id, contact_id, received_on, amount, method, reference,
-                     status, entered_by, entered_at, client_key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', ?7, ?8, ?9)",
+                     status, entered_by, entered_at, client_key, provider, provider_payment_id,
+                     regular_gift_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             )?
             .execute(params![
                 id,
@@ -285,9 +324,13 @@ impl Contract for Gift {
                 g.amount,
                 g.method.as_str(),
                 g.reference,
+                if o.is_some() { "pending" } else { "completed" },
                 next.entered_by,
                 next.entered_at,
-                g.client_key
+                g.client_key,
+                o.map(|o| o.provider.as_str()),
+                o.map(|o| &o.payment_id),
+                o.and_then(|o| o.regular_gift_id.as_ref())
             ])?;
             return write_allocations(tx, id, &[], &g.allocations);
         };
@@ -312,6 +355,12 @@ impl Contract for Gift {
             g.reference
         ])?;
         write_allocations(tx, id, &before.gift.allocations, &g.allocations)
+    }
+
+    /// v1 had no origin: the same JSON reads as v2 (none: a save keeps
+    /// the gift's own).
+    fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
+        (from == 1).then_some(payload)
     }
 
     fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
@@ -368,7 +417,7 @@ fn project_allocations(tx: &Connection, id: &str) -> rusqlite::Result<()> {
          SELECT a.id, g.id, g.contact_id, a.source_code_id, d.id, d.parent_id, g.received_on,
                 a.amount, g.status
          FROM gift_allocations a
-         JOIN gifts g ON g.id = a.gift_id
+         JOIN gifts g ON g.id = a.gift_id /* any status: the projection carries it */
          JOIN source_codes v ON v.id = a.source_code_id
          JOIN source_codes d ON d.id = v.parent_id
          WHERE a.gift_id = ?1",
@@ -379,18 +428,18 @@ fn project_allocations(tx: &Connection, id: &str) -> rusqlite::Result<()> {
 
 // ── status ─────────────────────────────────────────────────────────────────
 
-/// Completed or void, and why it was voided. A void gift is kept and
-/// counts for nothing. A claimed gift (`claim_id`) needs a reason to
-/// void, and its void is final: HMRC is repaid through an adjustment.
+/// Where the gift stands, and why it doesn't count. Staff set
+/// `completed` or `void`; a provider's statuses are the system's (its
+/// payment's, ADR 0025). A void gift is kept and counts for nothing.
+/// A claimed gift (`claim_id`) needs a reason to stop counting, and a
+/// staff void of one is final: HMRC is repaid through an adjustment.
 pub struct GiftStatus;
 pub static STATUS: GiftStatus = GiftStatus;
 
 /// The `giving.status` slice as stored, plus what isn't this slice's
-/// (never serialised): the claim that holds the gift, and whether it is a
-/// Direct Debit payment GoCardless says was not collected after all
-/// (charged back, failed late, cancelled): such a gift only the system
-/// may un-void, when the money comes back
-/// ([`crate::regular::record_payment`]).
+/// (never serialised): the claim that holds the gift, whether it is a
+/// provider's gift, and the status its provider payment gives it now
+/// (what un-voiding it restores).
 #[derive(Clone, Debug, Serialize)]
 pub struct StatusState {
     #[serde(flatten)]
@@ -398,27 +447,29 @@ pub struct StatusState {
     #[serde(skip)]
     claim_id: Option<String>,
     #[serde(skip)]
-    returned: bool,
-    /// A Direct Debit gift whose payment is now another completed gift
-    /// (recorded again after a claimed void, or a retry on another day).
+    provider: bool,
+    /// The payment's status for its gift, and the provider's reason.
     #[serde(skip)]
-    superseded: bool,
+    provider_status: Option<(Status, Option<String>)>,
 }
 
 fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<StatusState>> {
-    conn.prepare_cached("SELECT status, void_reason, claim_id FROM gifts WHERE id = ?1")?
-        .query_row([id], |r| {
-            Ok(StatusState {
-                status: StatusPayload {
-                    status: Status::parse(&r.get::<_, String>(0)?),
-                    reason: r.get(1)?,
-                },
-                claim_id: r.get(2)?,
-                returned: false,
-                superseded: false,
-            })
+    conn.prepare_cached(
+        "SELECT status, void_reason, claim_id, provider IS NOT NULL FROM gifts
+         WHERE id = ?1 /* any status: one gift */",
+    )?
+    .query_row([id], |r| {
+        Ok(StatusState {
+            status: StatusPayload {
+                status: Status::parse(&r.get::<_, String>(0)?),
+                reason: r.get(1)?,
+            },
+            claim_id: r.get(2)?,
+            provider: r.get(3)?,
+            provider_status: None,
         })
-        .optional()
+    })
+    .optional()
 }
 
 impl Contract for GiftStatus {
@@ -438,20 +489,9 @@ impl Contract for GiftStatus {
     fn load(&self, tx: &OrgTx, id: &str) -> Result<StatusState, ContractError> {
         let conn = tx.read();
         let mut state = load_status_state(conn, id)?.ok_or(ContractError::NotFound)?;
-        state.returned = conn
-            .prepare_cached(
-                "SELECT 1 FROM direct_debit_payments
-                 WHERE gift_id = ?1 AND status IN ('charged_back', 'failed', 'cancelled')",
-            )?
-            .exists([id])?;
-        state.superseded = conn
-            .prepare_cached(
-                "SELECT 1 FROM gifts g JOIN gifts other
-                     ON other.method = 'direct_debit' AND other.reference = g.reference
-                 WHERE g.id = ?1 AND g.method = 'direct_debit' AND other.id <> g.id
-                     AND other.status = 'completed'",
-            )?
-            .exists([id])?;
+        if state.provider {
+            state.provider_status = crate::regular::payment_status_of_gift(conn, id)?;
+        }
         Ok(state)
     }
 
@@ -467,49 +507,61 @@ impl Contract for GiftStatus {
                 "giving.status targets an existing gift",
             ));
         };
-        if current.superseded && p.status == Status::Completed {
-            return Err(ContractError::rejected(
-                "direct_debit_recorded_again",
-                "This Direct Debit payment is already counted as another gift",
-            ));
-        }
-        if current.returned && p.status == Status::Completed && command.source != Source::System {
-            return Err(ContractError::rejected(
-                "direct_debit_returned",
-                "GoCardless says this payment wasn’t collected: it can’t count as a gift",
-            ));
-        }
+        let was = current.status.status;
+        // Staff (and a restore) choose completed or void. On a provider's
+        // gift, "completed" un-voids it: it takes its payment's status.
+        let (status, reason) = if command.source == Source::System {
+            let keep = p.status == was && p.reason.is_none();
+            let reason = if keep {
+                current.status.reason.clone()
+            } else {
+                p.reason.clone()
+            };
+            (p.status, reason)
+        } else {
+            match (p.status, current.provider) {
+                (Status::Void, _) => (Status::Void, p.reason.clone()),
+                (Status::Completed, false) => (Status::Completed, None),
+                (Status::Completed, true) if was != Status::Void => {
+                    return Err(ContractError::rejected(
+                        "provider_status",
+                        "This gift’s status is the payment provider’s",
+                    ));
+                }
+                (Status::Completed, true) => current.provider_status.clone().ok_or_else(|| {
+                    ContractError::rejected(
+                        "provider_status",
+                        "This gift’s payment is no longer on record: it stays void",
+                    )
+                })?,
+                _ => {
+                    return Err(ContractError::rejected(
+                        "provider_status",
+                        "Only the payment provider sets this status",
+                    ));
+                }
+            }
+        };
+        let reason = if status.is_received() { None } else { reason };
         if current.claim_id.is_some() {
-            match (current.status.status, p.status) {
-                (Status::Completed, Status::Void) if p.reason.is_none() => {
-                    return Err(ContractError::rejected(
-                        "void_reason_required",
-                        "This gift is in a Gift Aid claim: say why it is void. \
-                         The next claim pays the tax back to HMRC",
-                    ));
-                }
-                (Status::Void, Status::Completed) => {
-                    return Err(ContractError::rejected(
-                        "claimed_gift",
-                        "This gift was voided after it was claimed for Gift Aid, \
-                         so it can’t be un-voided: record it again",
-                    ));
-                }
-                _ => {}
+            if was.is_received() && !status.is_received() && reason.is_none() {
+                return Err(ContractError::rejected(
+                    "void_reason_required",
+                    "This gift is in a Gift Aid claim: say why it is void. \
+                     The next claim pays the tax back to HMRC",
+                ));
+            }
+            if was == Status::Void && status != Status::Void {
+                return Err(ContractError::rejected(
+                    "claimed_gift",
+                    "This gift was voided after it was claimed for Gift Aid, \
+                     so it can’t be un-voided: record it again",
+                ));
             }
         }
         Ok(StatusState {
-            status: StatusPayload {
-                status: p.status,
-                // Un-voiding clears the reason.
-                reason: match p.status {
-                    Status::Void => p.reason.clone(),
-                    Status::Completed => None,
-                },
-            },
-            claim_id: current.claim_id.clone(),
-            returned: current.returned,
-            superseded: current.superseded,
+            status: StatusPayload { status, reason },
+            ..current.clone()
         })
     }
 
@@ -544,8 +596,8 @@ impl Contract for GiftStatus {
 pub struct ClaimLock;
 pub static CLAIM_LOCK: ClaimLock = ClaimLock;
 
-/// The lock as stored, plus the gift's status (a void gift can't be
-/// claimed). Only the payload is serialised.
+/// The lock as stored, plus the gift's status (only money received can
+/// be claimed). Only the payload is serialised.
 #[derive(Clone, Debug, Serialize)]
 pub struct ClaimLockState {
     #[serde(flatten)]
@@ -564,7 +616,9 @@ impl Contract for ClaimLock {
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<ClaimLockState, ContractError> {
         tx.read()
-            .prepare_cached("SELECT claim_id, status FROM gifts WHERE id = ?1")?
+            .prepare_cached(
+                "SELECT claim_id, status FROM gifts WHERE id = ?1 /* any status: one gift */",
+            )?
             .query_row([id], |r| {
                 Ok(ClaimLockState {
                     lock: ClaimLockPayload {
@@ -606,6 +660,12 @@ impl Contract for ClaimLock {
                 return Err(ContractError::rejected(
                     "void_gift",
                     "A void gift can’t be claimed",
+                ));
+            }
+            (None, Some(_)) if !current.status.is_received() => {
+                return Err(ContractError::rejected(
+                    "not_received",
+                    "Only money received can be claimed",
                 ));
             }
             _ => {}

@@ -572,8 +572,9 @@ pub fn create_claim(
 
 /// One step of a claim's life ([`ClaimStatusContract`]): ready,
 /// submitted, paid, rejected, or a draft deleted. Ready is refused while
-/// a gift of the draft was voided since it was made (delete the draft
-/// and claim again); after that a voided gift is paid back by the next
+/// a gift of the draft was voided since it was made, its payment moved
+/// to another day or amount, or a gift it pays back is money received
+/// again (delete the draft and claim again); after that a voided gift is paid back by the next
 /// claim. Rejected is refused while any later claim (whatever its
 /// status) pays back one of its gifts: that repayment tells HMRC this
 /// claim stood. Reject or delete the later claim first, which lets its
@@ -604,6 +605,45 @@ pub fn set_claim_status(
                          delete the draft and make a new claim",
                         voided.len(),
                         if voided.len() == 1 { "was" } else { "were" }
+                    ),
+                ));
+            }
+            // A gift whose payment moved to another amount or day while
+            // this draft held it (a retry): its claimed date may be in
+            // the wrong tax year (review L4).
+            let mut moved = 0;
+            for line in lines(conn, id)? {
+                if giving::regular::payment_moved(conn, &line.gift_id)? {
+                    moved += 1;
+                }
+            }
+            if moved > 0 {
+                return Err(ContractError::rejected(
+                    "payment_moved",
+                    format!(
+                        "{moved} of this claim's gifts {} collected on another day or for \
+                         another amount since it was made: delete the draft and make a new claim",
+                        if moved == 1 { "was" } else { "were" }
+                    ),
+                ));
+            }
+            // A gift this draft pays back that is money received again
+            // (a chargeback cancelled since): the repayment would give
+            // HMRC tax on money the charity has (ADR 0025, review M1).
+            let mut again = 0;
+            for a in adjustments(conn, id)? {
+                if giving::describe_gift(conn, &a.gift_id)?.is_some_and(|g| g.status.is_received())
+                {
+                    again += 1;
+                }
+            }
+            if again > 0 {
+                return Err(ContractError::rejected(
+                    "received_again",
+                    format!(
+                        "{again} of the gifts this claim pays back {} money received again \
+                         since it was made: delete the draft and make a new claim",
+                        if again == 1 { "is" } else { "are" }
                     ),
                 ));
             }

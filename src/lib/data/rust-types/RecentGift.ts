@@ -16,6 +16,6 @@ enteredAt: number, contactId: string,
  */
 contactName: string, amount: number, receivedOn: string, method: GiftMethod, 
 /**
- * `void` gifts stay in the list, marked.
+ * Every status stays in the list, marked.
  */
 status: GiftStatus, };

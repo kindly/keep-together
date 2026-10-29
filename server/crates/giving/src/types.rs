@@ -8,8 +8,8 @@ use sources::CodeDescription;
 use ts_rs::TS;
 
 /// How a gift was paid: by hand, on a card reader we don't drive (yet), or
-/// by Direct Debit (a GoCardless payment GoCardless confirmed: recorded by
-/// the system, never by hand).
+/// by Direct Debit (a GoCardless payment: recorded by the system from
+/// GoCardless's events, never by hand).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename = "GiftMethod")]
@@ -37,31 +37,103 @@ impl Method {
     }
 }
 
-/// Where a gift stands. `void` = entered by mistake: kept, counts for
-/// nothing. Room for `pending` / `failed` / `refunded` (ADR 0008).
+/// Where a gift stands (ADR 0025: a gift is every payment attempt).
+/// Only `completed` is money received ([`crate::RECEIVED`]): it alone
+/// counts as income and can be claimed for Gift Aid. `void` is the
+/// staff's word (entered by mistake: kept, counts for nothing); the rest
+/// are a provider's, following its payment: `pending` (not collected
+/// yet), `failed`, `cancelled` (never collected), `refunded`,
+/// `chargedBack` (returned under the Direct Debit Guarantee).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 #[ts(export, rename = "GiftStatus")]
 pub enum Status {
+    Pending,
     Completed,
+    Failed,
+    Cancelled,
+    Refunded,
+    ChargedBack,
     Void,
 }
 
 impl Status {
+    pub const ALL: [Status; 7] = [
+        Status::Pending,
+        Status::Completed,
+        Status::Failed,
+        Status::Cancelled,
+        Status::Refunded,
+        Status::ChargedBack,
+        Status::Void,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
+            Status::Pending => "pending",
             Status::Completed => "completed",
+            Status::Failed => "failed",
+            Status::Cancelled => "cancelled",
+            Status::Refunded => "refunded",
+            Status::ChargedBack => "charged_back",
             Status::Void => "void",
         }
     }
 
+    /// The stored word; anything else (never written: a CHECK holds the
+    /// column) reads as void, which counts for nothing.
     pub fn parse(s: &str) -> Self {
-        if s == "void" {
-            Status::Void
-        } else {
-            Status::Completed
+        Status::ALL
+            .into_iter()
+            .find(|v| v.as_str() == s)
+            .unwrap_or(Status::Void)
+    }
+
+    /// Money received: counts as income, may be claimed.
+    pub fn is_received(self) -> bool {
+        self == Status::Completed
+    }
+}
+
+/// The payment provider a gift came from. None = entered by hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, rename = "GiftProvider")]
+pub enum Provider {
+    Gocardless,
+    Stripe,
+}
+
+impl Provider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Provider::Gocardless => "gocardless",
+            Provider::Stripe => "stripe",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "gocardless" => Some(Provider::Gocardless),
+            "stripe" => Some(Provider::Stripe),
+            _ => None,
+        }
+    }
+}
+
+/// A provider gift's origin: create-only, the system's (a payment the
+/// provider reported). `paymentId` is unique per provider: one gift per
+/// payment, for its whole life.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "GiftOrigin")]
+pub struct ProviderRef {
+    pub provider: Provider,
+    pub payment_id: String,
+    /// The regular gift it was collected for; none for a one-off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub regular_gift_id: Option<String>,
 }
 
 /// A share of the gift under one source code (a version), in pence.
@@ -103,11 +175,19 @@ pub struct GiftPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub client_key: Option<String>,
+    /// The provider payment it is (create-only, the system's; v2). A save
+    /// may leave it out: it never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub origin: Option<ProviderRef>,
 }
 
-/// The `giving.status` slice (v2: `reason`). Voiding a gift that is in a
-/// Gift Aid claim needs a reason (it goes into the next claim as an
-/// adjustment); any other void may give one. Un-voiding clears it.
+/// The `giving.status` slice (v2: `reason`). Staff set `completed` or
+/// `void`; the provider's statuses are the system's. Voiding a gift that
+/// is in a Gift Aid claim needs a reason (it goes into the next claim as
+/// an adjustment); any other void may give one. A provider status that
+/// isn't money received carries the provider's reason. `completed`
+/// clears it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, rename = "GiftStatusPayload")]
 pub struct StatusPayload {
@@ -180,8 +260,14 @@ pub struct GiftRow {
     pub reference: Option<String>,
     pub allocations: Vec<AllocationView>,
     pub status: Status,
-    /// Why it was voided, when a reason was given.
+    /// Why it doesn't count (voided, failed, charged back…), when a
+    /// reason was given.
     pub void_reason: Option<String>,
+    /// The provider it came from (none: entered by hand), its payment id
+    /// and the regular gift it was collected for (none: a one-off).
+    pub provider: Option<Provider>,
+    pub provider_payment_id: Option<String>,
+    pub regular_gift_id: Option<String>,
     /// The Gift Aid claim it is in: amount, date and donor locked.
     pub claim_id: Option<String>,
     /// The platform user who entered it; null = system.
@@ -247,7 +333,7 @@ pub struct RecentGift {
     pub amount: i64,
     pub received_on: String,
     pub method: Method,
-    /// `void` gifts stay in the list, marked.
+    /// Every status stays in the list, marked.
     pub status: Status,
 }
 

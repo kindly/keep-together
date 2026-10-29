@@ -359,6 +359,7 @@ keep [--data <dir>] dev seed-demo [--slug demo] [--admin-email <email>]
 keep [--data <dir>] dev seed-riverside        # KEEP_ENV=dev (or staging, credentials from env)
 keep [--data <dir>] giftaid-xml <slug> <claim-id>   # a claim's HMRC XML on stdout, IRmark on stderr
 keep giftaid-xml --hmrc-sample                # HMRC's sample data: their GAValidSample.xml, byte for byte
+keep [--data <dir>] giving-consistency <slug>       # provider payments vs their gifts (ADR 0025); exit 1 on any
 ```
 
 `keep sql` opens the org file `SQLITE_OPEN_READ_ONLY` with `query_only`,
@@ -488,13 +489,53 @@ phones as digits and tail, postcodes compact and spaced) as a plain FTS5
 spike's trigram variant was measured and dropped (org schema step 3): it
 was slower on every case and its index twice the size.
 
+## Gifts (ADR 0025)
+
+`gifts` is every payment attempt, CiviCRM-style: status `pending |
+completed | failed | cancelled | refunded | charged_back | void`. Staff
+set `completed` or `void` (a mistake: kept, counts for nothing); the
+others are a payment provider's (`422 rejected provider_status` from
+staff). Every gift has one origin: `provider` (`gocardless`, later
+`stripe`) with `providerPaymentId` (unique per provider: one gift per
+payment for its whole life) and `regularGiftId` (empty for a one-off),
+or entered by hand (`provider` empty). Provider tables
+(`direct_debit_payments`) stay the provider's raw record; no cash table
+(a paying-in batch table comes with banking reconciliation).
+
+**Only `completed` is money received.** Income, reports, dashboards and
+Gift Aid read gifts through `giving::RECEIVED` (`status = 'completed'`,
+spliced into SQL; `NOT_RECEIVED` its negation); `received_total` is
+income over dates. `api/tests/schema.rs`
+(`every_gifts_read_counts_only_money_received_or_says_why`) fails on any
+SQL literal in server code that reads `gifts` or `gift_allocation_index`
+without it, unless it says why in a `/* any status: … */` comment (one
+gift by id, a list that marks each status). Lists show every gift,
+marked; the SPA's `src/lib/domain/gift-status.ts` (`isReceived`,
+`receivedTotal`) mirrors the rule.
+
+`giving.gift` v2 carries the origin (create-only, the system's; a save
+may leave it out). On a provider's gift, staff may correct the split
+across codes or void it; method, amount, date, reference and status are
+the provider's (`direct_debit_fixed`), and a Direct Debit gift can't be
+entered by hand (`direct_debit_by_hand`). A staff void outlives later
+provider updates; un-voiding gives the gift its payment's status again
+(with the provider's reason), not "completed".
+
+Org schema step 18 rebuilds `gifts` and `direct_debit_payments` (foreign
+keys deferred) and gives every existing Direct Debit payment exactly one
+gift: a confirmed one keeps its gift, which takes the payment's status
+(a staff void stays void); one never confirmed gets a new gift with its
+status, to its regular gift's code; a D2 gift a retry superseded keeps
+`provider` with no payment id (void, out of the unique pair).
+
 ## Gift Aid claims
 
 A claim is a financial record (rule 4): `gift_aid_claims` with its
 `gift_aid_claim_lines` (the gift, its covering declaration, and the donor
 as sent: kept through later edits and erasure) and
-`gift_aid_claim_adjustments` (tax paid back on gifts voided after an
-earlier claim may have gone to HMRC). `giftaid.claim` is the claim as
+`gift_aid_claim_adjustments` (tax paid back on gifts that stopped
+counting, voided or their payment charged back, failed or cancelled,
+after an earlier claim may have gone to HMRC). `giftaid.claim` is the claim as
 made (create-only, **at most 1,000 lines**: HMRC's schedule limit, one
 schedule per Charities Online claim); `giftaid.claimStatus` moves it
 `draft → ready → submitted → paid`, or `rejected` (from ready or
@@ -507,7 +548,11 @@ first.
 **Ready** means the claim may go to HMRC: from then on it can't be
 deleted, and only then do its schedule and XML download (`claim_draft`
 before). A gift voided out of a draft holds the draft back
-(`voided_gifts`: delete it and claim again); one voided out of a ready,
+(`voided_gifts`: delete it and claim again), and so does one whose
+payment moved (`payment_moved`) or a gift it pays back that is money
+received again, a chargeback cancelled since (`received_again`); deleting
+or rejecting a claim lets a Direct Debit gift take its payment's amount
+and date again. One voided out of a ready,
 submitted or paid claim is paid back by the next claim.
 
 **A gift is in at most one live claim**: a partial unique index on the
@@ -521,7 +566,7 @@ included. The declaration a completed claimed gift was claimed under
 can't be voided, nor cancelled from on or before that gift's date
 (`claimed_declaration`).
 
-Eligible: completed, unclaimed, received in the last 4 years and by the
+Eligible: completed (money received, `giving::RECEIVED`), unclaimed, received in the last 4 years and by the
 end date, covered by a declaration on its date, from a person whose
 name fits HMRC's name patterns once folded to ASCII (Zoë → Zoe, O’Brien
 → O'Brien), with a house name or number and a UK postcode (or an address
@@ -538,13 +583,14 @@ Routes under `/api/t/{slug}`, **admin only** (reads too):
 | `GET giftaid/claims/preview?periodEnd` | `GiftAidClaimPreview {lines, adjustments, excluded, tooOld, totals, claims, …}` |
 | `POST giftaid/claims {periodEnd, expectedLines?, expectedDonations?, expectedAdjustment?}` | `GiftAidClaimsCreated {claims}` (drafts); `422 rejected`: `nothing_to_claim`, `preview_changed` |
 | `GET giftaid/claims/{id}` | `GiftAidClaimView`: summary, lines, adjustments, `voidedGifts` |
-| `POST giftaid/claims/{id}/status {expected, status, submittedOn?, hmrcReference?, paidOn?, paidAmount?, reason?}` | `GiftAidClaimSaved` (`view` null once deleted); `expected` = `statusVersion`; `409 stale`; `422 rejected`: `claim_status`, `voided_gifts`, `adjusted_later` (a later claim, whatever its status, pays back one of its gifts: let that go first) |
+| `POST giftaid/claims/{id}/status {expected, status, submittedOn?, hmrcReference?, paidOn?, paidAmount?, reason?}` | `GiftAidClaimSaved` (`view` null once deleted); `expected` = `statusVersion`; `409 stale`; `422 rejected`: `claim_status`, `voided_gifts`, `payment_moved` (a draft's Direct Debit gift was collected on another day or for another amount since: delete the draft), `received_again` (a gift the draft pays back is money received again: delete the draft), `adjusted_later` (a later claim, whatever its status, pays back one of its gifts: let that go first) |
 | `GET giftaid/claims/{id}/schedule?format=excel\|libreoffice` | HMRC's Gift Aid schedule (`.ods`), filled from HMRC's own template (`giftaid/assets/hmrc`); ready or later |
 | `GET giftaid/claims/{id}/xml` | the claim as HMRC's R68 XML, IRmark stamped (`X-IRmark`: base32), generated and never sent; ready or later; `422 rejected`: `missing_hmrc_details`, `org_name` |
 | `GET giftaid/hmrc-details` · `POST giftaid/hmrc-details {expected?, …}` | `HmrcDetailsView {…, version, warnings}`: HMRC reference, regulator and number, the authorised official (name, postcode, phone); stored as typed, what HMRC would refuse is a warning |
 ## GoCardless (Direct Debit)
 
-`api::gocardless`, plan `factory/plans/gocardless.sv` (D1, D2). Each
+`api::gocardless`, plan `factory/plans/gocardless.sv` (D1, D2, round 2:
+ADR 0025). Each
 organisation connects its own GoCardless account through GoCardless's
 partner OAuth; donors' money goes straight to it. The organisation's
 access token is an org secret (`platform::settings`,
@@ -601,26 +647,61 @@ Regular gifts (`giving::regular`): the terms (`giving.regularGift`,
 fixed once set up), where it stands at GoCardless
 (`giving.regularGiftMandate`: status `pending → active →
 cancelled/failed`, billing request and hosted link, mandate and
-subscription ids, why it ended), and one `giving.directDebitPayment` per
-GoCardless payment. A payment becomes a gift (`method = 'direct_debit'`,
-the payment id as its reference, unique) only when GoCardless reports it
-`confirmed`, dated the day GoCardless collected it (its charge date,
-which decides the tax year for Gift Aid and income), and counts exactly
-while GoCardless says the money was collected: `charged_back`, or `failed`/`cancelled` after it was confirmed
-(a Bacs late failure), voids it with GoCardless's reason as its
-`void_reason` (so a gift already in a Gift Aid claim is voided too, and
-the next claim pays its tax back as an adjustment); a cancelled
-chargeback or a retry collected the same day un-voids the same gift; a
-retry collected on another day, or money back on a gift in a claim
-(whose void is final), is recorded again as a new gift. At most one
-completed gift per payment (a partial unique index on the reference);
-un-voiding a gift whose payment is now another gift is `422
-direct_debit_recorded_again`.
-A gift staff voided themselves stays void, and staff can't un-void one
-whose money went back (`422 direct_debit_returned`). A failed payment
-with no gift shows on the regular gift. A Direct Debit gift's method,
-amount, date and reference can't be edited (`422 direct_debit_fixed`) or
-entered by hand (`direct_debit_by_hand`).
+subscription ids, why it ended), and one `giving.directDebitPayment` (v2)
+per GoCardless payment: the raw record (amount, charge date, status,
+reason, the mandate and regular gift) beside its gift.
+
+**Every payment is one gift** (ADR 0025), made the first time we hear of
+it and following it in the same transaction as its payment row
+(`giving::regular::record_payment`): `pending` until GoCardless says
+`confirmed` (only then money received), `failed`, `cancelled` or
+`charged_back` after, with GoCardless's reason (`voidReason`); a cancelled
+chargeback or a collected retry makes it `completed` again. Its amount
+and date follow the payment: dated the day GoCardless collected it (the
+charge date, which decides the tax year), so a retry collected on another
+day moves the same gift. A gift in a Gift Aid claim keeps the amount and
+date it was claimed on; its status still follows, and a claimed gift that
+stops counting is paid back by the next claim (an adjustment); if its
+money comes back before that claim, nothing is repaid (after it, the tax
+stays repaid: re-claiming it is a follow-up).
+
+Whose a payment is: its subscription's regular gift (an instalment;
+also a subscription payment on its mandate before the subscription id is
+recorded, and a payment stored unmatched that its regular gift turns out
+to own);
+else our one-off tag (`metadata.keep_contact`/`keep_source_code`, on a
+payment staff took or an Instant Bank Pay request, whose `fulfilled`
+event names its payment); else a mandate we know (a one-off from its
+donor, to that regular gift's code; `regularGiftId` empty); else nobody
+yet: stored **unmatched** (no gift; event outcome `unmatched`) and listed
+for staff to match. A payment in another currency is logged and sent to
+Sentry, never recorded. `keep giving-consistency <slug>` and
+`giving::regular::consistency` check that every matched payment has
+exactly one gift agreeing with it.
+
+**Who asked** (review M2): a staff one-off or Instant Bank Pay link is
+first recorded as the staff member (`giving.providerRequest`,
+`provider_requests`: kind, donor, regular gift, amount, code, charge
+date; the form's `clientKey` is its id, so a retry is the same request,
+and a key reused for another donor or kind is `409 duplicate`), then
+GoCardless is called with the request id as `metadata.keep_request`, and
+GoCardless's id for what it made is added to the request. The gift that
+comes from GoCardless's events is made with the requester as its actor:
+`enteredBy` and its history ("…, as asked by staff") name them.
+
+**Catch-up** (`api::gocardless::catchup`, job `gocardless-catchup`,
+daily, first run 15 minutes after boot): for each connected
+organisation, GoCardless's events for its account since the last run
+(`GET events`, 500 a page; the cursor per organisation and account in
+`platform.db`'s `gocardless_catchup`, read again from an hour before;
+an account's first run from its connection, at most a week back; never
+further back than 85 days, inside the 90 days handled events are kept;
+only with a token sealed for that account, `gocardless.organisationId`
+beside `gocardless.accessToken`, so a switch still landing is skipped)
+go into
+the same event store, a repeat being a no-op. How many were new is
+logged, and sent to Sentry as a warning when not zero (webhooks are
+being missed); then a processing run handles them.
 
 | route | |
 |---|---|
@@ -634,14 +715,25 @@ entered by hand (`direct_debit_by_hand`).
 | `POST …/contacts/{id}/regular-gifts` | `SetUpRegularGift {amount, frequency: monthly\|yearly, dayOfMonth: 1–28, month?, sourceCodeId, clientKey?}` → `RegularGiftSaved {id, view}` with `view.flowUrl`, the donor's GoCardless page; staff. Checked first (`422`, `409 duplicate`), then GoCardless makes the billing request (Bacs, GBP) and the page, then it is stored; not connected `422 rejected not_connected` |
 | `GET …/regular-gifts/{id}` | `RegularGiftView` |
 | `POST …/regular-gifts/{id}/link` | `{expected}` (`mandateVersion`) → a new hosted page (one lasts 7 days) while pending; staff |
+| `POST …/regular-gifts/{id}/one-off` | `TakeOneOff {amount, chargeDate?, sourceCodeId, clientKey}` → `OneOffStarted {requestId, paymentId, status, chargeDate}`: GoCardless takes a payment on the mandate once (idempotent per `clientKey`, 32 hex), tagged with the donor and code; the gift comes from its events; staff. No live mandate: `422 rejected no_mandate` |
+| `POST …/contacts/{id}/instant-payment` | `InstantPayment {amount, sourceCodeId, description?, clientKey}` → `InstantPaymentLink {requestId, billingRequestId, flowUrl, flowExpiresAt}`: an Instant Bank Pay request (a payment request, no mandate; the group switches Instant Bank Pay on in GoCardless) and its hosted page; only the request (who asked) is stored here; staff |
+| `GET …/gocardless/unmatched` | `UnmatchedPayment[]`: payments nobody could be matched to (no gift), newest first, at most 500; any member |
+| `POST …/gocardless/unmatched/{id}/match` | `MatchPayment {expected, contactId, sourceCodeId}` → `MatchedPayment {giftId, gift}`: the contact's gift, with GoCardless's amount, date and status; staff; `409 stale`; `422 rejected already_matched` |
 | `POST …/regular-gifts/{id}/cancel` | `{expected}` → cancels the mandate (or the unsigned billing request; one the donor fulfilled meanwhile: the mandate it made) at GoCardless, then `cancelled` "Cancelled by staff" (or GoCardless's reason, if its webhook landed first); staff |
 
 The fake (`KEEP_GOCARDLESS=fake`, `api::gocardless::fake`) answers the
 calls the client makes in GoCardless's shapes, hosts the consent page and
 the donor's sign-up page, and signs its webhooks like GoCardless. Its
 scenario simulators (`POST /api/fake-gocardless/simulate/…`: a mandate's
-`activate|fail|cancel|expire`, a subscription's next `payment`, a
-payment's `submit|confirm|fail|charge_back|cancel_chargeback`; `outage`
+`activate|fail|cancel|expire` or a one-off `payment` on it (no metadata),
+a subscription's next `payment`, a stranger's payment
+(`organisations/{OR…}/payment`), a payment's
+`retry|submit|confirm|fail|charge_back|cancel_chargeback`; `outage`
 `{calls, status?, path?, delay_ms?}`; `webhooks/hold` and
 `webhooks/release?reverse`) drive the rest, and its consent page can pick
-an existing account. `api/tests/gocardless.rs` and `qc/flows/gocardless.spec.ts` run on it.
+an existing account. Beyond D2's calls it answers `POST payments` (a
+one-off), `GET events` (newest first, `created_at[gte]`, `after`) and
+Instant Bank Pay requests, whose page is "Pay by bank" (the payment it
+makes carries no metadata: only the request's `fulfilled` event names
+it). `api/tests/gocardless.rs` and `qc/flows/gocardless.spec.ts` run on
+it.

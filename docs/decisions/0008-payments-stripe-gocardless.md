@@ -1,6 +1,8 @@
 # 0008 — Payments: Stripe (cards) + GoCardless (Direct Debit)
 
-Status: accepted (2026-07) — implementation deferred to a later phase
+Status: accepted (2026-07) — implementation deferred to a later phase.
+Amended by [ADR 0025](0025-gifts-are-every-payment-attempt.md): the
+status enum's values, and one gift per provider payment.
 
 ## Context
 

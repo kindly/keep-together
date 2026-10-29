@@ -1,6 +1,12 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import {
+  STATUS_LABELS,
+  STATUS_MEANINGS,
+  isProviderStatus,
+  isReceived,
+} from '../lib/domain/gift-status'
 import type { Id } from '../lib/domain/ids'
 import { giftWarnings } from '../lib/domain/warnings'
 import { ConfirmDialog } from '../components/confirm-dialog'
@@ -95,6 +101,10 @@ function GiftView({ gift }: { gift: Gift }) {
   const [statusError, setStatusError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const isVoid = gift.status === 'void'
+  // Not money received: void, or a provider's pending, failed, charged
+  // back… (ADR 0025). Shown as such, never as money in.
+  const received = isReceived(gift.status)
+  const providers = isProviderStatus(gift.status)
   // "system" means an import or a webhook: never say it while loading.
   const name = (userId: number | null | undefined) =>
     members === undefined
@@ -135,7 +145,7 @@ function GiftView({ gift }: { gift: Gift }) {
             data-status-version={gift.statusVersion}
             className="flex flex-wrap items-baseline gap-2 text-xl font-semibold"
           >
-            <span className={isVoid ? 'text-neutral-500 line-through' : ''}>
+            <span className={received ? '' : 'text-neutral-500 line-through'}>
               {formatPence(gift.amount)}
             </span>
             <span>from</span>
@@ -150,18 +160,21 @@ function GiftView({ gift }: { gift: Gift }) {
             ) : (
               <span className="text-neutral-500">an unknown contact</span>
             )}
-            {isVoid && (
-              <span className="rounded bg-red-100 px-1.5 text-sm font-normal text-red-800">
-                void
+            {!received && (
+              <span
+                data-testid="gift-status"
+                className={`rounded px-1.5 text-sm font-normal ${gift.status === 'pending' ? 'bg-amber-100 text-amber-900' : 'bg-red-100 text-red-800'}`}
+              >
+                {STATUS_LABELS[gift.status]}
               </span>
             )}
             {gift.claimId && (
               <ClaimBadge claimId={gift.claimId} claim={claim} />
             )}
           </h1>
-          {isVoid && (
+          {!received && (
             <p className="text-sm text-neutral-600">
-              Void: kept for the record, counts for nothing.
+              {STATUS_MEANINGS[gift.status]}
               {gift.voidReason && (
                 <span data-testid="void-reason"> Why: {gift.voidReason}</span>
               )}
@@ -171,7 +184,9 @@ function GiftView({ gift }: { gift: Gift }) {
             <p data-testid="claim-lock" className="text-sm text-neutral-600">
               {isVoid
                 ? lock.voided
-                : 'Claimed for Gift Aid: its amount, date and donor can’t change. If it was wrong, void it with a reason and record it again.'}
+                : providers
+                  ? 'Claimed for Gift Aid before its payment stopped counting: the next claim pays the tax back to HMRC.'
+                  : 'Claimed for Gift Aid: its amount, date and donor can’t change. If it was wrong, void it with a reason and record it again.'}
             </p>
           )}
         </header>
@@ -218,11 +233,13 @@ function GiftView({ gift }: { gift: Gift }) {
                 ? 'Not for an organisation or household'
                 : isVoid
                   ? 'None: a void gift is never claimed'
-                  : coverage === undefined
-                    ? '…'
-                    : coverage
-                      ? `✓ Covered by ${describeDeclaration(coverage)}`
-                      : 'Not covered by a declaration'}
+                  : !received
+                    ? 'None until the money is received'
+                    : coverage === undefined
+                      ? '…'
+                      : coverage
+                        ? `✓ Covered by ${describeDeclaration(coverage)}`
+                        : 'Not covered by a declaration'}
             </dd>
             <dt className="text-neutral-500">Entered by</dt>
             <dd>{name(gift.enteredBy)}</dd>
@@ -295,8 +312,9 @@ function GiftView({ gift }: { gift: Gift }) {
           {...(confirming?.status === 'completed'
             ? {
                 title: 'Unvoid this gift?',
-                description:
-                  'It counts again, and Gift Aid can be claimed on it if a declaration covers it. You can void it again later.',
+                description: gift.provider
+                  ? 'It takes its payment’s status again: it counts once GoCardless says the money was collected. You can void it again later.'
+                  : 'It counts again, and Gift Aid can be claimed on it if a declaration covers it. You can void it again later.',
                 confirm: 'Unvoid',
               }
             : {

@@ -5,6 +5,9 @@ Status: Accepted (2026-10-19) · from the source codes plan
 4). The answer behind each point is cited by question, e.g. *(g2q3)*. Where
 the build on `main` (up to `0e3cb26`) differs from the plan, this ADR
 follows the build and says so ("Differences from the plan" below).
+Amended by [ADR 0025](0025-gifts-are-every-payment-attempt.md): a
+provider gift (Direct Debit) keeps one allocation, its regular gift's or
+its one-off's code, until the dated terms history is built.
 
 ## Context
 

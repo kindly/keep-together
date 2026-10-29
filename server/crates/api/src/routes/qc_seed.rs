@@ -218,7 +218,7 @@ fn seeded_giving(
         };
         Ok::<_, rusqlite::Error>((
             ids(
-                "SELECT id FROM gifts WHERE contact_id = ?1 ORDER BY rowid",
+                "SELECT id FROM gifts WHERE contact_id = ?1 ORDER BY rowid /* any status: the seed's */",
                 trust,
             )?,
             ids(
@@ -401,6 +401,7 @@ fn side(
                     amount: pence,
                 }],
                 client_key: None,
+                origin: None,
             },
             Source::Seed,
             Some(&group),

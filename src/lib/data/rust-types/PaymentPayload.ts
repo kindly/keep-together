@@ -2,7 +2,8 @@
 import type { DirectDebitPaymentStatus } from "./DirectDebitPaymentStatus";
 
 /**
- * `giving.directDebitPayment`: one provider payment of a regular gift.
+ * `giving.directDebitPayment` (v2): one GoCardless payment, as GoCardless
+ * reports it: the provider's raw record beside its gift.
  */
 export type PaymentPayload = { 
 /**
@@ -10,9 +11,14 @@ export type PaymentPayload = {
  */
 paymentId: string, 
 /**
- * Fixed.
+ * The regular gift it was collected for; none for a one-off, or a
+ * payment not matched to a donor. Fixed.
  */
-regularGiftId: string, amount: number, 
+regularGiftId: string | null, 
+/**
+ * The mandate it was taken on (none: Instant Bank Pay).
+ */
+mandateId: string | null, amount: number, 
 /**
  * ISO date it is (or was) collected.
  */
@@ -22,12 +28,7 @@ chargeDate: string, status: DirectDebitPaymentStatus,
  */
 reason: string | null, 
 /**
- * The gift it became, once confirmed.
+ * Its gift (one for the payment's whole life); none while unmatched.
+ * Set once.
  */
-giftId: string | null, 
-/**
- * Whether that gift is void because of this payment (a chargeback, a
- * late failure, a cancellation), so the payment's recovery may
- * un-void it. A gift staff voided themselves stays theirs.
- */
-giftVoided: boolean, };
+giftId: string | null, };

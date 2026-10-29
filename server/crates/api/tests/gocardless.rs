@@ -369,6 +369,19 @@ impl T {
             .as_u16()
     }
 
+    /// ADR 0025's consistency check: every matched payment of `slug` has
+    /// exactly one gift agreeing with it.
+    fn consistent(&self, slug: &str) {
+        let tenant = if slug == "alpha" {
+            &self.w.alpha
+        } else {
+            &self.w.beta
+        };
+        let db = self.w.store.org(&tenant.id).unwrap();
+        let problems = db.read(|r| giving::regular::consistency(r)).unwrap();
+        assert!(problems.is_empty(), "{slug}: {problems:?}");
+    }
+
     fn events(&self) -> Vec<(String, Option<String>, Option<String>)> {
         self.w
             .store
@@ -590,7 +603,7 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     t.settle().await;
     assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "active");
 
-    // A payment is made: pending, no gift.
+    // A payment is made: its gift at once, pending (not money received).
     let pm = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
         .as_str()
         .unwrap()
@@ -598,7 +611,7 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     t.settle().await;
     let v = t.regular("alpha", &t.val, &id).await;
     assert_eq!(v["payments"][0]["status"], "pending");
-    assert_eq!(v["payments"][0]["giftId"], Value::Null);
+    let gift = v["payments"][0]["giftId"].as_str().unwrap().to_owned();
     let gifts = ok(
         &t.w,
         "GET",
@@ -607,14 +620,30 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
         None,
     )
     .await;
-    assert_eq!(gifts["rows"].as_array().unwrap().len(), 0);
+    assert_eq!(gifts["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        (
+            gifts["rows"][0]["id"].clone(),
+            gifts["rows"][0]["status"].clone(),
+            gifts["rows"][0]["provider"].clone(),
+            gifts["rows"][0]["providerPaymentId"].clone(),
+            gifts["rows"][0]["regularGiftId"].clone()
+        ),
+        (
+            json!(gift),
+            json!("pending"),
+            json!("gocardless"),
+            json!(pm),
+            json!(id)
+        )
+    );
 
-    // Confirmed: the gift.
+    // Confirmed: the same gift, completed.
     t.simulate(&format!("payments/{pm}/confirm")).await;
     t.settle().await;
     let v = t.regular("alpha", &t.val, &id).await;
     assert_eq!(v["payments"][0]["status"], "confirmed");
-    let gift = v["payments"][0]["giftId"].as_str().unwrap().to_owned();
+    assert_eq!(v["payments"][0]["giftId"], gift.as_str());
     let g = ok(
         &t.w,
         "GET",
@@ -690,7 +719,8 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
     assert_eq!(out["reason"], "direct_debit_by_hand");
 
-    // The next payment fails: no gift, shown on the regular gift.
+    // The next payment fails: its gift failed (never money received),
+    // shown on the regular gift.
     let pm2 = t.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
         .as_str()
         .unwrap()
@@ -699,7 +729,14 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     t.settle().await;
     let v = t.regular("alpha", &t.val, &id).await;
     assert_eq!(v["lastFailure"]["paymentId"], pm2.as_str());
-    assert_eq!(v["lastFailure"]["giftId"], Value::Null);
+    let failed = t.gift(v["lastFailure"]["giftId"].as_str().unwrap()).await;
+    assert_eq!(failed["status"], "failed");
+    assert!(
+        failed["voidReason"]
+            .as_str()
+            .unwrap()
+            .contains("insufficient funds")
+    );
     assert!(
         v["lastFailure"]["reason"]
             .as_str()
@@ -707,8 +744,8 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
             .contains("insufficient funds")
     );
 
-    // The first is charged back: its gift void, with the reason; then the
-    // chargeback is cancelled: un-void.
+    // The first is charged back: its gift charged back, with the reason;
+    // then the chargeback is cancelled: completed again.
     t.simulate(&format!("payments/{pm}/charge_back")).await;
     t.settle().await;
     let g = ok(
@@ -719,7 +756,7 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
         None,
     )
     .await;
-    assert_eq!(g["status"], "void");
+    assert_eq!(g["status"], "charged_back");
     let v = t.regular("alpha", &t.val, &id).await;
     let first = v["payments"]
         .as_array()
@@ -751,6 +788,18 @@ async fn a_regular_gift_runs_from_sign_up_to_gifts_failures_chargebacks_and_canc
     )
     .await;
     assert_eq!(g["status"], "completed");
+
+    // Two payments, two gifts, each matching its payment.
+    let gifts = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/gifts"),
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(gifts["rows"].as_array().unwrap().len(), 2);
+    t.consistent("alpha");
 
     // The donor's bank cancels the mandate: the regular gift ends.
     t.simulate(&format!("mandates/{mandate}/cancel")).await;
@@ -1039,7 +1088,7 @@ fn a_routing_read_that_fails_fails_the_batch() {
 /// late failure). The gift goes void with the reason; if a retry is then
 /// collected, the same gift counts again (one payment id, one gift).
 #[tokio::test(flavor = "multi_thread")]
-async fn a_late_failure_voids_the_gift_and_a_collected_retry_restores_it() {
+async fn a_late_failure_fails_the_gift_and_a_collected_retry_completes_it() {
     let t = setup().await;
     let (jo, id, sub) = t.active().await;
     let (pm, gift) = t.collected(&id, &sub).await;
@@ -1047,7 +1096,14 @@ async fn a_late_failure_voids_the_gift_and_a_collected_retry_restores_it() {
 
     t.simulate(&format!("payments/{pm}/fail")).await;
     t.settle().await;
-    assert_eq!(t.gift(&gift).await["status"], "void");
+    let g = t.gift(&gift).await;
+    assert_eq!(g["status"], "failed");
+    assert!(
+        g["voidReason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Failed (GoCardless): ")
+    );
     let v = t.regular("alpha", &t.val, &id).await;
     let row = payment(&v, &pm);
     assert_eq!(row["status"], "failed");
@@ -1065,16 +1121,15 @@ async fn a_late_failure_voids_the_gift_and_a_collected_retry_restores_it() {
         None,
     )
     .await;
-    assert!(
-        history
-            .to_string()
-            .contains("failed after it was collected"),
-        "{history}"
-    );
+    assert!(history.to_string().contains("failed"), "{history}");
 
     t.simulate(&format!("payments/{pm}/confirm")).await;
     t.settle().await;
-    assert_eq!(t.gift(&gift).await["status"], "completed");
+    let g = t.gift(&gift).await;
+    assert_eq!(
+        (g["status"].clone(), g["voidReason"].clone()),
+        (json!("completed"), Value::Null)
+    );
     let gifts = ok(
         &t.w,
         "GET",
@@ -1088,13 +1143,15 @@ async fn a_late_failure_voids_the_gift_and_a_collected_retry_restores_it() {
         1,
         "never a second gift"
     );
+    t.consistent("alpha");
 }
 
-/// Reviewer M4: a gift staff voided stays void when a chargeback on it is
-/// cancelled; and staff can't un-void a charged-back gift (the money went
-/// back to the donor).
+/// Reviewer M4, under ADR 0025: a gift staff voided stays void whatever
+/// its payment does next; staff can't make a charged-back gift completed
+/// (its status is GoCardless's); and un-voiding a provider gift gives it
+/// its payment's status, not "completed".
 #[tokio::test(flavor = "multi_thread")]
-async fn a_staff_void_outlives_a_cancelled_chargeback_and_returned_money_stays_void() {
+async fn a_staff_void_outlives_the_payment_and_a_provider_status_is_the_providers() {
     let t = setup().await;
     let (_, id, sub) = t.active().await;
 
@@ -1114,12 +1171,13 @@ async fn a_staff_void_outlives_a_cancelled_chargeback_and_returned_money_stays_v
         .await;
     t.settle().await;
     assert_eq!(t.gift(&gift).await["status"], "void", "staff's void kept");
+    t.consistent("alpha");
 
     let (pm2, gift2) = t.collected(&id, &sub).await;
     t.simulate(&format!("payments/{pm2}/charge_back")).await;
     t.settle().await;
     let g = t.gift(&gift2).await;
-    assert_eq!(g["status"], "void");
+    assert_eq!(g["status"], "charged_back");
     let (s, out) =
         t.w.call(
             "POST",
@@ -1129,12 +1187,37 @@ async fn a_staff_void_outlives_a_cancelled_chargeback_and_returned_money_stays_v
         )
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
-    assert_eq!(out["reason"], "direct_debit_returned");
-    // The system still restores it when the chargeback is cancelled.
+    assert_eq!(out["reason"], "provider_status");
+    // Voided by staff, then un-voided: charged back again, with why.
+    let v = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{gift2}/status"),
+        &t.sam,
+        Some(json!({ "expected": g["statusVersion"], "status": "void", "reason": "test" })),
+    )
+    .await;
+    let v = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{gift2}/status"),
+        &t.sam,
+        Some(json!({ "expected": v["counter"], "status": "completed" })),
+    )
+    .await;
+    assert_eq!(v["view"]["status"], "charged_back");
+    assert!(
+        v["view"]["voidReason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Charged back (GoCardless)")
+    );
+    // The system completes it when the chargeback is cancelled.
     t.simulate(&format!("payments/{pm2}/cancel_chargeback"))
         .await;
     t.settle().await;
     assert_eq!(t.gift(&gift2).await["status"], "completed");
+    t.consistent("alpha");
 }
 
 /// Codex 4 and reviewer L3: a mandate's events can overtake its billing
@@ -1703,10 +1786,11 @@ impl T {
 }
 
 /// A Direct Debit gift already claimed for Gift Aid, then charged back
-/// or failed late: voided with GoCardless's reason (a claimed gift needs
-/// one), and the next claim pays its tax back (an adjustment). Its void
-/// is final, so if the money comes back after all it is recorded again,
-/// as a new gift: one completed gift per payment.
+/// or failed late: its status follows GoCardless with GoCardless's reason
+/// (a claimed gift needs one), it keeps the amount and date it was
+/// claimed on, and the next claim pays its tax back (an adjustment). If
+/// the money comes back before that claim, the same gift is completed
+/// again and nothing is repaid: one gift per payment.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not_refused() {
     let t = setup().await;
@@ -1747,7 +1831,7 @@ async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not
     t.simulate(&format!("payments/{pm}/charge_back")).await;
     t.settle().await;
     let g = t.gift(&gift).await;
-    assert_eq!(g["status"], "void");
+    assert_eq!(g["status"], "charged_back");
     let reason = g["voidReason"].as_str().unwrap();
     assert!(
         reason.starts_with("Charged back (GoCardless): "),
@@ -1764,24 +1848,20 @@ async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not
         t.events()
     );
 
-    // The chargeback is cancelled: the claimed void stays, a new gift
-    // records the money.
+    // The chargeback is cancelled before the next claim: the same gift,
+    // completed and still claimed, and nothing to pay back.
     t.simulate(&format!("payments/{pm}/cancel_chargeback"))
         .await;
     t.settle().await;
-    assert_eq!(t.gift(&gift).await["status"], "void");
-    let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
-    let again = row["giftId"].as_str().unwrap().to_owned();
-    assert_ne!(again, gift);
-    let g = t.gift(&again).await;
+    let g = t.gift(&gift).await;
     assert_eq!(
-        (
-            g["status"].clone(),
-            g["reference"].clone(),
-            g["claimId"].clone()
-        ),
-        (json!("completed"), json!(pm), Value::Null)
+        (g["status"].clone(), g["claimId"].clone()),
+        (json!("completed"), claim["id"].clone())
     );
+    let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
+    assert_eq!(row["giftId"], gift.as_str());
+    assert_eq!(t.adjustments().await, json!([]));
+    t.consistent("alpha");
 
     // A later payment, claimed, then failed late: the same.
     let pm2 = t.simulate(&pay(3)).await["payment"]
@@ -1799,14 +1879,26 @@ async fn a_claimed_direct_debit_gift_charged_back_or_failed_late_is_adjusted_not
     t.simulate(&format!("payments/{pm2}/fail")).await;
     t.settle().await;
     let g = t.gift(&gift2).await;
-    assert_eq!(g["status"], "void");
+    assert_eq!(g["status"], "failed");
     assert!(
         g["voidReason"]
             .as_str()
             .unwrap()
-            .starts_with("Failed after it was collected (GoCardless): ")
+            .starts_with("Failed (GoCardless): ")
     );
     assert!(t.adjustments().await.to_string().contains(gift2.as_str()));
+    // A retry on another day while claimed: the gift keeps the date it was
+    // claimed on; the payment row has the new one.
+    let claimed_on = g["receivedOn"].clone();
+    t.simulate(&format!("payments/{pm2}/retry?charge_date={}", uk_day(4)))
+        .await;
+    t.settle().await;
+    let g = t.gift(&gift2).await;
+    assert_eq!(
+        (g["status"].clone(), g["receivedOn"].clone()),
+        (json!("pending"), claimed_on)
+    );
+    t.consistent("alpha");
 }
 
 impl T {
@@ -1816,7 +1908,7 @@ impl T {
         let gc = self.gc.clone();
         let token = token.to_owned();
         contracts::transact(&db, None, move |ctx| {
-            gc.put_token(ctx, &token, contracts::Source::Test)
+            gc.put_token(ctx, &token, "", contracts::Source::Test)
         })
         .unwrap();
     }
@@ -1938,10 +2030,10 @@ async fn switching_accounts_keeps_the_old_accounts_events_for_switching_back() {
 }
 
 /// Second review L-a: a gift is dated when GoCardless collected the money,
-/// which decides its tax year. A late failure retried and collected on
-/// another day is a new gift on that day; the failed attempt's stays void.
+/// which decides its tax year. Under ADR 0025 a late failure retried and
+/// collected on another day is the same gift, moved to that day.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_retry_collected_on_another_day_is_a_gift_on_that_day() {
+async fn a_retry_collected_on_another_day_moves_the_same_gift_to_that_day() {
     let t = setup().await;
     let (jo, id, sub) = t.active().await;
     let first_day = uk_day(-2);
@@ -1955,32 +2047,33 @@ async fn a_retry_collected_on_another_day_is_a_gift_on_that_day() {
         .to_owned();
     t.simulate(&format!("payments/{pm}/confirm")).await;
     t.settle().await;
-    let first = payment(&t.regular("alpha", &t.val, &id).await, &pm)["giftId"]
+    let gift = payment(&t.regular("alpha", &t.val, &id).await, &pm)["giftId"]
         .as_str()
         .unwrap()
         .to_owned();
     t.simulate(&format!("payments/{pm}/fail")).await;
     t.settle().await;
-    assert_eq!(t.gift(&first).await["status"], "void");
+    assert_eq!(t.gift(&gift).await["status"], "failed");
 
     let retry_day = uk_day(5);
     t.simulate(&format!("payments/{pm}/retry?charge_date={retry_day}"))
         .await;
+    t.settle().await;
+    let g = t.gift(&gift).await;
+    assert_eq!(
+        (g["status"].clone(), g["receivedOn"].clone()),
+        (json!("pending"), json!(retry_day))
+    );
     t.simulate(&format!("payments/{pm}/confirm")).await;
     t.settle().await;
     let row = payment(&t.regular("alpha", &t.val, &id).await, &pm);
     assert_eq!(row["chargeDate"], retry_day.as_str());
-    let again = row["giftId"].as_str().unwrap().to_owned();
-    assert_ne!(again, first);
-    let g = t.gift(&again).await;
+    assert_eq!(row["giftId"], gift.as_str());
+    let g = t.gift(&gift).await;
     assert_eq!(
         (g["status"].clone(), g["receivedOn"].clone()),
-        (json!("completed"), json!(retry_day))
-    );
-    let f = t.gift(&first).await;
-    assert_eq!(
-        (f["status"].clone(), f["receivedOn"].clone()),
-        (json!("void"), json!(first_day))
+        (json!("completed"), json!(retry_day)),
+        "dated the day the money was collected"
     );
     let gifts = ok(
         &t.w,
@@ -1990,56 +2083,12 @@ async fn a_retry_collected_on_another_day_is_a_gift_on_that_day() {
         None,
     )
     .await;
-    let completed = gifts["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|g| g["status"] == "completed")
-        .count();
-    assert_eq!(completed, 1, "one completed gift per payment");
-}
-
-/// Second review L-b: a Direct Debit gift whose payment was recorded
-/// again as another gift (a retry on another day here; or a claimed void
-/// whose claim was later deleted) can't be un-voided: a clear 422, not
-/// the unique index's 500.
-#[tokio::test(flavor = "multi_thread")]
-async fn un_voiding_a_gift_whose_payment_was_recorded_again_is_refused_clearly() {
-    let t = setup().await;
-    let (_, id, sub) = t.active().await;
-    let pm = t
-        .simulate(&format!(
-            "subscriptions/{sub}/payment?charge_date={}",
-            uk_day(-2)
-        ))
-        .await["payment"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    t.simulate(&format!("payments/{pm}/confirm")).await;
-    t.settle().await;
-    let first = payment(&t.regular("alpha", &t.val, &id).await, &pm)["giftId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    t.simulate(&format!("payments/{pm}/fail")).await;
-    t.settle().await;
-    t.simulate(&format!("payments/{pm}/retry?charge_date={}", uk_day(5)))
-        .await;
-    t.simulate(&format!("payments/{pm}/confirm")).await;
-    t.settle().await;
-    let g = t.gift(&first).await;
-    assert_eq!(g["status"], "void");
-    let (s, out) =
-        t.w.call(
-            "POST",
-            &format!("/api/t/alpha/gifts/{first}/status"),
-            &t.sam,
-            Some(json!({ "expected": g["statusVersion"], "status": "completed" })),
-        )
-        .await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
-    assert_eq!(out["reason"], "direct_debit_recorded_again");
+    assert_eq!(
+        gifts["rows"].as_array().unwrap().len(),
+        1,
+        "one gift per payment"
+    );
+    t.consistent("alpha");
 }
 
 /// Second review L-c: a disconnect and another group's connect to the same
@@ -2272,4 +2321,674 @@ async fn another_group_connecting_the_account_never_gets_the_kept_events() {
         })
         .unwrap();
     assert_eq!(n, 0);
+}
+
+impl T {
+    /// `slug`'s gifts for `contact`, newest first.
+    async fn gifts_of(&self, slug: &str, cookie: &str, contact: &str) -> Vec<Value> {
+        ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/{slug}/contacts/{contact}/gifts"),
+            cookie,
+            None,
+        )
+        .await["rows"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+}
+
+/// ADR 0025: a one-off on a mandate we know (taken in GoCardless's
+/// dashboard, no subscription) is a gift from the mandate's donor,
+/// allocated to its regular gift's code, but not an instalment: no
+/// regular gift, and not on the regular gift's payments.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_one_off_on_a_known_mandate_is_its_donors_gift_not_an_instalment() {
+    let t = setup().await;
+    let (jo, id, _) = t.active().await;
+    let mandate = t.regular("alpha", &t.val, &id).await["mandateId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let pm = t
+        .simulate(&format!("mandates/{mandate}/payment?amount=2500"))
+        .await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.settle().await;
+    let gifts = t.gifts_of("alpha", &t.val, &jo).await;
+    assert_eq!(gifts.len(), 1);
+    let g = &gifts[0];
+    assert_eq!(
+        (
+            g["amount"].clone(),
+            g["status"].clone(),
+            g["providerPaymentId"].clone(),
+            g["regularGiftId"].clone(),
+            g["allocations"][0]["sourceCodeId"].clone()
+        ),
+        (
+            json!(2500),
+            json!("pending"),
+            json!(pm),
+            Value::Null,
+            json!(t.code)
+        )
+    );
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert!(v["payments"].as_array().unwrap().is_empty(), "{v}");
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    assert_eq!(
+        t.gift(g["id"].as_str().unwrap()).await["status"],
+        "completed"
+    );
+    t.consistent("alpha");
+}
+
+/// ADR 0025: a payment nobody here can be matched to (a stranger's
+/// mandate) is kept with no gift and listed; staff match it to a contact
+/// and a code, which makes its gift with GoCardless's facts, and later
+/// events move that gift. Viewers can't match; beta never sees alpha's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stranger_payment_is_kept_unmatched_until_staff_match_it() {
+    let t = setup().await;
+    let status = t.connect("alpha", &t.ann).await;
+    let org = status["organisationId"].as_str().unwrap().to_owned();
+    let jo = t.contact("alpha", &t.sam).await;
+    let pm = t
+        .simulate(&format!("organisations/{org}/payment?amount=1500"))
+        .await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.settle().await;
+    assert!(
+        t.events()
+            .iter()
+            .any(|(_, _, o)| o.as_deref() == Some("unmatched")),
+        "{:?}",
+        t.events()
+    );
+    let listed = ok(
+        &t.w,
+        "GET",
+        "/api/t/alpha/gocardless/unmatched",
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+    let row = listed[0].clone();
+    assert_eq!(
+        (
+            row["paymentId"].clone(),
+            row["amount"].clone(),
+            row["status"].clone()
+        ),
+        (json!(pm), json!(1500), json!("pending"))
+    );
+    let id = row["id"].as_str().unwrap().to_owned();
+    t.consistent("alpha");
+
+    // Beta sees none of it, and alpha's payment is 404 under beta.
+    t.connect("beta", &t.bob).await;
+    let theirs = ok(
+        &t.w,
+        "GET",
+        "/api/t/beta/gocardless/unmatched",
+        &t.bob,
+        None,
+    )
+    .await;
+    assert_eq!(theirs, json!([]));
+    let body = json!({ "expected": row["version"], "contactId": jo, "sourceCodeId": t.code });
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/beta/gocardless/unmatched/{id}/match"),
+            &t.bob,
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // A viewer can't match it.
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/gocardless/unmatched/{id}/match"),
+            &t.val,
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // A stale version is 409.
+    let mut stale = body.clone();
+    stale["expected"] = json!(row["version"].as_i64().unwrap() + 1);
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/gocardless/unmatched/{id}/match"),
+            &t.sam,
+            Some(stale),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{out}");
+
+    let matched = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/gocardless/unmatched/{id}/match"),
+        &t.sam,
+        Some(body.clone()),
+    )
+    .await;
+    let gift = matched["giftId"].as_str().unwrap().to_owned();
+    assert_eq!(
+        (
+            matched["gift"]["contactId"].clone(),
+            matched["gift"]["amount"].clone(),
+            matched["gift"]["status"].clone(),
+            matched["gift"]["regularGiftId"].clone()
+        ),
+        (json!(jo), json!(1500), json!("pending"), Value::Null)
+    );
+    let listed = ok(
+        &t.w,
+        "GET",
+        "/api/t/alpha/gocardless/unmatched",
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(listed, json!([]));
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/gocardless/unmatched/{id}/match"),
+            &t.sam,
+            Some(body),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "already_matched");
+
+    // GoCardless collects it: the matched gift follows.
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    assert_eq!(t.gift(&gift).await["status"], "completed");
+    t.consistent("alpha");
+}
+
+/// ADR 0025, staff one-offs: charging a regular gift's mandate once makes
+/// a GoCardless payment tagged with the donor and code, and nothing here
+/// until GoCardless's event, which makes the gift (pending). A retry with
+/// the same key takes it once. No live mandate: refused; a viewer: 403;
+/// alpha's regular gift under beta: 404.
+#[tokio::test(flavor = "multi_thread")]
+async fn staff_charge_a_mandate_once_and_the_gift_comes_from_gocardless() {
+    let t = setup().await;
+    let (jo, id, _) = t.active().await;
+    let key = contracts::new_id();
+    let body = json!({ "amount": 3000, "sourceCodeId": t.code, "clientKey": key });
+    t.fake_post("webhooks/hold", json!({})).await;
+    let started = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+        &t.sam,
+        Some(body.clone()),
+    )
+    .await;
+    let pm = started["paymentId"].as_str().unwrap().to_owned();
+    assert_eq!(started["status"], "pending_submission");
+    let tag = t.fake.resource(&pm).unwrap()["metadata"].clone();
+    assert_eq!(
+        tag,
+        json!({ "keep_contact": jo, "keep_source_code": t.code, "keep_request": key })
+    );
+    assert_eq!(started["requestId"], key.as_str());
+    // Never optimistic: no gift before GoCardless's event.
+    t.settle().await;
+    assert!(t.gifts_of("alpha", &t.val, &jo).await.is_empty());
+    t.fake_post("webhooks/release", json!({})).await;
+    t.settle().await;
+    let gifts = t.gifts_of("alpha", &t.val, &jo).await;
+    assert_eq!(gifts.len(), 1);
+    assert_eq!(
+        (
+            gifts[0]["amount"].clone(),
+            gifts[0]["status"].clone(),
+            gifts[0]["providerPaymentId"].clone(),
+            gifts[0]["regularGiftId"].clone()
+        ),
+        (json!(3000), json!("pending"), json!(pm), Value::Null)
+    );
+    // Review M2: who asked is on the gift: Sam entered it, and its history
+    // says it was asked for, as Sam.
+    let sam = t.user_id("sam@alpha.org").await;
+    assert_eq!(gifts[0]["enteredBy"], sam);
+    let history = ok(
+        &t.w,
+        "GET",
+        &format!(
+            "/api/t/alpha/gifts/{}/history",
+            gifts[0]["id"].as_str().unwrap()
+        ),
+        &t.val,
+        None,
+    )
+    .await;
+    assert!(
+        history.to_string().contains("as asked by staff"),
+        "{history}"
+    );
+    // The same key again: the same payment.
+    let again = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+        &t.sam,
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(again["paymentId"], pm.as_str());
+    assert_eq!(t.fake.ids("payments").len(), 1);
+
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+            &t.val,
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+            &t.sam,
+            Some(
+                json!({ "amount": 0, "sourceCodeId": t.code, "clientKey": "nope",
+                         "chargeDate": "soon" }),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["problems"].as_array().unwrap().len(), 3, "{out}");
+    // A regular gift still waiting for its donor has no mandate.
+    let waiting = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let (s, out) =
+        t.w.call(
+            "POST",
+            &format!(
+                "/api/t/alpha/regular-gifts/{}/one-off",
+                waiting["id"].as_str().unwrap()
+            ),
+            &t.sam,
+            Some(json!({ "amount": 500, "sourceCodeId": t.code,
+                         "clientKey": contracts::new_id() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "no_mandate");
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/beta/regular-gifts/{id}/one-off"),
+            &t.bob,
+            Some(json!({ "amount": 500, "sourceCodeId": t.beta_code,
+                         "clientKey": contracts::new_id() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    t.consistent("alpha");
+}
+
+/// ADR 0025, Instant Bank Pay: staff get a hosted link for a contact with
+/// no mandate; when the donor pays, the payment (which carries no tag of
+/// ours) is matched through its billing request and becomes the
+/// contact's gift. Alpha's contact under beta: 404.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_instant_bank_pay_link_becomes_the_contacts_gift_when_paid() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let link = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{jo}/instant-payment"),
+        &t.sam,
+        Some(json!({ "amount": 4000, "sourceCodeId": t.code,
+                     "clientKey": contracts::new_id() })),
+    )
+    .await;
+    let br = link["billingRequestId"].as_str().unwrap();
+    assert_eq!(
+        t.fake.resource(br).unwrap()["payment_request"]["metadata"],
+        json!({ "keep_contact": jo, "keep_source_code": t.code,
+                "keep_request": link["requestId"] })
+    );
+    assert!(t.gifts_of("alpha", &t.val, &jo).await.is_empty());
+    t.sign(link["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let gifts = t.gifts_of("alpha", &t.val, &jo).await;
+    assert_eq!(gifts.len(), 1, "{gifts:?}");
+    assert_eq!(
+        (
+            gifts[0]["amount"].clone(),
+            gifts[0]["status"].clone(),
+            gifts[0]["regularGiftId"].clone(),
+            gifts[0]["allocations"][0]["sourceCodeId"].clone()
+        ),
+        (json!(4000), json!("completed"), Value::Null, json!(t.code))
+    );
+    // Review M2: the staff member who sent the link.
+    assert_eq!(gifts[0]["enteredBy"], t.user_id("sam@alpha.org").await);
+    let listed = ok(
+        &t.w,
+        "GET",
+        "/api/t/alpha/gocardless/unmatched",
+        &t.val,
+        None,
+    )
+    .await;
+    assert_eq!(listed, json!([]), "matched through its billing request");
+    t.consistent("alpha");
+
+    let (s, _) =
+        t.w.call(
+            "POST",
+            &format!("/api/t/beta/contacts/{jo}/instant-payment"),
+            &t.bob,
+            Some(json!({ "amount": 4000, "sourceCodeId": t.beta_code,
+                         "clientKey": contracts::new_id() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// The nightly catch-up: a payment whose webhook never came is found in
+/// GoCardless's events, stored, counted as missed, and becomes its gift;
+/// a second run finds nothing new.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_webhook_is_recovered_by_the_catch_up() {
+    let t = setup().await;
+    let (jo, _, sub) = t.active().await;
+    let first = api::gocardless::catchup::catch_up(t.w.store.clone(), t.gc.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].missed, 0, "every webhook landed: {first:?}");
+    assert!(first[0].read > 0);
+
+    // The webhook is lost (held and never released).
+    t.fake_post("webhooks/hold", json!({})).await;
+    t.simulate(&format!("subscriptions/{sub}/payment")).await;
+    t.settle().await;
+    assert!(t.gifts_of("alpha", &t.val, &jo).await.is_empty());
+
+    let caught = api::gocardless::catchup::catch_up(t.w.store.clone(), t.gc.clone())
+        .await
+        .unwrap();
+    assert_eq!(caught[0].missed, 1, "{caught:?}");
+    t.settle().await;
+    let gifts = t.gifts_of("alpha", &t.val, &jo).await;
+    assert_eq!(gifts.len(), 1);
+    assert_eq!(gifts[0]["status"], "pending");
+    let again = api::gocardless::catchup::catch_up(t.w.store.clone(), t.gc.clone())
+        .await
+        .unwrap();
+    assert_eq!(again[0].missed, 0);
+    t.consistent("alpha");
+}
+
+/// A subscription payment on our mandate that arrives before the
+/// subscription's id is on record here (GoCardless refused to answer the
+/// create, say) is that regular gift's instalment, not a one-off.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subscription_payment_before_its_subscription_is_recorded_is_an_instalment() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let v = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = v["id"].as_str().unwrap().to_owned();
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1000, "path": "subscriptions", "status": 422 }),
+    )
+    .await;
+    t.sign(v["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let mandate = v["mandateId"].as_str().unwrap().to_owned();
+    assert_eq!(v["subscriptionId"], Value::Null);
+    let pm = t
+        .simulate(&format!(
+            "mandates/{mandate}/payment?amount=1000&subscription=SBELSEWHERE"
+        ))
+        .await["payment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let row = payment(&v, &pm);
+    let g = t.gift(row["giftId"].as_str().unwrap()).await;
+    assert_eq!(g["regularGiftId"], id.as_str());
+    t.fake_post("outage", json!({ "calls": 0 })).await;
+    t.consistent("alpha");
+}
+
+impl T {
+    /// `email`'s platform user id, from alpha's members.
+    async fn user_id(&self, email: &str) -> Value {
+        let page = ok(&self.w, "GET", "/api/t/alpha/members", &self.ann, None).await;
+        page["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["email"] == email)
+            .unwrap_or_else(|| panic!("no {email} in {page}"))["userId"]
+            .clone()
+    }
+
+    /// A Gift Aid claim of everything eligible up to today, as a draft.
+    async fn claim_draft(&self) -> Value {
+        ok(
+            &self.w,
+            "POST",
+            "/api/t/alpha/giftaid/claims",
+            &self.ann,
+            Some(json!({ "periodEnd": uk_day(0) })),
+        )
+        .await["claims"][0]
+            .clone()
+    }
+
+    /// Move claim `id` to `body.status` (its `expected` read first).
+    async fn claim_status(&self, id: &str, mut body: Value) -> (StatusCode, Value) {
+        let now = ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/alpha/giftaid/claims/{id}"),
+            &self.ann,
+            None,
+        )
+        .await;
+        body["expected"] = now["statusVersion"].clone();
+        self.w
+            .call(
+                "POST",
+                &format!("/api/t/alpha/giftaid/claims/{id}/status"),
+                &self.ann,
+                Some(body),
+            )
+            .await
+    }
+
+    /// A cash gift for `contact` dated `days` ago, as alpha's admin.
+    async fn cash_gift(&self, contact: &str, days: i64) {
+        ok(
+            &self.w,
+            "POST",
+            "/api/t/alpha/gifts/record",
+            &self.ann,
+            Some(json!({
+                "clientKey": contracts::new_id(), "contact": contact,
+                "receivedOn": uk_day(-days), "amount": 300, "method": "cash",
+                "allocations": [{ "sourceCodeId": self.code, "amount": 300 }]
+            })),
+        )
+        .await;
+    }
+
+    /// Ann, a Gift Aid donor with an active regular gift: (contact,
+    /// regular gift, subscription).
+    async fn gift_aid_regular(&self) -> (String, String, String) {
+        self.connect("alpha", &self.ann).await;
+        let ann = self.gift_aid_donor().await;
+        let v = self.set_up("alpha", &self.sam, &ann, &self.code).await;
+        let id = v["id"].as_str().unwrap().to_owned();
+        self.sign(v["flowUrl"].as_str().unwrap()).await;
+        self.settle().await;
+        let v = self.regular("alpha", &self.val, &id).await;
+        self.simulate(&format!(
+            "mandates/{}/activate",
+            v["mandateId"].as_str().unwrap()
+        ))
+        .await;
+        (ann, id, v["subscriptionId"].as_str().unwrap().to_owned())
+    }
+
+    /// A payment on `sub` charged `days` ago and collected: (payment, gift).
+    async fn collected_on(&self, id: &str, sub: &str, days: i64) -> (String, String) {
+        let pm = self
+            .simulate(&format!(
+                "subscriptions/{sub}/payment?charge_date={}",
+                uk_day(-days)
+            ))
+            .await["payment"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        self.simulate(&format!("payments/{pm}/confirm")).await;
+        self.settle().await;
+        let gift = payment(&self.regular("alpha", &self.val, id).await, &pm)["giftId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (pm, gift)
+    }
+}
+
+/// Review M1: a draft claim that pays back a gift whose chargeback has
+/// since been cancelled (money received again) can't be marked ready:
+/// it would repay HMRC tax on money the charity has. Deleting the draft
+/// lets the repayment go.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_repaying_a_gift_received_again_is_held_back() {
+    let t = setup().await;
+    let (ann, id, sub) = t.gift_aid_regular().await;
+    let (pm, gift) = t.collected_on(&id, &sub, 5).await;
+    t.claim_and_send().await;
+    t.simulate(&format!("payments/{pm}/charge_back")).await;
+    t.settle().await;
+    // A new gift to claim, and a draft that also repays the charged-back
+    // one.
+    t.cash_gift(&ann, 2).await;
+    let draft = t.claim_draft().await;
+    let draft_id = draft["id"].as_str().unwrap().to_owned();
+    let view = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/giftaid/claims/{draft_id}"),
+        &t.ann,
+        None,
+    )
+    .await;
+    assert!(view["adjustments"].to_string().contains(&gift), "{view}");
+    t.simulate(&format!("payments/{pm}/cancel_chargeback"))
+        .await;
+    t.settle().await;
+    assert_eq!(t.gift(&gift).await["status"], "completed");
+    let (s, out) = t
+        .claim_status(&draft_id, json!({ "status": "ready" }))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "received_again");
+    let (s, out) = t
+        .claim_status(&draft_id, json!({ "status": "deleted" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(t.adjustments().await, json!([]), "nothing to repay now");
+    t.consistent("alpha");
+}
+
+/// Review L4: a gift in a draft claim whose payment fails and is
+/// collected on another day keeps its claimed date, so the draft is held
+/// back (its tax year may be wrong); deleting the draft lets the gift go
+/// and it moves to the day the money came.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_whose_gift_was_collected_on_another_day_is_held_back() {
+    let t = setup().await;
+    let (_, id, sub) = t.gift_aid_regular().await;
+    let (pm, gift) = t.collected_on(&id, &sub, 5).await;
+    let draft = t.claim_draft().await;
+    let draft_id = draft["id"].as_str().unwrap().to_owned();
+    assert_eq!(t.gift(&gift).await["claimId"], draft_id.as_str());
+    let claimed_on = t.gift(&gift).await["receivedOn"].clone();
+    t.simulate(&format!("payments/{pm}/fail")).await;
+    t.settle().await;
+    let retry_day = uk_day(-1);
+    t.simulate(&format!("payments/{pm}/retry?charge_date={retry_day}"))
+        .await;
+    t.simulate(&format!("payments/{pm}/confirm")).await;
+    t.settle().await;
+    let g = t.gift(&gift).await;
+    assert_eq!(
+        (g["status"].clone(), g["receivedOn"].clone()),
+        (json!("completed"), claimed_on)
+    );
+    let (s, out) = t
+        .claim_status(&draft_id, json!({ "status": "ready" }))
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "payment_moved");
+    let (s, out) = t
+        .claim_status(&draft_id, json!({ "status": "deleted" }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let g = t.gift(&gift).await;
+    assert_eq!(
+        (g["claimId"].clone(), g["receivedOn"].clone()),
+        (Value::Null, json!(retry_day))
+    );
+    t.consistent("alpha");
+}
+
+/// Review L7: catch-up uses an organisation's token only if it is the
+/// mapped account's; one sealed for another account (a switch still
+/// landing) is skipped for this run.
+#[tokio::test(flavor = "multi_thread")]
+async fn catch_up_never_lists_with_another_accounts_token() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let db = t.w.store.org(&t.w.alpha.id).unwrap();
+    let gc = t.gc.clone();
+    let token = db.read(|r| gc.token(r)).unwrap().unwrap();
+    let gc = t.gc.clone();
+    contracts::transact(&db, None, move |ctx| {
+        gc.put_token(ctx, &token, "ORSOMEONEELSE", contracts::Source::Test)
+    })
+    .unwrap();
+    let caught = api::gocardless::catchup::catch_up(t.w.store.clone(), t.gc.clone())
+        .await
+        .unwrap();
+    assert!(caught.is_empty(), "{caught:?}");
+    assert_eq!(t.fake.calls("GET events"), 0);
 }

@@ -338,7 +338,7 @@ impl Tenant {
                 }
             }
             let g = gc.clone();
-            self.write(move |ctx| Ok(g.put_token(ctx, "", contracts::Source::Ui)?))
+            self.write(move |ctx| Ok(g.put_token(ctx, "", "", contracts::Source::Ui)?))
                 .await?;
         }
         let (store, id) = (self.store.clone(), self.tenant_id.clone());

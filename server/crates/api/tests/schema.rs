@@ -185,6 +185,38 @@ const FIXTURES: &[&str] = &[
      VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e8', 'PM000010',
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 1000, '2026-11-05', 'confirmed',
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e6', 2);",
+    // 18: every payment attempt (ADR 0025): a pending instalment and its
+    // pending gift, a one-off on the same mandate (no regular gift) and
+    // the staff request that took it, and an unmatched payment (no
+    // regular gift, no gift)
+    "INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, reference, status,
+         entered_by, entered_at, gift_version, status_version, provider, provider_payment_id,
+         regular_gift_id)
+     VALUES (4, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '2026-12-05', 1000, 'direct_debit', 'PM000011', 'pending', NULL, 4000, 1, 1,
+         'gocardless', 'PM000011', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5'),
+            (5, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '2026-12-09', 2500, 'direct_debit', 'PM000012', 'completed', NULL, 4100, 1, 1,
+         'gocardless', 'PM000012', NULL);
+     INSERT INTO gift_allocations (id, gift_id, position, source_code_id, amount)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0d3', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d1', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 1000),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0d4', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d2', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 2500);
+     INSERT INTO direct_debit_payments (seq, id, payment_id, regular_gift_id, mandate_id,
+         amount, charge_date, status, reason, gift_id, version)
+     VALUES (2, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d5', 'PM000011',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 'MD000010', 1000, '2026-12-05', 'pending', NULL,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d1', 1),
+            (3, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d6', 'PM000012', NULL, 'MD000010', 2500,
+         '2026-12-09', 'confirmed', NULL, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d2', 1),
+            (4, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d7', 'PM000013', NULL, 'MD000099', 700,
+         '2026-12-10', 'confirmed', NULL, NULL, 1);
+     INSERT INTO provider_requests (seq, id, kind, provider, contact_id, regular_gift_id,
+         amount, source_code_id, charge_date, provider_ref, requested_by, requested_at, version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d8', 'one_off', 'gocardless',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 2500,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', NULL, 'PM000012', 1, 4050, 2);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
@@ -414,51 +446,6 @@ fn domain_crates_cannot_switch_the_read_view_off() {
         "PRAGMA",
         "END",
     ];
-    fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                sources(&path, out);
-            } else if path.extension().is_some_and(|x| x == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    /// The contents of every string literal in `text` (plain and raw;
-    /// char literals like `'"'` skipped).
-    fn literals(text: &str) -> Vec<&str> {
-        let bytes = text.as_bytes();
-        let mut out = vec![];
-        let mut i = 0;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 3,
-                b'r' if matches!(bytes.get(i + 1), Some(b'"' | b'#')) => {
-                    let hashes = bytes[i + 1..].iter().take_while(|b| **b == b'#').count();
-                    let start = i + 2 + hashes;
-                    if bytes.get(start - 1) != Some(&b'"') {
-                        i += 1;
-                        continue;
-                    }
-                    let close = format!("\"{}", "#".repeat(hashes));
-                    let end = text[start..].find(&close).map_or(text.len(), |e| start + e);
-                    out.push(&text[start..end]);
-                    i = end + close.len();
-                }
-                b'"' => {
-                    let start = i + 1;
-                    let mut j = start;
-                    while j < bytes.len() && bytes[j] != b'"' {
-                        j += if bytes[j] == b'\\' { 2 } else { 1 };
-                    }
-                    out.push(&text[start..j.min(text.len())]);
-                    i = j + 1;
-                }
-                _ => i += 1,
-            }
-        }
-        out
-    }
     /// SQL keywords that open a string literal: written as SQL is (all
     /// upper or all lower case), and followed by whitespace or `;`, or the
     /// whole literal. A label such as "End", "Begin" or "Release date" is
@@ -518,6 +505,177 @@ fn domain_crates_cannot_switch_the_read_view_off() {
     }
 }
 
+fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            sources(&path, out);
+        } else if path.extension().is_some_and(|x| x == "rs") {
+            out.push(path);
+        }
+    }
+}
+/// The contents of every string literal in `text` (plain and raw;
+/// char literals like `'"'` skipped).
+fn literals(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut out = vec![];
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 3,
+            b'r' if matches!(bytes.get(i + 1), Some(b'"' | b'#')) => {
+                let hashes = bytes[i + 1..].iter().take_while(|b| **b == b'#').count();
+                let start = i + 2 + hashes;
+                if bytes.get(start - 1) != Some(&b'"') {
+                    i += 1;
+                    continue;
+                }
+                let close = format!("\"{}", "#".repeat(hashes));
+                let end = text[start..].find(&close).map_or(text.len(), |e| start + e);
+                out.push(&text[start..end]);
+                i = end + close.len();
+            }
+            b'"' => {
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    j += if bytes[j] == b'\\' { 2 } else { 1 };
+                }
+                out.push(&text[start..j.min(text.len())]);
+                i = j + 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// ADR 0025: only `completed` is money received. Every SQL literal in
+/// server code that reads `gifts` or `gift_allocation_index` filters
+/// with `giving::RECEIVED` (spliced in as `{RECEIVED}`, or its negation
+/// `{NOT_RECEIVED}`) or says why it
+/// reads every status (`/* any status: … */`): a new income, report or
+/// Gift Aid read that forgets the filter fails here. Schema steps and
+/// plain writes (`UPDATE`, `DELETE`) aren't reads.
+#[test]
+fn every_gifts_read_counts_only_money_received_or_says_why() {
+    /// The literal as the matcher sees it: whitespace runs collapsed to
+    /// one space, upper case (SQL is case-insensitive).
+    fn normal(lit: &str) -> String {
+        lit.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_uppercase()
+    }
+    /// `FROM`/`JOIN` (or a schema-qualified `MAIN.`) a gifts table, or a
+    /// constant in `consts` (`{TABLE}` in a file where `TABLE` is
+    /// "gifts").
+    fn reads_gifts(lit: &str, consts: &[String]) -> bool {
+        let spaced = lit.split_whitespace().collect::<Vec<_>>().join(" ");
+        if consts
+            .iter()
+            .any(|c| spaced.contains(&format!("FROM {c}")) || spaced.contains(&format!("JOIN {c}")))
+        {
+            return true;
+        }
+        let n = normal(lit).replace("MAIN.", "");
+        ["FROM ", "JOIN "].iter().any(|k| {
+            ["GIFTS", "GIFT_ALLOCATION_INDEX"].iter().any(|t| {
+                let needle = format!("{k}{t}");
+                n.match_indices(&needle).any(|(i, _)| {
+                    n[i + needle.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                })
+            })
+        })
+    }
+    fn exempt(lit: &str) -> bool {
+        let n = normal(lit);
+        n.contains("CREATE TABLE")
+            || n.contains("CREATE INDEX")
+            || n.starts_with("UPDATE")
+            || n.starts_with("DELETE")
+    }
+    /// Never allowed: a view over gifts (reads through it dodge the
+    /// filter), or income summed from a provider's or a request's table
+    /// (income comes from gifts).
+    fn forbidden(lit: &str) -> bool {
+        let n = normal(lit);
+        (n.contains("CREATE VIEW") && n.contains("GIFT"))
+            || (["DIRECT_DEBIT_PAYMENTS", "PROVIDER_REQUESTS"]
+                .iter()
+                .any(|t| n.contains(t))
+                && ["SUM(", "TOTAL(", "AVG("].iter().any(|f| n.contains(f)))
+    }
+    fn unfiltered(text: &str) -> Vec<String> {
+        // A constant naming a gifts table in this file.
+        let consts: Vec<String> = ["TABLE", "ENTITY", "ALLOCATION_INDEX"]
+            .iter()
+            .filter(|c| {
+                ["gifts", "gift_allocation_index"]
+                    .iter()
+                    .any(|t| text.contains(&format!("{c}: &str = \"{t}\"")))
+            })
+            .map(|c| format!("{{{c}}}"))
+            .collect();
+        literals(text)
+            .into_iter()
+            .filter(|l| {
+                forbidden(l)
+                    || (reads_gifts(l, &consts)
+                        && !exempt(l)
+                        && !l.contains("RECEIVED}")
+                        && !l.contains("/* any status: "))
+            })
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect()
+    }
+    for dodge in [
+        r#"x("SELECT sum(amount) FROM gifts WHERE received_on > ?1")"#,
+        r#"x("SELECT sum(amount) from
+             gifts WHERE x")"#,
+        r#"x("SELECT sum(amount) FROM  main.gifts")"#,
+        r#"pub const TABLE: &str = "gifts"; x("SELECT sum(amount) FROM {TABLE} WHERE x")"#,
+        r#"x("SELECT 1 FROM x JOIN gift_allocation_index i ON 1")"#,
+        r#"x("CREATE VIEW income AS SELECT * FROM gifts WHERE {RECEIVED}")"#,
+        r#"x("SELECT total(amount) FROM direct_debit_payments WHERE status = 'confirmed'")"#,
+    ] {
+        assert_eq!(unfiltered(dodge).len(), 1, "{dodge}");
+    }
+    assert!(
+        unfiltered(
+            r#"x("SELECT 1 FROM gifts WHERE {RECEIVED}", "SELECT 1 FROM gifts_widen",
+               "SELECT 1 FROM gifts WHERE id = ?1 /* any status: one gift */",
+               "UPDATE gifts SET status = ?2", "DELETE FROM gift_allocation_index WHERE x",
+               "SELECT amount FROM direct_debit_payments WHERE id = ?1")"#
+        )
+        .is_empty()
+    );
+    assert_eq!(giving::RECEIVED, "status = 'completed'");
+
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = vec![];
+    for entry in std::fs::read_dir(&crates).unwrap().flatten() {
+        sources(&entry.path().join("src"), &mut files);
+    }
+    assert!(files.len() > 20);
+    let mut found = vec![];
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        for lit in unfiltered(&text) {
+            found.push(format!("{}: {lit}", file.display()));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "gifts reads without giving::RECEIVED or an `/* any status: … */` note:\n{}",
+        found.join("\n")
+    );
+}
+
 /// Step 15's rebuild checks the foreign keys after it runs, whatever the
 /// connection's `foreign_keys` says: a rebuild that orphaned a row fails.
 #[test]
@@ -562,8 +720,8 @@ fn a_rebuild_that_orphans_a_row_fails_its_step() {
     ok.to_latest(&mut conn).unwrap();
 }
 
-/// Step 17 rebuilds `gifts`: everything Gift Aid claims (step 16) put
-/// there comes through, the claim lock and void reason values, and its
+/// Step 17 rebuilds `gifts` (checked at version 17: step 18 rebuilds it
+/// again): everything Gift Aid claims (step 16) put there comes through, the claim lock and void reason values, and its
 /// two partial indexes, beside Direct Debit's own.
 #[test]
 fn the_direct_debit_rebuild_keeps_gift_aid_claims_columns_and_indexes() {
@@ -581,7 +739,7 @@ fn the_direct_debit_rebuild_keeps_gift_aid_claims_columns_and_indexes() {
              '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', 1, 1, 2600, 0, 2);",
     )
     .unwrap();
-    org_migrations().to_latest(&mut conn).unwrap();
+    org_migrations().to_version(&mut conn, 17).unwrap();
     let carried: (String, Option<String>, Option<String>, i64) = conn
         .query_row(
             "SELECT status, void_reason, claim_id, claim_lock_version FROM gifts
@@ -662,6 +820,152 @@ fn the_direct_debit_rebuild_keeps_gift_aid_claims_columns_and_indexes() {
         .query_row(
             "EXPLAIN QUERY PLAN SELECT id FROM gifts INDEXED BY gifts_unclaimed
              WHERE claim_id IS NULL AND status = 'completed' AND received_on BETWEEN '2026-01-01' AND '2026-12-31'",
+            [],
+            |r| r.get(3),
+        )
+        .unwrap();
+    assert!(plan.contains("gifts_unclaimed"), "{plan}");
+}
+
+/// Step 18 (ADR 0025) gives every D2 payment exactly one gift with its
+/// status: a confirmed payment keeps its gift; one charged back (its gift
+/// voided by the payment) has that gift charged back; a void staff made
+/// stays void; a payment never confirmed gets a new gift with its status,
+/// to its regular gift's code, in the allocation projection; a gift a
+/// retry superseded keeps its provider without the payment id. Gift
+/// Aid's claimed gift that stopped counting is found by its new index.
+#[test]
+fn the_unified_gifts_step_gives_every_payment_one_gift_with_its_status() {
+    let tmp = tempfile::tempdir().unwrap();
+    file_at(tmp.path(), 17);
+    let mut conn = Connection::open(tmp.path().join(format!("orgs/{TENANT}.db"))).unwrap();
+    // Under D2: PM20 charged back (its gift voided by the payment, in the
+    // v15 claim); PM21 confirmed, then voided by staff; PM22 failed, never
+    // a gift; PM23 retried on another day (the first gift void, the second
+    // completed); and the fixture's PM000010, confirmed.
+    conn.execute_batch(
+        "INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, reference, status,
+             void_reason, claim_id, claim_lock_version, entered_by, entered_at, gift_version,
+             status_version)
+         VALUES (20, '000000000000000000000000000000a0', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+             '2026-10-05', 1000, 'direct_debit', 'PM20', 'void', 'Charged back (GoCardless)',
+             '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1', 1, NULL, 1, 1, 2),
+                (21, '000000000000000000000000000000a1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+             '2026-10-06', 1000, 'direct_debit', 'PM21', 'void', 'wrong donor', NULL, 0,
+             NULL, 1, 1, 2),
+                (23, '000000000000000000000000000000a3', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+             '2026-10-07', 1000, 'direct_debit', 'PM23', 'void', 'Failed after it was collected',
+             NULL, 0, NULL, 1, 1, 2),
+                (24, '000000000000000000000000000000a4', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+             '2026-10-14', 1000, 'direct_debit', 'PM23', 'completed', NULL, NULL, 0, NULL, 1,
+             1, 1);
+         INSERT INTO direct_debit_payments (seq, id, payment_id, regular_gift_id, amount,
+             charge_date, status, reason, gift_id, gift_voided, version)
+         VALUES (20, '000000000000000000000000000000b0', 'PM20',
+             '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 1000, '2026-10-05', 'charged_back', 'disputed',
+             '000000000000000000000000000000a0', 1, 3),
+                (21, '000000000000000000000000000000b1', 'PM21',
+             '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 1000, '2026-10-06', 'confirmed', NULL,
+             '000000000000000000000000000000a1', 0, 2),
+                (22, '000000000000000000000000000000b2', 'PM22',
+             '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 1000, '2026-10-08', 'failed',
+             'insufficient funds', NULL, 0, 2),
+                (23, '000000000000000000000000000000b3', 'PM23',
+             '0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5', 1000, '2026-10-14', 'confirmed', NULL,
+             '000000000000000000000000000000a4', 0, 4);",
+    )
+    .unwrap();
+    org_migrations().to_latest(&mut conn).unwrap();
+    let gift = |payment: &str| -> (
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+    ) {
+        conn.query_row(
+            "SELECT g.id, g.provider, g.status, g.void_reason, g.regular_gift_id
+             FROM direct_debit_payments p JOIN gifts g ON g.id = p.gift_id
+             WHERE p.payment_id = ?1 AND g.provider_payment_id = ?1",
+            [payment],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap_or_else(|e| panic!("{payment}: {e}"))
+    };
+    let regular = Some("0190f0c0a0b0c0d0e0f0a0b0c0d0e0e5".to_owned());
+    let gc = Some("gocardless".to_owned());
+    assert_eq!(gift("PM000010").2, "completed");
+    let pm20 = gift("PM20");
+    assert_eq!(
+        (pm20.0.as_str(), &pm20.1, pm20.2.as_str(), &pm20.4),
+        (
+            "000000000000000000000000000000a0",
+            &gc,
+            "charged_back",
+            &regular
+        )
+    );
+    assert_eq!(gift("PM21").2, "void", "a staff void stays");
+    let pm22 = gift("PM22");
+    assert_eq!(
+        (pm22.2.as_str(), pm22.3.as_deref()),
+        ("failed", Some("Failed (GoCardless): insufficient funds")),
+        "the reason as live processing writes it"
+    );
+    assert_eq!(gift("PM23").0, "000000000000000000000000000000a4");
+    // The new gift: allocated to the regular gift's code, projected.
+    let (code, amount, projected): (String, i64, String) = conn
+        .query_row(
+            "SELECT a.source_code_id, a.amount, x.status FROM gift_allocations a
+             JOIN gift_allocation_index x ON x.allocation_id = a.id WHERE a.gift_id = ?1",
+            [&pm22.0],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (code.as_str(), amount, projected.as_str()),
+        ("0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3", 1000, "failed")
+    );
+    // The superseded gift: void, its provider kept, out of the pair.
+    let superseded: (Option<String>, Option<String>, String) = conn
+        .query_row(
+            "SELECT provider, provider_payment_id, status FROM gifts
+             WHERE id = '000000000000000000000000000000a3'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(superseded, (gc.clone(), None, "void".into()));
+    // Exactly one gift per payment, and none disagrees.
+    let pairs: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM direct_debit_payments p
+             WHERE (SELECT count(*) FROM gifts g WHERE g.provider_payment_id = p.payment_id) <> 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pairs, 0);
+    assert_eq!(
+        giving::regular::consistency(&conn).unwrap(),
+        Vec::<String>::new()
+    );
+    // The charged-back claimed gift is what the next claim's adjustment
+    // reads.
+    let uncounted: Vec<String> = giving::voided_in_claims(&conn)
+        .unwrap()
+        .into_iter()
+        .map(|v| v.id)
+        .collect();
+    assert_eq!(uncounted, ["000000000000000000000000000000a0"]);
+    // And the eligibility read still uses its index.
+    let plan: String = conn
+        .query_row(
+            &format!(
+                "EXPLAIN QUERY PLAN SELECT id FROM gifts INDEXED BY gifts_unclaimed
+                 WHERE claim_id IS NULL AND {} AND received_on BETWEEN '2026-01-01' AND '2026-12-31'",
+                giving::RECEIVED
+            ),
             [],
             |r| r.get(3),
         )

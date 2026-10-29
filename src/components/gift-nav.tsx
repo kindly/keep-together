@@ -4,6 +4,7 @@ import type { ComponentProps } from 'react'
 import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
 import type { RecentGift } from '../lib/gifts'
 import { FEATURES } from '../lib/data'
+import { STATUS_LABELS, isReceived } from '../lib/domain/gift-status'
 import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
 import {
   DropdownMenu,
@@ -18,16 +19,23 @@ import {
 // menu and the group home page: "Record a gift" (step 3) and each recent
 // gift, linking to its page (step 5).
 
-/** Amount, contact, date; a void gift struck through and marked. */
+/**
+ * Amount, contact, date; a gift that isn't money received struck through
+ * and marked with its status.
+ */
 function GiftSummary({ gift }: { gift: RecentGift }) {
-  const isVoid = gift.status === 'void'
+  const received = isReceived(gift.status)
   return (
     <span className="flex w-full items-baseline gap-2">
-      <span className={isVoid ? 'text-neutral-500 line-through' : ''}>
+      <span className={received ? '' : 'text-neutral-500 line-through'}>
         {formatPence(gift.amount)}
       </span>
       <span className="min-w-0 flex-1 truncate">{gift.contactName}</span>
-      {isVoid && <span className="text-xs text-red-700">void</span>}
+      {!received && (
+        <span className="text-xs text-red-700">
+          {STATUS_LABELS[gift.status]}
+        </span>
+      )}
       <span className="text-xs whitespace-nowrap text-neutral-500">
         {formatDay(gift.receivedOn)}
       </span>

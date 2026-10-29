@@ -41,8 +41,10 @@
 //! - in `platform.db` ([`SCHEMA`]): which GoCardless organisation is which
 //!   of ours (webhooks name theirs), the single-use OAuth `state`s, and
 //!   every webhook event by id, until a job has handled it in its org file
-//!   ([`process`]).
+//!   ([`process`]), and the nightly catch-up's cursor per account
+//!   ([`catchup`]).
 
+pub mod catchup;
 pub mod client;
 pub mod fake;
 pub mod oauth;
@@ -62,6 +64,10 @@ pub use client::{Api, CallError, Credentials};
 /// The org secret holding the organisation's access token ("" once
 /// disconnected).
 pub const TOKEN_SETTING: &str = "gocardless.accessToken";
+/// The GoCardless account (`OR…`) that token is for, sealed beside it, so
+/// a reader can tell a token from an account switch still landing
+/// (review L7). Unset for a token sealed before it existed.
+pub const ACCOUNT_SETTING: &str = "gocardless.organisationId";
 /// How long an OAuth `state` is good for.
 pub const STATE_TTL_MS: i64 = 10 * 60 * 1000;
 
@@ -228,14 +234,40 @@ impl GoCardless {
         Ok(token.filter(|t| !t.is_empty()))
     }
 
-    /// Seal `token` (or "" to forget it) into the organisation's file.
+    /// Seal `token` (or "" to forget it) and the account it is for
+    /// (`organisation`, "" with it) into the organisation's file.
     pub fn put_token(
         &self,
         ctx: &contracts::Ctx,
         token: &str,
+        organisation: &str,
         source: contracts::Source,
     ) -> Result<(), contracts::ContractError> {
-        platform::settings::put(ctx, &self.settings_key, TOKEN_SETTING, token, source).map(|_| ())
+        platform::settings::put(ctx, &self.settings_key, TOKEN_SETTING, token, source)?;
+        platform::settings::put(
+            ctx,
+            &self.settings_key,
+            ACCOUNT_SETTING,
+            organisation,
+            source,
+        )
+        .map(|_| ())
+    }
+
+    /// The token, only if it is account `organisation`'s (or was sealed
+    /// before the account was recorded beside it).
+    pub fn token_for(
+        &self,
+        conn: &Connection,
+        organisation: &str,
+    ) -> Result<Option<String>, crate::ApiError> {
+        let account = platform::settings::get(conn, &self.settings_key, ACCOUNT_SETTING)
+            .map_err(crate::ApiError::internal)?
+            .filter(|a| !a.is_empty());
+        if account.is_some_and(|a| a != organisation) {
+            return Ok(None);
+        }
+        self.token(conn)
     }
 
     pub fn credentials(&self) -> &Credentials {
@@ -305,6 +337,16 @@ pub const SCHEMA: PlatformSchema = PlatformSchema {
              tenant_id TEXT NOT NULL REFERENCES tenants (id),
              at INTEGER NOT NULL,
              PRIMARY KEY (organisation_id, tenant_id)
+         ) STRICT;",
+        // 2: the nightly catch-up's cursor per connected organisation
+        // (`catchup`): events read up to `since` (RFC 3339) for that
+        // account, and what the last run found
+        "CREATE TABLE gocardless_catchup (
+             tenant_id TEXT PRIMARY KEY REFERENCES tenants (id),
+             organisation_id TEXT NOT NULL,
+             since TEXT NOT NULL,
+             last_run_at INTEGER NOT NULL,
+             last_found INTEGER NOT NULL
          ) STRICT;",
     ],
 };
