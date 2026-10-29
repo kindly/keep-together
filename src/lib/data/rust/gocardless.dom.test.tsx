@@ -185,3 +185,12 @@ test('a gift anywhere refetches the contacts’ cards, never a card’s GoCardle
     keys.gocardless(SLUG),
   )
 })
+
+test('the forecast is keyed by the gift’s status: going live reads it afresh', () => {
+  const pending = keys.regularGiftForecast(SLUG, 'r1', 'pending')
+  const active = keys.regularGiftForecast(SLUG, 'r1', 'active')
+  expect(pending).not.toEqual(active)
+  // A terms write's invalidation (no status) covers every status's.
+  const prefix = keys.regularGiftForecast(SLUG, 'r1')
+  expect(active.slice(0, prefix.length)).toEqual([...prefix])
+})

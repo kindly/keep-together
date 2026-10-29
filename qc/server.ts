@@ -30,6 +30,8 @@ export function routeOf(c: Pick<ApiCall, 'method' | 'url'>): string {
     // A phone pairing's token is its credential: never in a report.
     .replace(/^\/scan\/[^/]+/, '/scan/:token')
     .replace(/\/[0-9a-f]{32}(?=\/|$)/g, '/:id')
+    // GoCardless's own ids (a subscription to adopt): `SB…`, `PM…`.
+    .replace(/\/(?:SB|PM|MD|BRQ)[0-9A-Z]+(?=\/|$)/g, '/:gcId')
   return `${c.method} ${p}`
 }
 

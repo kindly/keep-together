@@ -13,6 +13,7 @@ import {
   GIFT_AID,
   GiftAidEntryLink,
   GiftLink,
+  ExpectedReportAction,
   RecordGiftAction,
   UnmatchedAction,
   useDonations,
@@ -266,13 +267,14 @@ function Donations({ follow }: { follow: Follow }) {
   const onDonations = useRouterState({
     select: (s) =>
       s.location.pathname.startsWith(`/t/${slug}/gifts/`) ||
-      s.location.pathname.startsWith(`/t/${slug}/gocardless/`),
+      s.location.pathname.startsWith(`/t/${slug}/gocardless/`) ||
+      s.location.pathname.startsWith(`/t/${slug}/reports/`),
   })
   const [open, setOpen] = useState(() => onDonations || stored() === true)
   useEffect(() => {
     if (onDonations) store(true)
   }, [onDonations])
-  const { canWrite, directDebit, gifts } = useDonations(open)
+  const { canWrite, directDebit, report, gifts } = useDonations(open)
   const id = useId()
   const toggle = () => {
     store(!open)
@@ -299,6 +301,7 @@ function Donations({ follow }: { follow: Follow }) {
       <div id={id} hidden={!open} className="pl-3">
         {canWrite && <RecordGiftAction className={item} {...follow} />}
         {directDebit && <UnmatchedAction className={item} {...follow} />}
+        {report && <ExpectedReportAction className={item} {...follow} />}
         <p className={heading}>{DONATIONS.recent}</p>
         {gifts === undefined ? (
           <p className="px-3 py-2 text-sm text-neutral-500">

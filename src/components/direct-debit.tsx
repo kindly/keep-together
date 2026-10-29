@@ -169,7 +169,11 @@ export function RegularGiftCard({
 }) {
   // The list is the card (refetched on its events); GoCardless's
   // forecast of its next payments comes from its own read.
-  const forecast = useRegularGiftForecast(listed.id, !isEnded(listed))
+  const forecast = useRegularGiftForecast(
+    listed.id,
+    listed.status,
+    !isEnded(listed),
+  )
   const gift = forecast ? { ...listed, upcoming: forecast } : listed
   const canWrite = useCanWrite()
   const [dialog, setDialog] = useState<'oneOff' | 'cancel' | null>(null)
