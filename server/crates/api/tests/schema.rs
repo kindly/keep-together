@@ -460,7 +460,7 @@ fn money_is_integer_pence_and_nothing_is_real() {
 #[test]
 fn domain_crates_cannot_reach_the_store_or_the_platform() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    for domain in ["contacts", "sources", "giving", "giftaid", "comms"] {
+    for domain in ["contacts", "sources", "giving", "giftaid", "comms", "banking"] {
         let manifest = std::fs::read_to_string(crates.join(domain).join("Cargo.toml"))
             .unwrap_or_else(|e| panic!("{domain}: {e}"));
         let mut section = "";
@@ -496,6 +496,7 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
         &*sources::REGISTRY,
         &*giving::REGISTRY,
         &*giftaid::REGISTRY,
+        &*banking::REGISTRY,
     ];
     for c in registries.iter().flat_map(|r| r.contracts()) {
         let (ty, notnull, default): (String, bool, Option<String>) = conn
@@ -586,7 +587,7 @@ fn domain_crates_cannot_switch_the_read_view_off() {
 
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = vec![];
-    for domain in ["contacts", "sources", "giving", "giftaid", "comms"] {
+    for domain in ["contacts", "sources", "giving", "giftaid", "comms", "banking"] {
         sources(&crates.join(domain).join("src"), &mut files);
     }
     assert!(!files.is_empty());

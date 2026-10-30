@@ -125,4 +125,15 @@ export const keys = {
     ['t', slug, 'gocardless', 'unknown'] as const,
   /** The charity's HMRC details (Settings). */
   hmrcDetails: (slug: string) => ['t', slug, 'hmrcDetails'] as const,
+  /**
+   * Bank accounts and statement imports (bank transfers 6a): one prefix,
+   * so an account's or an import's event refetches whatever shows one.
+   */
+  bank: (slug: string) => ['t', slug, 'bank'] as const,
+  bankPresets: (slug: string) => ['t', slug, 'bankPresets'] as const,
+  bankAccounts: (slug: string) => ['t', slug, 'bank', 'accounts'] as const,
+  bankImports: (slug: string, accountId: string) =>
+    ['t', slug, 'bank', 'imports', accountId] as const,
+  bankImport: (slug: string, id: string) =>
+    ['t', slug, 'bank', 'import', id] as const,
 }

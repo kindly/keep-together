@@ -50,6 +50,7 @@ export const DONATIONS = {
   record: 'Record a gift',
   recent: 'My recent gifts',
   unmatched: 'Unmatched payments',
+  bank: 'Bank statements',
   expected: 'Expected vs actual',
   loading: 'Loading…',
   none: 'None yet.',
@@ -188,6 +189,16 @@ export function ExpectedReportAction(props: AnchorProps) {
   )
 }
 
+/** "Bank statements": the accounts' imports (staff and admins). */
+export function BankStatementsAction(props: AnchorProps) {
+  const tenant = useTenant()
+  return (
+    <Link to="/t/$slug/bank" params={{ slug: tenant.slug }} {...props}>
+      {DONATIONS.bank}
+    </Link>
+  )
+}
+
 /** "Unmatched payments" (GoCardless): payments to match to a contact. */
 export function UnmatchedAction(props: AnchorProps) {
   const tenant = useTenant()
@@ -255,7 +266,7 @@ export function RecentGifts() {
 }
 
 /**
- * The header's Donations ▾: "Record a gift" and, with GoCardless on,
+ * The header's Donations ▾: "Record a gift", "Bank statements" and, with GoCardless on,
  * "Unmatched payments" (staff and admins); "Expected vs actual" (with
  * GoCardless on); then the caller's last 10 gifts. Fetched only while
  * open.
@@ -273,6 +284,9 @@ export function DonationsMenu() {
           <>
             <DropdownMenuItem asChild>
               <RecordGiftAction />
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <BankStatementsAction />
             </DropdownMenuItem>
             {directDebit && (
               <DropdownMenuItem asChild>

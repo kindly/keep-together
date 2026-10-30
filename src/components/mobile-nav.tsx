@@ -13,6 +13,7 @@ import {
   GIFT_AID,
   GiftAidEntryLink,
   GiftLink,
+  BankStatementsAction,
   ExpectedReportAction,
   RecordGiftAction,
   UnmatchedAction,
@@ -268,6 +269,7 @@ function Donations({ follow }: { follow: Follow }) {
     select: (s) =>
       s.location.pathname.startsWith(`/t/${slug}/gifts/`) ||
       s.location.pathname.startsWith(`/t/${slug}/gocardless/`) ||
+      s.location.pathname.startsWith(`/t/${slug}/bank/`) ||
       s.location.pathname.startsWith(`/t/${slug}/reports/`),
   })
   const [open, setOpen] = useState(() => onDonations || stored() === true)
@@ -300,6 +302,7 @@ function Donations({ follow }: { follow: Follow }) {
       </button>
       <div id={id} hidden={!open} className="pl-3">
         {canWrite && <RecordGiftAction className={item} {...follow} />}
+        {canWrite && <BankStatementsAction className={item} {...follow} />}
         {directDebit && <UnmatchedAction className={item} {...follow} />}
         {report && <ExpectedReportAction className={item} {...follow} />}
         <p className={heading}>{DONATIONS.recent}</p>

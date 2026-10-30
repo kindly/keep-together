@@ -1,0 +1,4 @@
+Number,Date,Account,Amount,Subcategory,Memo
+ ,02/11/2026,20-00-00 12345678,25.00,Counter Credit,J SMITH      	100016 DONATION	BGC
+ ,02/11/2026,20-00-00 12345678,-84.5,Direct Debit,PRINT SHOP LTD	INV 2231	DDR
+ ,03/11/2026,20-00-00 12345678,10,Standing Order,A JONES       	SO	STO

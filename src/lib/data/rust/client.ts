@@ -40,6 +40,10 @@ export function describe(error: ApiError): string {
       return error.problems.map((p) => p.message).join('; ') || 'Invalid'
     case 'rejected':
       return error.message
+    case 'file_rows':
+      return 'The file can’t be read: nothing was imported'
+    case 'too_large':
+      return `The file is over ${Math.floor(error.limit / 1024 / 1024)} MB`
     case 'rate_limited':
       return 'Too many attempts: wait a minute'
     case 'lookup_cap':
@@ -76,6 +80,8 @@ async function call<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
+  // A file goes as itself (a statement upload); anything else as JSON.
+  const raw = body instanceof Blob
   let response: Response
   try {
     response = await fetch(apiUrl(path), {
@@ -83,8 +89,15 @@ async function call<T>(
       // Same origin: as 'same-origin'. Another `VITE_API_BASE`: the cookie
       // still goes (the api has to allow the SPA's origin).
       credentials: 'include',
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers:
+        body === undefined
+          ? {}
+          : {
+              'content-type': raw
+                ? 'application/octet-stream'
+                : 'application/json',
+            },
+      body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
     })
   } catch {
     throw new RustApiError(0, { kind: 'internal' })
@@ -113,3 +126,7 @@ export const post = <T>(path: string, body: unknown = {}) =>
   call<T>('POST', path, body)
 
 export const del = <T>(path: string) => call<T>('DELETE', path)
+
+/** POST a file as the whole body, the rest in the query. */
+export const postFile = <T>(path: string, query: URLSearchParams, file: Blob) =>
+  call<T>('POST', `${path}?${query.toString()}`, file)

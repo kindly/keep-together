@@ -82,6 +82,7 @@ version = "0.1.0"
 dependencies = [
  "auth",
  "axum",
+ "banking",
  "base32",
  "bytes",
  "comms",
@@ -264,6 +265,23 @@ dependencies = [
  "object",
  "rustc-demangle",
  "windows-link",
+]
+
+[[package]]
+name = "banking"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "giving",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sources",
+ "store",
+ "tempfile",
+ "thiserror",
+ "ts-rs",
 ]
 
 [[package]]

@@ -456,11 +456,13 @@ test('the Donations menu: Record a gift, then my recent gifts, each a link', asy
   expect(items[0].textContent).toBe('Record a gift')
   expect(items[0].getAttribute('href')).toBe('/t/alpha/gifts/new')
   expect(items[0].getAttribute('aria-disabled')).toBeNull()
-  expect(items.slice(1).map((i) => i.textContent)).toEqual([
+  expect(items[1].textContent).toBe('Bank statements')
+  expect(items[1].getAttribute('href')).toBe('/t/alpha/bank')
+  expect(items.slice(2).map((i) => i.textContent)).toEqual([
     '£1,234.56Acme Ltd23 Oct 2026',
     '£20.00Jo Bloggsvoid23 Oct 2026',
   ])
-  expect(items.slice(1).map((i) => i.getAttribute('href'))).toEqual([
+  expect(items.slice(2).map((i) => i.getAttribute('href'))).toEqual([
     '/t/alpha/gifts/g2',
     '/t/alpha/gifts/g1',
   ])
@@ -483,8 +485,9 @@ test('with GoCardless on, the Donations menu lists Unmatched payments for staff,
     ].map((i) => [i.textContent, i.getAttribute('href')])
   }
   tenants = [group('alpha', { role: 'staff' })]
-  expect((await items()).slice(0, 3)).toEqual([
+  expect((await items()).slice(0, 4)).toEqual([
     ['Record a gift', '/t/alpha/gifts/new'],
+    ['Bank statements', '/t/alpha/bank'],
     ['Unmatched payments', '/t/alpha/gocardless/unmatched'],
     ['Expected vs actual', '/t/alpha/reports/expected'],
   ])
@@ -654,6 +657,7 @@ test('this build serves every list tab: Settings opens on Fields', async () => {
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
+    ['Bank accounts', '/t/alpha/settings/bank'],
     ['GoCardless', '/t/alpha/settings/gocardless'],
     ['Scans storage', '/t/alpha/settings/storage'],
     ['Members', '/t/alpha/settings/members'],
@@ -677,6 +681,7 @@ test('settings: the first tab is Fields once every list is ported', async () => 
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
+    ['Bank accounts', '/t/alpha/settings/bank'],
     ['GoCardless', '/t/alpha/settings/gocardless'],
     ['Scans storage', '/t/alpha/settings/storage'],
     ['Members', '/t/alpha/settings/members'],
@@ -788,6 +793,7 @@ test('the drawer lists every destination, Donations flattened, then the account'
     ['Home', '/t/alpha'],
     ['Contacts', '/t/alpha/contacts'],
     ['Record a gift', '/t/alpha/gifts/new'],
+    ['Bank statements', '/t/alpha/bank'],
     ['£1,234.56Acme Ltd23 Oct 2026', '/t/alpha/gifts/g2'],
     ['£20.00Jo Bloggsvoid23 Oct 2026', '/t/alpha/gifts/g1'],
     ['Claims', '/t/alpha/giftaid'],
@@ -988,6 +994,7 @@ test('Donations: a 44px toggle, collapsed by default, opening and closing in pla
   expect(region.hidden).toBe(false)
   expect(shown(region).map(([t]) => t)).toEqual([
     'Record a gift',
+    'Bank statements',
     '£20.00Jo Bloggs23 Oct 2026',
   ])
   await toggleDonations()

@@ -59,6 +59,12 @@ export const PORTED: ReadonlyArray<RouteId> = [
   '/t/$slug/gocardless/unmatched',
   // Regular-gift terms step 6: the expected vs actual report.
   '/t/$slug/reports/expected',
+  // Bank transfers 6a: Settings › Bank accounts, the statements, an
+  // import and its lines.
+  '/t/$slug/settings/bank',
+  '/t/$slug/bank/',
+  '/t/$slug/bank/import',
+  '/t/$slug/bank/imports/$importId',
 ]
 
 const ported = new Set<string>(PORTED)
