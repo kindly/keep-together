@@ -488,10 +488,10 @@ async fn a_payment_is_missed_after_14_days_and_a_late_one_clears_it() {
 /// The standing-order suggester: an expected payment matches a line
 /// posted from 5 days before its due date to 15 after, with the exact
 /// amount; outside the window, or another amount, it isn't suggested.
-/// Strong (pre-ticked) only when the line identifies the donor (review
-/// b5r H1): B quotes the standing order's distinctive reference as whole
-/// tokens ("SMITH123" in "FPI SMITH123 DONATION"); C, inside the window
-/// too, is "amount and date only", never ticked. Two lines for one
+/// Strong (pre-ticked) only when the line's payer is a known payer of the
+/// donor (review b5r round 3): B paid Jo before. F quotes the standing
+/// order's reference ("reference SMITH123 matches") but is only
+/// suggested; C, inside the window too, is "amount and date only". Two lines for one
 /// period: the second is refused on its own (`period_paid`, review b5r
 /// M1) and the rest of the accept applies.
 #[tokio::test]
@@ -506,6 +506,19 @@ async fn an_expected_payment_matches_inside_minus_5_plus_15_only() {
         payer,
         reference,
     };
+    // B paid Jo before (a payment staff matched): a known payer.
+    let earlier = s
+        .import(&[credit(-40, 999, "B", "FPI SMITH123 DONATION")])
+        .await;
+    let e0 = s.line(&id(&earlier[0])).await;
+    let (st, _) = s
+        .post(
+            &format!("bank/lines/{}/gifts", id(&earlier[0])),
+            json!({ "expected": e0["line"]["matchVersion"],
+                "parts": [{ "contact": jo, "amount": 999 }] }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
     let lines = s
         .import(&[
             credit(-6, 1500, "A", "SMITH123"),
@@ -513,6 +526,7 @@ async fn an_expected_payment_matches_inside_minus_5_plus_15_only() {
             credit(15, 1500, "C", ""),
             credit(16, 1500, "D", "SMITH123"),
             credit(2, 1501, "E", "SMITH123"),
+            credit(3, 1500, "F", "SMITH123"),
         ])
         .await;
     let instalments = |v: &Value| -> Vec<Value> {
@@ -531,6 +545,8 @@ async fn an_expected_payment_matches_inside_minus_5_plus_15_only() {
         ("C", Some(("suggested", false))),
         ("D", None),
         ("E", None),
+        // The standing order's reference alone: ranked, said, not strong.
+        ("F", Some(("suggested", false))),
     ] {
         let found = instalments(&s.line(&by_payer(payer)).await);
         assert_eq!(
@@ -553,6 +569,14 @@ async fn an_expected_payment_matches_inside_minus_5_plus_15_only() {
             );
         }
     }
+    let f = s.line(&by_payer("F")).await;
+    assert!(
+        instalments(&f)[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("reference SMITH123 matches"),
+        "{f}"
+    );
     let c = s.line(&by_payer("C")).await;
     assert!(
         instalments(&c)[0]["reason"]
@@ -649,6 +673,44 @@ async fn a_known_payer_makes_a_standing_order_payment_strong() {
     assert_eq!(
         (next[0]["confidence"].as_str(), next[0]["ticked"].as_bool()),
         (Some("strong"), Some(true))
+    );
+
+    // A payer known for someone else names Al, not Jo: Jo's expected
+    // payment from them is only suggested.
+    let al = s.contact("alpha", &s.ann, "Al").await;
+    let more = s
+        .import(&[
+            Credit {
+                on: shift(&first, -20),
+                pence: 777,
+                payer: "AL OTHER",
+                reference: "",
+            },
+            Credit {
+                on: shift(&second, 1),
+                pence: 2000,
+                payer: "AL OTHER",
+                reference: "",
+            },
+        ])
+        .await;
+    let a0 = s.line(&id(&more[0])).await;
+    let (st, _) = s
+        .post(
+            &format!("bank/lines/{}/gifts", id(&more[0])),
+            json!({ "expected": a0["line"]["matchVersion"],
+                "parts": [{ "contact": al, "amount": 777 }] }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let theirs = instalments_of(&s.line(&id(&more[1])).await);
+    assert_eq!(theirs.len(), 1);
+    assert_eq!(
+        (
+            theirs[0]["confidence"].as_str(),
+            theirs[0]["ticked"].as_bool()
+        ),
+        (Some("suggested"), Some(false))
     );
 }
 
@@ -943,7 +1005,7 @@ async fn make_this_a_standing_order_is_offered_on_the_second_payment_not_the_fir
     )
     .await;
     assert_eq!(mine.as_array().unwrap().len(), 1);
-    // "MONTHLY" names no one: the reference is left for staff to fill in.
+    // The line's reference is never taken for it: staff type one.
     assert_eq!(mine[0]["bankReference"], Value::Null);
     let gift = ok(
         &s.w,

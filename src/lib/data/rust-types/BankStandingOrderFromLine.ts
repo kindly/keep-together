@@ -14,6 +14,7 @@ export type BankStandingOrderFromLine = { expected: number, contact: DonorRef, f
  */
 sourceCodeId?: string, 
 /**
- * Omitted: the line's own reference.
+ * The reference the donor's bank shows, as staff type it; never
+ * taken from the line.
  */
 bankReference?: string, };

@@ -446,10 +446,11 @@ fn display_payer(line: &LineView) -> String {
 /// A standing order's expected payment (step 5): the exact amount, due
 /// from 15 days before the line to 5 days after it (−5/+15, as
 /// CiviBanking does), and not paid yet. Strong (so pre-ticked) only when
-/// the line identifies the donor: the standing order's bank reference in
-/// its reference or narrative, or a payer matched to the donor before.
-/// Amount and date alone are only a suggestion; outside the window it
-/// isn't suggested.
+/// the line's payer is a known payer of the standing order's donor (a
+/// payment from them was matched before): the first payment is always
+/// staff's to confirm. The standing order's reference in the line ranks
+/// the suggestion first and says so, but never makes it strong (review
+/// b5r round 3). Outside the window it isn't suggested.
 pub struct StandingOrder;
 
 impl Suggester for StandingOrder {
@@ -459,7 +460,7 @@ impl Suggester for StandingOrder {
 
     fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
         let conn = cx.conn;
-        let mut out = Vec::new();
+        let mut out: Vec<(bool, Suggestion)> = Vec::new();
         let known: Vec<String> = match payer_key(&line.payer, &line.reference) {
             Some(key) => payers_for(conn, &line.account_id, &key)?
                 .into_iter()
@@ -477,67 +478,61 @@ impl Suggester for StandingOrder {
                 giving::format_pence(p.amount),
                 p.due_on
             );
-            // Strong only when the line says who paid (review b5r H1): its
-            // reference, or a payer matched to this donor before.
-            let by_reference = p
+            // Strong only when this payer was matched to the donor before
+            // (review b5r round 3): the first payment is always staff's
+            // call, and then later ones pre-tick. The standing order's
+            // reference in the line ranks it first and says so, but never
+            // makes it strong.
+            let reference = p
                 .bank_reference
                 .as_deref()
-                .is_some_and(|r| reference_identifies(r, line));
+                .filter(|r| reference_identifies(r, line));
             let by_payer = known.contains(&p.contact_id);
-            let (confidence, reason) = match (by_reference, by_payer) {
-                (true, _) => (
+            let mut why = what;
+            if let Some(r) = reference {
+                why = format!("{why}; reference {} matches", r.trim());
+            }
+            let (confidence, reason) = if by_payer {
+                (
                     Confidence::Strong,
-                    format!("{what}; its reference is in the line"),
-                ),
-                (_, true) => (
-                    Confidence::Strong,
-                    format!("{what}; {} paid it before", display_payer(line)),
-                ),
-                _ => (
+                    format!("{why}; {} paid it before", display_payer(line)),
+                )
+            } else if reference.is_some() {
+                (Confidence::Suggested, why)
+            } else {
+                (
                     Confidence::Suggested,
-                    format!("{what}: amount and date only"),
-                ),
+                    format!("{why}: amount and date only"),
+                )
             };
-            out.push(Suggestion::new(
-                line,
-                Proposal::Instalment {
-                    regular_gift_id: p.regular_gift_id,
-                    scheduled_on: p.due_on.clone(),
-                },
-                named(conn, &p.contact_id)?,
-                confidence,
-                reason,
-                self.name(),
-            ));
+            let at = if reference.is_some() {
+                out.iter()
+                    .take_while(|(by_ref, _): &&(bool, Suggestion)| *by_ref)
+                    .count()
+            } else {
+                out.len()
+            };
+            out.insert(
+                at,
+                (
+                    reference.is_some(),
+                    Suggestion::new(
+                        line,
+                        Proposal::Instalment {
+                            regular_gift_id: p.regular_gift_id,
+                            scheduled_on: p.due_on.clone(),
+                        },
+                        named(conn, &p.contact_id)?,
+                        confidence,
+                        reason,
+                        self.name(),
+                    ),
+                ),
+            );
         }
-        Ok(out)
+        Ok(out.into_iter().map(|(_, s)| s).collect())
     }
 }
-
-/// Words on statements that say nothing about who paid: a reference made
-/// of these alone identifies no one (review b5r round 2).
-pub const GENERIC_WORDS: &[&str] = &[
-    "DONATION",
-    "DONATIONS",
-    "GIFT",
-    "MONTHLY",
-    "QUARTERLY",
-    "YEARLY",
-    "ANNUAL",
-    "STANDING",
-    "ORDER",
-    "SO",
-    "STO",
-    "REF",
-    "REFERENCE",
-    "CHARITY",
-    "PAYMENT",
-    "TRANSFER",
-    "BGC",
-    "FPI",
-    "FASTER",
-    "PAYMENTS",
-];
 
 /// `text` as upper-cased alphanumeric runs: "FPI smith-123/don" is
 /// `["FPI", "SMITH", "123", "DON"]`.
@@ -548,28 +543,16 @@ pub fn tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether a standing order's reference can name its donor on a
-/// statement: a digit and at least 4 letters or digits, or at least 6,
-/// and not only generic words ([`GENERIC_WORDS`]). "SMITH123" does;
-/// "MONTHLY", "SO REF" and "JO" don't. One that doesn't can be kept, but
-/// it never makes a match strong.
-pub fn is_distinctive(reference: &str) -> bool {
-    let words = tokens(reference);
-    let chars: usize = words.iter().map(|w| w.chars().count()).sum();
-    let digit = words.iter().any(|w| w.chars().any(|c| c.is_ascii_digit()));
-    let generic = words.iter().all(|w| GENERIC_WORDS.contains(&w.as_str()));
-    !words.is_empty() && !generic && (chars >= 6 || (digit && chars >= 4))
-}
-
-/// Whether `reference` names the payer of `line`: distinctive, and its
-/// tokens appear as one run of whole tokens in the line's reference or
-/// its narrative ("SMITH123" in "FPI SMITH123 DONATION"; never "SO REF"
-/// in "ALSO REFUND", nor "JO" in "JOHN SMITH").
+/// Whether `reference` appears in `line`: its tokens as one run of
+/// whole tokens in the line's reference or its narrative ("SMITH123" in
+/// "FPI SMITH123 DONATION"; never "SO REF" in "ALSO REFUND", nor "JO" in
+/// "JOHN SMITH"). For ranking and the reason only: a reference never
+/// makes a match strong (review b5r round 3).
 pub fn reference_identifies(reference: &str, line: &LineView) -> bool {
-    if !is_distinctive(reference) {
+    let want = tokens(reference);
+    if want.is_empty() {
         return false;
     }
-    let want = tokens(reference);
     [&line.reference, &line.narrative].iter().any(|field| {
         let have = tokens(field);
         have.windows(want.len()).any(|w| w == want.as_slice())
@@ -817,19 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reference_names_the_donor_only_when_distinctive_and_whole() {
-        // Generic, or too short: never identifies anyone.
-        assert!(!is_distinctive("MONTHLY"));
-        assert!(!is_distinctive("SO REF"));
-        assert!(!is_distinctive("JO"));
-        assert!(!is_distinctive("monthly donation"));
-        assert!(is_distinctive("SMITH123"));
-        assert!(is_distinctive("JBLOGGS"));
-        assert!(is_distinctive("A123"));
-        assert!(!reference_identifies(
-            "MONTHLY",
-            &line("MONTHLY DONATION", "")
-        ));
+    fn a_reference_is_found_only_as_whole_tokens_in_one_run() {
         assert!(!reference_identifies("SO REF", &line("", "ALSO REFUND")));
         assert!(!reference_identifies("JO", &line("JOHN SMITH", "")));
         assert!(reference_identifies(
@@ -837,9 +808,9 @@ mod tests {
             &line("", "FPI SMITH123 DONATION")
         ));
         assert!(reference_identifies("smith-123", &line("SMITH 123", "")));
-        // Whole tokens only, in one run.
         assert!(!reference_identifies("SMITH123", &line("XSMITH1234", "")));
         assert!(!reference_identifies("JO BLOGGS", &line("JO X BLOGGS", "")));
+        assert!(!reference_identifies(" - ", &line("ANYTHING", "")));
     }
 
     #[test]

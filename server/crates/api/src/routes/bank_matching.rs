@@ -896,8 +896,8 @@ pub struct StandingOrderFromLine {
     #[serde(default)]
     #[ts(optional)]
     pub source_code_id: Option<String>,
-    /// Omitted: the line's own reference, when it is distinctive
-    /// (`banking::suggest::is_distinctive`); else none, for staff to fill.
+    /// The reference the donor's bank shows, as staff type it; never
+    /// taken from the line.
     #[serde(default)]
     #[ts(optional)]
     pub bank_reference: Option<String>,
@@ -993,11 +993,9 @@ pub fn standing_order_from(
             day_of_month: req.day_of_month,
             month: req.month,
             source_code_id: code,
-            // The line's reference names the donor only when it is
-            // distinctive (review b5r round 2); else staff fill it in.
-            bank_reference: req
-                .bank_reference
-                .or(Some(line.reference.clone()).filter(|r| banking::suggest::is_distinctive(r))),
+            // Staff type the reference if they want one (review b5r
+            // round 3): the line's own is never taken for it.
+            bank_reference: req.bank_reference,
             starts_on: starts_on.clone(),
         },
         source,
