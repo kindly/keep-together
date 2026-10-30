@@ -20,6 +20,7 @@ auth = { path = "crates/auth" }
 sources = { path = "crates/sources" }
 giving = { path = "crates/giving" }
 giftaid = { path = "crates/giftaid" }
+banking = { path = "crates/banking" }
 comms = { path = "crates/comms" }
 cli = { path = "crates/cli" }
 seed = { path = "crates/seed" }
