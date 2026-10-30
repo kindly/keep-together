@@ -7,12 +7,15 @@
 //! - A transfer **entered by hand** is `completed` at once and is "not on
 //!   a statement yet" ([`not_on_a_statement`], derived) until a line is
 //!   matched to it: `giving.line` ([`LINE`], counter `line_version`) links
-//!   it, and unlinks it again when the line is unmatched.
+//!   it, and unlinks it again when the line is unmatched or the gift is
+//!   voided.
 //! - **Paying-in batches** (`giving.payingInBatch`, [`PAYING_IN_BATCH`],
-//!   counter `version`) hold cash and cheques paid in on one slip. A
-//!   cheque is `pending` until its batch is matched to the slip's
-//!   statement line ([`match_batch`]), and back to `pending` if that is
-//!   undone ([`unmatch_batch`]).
+//!   counter `version`) hold cash and cheques paid in on one slip. Their
+//!   line is a slice of its own (`giving.batchLine`, [`BATCH_LINE`],
+//!   counter `line_version`), moved only by [`match_batch`] and
+//!   [`unmatch_batch`]: a cheque is `pending` until its batch is matched
+//!   to the slip's statement line, and back to `pending` if that is
+//!   undone.
 //!
 //! A statement line holds gifts or one batch, never both. The statement
 //! side (accounts, imports, lines) is `banking`'s, which depends on this
@@ -29,7 +32,8 @@ use crate::RECEIVED;
 use crate::gift::{STATUS, TABLE};
 use crate::rules::prepare_batch;
 use crate::types::{
-    BatchStatus, LinePayload, Method, PayingInBatchPayload, PayingInBatchRow, Status, StatusPayload,
+    BatchLinePayload, BatchStatus, LinePayload, Method, PayingInBatchPayload, PayingInBatchRow,
+    Status, StatusPayload,
 };
 
 /// Org schema step 21 (ADR 0027, plan `factory/plans/bank-transfers.sv`).
@@ -45,7 +49,9 @@ use crate::types::{
 ///   when the format has one. `match_state`, `match_note` and
 ///   `match_version` are `banking.lineMatch`'s slice; the gifts a line
 ///   became point at it (`gifts.bank_line_id`), and a batch matched to it
-///   says so (`paying_in_batches.line_id`): one link each way, never both.
+///   says so (`paying_in_batches.line_id`, `giving.batchLine`'s slice, so
+///   a batch is matched when it is closed and names its line): one link
+///   each way, never both.
 /// - `bank_payers` is derived (`banking.lineMatch`'s projection): no
 ///   counter. A contact's rows go on erasure (rule 3).
 /// - `gifts` is rebuilt (SQLite can't widen the method's CHECK in place)
@@ -148,14 +154,16 @@ CREATE TABLE paying_in_batches (
     slip_number TEXT NOT NULL DEFAULT '',
     banked_on TEXT,
     total INTEGER CHECK (total IS NULL OR total >= 0),
-    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed', 'matched')),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
     line_id TEXT UNIQUE REFERENCES bank_lines (id),
     opened_by INTEGER,
     opened_at INTEGER NOT NULL,
     closed_by INTEGER,
     closed_at INTEGER,
     version INTEGER NOT NULL DEFAULT 0,
-    CHECK ((status = 'matched') = (line_id IS NOT NULL)),
+    -- `giving.batchLine`'s counter: matched = closed and naming its line.
+    line_version INTEGER NOT NULL DEFAULT 0,
+    CHECK (line_id IS NULL OR status = 'closed'),
     CHECK (status = 'open' OR total IS NOT NULL)
 ) STRICT;
 CREATE INDEX paying_in_batches_by_account ON paying_in_batches (account_id, status, seq);
@@ -257,14 +265,39 @@ pub(crate) fn check_line_free_of_batches(
     }
 }
 
-/// Refuse a line that gifts are on (void ones have freed it).
-fn check_line_free_of_gifts(conn: &Connection, line_id: &str) -> Result<(), ContractError> {
+/// The bank account a statement line is on, or `None` for no such line.
+fn line_account(conn: &Connection, line_id: &str) -> rusqlite::Result<Option<String>> {
+    conn.prepare_cached("SELECT account_id FROM bank_lines WHERE id = ?1")?
+        .query_row([line_id], |r| r.get(0))
+        .optional()
+}
+
+/// Refuse a line id that isn't a statement line (rather than meet the
+/// foreign key).
+pub(crate) fn check_line_exists(conn: &Connection, line_id: &str) -> Result<(), ContractError> {
+    match line_account(conn, line_id)? {
+        Some(_) => Ok(()),
+        None => Err(ContractError::rejected(
+            "unknown_line",
+            "The statement line must exist",
+        )),
+    }
+}
+
+/// Refuse a line that gifts are on (void ones have freed it), `except`
+/// one gift.
+fn check_line_free_of_gifts(
+    conn: &Connection,
+    line_id: &str,
+    except: Option<&str>,
+) -> Result<(), ContractError> {
     let held: Option<String> = conn
         .prepare_cached(
             "SELECT id FROM gifts WHERE bank_line_id = ?1 AND status <> 'void'
+                 AND id IS NOT ?2
              /* any status: a void gift has freed its line */ LIMIT 1",
         )?
-        .query_row([line_id], |r| r.get(0))
+        .query_row(params![line_id, except], |r| r.get(0))
         .optional()?;
     match held {
         Some(_) => Err(ContractError::rejected(
@@ -297,7 +330,9 @@ pub(crate) fn check_batch_open(conn: &Connection, batch_id: &str) -> Result<(), 
 // ── giving.line ────────────────────────────────────────────────────────────
 
 /// The statement line a gift entered by hand is matched to (ADR 0027
-/// decision 4). Only a bank transfer that isn't void is linked; one line
+/// decision 4). A restore relinks only a line no batch and no other gift
+/// holds now. Voiding the gift unlinks it ([`crate::set_status`]). Only a
+/// bank transfer that isn't void is linked; one line
 /// at a time (unmatch, then match again). A gift made from a line is
 /// refused: its line is its for good.
 pub struct Line;
@@ -315,6 +350,8 @@ pub struct LineState {
     method: Method,
     #[serde(skip)]
     status: Status,
+    #[serde(skip)]
+    restoring: bool,
 }
 
 impl Contract for Line {
@@ -337,6 +374,7 @@ impl Contract for Line {
                     made: r.get(1)?,
                     method: Method::parse(&r.get::<_, String>(2)?),
                     status: Status::parse(&r.get::<_, String>(3)?),
+                    restoring: false,
                 })
             })
             .optional()?
@@ -347,7 +385,7 @@ impl Contract for Line {
         &self,
         current: Option<&LineState>,
         p: &LinePayload,
-        _: &Command,
+        command: &Command,
     ) -> Result<LineState, ContractError> {
         let Some(current) = current else {
             return Err(ContractError::rejected(
@@ -384,6 +422,7 @@ impl Contract for Line {
         }
         Ok(LineState {
             line: p.clone(),
+            restoring: command.source == Source::Restore,
             ..current.clone()
         })
     }
@@ -398,7 +437,14 @@ impl Contract for Line {
         if let Some(line) = &next.line.line_id
             && before.and_then(|b| b.line.line_id.as_ref()) != Some(line)
         {
+            check_line_exists(tx, line)?;
             check_line_free_of_batches(tx, line)?;
+            // A restore relinks only a line nothing else has taken since
+            // (matching by hand may put several gifts on one line; a
+            // restore doesn't know what was matched since).
+            if next.restoring {
+                check_line_free_of_gifts(tx, line, Some(id))?;
+            }
         }
         tx.prepare_cached("UPDATE gifts SET bank_line_id = ?2 WHERE id = ?1")?
             .execute(params![id, next.line.line_id])?;
@@ -563,16 +609,17 @@ pub const BATCH_TABLE: &str = "paying_in_batches";
 
 /// A paying-in batch (ADR 0027 decision 6). It opens empty on a bank
 /// account; staff record its cash and cheques into it while it is open,
-/// then close it with the slip's total and the date it was paid in
-/// (and may reopen it). Matching it to its statement line, and undoing
-/// that, go through [`match_batch`] and [`unmatch_batch`], which clear its
-/// cheques and pend them again. While matched nothing else changes, and
-/// no restore moves a batch into or out of matched: only its line does.
+/// then close it with the slip's total and the date it was paid in (and
+/// may reopen it). Its statement line is another slice,
+/// `giving.batchLine` ([`BATCH_LINE`]): a batch is matched when it is
+/// closed and names its line, and while it does, this slice changes
+/// nothing (`batch_matched`). The account never changes.
 pub struct PayingInBatch;
 pub static PAYING_IN_BATCH: PayingInBatch = PayingInBatch;
 
 /// The batch as stored, plus who opened and closed it and when (set by
-/// the commands, never by a payload). Only the payload is serialised.
+/// the commands, never by a payload) and the line `giving.batchLine`
+/// holds. Only the payload is serialised.
 #[derive(Clone, Debug, Serialize)]
 pub struct BatchState {
     #[serde(flatten)]
@@ -585,10 +632,12 @@ pub struct BatchState {
     closed_by: Option<i64>,
     #[serde(skip)]
     closed_at: Option<i64>,
+    #[serde(skip)]
+    line_id: Option<String>,
 }
 
-const BATCH_COLUMNS: &str = "account_id, slip_number, banked_on, total, status, line_id, \
-     opened_by, opened_at, closed_by, closed_at";
+const BATCH_COLUMNS: &str = "account_id, slip_number, banked_on, total, status, \
+     opened_by, opened_at, closed_by, closed_at, line_id";
 
 fn batch_state(r: &rusqlite::Row, at: usize) -> rusqlite::Result<BatchState> {
     Ok(BatchState {
@@ -598,12 +647,12 @@ fn batch_state(r: &rusqlite::Row, at: usize) -> rusqlite::Result<BatchState> {
             banked_on: r.get(at + 2)?,
             total: r.get(at + 3)?,
             status: BatchStatus::parse(&r.get::<_, String>(at + 4)?),
-            line_id: r.get(at + 5)?,
         },
-        opened_by: r.get(at + 6)?,
-        opened_at: r.get(at + 7)?,
-        closed_by: r.get(at + 8)?,
-        closed_at: r.get(at + 9)?,
+        opened_by: r.get(at + 5)?,
+        opened_at: r.get(at + 6)?,
+        closed_by: r.get(at + 7)?,
+        closed_at: r.get(at + 8)?,
+        line_id: r.get(at + 9)?,
     })
 }
 
@@ -650,6 +699,7 @@ impl Contract for PayingInBatch {
                 opened_at: command.at,
                 closed_by: None,
                 closed_at: None,
+                line_id: None,
             });
         };
         let was = &current.batch;
@@ -659,36 +709,12 @@ impl Contract for PayingInBatch {
                 "A paying-in batch’s bank account can’t change: open another batch",
             ));
         }
-        let matched = (
-            was.status == BatchStatus::Matched,
-            p.status == BatchStatus::Matched,
-        );
-        if command.source == Source::Restore && matched != (false, false) {
+        // Matched: only its line's unmatch changes it (a restore included).
+        if current.line_id.is_some() && p != was {
             return Err(ContractError::rejected(
-                "not_restorable",
-                "Only its statement line matches or unmatches a paying-in batch",
+                "batch_matched",
+                "This batch is matched to a statement line: unmatch it to change it",
             ));
-        }
-        match (was.status, p.status) {
-            (BatchStatus::Open, BatchStatus::Matched) => {
-                return Err(ContractError::rejected(
-                    "close_first",
-                    "Close the batch with the slip’s total before matching it",
-                ));
-            }
-            (BatchStatus::Matched, BatchStatus::Open) => {
-                return Err(ContractError::rejected(
-                    "unmatch_first",
-                    "This batch is matched to a statement line: unmatch it first",
-                ));
-            }
-            (BatchStatus::Matched, BatchStatus::Matched) if p != was => {
-                return Err(ContractError::rejected(
-                    "batch_matched",
-                    "This batch is matched to a statement line: unmatch it to change it",
-                ));
-            }
-            _ => {}
         }
         let (closed_by, closed_at) = match (was.status, p.status) {
             (_, BatchStatus::Open) => (None, None),
@@ -711,7 +737,7 @@ impl Contract for PayingInBatch {
         next: &BatchState,
     ) -> Result<(), ContractError> {
         let b = &next.batch;
-        let Some(before) = before else {
+        if before.is_none() {
             let account: Option<i64> = tx
                 .prepare_cached("SELECT 1 FROM bank_accounts WHERE id = ?1")?
                 .query_row([&b.account_id], |r| r.get(0))
@@ -738,25 +764,10 @@ impl Contract for PayingInBatch {
                 next.opened_at
             ])?;
             return Ok(());
-        };
-        if let Some(line) = &b.line_id
-            && before.batch.line_id.as_ref() != Some(line)
-        {
-            check_line_free_of_gifts(tx, line)?;
-            let other: Option<String> = tx
-                .prepare_cached("SELECT id FROM paying_in_batches WHERE line_id = ?1")?
-                .query_row([line], |r| r.get(0))
-                .optional()?;
-            if other.is_some() {
-                return Err(ContractError::rejected(
-                    "line_taken",
-                    "This statement line is matched to another paying-in batch",
-                ));
-            }
         }
         tx.prepare_cached(
             "UPDATE paying_in_batches SET slip_number = ?2, banked_on = ?3, total = ?4,
-                 status = ?5, line_id = ?6, closed_by = ?7, closed_at = ?8
+                 status = ?5, closed_by = ?6, closed_at = ?7
              WHERE id = ?1",
         )?
         .execute(params![
@@ -765,10 +776,122 @@ impl Contract for PayingInBatch {
             b.banked_on,
             b.total,
             b.status.as_str(),
-            b.line_id,
             next.closed_by,
             next.closed_at
         ])?;
+        Ok(())
+    }
+}
+
+// ── giving.batchLine ───────────────────────────────────────────────────────
+
+/// The statement line a closed paying-in batch is matched to (counter
+/// `line_version`): its own slice so that no batch save can match or
+/// unmatch it. Run only by [`match_batch`] and [`unmatch_batch`], which
+/// clear the batch's cheques and pend them again in the same command
+/// group; a restore is refused, since the cheques wouldn't follow. The
+/// line must be on the batch's own account and hold no gifts and no
+/// other batch.
+pub struct BatchLine;
+pub static BATCH_LINE: BatchLine = BatchLine;
+
+/// The `giving.batchLine` slice as stored, plus what decides whether it
+/// may change (never serialised).
+#[derive(Clone, Debug, Serialize)]
+pub struct BatchLineState {
+    #[serde(flatten)]
+    pub line: BatchLinePayload,
+    #[serde(skip)]
+    status: BatchStatus,
+    #[serde(skip)]
+    account_id: String,
+}
+
+impl Contract for BatchLine {
+    const NAME: &'static str = "giving.batchLine";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = BATCH_TABLE;
+    const COUNTER: &'static str = "line_version";
+    type Payload = BatchLinePayload;
+    type State = BatchLineState;
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<BatchLineState, ContractError> {
+        tx.read()
+            .prepare_cached(
+                "SELECT line_id, status, account_id FROM paying_in_batches WHERE id = ?1",
+            )?
+            .query_row([id], |r| {
+                Ok(BatchLineState {
+                    line: BatchLinePayload { line_id: r.get(0)? },
+                    status: BatchStatus::parse(&r.get::<_, String>(1)?),
+                    account_id: r.get(2)?,
+                })
+            })
+            .optional()?
+            .ok_or(ContractError::NotFound)
+    }
+
+    fn apply(
+        &self,
+        current: Option<&BatchLineState>,
+        p: &BatchLinePayload,
+        command: &Command,
+    ) -> Result<BatchLineState, ContractError> {
+        let Some(current) = current else {
+            return Err(ContractError::rejected(
+                "no_root",
+                "giving.batchLine targets an existing paying-in batch",
+            ));
+        };
+        if command.source == Source::Restore {
+            return Err(ContractError::rejected(
+                "not_restorable",
+                "Only matching its statement line matches or unmatches a paying-in batch",
+            ));
+        }
+        match (&current.line.line_id, &p.line_id) {
+            (None, Some(_)) if current.status != BatchStatus::Closed => {
+                return Err(ContractError::rejected(
+                    "close_first",
+                    "Close the batch with the slip’s total before matching it",
+                ));
+            }
+            (Some(held), Some(next)) if held != next => {
+                return Err(ContractError::rejected(
+                    "batch_matched",
+                    "This batch is matched to another statement line: unmatch it first",
+                ));
+            }
+            _ => {}
+        }
+        Ok(BatchLineState {
+            line: p.clone(),
+            ..current.clone()
+        })
+    }
+
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        before: Option<&BatchLineState>,
+        next: &BatchLineState,
+    ) -> Result<(), ContractError> {
+        if let Some(line) = &next.line.line_id
+            && before.and_then(|b| b.line.line_id.as_ref()) != Some(line)
+        {
+            check_line_exists(tx, line)?;
+            if line_account(tx, line)?.as_deref() != Some(next.account_id.as_str()) {
+                return Err(ContractError::rejected(
+                    "line_account",
+                    "This statement line is on another bank account than the batch",
+                ));
+            }
+            check_line_free_of_gifts(tx, line, None)?;
+            check_line_free_of_batches(tx, line)?;
+        }
+        tx.prepare_cached("UPDATE paying_in_batches SET line_id = ?2 WHERE id = ?1")?
+            .execute(params![id, next.line.line_id])?;
         Ok(())
     }
 }
@@ -790,10 +913,10 @@ fn cheques_in(
     .collect()
 }
 
-/// Match a closed batch to its statement line, under `group`: the batch
-/// names the line, and its pending cheques clear (`completed`). A
-/// difference between the slip's total and the line is the caller's to
-/// show, never forced here.
+/// Match a closed batch to its statement line (`expected`: the batch's
+/// `lineVersion`), under `group`: the batch names the line, and its
+/// pending cheques clear (`completed`). A difference between the slip's
+/// total and the line is the caller's to show, never forced here.
 pub fn match_batch(
     ctx: &Ctx,
     id: &str,
@@ -802,14 +925,11 @@ pub fn match_batch(
     source: Source,
     group: &CommandGroup,
 ) -> Result<Executed, ContractError> {
-    let current = load_batch(ctx.tx.read(), id)?.ok_or(ContractError::NotFound)?;
     let done = execute(
         ctx,
-        &PAYING_IN_BATCH,
-        PayingInBatchPayload {
-            status: BatchStatus::Matched,
+        &BATCH_LINE,
+        BatchLinePayload {
             line_id: Some(line_id.to_owned()),
-            ..current.batch
         },
         Exec::update(id, Some(expected), source).in_group(group),
     )?;
@@ -827,10 +947,11 @@ pub fn match_batch(
     Ok(done)
 }
 
-/// Undo [`match_batch`], under `group`: the batch is closed again with no
-/// line, and its cleared cheques go back to `pending` (with
-/// [`BATCH_UNMATCHED_REASON`], so a claimed one goes into the next claim
-/// as an adjustment). A bounced cheque stays failed.
+/// Undo [`match_batch`] (`expected`: the batch's `lineVersion`), under
+/// `group`: the batch is closed with no line again, and its cleared
+/// cheques go back to `pending` (with [`BATCH_UNMATCHED_REASON`], so a
+/// claimed one goes into the next claim as an adjustment). A bounced
+/// cheque stays failed.
 pub fn unmatch_batch(
     ctx: &Ctx,
     id: &str,
@@ -838,15 +959,10 @@ pub fn unmatch_batch(
     source: Source,
     group: &CommandGroup,
 ) -> Result<Executed, ContractError> {
-    let current = load_batch(ctx.tx.read(), id)?.ok_or(ContractError::NotFound)?;
     let done = execute(
         ctx,
-        &PAYING_IN_BATCH,
-        PayingInBatchPayload {
-            status: BatchStatus::Closed,
-            line_id: None,
-            ..current.batch
-        },
+        &BATCH_LINE,
+        BatchLinePayload { line_id: None },
         Exec::update(id, Some(expected), source).in_group(group),
     )?;
     for (gift, counter) in cheques_in(ctx.tx.read(), id, Status::Completed)? {
@@ -866,7 +982,7 @@ pub fn unmatch_batch(
 /// One batch with what its gifts add up to, or `None`.
 pub fn get_batch(conn: &Connection, id: &str) -> rusqlite::Result<Option<PayingInBatchRow>> {
     conn.prepare_cached(&format!(
-        "SELECT b.id, b.version, {BATCH_COLUMNS},
+        "SELECT b.id, b.version, b.line_version, {BATCH_COLUMNS},
              (SELECT count(*) FROM gifts g WHERE g.paying_in_batch_id = b.id
                  AND g.status <> 'void' /* any status: a slip holds its cheques before they clear */),
              (SELECT coalesce(sum(g.amount), 0) FROM gifts g WHERE g.paying_in_batch_id = b.id
@@ -874,17 +990,19 @@ pub fn get_batch(conn: &Connection, id: &str) -> rusqlite::Result<Option<PayingI
          FROM paying_in_batches b WHERE b.id = ?1"
     ))?
     .query_row([id], |r| {
-        let state = batch_state(r, 2)?;
+        let state = batch_state(r, 3)?;
         Ok(PayingInBatchRow {
             id: r.get(0)?,
             version: r.get(1)?,
+            line_version: r.get(2)?,
             batch: state.batch,
+            line_id: state.line_id,
             opened_by: state.opened_by,
             opened_at: state.opened_at,
             closed_by: state.closed_by,
             closed_at: state.closed_at,
-            gift_count: r.get(12)?,
-            gifts_total: r.get(13)?,
+            gift_count: r.get(13)?,
+            gifts_total: r.get(14)?,
         })
     })
     .optional()

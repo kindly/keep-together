@@ -290,10 +290,10 @@ const FIXTURES: &[&str] = &[
      VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a6', NULL, 'narrative', 'GOCARDLESS',
          'not_donation', 'payouts', 1, 1, 6400, 0);
      INSERT INTO paying_in_batches (seq, id, account_id, slip_number, banked_on, total,
-         status, line_id, opened_by, opened_at, closed_by, closed_at, version)
+         status, line_id, opened_by, opened_at, closed_by, closed_at, version, line_version)
      VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a7', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
-         '000123', '2026-10-19', 3000, 'matched', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a4', 1,
-         6050, 1, 6250, 3);
+         '000123', '2026-10-19', 3000, 'closed', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a4', 1,
+         6050, 1, 6250, 2, 1);
      INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, reference, status,
          entered_by, entered_at, gift_version, status_version, bank_line_id, bank_line_made,
          line_version, paying_in_batch_id)
@@ -1262,9 +1262,14 @@ fn the_bank_step_widens_gifts_and_keeps_every_row_column_and_index() {
     refused("UPDATE gifts SET method = 'cash' WHERE seq = 20");
     refused("UPDATE gifts SET bank_line_made = 1 WHERE seq = 22");
     refused("UPDATE gifts SET method = 'card' WHERE seq = 21");
-    // Matched exactly when it names its line; closed only with a total.
+    // Matched = closed and naming its line: an open batch names none, and
+    // `matched` isn't a status. Closed only with a total.
     refused(
-        "UPDATE paying_in_batches SET status = 'closed'
+        "UPDATE paying_in_batches SET status = 'open'
+         WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a7'",
+    );
+    refused(
+        "UPDATE paying_in_batches SET status = 'matched'
          WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a7'",
     );
     refused(

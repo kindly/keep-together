@@ -5,8 +5,8 @@ import type { BatchStatus } from "./BatchStatus";
  * The `giving.payingInBatch` contract (counter `version`): cash and
  * cheques paid in together on one slip (ADR 0027 decision 6). Opened on
  * an account, closed with the slip's total (pence) and the date it was
- * paid in, then matched to its one statement line. The account never
- * changes.
+ * paid in. Its statement line is `giving.batchLine`'s, never this
+ * payload's. The account never changes.
  */
 export type PayingInBatchPayload = { accountId: string, 
 /**
@@ -20,8 +20,4 @@ bankedOn: string | null,
 /**
  * The slip's total in pence, over 0; needed to close.
  */
-total: number | null, status: BatchStatus, 
-/**
- * The statement line it matched: set exactly when `matched`.
- */
-lineId: string | null, };
+total: number | null, status: BatchStatus, };

@@ -263,7 +263,6 @@ fn batch_payload(w: &World) -> PayingInBatchPayload {
         banked_on: None,
         total: None,
         status: BatchStatus::Open,
-        line_id: None,
     }
 }
 
@@ -312,7 +311,7 @@ fn close_batch(w: &World, id: &str, total: i64) {
 }
 
 fn match_to(w: &World, id: &str, line: &str) -> Result<Executed, ContractError> {
-    let expected = batch(w, id).version;
+    let expected = batch(w, id).line_version;
     tx(&w.a, |ctx| {
         let group = command_group(ctx, "match batch")?;
         match_batch(ctx, id, expected, line, Source::Ui, &group)
@@ -320,7 +319,7 @@ fn match_to(w: &World, id: &str, line: &str) -> Result<Executed, ContractError> 
 }
 
 fn unmatch(w: &World, id: &str) -> Result<Executed, ContractError> {
-    let expected = batch(w, id).version;
+    let expected = batch(w, id).line_version;
     tx(&w.a, |ctx| {
         let group = command_group(ctx, "unmatch batch")?;
         unmatch_batch(ctx, id, expected, Source::Ui, &group)
@@ -435,8 +434,8 @@ fn a_cheque_is_pending_until_its_batch_is_matched_to_a_line() {
     let slip = line(&w, 3000, "2026-10-20");
     match_to(&w, &b, &slip).unwrap();
     let after = batch(&w, &b);
-    assert_eq!(after.batch.status, BatchStatus::Matched);
-    assert_eq!(after.batch.line_id.as_deref(), Some(slip.as_str()));
+    assert_eq!(after.batch.status, BatchStatus::Closed);
+    assert_eq!(after.line_id.as_deref(), Some(slip.as_str()));
     assert_eq!(gift(&w, &cheque).status, Status::Completed);
     assert_eq!(received(&w), 3000);
     assert_eq!(
@@ -530,7 +529,7 @@ fn unmatching_a_batch_pends_its_cleared_cheques_again() {
     unmatch(&w, &b).unwrap();
     let after = batch(&w, &b);
     assert_eq!(
-        (after.batch.status, after.batch.line_id),
+        (after.batch.status, after.line_id),
         (BatchStatus::Closed, None)
     );
     let g = gift(&w, &claimed);
@@ -628,14 +627,7 @@ fn a_batch_opens_closes_with_its_total_and_date_and_then_matches() {
     let err = save_batch(&w, &id, |p| p.account_id = contracts::new_id()).unwrap_err();
     assert_eq!(reason(err), "account_fixed");
     let slip = line(&w, 900, "2026-10-20");
-    let err = save_batch(&w, &id, |p| {
-        p.status = BatchStatus::Matched;
-        p.line_id = Some(slip.clone());
-        p.total = Some(900);
-        p.banked_on = Some("2026-10-19".into());
-    })
-    .unwrap_err();
-    assert_eq!(reason(err), "close_first");
+    assert_eq!(reason(match_to(&w, &id, &slip).unwrap_err()), "close_first");
 
     close_batch(&w, &id, 900);
     let closed = batch(&w, &id);
@@ -649,12 +641,8 @@ fn a_batch_opens_closes_with_its_total_and_date_and_then_matches() {
     match_to(&w, &id, &slip).unwrap();
     let err = save_batch(&w, &id, |p| p.total = Some(901)).unwrap_err();
     assert_eq!(reason(err), "batch_matched");
-    let err = save_batch(&w, &id, |p| {
-        p.status = BatchStatus::Open;
-        p.line_id = None;
-    })
-    .unwrap_err();
-    assert_eq!(reason(err), "unmatch_first");
+    let err = save_batch(&w, &id, |p| p.status = BatchStatus::Open).unwrap_err();
+    assert_eq!(reason(err), "batch_matched");
     // A difference between the slip and its line is shown, not refused:
     // that's the caller's to read from the batch and the line.
     let other = open_batch(&w);
@@ -1012,5 +1000,303 @@ fn a_claimed_gift_voided_by_an_unmatch_is_an_adjustment_in_the_next_claim() {
     assert_eq!(
         adjustments[0].void_reason.as_deref(),
         Some(LINE_UNMATCHED_REASON)
+    );
+}
+
+// ── review round 1 (reviewer-bk2r): voids, batch lines, restores ───────────
+
+/// A revision of `contract` on `entity` `id`, by the counter it wrote.
+fn revision(w: &World, entity: &str, id: &str, contract: &str, counter: i64) -> i64 {
+    read(&w.a, |c| {
+        c.query_row(
+            "SELECT id FROM revisions
+             WHERE entity = ?1 AND entity_id = ?2 AND contract = ?3 AND counter = ?4",
+            rusqlite::params![entity, id, contract, counter],
+            |r| r.get(0),
+        )
+    })
+}
+
+fn restore(w: &World, revision: i64) -> Result<Executed, ContractError> {
+    tx(&w.a, |ctx| {
+        contracts::restore(ctx, &giving::REGISTRY, revision, None)
+    })
+}
+
+/// Another bank account of the group's, with an import to put lines in.
+fn other_account(w: &World) -> (String, String) {
+    let (account, import) = (contracts::new_id(), contracts::new_id());
+    raw(
+        &w.a,
+        "INSERT INTO bank_accounts (id, name, created_at) VALUES (?1, 'Unity deposit', 1)",
+        &[&account],
+    );
+    raw(
+        &w.a,
+        "INSERT INTO bank_imports (id, account_id, file_name, format, imported_at)
+         VALUES (?1, ?2, 'unity.csv', 'csv', 1)",
+        &[&import, &account],
+    );
+    (account, import)
+}
+
+/// M1: voiding a transfer matched by hand unlinks it in the same command,
+/// so its line is free; matching the line to a batch, then un-voiding the
+/// gift, brings it back unlinked ("not on a statement yet"), and the line
+/// never holds a batch and a gift. A void that didn't unlink (the system,
+/// a restore) can't be undone while the line is held elsewhere.
+#[test]
+fn voiding_a_matched_transfer_unlinks_it_and_the_line_never_holds_both() {
+    let w = world();
+    let l = line(&w, 2000, "2026-10-15");
+    let g = record(&w, payload(&w, Method::BankTransfer, 2000)).unwrap();
+    link(&w, &g, Some(&l)).unwrap();
+    let before = gift(&w, &g).line_version;
+    set_status(&w, &g, Status::Void).unwrap();
+    let voided = gift(&w, &g);
+    assert_eq!(voided.bank_line_id, None);
+    assert_eq!(voided.line_version, before + 1);
+    let b = open_batch(&w);
+    close_batch(&w, &b, 2000);
+    match_to(&w, &b, &l).unwrap();
+    set_status(&w, &g, Status::Completed).unwrap();
+    let back = gift(&w, &g);
+    assert_eq!((back.status, back.bank_line_id), (Status::Completed, None));
+    assert!(back.not_on_a_statement);
+    assert!(read(&w.a, |c| gifts_on_line(c, &l)).is_empty());
+    assert_eq!(read(&w.a, |c| giving::bank::batch_for_line(c, &l)), Some(b));
+
+    // The system's void keeps the link; the line goes to a batch; staff
+    // can't then revive the gift onto it.
+    let l2 = line(&w, 1500, "2026-10-16");
+    let h = record(&w, payload(&w, Method::BankTransfer, 1500)).unwrap();
+    link(&w, &h, Some(&l2)).unwrap();
+    let expected = gift(&w, &h).status_version;
+    tx(&w.a, |ctx| {
+        execute(
+            ctx,
+            &giving::STATUS,
+            giving::StatusPayload {
+                status: Status::Void,
+                reason: None,
+            },
+            Exec::update(&h, Some(expected), Source::System),
+        )
+    })
+    .unwrap();
+    assert_eq!(gift(&w, &h).bank_line_id, Some(l2.clone()));
+    let b2 = open_batch(&w);
+    close_batch(&w, &b2, 1500);
+    match_to(&w, &b2, &l2).unwrap();
+    assert_eq!(
+        reason(set_status(&w, &h, Status::Completed).unwrap_err()),
+        "line_taken"
+    );
+}
+
+/// M2: a batch's line is its own slice, so no batch save matches or
+/// unmatches it: `matched` isn't a status a payload can carry (the wire
+/// refuses it), a matched batch can't be reopened or edited by a save or
+/// a restore, and only match/unmatch move the line, its cheques with it.
+#[test]
+fn a_batch_save_never_matches_or_unmatches_it_and_its_cheques_follow_the_line() {
+    let w = world();
+    let named_matched = serde_json::from_value::<PayingInBatchPayload>(serde_json::json!({
+        "accountId": w.account, "slipNumber": "1", "status": "matched",
+        "bankedOn": "2026-10-19", "total": 3000,
+    }));
+    assert!(named_matched.is_err());
+
+    let b = open_batch(&w);
+    let cheque = cheque_in(&w, &b, 3000);
+    close_batch(&w, &b, 3000);
+    let slip = line(&w, 3000, "2026-10-20");
+    // Closed is not matched: the cheque waits.
+    assert_eq!(gift(&w, &cheque).status, Status::Pending);
+    match_to(&w, &b, &slip).unwrap();
+    assert_eq!(gift(&w, &cheque).status, Status::Completed);
+    let closed_rev = revision(&w, "paying_in_batches", &b, "giving.payingInBatch", 1);
+
+    // Leaving matched by a save or a restore is refused, the cheque kept.
+    let err = save_batch(&w, &b, |p| p.status = BatchStatus::Open).unwrap_err();
+    assert_eq!(reason(err), "batch_matched");
+    let open_rev = revision(&w, "paying_in_batches", &b, "giving.payingInBatch", 0);
+    assert_eq!(reason(restore(&w, open_rev).unwrap_err()), "batch_matched");
+    // Restoring the closed slip it already is changes nothing.
+    restore(&w, closed_rev).unwrap();
+    assert_eq!(gift(&w, &cheque).status, Status::Completed);
+    assert_eq!(batch(&w, &b).line_id.as_deref(), Some(slip.as_str()));
+
+    unmatch(&w, &b).unwrap();
+    assert_eq!(gift(&w, &cheque).status, Status::Pending);
+    // Nor does a restore of the line slice match it again.
+    let matched_rev = revision(&w, "paying_in_batches", &b, "giving.batchLine", 1);
+    assert_eq!(
+        reason(restore(&w, matched_rev).unwrap_err()),
+        "not_restorable"
+    );
+    assert_eq!(batch(&w, &b).line_id, None);
+    assert_eq!(gift(&w, &cheque).status, Status::Pending);
+}
+
+/// L1 (a): a gift made from a line, voided, isn't revived by restoring
+/// its `completed` status either.
+#[test]
+fn restoring_a_line_gifts_status_doesnt_revive_it() {
+    let w = world();
+    let l = line(&w, 5000, "2026-10-14");
+    let id = record(
+        &w,
+        GiftPayload {
+            from_line: Some(l),
+            ..payload(&w, Method::BankTransfer, 5000)
+        },
+    )
+    .unwrap();
+    set_status(&w, &id, Status::Void).unwrap();
+    let completed = revision(&w, "gifts", &id, "giving.status", 1);
+    assert_eq!(
+        reason(restore(&w, completed).unwrap_err()),
+        "line_gift_void"
+    );
+    assert_eq!(gift(&w, &id).status, Status::Void);
+}
+
+/// L1 (c): a cheque's `completed` status isn't restored while its batch
+/// is no longer matched.
+#[test]
+fn restoring_a_cheques_cleared_status_waits_for_its_batch() {
+    let w = world();
+    let b = open_batch(&w);
+    let cheque = cheque_in(&w, &b, 3000);
+    close_batch(&w, &b, 3000);
+    match_to(&w, &b, &line(&w, 3000, "2026-10-20")).unwrap();
+    unmatch(&w, &b).unwrap();
+    let cleared = revision(&w, "gifts", &cheque, "giving.status", 2);
+    assert_eq!(
+        reason(restore(&w, cleared).unwrap_err()),
+        "cheque_not_cleared"
+    );
+    assert_eq!(gift(&w, &cheque).status, Status::Pending);
+}
+
+/// L1 (d): restoring a gift's own slice, made from a line or matched by
+/// hand, leaves its line as it is (the line isn't that slice's), and the
+/// lock still holds a made gift's amount.
+#[test]
+fn restoring_a_gifts_slice_keeps_its_line() {
+    let w = world();
+    let second = code(&w.a, "Spring appeal");
+    let l = line(&w, 2000, "2026-10-15");
+    let by_hand = record(&w, payload(&w, Method::BankTransfer, 2000)).unwrap();
+    link(&w, &by_hand, Some(&l)).unwrap();
+    save(&w, &by_hand, |p| {
+        p.allocations[0].source_code_id = second.clone()
+    })
+    .unwrap();
+    let first = revision(&w, "gifts", &by_hand, "giving.gift", 0);
+    restore(&w, first).unwrap();
+    let g = gift(&w, &by_hand);
+    assert_eq!(g.allocations[0].source_code_id, w.code);
+    assert_eq!(g.bank_line_id.as_deref(), Some(l.as_str()));
+
+    let m = line(&w, 5000, "2026-10-14");
+    let made = record(
+        &w,
+        GiftPayload {
+            from_line: Some(m.clone()),
+            ..payload(&w, Method::BankTransfer, 5000)
+        },
+    )
+    .unwrap();
+    save(&w, &made, |p| {
+        p.allocations[0].source_code_id = second.clone()
+    })
+    .unwrap();
+    restore(&w, revision(&w, "gifts", &made, "giving.gift", 0)).unwrap();
+    let g = gift(&w, &made);
+    assert_eq!(
+        (g.bank_line_id.as_deref(), g.made_from_line),
+        (Some(m.as_str()), true)
+    );
+    assert_eq!(g.allocations[0].source_code_id, w.code);
+}
+
+/// L2: restoring a gift's link relinks only a line that no batch and no
+/// other gift holds now.
+#[test]
+fn restoring_a_link_relinks_only_a_line_nothing_else_holds() {
+    let w = world();
+    let l = line(&w, 2000, "2026-10-15");
+    let g = record(&w, payload(&w, Method::BankTransfer, 2000)).unwrap();
+    link(&w, &g, Some(&l)).unwrap();
+    let linked = revision(&w, "gifts", &g, "giving.line", 1);
+    link(&w, &g, None).unwrap();
+
+    let other = record(&w, payload(&w, Method::BankTransfer, 2000)).unwrap();
+    link(&w, &other, Some(&l)).unwrap();
+    assert_eq!(reason(restore(&w, linked).unwrap_err()), "line_taken");
+    link(&w, &other, None).unwrap();
+
+    let b = open_batch(&w);
+    close_batch(&w, &b, 2000);
+    match_to(&w, &b, &l).unwrap();
+    assert_eq!(reason(restore(&w, linked).unwrap_err()), "line_taken");
+    unmatch(&w, &b).unwrap();
+
+    // Free again: the restore relinks it.
+    restore(&w, linked).unwrap();
+    assert_eq!(gift(&w, &g).bank_line_id.as_deref(), Some(l.as_str()));
+}
+
+/// L3: a batch matches only a line on its own bank account: a CAF slip
+/// never clears its cheques against a Unity line.
+#[test]
+fn a_batch_matches_only_a_line_on_its_own_account() {
+    let w = world();
+    let (account, import) = other_account(&w);
+    let unity = contracts::new_id();
+    raw(
+        &w.a,
+        "INSERT INTO bank_lines (id, account_id, import_id, posted_on, amount, dedupe_key,
+             occurrence)
+         VALUES (?1, ?2, ?3, '2026-10-20', 3000, ?1, 1)",
+        &[&unity, &account, &import],
+    );
+    let b = open_batch(&w);
+    let cheque = cheque_in(&w, &b, 3000);
+    close_batch(&w, &b, 3000);
+    assert_eq!(
+        reason(match_to(&w, &b, &unity).unwrap_err()),
+        "line_account"
+    );
+    assert_eq!(gift(&w, &cheque).status, Status::Pending);
+    assert_eq!(batch(&w, &b).line_id, None);
+}
+
+/// L4: an id that isn't a statement line is refused by name (a 422), not
+/// left to the foreign key (a 500), wherever a line is named.
+#[test]
+fn an_unknown_line_is_refused_by_name() {
+    let w = world();
+    let nowhere = contracts::new_id();
+    let made = record(
+        &w,
+        GiftPayload {
+            from_line: Some(nowhere.clone()),
+            ..payload(&w, Method::BankTransfer, 1000)
+        },
+    );
+    assert_eq!(reason(made.unwrap_err()), "unknown_line");
+    let by_hand = record(&w, payload(&w, Method::BankTransfer, 1000)).unwrap();
+    assert_eq!(
+        reason(link(&w, &by_hand, Some(&nowhere)).unwrap_err()),
+        "unknown_line"
+    );
+    let b = open_batch(&w);
+    close_batch(&w, &b, 1000);
+    assert_eq!(
+        reason(match_to(&w, &b, &nowhere).unwrap_err()),
+        "unknown_line"
     );
 }

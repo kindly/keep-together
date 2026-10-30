@@ -34,8 +34,8 @@ use sources::{describe, mark_used};
 
 use crate::rules::{prepare_gift, prepare_status};
 use crate::types::{
-    AllocationRow, BatchStatus, ClaimLockPayload, GiftPayload, Method, Provider, ProviderRef,
-    Status, StatusPayload,
+    AllocationRow, ClaimLockPayload, GiftPayload, Method, Provider, ProviderRef, Status,
+    StatusPayload,
 };
 
 pub const TABLE: &str = "gifts";
@@ -385,6 +385,7 @@ impl Contract for Gift {
             }
             check_new_codes(tx, next, &HashSet::new())?;
             if let Some(line) = &g.from_line {
+                crate::bank::check_line_exists(tx, line)?;
                 crate::bank::check_line_free_of_batches(tx, line)?;
             }
             if let Some(batch) = &g.paying_in_batch_id {
@@ -555,6 +556,10 @@ pub struct StatusState {
     batch_matched: Option<bool>,
     #[serde(skip)]
     from_line: bool,
+    /// Matched by hand to a statement line that a batch or another gift
+    /// holds now (a void that didn't unlink it: a restore, the system).
+    #[serde(skip)]
+    line_taken: bool,
 }
 
 impl StatusState {
@@ -568,7 +573,14 @@ impl StatusState {
 fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<StatusState>> {
     conn.prepare_cached(
         "SELECT g.status, g.void_reason, g.claim_id, g.provider IS NOT NULL,
-                g.method = 'cheque', b.status, g.bank_line_made
+                g.method = 'cheque',
+                CASE WHEN b.id IS NULL THEN NULL ELSE b.line_id IS NOT NULL END,
+                g.bank_line_made,
+                g.bank_line_id IS NOT NULL AND NOT g.bank_line_made AND (
+                    EXISTS (SELECT 1 FROM paying_in_batches p WHERE p.line_id = g.bank_line_id)
+                    OR EXISTS (SELECT 1 FROM gifts o WHERE o.bank_line_id = g.bank_line_id
+                        AND o.id <> g.id AND o.status <> 'void'
+                        /* any status: a void gift has freed its line */))
          FROM gifts g LEFT JOIN paying_in_batches b ON b.id = g.paying_in_batch_id
          WHERE g.id = ?1 /* any status: one gift */",
     )?
@@ -582,10 +594,9 @@ fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sta
             provider: r.get(3)?,
             provider_status: None,
             cheque: r.get(4)?,
-            batch_matched: r
-                .get::<_, Option<String>>(5)?
-                .map(|s| BatchStatus::parse(&s) == BatchStatus::Matched),
+            batch_matched: r.get(5)?,
             from_line: r.get(6)?,
+            line_taken: r.get(7)?,
         })
     })
     .optional()
@@ -683,6 +694,13 @@ impl Contract for GiftStatus {
                 "line_gift_void",
                 "This gift was made from a statement line, and voiding it freed the line: \
                  match the line again",
+            ));
+        }
+        if current.line_taken && was == Status::Void && status != Status::Void {
+            return Err(ContractError::rejected(
+                "line_taken",
+                "This gift’s statement line has been matched to something else since it \
+                 was voided: unmatch the gift from it first",
             ));
         }
         if current.claim_id.is_some() {

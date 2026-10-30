@@ -5,12 +5,16 @@ import type { BatchStatus } from "./BatchStatus";
  * A paying-in batch as stored, with what its gifts add up to. A
  * difference against the slip or its line is shown, never forced.
  */
-export type PayingInBatchRow = { id: string, openedBy: number | null, openedAt: number, closedBy: number | null, closedAt: number | null, 
+export type PayingInBatchRow = { id: string, 
+/**
+ * The statement line it is matched to: matched exactly when set.
+ */
+lineId: string | null, openedBy: number | null, openedAt: number, closedBy: number | null, closedAt: number | null, 
 /**
  * The gifts in it that aren't void (pending cheques included: they
  * were paid in), and their sum in pence.
  */
-giftCount: number, giftsTotal: number, version: number, accountId: string, 
+giftCount: number, giftsTotal: number, version: number, lineVersion: number, accountId: string, 
 /**
  * The paying-in slip's number; may be blank.
  */
@@ -22,8 +26,4 @@ bankedOn: string | null,
 /**
  * The slip's total in pence, over 0; needed to close.
  */
-total: number | null, status: BatchStatus, 
-/**
- * The statement line it matched: set exactly when `matched`.
- */
-lineId: string | null, };
+total: number | null, status: BatchStatus, };

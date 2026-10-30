@@ -184,9 +184,8 @@ pub const SLIP_NUMBER_MAX: usize = 50;
 
 /// Normalise a paying-in batch and refuse what can't be stored: a slip
 /// number over [`SLIP_NUMBER_MAX`], a date that isn't one, a total of 0 or
-/// less or over [`PENCE_MAX`], a closed or matched batch without its total
-/// and date, and a line on a batch that isn't matched (or none on one that
-/// is). A blank slip number is kept blank; a blank date is none.
+/// less or over [`PENCE_MAX`], and a closed batch without its total and
+/// date. A blank slip number is kept blank; a blank date is none.
 pub fn prepare_batch(mut p: PayingInBatchPayload) -> Result<PayingInBatchPayload, ContractError> {
     let mut problems = Vec::new();
     p.slip_number = p.slip_number.trim().to_owned();
@@ -215,12 +214,6 @@ pub fn prepare_batch(mut p: PayingInBatchPayload) -> Result<PayingInBatchPayload
         if p.banked_on.is_none() {
             problems.push(Problem::new("bankedOn", "Enter the date it was paid in"));
         }
-    }
-    if (p.status == BatchStatus::Matched) != p.line_id.is_some() {
-        problems.push(Problem::new(
-            "lineId",
-            "A batch names its statement line exactly when it is matched",
-        ));
     }
     if problems.is_empty() {
         Ok(p)
@@ -474,7 +467,6 @@ mod tests {
             banked_on: Some(" ".into()),
             total: None,
             status: BatchStatus::Open,
-            line_id: None,
         };
         let p = prepare_batch(open()).unwrap();
         assert_eq!((p.slip_number.as_str(), p.banked_on), ("000123", None));
@@ -511,20 +503,6 @@ mod tests {
             banked_on: Some("2026-10-19".into()),
             ..open()
         };
-        assert!(prepare_batch(closed.clone()).is_ok());
-        assert_eq!(
-            fields(PayingInBatchPayload {
-                status: BatchStatus::Matched,
-                ..closed.clone()
-            }),
-            ["lineId"]
-        );
-        assert_eq!(
-            fields(PayingInBatchPayload {
-                line_id: Some("l".into()),
-                ..closed
-            }),
-            ["lineId"]
-        );
+        assert!(prepare_batch(closed).is_ok());
     }
 }

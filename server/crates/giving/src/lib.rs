@@ -30,7 +30,7 @@ use contracts::{
 };
 use rusqlite::{Connection, OptionalExtension};
 
-pub use bank::{LINE, PAYING_IN_BATCH};
+pub use bank::{BATCH_LINE, LINE, PAYING_IN_BATCH};
 pub use gift::{CLAIM_LOCK, GIFT, STATUS};
 pub use queries::{
     BY_CONTACT_LIMIT, HISTORY_PAGE_LIMIT, RECENT_LIMIT, by_contact, get, history, my_recent,
@@ -133,6 +133,7 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &CLAIM_LOCK,
         &LINE,
         &PAYING_IN_BATCH,
+        &BATCH_LINE,
         &REGULAR_GIFT,
         &REGULAR_GIFT_MANDATE,
         &terms::REGULAR_GIFT_TERMS,
@@ -231,7 +232,10 @@ pub fn create_provider_gift(
 
 /// Void or un-void. Re-sending the current status is a no-op that answers
 /// the counter as it is. `reason`: why it is void (needed when the gift
-/// is in a Gift Aid claim).
+/// is in a Gift Aid claim). Voiding a transfer entered by hand that is
+/// matched to a statement line also unlinks it (`giving.line`), in the
+/// same command group, so the line is free and an un-void brings the gift
+/// back "not on a statement yet" (ADR 0027).
 pub fn set_status(
     ctx: &Ctx,
     id: &str,
@@ -240,16 +244,18 @@ pub fn set_status(
     reason: Option<String>,
     source: Source,
 ) -> Result<Executed, ContractError> {
-    let current: Option<(String, i64)> = ctx
+    let current: Option<(String, i64, bool, i64)> = ctx
         .tx
         .read()
         .query_row(
-            "SELECT status, status_version FROM gifts WHERE id = ?1 /* any status: one gift */",
+            "SELECT status, status_version, bank_line_id IS NOT NULL AND NOT bank_line_made,
+                    line_version
+             FROM gifts WHERE id = ?1 /* any status: one gift */",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let Some((held, counter)) = current else {
+    let Some((held, counter, linked, line_version)) = current else {
         return Err(ContractError::NotFound);
     };
     if Status::parse(&held) == status {
@@ -258,12 +264,28 @@ pub fn set_status(
             counter,
         });
     }
-    execute(
+    if !(linked && status == Status::Void) {
+        return execute(
+            ctx,
+            &STATUS,
+            StatusPayload { status, reason },
+            Exec::update(id, Some(expected), source),
+        );
+    }
+    let group = command_group(ctx, "void gift, unmatched from its statement line")?;
+    let done = execute(
         ctx,
         &STATUS,
         StatusPayload { status, reason },
-        Exec::update(id, Some(expected), source),
-    )
+        Exec::update(id, Some(expected), source).in_group(&group),
+    )?;
+    execute(
+        ctx,
+        &LINE,
+        types::LinePayload { line_id: None },
+        Exec::update(id, Some(line_version), source).in_group(&group),
+    )?;
+    Ok(done)
 }
 
 /// A Gift Aid claim takes the gift (`giving.claimLock`), in the claim's

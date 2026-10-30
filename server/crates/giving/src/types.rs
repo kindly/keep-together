@@ -435,16 +435,16 @@ pub struct LinePayload {
     pub line_id: Option<String>,
 }
 
-/// Where a paying-in batch stands: `open` (gifts going in), `closed`
-/// (its slip's total and date written, waiting for its statement line),
-/// `matched` (its line found: its cheques have cleared).
+/// Where a paying-in batch stands: `open` (gifts going in) or `closed`
+/// (its slip's total and date written). A closed batch is matched once it
+/// names its statement line (`giving.batchLine`): then its cheques have
+/// cleared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum BatchStatus {
     Open,
     Closed,
-    Matched,
 }
 
 impl BatchStatus {
@@ -452,7 +452,6 @@ impl BatchStatus {
         match self {
             BatchStatus::Open => "open",
             BatchStatus::Closed => "closed",
-            BatchStatus::Matched => "matched",
         }
     }
 
@@ -460,7 +459,6 @@ impl BatchStatus {
     pub fn parse(s: &str) -> Self {
         match s {
             "closed" => BatchStatus::Closed,
-            "matched" => BatchStatus::Matched,
             _ => BatchStatus::Open,
         }
     }
@@ -469,8 +467,8 @@ impl BatchStatus {
 /// The `giving.payingInBatch` contract (counter `version`): cash and
 /// cheques paid in together on one slip (ADR 0027 decision 6). Opened on
 /// an account, closed with the slip's total (pence) and the date it was
-/// paid in, then matched to its one statement line. The account never
-/// changes.
+/// paid in. Its statement line is `giving.batchLine`'s, never this
+/// payload's. The account never changes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -487,8 +485,15 @@ pub struct PayingInBatchPayload {
     #[ts(type = "number | null")]
     pub total: Option<i64>,
     pub status: BatchStatus,
-    /// The statement line it matched: set exactly when `matched`.
-    #[serde(default)]
+}
+
+/// The `giving.batchLine` slice (counter `line_version`): the statement
+/// line a closed batch is matched to, or none. Moved only by matching and
+/// unmatching, which clear and re-pend the batch's cheques with it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BatchLinePayload {
     pub line_id: Option<String>,
 }
 
@@ -502,6 +507,8 @@ pub struct PayingInBatchRow {
     #[serde(flatten)]
     #[ts(flatten)]
     pub batch: PayingInBatchPayload,
+    /// The statement line it is matched to: matched exactly when set.
+    pub line_id: Option<String>,
     #[ts(type = "number | null")]
     pub opened_by: Option<i64>,
     #[ts(type = "number")]
@@ -518,4 +525,6 @@ pub struct PayingInBatchRow {
     pub gifts_total: i64,
     #[ts(type = "number")]
     pub version: i64,
+    #[ts(type = "number")]
+    pub line_version: i64,
 }
