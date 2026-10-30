@@ -18,4 +18,9 @@ contactName: string, amount: number, receivedOn: string, method: GiftMethod,
 /**
  * Every status stays in the list, marked.
  */
-status: GiftStatus, };
+status: GiftStatus, 
+/**
+ * A bank transfer entered by hand that no statement line is matched
+ * to yet (derived, as on the gift's page).
+ */
+notOnAStatement: boolean, };

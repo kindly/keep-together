@@ -45,6 +45,8 @@ import { Route as TSlugSettingsMembersRouteImport } from './routes/t.$slug.setti
 import { Route as TSlugSettingsSourcesRouteImport } from './routes/t.$slug.settings.sources'
 import { Route as TSlugSettingsStorageRouteImport } from './routes/t.$slug.settings.storage'
 import { Route as TSlugSettingsTagsRouteImport } from './routes/t.$slug.settings.tags'
+import { Route as TSlugBankBatchesIndexRouteImport } from './routes/t.$slug.bank.batches.index'
+import { Route as TSlugBankBatchesBatchIdRouteImport } from './routes/t.$slug.bank.batches.$batchId'
 import { Route as TSlugBankImportsImportIdRouteImport } from './routes/t.$slug.bank.imports.$importId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -229,6 +231,16 @@ const TSlugSettingsTagsRoute = TSlugSettingsTagsRouteImport.update({
   path: '/tags',
   getParentRoute: () => TSlugSettingsRoute,
 } as any)
+const TSlugBankBatchesIndexRoute = TSlugBankBatchesIndexRouteImport.update({
+  id: '/bank/batches/',
+  path: '/bank/batches/',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugBankBatchesBatchIdRoute = TSlugBankBatchesBatchIdRouteImport.update({
+  id: '/bank/batches/$batchId',
+  path: '/bank/batches/$batchId',
+  getParentRoute: () => TSlugRoute,
+} as any)
 const TSlugBankImportsImportIdRoute =
   TSlugBankImportsImportIdRouteImport.update({
     id: '/bank/imports/$importId',
@@ -273,7 +285,9 @@ export interface FileRoutesByFullPath {
   '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
   '/t/$slug/scans/': typeof TSlugScansIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
+  '/t/$slug/bank/batches/$batchId': typeof TSlugBankBatchesBatchIdRoute
   '/t/$slug/bank/imports/$importId': typeof TSlugBankImportsImportIdRoute
+  '/t/$slug/bank/batches/': typeof TSlugBankBatchesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -309,7 +323,9 @@ export interface FileRoutesByTo {
   '/t/$slug/giftaid': typeof TSlugGiftaidIndexRoute
   '/t/$slug/scans': typeof TSlugScansIndexRoute
   '/t/$slug/settings': typeof TSlugSettingsIndexRoute
+  '/t/$slug/bank/batches/$batchId': typeof TSlugBankBatchesBatchIdRoute
   '/t/$slug/bank/imports/$importId': typeof TSlugBankImportsImportIdRoute
+  '/t/$slug/bank/batches': typeof TSlugBankBatchesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -349,7 +365,9 @@ export interface FileRoutesById {
   '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
   '/t/$slug/scans/': typeof TSlugScansIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
+  '/t/$slug/bank/batches/$batchId': typeof TSlugBankBatchesBatchIdRoute
   '/t/$slug/bank/imports/$importId': typeof TSlugBankImportsImportIdRoute
+  '/t/$slug/bank/batches/': typeof TSlugBankBatchesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -390,7 +408,9 @@ export interface FileRouteTypes {
     | '/t/$slug/giftaid/'
     | '/t/$slug/scans/'
     | '/t/$slug/settings/'
+    | '/t/$slug/bank/batches/$batchId'
     | '/t/$slug/bank/imports/$importId'
+    | '/t/$slug/bank/batches/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -426,7 +446,9 @@ export interface FileRouteTypes {
     | '/t/$slug/giftaid'
     | '/t/$slug/scans'
     | '/t/$slug/settings'
+    | '/t/$slug/bank/batches/$batchId'
     | '/t/$slug/bank/imports/$importId'
+    | '/t/$slug/bank/batches'
   id:
     | '__root__'
     | '/'
@@ -465,7 +487,9 @@ export interface FileRouteTypes {
     | '/t/$slug/giftaid/'
     | '/t/$slug/scans/'
     | '/t/$slug/settings/'
+    | '/t/$slug/bank/batches/$batchId'
     | '/t/$slug/bank/imports/$importId'
+    | '/t/$slug/bank/batches/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -731,6 +755,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugSettingsTagsRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
+    '/t/$slug/bank/batches/': {
+      id: '/t/$slug/bank/batches/'
+      path: '/bank/batches'
+      fullPath: '/t/$slug/bank/batches/'
+      preLoaderRoute: typeof TSlugBankBatchesIndexRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/bank/batches/$batchId': {
+      id: '/t/$slug/bank/batches/$batchId'
+      path: '/bank/batches/$batchId'
+      fullPath: '/t/$slug/bank/batches/$batchId'
+      preLoaderRoute: typeof TSlugBankBatchesBatchIdRouteImport
+      parentRoute: typeof TSlugRoute
+    }
     '/t/$slug/bank/imports/$importId': {
       id: '/t/$slug/bank/imports/$importId'
       path: '/bank/imports/$importId'
@@ -806,7 +844,9 @@ interface TSlugRouteChildren {
   TSlugBankIndexRoute: typeof TSlugBankIndexRoute
   TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
   TSlugScansIndexRoute: typeof TSlugScansIndexRoute
+  TSlugBankBatchesBatchIdRoute: typeof TSlugBankBatchesBatchIdRoute
   TSlugBankImportsImportIdRoute: typeof TSlugBankImportsImportIdRoute
+  TSlugBankBatchesIndexRoute: typeof TSlugBankBatchesIndexRoute
 }
 
 const TSlugRouteChildren: TSlugRouteChildren = {
@@ -826,7 +866,9 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugBankIndexRoute: TSlugBankIndexRoute,
   TSlugContactsIndexRoute: TSlugContactsIndexRoute,
   TSlugScansIndexRoute: TSlugScansIndexRoute,
+  TSlugBankBatchesBatchIdRoute: TSlugBankBatchesBatchIdRoute,
   TSlugBankImportsImportIdRoute: TSlugBankImportsImportIdRoute,
+  TSlugBankBatchesIndexRoute: TSlugBankBatchesIndexRoute,
 }
 
 const TSlugRouteWithChildren = TSlugRoute._addFileChildren(TSlugRouteChildren)

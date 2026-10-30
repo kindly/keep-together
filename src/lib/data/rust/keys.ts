@@ -136,4 +136,13 @@ export const keys = {
     ['t', slug, 'bank', 'imports', accountId] as const,
   bankImport: (slug: string, id: string) =>
     ['t', slug, 'bank', 'import', id] as const,
+  /**
+   * Paying-in batches (bank transfers 6b): one prefix, so a batch's event
+   * or one of its gifts' refetches the list and the batch.
+   */
+  batches: (slug: string) => ['t', slug, 'batches'] as const,
+  batchList: (slug: string, status: string) =>
+    ['t', slug, 'batches', 'list', status] as const,
+  batch: (slug: string, id: string) =>
+    ['t', slug, 'batches', 'one', id] as const,
 }

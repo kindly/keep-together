@@ -37,7 +37,13 @@ export type GiftDraft = {
   code: PickedCode | null
   amountText: string
   method: GiftMethod
+  /** A card reader's receipt, a transfer's reference, a cheque's number. */
   reference: string
+  /**
+   * The open paying-in batch a cash gift or cheque goes into, or none
+   * (g2q5). Kept from one gift to the next, like the date and method.
+   */
+  batchId: string | null
   receivedOn: string
   giftAid: boolean
   scope: DeclarationScope
@@ -47,13 +53,19 @@ export type GiftDraft = {
   postcode: string
 }
 
+/** The methods staff record by hand, in the form's order. */
+export const HAND_METHODS = ['cash', 'card', 'bank_transfer', 'cheque'] as const
+
+/** Whether a method is paid in on a slip, so may go in a batch. */
+export const paidIn = (m: GiftMethod) => m === 'cash' || m === 'cheque'
+
 /**
- * An empty form. After a save the next one keeps the date and method
- * (g1q7); never the code, which comes from the next donor.
+ * An empty form. After a save the next one keeps the date, method and
+ * batch (g1q7, g2q5); never the code, which comes from the next donor.
  */
 export function freshDraft(
   today: string,
-  keep?: Pick<GiftDraft, 'receivedOn' | 'method'>,
+  keep?: Partial<Pick<GiftDraft, 'receivedOn' | 'method' | 'batchId'>>,
 ): GiftDraft {
   return {
     donor: null,
@@ -61,6 +73,7 @@ export function freshDraft(
     amountText: '',
     method: keep?.method ?? 'cash',
     reference: '',
+    batchId: keep?.batchId ?? null,
     receivedOn: keep?.receivedOn ?? today,
     giftAid: false,
     scope: 'futureAndPast4y',
@@ -79,6 +92,7 @@ export function isDirty(draft: GiftDraft, fresh: GiftDraft): boolean {
     draft.reference.trim() !== '' ||
     draft.receivedOn !== fresh.receivedOn ||
     draft.method !== fresh.method ||
+    draft.batchId !== fresh.batchId ||
     draft.giftAid ||
     draft.line1.trim() !== '' ||
     draft.postcode.trim() !== ''
@@ -333,7 +347,10 @@ export function toArgs(
     receivedOn: draft.receivedOn,
     amount,
     method: draft.method,
-    ...(draft.method === 'card' && reference ? { reference } : {}),
+    ...(draft.method !== 'cash' && reference ? { reference } : {}),
+    ...(paidIn(draft.method) && draft.batchId
+      ? { payingInBatchId: draft.batchId }
+      : {}),
     allocations: [{ sourceCodeId: code.id, amount }],
     ...(ticked && {
       giftAid: { scope: draft.scope, method: draft.declarationMethod },

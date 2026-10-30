@@ -200,3 +200,10 @@ export type {
   BankRowError,
   BankUndated,
 } from './rust/banking'
+export { useBatch, useBatchWrites, useBatches } from './rust/batches'
+export type {
+  BatchGift,
+  BatchStatus,
+  PayingInBatch,
+  PayingInBatchPage,
+} from './rust/batches'

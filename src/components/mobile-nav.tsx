@@ -14,6 +14,7 @@ import {
   GiftAidEntryLink,
   GiftLink,
   BankStatementsAction,
+  BatchesAction,
   ExpectedReportAction,
   RecordGiftAction,
   UnmatchedAction,
@@ -303,6 +304,7 @@ function Donations({ follow }: { follow: Follow }) {
       <div id={id} hidden={!open} className="pl-3">
         {canWrite && <RecordGiftAction className={item} {...follow} />}
         {canWrite && <BankStatementsAction className={item} {...follow} />}
+        {canWrite && <BatchesAction className={item} {...follow} />}
         {directDebit && <UnmatchedAction className={item} {...follow} />}
         {report && <ExpectedReportAction className={item} {...follow} />}
         <p className={heading}>{DONATIONS.recent}</p>

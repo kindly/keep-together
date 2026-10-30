@@ -31,6 +31,9 @@ function GiftSummary({ gift }: { gift: RecentGift }) {
         {formatPence(gift.amount)}
       </span>
       <span className="min-w-0 flex-1 truncate">{gift.contactName}</span>
+      {gift.notOnAStatement && (
+        <span className="text-xs text-amber-700">not on a statement yet</span>
+      )}
       {!received && (
         <span className="text-xs text-red-700">
           {STATUS_LABELS[gift.status]}
@@ -51,6 +54,7 @@ export const DONATIONS = {
   recent: 'My recent gifts',
   unmatched: 'Unmatched payments',
   bank: 'Bank statements',
+  batches: 'Paying-in batches',
   expected: 'Expected vs actual',
   loading: 'Loading…',
   none: 'None yet.',
@@ -199,6 +203,16 @@ export function BankStatementsAction(props: AnchorProps) {
   )
 }
 
+/** "Paying-in batches": cash and cheques paid in together. */
+export function BatchesAction(props: AnchorProps) {
+  const tenant = useTenant()
+  return (
+    <Link to="/t/$slug/bank/batches" params={{ slug: tenant.slug }} {...props}>
+      {DONATIONS.batches}
+    </Link>
+  )
+}
+
 /** "Unmatched payments" (GoCardless): payments to match to a contact. */
 export function UnmatchedAction(props: AnchorProps) {
   const tenant = useTenant()
@@ -287,6 +301,9 @@ export function DonationsMenu() {
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <BankStatementsAction />
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <BatchesAction />
             </DropdownMenuItem>
             {directDebit && (
               <DropdownMenuItem asChild>

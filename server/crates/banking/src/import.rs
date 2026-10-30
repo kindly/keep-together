@@ -159,6 +159,33 @@ fn prepare_import(mut p: ImportPayload) -> Result<ImportPayload, ContractError> 
     Ok(p)
 }
 
+/// A statement line's date and amount, for a page that names it (a
+/// paying-in batch matched to it).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "BankLineSummary")]
+pub struct LineSummary {
+    pub id: String,
+    pub account_id: String,
+    pub posted_on: String,
+    #[ts(type = "number")]
+    pub amount: i64,
+}
+
+pub fn line_summary(conn: &Connection, id: &str) -> Result<Option<LineSummary>, ContractError> {
+    Ok(conn
+        .prepare_cached("SELECT account_id, posted_on, amount FROM bank_lines WHERE id = ?1")?
+        .query_row([id], |r| {
+            Ok(LineSummary {
+                id: id.to_owned(),
+                account_id: r.get(0)?,
+                posted_on: r.get(1)?,
+                amount: r.get(2)?,
+            })
+        })
+        .optional()?)
+}
+
 /// The lines an import brought, in file order.
 pub fn import_lines(conn: &Connection, import_id: &str) -> Result<Vec<ImportLine>, ContractError> {
     Ok(conn

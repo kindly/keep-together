@@ -458,11 +458,13 @@ test('the Donations menu: Record a gift, then my recent gifts, each a link', asy
   expect(items[0].getAttribute('aria-disabled')).toBeNull()
   expect(items[1].textContent).toBe('Bank statements')
   expect(items[1].getAttribute('href')).toBe('/t/alpha/bank')
-  expect(items.slice(2).map((i) => i.textContent)).toEqual([
+  expect(items[2].textContent).toBe('Paying-in batches')
+  expect(items[2].getAttribute('href')).toBe('/t/alpha/bank/batches')
+  expect(items.slice(3).map((i) => i.textContent)).toEqual([
     '£1,234.56Acme Ltd23 Oct 2026',
     '£20.00Jo Bloggsvoid23 Oct 2026',
   ])
-  expect(items.slice(2).map((i) => i.getAttribute('href'))).toEqual([
+  expect(items.slice(3).map((i) => i.getAttribute('href'))).toEqual([
     '/t/alpha/gifts/g2',
     '/t/alpha/gifts/g1',
   ])
@@ -485,9 +487,10 @@ test('with GoCardless on, the Donations menu lists Unmatched payments for staff,
     ].map((i) => [i.textContent, i.getAttribute('href')])
   }
   tenants = [group('alpha', { role: 'staff' })]
-  expect((await items()).slice(0, 4)).toEqual([
+  expect((await items()).slice(0, 5)).toEqual([
     ['Record a gift', '/t/alpha/gifts/new'],
     ['Bank statements', '/t/alpha/bank'],
+    ['Paying-in batches', '/t/alpha/bank/batches'],
     ['Unmatched payments', '/t/alpha/gocardless/unmatched'],
     ['Expected vs actual', '/t/alpha/reports/expected'],
   ])
@@ -794,6 +797,7 @@ test('the drawer lists every destination, Donations flattened, then the account'
     ['Contacts', '/t/alpha/contacts'],
     ['Record a gift', '/t/alpha/gifts/new'],
     ['Bank statements', '/t/alpha/bank'],
+    ['Paying-in batches', '/t/alpha/bank/batches'],
     ['£1,234.56Acme Ltd23 Oct 2026', '/t/alpha/gifts/g2'],
     ['£20.00Jo Bloggsvoid23 Oct 2026', '/t/alpha/gifts/g1'],
     ['Claims', '/t/alpha/giftaid'],
@@ -995,6 +999,7 @@ test('Donations: a 44px toggle, collapsed by default, opening and closing in pla
   expect(shown(region).map(([t]) => t)).toEqual([
     'Record a gift',
     'Bank statements',
+    'Paying-in batches',
     '£20.00Jo Bloggs23 Oct 2026',
   ])
   await toggleDonations()
@@ -1050,4 +1055,27 @@ test('Sign out in the drawer signs out and goes to the sign-in page', async () =
   // In the drawer entry's place.
   expect(navigate).toHaveBeenLastCalledWith({ to: '/', replace: true })
   expect(paths()).toEqual(['/t/alpha', '/'])
+})
+
+test('my recent gifts mark a transfer by hand not on a statement yet', async () => {
+  gifts = [
+    gift({
+      method: 'bank_transfer',
+      notOnAStatement: true,
+      contactName: 'Tia Transfer',
+    }),
+  ]
+  await page(import('./t.$slug'))
+  const trigger = [...el.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Donations ▾',
+  )!
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+    )
+  })
+  const items = [...document.querySelectorAll('[role="menuitem"]')]
+  expect(items.at(-1)?.textContent).toBe(
+    '£20.00Tia Transfernot on a statement yet23 Oct 2026',
+  )
 })

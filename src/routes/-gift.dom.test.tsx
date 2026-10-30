@@ -49,7 +49,11 @@ vi.mock('../lib/data', () => ({
   useMembers: () => members,
   useDeclarations: () => ({ declarations: [], currentId: null }),
   useGiftWrites: () => mutations,
+  useBatch: (id: string | null) => ({
+    data: id === null ? undefined : { batch: { status: batchStatus } },
+  }),
 }))
+let batchStatus: 'open' | 'closed' = 'open'
 vi.mock('../components/contact-history', () => ({
   useHistoryMoments: () => ({ moments: [], loading: false, error: null }),
   MomentList: () => null,
@@ -109,6 +113,7 @@ beforeEach(() => {
   members = [{ userId: '1', name: 'Jo Staff' }]
   claimList = [{ id: 'claim7', number: 7, status: 'submitted' }]
   admin = true
+  batchStatus = 'open'
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -415,4 +420,70 @@ test('unvoiding a provider gift gives it its payment’s status', async () => {
   render()
   await click(button(el, 'Unvoid'))
   expect(dialog().textContent).toContain('It takes its payment’s status again')
+})
+
+// Bank transfers 6b: the bank methods by hand.
+
+test('a transfer by hand says it is not on a statement yet', () => {
+  gift = makeGift({ method: 'bank_transfer', notOnAStatement: true })
+  render()
+  expect(el.querySelector('[data-testid="gift-bank-note"]')?.textContent).toBe(
+    'Not on a statement yet: it counts, and no statement line is matched to it so far.',
+  )
+  expect(button(el, 'Mark bounced')).toBeUndefined()
+})
+
+test('a cheque outside a batch: mark it cleared, or bounced, confirmed first', async () => {
+  gift = makeGift({ method: 'cheque', status: 'pending', statusVersion: 1 })
+  render()
+  expect(el.querySelector('[data-testid="gift-bank-note"]')?.textContent).toBe(
+    'Pending until it clears: mark it cleared once the bank has the money.',
+  )
+  await click(button(el, 'Mark cleared'))
+  expect(dialog().textContent).toContain('Mark this cheque cleared?')
+  await click(button(dialog(), 'Mark cleared'))
+  expect(mutations.setStatus).toHaveBeenCalledWith(1, 'completed', undefined)
+  await click(button(el, 'Mark bounced'))
+  expect(dialog().textContent).toContain('Mark this cheque bounced?')
+  await click(button(dialog(), 'Mark bounced'))
+  expect(mutations.setStatus).toHaveBeenLastCalledWith(1, 'failed', undefined)
+})
+
+test('a cheque in a batch clears with its batch: no Mark cleared, and a link to it', () => {
+  gift = makeGift({
+    method: 'cheque',
+    status: 'pending',
+    payingInBatchId: 'b1',
+  })
+  render()
+  expect(el.querySelector('[data-testid="gift-bank-note"]')?.textContent).toBe(
+    'Pending until its paying-in batch is matched to a statement line.',
+  )
+  expect(button(el, 'Mark cleared')).toBeUndefined()
+  expect(button(el, 'Mark bounced')).toBeDefined()
+  expect(el.textContent).toContain('See the batch')
+})
+
+test('a gift in a closed batch holds Edit and Void, and says to reopen it; a cheque still bounces', () => {
+  gift = makeGift({
+    method: 'cheque',
+    status: 'pending',
+    payingInBatchId: 'b1',
+  })
+  batchStatus = 'closed'
+  render()
+  expect(el.querySelector('[data-testid="gift-slip-held"]')?.textContent).toBe(
+    'In a closed paying-in batch: reopen it first to edit or void this gift.',
+  )
+  expect(button(el, 'Edit').disabled).toBe(true)
+  expect(button(el, 'Void').disabled).toBe(true)
+  expect(button(el, 'Mark bounced').disabled).toBe(false)
+})
+
+test('a gift in an open batch can be edited and voided', () => {
+  gift = makeGift({ payingInBatchId: 'b1' })
+  render()
+  expect(el.querySelector('[data-testid="gift-slip-held"]')).toBeNull()
+  expect(button(el, 'Edit').disabled).toBe(false)
+  expect(button(el, 'Void').disabled).toBe(false)
 })

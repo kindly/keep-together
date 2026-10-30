@@ -111,11 +111,14 @@ fn describe_allocations(
 pub fn my_recent(conn: &Connection, user: i64) -> rusqlite::Result<Vec<RecentGift>> {
     let rows: Vec<RecentGift> = conn
         .prepare_cached(
-            "SELECT id, entered_at, contact_id, amount, received_on, method, status
+            "SELECT id, entered_at, contact_id, amount, received_on, method, status, bank_line_id
              FROM gifts WHERE entered_by = ?1 ORDER BY seq DESC LIMIT ?2
              /* any status: the list marks each */",
         )?
         .query_map(params![user, RECENT_LIMIT as i64], |r| {
+            let method = Method::parse(&r.get::<_, String>(5)?);
+            let status = Status::parse(&r.get::<_, String>(6)?);
+            let line: Option<String> = r.get(7)?;
             Ok(RecentGift {
                 id: r.get(0)?,
                 entered_at: r.get(1)?,
@@ -123,8 +126,9 @@ pub fn my_recent(conn: &Connection, user: i64) -> rusqlite::Result<Vec<RecentGif
                 contact_name: String::new(),
                 amount: r.get(3)?,
                 received_on: r.get(4)?,
-                method: Method::parse(&r.get::<_, String>(5)?),
-                status: Status::parse(&r.get::<_, String>(6)?),
+                method,
+                status,
+                not_on_a_statement: crate::bank::not_on_a_statement(method, status, line.as_deref()),
             })
         })?
         .collect::<rusqlite::Result<_>>()?;

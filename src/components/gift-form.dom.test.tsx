@@ -14,6 +14,8 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const record = vi.fn()
 const readBack = vi.fn()
 let search: unknown
+/** The open paying-in batches the batch picker offers. */
+let openBatches: Array<object> = []
 /** Per search term, overriding `search`; undefined = still loading. */
 let searchFor: Map<string, unknown> | null = null
 let donor: DonorInfo | null | undefined
@@ -35,6 +37,7 @@ vi.mock('../lib/data', async (original) => ({
     return contactId === null ? undefined : donor
   },
   useRecordGift: () => record,
+  useBatches: () => ({ data: openBatches }),
   fetchGift: (...args: Array<unknown>) => readBack(...args),
   // The source code picker is on the Rust data layer (A2).
   useSourcePicker: (args: unknown) =>
@@ -115,6 +118,7 @@ function jo(over: Partial<DonorInfo> = {}): DonorInfo {
 let root: Root
 let el: HTMLDivElement
 beforeEach(() => {
+  openBatches = []
   record.mockReset()
   readBack.mockReset()
   searchFor = null
@@ -592,4 +596,58 @@ test('a highlight moved on old rows goes back to the first when new rows arrive'
   expect(el.querySelector('[data-testid="donor"]')!.textContent).toContain(
     'Jo Brown',
   )
+})
+
+test('a cheque into an open batch: its number, and the batch kept for the next', async () => {
+  openBatches = [
+    {
+      id: 'b1',
+      accountName: 'CAF current',
+      slipNumber: '12',
+      openedAt: Date.UTC(2026, 10, 2),
+      status: 'open',
+    },
+  ]
+  await rerender()
+  const radios = () =>
+    [...el.querySelectorAll<HTMLInputElement>('input[type="radio"]')].filter(
+      (r) => r.name === 'method',
+    )
+  expect(radios().map((r) => r.parentElement!.textContent)).toEqual([
+    'Cash',
+    'Card (separate reader)',
+    'Bank transfer',
+    'Cheque',
+  ])
+  await find('jo')
+  await pickOption(0)
+  await type(labelled('Amount'), '50')
+  await click(radios()[3])
+  await type(labelled('Cheque number'), '100231')
+  const batch = () =>
+    [...el.querySelectorAll('label')]
+      .find((l) => l.textContent.startsWith('Paying-in batch'))
+      ?.querySelector('select')
+  expect(batch()?.textContent).toContain('CAF current, slip 12, opened 2 Nov')
+  await act(async () => {
+    batch()!.value = 'b1'
+    batch()!.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  record.mockResolvedValue({
+    contactId: 'jo',
+    giftId: 'g1',
+    declarationId: null,
+  })
+  await click(submit())
+  expect(record.mock.calls[0][0]).toMatchObject({
+    method: 'cheque',
+    reference: '100231',
+    payingInBatchId: 'b1',
+  })
+  // The next gift goes into the same batch.
+  expect(batch()?.value).toBe('b1')
+  // A transfer isn't paid in on a slip: no batch, and a reference.
+  await click(radios()[2])
+  expect(batch()).toBeUndefined()
+  expect(el.textContent).toContain('not on a statement yet')
 })

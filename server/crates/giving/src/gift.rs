@@ -72,6 +72,10 @@ pub struct GiftState {
     /// matched to (a gift made from one has it in `gift.from_line`).
     #[serde(skip)]
     linked_line: Option<String>,
+    /// Its paying-in batch is closed (or matched): what it paid in is on
+    /// the slip, so amount, date and method stay until it is reopened.
+    #[serde(skip)]
+    batch_closed: bool,
 }
 
 pub(crate) fn load_allocations(
@@ -97,7 +101,9 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
         .prepare_cached(
             "SELECT contact_id, received_on, amount, method, reference, entered_by, entered_at,
                     claim_id, provider, provider_payment_id, regular_gift_id, scheduled_on,
-                    bank_line_id, bank_line_made, paying_in_batch_id
+                    bank_line_id, bank_line_made, paying_in_batch_id,
+                    coalesce((SELECT b.status <> 'open' FROM paying_in_batches b
+                              WHERE b.id = paying_in_batch_id), 0)
              FROM gifts WHERE id = ?1 /* any status: one gift */",
         )?
         .query_row([id], |r| {
@@ -127,6 +133,7 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
                 claim_id: r.get(7)?,
                 system: false,
                 linked_line: line.filter(|_| !made),
+                batch_closed: r.get(15)?,
             })
         })
         .optional()?
@@ -239,6 +246,7 @@ impl Contract for Gift {
                 claim_id: None,
                 system,
                 linked_line: None,
+                batch_closed: false,
             });
         };
         if p.contact_id != current.gift.contact_id {
@@ -275,6 +283,17 @@ impl Contract for Gift {
             return Err(ContractError::rejected(
                 "batch_fixed",
                 "A gift’s paying-in batch can’t change: void it and record it again",
+            ));
+        }
+        if current.batch_closed
+            && (p.amount != current.gift.amount
+                || p.received_on != current.gift.received_on
+                || p.method != current.gift.method)
+        {
+            return Err(ContractError::rejected(
+                "batch_closed",
+                "This gift’s paying-in batch is closed: reopen it to change its amount, \
+                 date or method",
             ));
         }
         // What the provider says is the system's: the split across codes
@@ -554,6 +573,10 @@ pub struct StatusState {
     /// (`None`: outside a batch).
     #[serde(skip)]
     batch_matched: Option<bool>,
+    /// Its batch is closed (or matched): voiding or un-voiding it would
+    /// change what the slip says was paid in.
+    #[serde(skip)]
+    batch_closed: bool,
     #[serde(skip)]
     from_line: bool,
     /// Matched by hand to a statement line that a batch or another gift
@@ -580,7 +603,8 @@ fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sta
                     EXISTS (SELECT 1 FROM paying_in_batches p WHERE p.line_id = g.bank_line_id)
                     OR EXISTS (SELECT 1 FROM gifts o WHERE o.bank_line_id = g.bank_line_id
                         AND o.id <> g.id AND o.status <> 'void'
-                        /* any status: a void gift has freed its line */))
+                        /* any status: a void gift has freed its line */)),
+                coalesce(b.status <> 'open', 0)
          FROM gifts g LEFT JOIN paying_in_batches b ON b.id = g.paying_in_batch_id
          WHERE g.id = ?1 /* any status: one gift */",
     )?
@@ -597,6 +621,7 @@ fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sta
             batch_matched: r.get(5)?,
             from_line: r.get(6)?,
             line_taken: r.get(7)?,
+            batch_closed: r.get(8)?,
         })
     })
     .optional()
@@ -689,6 +714,14 @@ impl Contract for GiftStatus {
             }
         };
         let reason = if status.is_received() { None } else { reason };
+        // A cheque in a closed batch still clears and bounces; voiding a
+        // gift on the slip (or un-voiding one) waits for it to reopen.
+        if current.batch_closed && (status == Status::Void) != (was == Status::Void) {
+            return Err(ContractError::rejected(
+                "batch_closed",
+                "This gift’s paying-in batch is closed: reopen it to void or unvoid a gift",
+            ));
+        }
         if current.from_line && was == Status::Void && status != Status::Void {
             return Err(ContractError::rejected(
                 "line_gift_void",

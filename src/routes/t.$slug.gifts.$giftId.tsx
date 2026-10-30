@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   STATUS_LABELS,
+  bankNote,
   STATUS_MEANINGS,
   isProviderStatus,
   isReceived,
@@ -27,6 +28,7 @@ import {
 import { MomentList, useHistoryMoments } from '../components/contact-history'
 import {
   FEATURES,
+  useBatch,
   useClaims,
   useGift,
   useGiftWrites,
@@ -34,6 +36,7 @@ import {
 } from '../lib/data'
 import type {
   ClaimSummary,
+  GiftMethod,
   GiftStatus,
   GiftView as Gift,
   Member,
@@ -112,6 +115,14 @@ function GiftView({ gift }: { gift: Gift }) {
       : (members.find((m) => String(m.userId) === String(userId))?.name ??
         'system')
   const warnings = giftWarnings(gift, localToday())
+  const note = isVoid ? null : bankNote(gift)
+  // A gift on a closed (or matched) paying-in slip keeps its amount, date
+  // and method and stays voided or not until the batch reopens, as the
+  // server says (`batch_closed`). Unknown while its batch loads: held.
+  const batch = useBatch(gift.payingInBatchId)
+  const slipHeld =
+    gift.payingInBatchId !== null && batch.data?.batch.status !== 'open'
+  const cheque = gift.method === 'cheque' && !isVoid
   const coverage = giftCoverage(declarations, gift)
 
   async function changeStatus(
@@ -172,9 +183,17 @@ function GiftView({ gift }: { gift: Gift }) {
               <ClaimBadge claimId={gift.claimId} claim={claim} />
             )}
           </h1>
+          {note && (
+            <p
+              data-testid="gift-bank-note"
+              className="text-sm text-neutral-600"
+            >
+              {note.long}
+            </p>
+          )}
           {!received && (
             <p className="text-sm text-neutral-600">
-              {STATUS_MEANINGS[gift.status]}
+              {note ? null : STATUS_MEANINGS[gift.status]}
               {gift.voidReason && (
                 <span data-testid="void-reason"> Why: {gift.voidReason}</span>
               )}
@@ -205,6 +224,23 @@ function GiftView({ gift }: { gift: Gift }) {
               <>
                 <dt className="text-neutral-500">Reference</dt>
                 <dd>{gift.reference ?? '—'}</dd>
+              </>
+            )}
+            {gift.payingInBatchId && (
+              <>
+                <dt className="text-neutral-500">Paying-in batch</dt>
+                <dd>
+                  <Link
+                    to="/t/$slug/bank/batches/$batchId"
+                    params={{
+                      slug: tenant.slug,
+                      batchId: gift.payingInBatchId,
+                    }}
+                    className="underline"
+                  >
+                    See the batch
+                  </Link>
+                </dd>
               </>
             )}
             <dt className="text-neutral-500">Source code</dt>
@@ -259,21 +295,58 @@ function GiftView({ gift }: { gift: Gift }) {
           </ul>
         )}
 
+        {canWrite && !editing && slipHeld && (
+          <p data-testid="gift-slip-held" className="text-sm text-neutral-600">
+            In a closed paying-in batch: reopen it first to edit or void this
+            gift.
+          </p>
+        )}
         {canWrite && !editing && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               className={secondary}
+              disabled={slipHeld}
               onClick={() => setEditing(true)}
             >
               Edit
             </button>
+            {cheque && gift.status === 'pending' && !gift.payingInBatchId && (
+              <button
+                type="button"
+                className={secondary}
+                disabled={busy}
+                onClick={() =>
+                  setConfirming({
+                    status: 'completed',
+                    expected: gift.statusVersion,
+                  })
+                }
+              >
+                Mark cleared
+              </button>
+            )}
+            {cheque && gift.status !== 'failed' && (
+              <button
+                type="button"
+                className={secondary}
+                disabled={busy}
+                onClick={() =>
+                  setConfirming({
+                    status: 'failed',
+                    expected: gift.statusVersion,
+                  })
+                }
+              >
+                Mark bounced
+              </button>
+            )}
             {isVoid ? (
               !claimed && (
                 <button
                   type="button"
                   className={secondary}
-                  disabled={busy}
+                  disabled={busy || slipHeld}
                   onClick={() =>
                     setConfirming({
                       status: 'completed',
@@ -288,7 +361,7 @@ function GiftView({ gift }: { gift: Gift }) {
               <button
                 type="button"
                 className={secondary}
-                disabled={busy}
+                disabled={busy || slipHeld}
                 onClick={() => {
                   setVoidReason('')
                   setConfirming({
@@ -309,22 +382,36 @@ function GiftView({ gift }: { gift: Gift }) {
         )}
         <ConfirmDialog
           open={confirming !== null}
-          {...(confirming?.status === 'completed'
+          {...(confirming?.status === 'completed' && cheque
             ? {
-                title: 'Unvoid this gift?',
-                description: gift.provider
-                  ? 'It takes its payment’s status again: it counts once GoCardless says the money was collected. You can void it again later.'
-                  : 'It counts again, and Gift Aid can be claimed on it if a declaration covers it. You can void it again later.',
-                confirm: 'Unvoid',
+                title: 'Mark this cheque cleared?',
+                description:
+                  'The bank has the money: it counts from now, and Gift Aid can be claimed on it if a declaration covers it.',
+                confirm: 'Mark cleared',
               }
-            : {
-                title: 'Void this gift?',
-                description: claimed
-                  ? lock.voiding
-                  : 'It stays on record but counts for nothing. You can unvoid it later.',
-                confirm: 'Void',
-                confirmDisabled: claimed && voidReason.trim() === '',
-              })}
+            : confirming?.status === 'failed'
+              ? {
+                  title: 'Mark this cheque bounced?',
+                  description:
+                    'It didn’t clear: it counts for nothing. It stays on its paying-in slip, as the bank credited it: the bank takes it back as a debit of its own.',
+                  confirm: 'Mark bounced',
+                }
+              : confirming?.status === 'completed'
+                ? {
+                    title: 'Unvoid this gift?',
+                    description: gift.provider
+                      ? 'It takes its payment’s status again: it counts once GoCardless says the money was collected. You can void it again later.'
+                      : 'It counts again, and Gift Aid can be claimed on it if a declaration covers it. You can void it again later.',
+                    confirm: 'Unvoid',
+                  }
+                : {
+                    title: 'Void this gift?',
+                    description: claimed
+                      ? lock.voiding
+                      : 'It stays on record but counts for nothing. You can unvoid it later.',
+                    confirm: 'Void',
+                    confirmDisabled: claimed && voidReason.trim() === '',
+                  })}
           cancel="Cancel"
           onConfirm={() => {
             if (!confirming) return
@@ -413,6 +500,19 @@ function ClaimBadge({
       Claimed in claim {claim.number}
     </Link>
   )
+}
+
+/**
+ * The methods a gift can be corrected to: a cheque stays a cheque (its
+ * status follows its clearing), cash in a paying-in batch stays cash, and
+ * a transfer matched to a statement line stays a transfer, as the server
+ * says (`cheque_fixed`, `batch_method`, `line_method`).
+ */
+function editableMethods(gift: Gift): Array<GiftMethod> {
+  if (gift.method === 'cheque') return ['cheque']
+  if (gift.payingInBatchId) return ['cash']
+  if (gift.bankLineId) return ['bank_transfer']
+  return ['cash', 'card', 'bank_transfer']
 }
 
 /** The code the edit form holds: the gift's, or one picked just now. */
@@ -650,7 +750,7 @@ function GiftEdit({ gift, onDone }: { gift: Gift; onDone: () => void }) {
       </label>
       <fieldset className="flex flex-col gap-1 text-sm">
         <legend className="mb-1">Method</legend>
-        {(['cash', 'card'] as const).map((m) => (
+        {editableMethods(gift).map((m) => (
           <label key={m} className="flex items-center gap-2">
             <input
               type="radio"
@@ -662,13 +762,17 @@ function GiftEdit({ gift, onDone }: { gift: Gift; onDone: () => void }) {
           </label>
         ))}
       </fieldset>
-      {method === 'card' && (
+      {method !== 'cash' && (
         <label className="flex flex-col gap-1 text-sm">
-          Reference
+          {method === 'cheque' ? 'Cheque number' : 'Reference'}
           <input
             value={reference}
             onChange={(e) => setReference(e.target.value)}
-            placeholder="Receipt or transaction id (optional)"
+            placeholder={
+              method === 'card'
+                ? 'Receipt or transaction id (optional)'
+                : '(optional)'
+            }
             className={`${field} w-72`}
           />
         </label>

@@ -298,6 +298,11 @@ pub struct RecordGift {
     #[serde(default)]
     #[ts(optional)]
     pub gift_aid: Option<GiftAidTick>,
+    /// The open paying-in batch a cash gift or cheque goes into (ADR
+    /// 0027, g2q5): optional.
+    #[serde(default)]
+    #[ts(optional)]
+    pub paying_in_batch_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
@@ -368,7 +373,7 @@ pub fn record_gift(
         allocations: req.allocations,
         client_key: Some(req.client_key.clone()),
         from_line: None,
-        paying_in_batch_id: None,
+        paying_in_batch_id: req.paying_in_batch_id.filter(|b| !b.is_empty()),
         origin: None,
     };
     let group = command_group(ctx, &giving::gift_group_name(ctx.tx.read(), &gift)?)?;

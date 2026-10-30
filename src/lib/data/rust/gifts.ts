@@ -461,8 +461,12 @@ export async function fetchContactSnapshot(
 const isGiftView = (key: ReadonlyArray<unknown>, id: string) =>
   key.length === 5 && key[3] === 'one' && key[4] === id
 
-/** Every read showing gifts: the gift pages, panels, recent and the donor. */
+/**
+ * Every read showing gifts: the gift pages, panels, recent and the donor,
+ * and the paying-in batches (their gifts and totals).
+ */
 export function giftsChanged(qc: QueryClient, slug: string) {
+  void qc.invalidateQueries({ queryKey: keys.batches(slug) })
   return qc.invalidateQueries({ queryKey: keys.gifts(slug) })
 }
 
@@ -538,11 +542,13 @@ export function useGiftWrites(id: string) {
       qc.setQueryData(view, giftViewFromWire(done.view))
       if (inFlight) void qc.invalidateQueries({ queryKey: view, exact: true })
     }
-    // The panels, the recent list, the history, the donor's coverage.
+    // The panels, the recent list, the history, the donor's coverage,
+    // and its paying-in batch's total.
     void qc.invalidateQueries({
       queryKey: keys.gifts(slug),
       predicate: (q) => !isGiftView(q.queryKey, id),
     })
+    void qc.invalidateQueries({ queryKey: keys.batches(slug) })
     return { id: done.id as GiftId, counter: done.counter }
   }
   return {

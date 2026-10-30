@@ -6,6 +6,9 @@ import { UnsavedWorkProvider, useUnsavedWork } from '../lib/unsaved'
 
 export const Route = createFileRoute('/t/$slug/gifts/new')({
   component: RecordGift,
+  // From a paying-in batch's page: its cash and cheques go into it.
+  validateSearch: (s: Record<string, unknown>): { batch?: string } =>
+    typeof s.batch === 'string' ? { batch: s.batch } : {},
 })
 
 /**
@@ -16,6 +19,7 @@ function RecordGift() {
   const tenant = useTenant()
   const canWrite = useCanWrite()
   const work = useUnsavedWork()
+  const { batch } = Route.useSearch()
   if (!canWrite) {
     return (
       <main className="mx-auto max-w-2xl p-6 text-sm text-neutral-600">
@@ -28,7 +32,7 @@ function RecordGift() {
       <main className="mx-auto max-w-2xl p-6">
         <h1 className="mb-6 text-xl font-semibold">Record a gift</h1>
         {/* Keyed so nothing of one group's form carries to another. */}
-        <GiftForm key={tenant._id} />
+        <GiftForm key={tenant._id} batch={batch} />
       </main>
       <LeaveGuard work={work} />
     </UnsavedWorkProvider>
