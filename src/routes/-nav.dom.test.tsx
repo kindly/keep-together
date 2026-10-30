@@ -207,6 +207,8 @@ vi.mock('../lib/data', async (original) => {
     useOpened: () => opened,
     useOrgEvents: () => {},
     useGoCardlessStatus: () => gocardless,
+    // Home's standing orders with a missed payment: none here.
+    useMissedStandingOrders: () => [],
   }
 })
 
