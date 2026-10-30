@@ -542,3 +542,49 @@ test('a batch for the line is chosen by staff, never pre-selected', async () => 
   await click(button('Match to this batch'))
   expect(writes.matchBatch).toHaveBeenCalledWith('l1', 2, 'b2', 4)
 })
+
+test('the server’s refusals land on their fields: the rest, the sum, an unknown donor', async () => {
+  detail = { line: line(), gifts: [], batchId: null, suggestions: [] }
+  writes.gifts.mockRejectedValueOnce(
+    new RustApiError(422, {
+      kind: 'invalid',
+      problems: [
+        {
+          field: 'remainder',
+          message: 'Say what the rest was: it isn’t a donation',
+        },
+        {
+          field: 'parts',
+          message: 'The parts must add up to the line’s £60 exactly',
+        },
+      ],
+    }),
+  )
+  await linePage()
+  await click(button('Find Dee'))
+  await setInput(labelled('Amount (£)'), '50')
+  await setInput(labelled('What the rest is'), 'x')
+  await click(button('Make the gift'))
+  const rest = labelled('What the rest is')
+  expect(
+    document.getElementById(rest.getAttribute('aria-describedby')!)
+      ?.textContent,
+  ).toBe('Say what the rest was: it isn’t a donation')
+  expect(byTestId('split-refused')).toBe(
+    'The parts must add up to the line’s £60 exactly',
+  )
+  writes.gifts.mockRejectedValueOnce(
+    new RustApiError(422, {
+      kind: 'rejected',
+      reason: 'unknown_contact',
+      message: 'Contact must exist',
+    }),
+  )
+  await click(button('Make the gift'))
+  const change = button('Change')!
+  expect(change.getAttribute('aria-invalid')).toBe('true')
+  expect(
+    document.getElementById(change.getAttribute('aria-describedby')!)
+      ?.textContent,
+  ).toBe('Contact must exist')
+})

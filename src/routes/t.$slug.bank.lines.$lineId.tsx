@@ -375,13 +375,28 @@ function SplitForm({
       if (
         err instanceof RustApiError &&
         err.error.kind === 'invalid' &&
-        err.error.problems.every((p) =>
-          /^(parts\[\d+\]|remainder)/.test(p.field),
-        )
+        err.error.problems.every((p) => /^(parts|remainder)/.test(p.field))
       ) {
         setRefused(
           Object.fromEntries(
             err.error.problems.map((p) => [p.field, p.message]),
+          ),
+        )
+        setError('Check the marked fields.')
+      } else if (
+        err instanceof RustApiError &&
+        err.error.kind === 'rejected' &&
+        err.error.reason === 'unknown_contact'
+      ) {
+        // The server names no part: mark every donor picked from search.
+        const message = err.error.message
+        setRefused(
+          Object.fromEntries(
+            parts.flatMap((p, i) =>
+              p.donor?.kind === 'existing'
+                ? [[`parts[${i}].contact`, message]]
+                : [],
+            ),
           ),
         )
         setError('Check the marked fields.')
@@ -542,6 +557,11 @@ function SplitForm({
             ? `${formatPence(left)} of the line is left: it isn’t a donation.`
             : `The gifts are ${formatPence(-left)} more than the line.`}
       </p>
+      {refused.parts && (
+        <p className="text-sm text-red-700" data-testid="split-refused">
+          {refused.parts}
+        </p>
+      )}
       {issues.total === 'Add at least one gift' && (
         <p className="text-sm text-red-700">{issues.total}</p>
       )}
@@ -556,9 +576,9 @@ function SplitForm({
               setNote(e.target.value)
             }}
             className={`${field} w-full max-w-md`}
-            {...describedBy('rest', issues.rest ?? refused['remainder.note'])}
+            {...describedBy('rest', issues.rest ?? refused.remainder)}
           />
-          {fieldError('rest', issues.rest ?? refused['remainder.note'])}
+          {fieldError('rest', issues.rest ?? refused.remainder)}
         </label>
       )}
       <Alert error={error} />
@@ -620,10 +640,13 @@ function ChosenDonor({
     return (
       <p className="flex flex-wrap items-center gap-2 text-sm">
         <span data-testid="split-donor">{donor.displayName}</span>
+        {/* The donor's refusal (an unknown contact) is described here: the
+            control that changes the donor. */}
         <button
           type="button"
           className="underline"
           onClick={() => onChange(null)}
+          {...invalid}
         >
           Change
         </button>
