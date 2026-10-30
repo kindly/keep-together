@@ -93,10 +93,15 @@ export function RegularGiftTerms({ gift }: { gift: RegularGift }) {
   const open = (kind: 'edit' | 'withdraw' | 'code') => (t: Term) =>
     setDialog({ kind, termId: t.id })
   const close = () => setDialog(null)
+  // Our own withdraw in flight: its event's refetch may land before its
+  // answer, and the row reading withdrawn then is ours, not someone
+  // else's (review B-L4).
+  const [withdrawing, setWithdrawing] = useState(false)
   // Edit and withdraw only while it waits to be sent.
   const unchangeable =
     (dialog?.kind === 'edit' || dialog?.kind === 'withdraw') &&
-    term?.status !== 'scheduled'
+    term?.status !== 'scheduled' &&
+    !withdrawing
   const ended = isEnded(gift)
   const uncoded = gift.terms.filter((t) => t.uncoded)
   return (
@@ -169,7 +174,13 @@ export function RegularGiftTerms({ gift }: { gift: RegularGift }) {
             />
           )}
           {dialog?.kind === 'withdraw' && term && (
-            <WithdrawDialog gift={gift} term={term} onClose={close} />
+            <WithdrawDialog
+              gift={gift}
+              term={term}
+              busy={withdrawing}
+              onBusy={setWithdrawing}
+              onClose={close}
+            />
           )}
           {dialog?.kind === 'code' && term && (
             <CodeDialog gift={gift} term={term} onClose={close} />
@@ -822,14 +833,18 @@ function SplitEditor({
 function WithdrawDialog({
   gift,
   term,
+  busy,
+  onBusy: setBusy,
   onClose,
 }: {
   gift: RegularGift
   term: Term
+  /** In flight: held by the card, which must know (see `withdrawing`). */
+  busy: boolean
+  onBusy: (busy: boolean) => void
   onClose: () => void
 }) {
   const writes = useTermsWrites()
-  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   async function confirm() {
     setBusy(true)

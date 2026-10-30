@@ -571,3 +571,21 @@ test('an upgrade with an edited split still needs the code that won it, as the s
   expect(byTestId('change-problem')).toBe('Pick the code that won the upgrade')
   expect(submitButton()?.disabled).toBe(true)
 })
+
+test('our own withdraw landing never flashes "someone has withdrawn it" (B-L4)', async () => {
+  const g = gift({ terms: [term({}), SCHEDULED], scheduled: SCHEDULED })
+  render(g)
+  await click(button('Withdraw change'))
+  let answer!: (v: RegularGift) => void
+  writes.withdraw.mockReturnValue(new Promise((done) => (answer = done)))
+  await click(
+    button('Withdraw change', document.querySelector('[role="alertdialog"]')!),
+  )
+  // The event's refetch lands first: the row reads withdrawn.
+  const gone = { ...SCHEDULED, status: 'withdrawn' as const }
+  render({ ...g, terms: [term({}), gone], scheduled: null })
+  expect(document.querySelector('[data-testid="term-unchangeable"]')).toBeNull()
+  await act(async () => answer(g))
+  expect(document.querySelector('[data-testid="term-unchangeable"]')).toBeNull()
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+})
