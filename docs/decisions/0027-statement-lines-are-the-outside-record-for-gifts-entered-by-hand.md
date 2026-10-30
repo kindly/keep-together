@@ -100,3 +100,66 @@ transaction id.
   (`bank_rules`).
 - Open banking can be added later as one more way lines arrive; the line
   stays the outside record whichever way it came.
+
+## Decided during the build (2026-10-30)
+
+Steps 1–5 and their reviews settled these. The code and its tests are
+the reference; `server/README.md` "Bank transfers" says where each lives.
+
+1. **Dedupe: content beats an unheld fresh bank id** (review bk2r L2). A
+   file line whose bank id the account doesn't hold is still a duplicate
+   when the account holds a line with the same content whose id this
+   file doesn't carry. That keeps re-downloads from banks that issue a
+   new `FITID` each time from doubling every line. The cost falls on
+   banks whose ids are stable: a genuine second identical payment on the
+   same day is dropped if the file carries it but not the first one's id.
+   That's rare, and a held id is never imported twice
+   (`banking::dedupe`'s module doc).
+2. **A Luhn-valid contact number in a line's reference or narrative is
+   a strong match on its own** (review b4r L1). The reference names the
+   donor, and a gift made from the line takes the line's own amount and
+   date. A number whose check digit fails is never strong.
+3. **A standing order's expected payment is strong only through a known
+   payer** (review b5r, the controller's call). The line's payer must
+   have been matched to that standing order's donor before, with the
+   exact amount, and the line must arrive from 5 days before the due
+   date to 15 after.
+   - The first payment from a payer is always staff's to confirm; once
+     it is, later ones pre-tick.
+   - The standing order's bank reference, found in the line as whole
+     tokens, ranks the suggestion first and says so in its reason, but
+     never makes it strong: references are too often generic ("MONTHLY",
+     "DONATION 2026") or another person's name.
+4. **Paying-in batches**:
+   - A batch is `open` or `closed`. "Matched" means closed and naming its
+     statement line, a slice of its own (`giving.batchLine`) that only
+     matching and unmatching move, so the cheques' statuses always follow.
+   - A closed batch holds its gifts: their amount, date and method, and
+     whether they are void, stay as the slip says until the batch is
+     reopened.
+5. **A split line is undone whole.** Voiding one part of a line's split
+   (made from the line or matched to it by hand) is refused
+   (`line_split`): unmatch the line instead. Voiding a line's only gift
+   frees the line, in the same command group.
+6. **A gift matched to a line keeps the line's terms.**
+   - A gift made from a line has its amount, date, method and reference
+     locked, as a provider's gift does.
+   - A transfer entered by hand and matched to a line has its amount,
+     date and method fixed while it's matched and not void
+     (`line_matched_fixed`), because Gift Aid claims on them.
+   - Voiding a hand-matched transfer unlinks it from the line.
+7. **One payment per standing-order period** (`period_paid`, enforced on
+   the gift), and a line pays no period due more than 5 days after it
+   (`period_not_due`). A late payment still pays its own missed period.
+   A standing order expects payments from its first row, paid or not, so
+   a payment missed before the first one that came is still missed.
+8. **Forgetting a contact's remembered payers is recorded**
+   (`bank_payer_forgets`, org schema step 22), because `bank_payers` is
+   derived and a rebuild would otherwise bring them back. Lines matched
+   before the forget are skipped for that contact, and a match after it
+   is remembered again. Erasure itself isn't built yet; when it is, it
+   calls `banking::forget_payers`.
+9. **A line command checks the line's counter first.** A line someone
+   matched meanwhile is `409 stale` with its match as it now is, before
+   any other refusal. "Accept ticked" runs one transaction per line, so
+   one stale line fails alone.

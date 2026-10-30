@@ -355,7 +355,9 @@ on), and `scan-pairing-sweep`, `scan-orphan-sweep` and
 registers the same way. With GoCardless on: `gocardless-events` (30 s),
 `gocardless-catchup` (daily) and `regular-terms-sync` (hourly, first
 run 10 minutes after boot; also run for one organisation after a terms
-change is saved). A job's first run is `first_after()` after boot
+change is saved). Always: `standing-orders-missed` (6 h: standing
+orders' payments still unmatched 14 days after they were due; "Bank
+transfers"). A job's first run is `first_after()` after boot
 (default: one period), so the snapshot needn't wait an hour after every
 deploy.
 
@@ -516,40 +518,8 @@ entered by hand (`provider` empty). Provider tables
 lines (`bank_lines`) are for money that reached the bank (ADR 0027).
 Cash and cheques paid in together are a paying-in batch
 (`giving.payingInBatch`); a cheque is `pending` until its batch is
-matched to its statement line.
-
-**Matching statement lines** (`api/src/routes/bank_matching.rs`, ADR
-0027). A line is `unmatched`, `matched` (to gifts or one paying-in
-batch) or `not_donation` (`banking.lineMatch`, counter
-`match_version`). Every command (gifts from a line, split across
-contacts; matched to transfers entered by hand; to a batch; not a
-donation; unmatch) is one transaction and one named command group, with
-`banking.lineMatch` last against the line's `matchVersion`, so a line
-matched meanwhile is `409 stale`. Parts and remainder add up to the line
-exactly or `422`. Suggestions (`banking::suggest`) are computed on read
-by the suggesters in `banking::suggest::SUGGESTERS` (contact number,
-known payer, transfer entered by hand, rules, name only; step 5 adds the
-standing order) and never stored or applied by themselves; "Accept
-ticked" applies each line in its own transaction. Remembered payers
-(`bank_payers`) are derived from confirmed matches;
-`banking::forget_payers` forgets a contact's (erasure, rule 3).
-
-**Standing orders** (`giving::standing`, `api/src/routes/standing_orders.rs`,
-bank transfers step 5): regular gifts of kind `standing_order`, no
-provider, active from their set-up; monthly, quarterly (Direct Debit
-refuses quarterly: `giving.regularGiftTerms`) or yearly. Expected
-payments come from the terms chain; a statement line becomes one's
-instalment (`bank/lines/{id}/instalment`: a gift made from the line with
-`regularGiftId` and the period's `scheduledOn`, the terms' split), and
-"make this a standing order" makes one from a line. The standing-order
-suggester matches an unpaid expected payment for the exact amount from 5
-days before its due date to 15 after. A payment still unmatched 14 days
-after it was due is missed (`giving.standingOrderMissed`, set by the
-`standing-orders-missed` job over every org and by every match; a late
-payment clears it); staff decide what to do. Not
-built here: erasure itself (no anonymise exists yet); when it is built,
-it calls `banking::forget_payers` in its own command group. Voiding one
-part of a line's split is refused (`line_split`): unmatch the line.
+matched to its statement line. Bank transfers, cheques, batches and
+standing orders: "Bank transfers", below.
 
 **Only `completed` is money received.** Income, reports, dashboards and
 Gift Aid read gifts through `giving::RECEIVED` (`status = 'completed'`,
@@ -576,6 +546,117 @@ gift: a confirmed one keeps its gift, which takes the payment's status
 (a staff void stays void); one never confirmed gets a new gift with its
 status, to its regular gift's code; a D2 gift a retry superseded keeps
 `provider` with no payment id (void, out of the unique pair).
+
+## Bank transfers (ADR 0027)
+
+Money that reaches the group's bank account without a payment provider
+(one-off transfers, standing orders, cash and cheques paid in on a slip)
+becomes gifts by matching **statement lines**, the outside record for it
+as `direct_debit_payments` is for GoCardless. Plan
+`factory/plans/bank-transfers.sv` (steps 1–7). Org schema steps 21 (the
+tables, `gifts` widened), 22 (forgotten payers) and 23 (quarterly terms,
+standing orders' reference and missed flag).
+
+**The `banking` crate** (a domain crate: `contracts`, `contacts`,
+`giving`, `sources`; never `store`, `platform`, `auth` or `api`):
+
+- *Reading files* is pure: `banking::read` turns a file's bytes into
+  credit lines (`csv.rs` with presets and saved column mappings,
+  `ofx.rs`, `qif.rs`; `money.rs` parses pence from text, never a float;
+  `dates.rs` reads day-first). Debits are dropped as the file is read
+  and never stored. One malformed row refuses the whole file, by line.
+- *Dedupe* (`dedupe.rs`): a line is keyed by its content (date, amount,
+  payer, reference, narrative: `dedupe_key`) and `occurrence` counts
+  identical lines, so two identical £10 standing orders on one day both
+  survive and a re-import adds nothing. A bank id (OFX `FITID`, Bankline's
+  reference) is used too: a held id is a duplicate whatever its content,
+  and content beats an unheld fresh id (the module doc says why).
+- *Accounts and imports*: `banking.account` (name, sort code, last four
+  digits, default source code, saved CSV layout, active; `version`) and
+  `banking.import` (create-only: the import and its new `bank_lines`,
+  whose content is never edited).
+- *Matching* (`matching.rs`): `banking.lineMatch` (`match_version`): a
+  line is `unmatched`, `matched` (to gifts, or to one paying-in batch) or
+  `not_donation` (with a note), checked against giving's side at every
+  commit; its projection `bank_payers` remembers who paid (payer and
+  reference, per account → contact), derived from confirmed matches.
+  `banking.forgetPayers` (`bank_payer_forgets`, keyed by the contact)
+  forgets a contact's payers from a moment; no rebuild brings them back.
+  `banking.rule` (`bank_rules`): "narrative contains GOCARDLESS → not a
+  donation", suggested, never applied by itself.
+- *Suggesters* (`suggest.rs`): computed on read, never stored, never
+  writing. `SUGGESTERS`, in rank order: contact number (a Luhn-valid one
+  in the reference or narrative: strong on its own), known payer,
+  standing order, "make this a standing order", transfer entered by
+  hand, rules, name only (never strong). Merged one per proposal, strong
+  first; the best is pre-ticked when it is the only strong one. A
+  standing order's expected payment (exact amount, due from 15 days
+  before the line to 5 after) is strong only when the line's payer is a
+  known payer of its donor; its bank reference, found as whole tokens,
+  only ranks it and says so. Suggesters take a `Context` that reads what
+  a request shares once (`suggest_lines`: the standing orders'
+  schedule). The seam for more (an AI one, behind an org opt-in) is
+  `suggest_with`.
+
+**In `giving`** (`bank.rs`, `standing.rs`): gifts made from a line
+(`fromLine`, locked as a provider's gift: `line_fixed`), transfers
+entered by hand and linked to a line (`giving.line`: their amount, date
+and method fixed while matched, `line_matched_fixed`; a void unlinks),
+"not on a statement yet" (derived), paying-in batches
+(`giving.payingInBatch` open | closed; their line is `giving.batchLine`,
+moved only by `match_batch`/`unmatch_batch`, which clear and re-pend the
+cheques; a closed batch holds its gifts' amount, date, method and
+voids), cheques (`pending` until their batch is matched, `failed` when
+they bounce), and standing orders (regular gifts of kind
+`standing_order`: no provider, active from set-up, monthly, quarterly or
+yearly; Direct Debit refuses quarterly). A standing-order payment is a
+gift with `instalment {regularGiftId, scheduledOn}`, one per period
+(`period_paid`), for a period due at most 5 days after the line
+(`period_not_due`), with its terms' split. A payment still unmatched 14
+days after it was due is missed (`giving.standingOrderMissed`).
+
+**Routes** (viewers get `403` on every line, import, account and rule
+route: statement lines show every payer; staff and admins import and
+match; admins set accounts up):
+
+| Routes | What |
+|---|---|
+| `GET bank/presets`, `GET/POST bank/accounts`, `GET bank/accounts/{id}`, `POST …/{id}/save` | presets (each marked verified or not; CAF, Unity, Co-op await samples) and accounts (admin set-up, step-up) |
+| `POST bank/imports/preview`, `POST bank/imports`, `GET bank/accounts/{id}/imports`, `GET bank/imports/{id}`, `POST bank/peek` | a statement file in the body (5 MB: `413 too_large`); "41 new, 12 already imported"; a bad file is `422 file_rows` by line, nothing stored |
+| `GET bank/accounts/{id}/lines?state`, `GET bank/lines/{id}` | lines with their ranked suggestions; one line with its gifts or batch |
+| `POST bank/lines/{id}/gifts`, `…/match-gifts`, `…/match-batch`, `…/instalment`, `…/standing-order`, `…/not-donation`, `…/unmatch` | the matching commands (below) |
+| `POST bank/accept` | "Accept ticked": each line in its own transaction, answering per line (a line matched meanwhile is `409 stale` alone) |
+| `GET/POST bank/rules`, `POST bank/rules/{id}/delete` | not-a-donation rules (deleted: kept inactive) |
+| `GET/POST bank/batches`, `GET bank/batches/{id}`, `POST …/{id}/save`, `…/close`, `…/reopen` | paying-in batches (every member reads; matching one is the line's command) |
+| `GET/POST contacts/{id}/standing-orders`, `GET standing-orders/{id}`, `POST standing-orders/{id}/end`, `GET standing-orders/missed` | standing orders (every member reads) |
+
+**The matching commands** each run in one transaction under one named
+command group ("gifts: statement line £50 on 2026-10-27", "match gifts:
+…", "match paying-in batch: …", "standing order payment: …", "new
+standing order: …", "not a donation: …", "unmatch: …"), with
+`banking.lineMatch` last against the line's `matchVersion`; every one
+checks that version before the line's state, so a line matched meanwhile
+is `409 stale` with its match as it now is. Parts and any remainder add
+up to the line exactly (integer pence) or `422`; a remainder is not a
+donation and needs its note. A gift's code is the one picked, else the
+contact's acquisition code, else the account's default (g2q6); a new
+contact can be typed inline. Unmatch undoes a batch's match (its cheques
+pend again), voids the gifts made from the line (a claimed one goes into
+the next claim as an adjustment), unlinks the hand-entered ones, and
+refreshes the missed flag of the standing orders the line paid. Voiding
+a gift from its own page frees a line it leaves empty (one group, "void
+gift, frees: …"); voiding one part of a split is `422 line_split`
+(unmatch the line instead). Every committed contract is an SSE event;
+the SPA maps the `bank_*` entities to the bank queries and
+`paying_in_batches` to the batch queries.
+
+**Not built yet:** erasure itself (no anonymise exists; when it is, it
+calls `banking::forget_payers` in its own command group); the CAF Bank,
+Unity Trust and Co-op Business presets (column mapping covers them until
+a real anonymised export arrives); the AI suggester (the seam is
+`suggest_with`, behind an org opt-in, a DPA and a privacy-notice line);
+changing a standing order's amount or schedule (the terms routes are
+GoCardless's); open banking (one more way lines would arrive).
 
 ## Gift Aid claims
 
