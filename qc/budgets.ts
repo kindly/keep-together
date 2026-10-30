@@ -236,6 +236,14 @@ export const budgets = {
   // infrequent.
   'gift.recordCheque': infrequent,
   'batch.close': infrequent,
+  // Bank transfers 6b part 2 (qc/flows/reconcile.spec.ts). PROVISIONAL:
+  // proposed by builder-bkp for the human's OK. "Accept ticked" applies
+  // several lines at once (5 a sample): bulk, its budget recorded
+  // 2026-10-30 in runs tnqner2h, tnqnf7l4, tnqnfhnt with netem off and
+  // load under 10 (worst 30 ms), 1.5× rounded up to 10 ms. Matching a
+  // line by hand makes or ends a record: infrequent.
+  'bank.acceptTicked': { kind: 'bulk', maxMs: 50 },
+  'bank.matchLine': infrequent,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },
