@@ -532,7 +532,10 @@ known payer, transfer entered by hand, rules, name only; step 5 adds the
 standing order) and never stored or applied by themselves; "Accept
 ticked" applies each line in its own transaction. Remembered payers
 (`bank_payers`) are derived from confirmed matches;
-`banking::forget_payers` forgets a contact's (erasure, rule 3).
+`banking::forget_payers` forgets a contact's (erasure, rule 3). Not
+built here: erasure itself (no anonymise exists yet); when it is built,
+it calls `banking::forget_payers` in its own command group. Voiding one
+part of a line's split is refused (`line_split`): unmatch the line.
 
 **Only `completed` is money received.** Income, reports, dashboards and
 Gift Aid read gifts through `giving::RECEIVED` (`status = 'completed'`,

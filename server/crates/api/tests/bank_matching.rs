@@ -1050,11 +1050,14 @@ async fn accept_ticked_applies_only_the_ticked_lines_still_unmatched() {
 
 // ── suggesters ─────────────────────────────────────────────────────────────
 
-/// A Luhn-valid contact number in the reference is strong (and fits a
-/// transfer entered by hand when one waits); a wrong check digit isn't;
-/// a name alone is never strong or pre-ticked.
+/// A Luhn-valid contact number in the reference is strong on its own
+/// (the reference names the donor; a new gift takes the line's amount and
+/// date), and proposes the donor's transfer entered by hand when one
+/// waits; a wrong check digit isn't strong; a name alone is never strong
+/// or pre-ticked, and never offers a new gift for a donor whose waiting
+/// gift is proposed (review b4r L1, L2).
 #[tokio::test]
-async fn contact_numbers_are_strong_only_when_they_check_and_names_never() {
+async fn a_valid_contact_number_is_strong_on_its_own_and_names_never() {
     let m = setup().await;
     let (jo, number) = m.contact("Jo", "Bloggs").await;
     let (sue, sue_number) = m.contact("Sue", "Waiting").await;
@@ -1131,6 +1134,13 @@ async fn contact_numbers_are_strong_only_when_they_check_and_names_never() {
         json!({ "kind": "existingGifts", "giftIds": [waiting] })
     );
     assert_eq!(s[0]["confidence"], "strong");
+    assert!(
+        s.as_array()
+            .unwrap()
+            .iter()
+            .all(|x| x["proposal"] != json!({ "kind": "newGift", "contactId": sue })),
+        "no new gift for Sue beside her waiting one: {s}"
+    );
 }
 
 /// A gift entered by hand for the line's amount, near its date, is
@@ -1531,4 +1541,149 @@ async fn b_never_sees_a_s_lines_and_suggestions_stay_in_their_file() {
     .await;
     assert_eq!(out[0]["status"], 404);
     assert_eq!(m.line(&a_line).await["line"]["state"], "unmatched");
+}
+
+// ── review b4r: splits and stale ───────────────────────────────────────────
+
+/// M1: voiding one part of a line's split from the gift's page is refused
+/// (`line_split`: unmatch the line instead); the line keeps both parts.
+/// Voiding the only gift still frees it.
+#[tokio::test]
+async fn voiding_one_part_of_a_split_is_refused_and_the_last_frees_the_line() {
+    let m = setup().await;
+    let (jo, _) = m.contact("Jo", "Bloggs").await;
+    let (al, _) = m.contact("Al", "Other").await;
+    let lines = m
+        .import(
+            "alpha",
+            &m.sam,
+            &m.account,
+            &[
+                Credit {
+                    days_ago: 2,
+                    pence: 5000,
+                    payer: "J AND A",
+                    reference: "",
+                },
+                Credit {
+                    days_ago: 2,
+                    pence: 900,
+                    payer: "J BLOGGS",
+                    reference: "",
+                },
+            ],
+        )
+        .await;
+    let line = id(&lines[0]);
+    let out = m
+        .gifts_from(
+            &line,
+            json!([{ "contact": jo, "amount": 3000 }, { "contact": al, "amount": 2000 }]),
+            None,
+        )
+        .await
+        .1;
+    let part = m.gift(out["gifts"][1]["id"].as_str().unwrap()).await;
+    let (s, reason) = refused(
+        &m.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{}/status", part["id"].as_str().unwrap()),
+        &m.sam,
+        Some(json!({ "expected": part["statusVersion"], "status": "void" })),
+    )
+    .await;
+    assert_eq!(
+        (s, reason.as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "line_split")
+    );
+    let after = m.line(&line).await;
+    assert_eq!(
+        (
+            after["line"]["state"].as_str(),
+            after["gifts"].as_array().unwrap().len()
+        ),
+        (Some("matched"), 2)
+    );
+    assert_eq!(
+        m.gift(part["id"].as_str().unwrap()).await["status"],
+        "completed"
+    );
+
+    let single = id(&lines[1]);
+    let out = m
+        .gifts_from(&single, json!([{ "contact": jo, "amount": 900 }]), None)
+        .await
+        .1;
+    let g = m.gift(out["gifts"][0]["id"].as_str().unwrap()).await;
+    ok(
+        &m.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{}/status", g["id"].as_str().unwrap()),
+        &m.sam,
+        Some(json!({ "expected": g["statusVersion"], "status": "void" })),
+    )
+    .await;
+    assert_eq!(m.line(&single).await["line"]["state"], "unmatched");
+}
+
+/// M2: every direct command checks the line's version first: a line
+/// matched meanwhile is `409 stale` with its match as it is now, as
+/// "Accept ticked" answers, not `422 line_matched`.
+#[tokio::test]
+async fn a_line_matched_meanwhile_is_stale_for_every_direct_command() {
+    let m = setup().await;
+    let (jo, _) = m.contact("Jo", "Bloggs").await;
+    let by_hand = m.by_hand(&jo, 2, 1000).await;
+    let lines = m
+        .import(
+            "alpha",
+            &m.sam,
+            &m.account,
+            &[Credit {
+                days_ago: 2,
+                pence: 1000,
+                payer: "J BLOGGS",
+                reference: "",
+            }],
+        )
+        .await;
+    let line = id(&lines[0]);
+    let seen = m.version(&line).await;
+    // Someone else marks it first.
+    let (s, _) = m
+        .post(
+            &format!("bank/lines/{line}/not-donation"),
+            json!({ "expected": seen, "note": "Refund" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    for (path, body) in [
+        (
+            "gifts",
+            json!({ "expected": seen, "parts": [{ "contact": jo, "amount": 1000 }] }),
+        ),
+        (
+            "match-gifts",
+            json!({ "expected": seen, "giftIds": [by_hand] }),
+        ),
+        (
+            "match-batch",
+            json!({ "expected": seen, "batchId": line, "batchLineVersion": 0 }),
+        ),
+        ("not-donation", json!({ "expected": seen, "note": "x" })),
+        ("unmatch", json!({ "expected": seen })),
+    ] {
+        let (s, out) = m.post(&format!("bank/lines/{line}/{path}"), body).await;
+        assert_eq!(
+            (s, out["kind"].as_str(), out["contract"].as_str()),
+            (
+                StatusCode::CONFLICT,
+                Some("stale"),
+                Some("banking.lineMatch")
+            ),
+            "{path}: {out}"
+        );
+        assert_eq!(out["current"]["state"], "not_donation", "{path}");
+    }
+    assert_eq!(m.line(&line).await["line"]["note"], "Refund");
 }

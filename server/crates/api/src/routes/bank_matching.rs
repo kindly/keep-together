@@ -176,10 +176,28 @@ async fn line_detail(
 
 // ── the commands ───────────────────────────────────────────────────────────
 
-/// The line, refused unless it is unmatched (a matched one is unmatched
-/// first).
-fn unmatched_line(conn: &Connection, id: &str) -> Result<LineView, ContractError> {
+/// `409 stale` for a line whose `matchVersion` isn't `expected`, with
+/// its match as it is now (the form merges it and retries).
+fn stale(line: &LineView) -> ContractError {
+    ContractError::Stale {
+        contract: "banking.lineMatch",
+        counter: line.match_version,
+        current: serde_json::to_value(LineMatchPayload {
+            state: line.state,
+            note: line.note.clone(),
+        })
+        .unwrap_or_default(),
+    }
+}
+
+/// The line as of `expected`: `stale` first if it moved since (someone
+/// matched it meanwhile), then refused unless it is unmatched (a matched
+/// one is unmatched first).
+fn unmatched_line(conn: &Connection, id: &str, expected: i64) -> Result<LineView, ContractError> {
     let line = matching::line(conn, id)?.ok_or(ContractError::NotFound)?;
+    if line.match_version != expected {
+        return Err(stale(&line));
+    }
     if line.state != MatchState::Unmatched {
         return Err(ContractError::rejected(
             "line_matched",
@@ -310,7 +328,7 @@ pub fn gifts_from(
     req: GiftsFromLine,
     source: Source,
 ) -> Result<Vec<String>, ContractError> {
-    let line = unmatched_line(ctx.tx.read(), line_id)?;
+    let line = unmatched_line(ctx.tx.read(), line_id, req.expected)?;
     if req.parts.is_empty() || req.parts.len() > PARTS_MAX {
         return Err(ContractError::invalid(
             "parts",
@@ -445,7 +463,7 @@ pub fn match_to_gifts(
     req: MatchGifts,
     source: Source,
 ) -> Result<(), ContractError> {
-    let line = unmatched_line(ctx.tx.read(), line_id)?;
+    let line = unmatched_line(ctx.tx.read(), line_id, req.expected)?;
     if req.gift_ids.is_empty() || req.gift_ids.len() > PARTS_MAX {
         return Err(ContractError::invalid(
             "giftIds",
@@ -524,7 +542,7 @@ pub fn match_to_batch(
     req: MatchBatch,
     source: Source,
 ) -> Result<(), ContractError> {
-    let line = unmatched_line(ctx.tx.read(), line_id)?;
+    let line = unmatched_line(ctx.tx.read(), line_id, req.expected)?;
     let group = line_group(ctx, "match paying-in batch", &line)?;
     giving::bank::match_batch(
         ctx,
@@ -576,7 +594,7 @@ pub fn mark_not_donation(
     req: NotDonation,
     source: Source,
 ) -> Result<(), ContractError> {
-    let line = unmatched_line(ctx.tx.read(), line_id)?;
+    let line = unmatched_line(ctx.tx.read(), line_id, req.expected)?;
     let group = line_group(ctx, "not a donation", &line)?;
     mark(
         ctx,
@@ -622,6 +640,9 @@ pub fn unmatch_line(
     source: Source,
 ) -> Result<Executed, ContractError> {
     let line = matching::line(ctx.tx.read(), line_id)?.ok_or(ContractError::NotFound)?;
+    if line.match_version != req.expected {
+        return Err(stale(&line));
+    }
     if line.state == MatchState::Unmatched {
         return Ok(Executed {
             id: line.id,
@@ -667,10 +688,37 @@ async fn unmatch(
     .map(Json)
 }
 
-/// After a gift on `line_id` is voided (and so off the line): a line
-/// that now holds nothing is unmatched again, its note cleared, so it is
-/// matched afresh. One still holding gifts or a batch is left as it is.
-pub fn free_emptied_line(ctx: &Ctx, line_id: &str, source: Source) -> Result<(), ContractError> {
+/// The group a gift's void runs in when the gift is on a statement line
+/// ("void gift: frees statement line £9 on …"). Refused when the line
+/// holds other gifts too (`line_split`): voiding one part of a split would
+/// leave the line short with nothing saying why, and its payers wrong, so
+/// the line is unmatched instead, which voids or unlinks every part.
+pub fn void_group(ctx: &Ctx, gift_id: &str, line_id: &str) -> Result<CommandGroup, ContractError> {
+    let conn = ctx.tx.read();
+    let line = matching::line(conn, line_id)?.ok_or(ContractError::NotFound)?;
+    if giving::bank::gifts_on_line(conn, line_id)?
+        .iter()
+        .filter(|g| g.id != gift_id)
+        .count()
+        > 0
+    {
+        return Err(ContractError::rejected(
+            "line_split",
+            "This gift is one part of a statement line’s split: unmatch the line instead",
+        ));
+    }
+    line_group(ctx, "void gift, frees", &line)
+}
+
+/// After the only gift on `line_id` is voided (and so off the line), in
+/// that void's `group`: the line is unmatched again, its note cleared, so
+/// it is matched afresh (and its payers rebuilt).
+pub fn free_emptied_line(
+    ctx: &Ctx,
+    line_id: &str,
+    source: Source,
+    group: &CommandGroup,
+) -> Result<(), ContractError> {
     let conn = ctx.tx.read();
     let Some(line) = matching::line(conn, line_id)? else {
         return Ok(());
@@ -688,7 +736,7 @@ pub fn free_emptied_line(ctx: &Ctx, line_id: &str, source: Source) -> Result<(),
             state: MatchState::Unmatched,
             note: None,
         },
-        Exec::update(line_id, None, source),
+        Exec::update(line_id, None, source).in_group(group),
     )?;
     Ok(())
 }
@@ -741,19 +789,10 @@ pub const ACCEPT_MAX: usize = 200;
 pub fn apply(ctx: &Ctx, item: AcceptItem, source: Source) -> Result<(), ContractError> {
     let line = matching::line(ctx.tx.read(), &item.line_id)?.ok_or(ContractError::NotFound)?;
     if line.match_version != item.expected {
-        return Err(ContractError::Stale {
-            contract: "banking.lineMatch",
-            counter: line.match_version,
-            current: serde_json::to_value(LineMatchPayload {
-                state: line.state,
-                note: line.note,
-            })
-            .unwrap_or_default(),
-        });
+        return Err(stale(&line));
     }
     match item.proposal {
         Proposal::NewGift { contact_id } => {
-            let line = unmatched_line(ctx.tx.read(), &item.line_id)?;
             gifts_from(
                 ctx,
                 &item.line_id,

@@ -145,6 +145,17 @@ pub fn suggest_with(
             }
         }
     }
+    // A contact some suggester matched to gifts already waiting: a
+    // name-only "new gift" for them would give twice (review b4r L2).
+    let waiting: Vec<String> = merged
+        .iter()
+        .filter(|(_, s)| matches!(s.proposal, Proposal::ExistingGifts { .. }))
+        .filter_map(|(_, s)| s.contact_id.clone())
+        .collect();
+    merged.retain(|(_, s)| {
+        !(matches!(&s.proposal, Proposal::NewGift { contact_id } if waiting.contains(contact_id))
+            && s.suggesters.iter().all(|n| n == "nameOnly"))
+    });
     merged.sort_by_key(|(rank, s)| (std::cmp::Reverse(s.confidence), *rank));
     let mut out: Vec<Suggestion> = merged.into_iter().map(|(_, s)| s).collect();
     let strong = out
@@ -240,9 +251,11 @@ fn six_digit_runs(text: &str) -> Vec<&str> {
 }
 
 /// The donor's contact number in the reference or narrative (the
-/// strongest sign: groups ask donors to quote it). Only a Luhn-valid one
-/// counts; the amount is the line's own and the date its posting, so a
-/// new gift fits them, and a transfer entered by hand must match both.
+/// strongest sign: groups ask donors to quote it). A Luhn-valid one is
+/// strong on its own: the reference names the donor, and a gift made
+/// from the line takes the line's own amount and date. When the donor
+/// has a transfer entered by hand for that amount near that date, that
+/// gift is proposed instead of a new one.
 pub struct ContactNumber;
 
 impl Suggester for ContactNumber {
