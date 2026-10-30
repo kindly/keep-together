@@ -17,6 +17,8 @@
 //! stays monthly or yearly (`giving.regularGiftTerms` refuses quarterly
 //! on one).
 
+use std::collections::HashSet;
+
 use contracts::{
     Command, CommandGroup, Contract, ContractError, Ctx, Exec, Executed, OrgTx, Problem, Source,
     WriteTx, command_group, execute,
@@ -298,6 +300,34 @@ pub(crate) fn check_instalment(
                     "A standing order’s payment is from its own donor",
                 ));
             }
+            // One payment per period (review b5r M1): a second line for a
+            // period already paid is refused, here at the gift, so no path
+            // (accept, a race) can pay it twice. A void one has freed it.
+            let month = month_index(&i.scheduled_on)
+                .map(month_label)
+                .unwrap_or_default();
+            let paid: Option<String> = conn
+                .prepare_cached(
+                    "SELECT id FROM gifts INDEXED BY gifts_by_scheduled
+                     WHERE regular_gift_id = ?1 AND scheduled_on BETWEEN ?2 AND ?3
+                         AND status <> 'void'
+                     /* any status: a period's payment */ LIMIT 1",
+                )?
+                .query_row(
+                    params![
+                        i.regular_gift_id,
+                        format!("{month}-01"),
+                        format!("{month}-31")
+                    ],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if paid.is_some() {
+                return Err(ContractError::rejected(
+                    "period_paid",
+                    "That period of the standing order is paid already",
+                ));
+            }
             Ok(())
         }
         _ => Err(ContractError::rejected(
@@ -308,78 +338,150 @@ pub(crate) fn check_instalment(
 }
 
 /// One of a standing order's expected payments a statement line could
-/// pay: its due date and amount, and the split its terms give it.
+/// pay: its due date and amount, the split its terms give it, and what
+/// identifies the donor on a statement (the bank reference).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DuePayment {
     pub regular_gift_id: String,
     pub contact_id: String,
+    pub bank_reference: Option<String>,
     pub due_on: String,
     pub amount: i64,
     pub frequency: Frequency,
     pub split: Vec<Share>,
 }
 
-/// The active standing orders, `(id, contact)`, oldest first
-/// (`regular_gifts_by_kind`).
-fn active_standing_orders(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
-    conn.prepare_cached(
-        "SELECT id, contact_id FROM regular_gifts INDEXED BY regular_gifts_by_kind
-         WHERE kind = 'standing_order' AND status = 'active' ORDER BY seq",
-    )?
-    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-    .collect()
+/// One active standing order as the schedule holds it.
+#[derive(Clone, Debug)]
+struct Order {
+    id: String,
+    contact_id: String,
+    bank_reference: Option<String>,
+    rules: Vec<crate::terms_rules::Terms>,
+    /// The periods (`YYYY-MM`) a payment that isn't void already pays.
+    paid: HashSet<String>,
 }
 
-/// The unpaid expected payments of active standing orders that a line
-/// posted on `posted_on` for `amount` pays: the exact amount, due from
-/// [`LATE_DAYS`] before the posting to [`EARLY_DAYS`] after it (the line
-/// came at most 5 days early or 15 late). Oldest due first.
+/// The active standing orders' schedules, read once: a reconcile page
+/// asks it for each of its lines without reading them again (review b5r
+/// M3). Each line then costs a pass in memory, over the standing orders
+/// whose live terms have the line's amount.
+#[derive(Clone, Debug, Default)]
+pub struct Schedule {
+    orders: Vec<Order>,
+}
+
+impl Schedule {
+    /// Every active standing order (`regular_gifts_by_kind`), its live
+    /// chain and the periods its gifts pay (`gifts_by_scheduled`).
+    pub fn load(conn: &Connection) -> rusqlite::Result<Self> {
+        let rows: Vec<(String, String, Option<String>)> = conn
+            .prepare_cached(
+                "SELECT id, contact_id, bank_reference FROM regular_gifts
+                 INDEXED BY regular_gifts_by_kind
+                 WHERE kind = 'standing_order' AND status = 'active' ORDER BY seq",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut paid_stmt = conn.prepare_cached(
+            "SELECT scheduled_on FROM gifts INDEXED BY gifts_by_scheduled
+             WHERE regular_gift_id = ?1 AND scheduled_on IS NOT NULL AND status <> 'void'
+             /* any status: a period with a payment */",
+        )?;
+        let mut orders = Vec::with_capacity(rows.len());
+        for (id, contact_id, bank_reference) in rows {
+            let rules = terms::chain(conn, &id)?
+                .iter()
+                .filter(|t| t.is_live())
+                .map(|t| t.rules())
+                .collect();
+            let paid = paid_stmt
+                .query_map([&id], |r| r.get::<_, String>(0))?
+                .filter_map(|d| d.ok().and_then(|d| month_index(&d)).map(month_label))
+                .collect();
+            orders.push(Order {
+                id,
+                contact_id,
+                bank_reference,
+                rules,
+                paid,
+            });
+        }
+        Ok(Self { orders })
+    }
+
+    /// The unpaid expected payments that a line posted on `posted_on`
+    /// for `amount` may pay: the exact amount, due from [`LATE_DAYS`]
+    /// before the posting to [`EARLY_DAYS`] after it (the line came at
+    /// most 5 days early or 15 late). Oldest due first.
+    pub fn payments_for_line(&self, posted_on: &str, amount: i64) -> Vec<DuePayment> {
+        let (Some(from), Some(to)) = (
+            add_days(posted_on, -LATE_DAYS),
+            add_days(posted_on, EARLY_DAYS),
+        ) else {
+            return vec![];
+        };
+        let mut out = Vec::new();
+        for o in &self.orders {
+            if !o.rules.iter().any(|t| t.amount == amount) {
+                continue;
+            }
+            for p in crate::terms_rules::expected_periods(&o.rules, None, &from, &to) {
+                if p.amount != amount || o.paid.contains(&p.period) {
+                    continue;
+                }
+                out.push(DuePayment {
+                    regular_gift_id: o.id.clone(),
+                    contact_id: o.contact_id.clone(),
+                    bank_reference: o.bank_reference.clone(),
+                    due_on: p.due_on,
+                    amount: p.amount,
+                    frequency: o.rules[p.row].frequency,
+                    split: p.split,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.due_on.cmp(&b.due_on));
+        out
+    }
+}
+
+/// [`Schedule::payments_for_line`] for one line, reading the schedule.
 pub fn payments_for_line(
     conn: &Connection,
     posted_on: &str,
     amount: i64,
 ) -> rusqlite::Result<Vec<DuePayment>> {
-    let (Some(from), Some(to)) = (
-        add_days(posted_on, -LATE_DAYS),
-        add_days(posted_on, EARLY_DAYS),
-    ) else {
-        return Ok(vec![]);
-    };
-    let (Some(a), Some(b)) = (month_index(&from), month_index(&to)) else {
-        return Ok(vec![]);
-    };
-    let (first, last) = (month_label(a), month_label(b));
-    let mut out = Vec::new();
-    for (id, contact) in active_standing_orders(conn)? {
-        let Some(rows) = expected::for_regular_gift(conn, &id, &first, &last, posted_on)? else {
-            continue;
-        };
-        let chain = terms::chain(conn, &id)?;
-        for row in rows {
-            if row.gift_id.is_some()
-                || row.expected != amount
-                || row.due_on.as_str() < from.as_str()
-                || row.due_on.as_str() > to.as_str()
-            {
-                continue;
-            }
-            let frequency = chain
-                .iter()
-                .find(|t| t.id == row.term_id)
-                .map(|t| t.frequency)
-                .unwrap_or(Frequency::Monthly);
-            out.push(DuePayment {
-                regular_gift_id: id.clone(),
-                contact_id: contact.clone(),
-                due_on: row.due_on,
-                amount: row.expected,
-                frequency,
-                split: row.split,
-            });
-        }
+    Ok(Schedule::load(conn)?.payments_for_line(posted_on, amount))
+}
+
+/// The standing orders that gifts on `line_id` pay (not void), before an
+/// unmatch voids them: their missed flags are refreshed after (review
+/// b5r L1).
+pub fn on_line(conn: &Connection, line_id: &str) -> rusqlite::Result<Vec<String>> {
+    conn.prepare_cached(
+        "SELECT DISTINCT regular_gift_id FROM gifts
+         WHERE bank_line_id = ?1 AND regular_gift_id IS NOT NULL AND status <> 'void'
+         /* any status: what the line pays */",
+    )?
+    .query_map([line_id], |r| r.get(0))?
+    .collect()
+}
+
+/// Refuse a line paying a period due more than [`EARLY_DAYS`] after it
+/// was posted: a payment is for a period that has come (or nearly), never
+/// one months ahead (review b5r L3). A late payment may pay any period
+/// before it.
+pub fn check_payable(scheduled_on: &str, posted_on: &str) -> Result<(), ContractError> {
+    match add_days(posted_on, EARLY_DAYS) {
+        Some(last) if scheduled_on <= last.as_str() => Ok(()),
+        _ => Err(ContractError::rejected(
+            "period_not_due",
+            format!(
+                "A payment can pay a period due at most {EARLY_DAYS} days after it reached the bank"
+            ),
+        )),
     }
-    out.sort_by(|a, b| a.due_on.cmp(&b.due_on));
-    Ok(out)
 }
 
 /// The split a payment of `amount` for the period due `scheduled_on`

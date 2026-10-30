@@ -487,46 +487,31 @@ async fn a_payment_is_missed_after_14_days_and_a_late_one_clears_it() {
 
 /// The standing-order suggester: an expected payment matches a line
 /// posted from 5 days before its due date to 15 after, with the exact
-/// amount, and is strong (pre-ticked); outside the window, or another
-/// amount, it isn't suggested. Accepting it makes the instalment.
+/// amount; outside the window, or another amount, it isn't suggested.
+/// Strong (pre-ticked) only when the line identifies the donor (review
+/// b5r H1): B quotes the standing order's reference; C, inside the window
+/// too, is "amount and date only", never ticked. Two lines for one
+/// period: the second is refused on its own (`period_paid`, review b5r
+/// M1) and the rest of the accept applies.
 #[tokio::test]
 async fn an_expected_payment_matches_inside_minus_5_plus_15_only() {
     let s = setup().await;
     let jo = s.contact("alpha", &s.ann, "Jo").await;
     let due = due_at_least(17);
     let so = id(&s.standing(&jo, 1500, &due).await);
+    let credit = |days: i64, pence: i64, payer: &'static str, reference: &'static str| Credit {
+        on: shift(&due, days),
+        pence,
+        payer,
+        reference,
+    };
     let lines = s
         .import(&[
-            Credit {
-                on: shift(&due, -6),
-                pence: 1500,
-                payer: "A",
-                reference: "",
-            },
-            Credit {
-                on: shift(&due, -5),
-                pence: 1500,
-                payer: "B",
-                reference: "",
-            },
-            Credit {
-                on: shift(&due, 15),
-                pence: 1500,
-                payer: "C",
-                reference: "",
-            },
-            Credit {
-                on: shift(&due, 16),
-                pence: 1500,
-                payer: "D",
-                reference: "",
-            },
-            Credit {
-                on: shift(&due, 2),
-                pence: 1501,
-                payer: "E",
-                reference: "",
-            },
+            credit(-6, 1500, "A", "SO REF"),
+            credit(-5, 1500, "B", "SO REF"),
+            credit(15, 1500, "C", ""),
+            credit(16, 1500, "D", "SO REF"),
+            credit(2, 1501, "E", "SO REF"),
         ])
         .await;
     let instalments = |v: &Value| -> Vec<Value> {
@@ -540,15 +525,19 @@ async fn an_expected_payment_matches_inside_minus_5_plus_15_only() {
     };
     let by_payer = |p: &str| lines.iter().find(|l| l["payer"] == p).map(id).unwrap();
     for (payer, fits) in [
-        ("A", false),
-        ("B", true),
-        ("C", true),
-        ("D", false),
-        ("E", false),
+        ("A", None),
+        ("B", Some(("strong", true))),
+        ("C", Some(("suggested", false))),
+        ("D", None),
+        ("E", None),
     ] {
         let found = instalments(&s.line(&by_payer(payer)).await);
-        assert_eq!(found.len(), usize::from(fits), "{payer}: {found:?}");
-        if fits {
+        assert_eq!(
+            found.len(),
+            usize::from(fits.is_some()),
+            "{payer}: {found:?}"
+        );
+        if let Some((confidence, ticked)) = fits {
             assert_eq!(
                 found[0]["proposal"],
                 json!({ "kind": "instalment", "regularGiftId": so, "scheduledOn": due })
@@ -558,24 +547,316 @@ async fn an_expected_payment_matches_inside_minus_5_plus_15_only() {
                     found[0]["confidence"].as_str(),
                     found[0]["ticked"].as_bool()
                 ),
-                (Some("strong"), Some(true))
+                (Some(confidence), Some(ticked)),
+                "{payer}"
             );
         }
     }
+    let c = s.line(&by_payer("C")).await;
+    assert!(
+        instalments(&c)[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("amount and date only"),
+        "{c}"
+    );
+
+    // B and C both sent for the one period, and E as a new gift for Jo.
     let b = s.line(&by_payer("B")).await;
+    let e = s.line(&by_payer("E")).await;
+    let item = |l: &Value, proposal: Value| {
+        json!({ "lineId": l["line"]["id"], "expected": l["line"]["matchVersion"],
+            "proposal": proposal })
+    };
     let out = ok(
         &s.w,
         "POST",
         "/api/t/alpha/bank/accept",
         &s.sam,
-        Some(json!({ "items": [{
-        "lineId": b["line"]["id"], "expected": b["line"]["matchVersion"],
-        "proposal": instalments(&b)[0]["proposal"] }] })),
+        Some(json!({ "items": [
+            item(&b, instalments(&b)[0]["proposal"].clone()),
+            item(&c, instalments(&c)[0]["proposal"].clone()),
+            item(&e, json!({ "kind": "newGift", "contactId": jo })),
+        ] })),
     )
     .await;
-    assert_eq!(out[0]["status"], 200, "{out}");
+    assert_eq!(
+        (
+            out[0]["status"].as_i64(),
+            out[1]["status"].as_i64(),
+            out[1]["error"]["reason"].as_str(),
+            out[2]["status"].as_i64()
+        ),
+        (Some(200), Some(422), Some("period_paid"), Some(200)),
+        "{out}"
+    );
     // Paid: C, inside the window too, is no longer offered that period.
     assert!(instalments(&s.line(&by_payer("C")).await).is_empty());
+    assert_eq!(s.line(&by_payer("C")).await["line"]["state"], "unmatched");
+}
+
+/// H1's other way to name the donor: a payer matched to the standing
+/// order's donor before makes its expected payment strong, with no
+/// reference.
+#[tokio::test]
+async fn a_known_payer_makes_a_standing_order_payment_strong() {
+    let s = setup().await;
+    let jo = s.contact("alpha", &s.ann, "Jo").await;
+    let first = due_at_least(40);
+    let so = ok(
+        &s.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{jo}/standing-orders"),
+        &s.sam,
+        Some(
+            json!({ "amount": 2000, "frequency": "monthly", "dayOfMonth": day_of(&first),
+            "sourceCodeId": s.code, "startsOn": first }),
+        ),
+    )
+    .await;
+    let second = shift(&first, 30);
+    let lines = s
+        .import(&[
+            Credit {
+                on: first.clone(),
+                pence: 2000,
+                payer: "JO GIVER",
+                reference: "",
+            },
+            Credit {
+                on: second.clone(),
+                pence: 2000,
+                payer: "JO GIVER",
+                reference: "",
+            },
+        ])
+        .await;
+    let (one, two) = (id(&lines[0]), id(&lines[1]));
+    let l = s.line(&one).await;
+    let first_due = instalments_of(&l)[0].clone();
+    assert_eq!(first_due["confidence"], "suggested", "{l}");
+    let (st, out) = s
+        .post(
+            &format!("bank/lines/{one}/instalment"),
+            json!({ "expected": l["line"]["matchVersion"], "regularGiftId": id(&so),
+                "scheduledOn": first }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+    let next = instalments_of(&s.line(&two).await);
+    assert_eq!(next.len(), 1);
+    assert_eq!(
+        (next[0]["confidence"].as_str(), next[0]["ticked"].as_bool()),
+        (Some("strong"), Some(true))
+    );
+}
+
+fn instalments_of(v: &Value) -> Vec<Value> {
+    v["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["proposal"]["kind"] == "instalment")
+        .cloned()
+        .collect()
+}
+
+/// Review b5r L1: unmatching an instalment re-opens its period, and the
+/// missed flag says so at once (not at the next job). L3: a line pays no
+/// period due more than 5 days after it. L5: "make this a standing
+/// order" starts on or before the line.
+#[tokio::test]
+async fn unmatching_an_instalment_reopens_its_period_and_lines_pay_only_periods_come() {
+    let s = setup().await;
+    let jo = s.contact("alpha", &s.ann, "Jo").await;
+    let due = due_at_least(20);
+    let so = id(&s.standing(&jo, 1000, &due).await);
+    s.job(&days_ago(0)).await;
+    assert_eq!(s.get_so(&so).await["missedOn"], due.as_str());
+    let lines = s
+        .import(&[
+            Credit {
+                on: days_ago(1),
+                pence: 1000,
+                payer: "J GIVER",
+                reference: "SO REF",
+            },
+            Credit {
+                on: days_ago(1),
+                pence: 700,
+                payer: "NEW SO",
+                reference: "",
+            },
+        ])
+        .await;
+    let (line, other) = (id(&lines[0]), id(&lines[1]));
+    let l = s.line(&line).await;
+    // A period months ahead isn't this line's to pay.
+    let far = shift(&due, 92);
+    let (st, out) = s
+        .post(
+            &format!("bank/lines/{line}/instalment"),
+            json!({ "expected": l["line"]["matchVersion"], "regularGiftId": so, "scheduledOn": far }),
+        )
+        .await;
+    assert_eq!(
+        (st, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("period_not_due")),
+        "{out}"
+    );
+    let (st, _) = s
+        .post(
+            &format!("bank/lines/{line}/instalment"),
+            json!({ "expected": l["line"]["matchVersion"], "regularGiftId": so, "scheduledOn": due }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(s.get_so(&so).await["missedOn"], Value::Null);
+
+    let l = s.line(&line).await;
+    let (st, _) = s
+        .post(
+            &format!("bank/lines/{line}/unmatch"),
+            json!({ "expected": l["line"]["matchVersion"] }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let after = s.get_so(&so).await;
+    assert_eq!(after["missedOn"], due.as_str(), "{after}");
+    let period = after["expected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["dueOn"] == due.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (period["status"].as_str(), &period["giftId"]),
+        (Some("missing"), &Value::Null)
+    );
+
+    // "Make this a standing order" can't start after its own line.
+    let o = s.line(&other).await;
+    let later = (day_of(&days_ago(1)) + 1).min(28);
+    if later > day_of(&days_ago(1)) {
+        let (st, out) = s
+            .post(
+                &format!("bank/lines/{other}/standing-order"),
+                json!({ "expected": o["line"]["matchVersion"], "contact": jo,
+                    "frequency": "monthly", "dayOfMonth": later }),
+            )
+            .await;
+        assert_eq!(
+            (st, out["problems"][0]["field"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("dayOfMonth")),
+            "{out}"
+        );
+    }
+}
+
+/// An instalment claimed for Gift Aid, its line then unmatched: the gift
+/// is void with the unmatch's reason, and the next claim repays it as an
+/// adjustment (as any gift made from a line).
+#[tokio::test]
+async fn a_claimed_instalment_unmatched_is_repaid_through_the_next_claim() {
+    let s = setup().await;
+    let rec = ok(&s.w, "POST", "/api/t/alpha/gifts/record", &s.ann, Some(json!({
+        "clientKey": contracts::new_id(),
+        "contact": { "kind": "individual", "firstName": "Ann", "lastName": "Smith", "name": "" },
+        "home": { "line1": "12 High Street", "postcode": "ls1 1aa" },
+        "giftAid": {},
+        "receivedOn": days_ago(30), "amount": 1000, "method": "cash",
+        "allocations": [{ "sourceCodeId": s.code, "amount": 1000 }],
+    }))).await;
+    let ann_smith = rec["contactId"].as_str().unwrap().to_owned();
+    let due = due_at_least(8);
+    let so = id(&s.standing(&ann_smith, 4000, &due).await);
+    let lines = s
+        .import(&[Credit {
+            on: shift(&due, 1),
+            pence: 4000,
+            payer: "A SMITH",
+            reference: "SO REF",
+        }])
+        .await;
+    let line = id(&lines[0]);
+    let l = s.line(&line).await;
+    let paid = ok(
+        &s.w,
+        "POST",
+        &format!("/api/t/alpha/bank/lines/{line}/instalment"),
+        &s.sam,
+        Some(json!({ "expected": l["line"]["matchVersion"], "regularGiftId": so, "scheduledOn": due })),
+    )
+    .await;
+    let gift = paid["gifts"][0]["id"].as_str().unwrap().to_owned();
+    ok(
+        &s.w,
+        "POST",
+        "/api/t/alpha/giftaid/hmrc-details",
+        &s.ann,
+        Some(json!({
+            "hmrcReference": "ab12345", "regulator": "ccew", "regulatorNumber": "1234567",
+            "officialTitle": "Mrs", "officialFirstName": "Jane", "officialLastName": "Doe",
+            "officialPostcode": "ls1 1aa", "officialPhone": "0113 496 0000",
+        })),
+    )
+    .await;
+    let today = days_ago(0);
+    let claim = ok(
+        &s.w,
+        "POST",
+        "/api/t/alpha/giftaid/claims",
+        &s.ann,
+        Some(json!({ "periodEnd": today })),
+    )
+    .await["claims"][0]
+        .clone();
+    let claim_id = claim["id"].as_str().unwrap().to_owned();
+    for step in [
+        json!({ "status": "ready" }),
+        json!({ "status": "submitted", "submittedOn": today, "hmrcReference": "CHAR-123" }),
+    ] {
+        let v = ok(
+            &s.w,
+            "GET",
+            &format!("/api/t/alpha/giftaid/claims/{claim_id}"),
+            &s.ann,
+            None,
+        )
+        .await;
+        let mut body = step;
+        body["expected"] = v["statusVersion"].clone();
+        ok(
+            &s.w,
+            "POST",
+            &format!("/api/t/alpha/giftaid/claims/{claim_id}/status"),
+            &s.ann,
+            Some(body),
+        )
+        .await;
+    }
+    let l = s.line(&line).await;
+    let (st, _) = s
+        .post(
+            &format!("bank/lines/{line}/unmatch"),
+            json!({ "expected": l["line"]["matchVersion"] }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let preview = ok(
+        &s.w,
+        "GET",
+        &format!("/api/t/alpha/giftaid/claims/preview?periodEnd={today}"),
+        &s.ann,
+        None,
+    )
+    .await;
+    let adjustments = preview["adjustments"].as_array().unwrap();
+    assert_eq!(adjustments.len(), 1, "{preview}");
+    assert_eq!(adjustments[0]["giftId"], gift.as_str());
+    assert_eq!(adjustments[0]["originalClaimId"], claim_id.as_str());
+    assert_eq!(adjustments[0]["amount"], 1000);
 }
 
 /// "Make this a standing order" (g2q3): offered when a payer matched

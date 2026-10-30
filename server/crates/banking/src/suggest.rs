@@ -111,8 +111,33 @@ impl Suggestion {
 pub trait Suggester: Sync {
     /// A short stable name, shown with the suggestion.
     fn name(&self) -> &'static str;
-    fn suggest(&self, conn: &Connection, line: &LineView)
-    -> Result<Vec<Suggestion>, ContractError>;
+    fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError>;
+}
+
+/// What suggesters read: the organisation's file, and what one request
+/// reads once for all its lines (review b5r M3: the standing orders'
+/// schedule).
+pub struct Context<'c> {
+    pub conn: &'c Connection,
+    standing: std::cell::OnceCell<giving::standing::Schedule>,
+}
+
+impl<'c> Context<'c> {
+    pub fn new(conn: &'c Connection) -> Self {
+        Self {
+            conn,
+            standing: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The active standing orders' schedule, read on first use.
+    pub fn standing(&self) -> rusqlite::Result<&giving::standing::Schedule> {
+        if let Some(s) = self.standing.get() {
+            return Ok(s);
+        }
+        let loaded = giving::standing::Schedule::load(self.conn)?;
+        Ok(self.standing.get_or_init(|| loaded))
+    }
 }
 
 /// The rule suggesters, in the order they rank.
@@ -128,13 +153,26 @@ pub static SUGGESTERS: &[&dyn Suggester] = &[
 
 /// The ranked suggestions for a line: none once it isn't unmatched.
 pub fn suggest(conn: &Connection, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
-    suggest_with(conn, line, SUGGESTERS)
+    suggest_with(&Context::new(conn), line, SUGGESTERS)
+}
+
+/// [`suggest`] for many lines (a reconcile page), reading what they
+/// share once.
+pub fn suggest_lines(
+    conn: &Connection,
+    lines: &[LineView],
+) -> Result<Vec<Vec<Suggestion>>, ContractError> {
+    let cx = Context::new(conn);
+    lines
+        .iter()
+        .map(|l| suggest_with(&cx, l, SUGGESTERS))
+        .collect()
 }
 
 /// [`suggest`] with the caller's suggesters (the seam for one behind an
 /// org opt-in).
 pub fn suggest_with(
-    conn: &Connection,
+    cx: &Context,
     line: &LineView,
     suggesters: &[&dyn Suggester],
 ) -> Result<Vec<Suggestion>, ContractError> {
@@ -143,7 +181,7 @@ pub fn suggest_with(
     }
     let mut merged: Vec<(usize, Suggestion)> = Vec::new();
     for (rank, s) in suggesters.iter().enumerate() {
-        for next in s.suggest(conn, line)? {
+        for next in s.suggest(cx, line)? {
             match merged.iter_mut().find(|(_, m)| m.proposal == next.proposal) {
                 Some((_, m)) => {
                     m.confidence = m.confidence.max(next.confidence);
@@ -309,11 +347,8 @@ impl Suggester for ContactNumber {
         "contactNumber"
     }
 
-    fn suggest(
-        &self,
-        conn: &Connection,
-        line: &LineView,
-    ) -> Result<Vec<Suggestion>, ContractError> {
+    fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
+        let conn = cx.conn;
         let text = format!("{} {}", line.reference, line.narrative);
         let mut out = Vec::new();
         let mut seen = Vec::new();
@@ -363,11 +398,8 @@ impl Suggester for KnownPayer {
         "knownPayer"
     }
 
-    fn suggest(
-        &self,
-        conn: &Connection,
-        line: &LineView,
-    ) -> Result<Vec<Suggestion>, ContractError> {
+    fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
+        let conn = cx.conn;
         let Some(key) = payer_key(&line.payer, &line.reference) else {
             return Ok(vec![]);
         };
@@ -413,8 +445,11 @@ fn display_payer(line: &LineView) -> String {
 
 /// A standing order's expected payment (step 5): the exact amount, due
 /// from 15 days before the line to 5 days after it (−5/+15, as
-/// CiviBanking does), and not paid yet. Strong, so pre-ticked; outside
-/// the window it isn't suggested.
+/// CiviBanking does), and not paid yet. Strong (so pre-ticked) only when
+/// the line identifies the donor: the standing order's bank reference in
+/// its reference or narrative, or a payer matched to the donor before.
+/// Amount and date alone are only a suggestion; outside the window it
+/// isn't suggested.
 pub struct StandingOrder;
 
 impl Suggester for StandingOrder {
@@ -422,13 +457,50 @@ impl Suggester for StandingOrder {
         "standingOrder"
     }
 
-    fn suggest(
-        &self,
-        conn: &Connection,
-        line: &LineView,
-    ) -> Result<Vec<Suggestion>, ContractError> {
+    fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
+        let conn = cx.conn;
         let mut out = Vec::new();
-        for p in giving::standing::payments_for_line(conn, &line.posted_on, line.amount)? {
+        let known: Vec<String> = match payer_key(&line.payer, &line.reference) {
+            Some(key) => payers_for(conn, &line.account_id, &key)?
+                .into_iter()
+                .map(|p| p.contact_id)
+                .collect(),
+            None => vec![],
+        };
+        let text = format!("{} {}", line.reference, line.narrative).to_lowercase();
+        for p in cx
+            .standing()?
+            .payments_for_line(&line.posted_on, line.amount)
+        {
+            let what = format!(
+                "the {} standing order of {} due {}",
+                p.frequency.as_str(),
+                giving::format_pence(p.amount),
+                p.due_on
+            );
+            // Strong only when the line says who paid (review b5r H1): its
+            // reference, or a payer matched to this donor before.
+            let by_reference = p
+                .bank_reference
+                .as_deref()
+                .map(|r| r.trim().to_lowercase())
+                .filter(|r| !r.is_empty())
+                .is_some_and(|r| text.contains(&r));
+            let by_payer = known.contains(&p.contact_id);
+            let (confidence, reason) = match (by_reference, by_payer) {
+                (true, _) => (
+                    Confidence::Strong,
+                    format!("{what}; its reference is in the line"),
+                ),
+                (_, true) => (
+                    Confidence::Strong,
+                    format!("{what}; {} paid it before", display_payer(line)),
+                ),
+                _ => (
+                    Confidence::Suggested,
+                    format!("{what}: amount and date only"),
+                ),
+            };
             out.push(Suggestion::new(
                 line,
                 Proposal::Instalment {
@@ -436,13 +508,8 @@ impl Suggester for StandingOrder {
                     scheduled_on: p.due_on.clone(),
                 },
                 named(conn, &p.contact_id)?,
-                Confidence::Strong,
-                format!(
-                    "the {} standing order of {} due {}",
-                    p.frequency.as_str(),
-                    giving::format_pence(p.amount),
-                    p.due_on
-                ),
+                confidence,
+                reason,
                 self.name(),
             ));
         }
@@ -469,11 +536,8 @@ impl Suggester for StandingOrderOffer {
         "standingOrderOffer"
     }
 
-    fn suggest(
-        &self,
-        conn: &Connection,
-        line: &LineView,
-    ) -> Result<Vec<Suggestion>, ContractError> {
+    fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
+        let conn = cx.conn;
         let Some(key) = payer_key(&line.payer, &line.reference) else {
             return Ok(vec![]);
         };
@@ -538,11 +602,8 @@ impl Suggester for HandEntered {
         "handEntered"
     }
 
-    fn suggest(
-        &self,
-        conn: &Connection,
-        line: &LineView,
-    ) -> Result<Vec<Suggestion>, ContractError> {
+    fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
+        let conn = cx.conn;
         let mut out = Vec::new();
         for t in waiting_transfers(conn, line)? {
             out.push(Suggestion::new(
@@ -573,11 +634,8 @@ impl Suggester for Rules {
         "rule"
     }
 
-    fn suggest(
-        &self,
-        conn: &Connection,
-        line: &LineView,
-    ) -> Result<Vec<Suggestion>, ContractError> {
+    fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
+        let conn = cx.conn;
         let mut out = Vec::new();
         for r in rules(conn, Some(&line.account_id))? {
             let field = r.rule.field.of(line).to_lowercase();
@@ -613,11 +671,8 @@ impl Suggester for NameOnly {
         "nameOnly"
     }
 
-    fn suggest(
-        &self,
-        conn: &Connection,
-        line: &LineView,
-    ) -> Result<Vec<Suggestion>, ContractError> {
+    fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
+        let conn = cx.conn;
         let words: Vec<String> = line
             .payer
             .split(|c: char| !c.is_alphanumeric())

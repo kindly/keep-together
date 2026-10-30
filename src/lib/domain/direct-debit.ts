@@ -75,7 +75,10 @@ export function ordinal(day: number): string {
   }
 }
 
-/** "every month on the 1st", "every year on 5th March". */
+/**
+ * "every month on the 1st", "every quarter on the 10th from February",
+ * "every year on 5th March".
+ */
 export function scheduleText(s: {
   frequency: RegularGiftFrequency
   dayOfMonth: number
@@ -83,6 +86,8 @@ export function scheduleText(s: {
 }): string {
   if (s.frequency === 'monthly')
     return `every month on the ${ordinal(s.dayOfMonth)}`
+  if (s.frequency === 'quarterly')
+    return `every quarter on the ${ordinal(s.dayOfMonth)} ${s.month === null ? '' : `from ${monthName(s.month)}`}`.trimEnd()
   return `every year on ${ordinal(s.dayOfMonth)} ${s.month === null ? '' : monthName(s.month)}`.trimEnd()
 }
 

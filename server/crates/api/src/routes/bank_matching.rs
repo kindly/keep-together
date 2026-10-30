@@ -104,14 +104,14 @@ async fn lines(
     require_staff(&t)?;
     t.read(move |r| {
         banking::account::account(r, &id)?.ok_or(ApiError::NotFound)?;
-        let mut out = Vec::new();
-        for line in matching::lines(r, &id, q.state.unwrap_or(MatchState::Unmatched))? {
-            out.push(LineRow {
-                suggestions: banking::suggest(r, &line)?,
-                line,
-            });
-        }
-        Ok(out)
+        let lines = matching::lines(r, &id, q.state.unwrap_or(MatchState::Unmatched))?;
+        // One read of what every line's suggestions share (review b5r M3).
+        let suggestions = banking::suggest::suggest_lines(r, &lines)?;
+        Ok(lines
+            .into_iter()
+            .zip(suggestions)
+            .map(|(line, suggestions)| LineRow { line, suggestions })
+            .collect())
     })
     .await
     .map(Json)
@@ -653,6 +653,7 @@ pub fn unmatch_line(
         });
     }
     let group = line_group(ctx, "unmatch", &line)?;
+    let standing = giving::standing::on_line(ctx.tx.read(), &line.id)?;
     if let Some(batch) = giving::bank::batch_for_line(ctx.tx.read(), &line.id)? {
         let version = giving::bank::get_batch(ctx.tx.read(), &batch)?
             .ok_or(ContractError::NotFound)?
@@ -666,6 +667,12 @@ pub fn unmatch_line(
         source,
         &group,
     )?;
+    // The periods the line paid are open again: missed, if they are due
+    // long enough ago.
+    let today = giving::terms_rules::date_of_ms(ctx.at);
+    for so in standing {
+        giving::standing::refresh_missed(ctx, &so, &today, source, Some(&group))?;
+    }
     mark(
         ctx,
         &line.id,
@@ -772,6 +779,7 @@ fn instalment_gift(
 ) -> Result<String, ContractError> {
     let conn = ctx.tx.read();
     let facts = giving::regular::facts(conn, regular_gift_id)?.ok_or(ContractError::NotFound)?;
+    giving::standing::check_payable(scheduled_on, &line.posted_on)?;
     if giving::regular::kind_of(conn, regular_gift_id)?
         != Some(giving::regular::Kind::StandingOrder)
     {
@@ -921,6 +929,14 @@ pub fn standing_order_from(
         ));
     }
     let starts_on = giving::terms_rules::day_in(index, req.day_of_month.clamp(1, 28));
+    // The line is its first payment: due on or before the line (review
+    // b5r L5).
+    if starts_on.as_str() > line.posted_on.as_str() {
+        return Err(ContractError::invalid(
+            "dayOfMonth",
+            "The first payment is this line: its day can’t be after the line’s date",
+        ));
+    }
     let default_code = banking::account::account(ctx.tx.read(), &line.account_id)?
         .and_then(|a| a.payload.default_source_code_id);
     let group = line_group(ctx, "new standing order", &line)?;

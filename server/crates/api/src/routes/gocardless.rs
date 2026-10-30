@@ -67,6 +67,18 @@ pub fn router() -> Router {
         )
 }
 
+/// The regular-gift routes here are a Direct Debit's: a standing order
+/// (its own routes, no provider; bank transfers step 5) is 404 here, as
+/// an id that isn't one.
+async fn direct_debit(t: &Tenant, id: &str) -> Result<(), ApiError> {
+    let id = id.to_owned();
+    t.read(move |r| match giving::regular::kind_of(r, &id)? {
+        Some(giving::regular::Kind::DirectDebit) => Ok(()),
+        _ => Err(ApiError::NotFound),
+    })
+    .await
+}
+
 /// `GET gocardless`: on or off here, and this organisation's connection.
 /// Any member.
 async fn status(Extension(t): Extension<Tenant>) -> Result<Json<GoCardlessStatus>, ApiError> {
@@ -152,6 +164,7 @@ async fn one(
     Path(IdParam { id }): Path<IdParam>,
 ) -> Result<Json<RegularGiftView>, ApiError> {
     let gc = t.gocardless()?;
+    direct_debit(&t, &id).await?;
     let owned = t.gocardless_owned().await?;
     let g = gc.clone();
     let (v, token) = t
@@ -364,6 +377,7 @@ async fn new_link(
     Body(req): Body<Expected>,
 ) -> Result<Json<RegularGiftSaved>, ApiError> {
     let gc = t.gocardless()?;
+    direct_debit(&t, &id).await?;
     // Connected = this organisation owns the account's mapping, not
     // merely holds a token.
     let owned = t.gocardless_owned().await?;
@@ -416,6 +430,7 @@ async fn cancel(
     Body(req): Body<Expected>,
 ) -> Result<Json<RegularGiftSaved>, ApiError> {
     let gc = t.gocardless()?;
+    direct_debit(&t, &id).await?;
     // Connected = this organisation owns the account's mapping, not
     // merely holds a token.
     let owned = t.gocardless_owned().await?;
@@ -649,6 +664,7 @@ async fn one_off(
     Body(req): Body<TakeOneOff>,
 ) -> Result<Json<OneOffStarted>, ApiError> {
     let gc = t.gocardless()?;
+    direct_debit(&t, &id).await?;
     let owned = t.gocardless_owned().await?;
     let (g, check) = (gc.clone(), req.clone());
     let (token, found) = t
@@ -946,6 +962,7 @@ async fn change_terms(
     Body(req): Body<ChangeTerms>,
 ) -> Result<Json<RegularGiftSaved>, ApiError> {
     t.gocardless()?;
+    direct_debit(&t, &id).await?;
     if req
         .client_key
         .as_deref()
@@ -972,6 +989,7 @@ async fn edit_terms(
     Body(req): Body<EditTerms>,
 ) -> Result<Json<RegularGiftSaved>, ApiError> {
     t.gocardless()?;
+    direct_debit(&t, &id).await?;
     let out = t
         .write(move |ctx| {
             term_of(ctx.tx.read(), &id, &term_id)?;
@@ -998,6 +1016,7 @@ async fn withdraw_terms(
     Body(req): Body<Expected>,
 ) -> Result<Json<RegularGiftSaved>, ApiError> {
     t.gocardless()?;
+    direct_debit(&t, &id).await?;
     let out = t
         .write(move |ctx| {
             term_of(ctx.tx.read(), &id, &term_id)?;
@@ -1017,6 +1036,7 @@ async fn code_terms(
     Body(req): Body<CodeTerms>,
 ) -> Result<Json<RegularGiftSaved>, ApiError> {
     t.gocardless()?;
+    direct_debit(&t, &id).await?;
     let out = t
         .write(move |ctx| {
             term_of(ctx.tx.read(), &id, &term_id)?;
@@ -1210,6 +1230,7 @@ async fn expected(
     Params(q): Params<ExpectedQuery>,
 ) -> Result<Json<Vec<giving::expected::ExpectedRow>>, ApiError> {
     t.gocardless()?;
+    direct_debit(&t, &id).await?;
     let (from, to) = months(&q)?;
     t.read(move |r| {
         giving::expected::for_regular_gift(r, &id, &from, &to, &today())?.ok_or(ApiError::NotFound)

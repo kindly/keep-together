@@ -1913,7 +1913,8 @@ fn fill(
     Ok(v)
 }
 
-/// One regular gift as of `today` (ISO), or `None`.
+/// One Direct Debit as of `today` (ISO), or `None` (a standing order is
+/// [`crate::standing`]'s).
 pub fn get_regular(
     conn: &Connection,
     id: &str,
@@ -1921,7 +1922,7 @@ pub fn get_regular(
 ) -> rusqlite::Result<Option<RegularGiftView>> {
     let found = conn
         .prepare_cached(&format!(
-            "SELECT {VIEW_COLUMNS} FROM regular_gifts WHERE id = ?1"
+            "SELECT {VIEW_COLUMNS} FROM regular_gifts WHERE id = ?1 AND kind = 'direct_debit'"
         ))?
         .query_row([id], view_row)
         .optional()?;
