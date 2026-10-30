@@ -40,6 +40,10 @@ export function proposalText(s: BankSuggestion): string {
       return `The gift${s.proposal.giftIds.length === 1 ? '' : 's'} already entered for ${who}`
     case 'notDonation':
       return `Not a donation: ${s.proposal.note}`
+    case 'instalment':
+      return `${who}’s standing order payment due ${formatDay(s.proposal.scheduledOn)}`
+    case 'newStandingOrder':
+      return `Make this a standing order for ${who}`
   }
 }
 

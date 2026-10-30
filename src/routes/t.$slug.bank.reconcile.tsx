@@ -13,7 +13,7 @@ import type {
   LineWithSuggestions,
 } from '../lib/data'
 import { describe } from '../lib/data/rust/client'
-import { nameOnly, proposalKey } from '../lib/domain/reconcile'
+import { bulkable, nameOnly, proposalKey } from '../lib/domain/reconcile'
 import { useCanWrite } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/bank/reconcile')({
@@ -168,8 +168,7 @@ function Lines({
     return <p className="text-sm text-neutral-500">Loading…</p>
   const rows = lines.data
   // A suggestion staff may tick: never one made from a name alone (g1q5).
-  const bulk = (l: LineWithSuggestions) =>
-    l.suggestions.filter((x) => !nameOnly(x))
+  const bulk = (l: LineWithSuggestions) => l.suggestions.filter(bulkable)
   const tickOf = (l: LineWithSuggestions): string | null => {
     const key =
       l.id in ticks
@@ -302,7 +301,7 @@ function LineCard({
         <fieldset className="flex flex-col gap-1">
           <legend className="sr-only">Suggestions for this line</legend>
           {l.suggestions.map((s) =>
-            nameOnly(s) ? (
+            !bulkable(s) ? (
               <div
                 key={proposalKey(s.proposal)}
                 data-testid="name-only"
@@ -313,8 +312,10 @@ function LineCard({
                   {proposalText(s)}
                 </span>
                 <span className="text-xs text-neutral-600">
-                  {s.reason}. A name alone is never accepted in bulk: match it
-                  by hand to use it.
+                  {s.reason}.{' '}
+                  {nameOnly(s)
+                    ? 'A name alone is never accepted in bulk: match it by hand to use it.'
+                    : 'Set it up one at a time: match it by hand to use it.'}
                 </span>
               </div>
             ) : (

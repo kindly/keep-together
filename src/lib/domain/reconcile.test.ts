@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nameOnly, nearestFirst, proposalKey } from './reconcile'
+import { bulkable, nameOnly, nearestFirst, proposalKey } from './reconcile'
 
 describe('reconcile rules', () => {
   it('a suggestion is known by what it does, not where it is', () => {
@@ -10,6 +10,56 @@ describe('reconcile rules', () => {
     expect(proposalKey({ kind: 'notDonation', ruleId: 'r1', note: 'x' })).toBe(
       'notDonation:r1',
     )
+  })
+
+  it('a standing order’s payment and a new standing order are known too', () => {
+    expect(
+      proposalKey({
+        kind: 'instalment',
+        regularGiftId: 'r1',
+        scheduledOn: '2026-11-03',
+      }),
+    ).toBe('instalment:r1:2026-11-03')
+    expect(
+      proposalKey({
+        kind: 'newStandingOrder',
+        contactId: 'c1',
+        frequency: 'monthly',
+        dayOfMonth: 3,
+        month: null,
+      }),
+    ).toBe('newStandingOrder:c1:monthly:3:')
+  })
+
+  it('a standing-order offer is never bulk; its payment is', () => {
+    expect(
+      bulkable({
+        suggesters: ['standingOrder'],
+        proposal: {
+          kind: 'newStandingOrder',
+          contactId: 'c1',
+          frequency: 'monthly',
+          dayOfMonth: 3,
+          month: null,
+        },
+      }),
+    ).toBe(false)
+    expect(
+      bulkable({
+        suggesters: ['standingOrder'],
+        proposal: {
+          kind: 'instalment',
+          regularGiftId: 'r1',
+          scheduledOn: '2026-11-03',
+        },
+      }),
+    ).toBe(true)
+    expect(
+      bulkable({
+        suggesters: ['nameOnly'],
+        proposal: { kind: 'newGift', contactId: 'c1' },
+      }),
+    ).toBe(false)
   })
 
   it('a name alone is never bulk', () => {

@@ -19,7 +19,24 @@ export function proposalKey(p: BankProposal): string {
       return `existingGifts:${[...p.giftIds].sort().join(',')}`
     case 'notDonation':
       return `notDonation:${p.ruleId}`
+    case 'instalment':
+      return `instalment:${p.regularGiftId}:${p.scheduledOn}`
+    case 'newStandingOrder':
+      return `newStandingOrder:${p.contactId}:${p.frequency}:${p.dayOfMonth}:${p.month ?? ''}`
   }
+}
+
+/**
+ * Never in a bulk "Accept ticked": a suggestion made from a name alone
+ * (g1q5), and an offer to make a standing order (staff set it up, one at
+ * a time). An `instalment` (a standing order's payment) goes in bulk like
+ * any other when the server marks it strong.
+ */
+export function bulkable(s: {
+  suggesters: ReadonlyArray<string>
+  proposal: BankProposal
+}): boolean {
+  return !nameOnly(s) && s.proposal.kind !== 'newStandingOrder'
 }
 
 /** Made from a name alone: applied one at a time, never in bulk. */
