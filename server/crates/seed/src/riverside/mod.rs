@@ -635,6 +635,8 @@ fn gifts(
                     amount: g.amount,
                 }],
                 client_key: None,
+                from_line: None,
+                paying_in_batch_id: None,
                 origin: None,
             },
             Source::Seed,

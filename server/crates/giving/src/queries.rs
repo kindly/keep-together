@@ -42,19 +42,23 @@ impl Codes {
 
 const GIFT_COLUMNS: &str = "id, contact_id, received_on, amount, method, reference, status, \
      entered_by, entered_at, gift_version, status_version, seq, void_reason, claim_id, provider, \
-     provider_payment_id, regular_gift_id";
+     provider_payment_id, regular_gift_id, bank_line_id, bank_line_made, paying_in_batch_id, \
+     line_version";
 
 fn gift_row(r: &rusqlite::Row) -> rusqlite::Result<(GiftRow, i64)> {
+    let method = Method::parse(&r.get::<_, String>(4)?);
+    let status = Status::parse(&r.get::<_, String>(6)?);
+    let bank_line_id: Option<String> = r.get(17)?;
     Ok((
         GiftRow {
             id: r.get(0)?,
             contact_id: r.get(1)?,
             received_on: r.get(2)?,
             amount: r.get(3)?,
-            method: Method::parse(&r.get::<_, String>(4)?),
+            method,
             reference: r.get(5)?,
             allocations: vec![],
-            status: Status::parse(&r.get::<_, String>(6)?),
+            status,
             void_reason: r.get(12)?,
             claim_id: r.get(13)?,
             provider: r
@@ -63,6 +67,15 @@ fn gift_row(r: &rusqlite::Row) -> rusqlite::Result<(GiftRow, i64)> {
                 .and_then(Provider::parse),
             provider_payment_id: r.get(15)?,
             regular_gift_id: r.get(16)?,
+            not_on_a_statement: crate::bank::not_on_a_statement(
+                method,
+                status,
+                bank_line_id.as_deref(),
+            ),
+            bank_line_id,
+            made_from_line: r.get(18)?,
+            paying_in_batch_id: r.get(19)?,
+            line_version: r.get(20)?,
             entered_by: r.get(7)?,
             entered_at: r.get(8)?,
             gift_version: r.get(9)?,

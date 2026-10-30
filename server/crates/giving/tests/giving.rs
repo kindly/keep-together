@@ -51,6 +51,7 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::MIGRATION_DIRECT_DEBIT),
         M::up(giving::MIGRATION_UNIFIED),
         M::up(giving::terms::MIGRATION),
+        M::up(giving::bank::MIGRATION),
     ])
 }
 
@@ -226,6 +227,8 @@ impl World {
             reference: None,
             allocations: vec![row(&self.street.version, amount)],
             client_key: None,
+            from_line: None,
+            paying_in_batch_id: None,
             origin: None,
         }
     }

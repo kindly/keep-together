@@ -23,10 +23,30 @@ provider: GiftProvider | null, providerPaymentId: string | null, regularGiftId: 
  */
 claimId: string | null, 
 /**
+ * The statement line it is on (ADR 0027), and whether it was made
+ * from that line (amount, date and reference are the line's; voiding
+ * it frees the line) or entered by hand and matched to it.
+ */
+bankLineId: string | null, 
+/**
+ * (Not `fromLine`: that is the payload's line id, and a page may
+ * post a row back as its save.)
+ */
+madeFromLine: boolean, 
+/**
+ * A bank transfer entered by hand, received, that no statement line
+ * is matched to yet (derived, never stored).
+ */
+notOnAStatement: boolean, 
+/**
+ * The paying-in batch it was banked in.
+ */
+payingInBatchId: string | null, 
+/**
  * The platform user who entered it; null = system.
  */
 enteredBy: number | null, 
 /**
  * When it was entered (ms since the epoch).
  */
-enteredAt: number, giftVersion: number, statusVersion: number, };
+enteredAt: number, giftVersion: number, statusVersion: number, lineVersion: number, };

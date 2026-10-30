@@ -61,8 +61,18 @@ pub fn org_migrations() -> Migrations<'static> {
         // `regular_gifts` rebuilt without its terms, the terms and their
         // split backfilled as each one's first row, `scheduled_on`
         M::up_with_hook("", rebuild_with_deferred_keys(giving::terms::MIGRATION)),
+        // 21: bank transfers (ADR 0027): bank accounts, statement imports
+        // and their credit lines, remembered payers, not-a-donation rules,
+        // paying-in batches; `gifts` rebuilt with `bank_transfer` and
+        // `cheque` and its line and batch; `regular_gifts.kind`
+        M::up_with_hook("", rebuild_with_deferred_keys(BANK_TRANSFERS)),
     ])
 }
+
+/// Step 21 (ADR 0027): the bank transfers step, held by `giving` (its
+/// gifts and batches point at the statement side) so the domain crates'
+/// tests migrate with it.
+pub use giving::bank::MIGRATION as BANK_TRANSFERS;
 
 /// A step that rebuilds a table other tables point at (drop, create,
 /// copy back). Foreign keys can't be switched off inside the migration's

@@ -44,6 +44,7 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::MIGRATION_UNIFIED),
         M::up(giftaid::MIGRATION_SCANS),
         M::up(giving::terms::MIGRATION),
+        M::up(giving::bank::MIGRATION),
     ])
 }
 
@@ -173,6 +174,8 @@ fn gift_for(db: &OrgDb, contact_id: &str, date: &str, void: bool) -> String {
                     amount: 2000,
                 }],
                 client_key: None,
+                from_line: None,
+                paying_in_batch_id: None,
                 origin: None,
             },
             Source::Ui,

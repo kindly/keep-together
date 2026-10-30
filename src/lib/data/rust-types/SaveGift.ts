@@ -17,11 +17,26 @@ receivedOn: string,
 amount: number, method: GiftMethod, 
 /**
  * Card: the reader's receipt id. Direct Debit: the GoCardless
- * payment id (unique: one gift per payment).
+ * payment id (unique: one gift per payment). Bank transfer: the
+ * donor's reference. Cheque: its number. Cash has none.
  */
 reference?: string, allocations: Array<AllocationRow>, clientKey?: string, 
 /**
  * The provider payment it is (create-only, the system's; v2). A save
  * may leave it out: it never changes.
  */
-origin?: GiftOrigin, };
+origin?: GiftOrigin, 
+/**
+ * The statement line it was made from (v4, ADR 0027): create-only.
+ * Its amount, date, method and reference are the line's, locked as a
+ * provider gift's are; voiding it frees the line. A save may leave
+ * it out: it never changes. (A gift entered by hand and matched to a
+ * line later is linked by `giving.line` instead.)
+ */
+fromLine?: string, 
+/**
+ * The paying-in batch it was banked in (v4): cash or a cheque, set
+ * when it is recorded, while the batch is open. A save may leave it
+ * out: it never changes.
+ */
+payingInBatchId?: string, };

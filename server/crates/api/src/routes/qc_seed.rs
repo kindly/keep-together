@@ -401,6 +401,8 @@ fn side(
                     amount: pence,
                 }],
                 client_key: None,
+                from_line: None,
+                paying_in_batch_id: None,
                 origin: None,
             },
             Source::Seed,

@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 use sources::CodeDescription;
 use ts_rs::TS;
 
-/// How a gift was paid: by hand, on a card reader we don't drive (yet), or
-/// by Direct Debit (a GoCardless payment: recorded by the system from
-/// GoCardless's events, never by hand).
+/// How a gift was paid: by hand, on a card reader we don't drive (yet), by
+/// Direct Debit (a GoCardless payment: recorded by the system from
+/// GoCardless's events, never by hand), by bank transfer (a one-off or a
+/// standing order: entered by hand, or made from a statement line), or by
+/// cheque (pending until it clears, ADR 0027).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, rename = "GiftMethod")]
@@ -17,6 +19,8 @@ pub enum Method {
     Cash,
     Card,
     DirectDebit,
+    BankTransfer,
+    Cheque,
 }
 
 impl Method {
@@ -25,6 +29,8 @@ impl Method {
             Method::Cash => "cash",
             Method::Card => "card",
             Method::DirectDebit => "direct_debit",
+            Method::BankTransfer => "bank_transfer",
+            Method::Cheque => "cheque",
         }
     }
 
@@ -32,8 +38,15 @@ impl Method {
         match s {
             "card" => Method::Card,
             "direct_debit" => Method::DirectDebit,
+            "bank_transfer" => Method::BankTransfer,
+            "cheque" => Method::Cheque,
             _ => Method::Cash,
         }
+    }
+
+    /// Paid in at the bank on a paying-in slip: what a batch holds.
+    pub fn is_paid_in(self) -> bool {
+        matches!(self, Method::Cash | Method::Cheque)
     }
 }
 
@@ -173,7 +186,8 @@ pub struct GiftPayload {
     pub amount: i64,
     pub method: Method,
     /// Card: the reader's receipt id. Direct Debit: the GoCardless
-    /// payment id (unique: one gift per payment).
+    /// payment id (unique: one gift per payment). Bank transfer: the
+    /// donor's reference. Cheque: its number. Cash has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub reference: Option<String>,
@@ -186,10 +200,25 @@ pub struct GiftPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub origin: Option<ProviderRef>,
+    /// The statement line it was made from (v4, ADR 0027): create-only.
+    /// Its amount, date, method and reference are the line's, locked as a
+    /// provider gift's are; voiding it frees the line. A save may leave
+    /// it out: it never changes. (A gift entered by hand and matched to a
+    /// line later is linked by `giving.line` instead.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub from_line: Option<String>,
+    /// The paying-in batch it was banked in (v4): cash or a cheque, set
+    /// when it is recorded, while the batch is open. A save may leave it
+    /// out: it never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub paying_in_batch_id: Option<String>,
 }
 
 /// The `giving.status` slice (v2: `reason`). Staff set `completed` or
-/// `void`; the provider's statuses are the system's. Voiding a gift that
+/// `void`, and on a cheque `pending` and `failed` (bounced) too; the
+/// provider's statuses are the system's. Voiding a gift that
 /// is in a Gift Aid claim needs a reason (it goes into the next claim as
 /// an adjustment); any other void may give one. A provider status that
 /// isn't money received carries the provider's reason. `completed`
@@ -276,6 +305,18 @@ pub struct GiftRow {
     pub regular_gift_id: Option<String>,
     /// The Gift Aid claim it is in: amount, date and donor locked.
     pub claim_id: Option<String>,
+    /// The statement line it is on (ADR 0027), and whether it was made
+    /// from that line (amount, date and reference are the line's; voiding
+    /// it frees the line) or entered by hand and matched to it.
+    pub bank_line_id: Option<String>,
+    /// (Not `fromLine`: that is the payload's line id, and a page may
+    /// post a row back as its save.)
+    pub made_from_line: bool,
+    /// A bank transfer entered by hand, received, that no statement line
+    /// is matched to yet (derived, never stored).
+    pub not_on_a_statement: bool,
+    /// The paying-in batch it was banked in.
+    pub paying_in_batch_id: Option<String>,
     /// The platform user who entered it; null = system.
     #[ts(type = "number | null")]
     pub entered_by: Option<i64>,
@@ -286,6 +327,8 @@ pub struct GiftRow {
     pub gift_version: i64,
     #[ts(type = "number")]
     pub status_version: i64,
+    #[ts(type = "number")]
+    pub line_version: i64,
 }
 
 /// The gift's donor as the gift page shows it.
@@ -380,4 +423,108 @@ pub struct GiftSaved {
     #[ts(type = "number")]
     pub counter: i64,
     pub view: GiftView,
+}
+
+/// The `giving.line` slice: the statement line a gift entered by hand is
+/// matched to, or none (ADR 0027). Only a bank transfer; a gift made from
+/// a line has it for good (`fromLine`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "GiftLine")]
+pub struct LinePayload {
+    pub line_id: Option<String>,
+}
+
+/// Where a paying-in batch stands: `open` (gifts going in) or `closed`
+/// (its slip's total and date written). A closed batch is matched once it
+/// names its statement line (`giving.batchLine`): then its cheques have
+/// cleared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BatchStatus {
+    Open,
+    Closed,
+}
+
+impl BatchStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BatchStatus::Open => "open",
+            BatchStatus::Closed => "closed",
+        }
+    }
+
+    /// The stored word (a CHECK holds the column).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "closed" => BatchStatus::Closed,
+            _ => BatchStatus::Open,
+        }
+    }
+}
+
+/// The `giving.payingInBatch` contract (counter `version`): cash and
+/// cheques paid in together on one slip (ADR 0027 decision 6). Opened on
+/// an account, closed with the slip's total (pence) and the date it was
+/// paid in. Its statement line is `giving.batchLine`'s, never this
+/// payload's. The account never changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PayingInBatchPayload {
+    pub account_id: String,
+    /// The paying-in slip's number; may be blank.
+    #[serde(default)]
+    pub slip_number: String,
+    /// ISO date it was paid in; needed to close.
+    #[serde(default)]
+    pub banked_on: Option<String>,
+    /// The slip's total in pence, over 0; needed to close.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub total: Option<i64>,
+    pub status: BatchStatus,
+}
+
+/// The `giving.batchLine` slice (counter `line_version`): the statement
+/// line a closed batch is matched to, or none. Moved only by matching and
+/// unmatching, which clear and re-pend the batch's cheques with it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BatchLinePayload {
+    pub line_id: Option<String>,
+}
+
+/// A paying-in batch as stored, with what its gifts add up to. A
+/// difference against the slip or its line is shown, never forced.
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PayingInBatchRow {
+    pub id: String,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub batch: PayingInBatchPayload,
+    /// The statement line it is matched to: matched exactly when set.
+    pub line_id: Option<String>,
+    #[ts(type = "number | null")]
+    pub opened_by: Option<i64>,
+    #[ts(type = "number")]
+    pub opened_at: i64,
+    #[ts(type = "number | null")]
+    pub closed_by: Option<i64>,
+    #[ts(type = "number | null")]
+    pub closed_at: Option<i64>,
+    /// The gifts in it that aren't void (pending cheques included: they
+    /// were paid in), and their sum in pence.
+    #[ts(type = "number")]
+    pub gift_count: i64,
+    #[ts(type = "number")]
+    pub gifts_total: i64,
+    #[ts(type = "number")]
+    pub version: i64,
+    #[ts(type = "number")]
+    pub line_version: i64,
 }

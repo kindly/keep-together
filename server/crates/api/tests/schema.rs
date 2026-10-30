@@ -258,6 +258,64 @@ const FIXTURES: &[&str] = &[
          amount, charge_date, status, reason, gift_id, version, scheduled_on, subscription_id)
      VALUES (5, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f4', 'PM000014', NULL, 'MD000010', 300,
          '2027-01-09', 'pending', NULL, NULL, 1, '2027-01-09', 'SB000099');",
+    // 21: bank transfers (ADR 0027): an account with a default code, an
+    // import of two credit lines, one made into a transfer gift (its
+    // payer remembered) and one a paying-in batch's (a cheque in it), a
+    // transfer entered by hand not on a statement yet, a not-a-donation
+    // rule, a standing order
+    "INSERT INTO bank_accounts (seq, id, name, sort_code, account_last4,
+         default_source_code_id, csv_mapping, active, created_by, created_at, version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1', 'CAF current', '40-52-40', '1234',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', NULL, 1, 1, 6000, 1);
+     INSERT INTO bank_imports (seq, id, account_id, file_name, format, preset, first_date,
+         last_date, new_lines, duplicate_lines, imported_by, imported_at, version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
+         'caf-oct.csv', 'csv', 'caf', '2026-10-01', '2026-10-31', 2, 0, 1, 6100, 0);
+     INSERT INTO bank_lines (seq, id, account_id, import_id, posted_on, amount, payer,
+         reference, narrative, bank_id, dedupe_key, occurrence, match_state, match_note,
+         matched_by, matched_at, match_version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a3', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a2', '2026-10-14', 5000, 'A SMITH', '100016',
+         'FASTER PAYMENT A SMITH 100016', NULL, 'k1', 1, 'matched', NULL, 1, 6200, 1),
+            (2, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a4', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a2', '2026-10-20', 3000, '', '000123',
+         'PAID IN AT BRANCH 000123', NULL, 'k2', 1, 'matched', NULL, 1, 6300, 1);
+     INSERT INTO bank_payers (id, account_id, payer_key, contact_id, payer, reference,
+         last_line_id, matched_at)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e1a5', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
+         'a smith|100016', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', 'A SMITH', '100016',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a3', 6200);
+     INSERT INTO bank_rules (seq, id, account_id, field, contains, action, note, active,
+         created_by, created_at, version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a6', NULL, 'narrative', 'GOCARDLESS',
+         'not_donation', 'payouts', 1, 1, 6400, 0);
+     INSERT INTO paying_in_batches (seq, id, account_id, slip_number, banked_on, total,
+         status, line_id, opened_by, opened_at, closed_by, closed_at, version, line_version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a7', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
+         '000123', '2026-10-19', 3000, 'closed', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a4', 1,
+         6050, 1, 6250, 2, 1);
+     INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, reference, status,
+         entered_by, entered_at, gift_version, status_version, bank_line_id, bank_line_made,
+         line_version, paying_in_batch_id)
+     VALUES (20, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a8', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '2026-10-14', 5000, 'bank_transfer', '100016', 'completed', 1, 6200, 0, 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a3', 1, 0, NULL),
+            (21, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a9', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '2026-10-19', 3000, 'cheque', '000456', 'completed', 1, 6060, 0, 1, NULL, 0, 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a7'),
+            (22, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1aa', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '2026-10-28', 2000, 'bank_transfer', NULL, 'completed', 1, 6500, 0, 0, NULL, 0, 0,
+         NULL);
+     INSERT INTO gift_allocations (id, gift_id, position, source_code_id, amount)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e1ab', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a8', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 5000),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e1ac', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a9', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 3000),
+            ('0190f0c0a0b0c0d0e0f0a0b0c0d0e1ad', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1aa', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 2000);
+     INSERT INTO regular_gifts (seq, id, contact_id, status, entered_by, entered_at, kind)
+     VALUES (3, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1ae', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         'active', 1, 6600, 'standing_order');",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
@@ -1134,4 +1192,158 @@ fn the_terms_step_backfills_one_applied_row_per_regular_gift() {
         giving::regular::consistency(&conn).unwrap(),
         Vec::<String>::new()
     );
+}
+
+/// Step 21 (ADR 0027): `gifts` rebuilt with every row, column and index
+/// it had (the Gift Aid claim lock and the partial indexes included),
+/// the two new methods, and its statement line and paying-in batch; a
+/// regular gift is a Direct Debit unless it says otherwise; a gift has
+/// one origin; a batch is matched exactly when it names its line.
+#[test]
+fn the_bank_step_widens_gifts_and_keeps_every_row_column_and_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    file_at(tmp.path(), 20);
+    let mut conn = Connection::open(tmp.path().join(format!("orgs/{TENANT}.db"))).unwrap();
+    let shape = |conn: &Connection, sql: &str| -> Vec<String> {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let columns = "SELECT name FROM pragma_table_info('gifts') ORDER BY cid";
+    let indexes = "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'gifts'
+                   AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name";
+    let rows = "SELECT id || '|' || method || '|' || status || '|' || amount || '|'
+                    || coalesce(claim_id, '') || '|' || claim_lock_version || '|'
+                    || coalesce(provider_payment_id, '') || '|'
+                    || coalesce(regular_gift_id, '') || '|' || coalesce(scheduled_on, '')
+                FROM gifts ORDER BY seq";
+    let (cols_before, idx_before, rows_before) = (
+        shape(&conn, columns),
+        shape(&conn, indexes),
+        shape(&conn, rows),
+    );
+    org_migrations().to_version(&mut conn, 21).unwrap();
+    let mut cols_after = shape(&conn, columns);
+    assert_eq!(
+        cols_after.split_off(cols_before.len()),
+        [
+            "bank_line_id",
+            "bank_line_made",
+            "line_version",
+            "paying_in_batch_id"
+        ]
+    );
+    assert_eq!(cols_after, cols_before);
+    let idx_after = shape(&conn, indexes);
+    for name in &idx_before {
+        assert!(idx_after.contains(name), "{name} lost in the rebuild");
+    }
+    assert_eq!(shape(&conn, rows), rows_before);
+    // The v17 regular gift is a Direct Debit.
+    let kinds = shape(&conn, "SELECT kind FROM regular_gifts ORDER BY seq");
+    assert_eq!(kinds, ["direct_debit"]);
+
+    let refused = |sql: &str| {
+        let err = conn.execute_batch(sql).unwrap_err().to_string();
+        assert!(err.contains("CHECK constraint failed"), "{sql}: {err}");
+    };
+    // A provider's gift can't also be a statement line's.
+    conn.execute_batch(FIXTURES[20]).unwrap();
+    refused(
+        "UPDATE gifts SET bank_line_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a3'
+         WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d1'",
+    );
+    refused("UPDATE gifts SET method = 'standing_order' WHERE seq = 20");
+    // Only a bank transfer is on a line, made from it only with it, and
+    // only cash or a cheque is in a batch.
+    refused("UPDATE gifts SET method = 'cash' WHERE seq = 20");
+    refused("UPDATE gifts SET bank_line_made = 1 WHERE seq = 22");
+    refused("UPDATE gifts SET method = 'card' WHERE seq = 21");
+    // Matched = closed and naming its line: an open batch names none, and
+    // `matched` isn't a status. Closed only with a total.
+    refused(
+        "UPDATE paying_in_batches SET status = 'open'
+         WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a7'",
+    );
+    refused(
+        "UPDATE paying_in_batches SET status = 'matched'
+         WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a7'",
+    );
+    refused(
+        "INSERT INTO paying_in_batches (id, account_id, status, opened_at)
+         VALUES ('000000000000000000000000000001b0', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
+             'closed', 1)",
+    );
+    // A debit is never a line.
+    refused(
+        "INSERT INTO bank_lines (id, account_id, import_id, posted_on, amount, dedupe_key,
+             occurrence)
+         VALUES ('000000000000000000000000000001b1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
+             '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a2', '2026-10-21', -500, 'k3', 1)",
+    );
+    // The same line twice in one account is one row: its occurrence tells
+    // two identical standing orders on one day apart.
+    let err = conn
+        .execute_batch(
+            "INSERT INTO bank_lines (id, account_id, import_id, posted_on, amount, dedupe_key,
+                 occurrence)
+             VALUES ('000000000000000000000000000001b2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
+                 '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a2', '2026-10-14', 5000, 'k1', 1)",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("UNIQUE constraint failed"), "{err}");
+    conn.execute_batch(
+        "INSERT INTO bank_lines (id, account_id, import_id, posted_on, amount, dedupe_key,
+             occurrence)
+         VALUES ('000000000000000000000000000001b2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a1',
+             '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a2', '2026-10-14', 5000, 'k1', 2)",
+    )
+    .unwrap();
+}
+
+/// Erasure (rule 3), the part the schema decides: a contact's remembered
+/// payers can go without touching anything that points at them, and
+/// their gifts (from lines, by hand, in a batch) and the statement lines'
+/// amounts and dates stay. Erasure itself isn't built yet; when it is, it
+/// deletes these rows.
+#[test]
+fn a_contacts_remembered_payers_go_and_their_gifts_and_lines_stay() {
+    let tmp = tempfile::tempdir().unwrap();
+    file_at(tmp.path(), 21);
+    let conn = Connection::open(tmp.path().join(format!("orgs/{TENANT}.db"))).unwrap();
+    let shape = |conn: &Connection, sql: &str| -> Vec<String> {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let jo = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0";
+    let kept = "SELECT id || '|' || amount || '|' || received_on || '|' || status || '|'
+                    || coalesce(bank_line_id, '') || '|' || coalesce(paying_in_batch_id, '')
+                FROM gifts WHERE contact_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0' ORDER BY seq";
+    let lines = "SELECT id || '|' || amount || '|' || posted_on FROM bank_lines ORDER BY seq";
+    let (gifts_before, lines_before) = (shape(&conn, kept), shape(&conn, lines));
+    assert!(
+        gifts_before
+            .iter()
+            .any(|g| g.contains("0190f0c0a0b0c0d0e0f0a0b0c0d0e1a3"))
+    );
+    assert_eq!(shape(&conn, "SELECT contact_id FROM bank_payers"), [jo]);
+    conn.execute("DELETE FROM bank_payers WHERE contact_id = ?1", [jo])
+        .unwrap();
+    let orphans: i64 = conn
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(orphans, 0);
+    assert!(shape(&conn, "SELECT id FROM bank_payers").is_empty());
+    assert_eq!(shape(&conn, kept), gifts_before);
+    assert_eq!(shape(&conn, lines), lines_before);
 }

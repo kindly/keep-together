@@ -3,12 +3,13 @@
 
 use contracts::{ContractError, Problem, mint_ids};
 
-use crate::types::{GiftPayload, Method, StatusPayload};
+use crate::types::{BatchStatus, GiftPayload, Method, PayingInBatchPayload, StatusPayload};
 
 /// Most source codes one gift is split across.
 pub const ALLOCATION_LIMIT: usize = 20;
 
-/// Longest card reference kept (a receipt or transaction id).
+/// Longest reference kept (a receipt or transaction id, a donor's bank
+/// reference, a cheque number).
 pub const REFERENCE_MAX: usize = 200;
 /// The most pence an amount may be: 2^53 − 1, the largest integer a
 /// JavaScript number holds exactly. Pence travel as JSON numbers, so a
@@ -80,9 +81,10 @@ pub fn is_iso_date(value: &str) -> bool {
 
 /// Normalise a gift and refuse what can't be stored: an amount of 0 or
 /// less or over [`PENCE_MAX`], a date that isn't one, allocations missing, not positive or not
-/// summing to the amount, a reference on a cash gift, or a Direct
-/// Debit gift without its payment id. Mints missing
-/// allocation keys; an empty reference is none.
+/// summing to the amount, a reference on a cash gift, a Direct
+/// Debit gift without its payment id, a gift from a statement line that
+/// isn't a bank transfer, or a batch gift that isn't cash or a cheque.
+/// Mints missing allocation keys; an empty reference is none.
 pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
     let mut problems = Vec::new();
     p.reference = p
@@ -108,9 +110,18 @@ pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
         problems.push(Problem::new("receivedOn", "Dates are YYYY-MM-DD"));
     }
     if p.reference.is_some() && p.method == Method::Cash {
+        problems.push(Problem::new("reference", "A cash gift has no reference"));
+    }
+    if p.from_line.is_some() && (p.method != Method::BankTransfer || p.origin.is_some()) {
         problems.push(Problem::new(
-            "reference",
-            "Only a card or Direct Debit payment has a reference",
+            "method",
+            "A gift from a statement line is a bank transfer",
+        ));
+    }
+    if p.paying_in_batch_id.is_some() && !p.method.is_paid_in() {
+        problems.push(Problem::new(
+            "payingInBatchId",
+            "Only cash and cheques are paid in on a slip",
         ));
     }
     if p.reference.is_none() && p.method == Method::DirectDebit {
@@ -168,6 +179,49 @@ pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
     }
 }
 
+/// Longest paying-in slip number kept.
+pub const SLIP_NUMBER_MAX: usize = 50;
+
+/// Normalise a paying-in batch and refuse what can't be stored: a slip
+/// number over [`SLIP_NUMBER_MAX`], a date that isn't one, a total of 0 or
+/// less or over [`PENCE_MAX`], and a closed batch without its total and
+/// date. A blank slip number is kept blank; a blank date is none.
+pub fn prepare_batch(mut p: PayingInBatchPayload) -> Result<PayingInBatchPayload, ContractError> {
+    let mut problems = Vec::new();
+    p.slip_number = p.slip_number.trim().to_owned();
+    p.banked_on = p
+        .banked_on
+        .map(|d| d.trim().to_owned())
+        .filter(|d| !d.is_empty());
+    if contacts::rules::too_long(&p.slip_number, SLIP_NUMBER_MAX) {
+        problems.push(Problem::new(
+            "slipNumber",
+            format!("At most {SLIP_NUMBER_MAX} characters"),
+        ));
+    }
+    if p.banked_on.as_deref().is_some_and(|d| !is_iso_date(d)) {
+        problems.push(Problem::new("bankedOn", "Dates are YYYY-MM-DD"));
+    }
+    match p.total {
+        Some(t) if t <= 0 => problems.push(Problem::new("total", "The total must be over £0")),
+        Some(t) if t > PENCE_MAX => problems.push(Problem::new("total", "The total is too large")),
+        _ => {}
+    }
+    if p.status != BatchStatus::Open {
+        if p.total.is_none() {
+            problems.push(Problem::new("total", "Enter the slip’s total to close it"));
+        }
+        if p.banked_on.is_none() {
+            problems.push(Problem::new("bankedOn", "Enter the date it was paid in"));
+        }
+    }
+    if problems.is_empty() {
+        Ok(p)
+    } else {
+        Err(ContractError::Invalid(problems))
+    }
+}
+
 /// Pence as pounds for names and messages: `£20`, `£20.50`, `£1,250`.
 pub fn format_pence(amount: i64) -> String {
     let sign = if amount < 0 { "-" } else { "" };
@@ -208,6 +262,8 @@ mod tests {
             reference: None,
             allocations: vec![row("v", amount)],
             client_key: None,
+            from_line: None,
+            paying_in_batch_id: None,
             origin: None,
         }
     }
@@ -349,6 +405,8 @@ mod tests {
                 amount: 1000,
             }],
             client_key: None,
+            from_line: None,
+            paying_in_batch_id: None,
             origin: None,
         };
         assert!(prepare_gift(base()).is_ok());
@@ -376,5 +434,75 @@ mod tests {
             Method::parse(Method::DirectDebit.as_str()),
             Method::DirectDebit
         );
+    }
+
+    #[test]
+    fn the_bank_methods_round_trip_and_only_cash_or_cheques_are_paid_in() {
+        for m in [Method::BankTransfer, Method::Cheque] {
+            assert_eq!(Method::parse(m.as_str()), m);
+        }
+        assert!(Method::Cash.is_paid_in() && Method::Cheque.is_paid_in());
+        assert!(!Method::BankTransfer.is_paid_in() && !Method::Card.is_paid_in());
+        let in_batch = |method| GiftPayload {
+            method,
+            paying_in_batch_id: Some("b".into()),
+            ..gift(2000)
+        };
+        assert!(prepare_gift(in_batch(Method::Cheque)).is_ok());
+        assert_eq!(fields(in_batch(Method::BankTransfer)), ["payingInBatchId"]);
+        let from_line = |method| GiftPayload {
+            method,
+            from_line: Some("l".into()),
+            ..gift(2000)
+        };
+        assert!(prepare_gift(from_line(Method::BankTransfer)).is_ok());
+        assert_eq!(fields(from_line(Method::Cheque)), ["method"]);
+    }
+
+    #[test]
+    fn batch_refusals_name_their_field() {
+        let open = || PayingInBatchPayload {
+            account_id: "a".into(),
+            slip_number: " 000123 ".into(),
+            banked_on: Some(" ".into()),
+            total: None,
+            status: BatchStatus::Open,
+        };
+        let p = prepare_batch(open()).unwrap();
+        assert_eq!((p.slip_number.as_str(), p.banked_on), ("000123", None));
+        let fields = |p| match prepare_batch(p) {
+            Err(ContractError::Invalid(problems)) => {
+                problems.into_iter().map(|p| p.field).collect::<Vec<_>>()
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            fields(PayingInBatchPayload {
+                slip_number: "1".repeat(SLIP_NUMBER_MAX + 1),
+                ..open()
+            }),
+            ["slipNumber"]
+        );
+        assert_eq!(
+            fields(PayingInBatchPayload {
+                banked_on: Some("19/10/2026".into()),
+                ..open()
+            }),
+            ["bankedOn"]
+        );
+        assert_eq!(
+            fields(PayingInBatchPayload {
+                status: BatchStatus::Closed,
+                ..open()
+            }),
+            ["total", "bankedOn"]
+        );
+        let closed = PayingInBatchPayload {
+            status: BatchStatus::Closed,
+            total: Some(3000),
+            banked_on: Some("2026-10-19".into()),
+            ..open()
+        };
+        assert!(prepare_batch(closed).is_ok());
     }
 }

@@ -3,7 +3,8 @@ import type { GiftStatus } from "./GiftStatus";
 
 /**
  * The `giving.status` slice (v2: `reason`). Staff set `completed` or
- * `void`; the provider's statuses are the system's. Voiding a gift that
+ * `void`, and on a cheque `pending` and `failed` (bounced) too; the
+ * provider's statuses are the system's. Voiding a gift that
  * is in a Gift Aid claim needs a reason (it goes into the next claim as
  * an adjustment); any other void may give one. A provider status that
  * isn't money received carries the provider's reason. `completed`

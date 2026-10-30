@@ -9,6 +9,12 @@
 //! reference and status follow the payment; staff may correct its split
 //! across codes, or void it as a mistake.
 //!
+//! A gift made from a statement line (ADR 0027) is held the same way:
+//! its amount, date, method and reference are the line's. A cheque's
+//! status follows its clearing: `pending` until its paying-in batch is
+//! matched to a statement line (or staff mark it cleared, outside a
+//! batch), `failed` if it bounces.
+//!
 //! A gift is editable whatever its status, void included, until a Gift
 //! Aid claim takes it (`giving.claimLock`, the third slice, its own
 //! counter `claim_lock_version`). Then BOTH other contracts' applies
@@ -62,6 +68,10 @@ pub struct GiftState {
     claim_id: Option<String>,
     #[serde(skip)]
     system: bool,
+    /// `giving.line`'s: the statement line a gift entered by hand is
+    /// matched to (a gift made from one has it in `gift.from_line`).
+    #[serde(skip)]
+    linked_line: Option<String>,
 }
 
 pub(crate) fn load_allocations(
@@ -86,10 +96,13 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
     let Some(mut state) = conn
         .prepare_cached(
             "SELECT contact_id, received_on, amount, method, reference, entered_by, entered_at,
-                    claim_id, provider, provider_payment_id, regular_gift_id, scheduled_on
+                    claim_id, provider, provider_payment_id, regular_gift_id, scheduled_on,
+                    bank_line_id, bank_line_made, paying_in_batch_id
              FROM gifts WHERE id = ?1 /* any status: one gift */",
         )?
         .query_row([id], |r| {
+            let line: Option<String> = r.get(12)?;
+            let made: bool = r.get(13)?;
             Ok(GiftState {
                 gift: GiftPayload {
                     contact_id: r.get(0)?,
@@ -105,12 +118,15 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
                         r.get(10)?,
                         r.get(11)?,
                     ),
+                    from_line: line.clone().filter(|_| made),
+                    paying_in_batch_id: r.get(14)?,
                 },
                 entered_by: r.get(5)?,
                 entered_at: r.get(6)?,
                 restoring: false,
                 claim_id: r.get(7)?,
                 system: false,
+                linked_line: line.filter(|_| !made),
             })
         })
         .optional()?
@@ -184,8 +200,9 @@ fn check_new_codes(
 
 impl Contract for Gift {
     const NAME: &'static str = "giving.gift";
-    /// v2: `origin` (ADR 0025); v3: `origin.scheduledOn` (ADR 0026).
-    const VERSION: u32 = 3;
+    /// v2: `origin` (ADR 0025); v3: `origin.scheduledOn` (ADR 0026); v4:
+    /// `fromLine` and `payingInBatchId` (ADR 0027).
+    const VERSION: u32 = 4;
     const ENTITY: &'static str = TABLE;
     const COUNTER: &'static str = "gift_version";
     const PROJECTIONS: &'static [&'static str] = &[ALLOCATION_INDEX];
@@ -221,6 +238,7 @@ impl Contract for Gift {
                 restoring: false,
                 claim_id: None,
                 system,
+                linked_line: None,
             });
         };
         if p.contact_id != current.gift.contact_id {
@@ -238,11 +256,25 @@ impl Contract for Gift {
                  If it was wrong, void it with a reason and record it again",
             ));
         }
-        // The origin never changes; a save may leave it out.
+        // The origin, the line it was made from and its batch never
+        // change; a save may leave them out.
         if p.origin.is_some() && p.origin != current.gift.origin {
             return Err(ContractError::rejected(
                 "identity_immutable",
                 "A gift’s provider payment can’t change",
+            ));
+        }
+        if p.from_line.is_some() && p.from_line != current.gift.from_line {
+            return Err(ContractError::rejected(
+                "identity_immutable",
+                "A gift’s statement line can’t change",
+            ));
+        }
+        if p.paying_in_batch_id.is_some() && p.paying_in_batch_id != current.gift.paying_in_batch_id
+        {
+            return Err(ContractError::rejected(
+                "batch_fixed",
+                "A gift’s paying-in batch can’t change: void it and record it again",
             ));
         }
         // What the provider says is the system's: the split across codes
@@ -264,10 +296,47 @@ impl Contract for Gift {
                 "A Direct Debit gift’s method, amount, date and payment are GoCardless’s",
             ));
         }
+        // A gift made from a statement line is the line's, as a
+        // provider's gift is the provider's.
+        if current.gift.from_line.is_some()
+            && (was.method != now.method
+                || was.amount != now.amount
+                || was.received_on != now.received_on
+                || was.reference != now.reference)
+        {
+            return Err(ContractError::rejected(
+                "line_fixed",
+                "This gift was made from a statement line: its amount, date and reference \
+                 are the line’s. Void it to free the line",
+            ));
+        }
+        // A cheque's status follows its clearing, so a gift doesn't
+        // become one, or stop being one, after it is recorded.
+        if (was.method == Method::Cheque) != (now.method == Method::Cheque) {
+            return Err(ContractError::rejected(
+                "cheque_fixed",
+                "A gift can’t change to or from a cheque: void it and record it again",
+            ));
+        }
+        if current.gift.paying_in_batch_id.is_some() && !now.method.is_paid_in() {
+            return Err(ContractError::rejected(
+                "batch_method",
+                "Only cash and cheques are paid in on a slip",
+            ));
+        }
+        if current.linked_line.is_some() && now.method != Method::BankTransfer {
+            return Err(ContractError::rejected(
+                "line_method",
+                "This gift is matched to a statement line, so it is a bank transfer. \
+                 Unmatch the line first",
+            ));
+        }
         Ok(GiftState {
             gift: GiftPayload {
                 client_key: None,
                 origin: current.gift.origin.clone(),
+                from_line: current.gift.from_line.clone(),
+                paying_in_batch_id: current.gift.paying_in_batch_id.clone(),
                 ..p.clone()
             },
             restoring: command.source == Source::Restore,
@@ -315,14 +384,25 @@ impl Contract for Gift {
                 ));
             }
             check_new_codes(tx, next, &HashSet::new())?;
-            // A provider's gift starts pending: its status is set next,
-            // in the same command group ([`crate::create_provider_gift`]).
+            if let Some(line) = &g.from_line {
+                crate::bank::check_line_exists(tx, line)?;
+                crate::bank::check_line_free_of_batches(tx, line)?;
+            }
+            if let Some(batch) = &g.paying_in_batch_id {
+                crate::bank::check_batch_open(tx, batch)?;
+            }
+            // A provider's gift and a cheque start pending: the status is
+            // set next, in the same command group ([`crate::create_gift`],
+            // [`crate::create_provider_gift`]).
             let o = g.origin.as_ref();
+            let pending = o.is_some() || g.method == Method::Cheque;
             tx.prepare_cached(
                 "INSERT INTO gifts (id, contact_id, received_on, amount, method, reference,
                      status, entered_by, entered_at, client_key, provider, provider_payment_id,
-                     regular_gift_id, scheduled_on)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                     regular_gift_id, scheduled_on, bank_line_id, bank_line_made,
+                     paying_in_batch_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ?17)",
             )?
             .execute(params![
                 id,
@@ -331,14 +411,17 @@ impl Contract for Gift {
                 g.amount,
                 g.method.as_str(),
                 g.reference,
-                if o.is_some() { "pending" } else { "completed" },
+                if pending { "pending" } else { "completed" },
                 next.entered_by,
                 next.entered_at,
                 g.client_key,
                 o.map(|o| o.provider.as_str()),
                 o.map(|o| &o.payment_id),
                 o.and_then(|o| o.regular_gift_id.as_ref()),
-                o.and_then(|o| o.scheduled_on.as_ref())
+                o.and_then(|o| o.scheduled_on.as_ref()),
+                g.from_line,
+                g.from_line.is_some(),
+                g.paying_in_batch_id
             ])?;
             return write_allocations(tx, id, &[], &g.allocations);
         };
@@ -366,9 +449,10 @@ impl Contract for Gift {
     }
 
     /// v1 had no origin (none: a save keeps the gift's own), v2's origin
-    /// no `scheduledOn` (none): the same JSON reads as v3.
+    /// no `scheduledOn` (none), v3 no line or batch (none: kept): the same
+    /// JSON reads as v4.
     fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
-        (from == 1 || from == 2).then_some(payload)
+        (1..=3).contains(&from).then_some(payload)
     }
 
     fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {
@@ -439,6 +523,11 @@ fn project_allocations(tx: &Connection, id: &str) -> rusqlite::Result<()> {
 /// Where the gift stands, and why it doesn't count. Staff set
 /// `completed` or `void`; a provider's statuses are the system's (its
 /// payment's, ADR 0025). A void gift is kept and counts for nothing.
+/// A cheque (ADR 0027) is `pending` until it clears: staff may also set
+/// it `pending` or `failed` (bounced), and `completed` only outside a
+/// paying-in batch or once its batch is matched to a statement line;
+/// un-voiding one gives `completed` or `pending` by the same rule. A gift
+/// made from a statement line stays void: voiding it freed the line.
 /// A claimed gift (`claim_id`) needs a reason to stop counting, and a
 /// staff void of one is final: HMRC is repaid through an adjustment.
 pub struct GiftStatus;
@@ -459,12 +548,41 @@ pub struct StatusState {
     /// The payment's status for its gift, and the provider's reason.
     #[serde(skip)]
     provider_status: Option<(Status, Option<String>)>,
+    #[serde(skip)]
+    cheque: bool,
+    /// The cheque's batch, and whether that is matched to its line
+    /// (`None`: outside a batch).
+    #[serde(skip)]
+    batch_matched: Option<bool>,
+    #[serde(skip)]
+    from_line: bool,
+    /// Matched by hand to a statement line that a batch or another gift
+    /// holds now (a void that didn't unlink it: a restore, the system).
+    #[serde(skip)]
+    line_taken: bool,
+}
+
+impl StatusState {
+    /// A cheque may read `completed`: it is outside a batch, or its
+    /// batch is matched to a statement line.
+    fn cheque_may_clear(&self) -> bool {
+        self.batch_matched != Some(false)
+    }
 }
 
 fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<StatusState>> {
     conn.prepare_cached(
-        "SELECT status, void_reason, claim_id, provider IS NOT NULL FROM gifts
-         WHERE id = ?1 /* any status: one gift */",
+        "SELECT g.status, g.void_reason, g.claim_id, g.provider IS NOT NULL,
+                g.method = 'cheque',
+                CASE WHEN b.id IS NULL THEN NULL ELSE b.line_id IS NOT NULL END,
+                g.bank_line_made,
+                g.bank_line_id IS NOT NULL AND NOT g.bank_line_made AND (
+                    EXISTS (SELECT 1 FROM paying_in_batches p WHERE p.line_id = g.bank_line_id)
+                    OR EXISTS (SELECT 1 FROM gifts o WHERE o.bank_line_id = g.bank_line_id
+                        AND o.id <> g.id AND o.status <> 'void'
+                        /* any status: a void gift has freed its line */))
+         FROM gifts g LEFT JOIN paying_in_batches b ON b.id = g.paying_in_batch_id
+         WHERE g.id = ?1 /* any status: one gift */",
     )?
     .query_row([id], |r| {
         Ok(StatusState {
@@ -475,6 +593,10 @@ fn load_status_state(conn: &Connection, id: &str) -> rusqlite::Result<Option<Sta
             claim_id: r.get(2)?,
             provider: r.get(3)?,
             provider_status: None,
+            cheque: r.get(4)?,
+            batch_matched: r.get(5)?,
+            from_line: r.get(6)?,
+            line_taken: r.get(7)?,
         })
     })
     .optional()
@@ -529,7 +651,23 @@ impl Contract for GiftStatus {
         } else {
             match (p.status, current.provider) {
                 (Status::Void, _) => (Status::Void, p.reason.clone()),
+                // Un-voiding a cheque: cleared if it may be, else pending.
+                (Status::Completed, false)
+                    if current.cheque && was == Status::Void && !current.cheque_may_clear() =>
+                {
+                    (Status::Pending, None)
+                }
+                (Status::Completed, false) if current.cheque && !current.cheque_may_clear() => {
+                    return Err(ContractError::rejected(
+                        "cheque_not_cleared",
+                        "A cheque in a paying-in batch clears when its batch is matched \
+                         to a statement line",
+                    ));
+                }
                 (Status::Completed, false) => (Status::Completed, None),
+                (Status::Pending | Status::Failed, false) if current.cheque => {
+                    (p.status, p.reason.clone())
+                }
                 (Status::Completed, true) if was != Status::Void => {
                     return Err(ContractError::rejected(
                         "provider_status",
@@ -551,6 +689,20 @@ impl Contract for GiftStatus {
             }
         };
         let reason = if status.is_received() { None } else { reason };
+        if current.from_line && was == Status::Void && status != Status::Void {
+            return Err(ContractError::rejected(
+                "line_gift_void",
+                "This gift was made from a statement line, and voiding it freed the line: \
+                 match the line again",
+            ));
+        }
+        if current.line_taken && was == Status::Void && status != Status::Void {
+            return Err(ContractError::rejected(
+                "line_taken",
+                "This gift’s statement line has been matched to something else since it \
+                 was voided: unmatch the gift from it first",
+            ));
+        }
         if current.claim_id.is_some() {
             if was.is_received() && !status.is_received() && reason.is_none() {
                 return Err(ContractError::rejected(
