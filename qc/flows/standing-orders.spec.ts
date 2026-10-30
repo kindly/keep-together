@@ -39,6 +39,20 @@ function nextAmount(): { typed: string; shown: string } {
   return { typed: pounds, shown: `£${pounds}` }
 }
 
+/**
+ * The 10th, two months on: always ahead of today, so the standing order
+ * the flow leaves behind never has a missed payment (review soui L4).
+ */
+function futureStart(): { date: string; month: string } {
+  const now = new Date()
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 10))
+  return {
+    date: d.toISOString().slice(0, 10),
+    month: d.toLocaleString('en-GB', { month: 'long', timeZone: 'UTC' }),
+  }
+}
+const START = futureStart()
+
 test.describe('standing orders', { annotation: [CONTACT] }, () => {
   test('record a standing order on a contact', async ({
     page,
@@ -59,9 +73,9 @@ test.describe('standing orders', { annotation: [CONTACT] }, () => {
         shown = amount.shown
         await dialog.getByLabel('Amount (£)').fill(amount.typed)
         await dialog.getByLabel('How often').selectOption('quarterly')
-        await dialog.getByLabel('First payment').fill('2026-02-10')
+        await dialog.getByLabel('First payment').fill(START.date)
         await expect(dialog).toContainText(
-          'every quarter on the 10th from February',
+          `every quarter on the 10th from ${START.month}`,
         )
         await pickCode(page, 'Event-Gala-001')
         await expect(
@@ -84,6 +98,6 @@ test.describe('standing orders', { annotation: [CONTACT] }, () => {
       .click()
     await expect(
       page.getByTestId('standing-order').filter({ hasText: shown }).first(),
-    ).toContainText('every quarter on the 10th from February')
+    ).toContainText(`every quarter on the 10th from ${START.month}`)
   })
 })

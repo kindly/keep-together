@@ -1312,3 +1312,84 @@ async fn a_blank_payer_is_never_a_known_payer() {
         "{gift_line}"
     );
 }
+
+// ── review soui ────────────────────────────────────────────────────────────
+
+/// M3: the next payment due comes from the terms chain however far
+/// ahead: a yearly one due in about ten months still has it.
+#[tokio::test]
+async fn a_yearly_standing_order_knows_its_next_payment_far_ahead() {
+    let s = setup().await;
+    let jo = s.contact("alpha", &s.ann, "Jo").await;
+    // First paid about two months ago: the next is about ten months off.
+    let first = due_at_least(60);
+    let so = ok(
+        &s.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{jo}/standing-orders"),
+        &s.sam,
+        Some(
+            json!({ "amount": 12000, "frequency": "yearly", "dayOfMonth": day_of(&first),
+            "month": first[5..7].parse::<u8>().unwrap(), "sourceCodeId": s.code,
+            "startsOn": first }),
+        ),
+    )
+    .await;
+    // The same day next year.
+    let next = format!("{}{}", first[0..4].parse::<i32>().unwrap() + 1, &first[4..]);
+    assert_eq!(so["nextDueOn"], next.as_str(), "{so}");
+    // Ended: nothing is next.
+    let ended = ok(
+        &s.w,
+        "POST",
+        &format!("/api/t/alpha/standing-orders/{}/end", id(&so)),
+        &s.sam,
+        Some(json!({ "expected": so["mandateVersion"] })),
+    )
+    .await;
+    assert_eq!(ended["nextDueOn"], Value::Null);
+}
+
+/// M1: "make this a standing order" starts on the line's own day (capped
+/// at the 28th) in the line's month, whatever the frequency: what the
+/// form shows read-only (`lineSchedule` in src/lib/domain/
+/// standing-orders.ts) is what the server records.
+#[tokio::test]
+async fn a_standing_order_from_a_line_starts_on_the_lines_day_capped_at_28() {
+    let s = setup().await;
+    let jo = s.contact("alpha", &s.ann, "Jo").await;
+    // A line on the 29th–31st if the calendar allows, else the latest.
+    let on = (20..60).map(days_ago).find(|d| day_of(d) >= 29).unwrap();
+    let lines = s
+        .import(&[Credit {
+            on: on.clone(),
+            pence: 3000,
+            payer: "JO GIVER",
+            reference: "",
+        }])
+        .await;
+    let l = s.line(&id(&lines[0])).await;
+    let month: u8 = on[5..7].parse().unwrap();
+    let (st, out) = s
+        .post(
+            &format!("bank/lines/{}/standing-order", id(&lines[0])),
+            json!({ "expected": l["line"]["matchVersion"], "contact": jo,
+                "frequency": "yearly", "dayOfMonth": 28, "month": month }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+    let mine = ok(
+        &s.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/standing-orders"),
+        &s.ann,
+        None,
+    )
+    .await;
+    let first = &mine[0]["chain"][0];
+    assert_eq!(first["effectiveFrom"], format!("{}-28", &on[0..7]));
+    assert_eq!(
+        (first["dayOfMonth"].as_u64(), first["month"].as_u64()),
+        (Some(28), Some(u64::from(month)))
+    );
+}

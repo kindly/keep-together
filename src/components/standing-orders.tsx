@@ -10,14 +10,15 @@ import type { RegularGiftFrequency, StandingOrder } from '../lib/data'
 import { scheduleText } from '../lib/domain/direct-debit'
 import type { Id } from '../lib/domain/ids'
 import {
-  nextDue,
+  STANDING_EXPECTED_LABELS,
+  lineSchedule,
   scheduleOf,
   startProblem,
   termInForce,
 } from '../lib/domain/standing-orders'
 import { formatDay, formatPence, parsePounds, refusal } from '../lib/gifts'
 import { useRequestKey } from '../lib/request-key'
-import { EXPECTED_LABELS } from '../lib/terms-form'
+import { RustApiError } from '../lib/data/rust/client'
 import { useCanWrite, useTenant } from '../lib/tenant'
 import {
   AmountField,
@@ -135,36 +136,40 @@ export function RecordStandingOrderDialog({
   const [code, setCode] = useState<PickedCode>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The server's 422s, by field: each shows on its own field.
+  const [problems, setProblems] = useState<Partial<Record<string, string>>>({})
   const [made, setMade] = useState<string | null>(null)
-  const typed = amountProblem(amount)
+  const typed = amountProblem(amount) ?? problems.amount ?? null
   const pence = parsePounds(amount)
-  const start =
-    startsOn === ''
+  // From a line, the first payment is the line itself, built as the
+  // server builds it (review soui M1): nothing to pick.
+  const fromLine = line ? lineSchedule(line.postedOn, frequency) : null
+  const start = fromLine
+    ? null
+    : startsOn === ''
       ? null
-      : (startProblem(startsOn) ??
-        (line && startsOn > line.postedOn
-          ? `This line is its first payment: on or before ${formatDay(line.postedOn)}`
-          : null))
-  const schedule =
-    startsOn !== '' && !start ? scheduleOf(startsOn, frequency) : null
+      : startProblem(startsOn)
+  const schedule = fromLine
+    ? { dayOfMonth: fromLine.dayOfMonth, month: fromLine.month }
+    : startsOn !== '' && !start
+      ? scheduleOf(startsOn, frequency)
+      : null
+  const startShown =
+    start ?? problems.startsOn ?? problems.dayOfMonth ?? problems.month ?? null
   const ready =
-    !typed && pence !== null && schedule !== null && code !== null && !busy
+    !amountProblem(amount) &&
+    pence !== null &&
+    schedule !== null &&
+    code !== null &&
+    !busy
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     if (!ready) return
     setBusy(true)
     setError(null)
+    setProblems({})
     try {
-      const asked = {
-        amount: pence,
-        frequency,
-        dayOfMonth: schedule.dayOfMonth,
-        ...(schedule.month !== null && { month: schedule.month }),
-        sourceCodeId: code.id,
-        ...(reference.trim() !== '' && { bankReference: reference.trim() }),
-        startsOn,
-      }
       if (line) {
         await writes.fromLine(line, {
           contact: contactId,
@@ -179,6 +184,15 @@ export function RecordStandingOrderDialog({
         setMade('Recorded, and this line matched as its first payment.')
         onRecorded?.(null)
       } else {
+        const asked = {
+          amount: pence,
+          frequency,
+          dayOfMonth: schedule.dayOfMonth,
+          ...(schedule.month !== null && { month: schedule.month }),
+          sourceCodeId: code.id,
+          ...(reference.trim() !== '' && { bankReference: reference.trim() }),
+          startsOn,
+        }
         const so = await writes.record(contactId, {
           ...asked,
           clientKey: keyFor(asked),
@@ -187,7 +201,10 @@ export function RecordStandingOrderDialog({
         onRecorded?.(so)
       }
     } catch (err) {
-      setError(refusal(err, 'Couldn’t record it', 'Changed by someone else'))
+      const byField = fieldProblems(err)
+      if (byField) setProblems(byField)
+      else
+        setError(refusal(err, 'Couldn’t record it', 'Changed by someone else'))
     } finally {
       setBusy(false)
     }
@@ -232,24 +249,34 @@ export function RecordStandingOrderDialog({
                 <option value="yearly">Yearly</option>
               </select>
             </label>
-            <label className="flex flex-col gap-1 text-sm">
-              First payment
-              <input
-                type="date"
-                value={startsOn}
-                onChange={(e) => setStartsOn(e.target.value)}
-                aria-invalid={start ? true : undefined}
-                aria-describedby="standing-start-problem"
-                className={field}
-              />
-            </label>
+            {fromLine ? (
+              <p className="flex flex-col gap-1 text-sm">
+                <span>First payment</span>
+                <span data-testid="standing-start">
+                  this line, {formatDay(fromLine.startsOn)}
+                </span>
+              </p>
+            ) : (
+              <label className="flex flex-col gap-1 text-sm">
+                First payment
+                <input
+                  type="date"
+                  value={startsOn}
+                  onChange={(e) => setStartsOn(e.target.value)}
+                  aria-invalid={startShown ? true : undefined}
+                  aria-describedby="standing-start-problem"
+                  className={field}
+                />
+              </label>
+            )}
           </div>
           <p
             id="standing-start-problem"
             aria-live="polite"
-            className={`text-xs empty:hidden ${start ? 'text-red-700' : 'text-neutral-600'}`}
+            className={`text-xs empty:hidden ${startShown ? 'text-red-700' : 'text-neutral-600'}`}
           >
-            {start ?? (schedule && scheduleText({ frequency, ...schedule }))}
+            {startShown ??
+              (schedule && scheduleText({ frequency, ...schedule }))}
           </p>
           <label className="flex flex-col gap-1 text-sm">
             The donor’s reference (optional)
@@ -257,14 +284,28 @@ export function RecordStandingOrderDialog({
               value={reference}
               onChange={(e) => setReference(e.target.value)}
               maxLength={200}
+              aria-invalid={problems.bankReference ? true : undefined}
+              aria-describedby="standing-reference-problem"
               className={field}
             />
+            <span
+              id="standing-reference-problem"
+              aria-live="polite"
+              className="text-xs text-red-700 empty:hidden"
+            >
+              {problems.bankReference}
+            </span>
             <span className="text-xs text-neutral-500">
               As their bank shows it on your statement. It helps find their
               payments; a payer matched once is recognised after.
             </span>
           </label>
           <CodeField code={code} onChange={setCode} />
+          {problems.sourceCodeId && (
+            <p aria-live="polite" className="text-xs text-red-700">
+              {problems.sourceCodeId}
+            </p>
+          )}
           {error && (
             <p role="alert" className="text-sm text-red-700">
               {error}
@@ -283,6 +324,28 @@ export function RecordStandingOrderDialog({
   )
 }
 
+/** The fields this form shows, by the server's name for each. */
+const FORM_FIELDS = [
+  'amount',
+  'startsOn',
+  'dayOfMonth',
+  'month',
+  'sourceCodeId',
+  'bankReference',
+]
+
+/**
+ * A `422 invalid` whose problems are all this form's fields, by field
+ * (review soui L1); anything else is said as one line.
+ */
+function fieldProblems(err: unknown): Record<string, string> | null {
+  if (!(err instanceof RustApiError) || err.error.kind !== 'invalid')
+    return null
+  const { problems } = err.error
+  if (problems.some((p) => !FORM_FIELDS.includes(p.field))) return null
+  return Object.fromEntries(problems.map((p) => [p.field, p.message]))
+}
+
 /** "£10.00 every month on the 5th", from the row in force today. */
 export function standingText(so: StandingOrder): string {
   const t = termInForce(so.chain, today())
@@ -298,7 +361,7 @@ export function StandingOrderCard({ so }: { so: StandingOrder }) {
   const [ending, setEnding] = useState(false)
   const now = today()
   const term = termInForce(so.chain, now)
-  const next = ended(so) ? null : nextDue(so.expected, now)
+  const next = so.nextDueOn
   return (
     <article
       data-testid="standing-order"
@@ -423,7 +486,7 @@ function ExpectedRows({ so }: { so: StandingOrder }) {
                   <td
                     className={`py-1 pr-3 ${r.status === 'collected' ? 'text-green-800' : r.status === 'missing' ? 'text-red-700' : 'text-neutral-600'}`}
                   >
-                    {EXPECTED_LABELS[r.status]}
+                    {STANDING_EXPECTED_LABELS[r.status]}
                     {r.amount !== null &&
                       r.amount !== r.expected &&
                       ` (${formatPence(r.amount)})`}
@@ -522,7 +585,28 @@ function EndDialog({
 /** Standing orders with a missed payment (g2q2: staff decide): for the home page. */
 export function MissedStandingOrders() {
   const { slug } = useTenant()
-  const missed = useMissedStandingOrders()
+  const { data: missed, error, refetch } = useMissedStandingOrders()
+  if (error)
+    return (
+      <section
+        aria-labelledby="missed-standing-orders"
+        className="flex flex-col gap-2"
+      >
+        <h2 id="missed-standing-orders" className="text-lg font-medium">
+          Standing orders with a missed payment
+        </h2>
+        <p role="alert" className="text-sm text-red-700">
+          The list couldn’t load.{' '}
+          <button
+            type="button"
+            className={small}
+            onClick={() => void refetch()}
+          >
+            Try again
+          </button>
+        </p>
+      </section>
+    )
   if (!missed || missed.length === 0) return null
   return (
     <section

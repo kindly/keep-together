@@ -5,7 +5,9 @@ import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { MissedStandingOrder, StandingOrder, Term } from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
 import type { Id } from '../lib/domain/ids'
+import { lineSchedule } from '../lib/domain/standing-orders'
 import {
   ContactStandingOrders,
   MissedStandingOrders,
@@ -23,11 +25,17 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 let orders: Array<StandingOrder> | undefined
 let missed: Array<MissedStandingOrder> | undefined
+let missedError: Error | null = null
+const refetchMissed = vi.fn()
 let canWrite = true
 const writes = { record: vi.fn(), end: vi.fn() }
 vi.mock('../lib/data', () => ({
   useStandingOrders: () => orders,
-  useMissedStandingOrders: () => missed,
+  useMissedStandingOrders: () => ({
+    data: missed,
+    error: missedError,
+    refetch: refetchMissed,
+  }),
   useStandingOrderWrites: () => writes,
 }))
 vi.mock('../lib/tenant', () => ({
@@ -106,6 +114,7 @@ function order(over: Partial<StandingOrder> = {}): StandingOrder {
     status: 'active',
     bankReference: 'SMITH123',
     missedOn: null,
+    nextDueOn: '2099-03-05',
     endedReason: null,
     endedAt: null,
     chain: [term()],
@@ -155,6 +164,8 @@ beforeEach(() => {
   writes.end.mockReset()
   orders = []
   missed = []
+  missedError = null
+  refetchMissed.mockReset()
   canWrite = true
   el = document.createElement('div')
   document.body.appendChild(el)
@@ -209,6 +220,27 @@ test('a card: its terms, the next payment due, a missed one, expected vs actual'
   ].map((r) => r.getAttribute('data-status'))
   // Due ones only, newest first; the one still to come isn't in it.
   expect(rows).toEqual(['missing', 'collected'])
+  // A standing order's money comes in: it isn't collected.
+  const table = document.querySelector(
+    '[data-testid="standing-order-expected"]',
+  )!.textContent
+  expect(table).toContain('Came in')
+  expect(table).not.toContain('Collected')
+})
+
+test('a yearly card shows the next payment the server read from the chain, months ahead', () => {
+  // Nothing in `expected` is ahead: the date is the server's alone.
+  orders = [
+    order({
+      chain: [term({ frequency: 'yearly', month: 11, dayOfMonth: 3 })],
+      expected: [],
+      nextDueOn: '2027-11-03',
+    }),
+  ]
+  render(<ContactStandingOrders contactId={'c1' as Id<'contacts'>} />)
+  expect(
+    document.querySelector('[data-testid="standing-order-next"]')!.textContent,
+  ).toMatch(/3 Nov.*2027/)
 })
 
 test('viewers read them but record and end nothing', () => {
@@ -342,40 +374,81 @@ test('home: nothing at all while none has missed a payment', () => {
   expect(text()).toBe('')
 })
 
-test('from a statement line: the line’s amount, started on or before it, matched in one command', async () => {
+test('home: a list that couldn’t load says so, and tries again', () => {
+  missed = undefined
+  missedError = new Error('boom')
+  render(<MissedStandingOrders />)
+  expect(document.querySelector('[role="alert"]')!.textContent).toContain(
+    'couldn’t load',
+  )
+  click('Try again')
+  expect(refetchMissed).toHaveBeenCalledTimes(1)
+})
+
+test('a 422 lands on its field, not as one line', async () => {
+  writes.record.mockRejectedValue(
+    new RustApiError(422, {
+      kind: 'invalid',
+      problems: [
+        { field: 'bankReference', message: 'Keep it to 18 characters' },
+      ],
+    }),
+  )
+  render(<ContactStandingOrders contactId={'c1' as Id<'contacts'>} />)
+  click('Record a standing order')
+  await type('Amount', '10')
+  await type('First payment', '2026-02-10')
+  await type('The donor’s reference', 'A REFERENCE FAR TOO LONG')
+  click('Pick a code')
+  await act(async () => button('Record').click())
+  expect(
+    document.getElementById('standing-reference-problem')!.textContent,
+  ).toBe('Keep it to 18 characters')
+  expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull()
+})
+
+test('from a statement line: the line’s amount, its first payment the line itself, matched in one command', async () => {
   const fromLine = vi.fn().mockResolvedValue({})
   Object.assign(writes, { fromLine })
   const recorded = vi.fn()
+  const line = {
+    id: 'l1',
+    matchVersion: 2,
+    amount: 2000n,
+    postedOn: '2026-01-30',
+  }
   render(
     <RecordStandingOrderDialog
       contactId={'c1' as Id<'contacts'>}
-      prefill={{ frequency: 'monthly', startsOn: '2026-03-07' }}
-      line={{
-        id: 'l1',
-        matchVersion: 2,
-        amount: 2000n,
-        postedOn: '2026-03-07',
-      }}
+      prefill={{ frequency: 'yearly', startsOn: '2026-01-30' }}
+      line={line}
       onClose={() => {}}
       onRecorded={recorded}
     />,
   )
   expect(text()).toContain('Amount: £20.00, the line’s')
-  await type('First payment', '2026-03-08')
-  expect(text()).toContain('This line is its first payment')
+  // Nothing to pick: the start the server records, built as it builds
+  // it (`lineSchedule`, in step with api/tests/standing_orders.rs).
+  const shown = lineSchedule(line.postedOn, 'yearly')
+  expect(shown.startsOn).toBe('2026-01-28')
+  expect(document.querySelector('input[type="date"]')).toBeNull()
+  expect(
+    document.querySelector('[data-testid="standing-start"]')!.textContent,
+  ).toMatch(/this line, 28 Jan/)
+  expect(text()).toContain('every year on 28th January')
+  // Monthly from the same line: no month goes.
+  await type('How often', 'monthly')
+  expect(text()).toContain('every month on the 28th')
+  await type('How often', 'yearly')
   click('Pick a code')
-  expect(button('Record').disabled).toBe(true)
-  await type('First payment', '2026-03-07')
   await act(async () => button('Record').click())
-  expect(fromLine).toHaveBeenCalledWith(
-    { id: 'l1', matchVersion: 2, amount: 2000n, postedOn: '2026-03-07' },
-    {
-      contact: 'c1',
-      frequency: 'monthly',
-      dayOfMonth: 7,
-      sourceCodeId: 'v1',
-    },
-  )
+  expect(fromLine).toHaveBeenCalledWith(line, {
+    contact: 'c1',
+    frequency: 'yearly',
+    dayOfMonth: shown.dayOfMonth,
+    month: shown.month,
+    sourceCodeId: 'v1',
+  })
   expect(writes.record).not.toHaveBeenCalled()
   expect(text()).toContain('this line matched as its first payment')
   expect(recorded).toHaveBeenCalledTimes(1)

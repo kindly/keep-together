@@ -20,7 +20,7 @@ import type { ExpectedRow } from '../rust-types/ExpectedRow'
 import type { MissedStandingOrder as WireMissed } from '../rust-types/MissedStandingOrder'
 import type { StandingOrderSetUp } from '../rust-types/StandingOrderSetUp'
 import type { StandingOrderView } from '../rust-types/StandingOrderView'
-import { get, post, tenantPath } from './client'
+import { RustApiError, get, post, tenantPath } from './client'
 import type { ExpectedPeriodRow, Term } from './gocardless'
 import { termFromWire, toWire } from './gocardless'
 import { keys } from './keys'
@@ -81,12 +81,17 @@ export function useStandingOrders(
   }).data
 }
 
-/** Standing orders with a missed payment, oldest miss first; any member. */
-export function useMissedStandingOrders(
-  enabled = true,
-): Array<MissedStandingOrder> | undefined {
+/**
+ * Standing orders with a missed payment, oldest miss first; any member.
+ * `data` undefined while loading; `error` when the read failed.
+ */
+export function useMissedStandingOrders(enabled = true): {
+  data: Array<MissedStandingOrder> | undefined
+  error: unknown
+  refetch: () => Promise<unknown>
+} {
   const { slug } = useTenant()
-  return useQuery({
+  const q = useQuery({
     queryKey: keys.standingMissed(slug),
     enabled,
     queryFn: async () =>
@@ -98,7 +103,8 @@ export function useMissedStandingOrders(
         ...m,
         amount: m.amount === null ? null : pence(m.amount),
       })),
-  }).data
+  })
+  return { data: q.data, error: q.error, refetch: q.refetch }
 }
 
 // ── writes ─────────────────────────────────────────────────────────────────
@@ -145,18 +151,31 @@ export function useStandingOrderWrites() {
   const { slug } = useTenant()
   const qc = useQueryClient()
   return {
-    record: async (contactId: string, args: StandingOrderArgs) =>
-      landStandingOrder(
-        qc,
-        slug,
-        await post<StandingOrderView>(
+    /**
+     * A retry under the same `clientKey` (the first answer was lost) is
+     * `409 duplicate` naming the standing order the first try recorded:
+     * read it back and treat it as recorded, as the record-gift form
+     * does, so nobody records it twice.
+     */
+    record: async (contactId: string, args: StandingOrderArgs) => {
+      let view: StandingOrderView
+      try {
+        view = await post<StandingOrderView>(
           tenantPath(slug, 'contacts', contactId, 'standing-orders'),
           {
             ...args,
             amount: toWire(args.amount),
           } satisfies StandingOrderSetUp,
-        ),
-      ),
+        )
+      } catch (err) {
+        if (!(err instanceof RustApiError && err.error.kind === 'duplicate'))
+          throw err
+        view = await get<StandingOrderView>(
+          tenantPath(slug, 'standing-orders', err.error.id),
+        )
+      }
+      return landStandingOrder(qc, slug, view)
+    },
     /**
      * "Make this a standing order" (g2q3): a standing order for the
      * line's amount, the line its first payment, in one command against

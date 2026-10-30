@@ -208,7 +208,11 @@ vi.mock('../lib/data', async (original) => {
     useOrgEvents: () => {},
     useGoCardlessStatus: () => gocardless,
     // Home's standing orders with a missed payment: none here.
-    useMissedStandingOrders: () => [],
+    useMissedStandingOrders: () => ({
+      data: [],
+      error: null,
+      refetch: async () => {},
+    }),
   }
 })
 

@@ -3,7 +3,7 @@
 // take their month).
 import { expect, test } from 'vitest'
 import {
-  nextDue,
+  lineSchedule,
   scheduleOf,
   startProblem,
   termInForce,
@@ -41,11 +41,22 @@ test('the row in force is the last started, never a withdrawn one', () => {
   expect(termInForce(chain, '2025-12-01')?.id).toBe('a')
 })
 
-test('next due is the first upcoming payment from today', () => {
-  const rows = [
-    { dueOn: '2026-01-05', status: 'missing' },
-    { dueOn: '2026-02-05', status: 'upcoming' },
-  ]
-  expect(nextDue(rows, '2026-01-20')).toBe('2026-02-05')
-  expect(nextDue(rows, '2026-02-06')).toBeNull()
+test('from a line: the line’s day capped at the 28th, in the line’s month', () => {
+  // As api/tests/standing_orders.rs
+  // a_standing_order_from_a_line_starts_on_the_lines_day_capped_at_28.
+  expect(lineSchedule('2026-03-07', 'monthly')).toEqual({
+    startsOn: '2026-03-07',
+    dayOfMonth: 7,
+    month: null,
+  })
+  expect(lineSchedule('2026-01-30', 'yearly')).toEqual({
+    startsOn: '2026-01-28',
+    dayOfMonth: 28,
+    month: 1,
+  })
+  expect(lineSchedule('2026-05-31', 'quarterly')).toEqual({
+    startsOn: '2026-05-28',
+    dayOfMonth: 28,
+    month: 5,
+  })
 })
