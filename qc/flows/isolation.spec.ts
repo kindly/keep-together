@@ -255,11 +255,11 @@ test.describe('isolation', () => {
     route('/t/$slug', '/t/$slug/gifts/new')
     await page.goto(`/t/${users.a.slug}/gifts/new`)
     await page.getByRole('combobox', { name: 'Donor' }).fill(`Bravo-${runId()}`)
-    // Only the two "new" choices: no match from B.
-    await expect(page.getByRole('option')).toHaveText([
-      /^New person/,
-      /^New organisation/,
-    ])
+    // Only the two "new" choices: no match from B. (The donor box's own
+    // options: a paying-in batch picker's are A's batches, not contacts.)
+    await expect(
+      page.getByRole('listbox', { name: 'Donor matches' }).getByRole('option'),
+    ).toHaveText([/^New person/, /^New organisation/])
     await expect(page.getByText('No contacts match.')).toBeVisible()
   })
 
