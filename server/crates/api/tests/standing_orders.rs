@@ -1162,3 +1162,151 @@ async fn viewers_read_only_and_b_never_sees_a_s_standing_orders() {
         .is_empty()
     );
 }
+
+// ── step 5 follow-ups (controller, after round 4) ──────────────────────────
+
+/// (a) The donor's own Luhn-valid contact number in the line makes their
+/// standing order's instalment strong, as step 4's contact-number rule;
+/// another contact's number doesn't (that one is its own new gift).
+#[tokio::test]
+async fn the_donors_own_contact_number_makes_an_instalment_strong() {
+    let s = setup().await;
+    let numbered = |c: &Value| {
+        (
+            id(c),
+            contacts::number::format_number(c["number"].as_i64().unwrap()),
+        )
+    };
+    let (jo, jo_no) = numbered(
+        &ok(
+            &s.w,
+            "POST",
+            "/api/t/alpha/contacts",
+            &s.ann,
+            Some(person("Jo", "Giver")),
+        )
+        .await,
+    );
+    let (_, al_no) = numbered(
+        &ok(
+            &s.w,
+            "POST",
+            "/api/t/alpha/contacts",
+            &s.ann,
+            Some(person("Al", "Other")),
+        )
+        .await,
+    );
+    let due = due_at_least(17);
+    let so = id(&s.standing(&jo, 1500, &due).await);
+    let lines = s
+        .import(&[
+            Credit {
+                on: shift(&due, 1),
+                pence: 1500,
+                payer: "X",
+                reference: &jo_no,
+            },
+            Credit {
+                on: shift(&due, 2),
+                pence: 1500,
+                payer: "Y",
+                reference: &al_no,
+            },
+        ])
+        .await;
+    let mine = instalments_of(&s.line(&id(&lines[0])).await);
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0]["proposal"]["regularGiftId"], so.as_str());
+    assert_eq!(
+        (mine[0]["confidence"].as_str(), mine[0]["ticked"].as_bool()),
+        (Some("strong"), Some(true))
+    );
+    assert!(mine[0]["reason"].as_str().unwrap().contains("contact no."));
+    let theirs = instalments_of(&s.line(&id(&lines[1])).await);
+    assert_eq!(theirs.len(), 1);
+    assert_eq!(theirs[0]["confidence"], "suggested");
+}
+
+/// (b) A line with a blank payer never makes or matches a known payer:
+/// a generic reference ("DONATION") names no one. Neither the known-payer
+/// suggester nor a standing order's expected payment is strong from it.
+#[tokio::test]
+async fn a_blank_payer_is_never_a_known_payer() {
+    let s = setup().await;
+    let jo = s.contact("alpha", &s.ann, "Jo").await;
+    let first = due_at_least(40);
+    let so = id(&s.standing(&jo, 2000, &first).await);
+    let second = shift(&first, 30);
+    let lines = s
+        .import(&[
+            Credit {
+                on: first.clone(),
+                pence: 2000,
+                payer: "",
+                reference: "DONATION",
+            },
+            Credit {
+                on: shift(&first, 2),
+                pence: 700,
+                payer: "",
+                reference: "DONATION",
+            },
+            Credit {
+                on: second.clone(),
+                pence: 2000,
+                payer: "",
+                reference: "DONATION",
+            },
+            Credit {
+                on: shift(&second, 2),
+                pence: 700,
+                payer: "",
+                reference: "DONATION",
+            },
+        ])
+        .await;
+    // Staff match the first two by hand: an instalment and a plain gift.
+    let l0 = s.line(&id(&lines[0])).await;
+    let (st, _) = s
+        .post(
+            &format!("bank/lines/{}/instalment", id(&lines[0])),
+            json!({ "expected": l0["line"]["matchVersion"], "regularGiftId": so,
+                "scheduledOn": first }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let l1 = s.line(&id(&lines[1])).await;
+    let (st, _) = s
+        .post(
+            &format!("bank/lines/{}/gifts", id(&lines[1])),
+            json!({ "expected": l1["line"]["matchVersion"],
+                "parts": [{ "contact": jo, "amount": 700 }] }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let payers = ok(
+        &s.w,
+        "GET",
+        &format!("/api/t/alpha/bank/lines/{}", id(&lines[2])),
+        &s.sam,
+        None,
+    )
+    .await;
+    let next = instalments_of(&payers);
+    assert_eq!(next.len(), 1);
+    assert_eq!(
+        (next[0]["confidence"].as_str(), next[0]["ticked"].as_bool()),
+        (Some("suggested"), Some(false)),
+        "{payers}"
+    );
+    let gift_line = s.line(&id(&lines[3])).await;
+    assert!(
+        gift_line["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|x| x["suggesters"] != json!(["knownPayer"])),
+        "{gift_line}"
+    );
+}

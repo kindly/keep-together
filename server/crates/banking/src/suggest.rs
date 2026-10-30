@@ -349,29 +349,8 @@ impl Suggester for ContactNumber {
 
     fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
         let conn = cx.conn;
-        let text = format!("{} {}", line.reference, line.narrative);
         let mut out = Vec::new();
-        let mut seen = Vec::new();
-        for run in six_digit_runs(&text) {
-            if !matches!(
-                contacts::number::parse_number(run),
-                Some(contacts::number::ParsedNumber::Sequence { written: true, .. })
-            ) {
-                continue;
-            }
-            let found = contacts::queries::search(
-                conn,
-                &contacts::queries::SearchQuery {
-                    q: run.to_owned(),
-                    ..Default::default()
-                },
-            )?;
-            let Some(contact) = found.number_match else {
-                continue;
-            };
-            if seen.contains(&contact) {
-                continue;
-            }
+        for (run, contact) in numbered_contacts(conn, line)? {
             if let Some(s) = for_contact(
                 conn,
                 line,
@@ -382,10 +361,40 @@ impl Suggester for ContactNumber {
             )? {
                 out.push(s);
             }
-            seen.push(contact);
         }
         Ok(out)
     }
+}
+
+/// The contacts whose Luhn-valid contact number is in the line's
+/// reference or narrative, each once, as `(the number written, contact)`.
+pub fn numbered_contacts(
+    conn: &Connection,
+    line: &LineView,
+) -> Result<Vec<(String, String)>, ContractError> {
+    let text = format!("{} {}", line.reference, line.narrative);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for run in six_digit_runs(&text) {
+        if !matches!(
+            contacts::number::parse_number(run),
+            Some(contacts::number::ParsedNumber::Sequence { written: true, .. })
+        ) {
+            continue;
+        }
+        let found = contacts::queries::search(
+            conn,
+            &contacts::queries::SearchQuery {
+                q: run.to_owned(),
+                ..Default::default()
+            },
+        )?;
+        if let Some(contact) = found.number_match
+            && out.iter().all(|(_, c)| *c != contact)
+        {
+            out.push((run.to_owned(), contact));
+        }
+    }
+    Ok(out)
 }
 
 /// A payer the group has matched before on this account (g1q8): strong
@@ -446,8 +455,9 @@ fn display_payer(line: &LineView) -> String {
 /// A standing order's expected payment (step 5): the exact amount, due
 /// from 15 days before the line to 5 days after it (−5/+15, as
 /// CiviBanking does), and not paid yet. Strong (so pre-ticked) only when
-/// the line's payer is a known payer of the standing order's donor (a
-/// payment from them was matched before): the first payment is always
+/// the line names the donor: their own Luhn-valid contact number in its
+/// reference or narrative, or a payer of theirs known from a match before
+/// (never a blank payer). The first payment by an unknown payer is always
 /// staff's to confirm. The standing order's reference in the line ranks
 /// the suggestion first and says so, but never makes it strong (review
 /// b5r round 3). Outside the window it isn't suggested.
@@ -461,6 +471,7 @@ impl Suggester for StandingOrder {
     fn suggest(&self, cx: &Context, line: &LineView) -> Result<Vec<Suggestion>, ContractError> {
         let conn = cx.conn;
         let mut out: Vec<(bool, Suggestion)> = Vec::new();
+        let numbered = numbered_contacts(conn, line)?;
         let known: Vec<String> = match payer_key(&line.payer, &line.reference) {
             Some(key) => payers_for(conn, &line.account_id, &key)?
                 .into_iter()
@@ -488,11 +499,23 @@ impl Suggester for StandingOrder {
                 .as_deref()
                 .filter(|r| reference_identifies(r, line));
             let by_payer = known.contains(&p.contact_id);
+            // The donor's own contact number names them, as step 4's
+            // contact-number rule (step 5 follow-up a); anyone else's
+            // number says nothing about this standing order.
+            let by_number = numbered
+                .iter()
+                .find(|(_, c)| *c == p.contact_id)
+                .map(|(run, _)| run.clone());
             let mut why = what;
             if let Some(r) = reference {
                 why = format!("{why}; reference {} matches", r.trim());
             }
-            let (confidence, reason) = if by_payer {
+            let (confidence, reason) = if let Some(run) = by_number {
+                (
+                    Confidence::Strong,
+                    format!("{why}; contact no. {run} in the reference"),
+                )
+            } else if by_payer {
                 (
                     Confidence::Strong,
                     format!("{why}; {} paid it before", display_payer(line)),

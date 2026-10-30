@@ -59,11 +59,13 @@ pub const NOTE_MAX: usize = 500;
 
 /// A line's payer key: its payer and reference, trimmed of spaces and
 /// lower-cased (ASCII, as SQLite's `lower` and `trim` do, so the index
-/// agrees). `None` when both are blank: nothing to remember.
+/// agrees). `None` when the payer is blank: a reference alone ("DONATION")
+/// says nothing about who paid, so it never makes or matches a known
+/// payer (step 5 follow-up b).
 pub fn payer_key(payer: &str, reference: &str) -> Option<String> {
     let norm = |s: &str| s.trim_matches(' ').to_ascii_lowercase();
     let (p, r) = (norm(payer), norm(reference));
-    (!p.is_empty() || !r.is_empty()).then(|| format!("{p}|{r}"))
+    (!p.is_empty()).then(|| format!("{p}|{r}"))
 }
 
 // ── lines ──────────────────────────────────────────────────────────────────
@@ -506,9 +508,12 @@ pub fn earlier_payment(
 
 /// A contact's remembered payers, newest first (shown on the contact).
 pub fn payers_of(conn: &Connection, contact_id: &str) -> rusqlite::Result<Vec<Payer>> {
+    // A row with a blank payer (remembered before blank payers stopped
+    // counting) names no one: skipped.
     conn.prepare_cached(
         "SELECT account_id, contact_id, payer, reference, last_line_id, matched_at
-         FROM bank_payers WHERE contact_id = ?1 ORDER BY matched_at DESC",
+         FROM bank_payers WHERE contact_id = ?1 AND trim(payer) <> ''
+         ORDER BY matched_at DESC",
     )?
     .query_map([contact_id], payer_row)?
     .collect()
@@ -915,7 +920,9 @@ mod tests {
             payer_key("  A SMITH ", "100016").as_deref(),
             Some("a smith|100016")
         );
-        assert_eq!(payer_key("", "REF").as_deref(), Some("|ref"));
+        assert_eq!(payer_key("A SMITH", "").as_deref(), Some("a smith|"));
+        // A reference alone names no one.
+        assert_eq!(payer_key("", "DONATION"), None);
         assert_eq!(payer_key(" ", ""), None);
     }
 
