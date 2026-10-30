@@ -300,6 +300,43 @@ async fn a_mapping_is_kept_with_the_import_once_and_staff_cant_replace_it() {
 }
 
 #[tokio::test]
+async fn a_headerless_file_imports_from_line_1_and_its_layout_is_kept() {
+    let w = world();
+    let sam = w.login("sam@alpha.org").await;
+    let ann = w.login("ann@alpha.org").await;
+    let acc = new_account(&w, "alpha", &ann, None).await;
+    let file = b"02/11/2026,J SMITH,25.00\n03/11/2026,A JONES,10.00\n".to_vec();
+    let headerless = json!({ "kind": "mapping", "mapping": {
+        "header": { "kind": "skip", "rows": 0 },
+        "date": { "index": 0 },
+        "amount": { "kind": "signed", "column": { "index": 2 } },
+        "narrative": [{ "index": 1 }]
+    }});
+    let (s, out) = import(&w, "alpha", &sam, &query(&acc, Some(headerless), true), file.clone()).await;
+    assert_eq!((s, out["newLines"].as_i64()), (StatusCode::OK, Some(2)), "{out}");
+    // Next month, the kept layout reads line 1 again.
+    let (_, out) = import(&w, "alpha", &sam, &query(&acc, None, false), file).await;
+    assert_eq!((out["newLines"].as_i64(), out["duplicateLines"].as_i64()), (Some(0), Some(2)));
+    // Line 1 taken for the column names: refused, pointing at the choice.
+    let by_name = json!({ "kind": "mapping", "mapping": {
+        "header": { "kind": "find" },
+        "date": { "name": "02/11/2026" },
+        "amount": { "kind": "signed", "column": { "name": "25.00" } },
+        "narrative": []
+    }});
+    let (s, out) = import(
+        &w,
+        "alpha",
+        &sam,
+        &query(&acc, Some(by_name), false),
+        b"02/11/2026,J SMITH,25.00\n".to_vec(),
+    )
+    .await;
+    assert_eq!((s, out["rows"][0]["line"].as_i64()), (StatusCode::UNPROCESSABLE_ENTITY, Some(1)));
+    assert!(out["rows"][0]["message"].as_str().unwrap().contains("No header row"));
+}
+
+#[tokio::test]
 async fn peek_shows_the_first_rows() {
     let w = world();
     let sam = w.login("sam@alpha.org").await;

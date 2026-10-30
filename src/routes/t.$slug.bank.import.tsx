@@ -1,5 +1,5 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   kindOfFile,
@@ -36,6 +36,9 @@ export const Route = createFileRoute('/t/$slug/bank/import')({
   validateSearch: (s: Record<string, unknown>): { account?: string } =>
     typeof s.account === 'string' ? { account: s.account } : {},
 })
+
+/** The rows `bank/peek` shows (`banking::csv::PEEK_ROWS`). */
+const PEEK_ROWS = 30
 
 const field = 'rounded border border-neutral-300 px-2 py-1 text-sm'
 const button =
@@ -127,10 +130,18 @@ function ImportFlow({
   const importStatement = useImportStatement()
   const [accountId, setAccountId] = useState(initialAccount)
   const [file, setFile] = useState<File | null>(null)
-  const [step, setStep] = useState<Step>({ kind: 'choose' })
+  const [step, setStepState] = useState<Step>({ kind: 'choose' })
+  // Past the first step: each new step's heading takes focus.
+  const [moved, setMoved] = useState(false)
+  const setStep = (to: Step) => {
+    setMoved(true)
+    setStepState(to)
+  }
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [rows, setRows] = useState<Array<BankRowError> | null>(null)
+  // Keeping the layout: by default only when the account has none, so an
+  // admin reading one file another way doesn't replace a working one.
   const [keep, setKeep] = useState(true)
   const account = accounts.find((a) => a.id === accountId) ?? accounts[0]
   const presetList = presets.data?.presets ?? []
@@ -157,6 +168,7 @@ function ImportFlow({
     attempt(async () => {
       if (!file) return
       const p = await previewImport(account.id, file, layout)
+      setKeep(!account.csvLayout)
       setStep({ kind: 'preview', layout, preview: p })
     })
 
@@ -192,7 +204,9 @@ function ImportFlow({
   )
 
   if (step.kind === 'done')
-    return <Done outcome={step.outcome} slug={slug} again={reset} />
+    return (
+      <Done outcome={step.outcome} slug={slug} again={reset} focus={moved} />
+    )
 
   if (step.kind === 'choose')
     return (
@@ -201,6 +215,7 @@ function ImportFlow({
         onSubmit={next}
         className="flex flex-col gap-4"
       >
+        <StepHeading focus={moved}>Choose the statement</StepHeading>
         <label className="flex flex-col gap-1 text-sm">
           Bank account
           <select
@@ -238,6 +253,8 @@ function ImportFlow({
     return (
       <LayoutChoice
         presets={presetList}
+        hasLayout={account.csvLayout !== undefined}
+        focus={moved}
         busy={busy}
         notice={notice}
         onPreset={(id) => void preview({ kind: 'preset', id })}
@@ -255,6 +272,7 @@ function ImportFlow({
     return (
       <MapColumns
         rows={step.rows}
+        focus={moved}
         busy={busy}
         notice={notice}
         onCheck={(mapping) => void preview({ kind: 'mapping', mapping })}
@@ -270,6 +288,7 @@ function ImportFlow({
   const mayKeep = csvLayout && (admin || !account.csvLayout)
   return (
     <section aria-label="Preview" className="flex flex-col gap-4">
+      <StepHeading focus={moved}>Check before importing</StepHeading>
       <p className="text-sm">
         <span className="font-medium">{file?.name}</span> into{' '}
         <span className="font-medium">{account.name}</span>
@@ -331,8 +350,33 @@ function ImportFlow({
   )
 }
 
+/**
+ * Each step's heading. Moving to a step replaces the form, so focus goes
+ * here (not to the page's body), and a screen reader says which step it
+ * is; not on the page's first render, where focus stays put.
+ */
+function StepHeading({
+  children,
+  focus,
+}: {
+  children: string
+  focus: boolean
+}) {
+  const ref = useRef<HTMLHeadingElement>(null)
+  useEffect(() => {
+    if (focus) ref.current?.focus()
+  }, [focus])
+  return (
+    <h2 ref={ref} tabIndex={-1} className="text-lg font-medium outline-none">
+      {children}
+    </h2>
+  )
+}
+
 function LayoutChoice({
   presets,
+  hasLayout,
+  focus,
   busy,
   notice,
   onPreset,
@@ -340,18 +384,25 @@ function LayoutChoice({
   onBack,
 }: {
   presets: Array<BankPreset>
+  hasLayout: boolean
+  focus: boolean
   busy: boolean
   notice: React.ReactNode
   onPreset: (id: string) => void
   onMap: () => void
   onBack: () => void
 }) {
-  const [preset, setPreset] = useState(presets[0]?.id ?? '')
+  const [picked, setPreset] = useState<string | null>(null)
+  // Until one is picked, the first: the presets may have loaded after
+  // this step opened.
+  const preset = picked ?? presets.at(0)?.id ?? ''
   return (
     <section aria-label="How to read it" className="flex flex-col gap-4">
+      <StepHeading focus={focus}>How to read the file</StepHeading>
       <p className="text-sm text-neutral-700">
-        This account has no CSV layout yet. Choose the bank’s, or match the
-        columns by hand.
+        {hasLayout
+          ? 'Read this file another way: the bank’s layout, or columns matched by hand.'
+          : 'This account has no CSV layout yet. Choose the bank’s, or match the columns by hand.'}
       </p>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <label className="flex flex-col gap-1 text-sm">
@@ -441,12 +492,14 @@ function ColumnSelect({
  */
 function MapColumns({
   rows,
+  focus,
   busy,
   notice,
   onCheck,
   onBack,
 }: {
   rows: Array<BankPeekRow>
+  focus: boolean
   busy: boolean
   notice: React.ReactNode
   onCheck: (mapping: NonNullable<ReturnType<typeof mappingOf>>) => void
@@ -454,15 +507,22 @@ function MapColumns({
 }) {
   const [picks, setPicks] = useState<MappingPicks>(emptyPicks)
   const width = Math.max(0, ...rows.map((r) => r.cells.length))
-  const header = Array.from(
-    { length: width },
-    (_, i) => rows[picks.headerRow]?.cells[i] ?? '',
+  const header = Array.from({ length: width }, (_, i) =>
+    picks.headerRow === null ? '' : (rows[picks.headerRow]?.cells[i] ?? ''),
   )
   const mapping = mappingOf(picks, header)
   const set = (p: Partial<MappingPicks>) => setPicks({ ...picks, ...p })
   const amount = picks.amount
   return (
     <section aria-label="Map the columns" className="flex flex-col gap-4">
+      <StepHeading focus={focus}>Match the columns</StepHeading>
+      {rows.length >= PEEK_ROWS && (
+        <p className="text-sm text-neutral-600">
+          Only the first {PEEK_ROWS} lines are shown. The column names must be
+          among them; if your bank puts them further down, delete the lines
+          above them in a spreadsheet, or use one of the bank layouts.
+        </p>
+      )}
       <div className="max-h-80 overflow-auto rounded border border-neutral-200">
         <table className="min-w-full text-xs">
           <caption className="sr-only">The file’s first rows</caption>
@@ -504,10 +564,16 @@ function MapColumns({
       <label className="flex flex-col gap-1 text-sm">
         Which line holds the column names?
         <select
-          value={picks.headerRow}
-          onChange={(e) => set({ headerRow: Number(e.target.value) })}
+          value={picks.headerRow ?? 'none'}
+          onChange={(e) =>
+            set({
+              headerRow:
+                e.target.value === 'none' ? null : Number(e.target.value),
+            })
+          }
           className={`${field} w-64 max-w-full`}
         >
+          <option value="none">No header row: the data starts on line 1</option>
           {rows.map((r, i) => (
             <option key={r.line} value={i}>
               Line {r.line}: {r.cells.filter(Boolean).slice(0, 3).join(', ')}
@@ -696,15 +762,17 @@ function Done({
   outcome,
   slug,
   again,
+  focus,
 }: {
   outcome: BankImportedOutcome
   slug: string
   again: () => void
+  focus: boolean
 }) {
   return (
     <section aria-label="Imported" className="flex flex-col gap-4">
+      <StepHeading focus={focus}>Imported</StepHeading>
       <div role="status">
-        <p className="text-sm text-neutral-700">Imported.</p>
         <Summary outcome={outcome} verb="were" />
       </div>
       <div className="flex flex-wrap gap-2">

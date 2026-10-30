@@ -4,7 +4,8 @@
  * with (`server/crates/banking/src/csv.rs`). Columns go by their header
  * text when every picked one has a distinct, non-empty name, so a bank
  * that reorders its columns still reads; otherwise every column goes by
- * position and the rows above the data are skipped. Header text is
+ * position and the rows above the data are skipped. A file with no header
+ * row goes by position, from line 1. Header text is
  * matched as the server matches it: ignoring case and whitespace runs.
  */
 import type { BankColumn } from '../data/rust-types/BankColumn'
@@ -12,8 +13,11 @@ import type { BankColumnMapping } from '../data/rust-types/BankColumnMapping'
 
 /** What the mapping screen picks: column positions (0-based). */
 export type MappingPicks = {
-  /** Which preview row (0-based, in file order) holds the column names. */
-  headerRow: number
+  /**
+   * Which preview row (0-based, in file order) holds the column names;
+   * null: the file has none, and its data starts on line 1.
+   */
+  headerRow: number | null
   date: number | null
   /** One signed column, or money in and money out. */
   amount:
@@ -73,10 +77,12 @@ export function mappingOf(
     p.bankId,
   ].filter((i): i is number => i !== null)
   const keys = header.map(headerKey)
-  const byName = picked.every((i) => {
-    const k = keys[i] ?? ''
-    return k !== '' && keys.filter((other) => other === k).length === 1
-  })
+  const byName =
+    p.headerRow !== null &&
+    picked.every((i) => {
+      const k = keys[i] ?? ''
+      return k !== '' && keys.filter((other) => other === k).length === 1
+    })
   const col = (i: number): BankColumn =>
     byName ? { name: (header[i] ?? '').trim() } : { index: i }
   const opt = (i: number | null) => (i === null ? undefined : col(i))
@@ -89,7 +95,9 @@ export function mappingOf(
           paidOut: col(p.amount.paidOut ?? 0),
         }
   return {
-    header: byName ? { kind: 'find' } : { kind: 'skip', rows: p.headerRow + 1 },
+    header: byName
+      ? { kind: 'find' }
+      : { kind: 'skip', rows: p.headerRow === null ? 0 : p.headerRow + 1 },
     date: col(p.date),
     amount,
     payer: opt(p.payer),

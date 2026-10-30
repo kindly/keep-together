@@ -121,7 +121,18 @@ function AccountImports({
         {details && `${details}. `}CSV layout:{' '}
         {layoutLabel(account.csvLayout, presets)}
       </p>
-      {imports.data === undefined ? (
+      {imports.error ? (
+        <p role="alert" className="text-sm text-red-700">
+          The imports couldn’t load.{' '}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => void imports.refetch()}
+          >
+            Try again
+          </button>
+        </p>
+      ) : imports.data === undefined ? (
         <p className="text-sm text-neutral-500">Loading…</p>
       ) : imports.data.length === 0 ? (
         <p className="text-sm text-neutral-600">Nothing imported yet.</p>

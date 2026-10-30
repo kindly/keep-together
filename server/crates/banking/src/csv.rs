@@ -291,6 +291,23 @@ pub fn read(text: &str, mapping: &ColumnMapping) -> Result<Parsed, Vec<RowError>
                     format!("No row has the columns {}", list.join(", ")),
                 )]);
             };
+            // A transaction taken for the column names: its amount is money.
+            // Its credit would be lost unseen, and next month's file would
+            // look for columns called `25.00`.
+            let amounts = match &mapping.amount {
+                AmountColumns::Signed { column } => vec![column],
+                AmountColumns::PaidInOut { paid_in, paid_out } => vec![paid_in, paid_out],
+            };
+            let money = amounts.iter().any(|c| match c {
+                Column::Name(n) => matches!(parse_pence(n, Decimal::Point), Ok(Some(_))),
+                Column::Index(_) => false,
+            });
+            if money {
+                return Err(vec![RowError::new(
+                    records[at].line,
+                    "This line is a transaction, not column names: choose \"No header row\"",
+                )]);
+            }
             let names = records[at].fields.iter().map(|f| header_key(f)).collect();
             (at + 1, names)
         }
@@ -531,6 +548,49 @@ mod tests {
         let errors = read(&text, &signed()).unwrap_err();
         assert_eq!(errors.len(), crate::ROW_ERRORS_MAX + 1);
         assert_eq!(errors.last().unwrap().message, "…and 10 more rows");
+    }
+
+    #[test]
+    fn a_headerless_file_reads_from_line_1_by_position() {
+        let mapping = ColumnMapping {
+            header: HeaderRow::Skip { rows: 0 },
+            date: Column::Index(0),
+            amount: AmountColumns::Signed {
+                column: Column::Index(2),
+            },
+            payer: Some(Column::Index(1)),
+            reference: None,
+            narrative: vec![Column::Index(1)],
+            bank_id: None,
+            currency: None,
+        };
+        let text = "02/11/2026,J SMITH,25.00\n03/11/2026,A JONES,10.00\n";
+        let p = read(text, &mapping).unwrap();
+        let got: Vec<_> = p.credits.iter().map(|c| (c.line, c.amount)).collect();
+        assert_eq!(got, [(1, 2500), (2, 1000)]);
+        assert_eq!(p.rows_skipped, 0);
+    }
+
+    #[test]
+    fn a_transaction_taken_for_the_header_is_refused() {
+        // Columns named after line 1's cells: the mapping took a data row
+        // for the names.
+        let mapping = ColumnMapping {
+            header: HeaderRow::Find,
+            date: Column::name("02/11/2026"),
+            amount: AmountColumns::Signed {
+                column: Column::name("25.00"),
+            },
+            payer: None,
+            reference: None,
+            narrative: vec![Column::name("J SMITH")],
+            bank_id: None,
+            currency: None,
+        };
+        let text = "02/11/2026,J SMITH,25.00\n03/11/2026,A JONES,10.00\n";
+        let errors = read(text, &mapping).unwrap_err();
+        assert_eq!(errors[0].line, 1);
+        assert!(errors[0].message.contains("No header row"), "{errors:?}");
     }
 
     #[test]

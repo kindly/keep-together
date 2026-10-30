@@ -61,6 +61,23 @@ describe('bank column mapping', () => {
     })
   })
 
+  it('a file with no header row goes by position from line 1', () => {
+    const picks: MappingPicks = {
+      ...emptyPicks(),
+      headerRow: null,
+      date: 0,
+      amount: { kind: 'signed', column: 2 },
+      narrative: [1],
+    }
+    // Line 1's cells are distinct and non-empty, but they are data.
+    expect(mappingOf(picks, ['02/11/2026', 'J SMITH', '25.00'])).toEqual({
+      header: { kind: 'skip', rows: 0 },
+      date: { index: 0 },
+      amount: { kind: 'signed', column: { index: 2 } },
+      narrative: [{ index: 1 }],
+    })
+  })
+
   it('matches names ignoring case and spacing, as the server does', () => {
     const header = ['Date', ' date ', 'Amount']
     const picks: MappingPicks = {

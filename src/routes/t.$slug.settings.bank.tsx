@@ -75,7 +75,15 @@ function BankAccountsPage() {
           <ul className="flex flex-col gap-3">
             {accounts.data.map((a) => (
               <li key={a.id}>
-                <AccountCard row={a} presets={presets.data.presets} />
+                <AccountCard
+                  row={a}
+                  presets={presets.data.presets}
+                  reload={() =>
+                    accounts
+                      .refetch()
+                      .then((r) => r.data?.find((x) => x.id === a.id))
+                  }
+                />
               </li>
             ))}
           </ul>
@@ -102,9 +110,11 @@ function BankAccountsPage() {
 function AccountCard({
   row,
   presets,
+  reload,
 }: {
   row: BankAccountRow
   presets: Array<BankPreset>
+  reload: () => Promise<BankAccountRow | undefined>
 }) {
   const [editing, setEditing] = useState(false)
   if (editing)
@@ -112,6 +122,7 @@ function AccountCard({
       <AccountForm
         row={row}
         presets={presets}
+        reload={reload}
         onDone={() => setEditing(false)}
       />
     )
@@ -153,45 +164,84 @@ function AccountCard({
   )
 }
 
+/** What the form edits, from an account as the server read it. */
+const valuesOf = (row?: BankAccountRow): BankAccountPayload => ({
+  name: row?.name ?? '',
+  sortCode: row ? formatSortCode(row.sortCode) : '',
+  accountLast4: row?.accountLast4 ?? '',
+  defaultSourceCodeId: row?.defaultSourceCodeId,
+  csvLayout: row?.csvLayout,
+  active: row?.active ?? true,
+})
+
+const shownOf = (row?: BankAccountRow): ShownCode | null =>
+  row?.defaultSourceCode
+    ? {
+        code: row.defaultSourceCode.code,
+        isActive: row.defaultSourceCode.isActive,
+        startDate: row.defaultSourceCode.startDate,
+        endDate: row.defaultSourceCode.endDate,
+      }
+    : null
+
+/** The fields a `422 invalid` can name, as the server names them. */
+type FieldName =
+  'name' | 'sortCode' | 'accountLast4' | 'defaultSourceCodeId' | 'csvLayout'
+const FIELDS: ReadonlyArray<string> = [
+  'name',
+  'sortCode',
+  'accountLast4',
+  'defaultSourceCodeId',
+  'csvLayout',
+]
+
 /**
  * Add an account, or edit one against its version. Another admin's save
- * meanwhile answers `stale`: the form says so and takes their version, so
- * the next Save overwrites knowingly.
+ * meanwhile answers `stale`: the form reloads the account and shows their
+ * version, and the change is made again on top of it. Never a blind
+ * overwrite. A field the server refuses says so beside it.
  */
 function AccountForm({
   row,
   presets,
+  reload,
   onDone,
 }: {
   row?: BankAccountRow
   presets: Array<BankPreset>
+  reload?: () => Promise<BankAccountRow | undefined>
   onDone: () => void
 }) {
   const create = useCreateBankAccount()
   const save = useSaveBankAccount()
   const stepUp = useStepUp()
   const id = useId()
-  const [values, setValues] = useState<BankAccountPayload>(() => ({
-    name: row?.name ?? '',
-    sortCode: row ? formatSortCode(row.sortCode) : '',
-    accountLast4: row?.accountLast4 ?? '',
-    defaultSourceCodeId: row?.defaultSourceCodeId,
-    csvLayout: row?.csvLayout,
-    active: row?.active ?? true,
-  }))
+  const [values, setValues] = useState<BankAccountPayload>(() => valuesOf(row))
   const [shownCode, setShownCode] = useState<ShownCode | null>(() =>
-    row?.defaultSourceCode
-      ? {
-          code: row.defaultSourceCode.code,
-          isActive: row.defaultSourceCode.isActive,
-          startDate: row.defaultSourceCode.startDate,
-          endDate: row.defaultSourceCode.endDate,
-        }
-      : null,
+    shownOf(row),
   )
   const [expected, setExpected] = useState(row?.version ?? 0)
   const [error, setError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<
+    Partial<Record<FieldName, string>>
+  >({})
   const [busy, setBusy] = useState(false)
+  /** An input's error wiring: invalid, and described by its message. */
+  const invalid = (f: FieldName, hint?: string) => {
+    const described = [fieldErrors[f] && `${id}-${f}-error`, hint]
+      .filter(Boolean)
+      .join(' ')
+    return {
+      'aria-invalid': fieldErrors[f] ? true : undefined,
+      'aria-describedby': described || undefined,
+    }
+  }
+  const fieldError = (f: FieldName) =>
+    fieldErrors[f] && (
+      <span id={`${id}-${f}-error`} className="text-xs text-red-700">
+        {fieldErrors[f]}
+      </span>
+    )
 
   const layoutValue = !values.csvLayout
     ? ''
@@ -202,6 +252,7 @@ function AccountForm({
   async function submit(e: FormEvent) {
     e.preventDefault()
     setError(null)
+    setFieldErrors({})
     setBusy(true)
     const sent = values
     try {
@@ -211,15 +262,27 @@ function AccountForm({
         onDone()
       })
     } catch (err) {
-      setError(
-        refusal(
-          err,
-          'Could not save the account',
-          'Someone else saved this account just now. Their version is loaded underneath: Save again to replace it with yours',
-        ),
-      )
-      if (err instanceof RustApiError && err.error.kind === 'stale')
-        setExpected(err.error.counter)
+      const refused = err instanceof RustApiError ? err.error : null
+      if (refused?.kind === 'stale') {
+        // Their version, in full: the change is redone on top of it.
+        const fresh = await reload?.()
+        if (fresh) {
+          setValues(valuesOf(fresh))
+          setShownCode(shownOf(fresh))
+          setExpected(fresh.version)
+        }
+        setError(
+          'Someone else saved this account just now. The form now shows their version: make your change again, then save.',
+        )
+      } else if (
+        refused?.kind === 'invalid' &&
+        refused.problems.every((p) => FIELDS.includes(p.field))
+      ) {
+        setFieldErrors(
+          Object.fromEntries(refused.problems.map((p) => [p.field, p.message])),
+        )
+        setError('Check the marked fields.')
+      } else setError(refusal(err, 'Could not save the account', ''))
     } finally {
       setBusy(false)
     }
@@ -240,7 +303,9 @@ function AccountForm({
             placeholder="CAF current account"
             onChange={(e) => setValues({ ...values, name: e.target.value })}
             className={`${field} w-72 max-w-full`}
+            {...invalid('name')}
           />
+          {fieldError('name')}
         </label>
         <div className="flex flex-wrap gap-3">
           <label className="flex flex-col gap-1 text-sm">
@@ -253,7 +318,9 @@ function AccountForm({
                 setValues({ ...values, sortCode: e.target.value })
               }
               className={`${field} w-32`}
+              {...invalid('sortCode')}
             />
+            {fieldError('sortCode')}
           </label>
           <label className="flex flex-col gap-1 text-sm">
             Account number’s last four digits
@@ -262,12 +329,13 @@ function AccountForm({
               inputMode="numeric"
               maxLength={4}
               placeholder="1234"
-              aria-describedby={`${id}-last4`}
               onChange={(e) =>
                 setValues({ ...values, accountLast4: e.target.value })
               }
               className={`${field} w-24`}
+              {...invalid('accountLast4', `${id}-last4`)}
             />
+            {fieldError('accountLast4')}
             <span id={`${id}-last4`} className="text-xs text-neutral-500">
               Only the last four: an OFX file for another account is refused.
             </span>
@@ -290,6 +358,7 @@ function AccountForm({
               })
             }}
             className={`${field} w-96 max-w-full`}
+            {...invalid('csvLayout')}
           >
             <option value="">Not set: choose at each import</option>
             {values.csvLayout?.kind === 'mapping' && (
@@ -307,6 +376,7 @@ function AccountForm({
             yet: check the first import’s preview. OFX and QIF files need no
             layout.
           </span>
+          {fieldError('csvLayout')}
         </label>
         <SourceCodePicker
           label="Default source code"
@@ -325,6 +395,7 @@ function AccountForm({
             setShownCode(null)
           }}
         />
+        {fieldError('defaultSourceCodeId')}
         {row && (
           <label className="flex items-center gap-2 text-sm">
             <input

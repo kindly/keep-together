@@ -21,6 +21,13 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 let role: 'admin' | 'staff' | 'viewer' = 'staff'
 let accounts: Array<BankAccountRow> = []
+// What a refetch of the accounts answers (another admin's save).
+let accountsAfterRefetch: Array<BankAccountRow> | undefined
+let importsRead: {
+  data?: Array<unknown>
+  error?: unknown
+  refetch: () => Promise<unknown>
+} = { data: [], refetch: () => Promise.resolve() }
 const create = vi.fn()
 const save = vi.fn()
 const preview = vi.fn()
@@ -52,10 +59,10 @@ vi.mock('../lib/data', () => ({
   useBankAccounts: () => ({
     data: accounts,
     error: null,
-    refetch: () => Promise.resolve(),
+    refetch: () => Promise.resolve({ data: accountsAfterRefetch ?? accounts }),
   }),
   useBankPresets: () => ({ data: PRESETS }),
-  useBankImports: () => ({ data: [] }),
+  useBankImports: () => importsRead,
   useCreateBankAccount: () => create,
   useSaveBankAccount: () => save,
   usePreviewImport: () => preview,
@@ -148,6 +155,8 @@ beforeEach(() => {
   for (const f of [create, save, preview, importStatement, peek]) f.mockReset()
   role = 'staff'
   accounts = [account({ csvLayout: { kind: 'preset', id: 'lloyds' } })]
+  accountsAfterRefetch = undefined
+  importsRead = { data: [], refetch: () => Promise.resolve() }
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -223,11 +232,13 @@ test('a saved layout: preview, then import shows only what was committed', async
   expect(importStatement).toHaveBeenCalledWith('acc1', file, null, false)
   // In flight: the button is disabled and nothing claims success yet.
   expect(button('Importing…')?.disabled).toBe(true)
-  expect(el.textContent).not.toContain('Imported.')
+  expect(el.textContent).not.toContain('Imported')
   await act(async () =>
     commit({ ...outcome({ newLines: 3, duplicateLines: 13 }), id: 'imp1' }),
   )
-  expect(el.textContent).toContain('Imported.')
+  expect(el.querySelector('h2')?.textContent).toBe('Imported')
+  // Focus moved to the step's heading.
+  expect(document.activeElement?.textContent).toBe('Imported')
   expect(byTestId('bank-summary')).toBe('3 new, 13 already imported')
   expect(
     el.querySelector('a[href="/t/alpha/bank/imports/imp1"]'),
@@ -388,17 +399,132 @@ test('settings: an admin adds an account, and a stale save says so', async () =>
     active: true,
   })
   await click(button(/^Edit/))
+  // Admin B archived it meanwhile; this admin renames it.
+  accountsAfterRefetch = [
+    account({ version: 4, name: 'Lloyds current', active: false }),
+  ]
+  const edit = el.querySelector('form[aria-label="Edit Lloyds current"]')!
+  await act(async () => {
+    const input = edit.querySelector('input')!
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )!.set!.call(input, 'Lloyds main')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
   await click(button('Save'))
   expect(save).toHaveBeenCalledWith(
     'acc1',
     3,
-    expect.objectContaining({ name: 'Lloyds current' }),
+    expect.objectContaining({ name: 'Lloyds main' }),
   )
   expect(el.querySelector('[role="alert"]')?.textContent).toContain(
-    'Someone else saved this account just now',
+    'The form now shows their version: make your change again',
   )
-  // The next Save goes against their version.
+  // Their version is in the form: archived, the old name. Nothing of
+  // ours survives to overwrite it unseen.
+  expect(edit.querySelector('input')?.value).toBe('Lloyds current')
+  const archived = [...edit.querySelectorAll('label')]
+    .find((l) => l.textContent.startsWith('Archived'))!
+    .querySelector('input')!
+  expect(archived.checked).toBe(true)
   save.mockResolvedValue({ id: 'acc1', counter: 5 })
   await click(button('Save'))
-  expect(save).toHaveBeenLastCalledWith('acc1', 4, expect.anything())
+  expect(save).toHaveBeenLastCalledWith(
+    'acc1',
+    4,
+    expect.objectContaining({ name: 'Lloyds current', active: false }),
+  )
+})
+
+test('settings: a refused field is marked and described beside it', async () => {
+  role = 'admin'
+  save.mockRejectedValue(
+    new RustApiError(422, {
+      kind: 'invalid',
+      problems: [{ field: 'sortCode', message: '6 digits, or leave it empty' }],
+    }),
+  )
+  await page(import('./t.$slug.settings.bank'))
+  await click(button(/^Edit/))
+  await click(button('Save'))
+  const input = [...el.querySelectorAll('label')]
+    .find((l) => l.textContent.startsWith('Sort code'))!
+    .querySelector('input')!
+  expect(input.getAttribute('aria-invalid')).toBe('true')
+  const described = document.getElementById(
+    input.getAttribute('aria-describedby')!,
+  )
+  expect(described?.textContent).toBe('6 digits, or leave it empty')
+})
+
+test('no header row: the data starts on line 1, by position', async () => {
+  accounts = [account()]
+  peek.mockResolvedValue([
+    { line: 1, cells: ['02/11/2026', 'J SMITH', '25.00'] },
+    { line: 2, cells: ['03/11/2026', 'A JONES', '10.00'] },
+  ])
+  preview.mockResolvedValue(outcome())
+  await importPage()
+  const file = await chooseFile('statement.csv')
+  await click(button('Next'))
+  await click(button('Map the columns by hand'))
+  expect(document.activeElement?.textContent).toBe('Match the columns')
+  const select = (label: string, value: string) =>
+    act(async () => {
+      const l = [...el.querySelectorAll('label')].find(
+        (x) => x.querySelector('select') && x.textContent.startsWith(label),
+      )!
+      const s = l.querySelector('select')!
+      s.value = value
+      s.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+  await select('Which line', 'none')
+  await select('Date', '0')
+  await select('Amount column', '2')
+  await click(button('Preview with these columns'))
+  expect(preview).toHaveBeenCalledWith('acc1', file, {
+    kind: 'mapping',
+    mapping: {
+      header: { kind: 'skip', rows: 0 },
+      date: { index: 0 },
+      amount: { kind: 'signed', column: { index: 2 } },
+      narrative: [],
+    },
+  })
+})
+
+test('an admin reading a file another way keeps the saved layout by default', async () => {
+  role = 'admin'
+  preview.mockResolvedValue(outcome())
+  importStatement.mockResolvedValue({ ...outcome(), id: 'imp1' })
+  await importPage()
+  const file = await chooseFile('statement.csv')
+  await click(button('Next'))
+  await click(button('Read it another way'))
+  // The first preset is ready to use at once.
+  expect(button('Preview with it')?.disabled).toBe(false)
+  await click(button('Preview with it'))
+  const keep = [...el.querySelectorAll('label')]
+    .find((l) => l.textContent.startsWith('Keep this layout'))!
+    .querySelector('input')!
+  expect(keep.checked).toBe(false)
+  await click(button('Import 4 new lines'))
+  expect(importStatement).toHaveBeenCalledWith(
+    'acc1',
+    file,
+    { kind: 'preset', id: 'lloyds' },
+    false,
+  )
+})
+
+test('an account’s imports that fail to load say so, with a retry', async () => {
+  const refetch = vi.fn(() => Promise.resolve())
+  importsRead = { error: new Error('down'), refetch }
+  await page(import('./t.$slug.bank.index'))
+  expect(el.querySelector('[role="alert"]')?.textContent).toContain(
+    'The imports couldn’t load.',
+  )
+  await click(button('Try again'))
+  expect(refetch).toHaveBeenCalled()
 })
