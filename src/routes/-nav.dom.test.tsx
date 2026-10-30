@@ -466,7 +466,7 @@ test('the Donations menu: Record a gift, then my recent gifts, each a link', asy
   ])
 })
 
-test('with GoCardless on, the Donations menu lists Unmatched payments for staff', async () => {
+test('with GoCardless on, the Donations menu lists Unmatched payments for staff, the report for everyone', async () => {
   gocardless = { enabled: true }
   const items = async () => {
     await page(import('./t.$slug'))
@@ -483,18 +483,21 @@ test('with GoCardless on, the Donations menu lists Unmatched payments for staff'
     ].map((i) => [i.textContent, i.getAttribute('href')])
   }
   tenants = [group('alpha', { role: 'staff' })]
-  expect((await items()).slice(0, 2)).toEqual([
+  expect((await items()).slice(0, 3)).toEqual([
     ['Record a gift', '/t/alpha/gifts/new'],
     ['Unmatched payments', '/t/alpha/gocardless/unmatched'],
+    ['Expected vs actual', '/t/alpha/reports/expected'],
   ])
   act(() => root.unmount())
   document.body.innerHTML = ''
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
-  // A viewer: neither; and nothing while GoCardless is off.
+  // A viewer: the report only.
   tenants = [group('alpha', { role: 'viewer' })]
-  expect((await items()).map(([t]) => t)).not.toContain('Unmatched payments')
+  const viewer = (await items()).map(([t]) => t)
+  expect(viewer).not.toContain('Unmatched payments')
+  expect(viewer).toContain('Expected vs actual')
 })
 
 test('back from GoCardless’s consent page: Settings opens its tab, with how it went', async () => {

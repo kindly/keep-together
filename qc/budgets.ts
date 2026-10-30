@@ -218,6 +218,17 @@ export const budgets = {
   // Bulk's class, as scan.sendPage (its own recorded budget; the phone
   // shows "Preparing the page…").
   'scans.uploadToLaptop': { kind: 'bulk', maxMs: 280 },
+  // Regular-gift terms step 6 (qc/flows/regular-terms.spec.ts).
+  // PROVISIONAL, awaiting the human's OK: classes picked, not recorded.
+  // Scheduling a change (the plan's "repeatable (100 ms)"), changing its
+  // code and withdrawing it are edits of the regular gift: repeatable.
+  // Opening the expected vs actual report is a read: repeatable.
+  // Adopting a subscription makes a regular gift: infrequent.
+  'terms.change': repeatable,
+  'terms.code': repeatable,
+  'terms.withdraw': repeatable,
+  'expected.report': repeatable,
+  'gocardless.adopt': infrequent,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },

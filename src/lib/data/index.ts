@@ -141,22 +141,33 @@ export type {
 } from './rust/scans'
 export {
   useDirectDebitWrites,
+  useExpectedPeriods,
+  useExpectedReport,
   useGoCardlessAdmin,
   useGoCardlessStatus,
   useMatchPayment,
   useRegularGiftForecast,
   useRegularGifts,
+  useTermsWrites,
+  useUnknownSubscriptions,
   useUnmatchedPayments,
 } from './rust/gocardless'
 export type {
+  ChangeArgs,
   DirectDebitPayment,
+  ExpectedGrouping,
+  ExpectedPeriodRow,
+  ExpectedReport,
   GoCardlessStatus,
   InstantPaymentLink,
   OneOffStarted,
   RegularGift,
   RegularGiftFrequency,
+  ReportLine,
+  ShareArgs,
   Term,
   TermShareView,
+  UnknownSubscription,
   UnmatchedPayment,
   Upcoming,
 } from './rust/gocardless'

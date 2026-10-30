@@ -28,6 +28,7 @@ import { Route as TSlugGiftaidNewRouteImport } from './routes/t.$slug.giftaid.ne
 import { Route as TSlugGiftsGiftIdRouteImport } from './routes/t.$slug.gifts.$giftId'
 import { Route as TSlugGiftsNewRouteImport } from './routes/t.$slug.gifts.new'
 import { Route as TSlugGocardlessUnmatchedRouteImport } from './routes/t.$slug.gocardless.unmatched'
+import { Route as TSlugReportsExpectedRouteImport } from './routes/t.$slug.reports.expected'
 import { Route as TSlugScansIndexRouteImport } from './routes/t.$slug.scans.index'
 import { Route as TSlugScansScanIdRouteImport } from './routes/t.$slug.scans.$scanId'
 import { Route as TSlugScansDeletableRouteImport } from './routes/t.$slug.scans.deletable'
@@ -138,6 +139,11 @@ const TSlugGocardlessUnmatchedRoute =
     path: '/gocardless/unmatched',
     getParentRoute: () => TSlugRoute,
   } as any)
+const TSlugReportsExpectedRoute = TSlugReportsExpectedRouteImport.update({
+  id: '/reports/expected',
+  path: '/reports/expected',
+  getParentRoute: () => TSlugRoute,
+} as any)
 const TSlugScansIndexRoute = TSlugScansIndexRouteImport.update({
   id: '/scans/',
   path: '/scans/',
@@ -223,6 +229,7 @@ export interface FileRoutesByFullPath {
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
   '/t/$slug/gocardless/unmatched': typeof TSlugGocardlessUnmatchedRoute
+  '/t/$slug/reports/expected': typeof TSlugReportsExpectedRoute
   '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
@@ -254,6 +261,7 @@ export interface FileRoutesByTo {
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
   '/t/$slug/gocardless/unmatched': typeof TSlugGocardlessUnmatchedRoute
+  '/t/$slug/reports/expected': typeof TSlugReportsExpectedRoute
   '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
@@ -289,6 +297,7 @@ export interface FileRoutesById {
   '/t/$slug/gifts/$giftId': typeof TSlugGiftsGiftIdRoute
   '/t/$slug/gifts/new': typeof TSlugGiftsNewRoute
   '/t/$slug/gocardless/unmatched': typeof TSlugGocardlessUnmatchedRoute
+  '/t/$slug/reports/expected': typeof TSlugReportsExpectedRoute
   '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
@@ -325,6 +334,7 @@ export interface FileRouteTypes {
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
     | '/t/$slug/gocardless/unmatched'
+    | '/t/$slug/reports/expected'
     | '/t/$slug/scans/$scanId'
     | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/fields'
@@ -356,6 +366,7 @@ export interface FileRouteTypes {
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
     | '/t/$slug/gocardless/unmatched'
+    | '/t/$slug/reports/expected'
     | '/t/$slug/scans/$scanId'
     | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/fields'
@@ -390,6 +401,7 @@ export interface FileRouteTypes {
     | '/t/$slug/gifts/$giftId'
     | '/t/$slug/gifts/new'
     | '/t/$slug/gocardless/unmatched'
+    | '/t/$slug/reports/expected'
     | '/t/$slug/scans/$scanId'
     | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/fields'
@@ -551,6 +563,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugGocardlessUnmatchedRouteImport
       parentRoute: typeof TSlugRoute
     }
+    '/t/$slug/reports/expected': {
+      id: '/t/$slug/reports/expected'
+      path: '/reports/expected'
+      fullPath: '/t/$slug/reports/expected'
+      preLoaderRoute: typeof TSlugReportsExpectedRouteImport
+      parentRoute: typeof TSlugRoute
+    }
     '/t/$slug/scans/': {
       id: '/t/$slug/scans/'
       path: '/scans'
@@ -701,6 +720,7 @@ interface TSlugRouteChildren {
   TSlugGiftsGiftIdRoute: typeof TSlugGiftsGiftIdRoute
   TSlugGiftsNewRoute: typeof TSlugGiftsNewRoute
   TSlugGocardlessUnmatchedRoute: typeof TSlugGocardlessUnmatchedRoute
+  TSlugReportsExpectedRoute: typeof TSlugReportsExpectedRoute
   TSlugScansScanIdRoute: typeof TSlugScansScanIdRoute
   TSlugScansDeletableRoute: typeof TSlugScansDeletableRoute
   TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
@@ -717,6 +737,7 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugGiftsGiftIdRoute: TSlugGiftsGiftIdRoute,
   TSlugGiftsNewRoute: TSlugGiftsNewRoute,
   TSlugGocardlessUnmatchedRoute: TSlugGocardlessUnmatchedRoute,
+  TSlugReportsExpectedRoute: TSlugReportsExpectedRoute,
   TSlugScansScanIdRoute: TSlugScansScanIdRoute,
   TSlugScansDeletableRoute: TSlugScansDeletableRoute,
   TSlugContactsIndexRoute: TSlugContactsIndexRoute,

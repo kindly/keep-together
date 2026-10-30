@@ -31,6 +31,17 @@ import type { TermAllocationView } from '../rust-types/TermAllocationView'
 import type { TermView } from '../rust-types/TermView'
 import type { UnmatchedPayment as WireUnmatched } from '../rust-types/UnmatchedPayment'
 import type { UpcomingPayment } from '../rust-types/UpcomingPayment'
+import type { AdoptSubscription } from '../rust-types/AdoptSubscription'
+import type { ChangeTerms } from '../rust-types/ChangeTerms'
+import type { CodeTerms } from '../rust-types/CodeTerms'
+import type { EditTerms } from '../rust-types/EditTerms'
+import type { ExpectedGrouping } from '../rust-types/ExpectedGrouping'
+import type { ExpectedLine } from '../rust-types/ExpectedLine'
+import type { ExpectedReport as WireReport } from '../rust-types/ExpectedReport'
+import type { ExpectedRow } from '../rust-types/ExpectedRow'
+import type { UnknownSubscription as WireUnknown } from '../rust-types/UnknownSubscription'
+import type { UpgradeLine } from '../rust-types/UpgradeLine'
+import type { NotRealised as WireNotRealised } from '../rust-types/NotRealised'
 import { RustApiError, get, post, tenantPath } from './client'
 import { keys } from './keys'
 
@@ -163,11 +174,13 @@ export function useRegularGifts(
  */
 export function useRegularGiftForecast(
   id: string,
+  /** The gift's status as listed: a new status reads it afresh. */
+  status: string,
   enabled = true,
 ): Array<Upcoming> | undefined {
   const { slug } = useTenant()
   return useQuery({
-    queryKey: keys.regularGiftForecast(slug, id),
+    queryKey: keys.regularGiftForecast(slug, id, status),
     enabled,
     staleTime: 5 * 60_000,
     retry: false,
@@ -200,12 +213,26 @@ export function useUnmatchedPayments(): {
 
 // ── writes ─────────────────────────────────────────────────────────────────
 
-/** Whether `was` has seen a change `next` hasn't: a counter of it is ahead. */
+/**
+ * Whether `was` has seen a change `next` hasn't: a counter of it, or of
+ * one of its terms rows, is ahead, or it has a row `next` lacks.
+ */
 function newer(was: RegularGift, next: RegularGift): boolean {
-  return (
+  if (
     was.setupVersion > next.setupVersion ||
     was.mandateVersion > next.mandateVersion
   )
+    return true
+  const rows = new Map(next.terms.map((t) => [t.id, t]))
+  return was.terms.some((t) => {
+    const n = rows.get(t.id)
+    return (
+      !n ||
+      t.termsVersion > n.termsVersion ||
+      t.syncVersion > n.syncVersion ||
+      t.codeVersion > n.codeVersion
+    )
+  })
 }
 
 /**
@@ -338,5 +365,253 @@ export function useMatchPayment() {
       await qc.invalidateQueries({ queryKey: keys.unmatched(slug) })
       void qc.invalidateQueries({ queryKey: keys.gifts(slug) })
     }
+  }
+}
+
+// ── regular-gift terms (ADR 0026; regular-gift-terms step 6) ──────────────
+
+export type { ExpectedGrouping }
+
+/** One layer of a split as a form sends it: pence to a code version. */
+export type ShareArgs = { key?: string; sourceCodeId: string; amount: bigint }
+
+export type ChangeArgs = Omit<ChangeTerms, 'amount' | 'allocations'> & {
+  amount: bigint
+  allocations?: Array<ShareArgs>
+}
+
+export type EditArgs = Omit<EditTerms, 'amount' | 'allocations'> & {
+  amount: bigint
+  allocations?: Array<ShareArgs>
+}
+
+export type ExpectedPeriodRow = Omit<
+  ExpectedRow,
+  'expected' | 'split' | 'amount'
+> & {
+  expected: bigint
+  split: Array<{ sourceCodeId: string; amount: bigint }>
+  amount: bigint | null
+}
+
+export type ReportLine = Omit<
+  ExpectedLine,
+  'expected' | 'received' | 'failed' | 'missing' | 'pending'
+> & {
+  expected: bigint
+  received: bigint
+  failed: bigint
+  missing: bigint
+  pending: bigint
+}
+
+export type ReportUpgrade = Omit<
+  UpgradeLine,
+  'upgrades' | 'downgrades' | 'annual' | 'monthly'
+> & { upgrades: number; downgrades: number; annual: bigint; monthly: bigint }
+
+export type NotRealised = Omit<WireNotRealised, 'annual' | 'monthly'> & {
+  annual: bigint
+  monthly: bigint | null
+}
+
+export type ExpectedReport = Omit<
+  WireReport,
+  'lines' | 'total' | 'upgrades' | 'notRealised'
+> & {
+  lines: Array<ReportLine>
+  total: ReportLine
+  upgrades: Array<ReportUpgrade>
+  notRealised: Array<NotRealised>
+}
+
+export type UnknownSubscription = Omit<WireUnknown, 'lastAmount'> & {
+  lastAmount: bigint
+}
+
+const lineFromWire = (l: ExpectedLine): ReportLine => ({
+  ...l,
+  expected: pence(l.expected),
+  received: pence(l.received),
+  failed: pence(l.failed),
+  missing: pence(l.missing),
+  pending: pence(l.pending),
+})
+
+export const reportFromWire = (r: WireReport): ExpectedReport => ({
+  ...r,
+  lines: r.lines.map(lineFromWire),
+  total: lineFromWire(r.total),
+  upgrades: r.upgrades.map((u) => ({
+    ...u,
+    annual: pence(u.annual),
+    monthly: pence(u.monthly),
+  })),
+  notRealised: r.notRealised.map((n) => ({
+    ...n,
+    annual: pence(n.annual),
+    monthly: n.monthly === null ? null : pence(n.monthly),
+  })),
+})
+
+const sharesToWire = (shares: Array<ShareArgs> | undefined) =>
+  shares?.map((a) => ({ ...a, amount: toWire(a.amount) }))
+
+/**
+ * A regular gift's last 12 periods (to this month) of expected against
+ * what happened; undefined while loading.
+ */
+export function useExpectedPeriods(
+  id: string,
+  enabled = true,
+): Array<ExpectedPeriodRow> | undefined {
+  const { slug } = useTenant()
+  return useQuery({
+    queryKey: keys.expected(slug, id),
+    enabled,
+    queryFn: async () =>
+      (
+        await get<Array<ExpectedRow>>(
+          tenantPath(slug, 'regular-gifts', id, 'expected'),
+        )
+      ).map((r) => ({
+        ...r,
+        expected: pence(r.expected),
+        split: r.split.map((s) => ({ ...s, amount: pence(s.amount) })),
+        amount: r.amount === null ? null : pence(r.amount),
+      })),
+  }).data
+}
+
+/** The expected vs actual and upgrades report over months `from`–`to`. */
+export function useExpectedReport(
+  from: string,
+  to: string,
+  by: ExpectedGrouping,
+): {
+  data: ExpectedReport | undefined
+  error: unknown
+  refetch: () => Promise<unknown>
+} {
+  const { slug } = useTenant()
+  const q = useQuery({
+    queryKey: keys.expectedReport(slug, { from, to, by }),
+    retry: false,
+    queryFn: async () =>
+      reportFromWire(
+        await get<WireReport>(
+          tenantPath(slug, 'reports', 'expected'),
+          new URLSearchParams({ from, to, by }),
+        ),
+      ),
+  })
+  return { data: q.data, error: q.error, refetch: q.refetch }
+}
+
+/** Subscriptions nobody here set up, on mandates we know; any member. */
+export function useUnknownSubscriptions():
+  Array<UnknownSubscription> | undefined {
+  const { slug } = useTenant()
+  return useQuery({
+    queryKey: keys.unknownSubscriptions(slug),
+    queryFn: async () =>
+      (
+        await get<Array<WireUnknown>>(
+          tenantPath(slug, 'gocardless', 'unknown-subscriptions'),
+        )
+      ).map((u) => ({ ...u, lastAmount: pence(u.lastAmount) })),
+  }).data
+}
+
+/**
+ * A regular gift's terms: a change from a date, editing or withdrawing
+ * one still scheduled, crediting one to a code; and adopting a
+ * subscription set up elsewhere. Each resolves with the regular gift as
+ * the server read it back; throws `RustApiError` when refused (`stale`:
+ * someone else's change won, and the gift is read again).
+ */
+export function useTermsWrites() {
+  const { slug } = useTenant()
+  const qc = useQueryClient()
+  const write = async (
+    id: string,
+    path: Array<string>,
+    body: unknown,
+    /** The amounts may change: read the forecast (a GoCardless call) again. */
+    forecast = true,
+  ) => {
+    try {
+      const done = await post<RegularGiftSaved>(
+        tenantPath(slug, 'regular-gifts', id, ...path),
+        body,
+      )
+      // The expected periods and GoCardless's forecast follow the chain.
+      void qc.invalidateQueries({ queryKey: keys.expected(slug, id) })
+      if (forecast)
+        void qc.invalidateQueries({
+          queryKey: keys.regularGiftForecast(slug, id),
+        })
+      return landRegularGift(qc, slug, done.view)
+    } catch (err) {
+      // Someone else's change won: read the chain again before saying so.
+      if (err instanceof RustApiError && err.error.kind === 'stale')
+        await qc.invalidateQueries({ queryKey: keys.regularGiftLists(slug) })
+      throw err
+    }
+  }
+  return {
+    change: (id: string, { amount, allocations, ...rest }: ChangeArgs) =>
+      write(id, ['terms'], {
+        ...rest,
+        amount: toWire(amount),
+        allocations: sharesToWire(allocations),
+      } satisfies ChangeTerms),
+    edit: (
+      id: string,
+      termId: string,
+      { amount, allocations, ...rest }: EditArgs,
+    ) =>
+      write(id, ['terms', termId], {
+        ...rest,
+        amount: toWire(amount),
+        allocations: sharesToWire(allocations),
+      } satisfies EditTerms),
+    withdraw: (id: string, termId: string, expected: number) =>
+      write(id, ['terms', termId, 'withdraw'], { expected }),
+    code: (
+      id: string,
+      termId: string,
+      expected: number,
+      changeCodeId: string | null,
+    ) =>
+      write(
+        id,
+        ['terms', termId, 'code'],
+        {
+          expected,
+          changeCodeId,
+        } satisfies CodeTerms,
+        // A code changes no amount: no GoCardless call for the forecast.
+        false,
+      ),
+    adopt: async (subscriptionId: string, args: AdoptSubscription) => {
+      try {
+        const done = await post<RegularGiftSaved>(
+          tenantPath(
+            slug,
+            'gocardless',
+            'unknown-subscriptions',
+            subscriptionId,
+            'adopt',
+          ),
+          args,
+        )
+        return landRegularGift(qc, slug, done.view)
+      } finally {
+        await qc.invalidateQueries({
+          queryKey: keys.unknownSubscriptions(slug),
+        })
+      }
+    },
   }
 }

@@ -4,12 +4,18 @@ import type { ComponentType, ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import type { GoCardlessStatus, UnmatchedPayment } from '../lib/data'
+import type {
+  ExpectedReport,
+  GoCardlessStatus,
+  UnknownSubscription,
+  UnmatchedPayment,
+} from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
 
 // GoCardless D3's pages: Settings › GoCardless (connect, status, the
 // way back from GoCardless's consent page, disconnect) and the
-// unmatched payments with "Match to contact".
+// unmatched payments with "Match to contact"; subscriptions set up in
+// GoCardless, adopted; the expected vs actual report.
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -23,6 +29,10 @@ const admin = {
   retryEvents: vi.fn(),
 }
 const match = vi.fn()
+const adopt = vi.fn()
+const reportAsked = vi.fn()
+let unknown: Array<UnknownSubscription> | undefined
+let report: ExpectedReport | undefined
 vi.mock('../lib/data', () => ({
   useGoCardlessStatus: () => status,
   useGoCardlessAdmin: () => admin,
@@ -32,6 +42,12 @@ vi.mock('../lib/data', () => ({
     refetch: () => Promise.resolve(),
   }),
   useMatchPayment: () => match,
+  useUnknownSubscriptions: () => unknown,
+  useTermsWrites: () => ({ adopt }),
+  useExpectedReport: (from: string, to: string, by: string) => {
+    reportAsked(from, to, by)
+    return { data: report, error: null, refetch: () => Promise.resolve() }
+  },
   useAuthState: () => ({ method: 'password' }),
 }))
 vi.mock('../lib/tenant', () => ({
@@ -45,6 +61,7 @@ vi.mock('@tanstack/react-router', () => ({
     useParams: () => ({ slug: 'alpha' }),
     useSearch: () => search,
   }),
+  useNavigate: () => navigate,
   Link: ({
     to,
     params,
@@ -93,6 +110,8 @@ vi.mock('../components/gift-form', () => ({
   ),
 }))
 
+const navigate = vi.fn()
+
 const CONNECTED: GoCardlessStatus = {
   enabled: true,
   mode: 'fake',
@@ -108,6 +127,10 @@ let el: HTMLDivElement
 beforeEach(() => {
   for (const f of Object.values(admin)) f.mockReset()
   match.mockReset()
+  adopt.mockReset()
+  reportAsked.mockReset()
+  unknown = []
+  report = undefined
   status = CONNECTED
   search = {}
   role = 'admin'
@@ -334,4 +357,144 @@ test('unmatched: matched by someone else, the dialog says so and offers no Match
     dialog.querySelector('[data-testid="match-gone"]')?.textContent,
   ).toContain('matched this payment already')
   expect(button('Match', dialog)).toBeUndefined()
+})
+
+const SUB: UnknownSubscription = {
+  subscriptionId: 'SB9',
+  mandateId: 'MD1',
+  contactId: 'c7',
+  payments: 2,
+  lastAmount: 500n,
+  lastChargeDate: '2026-10-05',
+}
+
+test('subscriptions set up elsewhere: listed under the payments, adopted with a code', async () => {
+  unknown = [SUB]
+  await unmatchedPage()
+  const row = el.querySelector('[data-subscription="SB9"]')!
+  expect(row.textContent).toContain('£5.00 on 5 Oct 2026')
+  expect(row.querySelector('a')?.getAttribute('href')).toBe(
+    '/t/alpha/contacts/c7',
+  )
+  await click(button('Adopt', row))
+  const dialog = document.querySelector('[role="dialog"]')!
+  expect(button('Adopt', dialog)?.disabled).toBe(true)
+  await click(button('Pick a code', dialog))
+  adopt.mockResolvedValue({
+    id: 'r9',
+    contactId: 'c7',
+    amount: 500n,
+    frequency: 'monthly',
+    dayOfMonth: 5,
+    month: null,
+  })
+  await act(async () => dialog.querySelector('form')!.requestSubmit())
+  // Adopted: it leaves the list (the last one), and the answer stays.
+  unknown = []
+  await unmatchedPage()
+  expect(el.textContent).not.toContain('Subscriptions set up elsewhere')
+  const [subscription, args] = adopt.mock.calls[0] as [
+    string,
+    { sourceCodeId: string; clientKey: string },
+  ]
+  expect(subscription).toBe('SB9')
+  expect(args.sourceCodeId).toBe('v1')
+  expect(args.clientKey).toMatch(/^[0-9a-f]{32}$/)
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+    'Adopted: £5.00 every month on the 5th.',
+  )
+})
+
+test('subscriptions set up elsewhere: none, no section; a viewer can’t adopt', async () => {
+  await unmatchedPage()
+  expect(el.textContent).not.toContain('Subscriptions set up elsewhere')
+  role = 'viewer'
+  unknown = [SUB]
+  await unmatchedPage()
+  expect(el.textContent).toContain('Subscriptions set up elsewhere')
+  expect(button('Adopt')).toBeUndefined()
+})
+
+const line = (label: string, n: number) => ({
+  id: label,
+  label,
+  expected: BigInt(n),
+  received: BigInt(n - 100),
+  failed: 100n,
+  missing: 0n,
+  pending: 0n,
+})
+
+test('the report: the last 12 months by code by default; lines, total, upgrades', async () => {
+  search = { to: '2026-10' }
+  report = {
+    from: '2025-11',
+    to: '2026-10',
+    by: 'code',
+    lines: [line('Street-1', 12_000)],
+    total: line('', 12_000),
+    upgrades: [
+      {
+        id: 'v2',
+        label: 'Phone-1',
+        upgrades: 1,
+        downgrades: 0,
+        annual: 2400n,
+        monthly: 200n,
+      },
+    ],
+    notRealised: [],
+  }
+  await page(import('./t.$slug.reports.expected'))
+  expect(reportAsked).toHaveBeenCalledWith('2025-11', '2026-10', 'code')
+  const row = el.querySelector('[data-testid="expected-lines"] tbody tr')!
+  expect([...row.querySelectorAll('td')].map((c) => c.textContent)).toEqual([
+    'Street-1',
+    '£120.00',
+    '£119.00',
+    '£1.00',
+    '£0.00',
+    '£0.00',
+  ])
+  expect(
+    el.querySelector('[data-testid="expected-total"] td')?.textContent,
+  ).toBe('Total')
+  expect(
+    [...el.querySelectorAll('[data-testid="upgrades"] tbody td')].map(
+      (c) => c.textContent,
+    ),
+  ).toEqual(['Phone-1', '1', '0', '£24.00', '£2.00'])
+  expect(el.querySelector('[data-testid="not-realised"]')).toBeNull()
+})
+
+test('unmatched: our own match landing never says someone else matched it', async () => {
+  unmatched = [PAYMENT]
+  await unmatchedPage()
+  await click(button('Match to contact'))
+  const dialog = () => document.querySelector('[role="dialog"]')!
+  await click(button('Find Dee', dialog()))
+  await click(button('Pick a code', dialog()))
+  let answer!: (id: string) => void
+  match.mockReturnValue(new Promise((done) => (answer = done)))
+  await act(async () => dialog().querySelector('form')!.requestSubmit())
+  // The list's refetch lands first: the row has gone, our answer not yet.
+  unmatched = []
+  await unmatchedPage()
+  expect(dialog().querySelector('[data-testid="match-gone"]')).toBeNull()
+  await act(async () => answer('g9'))
+  expect(dialog().textContent).toContain('Matched to Dee Debit.')
+  expect(dialog().querySelector('[data-testid="match-gone"]')).toBeNull()
+})
+
+test('subscriptions set up elsewhere: adopted by someone else meanwhile is said, no Adopt', async () => {
+  unknown = [SUB]
+  await unmatchedPage()
+  await click(button('Adopt', el.querySelector('[data-subscription="SB9"]')!))
+  unknown = []
+  await unmatchedPage()
+  const dialog = document.querySelector('[role="dialog"]')!
+  expect(
+    dialog.querySelector('[data-testid="adopt-gone"]')?.textContent,
+  ).toContain('adopted this subscription already')
+  expect(button('Adopt', dialog)).toBeUndefined()
 })

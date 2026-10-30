@@ -106,10 +106,23 @@ export const keys = {
    * One regular gift's next payments, as GoCardless forecasts them (its
    * single read, which asks GoCardless): outside `gocardless`, so no
    * event makes every open card call GoCardless; it lapses instead.
+   * Keyed by the gift's status too: a gift going live (pending, with no
+   * subscription and so no forecast, to active) reads it at once.
    */
-  regularGiftForecast: (slug: string, id: string) =>
-    ['t', slug, 'gocardlessForecast', id] as const,
+  regularGiftForecast: (slug: string, id: string, status?: string) =>
+    status === undefined
+      ? (['t', slug, 'gocardlessForecast', id] as const)
+      : (['t', slug, 'gocardlessForecast', id, status] as const),
   unmatched: (slug: string) => ['t', slug, 'gocardless', 'unmatched'] as const,
+  /** A regular gift's expected periods (terms step 6). */
+  expected: (slug: string, id: string) =>
+    ['t', slug, 'gocardless', 'expected', id] as const,
+  expectedReport: (
+    slug: string,
+    args: { from: string; to: string; by: string },
+  ) => ['t', slug, 'gocardless', 'report', args] as const,
+  unknownSubscriptions: (slug: string) =>
+    ['t', slug, 'gocardless', 'unknown'] as const,
   /** The charity's HMRC details (Settings). */
   hmrcDetails: (slug: string) => ['t', slug, 'hmrcDetails'] as const,
 }

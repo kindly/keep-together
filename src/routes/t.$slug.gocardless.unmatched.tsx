@@ -10,6 +10,7 @@ import {
 } from '../components/direct-debit'
 import type { PickedCode } from '../components/direct-debit'
 import { DonorSearch } from '../components/gift-form'
+import { UnknownSubscriptions } from '../components/unknown-subscriptions'
 import { useMatchPayment, useUnmatchedPayments } from '../lib/data'
 import type { UnmatchedPayment } from '../lib/data'
 import { PAYMENT_LABELS, isCollected } from '../lib/domain/direct-debit'
@@ -26,7 +27,8 @@ export const Route = createFileRoute('/t/$slug/gocardless/unmatched')({
  * that nobody here could be tied to a donor (no gift yet), newest
  * first. Staff and admins match each to a contact and a code, which
  * makes its gift with GoCardless's amount, date and status; viewers see
- * the list.
+ * the list. Below, subscriptions set up in GoCardless itself, to adopt
+ * or leave (regular-gift terms step 6).
  */
 function UnmatchedPayments() {
   const list = useUnmatchedPayments()
@@ -110,6 +112,7 @@ function UnmatchedPayments() {
           </table>
         </div>
       )}
+      <UnknownSubscriptions />
       {matching && list.data && (
         <MatchDialog
           id={matching}
@@ -186,7 +189,8 @@ function MatchDialog({
             Open the gift
           </Link>
         </p>
-      ) : listed === undefined ? (
+      ) : // Gone while our own match is in flight is our match landing.
+      listed === undefined && !busy ? (
         <p role="status" data-testid="match-gone" className="text-sm">
           Someone else has matched this payment already: it is no longer listed.
         </p>

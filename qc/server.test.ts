@@ -58,6 +58,15 @@ describe('routeOf', () => {
         ),
       ),
     ).toBe('POST /scan/:token/scans/:id/pages')
+    expect(
+      routeOf(
+        call(
+          '/api/t/r1w0-a/gocardless/unknown-subscriptions/SB2ADDE5530030/adopt',
+          1,
+          'POST',
+        ),
+      ),
+    ).toBe('POST /t/:slug/gocardless/unknown-subscriptions/:gcId/adopt')
   })
 })
 

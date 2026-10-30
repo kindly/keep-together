@@ -18,6 +18,7 @@ import {
   landRegularGift,
   regularGiftFromWire,
   useDirectDebitWrites,
+  useTermsWrites,
 } from './gocardless'
 import type { RegularGift } from './gocardless'
 import { keys } from './keys'
@@ -184,4 +185,31 @@ test('a gift anywhere refetches the contacts’ cards, never a card’s GoCardle
   expect(keys.regularGiftForecast(SLUG, 'r1').slice(0, 3)).not.toEqual(
     keys.gocardless(SLUG),
   )
+})
+
+test('the forecast is keyed by the gift’s status: going live reads it afresh', () => {
+  const pending = keys.regularGiftForecast(SLUG, 'r1', 'pending')
+  const active = keys.regularGiftForecast(SLUG, 'r1', 'active')
+  expect(pending).not.toEqual(active)
+  // A terms write's invalidation (no status) covers every status's.
+  const prefix = keys.regularGiftForecast(SLUG, 'r1')
+  expect(active.slice(0, prefix.length)).toEqual([...prefix])
+})
+
+test('saving a code reads no forecast (no GoCardless call); a terms change does', async () => {
+  const writes = mount(() => useTermsWrites())
+  const spy = vi.spyOn(qc, 'invalidateQueries')
+  const forecast = JSON.stringify(keys.regularGiftForecast(SLUG, 'r1'))
+  const invalidated = () =>
+    spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))
+  answers.push(json(200, { id: 'r1', view: wire() }))
+  await act(async () => {
+    await writes().code('r1', 't1', 0, 'v2')
+  })
+  expect(invalidated()).not.toContain(forecast)
+  answers.push(json(200, { id: 'r1', view: wire() }))
+  await act(async () => {
+    await writes().change('r1', { effectiveFrom: '2026-12-01', amount: 1500n })
+  })
+  expect(invalidated()).toContain(forecast)
 })
