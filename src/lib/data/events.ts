@@ -88,7 +88,12 @@ const INVALIDATES: Partial<
   // record-gift save's contact writes come as `contacts` events.
   // A regular gift's card lists its payments' gifts (GoCardless D3):
   // the contacts' lists only, which never call GoCardless.
-  gifts: (slug) => [keys.gifts(slug), keys.regularGiftLists(slug)],
+  // A batch's page lists its gifts and their total (bank transfers 6b).
+  gifts: (slug) => [
+    keys.gifts(slug),
+    keys.regularGiftLists(slug),
+    keys.batches(slug),
+  ],
   gift_aid_declarations: (slug) => [keys.declarations(slug), keys.gifts(slug)],
   // G3: a claim shows in the list, on its page and in every preview
   // (its gifts are no longer eligible). Its gifts' locks come as `gifts`
@@ -109,8 +114,10 @@ const INVALIDATES: Partial<
   provider_requests: (slug) => [keys.gocardless(slug)],
   // Bank transfers 6a: an account (its name and layout show on every
   // import page) and an import (its account's list, its own page).
-  bank_accounts: (slug) => [keys.bank(slug)],
+  bank_accounts: (slug) => [keys.bank(slug), keys.batches(slug)],
   bank_imports: (slug) => [keys.bank(slug)],
+  // A batch, and its line once matched; a bank account's name shows on it.
+  paying_in_batches: (slug) => [keys.batches(slug)],
 }
 
 /**

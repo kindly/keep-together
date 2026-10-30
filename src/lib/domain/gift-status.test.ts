@@ -4,6 +4,7 @@ import { describe, expect, test } from 'vitest'
 import type { GiftStatus } from '../data/rust-types/GiftStatus'
 import {
   STATUS_LABELS,
+  bankNote,
   isProviderStatus,
   isReceived,
   receivedTotal,
@@ -31,5 +32,36 @@ describe('gift status', () => {
     const completed = gifts.find((g) => g.status === 'completed')!
     expect(receivedTotal(gifts)).toBe(completed.amount)
     expect(receivedTotal([])).toBe(0n)
+  })
+})
+
+describe('bankNote (ADR 0027)', () => {
+  const gift = {
+    method: 'cheque' as const,
+    status: 'pending' as GiftStatus,
+    notOnAStatement: false,
+    payingInBatchId: null as string | null,
+  }
+  test('a transfer by hand not on a statement yet', () => {
+    expect(
+      bankNote({
+        ...gift,
+        method: 'bank_transfer',
+        status: 'completed',
+        notOnAStatement: true,
+      })?.short,
+    ).toBe('not on a statement yet')
+    expect(
+      bankNote({ ...gift, method: 'bank_transfer', status: 'completed' }),
+    ).toBeNull()
+  })
+  test('a cheque: pending in a batch or not, bounced, cleared', () => {
+    expect(bankNote({ ...gift, payingInBatchId: 'b1' })?.long).toBe(
+      'Pending until its paying-in batch is matched to a statement line.',
+    )
+    expect(bankNote(gift)?.short).toBe('pending: not cleared')
+    expect(bankNote({ ...gift, status: 'failed' })?.short).toBe('bounced')
+    expect(bankNote({ ...gift, status: 'completed' })).toBeNull()
+    expect(bankNote({ ...gift, method: 'cash' })).toBeNull()
   })
 })

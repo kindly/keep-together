@@ -24,12 +24,14 @@ import {
   donorKind,
   donorName,
   draftProblems,
+  HAND_METHODS,
   freshDraft,
   giftAidOffer,
   homeOnFile,
   isDirty,
   newDonor,
   noAddressWarning,
+  paidIn,
   partialHome,
   toArgs,
 } from '../lib/gift-form'
@@ -43,18 +45,29 @@ import type {
 import {
   fetchGift,
   useContactSearch,
+  useBatches,
   useDonor,
   useRecordGift,
 } from '../lib/data'
+import type { GiftMethod } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
 import { METHOD_LABELS, formatPence, refusal } from '../lib/gifts'
 import { useTenant } from '../lib/tenant'
 import { useReportUnsaved } from '../lib/unsaved'
 import { ScanWithPhone } from './scans'
+import { batchLabel } from './bank'
 import { SourceCodePicker, localToday } from './source-code-picker'
 
 const fieldClass = 'rounded border border-neutral-300 px-2 py-1.5 text-sm'
 const label = 'flex flex-col gap-1 text-sm text-neutral-700'
+
+/** What the reference is, by method (cash has none). */
+const REFERENCE_HINTS: Record<Exclude<GiftMethod, 'cash'>, string> = {
+  direct_debit: '',
+  card: '(optional: the reader’s receipt or transaction id)',
+  bank_transfer: '(optional: the reference the donor used)',
+  cheque: '(optional)',
+}
 
 /** How many search matches the donor box lists. */
 const SHOWN_MATCHES = 8
@@ -196,13 +209,17 @@ type Saved = {
  * already saved says what the stored gift is, read back from the server,
  * not what the form holds now.
  */
-export function GiftForm() {
+export function GiftForm({ batch }: { batch?: string } = {}) {
   const tenant = useTenant()
   const qc = useQueryClient()
   const form = useId()
   const today = localToday()
   const record = useRecordGift()
-  const [draft, setDraft] = useState<GiftDraft>(() => freshDraft(today))
+  // Opened from a batch's page: its cash and cheques go into it.
+  const [draft, setDraft] = useState<GiftDraft>(() =>
+    freshDraft(today, batch ? { batchId: batch } : undefined),
+  )
+  const openBatches = useBatches('open').data
   const [fresh, setFresh] = useState<GiftDraft>(draft)
   const [clientKey, setClientKey] = useState(() => crypto.randomUUID())
   const [problems, setProblems] = useState<Array<Problem>>([])
@@ -448,8 +465,8 @@ export function GiftForm() {
 
       <fieldset className="flex flex-col gap-2">
         <legend className="mb-1 text-sm font-medium">Method</legend>
-        <div className="flex flex-wrap gap-4 text-sm">
-          {(['cash', 'card'] as const).map((m) => (
+        <div className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+          {HAND_METHODS.map((m) => (
             <label key={m} className="flex items-center gap-2">
               <input
                 type="radio"
@@ -461,16 +478,16 @@ export function GiftForm() {
             </label>
           ))}
         </div>
-        {draft.method === 'card' && (
+        {draft.method !== 'cash' && (
           <TextField
             form={form}
             of="reference"
             problems={problems}
             label={
               <>
-                Reference{' '}
+                {draft.method === 'cheque' ? 'Cheque number' : 'Reference'}{' '}
                 <span className="text-xs text-neutral-500">
-                  (optional: the reader’s receipt or transaction id)
+                  {REFERENCE_HINTS[draft.method]}
                 </span>
               </>
             }
@@ -479,6 +496,44 @@ export function GiftForm() {
             className="max-w-sm"
           />
         )}
+        {draft.method === 'bank_transfer' && (
+          <p className="text-xs text-neutral-500">
+            Counts at once, marked “not on a statement yet” until a statement
+            line is matched to it.
+          </p>
+        )}
+        {draft.method === 'cheque' && (
+          <p className="text-xs text-neutral-500">
+            Pending until it clears: when its paying-in batch is matched to a
+            statement line, or marked cleared by hand.
+          </p>
+        )}
+        {paidIn(draft.method) &&
+          ((openBatches?.length ?? 0) > 0 || draft.batchId !== null) && (
+            <label className="flex flex-col gap-1 text-sm">
+              Paying-in batch{' '}
+              <span className="text-xs text-neutral-500">(optional)</span>
+              <select
+                value={draft.batchId ?? ''}
+                onChange={(e) => set({ batchId: e.target.value || null })}
+                className="max-w-sm rounded border border-neutral-300 px-2 py-1"
+              >
+                <option value="">None</option>
+                {openBatches?.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {batchLabel(b)}
+                  </option>
+                ))}
+                {draft.batchId !== null &&
+                  openBatches !== undefined &&
+                  !openBatches.some((b) => b.id === draft.batchId) && (
+                    <option value={draft.batchId}>
+                      A batch no longer open
+                    </option>
+                  )}
+              </select>
+            </label>
+          )}
       </fieldset>
 
       {offer === 'covered' && shownInfo?.covering && (

@@ -3,7 +3,7 @@
  * layout reads, and a table of statement lines.
  */
 import { formatDay, formatPence } from '../lib/gifts'
-import type { BankCsvLayout, BankPreset } from '../lib/data'
+import type { BankCsvLayout, BankPreset, PayingInBatch } from '../lib/data'
 
 /** How a layout reads, for the card. */
 export function layoutLabel(
@@ -80,4 +80,25 @@ export function LinesTable({
       </table>
     </div>
   )
+}
+
+/** A batch as a picker or a heading names it: account, slip, when opened. */
+export function batchLabel(b: PayingInBatch): string {
+  const opened = new Date(b.openedAt).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+  })
+  return [
+    b.accountName || 'Paying-in batch',
+    b.slipNumber && `slip ${b.slipNumber}`,
+    `opened ${opened}`,
+  ]
+    .filter(Boolean)
+    .join(', ')
+}
+
+/** Where a batch stands, in a few words. */
+export function batchState(b: PayingInBatch): string {
+  if (b.line) return `matched to the line of ${formatDay(b.line.postedOn)}`
+  return b.status === 'open' ? 'open' : 'closed, not matched yet'
 }

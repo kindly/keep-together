@@ -229,6 +229,13 @@ export const budgets = {
   'terms.withdraw': repeatable,
   'expected.report': repeatable,
   'gocardless.adopt': infrequent,
+  // Bank transfers 6b (qc/flows/batches.spec.ts). PROVISIONAL: classes
+  // proposed by builder-bkp for the human's OK, not recorded. Recording a
+  // cheque into a batch makes a gift (gift.record's class); closing a
+  // batch ends a record's open life, as cancelling a regular gift does:
+  // infrequent.
+  'gift.recordCheque': infrequent,
+  'batch.close': infrequent,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },

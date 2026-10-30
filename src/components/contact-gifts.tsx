@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { STATUS_LABELS, isReceived } from '../lib/domain/gift-status'
+import { STATUS_LABELS, bankNote, isReceived } from '../lib/domain/gift-status'
 import type { Id } from '../lib/domain/ids'
 import { useContactGifts } from '../lib/data'
 import { METHOD_LABELS, formatDay, formatPence } from '../lib/gifts'
@@ -39,6 +39,7 @@ export function ContactGifts({
         <ul className="divide-y divide-neutral-200 rounded border border-neutral-200 bg-white">
           {gifts.rows.map((g) => {
             const received = isReceived(g.status)
+            const note = g.status === 'void' ? null : bankNote(g)
             const covered =
               individual && received && giftCoverage(declarations, g)
             return (
@@ -61,13 +62,23 @@ export function ContactGifts({
                     {' · '}
                     {g.allocations.map((a) => a.code ?? '?').join(', ')}
                   </span>
-                  {!received && (
+                  {note ? (
                     <span
                       data-status={g.status}
-                      className={`text-xs ${g.status === 'pending' ? 'text-amber-700' : 'text-red-700'}`}
+                      data-testid="gift-bank-note"
+                      className={`text-xs ${received || g.status === 'pending' ? 'text-amber-700' : 'text-red-700'}`}
                     >
-                      {STATUS_LABELS[g.status]}
+                      {note.short}
                     </span>
+                  ) : (
+                    !received && (
+                      <span
+                        data-status={g.status}
+                        className={`text-xs ${g.status === 'pending' ? 'text-amber-700' : 'text-red-700'}`}
+                      >
+                        {STATUS_LABELS[g.status]}
+                      </span>
+                    )
                   )}
                   {covered && (
                     <span
