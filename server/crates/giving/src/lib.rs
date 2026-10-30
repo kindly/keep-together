@@ -12,6 +12,7 @@
 //! fails on a gifts read that neither uses it nor says, in a
 //! `/* any status: … */` comment, why it reads every status.
 
+pub mod bank;
 pub mod expected;
 pub mod gift;
 pub mod queries;
@@ -29,6 +30,7 @@ use contracts::{
 };
 use rusqlite::{Connection, OptionalExtension};
 
+pub use bank::{LINE, PAYING_IN_BATCH};
 pub use gift::{CLAIM_LOCK, GIFT, STATUS};
 pub use queries::{
     BY_CONTACT_LIMIT, HISTORY_PAGE_LIMIT, RECENT_LIMIT, by_contact, get, history, my_recent,
@@ -129,6 +131,8 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &GIFT,
         &STATUS,
         &CLAIM_LOCK,
+        &LINE,
+        &PAYING_IN_BATCH,
         &REGULAR_GIFT,
         &REGULAR_GIFT_MANDATE,
         &terms::REGULAR_GIFT_TERMS,
@@ -157,7 +161,10 @@ pub fn gift_group_name(conn: &Connection, p: &GiftPayload) -> rusqlite::Result<S
 }
 
 /// Record a gift in the caller's transaction: `giving.gift`, then
-/// `giving.status` (completed), so status history starts with the gift.
+/// `giving.status`, so status history starts with the gift: `completed`
+/// (a bank transfer entered by hand included: someone saw the money
+/// arrive), or `pending` for a cheque, which counts once it clears (ADR
+/// 0027). A gift made from a statement line carries it in `fromLine`.
 /// Runs under `group`, or one of its own named by [`gift_group_name`]. A
 /// `clientKey` already on a gift is `Duplicate`. A refusal fails the
 /// caller's whole command.
@@ -175,12 +182,17 @@ pub fn create_gift(
             &own
         }
     };
+    let status = if payload.method == types::Method::Cheque {
+        Status::Pending
+    } else {
+        Status::Completed
+    };
     let id = execute(ctx, &GIFT, payload, Exec::create(source).in_group(group))?.id;
     execute(
         ctx,
         &STATUS,
         StatusPayload {
-            status: Status::Completed,
+            status,
             reason: None,
         },
         Exec::update(&id, Some(0), source).in_group(group),

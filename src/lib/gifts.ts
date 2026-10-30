@@ -8,6 +8,8 @@ export const METHOD_LABELS: Record<GiftMethod, string> = {
   cash: 'Cash',
   card: 'Card (separate reader)',
   direct_debit: 'Direct Debit',
+  bank_transfer: 'Bank transfer',
+  cheque: 'Cheque',
 }
 
 const POUNDS = new Intl.NumberFormat('en-GB', {

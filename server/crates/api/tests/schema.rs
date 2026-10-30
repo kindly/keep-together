@@ -295,16 +295,17 @@ const FIXTURES: &[&str] = &[
          '000123', '2026-10-19', 3000, 'matched', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a4', 1,
          6050, 1, 6250, 3);
      INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, reference, status,
-         entered_by, entered_at, gift_version, status_version, bank_line_id,
-         paying_in_batch_id)
+         entered_by, entered_at, gift_version, status_version, bank_line_id, bank_line_made,
+         line_version, paying_in_batch_id)
      VALUES (20, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a8', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
          '2026-10-14', 5000, 'bank_transfer', '100016', 'completed', 1, 6200, 0, 0,
-         '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a3', NULL),
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a3', 1, 0, NULL),
             (21, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a9', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
-         '2026-10-19', 3000, 'cheque', '000456', 'completed', 1, 6060, 0, 1, NULL,
+         '2026-10-19', 3000, 'cheque', '000456', 'completed', 1, 6060, 0, 1, NULL, 0, 0,
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a7'),
             (22, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1aa', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
-         '2026-10-28', 2000, 'bank_transfer', NULL, 'completed', 1, 6500, 0, 0, NULL, NULL);
+         '2026-10-28', 2000, 'bank_transfer', NULL, 'completed', 1, 6500, 0, 0, NULL, 0, 0,
+         NULL);
      INSERT INTO gift_allocations (id, gift_id, position, source_code_id, amount)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e1ab', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a8', 0,
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 5000),
@@ -1228,7 +1229,12 @@ fn the_bank_step_widens_gifts_and_keeps_every_row_column_and_index() {
     let mut cols_after = shape(&conn, columns);
     assert_eq!(
         cols_after.split_off(cols_before.len()),
-        ["bank_line_id", "paying_in_batch_id"]
+        [
+            "bank_line_id",
+            "bank_line_made",
+            "line_version",
+            "paying_in_batch_id"
+        ]
     );
     assert_eq!(cols_after, cols_before);
     let idx_after = shape(&conn, indexes);
@@ -1251,6 +1257,11 @@ fn the_bank_step_widens_gifts_and_keeps_every_row_column_and_index() {
          WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0d1'",
     );
     refused("UPDATE gifts SET method = 'standing_order' WHERE seq = 20");
+    // Only a bank transfer is on a line, made from it only with it, and
+    // only cash or a cheque is in a batch.
+    refused("UPDATE gifts SET method = 'cash' WHERE seq = 20");
+    refused("UPDATE gifts SET bank_line_made = 1 WHERE seq = 22");
+    refused("UPDATE gifts SET method = 'card' WHERE seq = 21");
     // Matched exactly when it names its line; closed only with a total.
     refused(
         "UPDATE paying_in_batches SET status = 'closed'
@@ -1287,4 +1298,47 @@ fn the_bank_step_widens_gifts_and_keeps_every_row_column_and_index() {
              '0190f0c0a0b0c0d0e0f0a0b0c0d0e1a2', '2026-10-14', 5000, 'k1', 2)",
     )
     .unwrap();
+}
+
+/// Erasure (rule 3), the part the schema decides: a contact's remembered
+/// payers can go without touching anything that points at them, and
+/// their gifts (from lines, by hand, in a batch) and the statement lines'
+/// amounts and dates stay. Erasure itself isn't built yet; when it is, it
+/// deletes these rows.
+#[test]
+fn a_contacts_remembered_payers_go_and_their_gifts_and_lines_stay() {
+    let tmp = tempfile::tempdir().unwrap();
+    file_at(tmp.path(), 21);
+    let conn = Connection::open(tmp.path().join(format!("orgs/{TENANT}.db"))).unwrap();
+    let shape = |conn: &Connection, sql: &str| -> Vec<String> {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let jo = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0";
+    let kept = "SELECT id || '|' || amount || '|' || received_on || '|' || status || '|'
+                    || coalesce(bank_line_id, '') || '|' || coalesce(paying_in_batch_id, '')
+                FROM gifts WHERE contact_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0' ORDER BY seq";
+    let lines = "SELECT id || '|' || amount || '|' || posted_on FROM bank_lines ORDER BY seq";
+    let (gifts_before, lines_before) = (shape(&conn, kept), shape(&conn, lines));
+    assert!(
+        gifts_before
+            .iter()
+            .any(|g| g.contains("0190f0c0a0b0c0d0e0f0a0b0c0d0e1a3"))
+    );
+    assert_eq!(shape(&conn, "SELECT contact_id FROM bank_payers"), [jo]);
+    conn.execute("DELETE FROM bank_payers WHERE contact_id = ?1", [jo])
+        .unwrap();
+    let orphans: i64 = conn
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(orphans, 0);
+    assert!(shape(&conn, "SELECT id FROM bank_payers").is_empty());
+    assert_eq!(shape(&conn, kept), gifts_before);
+    assert_eq!(shape(&conn, lines), lines_before);
 }

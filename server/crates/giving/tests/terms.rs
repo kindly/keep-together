@@ -46,6 +46,7 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::MIGRATION_DIRECT_DEBIT),
         M::up(giving::MIGRATION_UNIFIED),
         M::up(giving::terms::MIGRATION),
+        M::up(giving::bank::MIGRATION),
     ])
 }
 
@@ -546,6 +547,8 @@ fn editing_one_gifts_split_leaves_the_chain_alone() {
                     },
                 ],
                 client_key: None,
+                from_line: None,
+                paying_in_batch_id: None,
                 origin: None,
             },
             Exec::update(&gift, None, Source::Ui),

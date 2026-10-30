@@ -1212,6 +1212,8 @@ fn record(
                 reference: Some(report.payment_id.clone()),
                 allocations,
                 client_key: None,
+                from_line: None,
+                paying_in_batch_id: None,
                 origin: Some(ProviderRef {
                     provider: Provider::Gocardless,
                     payment_id: report.payment_id.clone(),
@@ -1312,6 +1314,8 @@ fn sync_gift(
                     reference: current.reference,
                     allocations,
                     client_key: None,
+                    from_line: None,
+                    paying_in_batch_id: None,
                     origin: None,
                 },
                 Exec::update(gift, None, Source::System).in_group(group),
