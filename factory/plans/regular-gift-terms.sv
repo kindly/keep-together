@@ -1,4 +1,4 @@
-<sv-page label="plan: regular-gift terms" category="plans">
+<sv-page label="plan: regular-gift terms" category="archive">
 
 <sv-prose id="b1">
 ## Design tree
