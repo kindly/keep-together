@@ -78,7 +78,27 @@ pub fn read(text: &str) -> Result<Parsed, Vec<RowError>> {
 /// Quicken pads dates with spaces (`D 1/ 5' 3`) and writes years from
 /// 2000 after an apostrophe, in one or two digits.
 fn qif_date(value: &str) -> Result<String, String> {
-    let compact: String = value.chars().filter(|c| !c.is_whitespace()).collect();
+    // Drop only the padding beside a separator: `3 Nov 2026` keeps its
+    // spaces, ` 1/ 5' 3` becomes `1/5'3`.
+    let separator = |c: char| matches!(c, '/' | '-' | '.' | '\'');
+    let chars: Vec<char> = value.trim().chars().collect();
+    let beside = |i: usize, step: isize| {
+        let mut j = i as isize;
+        loop {
+            j += step;
+            match chars.get(j as usize) {
+                Some(c) if c.is_whitespace() && j >= 0 => continue,
+                Some(&c) if j >= 0 => return separator(c),
+                _ => return false,
+            }
+        }
+    };
+    let compact: String = chars
+        .iter()
+        .enumerate()
+        .filter(|&(i, c)| !(c.is_whitespace() && (beside(i, -1) || beside(i, 1))))
+        .map(|(_, c)| c)
+        .collect();
     let compact = match compact.split_once('\'') {
         Some((day_month, year)) if (1..=2).contains(&year.len()) => {
             format!("{day_month}/{year:0>2}")
@@ -141,6 +161,9 @@ mod tests {
         assert_eq!(qif_date(" 1/ 5' 3").as_deref(), Ok("2003-05-01"));
         assert_eq!(qif_date("01/05'26").as_deref(), Ok("2026-05-01"));
         assert_eq!(qif_date("1/5/2026").as_deref(), Ok("2026-05-01"));
+        // Month names keep their spaces.
+        assert_eq!(qif_date("3 Nov 2026").as_deref(), Ok("2026-11-03"));
+        assert_eq!(qif_date(" 3 Nov 2026 ").as_deref(), Ok("2026-11-03"));
         assert!(qif_date("31/2'26").is_err());
     }
 

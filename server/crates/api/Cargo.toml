@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+http-body-util.workspace = true
 store.workspace = true
 contracts.workspace = true
 contacts.workspace = true

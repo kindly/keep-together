@@ -89,7 +89,24 @@ pub async fn buffer(State(state): State<AppState>, mut req: Request, next: Next)
             axum::Json(serde_json::json!({ "kind": "timeout" })),
         )
             .into_response(),
-        Ok(Err(_)) if statement => ApiError::TooLarge { limit }.into_response(),
+        // Past the limit is 413; a body that broke off for any other
+        // reason is the client's 400.
+        Ok(Err(e)) if statement => {
+            if e.into_inner().downcast::<http_body_util::LengthLimitError>().is_ok() {
+                ApiError::TooLarge { limit }.into_response()
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(ApiError::Invalid {
+                        problems: vec![contracts::Problem::new(
+                            "body",
+                            "The file didn’t arrive whole: send it again",
+                        )],
+                    }),
+                )
+                    .into_response()
+            }
+        }
         Ok(Err(_)) => ApiError::Invalid {
             problems: vec![contracts::Problem::new(
                 "body",
