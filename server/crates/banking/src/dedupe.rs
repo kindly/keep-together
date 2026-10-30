@@ -7,6 +7,16 @@
 //! nothing. A bank id, when the format has one, is used as well: a line
 //! whose id the account already holds is a duplicate whatever its content
 //! (banks reword narratives between exports).
+//!
+//! **Content beats an unheld fresh id** (a decision, review bk2r L2): a
+//! file line whose id the account doesn't hold is still a duplicate when
+//! the account holds a line with the same content whose id this file
+//! doesn't carry. That is what keeps re-downloads from banks that issue a
+//! new `FITID` each time from doubling every line. The cost falls on
+//! banks whose ids are stable: a genuine second identical payment on the
+//! same day is dropped if the file carries it but not the first one's id
+//! (a filtered Bankline search, say). Rare, and the other direction holds
+//! always: a held id is never imported twice.
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,10 +44,11 @@ pub fn content_key(line: &CreditLine) -> String {
 }
 
 /// What an account already holds: for each content key, its lines' bank
-/// ids. Loaded for the keys and ids a file has.
+/// ids and highest occurrence. Loaded for the keys and ids a file has.
 #[derive(Clone, Debug, Default)]
 pub struct Held {
     by_key: HashMap<String, Vec<Option<String>>>,
+    last: HashMap<String, u32>,
     ids: HashSet<String>,
 }
 
@@ -47,16 +58,20 @@ impl Held {
     }
 
     /// One stored line.
-    pub fn add(&mut self, key: &str, bank_id: Option<&str>) {
+    pub fn add(&mut self, key: &str, bank_id: Option<&str>, occurrence: u32) {
         self.by_key
             .entry(key.to_owned())
             .or_default()
             .push(bank_id.map(str::to_owned));
+        let last = self.last.entry(key.to_owned()).or_default();
+        *last = (*last).max(occurrence);
         self.ids.extend(bank_id.map(str::to_owned));
     }
 
-    fn count(&self, key: &str) -> usize {
-        self.by_key.get(key).map_or(0, Vec::len)
+    /// The highest occurrence held: new lines number on from it, so a gap
+    /// (a line ever removed) can't make one collide.
+    fn last(&self, key: &str) -> u32 {
+        self.last.get(key).copied().unwrap_or(0)
     }
 }
 
@@ -114,7 +129,7 @@ pub fn dedupe(lines: Vec<CreditLine>, held: &Held) -> Deduped {
         }
         let n = next
             .entry(key)
-            .or_insert_with(|| held.count(key) as u32);
+            .or_insert_with(|| held.last(key));
         *n += 1;
         let mut line = line.clone();
         // An id the bank repeats within one file identifies neither line;
@@ -157,7 +172,7 @@ mod tests {
     fn import(held: &mut Held, file: Vec<CreditLine>) -> Deduped {
         let d = dedupe(file, held);
         for k in &d.new {
-            held.add(&k.key, k.line.bank_id.as_deref());
+            held.add(&k.key, k.line.bank_id.as_deref(), k.occurrence);
         }
         d
     }
@@ -224,6 +239,18 @@ mod tests {
         let d = dedupe(vec![reworded, with_id(line(3, 1000, "J SMITH"), "F2")], &held);
         assert_eq!((d.new.len(), d.duplicates), (1, 1));
         assert_eq!(d.new[0].line.bank_id.as_deref(), Some("F2"));
+    }
+
+    #[test]
+    fn occurrences_number_on_from_the_highest_held() {
+        let l = line(3, 1000, "J SMITH");
+        let key = content_key(&l);
+        let mut held = Held::new();
+        held.add(&key, None, 1);
+        held.add(&key, None, 3);
+        let d = dedupe(vec![l.clone(), l.clone(), l], &held);
+        let occurrences: Vec<u32> = d.new.iter().map(|k| k.occurrence).collect();
+        assert_eq!(occurrences, [4]);
     }
 
     #[test]

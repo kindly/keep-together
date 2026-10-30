@@ -5,7 +5,7 @@
 
 use crate::money::{Decimal, parse_pence};
 use crate::text::{clean, join, non_empty};
-use crate::{CreditLine, Errors, Parsed, RowError, dates};
+use crate::{CreditLine, Errors, Movement, Parsed, RowError, dates};
 
 #[derive(Default)]
 struct Transaction {
@@ -53,13 +53,25 @@ pub fn read(text: &str) -> Result<Parsed, Vec<RowError>> {
     if !tags.iter().any(|(_, t, _)| t.eq_ignore_ascii_case("OFX")) {
         return Err(vec![RowError::new(0, "Not an OFX file")]);
     }
+    // One statement (one account) per file: business banking can export
+    // every account as one OFX, and reading it whole would put another
+    // account's credits into this one.
+    let statements = tags
+        .iter()
+        .filter(|(_, t, _)| t.eq_ignore_ascii_case("STMTRS") || t.eq_ignore_ascii_case("CCSTMTRS"))
+        .count();
+    if statements > 1 {
+        return Err(vec![RowError::new(
+            0,
+            format!("This file holds {statements} accounts; download one account at a time"),
+        )]);
+    }
     let mut parsed = Parsed::default();
     let mut errors = Errors::default();
     let mut current: Option<Transaction> = None;
     let finish = |t: Transaction, parsed: &mut Parsed, errors: &mut Errors| {
         match transaction(&t) {
-            Ok(Some(credit)) => parsed.credits.push(credit),
-            Ok(None) => parsed.debits_dropped += 1,
+            Ok(movement) => parsed.take(movement),
             Err(message) => errors.push(t.line, message),
         }
     };
@@ -73,6 +85,7 @@ pub fn read(text: &str) -> Result<Parsed, Vec<RowError>> {
                     errors.push(line, format!("Not in pounds: {currency}"));
                 }
             }
+            "ACCTID" if parsed.source_account.is_none() => parsed.source_account = value(),
             "STMTTRN" => {
                 if let Some(t) = current.take() {
                     finish(t, &mut parsed, &mut errors);
@@ -110,16 +123,19 @@ pub fn read(text: &str) -> Result<Parsed, Vec<RowError>> {
     errors.finish(parsed)
 }
 
-/// A credit, `None` for a debit (or nothing moved).
-fn transaction(t: &Transaction) -> Result<Option<CreditLine>, String> {
+/// What one `<STMTTRN>` is.
+fn transaction(t: &Transaction) -> Result<Movement, String> {
     let posted = t.posted.as_deref().ok_or("No DTPOSTED")?;
     let amount = t.amount.as_deref().ok_or("No TRNAMT")?;
     let posted_on = dates::ofx(posted)?;
     let amount = parse_pence(amount, Decimal::PointOrComma)?.unwrap_or(0);
-    if amount <= 0 {
-        return Ok(None);
+    if amount < 0 {
+        return Ok(Movement::Debit);
     }
-    Ok(Some(CreditLine {
+    if amount == 0 {
+        return Ok(Movement::Zero);
+    }
+    Ok(Movement::Credit(CreditLine {
         line: t.line,
         posted_on,
         amount,
@@ -160,6 +176,26 @@ mod tests {
         let p = read(xml).unwrap();
         assert_eq!(p.credits[0].amount, 1250);
         assert_eq!(p.credits[0].payer.as_deref(), Some("SMITH & CO"));
+    }
+
+    #[test]
+    fn one_account_per_file_and_its_id_is_kept() {
+        let one = SGML.replace("<CURDEF>GBP", "<CURDEF>GBP\n<BANKACCTFROM><BANKID>200000<ACCTID>12345678</BANKACCTFROM>");
+        assert_eq!(read(&one).unwrap().source_account.as_deref(), Some("12345678"));
+        let two = SGML.replace(
+            "</STMTRS>",
+            "</STMTRS><STMTRS><CURDEF>GBP<BANKTRANLIST></BANKTRANLIST></STMTRS>",
+        );
+        let errors = read(&two).unwrap_err();
+        assert_eq!(errors[0].line, 0);
+        assert!(errors[0].message.contains("2 accounts"), "{errors:?}");
+    }
+
+    #[test]
+    fn zero_amounts_are_skipped_not_debits() {
+        let zero = SGML.replace("<TRNAMT>-25.00", "<TRNAMT>-0.00");
+        let p = read(&zero).unwrap();
+        assert_eq!((p.debits_dropped, p.rows_skipped), (0, 1));
     }
 
     #[test]

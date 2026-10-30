@@ -1,7 +1,7 @@
 //! Bank statements: the group's bank accounts, statement imports and
 //! their credit lines, the outside record for gifts entered by hand
 //! (plan `bank-transfers.sv`, ADR 0027). A domain crate: depends on
-//! `contracts`, `contacts`, `giving` and `sources` through their public
+//! `contracts`, `giving` and `sources` through their public
 //! functions, never on `store` or `platform`; it can't name an
 //! organisation. Money is INTEGER pence (rule 7).
 //!
@@ -118,17 +118,58 @@ impl RowError {
     }
 }
 
+/// A row skipped for having no date though it carries money in: a
+/// totals row, or a credit the layout (or a wrong date column) hides.
+/// Reported so staff can check, never stored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[ts(export, rename = "BankUndatedRow")]
+pub struct UndatedRow {
+    #[ts(type = "number")]
+    pub line: usize,
+    #[ts(type = "number")]
+    pub amount: i64,
+}
+
 /// A file read without errors.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
     pub credits: Vec<CreditLine>,
     /// Money out: counted, never kept.
     pub debits_dropped: usize,
-    /// Header, footer, balance and blank rows passed over.
+    /// Header, footer, balance, blank and zero rows passed over.
     pub rows_skipped: usize,
+    /// The first [`ROW_ERRORS_MAX`] dateless rows with money in, and how
+    /// many there were.
+    pub undated: Vec<UndatedRow>,
+    pub undated_count: usize,
+    /// The account the file says it is for (OFX `ACCTID`), if it says.
+    pub source_account: Option<String>,
+}
+
+/// What one transaction of a file is.
+pub(crate) enum Movement {
+    Credit(CreditLine),
+    Debit,
+    /// No money moved (an information line, `-0.00`).
+    Zero,
 }
 
 impl Parsed {
+    pub(crate) fn take(&mut self, movement: Movement) {
+        match movement {
+            Movement::Credit(credit) => self.credits.push(credit),
+            Movement::Debit => self.debits_dropped += 1,
+            Movement::Zero => self.rows_skipped += 1,
+        }
+    }
+
+    pub(crate) fn undated(&mut self, line: usize, amount: i64) {
+        self.undated_count += 1;
+        if self.undated.len() < ROW_ERRORS_MAX {
+            self.undated.push(UndatedRow { line, amount });
+        }
+    }
+
     /// The first and last posted dates, if there are any credits.
     pub fn date_range(&self) -> Option<(&str, &str)> {
         let first = self.credits.iter().map(|c| c.posted_on.as_str()).min()?;

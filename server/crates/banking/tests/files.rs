@@ -108,7 +108,7 @@ fn a_sample_imported_twice_keeps_its_two_identical_standing_orders() {
     let first = dedupe(p.credits.clone(), &held);
     assert_eq!((first.new.len(), first.duplicates), (4, 0));
     for k in &first.new {
-        held.add(&k.key, k.line.bank_id.as_deref());
+        held.add(&k.key, k.line.bank_id.as_deref(), k.occurrence);
     }
     let again = dedupe(p.credits, &held);
     assert_eq!((again.new.len(), again.duplicates), (0, 4));

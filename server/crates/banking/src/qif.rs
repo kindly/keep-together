@@ -5,7 +5,7 @@
 
 use crate::money::{Decimal, parse_pence};
 use crate::text::{join, non_empty};
-use crate::{CreditLine, Errors, Parsed, RowError, dates};
+use crate::{CreditLine, Errors, Movement, Parsed, RowError, dates};
 
 #[derive(Default)]
 struct Record<'a> {
@@ -31,8 +31,7 @@ pub fn read(text: &str) -> Result<Parsed, Vec<RowError>> {
     let mut errors = Errors::default();
     let mut record: Option<Record> = None;
     let mut finish = |r: Record, parsed: &mut Parsed| match transaction(&r) {
-        Ok(Some(credit)) => parsed.credits.push(credit),
-        Ok(None) => parsed.debits_dropped += 1,
+        Ok(movement) => parsed.take(movement),
         Err(message) => errors.push(r.line, message),
     };
     for (n, line) in lines {
@@ -76,6 +75,19 @@ pub fn read(text: &str) -> Result<Parsed, Vec<RowError>> {
     errors.finish(parsed)
 }
 
+/// Quicken pads dates with spaces (`D 1/ 5' 3`) and writes years from
+/// 2000 after an apostrophe, in one or two digits.
+fn qif_date(value: &str) -> Result<String, String> {
+    let compact: String = value.chars().filter(|c| !c.is_whitespace()).collect();
+    let compact = match compact.split_once('\'') {
+        Some((day_month, year)) if (1..=2).contains(&year.len()) => {
+            format!("{day_month}/{year:0>2}")
+        }
+        _ => compact,
+    };
+    dates::day_first(&compact).map_err(|_| format!("Not a date: {:?}", value.trim()))
+}
+
 /// Whether a `!` line starts transactions (`!Type:Bank`, `!Type:CCard`,
 /// …) rather than `!Account`, `!Option` or a category list.
 fn transactions_follow(line: &str) -> bool {
@@ -83,13 +95,16 @@ fn transactions_follow(line: &str) -> bool {
     header.starts_with("type:") && !header.starts_with("type:cat") && !header.starts_with("type:class")
 }
 
-fn transaction(r: &Record) -> Result<Option<CreditLine>, String> {
-    let posted_on = dates::day_first(r.date.ok_or("No date (D)")?)?;
+fn transaction(r: &Record) -> Result<Movement, String> {
+    let posted_on = qif_date(r.date.ok_or("No date (D)")?)?;
     let amount = parse_pence(r.amount.ok_or("No amount (T)")?, Decimal::Point)?.unwrap_or(0);
-    if amount <= 0 {
-        return Ok(None);
+    if amount < 0 {
+        return Ok(Movement::Debit);
     }
-    Ok(Some(CreditLine {
+    if amount == 0 {
+        return Ok(Movement::Zero);
+    }
+    Ok(Movement::Credit(CreditLine {
         line: r.line,
         posted_on,
         amount,
@@ -119,6 +134,20 @@ mod tests {
         assert_eq!(got, [(2, "2026-11-03", 1000), (11, "2026-11-05", 500)]);
         assert_eq!(p.credits[0].narrative, "J SMITH 100016 FP");
         assert_eq!(p.credits[1].reference.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn quicken_padded_dates() {
+        assert_eq!(qif_date(" 1/ 5' 3").as_deref(), Ok("2003-05-01"));
+        assert_eq!(qif_date("01/05'26").as_deref(), Ok("2026-05-01"));
+        assert_eq!(qif_date("1/5/2026").as_deref(), Ok("2026-05-01"));
+        assert!(qif_date("31/2'26").is_err());
+    }
+
+    #[test]
+    fn zero_amounts_are_skipped_not_debits() {
+        let p = read(&QIF.replace("T-1,250.00", "T0.00")).unwrap();
+        assert_eq!((p.debits_dropped, p.rows_skipped), (0, 1));
     }
 
     #[test]

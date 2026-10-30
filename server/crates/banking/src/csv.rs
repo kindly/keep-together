@@ -312,6 +312,10 @@ pub fn read(text: &str, mapping: &ColumnMapping) -> Result<Parsed, Vec<RowError>
             Ok(Row::Credit(credit)) => parsed.credits.push(credit),
             Ok(Row::Debit) => parsed.debits_dropped += 1,
             Ok(Row::Skip) => parsed.rows_skipped += 1,
+            Ok(Row::Undated(amount)) => {
+                parsed.rows_skipped += 1;
+                parsed.undated(record.line, amount);
+            }
             Err(message) => errors.push(record.line, message),
         }
     }
@@ -322,14 +326,44 @@ enum Row {
     Credit(CreditLine),
     Debit,
     Skip,
+    /// Money in on a row with no date: skipped, and reported.
+    Undated(i64),
+}
+
+/// The row's money, signed (in positive): `None` when no amount column
+/// holds one.
+fn signed(record: &Record, cols: &Resolved) -> Result<i64, String> {
+    let amount = |column: &Column| parse_pence(cols.cell(record, column), Decimal::Point);
+    Ok(match &cols.mapping.amount {
+        AmountColumns::Signed { column } => amount(column)?.unwrap_or(0),
+        AmountColumns::PaidInOut { paid_in, paid_out } => {
+            // Banks sign the paid-out column; a negative paid-in is a
+            // reversal or a returned credit, never a gift: refuse it.
+            let paid_in = amount(paid_in)?.unwrap_or(0);
+            if paid_in < 0 {
+                return Err("A negative amount in the paid-in column".into());
+            }
+            let paid_out = amount(paid_out)?.unwrap_or(0).abs();
+            if paid_in != 0 && paid_out != 0 {
+                return Err("Both paid in and paid out".into());
+            }
+            paid_in - paid_out
+        }
+    })
 }
 
 fn row(record: &Record, cols: &Resolved) -> Result<Row, String> {
     let m = cols.mapping;
     let date = cols.cell(record, &m.date);
-    // Footers, totals and notes: no date in the date column.
+    // Footers, totals and notes: no date in the date column. One that
+    // carries money in is skipped all the same (a totals row looks just
+    // like it), but reported, so a wrong date column can't lose a gift
+    // unseen.
     if !date.bytes().any(|b| b.is_ascii_digit()) {
-        return Ok(Row::Skip);
+        return Ok(match signed(record, cols) {
+            Ok(amount) if amount > 0 => Row::Undated(amount),
+            _ => Row::Skip,
+        });
     }
     let posted_on = dates::day_first(date)?;
     if let Some(currency) = &m.currency {
@@ -338,18 +372,7 @@ fn row(record: &Record, cols: &Resolved) -> Result<Row, String> {
             return Err(format!("Not in pounds: {c}"));
         }
     }
-    let amount = |column: &Column| parse_pence(cols.cell(record, column), Decimal::Point);
-    let signed = match &m.amount {
-        AmountColumns::Signed { column } => amount(column)?.unwrap_or(0),
-        AmountColumns::PaidInOut { paid_in, paid_out } => {
-            let paid_in = amount(paid_in)?.unwrap_or(0).abs();
-            let paid_out = amount(paid_out)?.unwrap_or(0).abs();
-            if paid_in != 0 && paid_out != 0 {
-                return Err("Both paid in and paid out".into());
-            }
-            paid_in - paid_out
-        }
-    };
+    let signed = signed(record, cols)?;
     if signed < 0 {
         return Ok(Row::Debit);
     }
@@ -430,11 +453,17 @@ mod tests {
         let text = "Date,Payer,Reference,Paid in,Paid out\n\
                     01/11/2026,J SMITH,100016,10.00,\n\
                     02/11/2026,ACME LTD,INV 4,,250.00\n\
-                    03/11/2026,A JONES,,-5.00,\n";
+                    02/11/2026,PRINT SHOP,INV 5,,-84.50\n\
+                    03/11/2026,A JONES,,5.00,\n";
         let p = read(text, &in_out()).unwrap();
-        assert_eq!(p.debits_dropped, 1);
+        assert_eq!(p.debits_dropped, 2);
         let got: Vec<_> = p.credits.iter().map(|c| c.amount).collect();
         assert_eq!(got, [1000, 500]);
+        // A negative paid-in is a reversal: refused, never a credit.
+        let reversed = "Date,Payer,Reference,Paid in,Paid out\n03/11/2026,A JONES,,-5.00,\n";
+        let errors = read(reversed, &in_out()).unwrap_err();
+        assert_eq!(errors[0].line, 2);
+        assert!(errors[0].message.contains("negative"), "{errors:?}");
         let both = "Date,Payer,Reference,Paid in,Paid out\n01/11/2026,X,,1.00,2.00\n";
         assert_eq!(read(both, &in_out()).unwrap_err()[0].line, 2);
     }
@@ -455,6 +484,29 @@ mod tests {
         assert_eq!(p.credits.len(), 2);
         assert_eq!(p.credits[1].line, 8);
         assert_eq!(p.rows_skipped, 8);
+        // The totals row carries money in, so it is reported, not lost.
+        assert_eq!(p.undated, [crate::UndatedRow { line: 9, amount: 1500 }]);
+    }
+
+    #[test]
+    fn a_dateless_row_with_money_in_is_skipped_and_reported() {
+        // A layout that prints each day's date only once.
+        let text = "Date,Payer,Reference,Amount\n\
+                    01/11/2026,J SMITH,100016,10.00\n\
+                    ,A JONES,,50.00\n\
+                    ,ACME LTD,,-20.00\n\
+                    ,,Balance carried,\n\
+                    02/11/2026,B BROWN,,5.00\n";
+        let p = read(text, &signed()).unwrap();
+        assert_eq!(p.credits.len(), 2);
+        assert_eq!(p.undated, [crate::UndatedRow { line: 3, amount: 5000 }]);
+        assert_eq!(p.undated_count, 1);
+        let mut many = String::from("Date,Payer,Reference,Amount\n01/11/2026,J,,1.00\n");
+        for _ in 0..60 {
+            many.push_str(",X,,1.00\n");
+        }
+        let p = read(&many, &signed()).unwrap();
+        assert_eq!((p.undated.len(), p.undated_count), (crate::ROW_ERRORS_MAX, 60));
     }
 
     #[test]

@@ -23,7 +23,7 @@ use ts_rs::TS;
 use crate::account::{CsvLayout, account};
 use crate::csv::ColumnMapping;
 use crate::presets::preset;
-use crate::{Format, Held, RowError, dedupe, read};
+use crate::{Format, Held, RowError, UndatedRow, dedupe, read};
 
 pub const TABLE: &str = "bank_imports";
 /// The largest statement file read, in bytes.
@@ -357,6 +357,11 @@ pub struct Imported {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub last_date: Option<String>,
+    /// Rows with money in but no date: skipped, for staff to check (a
+    /// totals row, or a credit a wrong date column hid). At most 50.
+    pub undated: Vec<UndatedRow>,
+    #[ts(type = "number")]
+    pub undated_count: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -386,12 +391,14 @@ fn held(
     ids: &BTreeSet<&str>,
 ) -> Result<Held, ContractError> {
     // By line id, so a line found both ways counts once.
-    let mut rows: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let mut rows: HashMap<String, HeldRow> = HashMap::new();
     let mut by_key = conn.prepare_cached(
-        "SELECT id, dedupe_key, bank_id FROM bank_lines WHERE account_id = ?1 AND dedupe_key = ?2",
+        "SELECT id, dedupe_key, bank_id, occurrence FROM bank_lines
+         WHERE account_id = ?1 AND dedupe_key = ?2",
     )?;
     let mut by_id = conn.prepare_cached(
-        "SELECT id, dedupe_key, bank_id FROM bank_lines WHERE account_id = ?1 AND bank_id = ?2",
+        "SELECT id, dedupe_key, bank_id, occurrence FROM bank_lines
+         WHERE account_id = ?1 AND bank_id = ?2",
     )?;
     for key in keys {
         collect(&mut by_key, account_id, key, &mut rows)?;
@@ -400,20 +407,23 @@ fn held(
         collect(&mut by_id, account_id, id, &mut rows)?;
     }
     let mut held = Held::new();
-    for (key, bank_id) in rows.values() {
-        held.add(key, bank_id.as_deref());
+    for (key, bank_id, occurrence) in rows.values() {
+        held.add(key, bank_id.as_deref(), *occurrence);
     }
     Ok(held)
 }
+
+/// A held line's key, bank id and occurrence.
+type HeldRow = (String, Option<String>, u32);
 
 fn collect(
     stmt: &mut rusqlite::CachedStatement,
     account_id: &str,
     value: &str,
-    rows: &mut HashMap<String, (String, Option<String>)>,
+    rows: &mut HashMap<String, HeldRow>,
 ) -> rusqlite::Result<()> {
     for row in stmt.query_map(params![account_id, value], |r| {
-        Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?)))
+        Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
     })? {
         let (id, row) = row?;
         rows.insert(id, row);
@@ -426,6 +436,8 @@ fn collect(
 pub struct Planned {
     pub payload: ImportPayload,
     pub debits_dropped: usize,
+    pub undated: Vec<UndatedRow>,
+    pub undated_count: usize,
 }
 
 /// Lines a [`Preview`] shows.
@@ -451,6 +463,11 @@ pub struct Preview {
     pub last_date: Option<String>,
     /// The first [`PREVIEW_LINES`] new lines.
     pub lines: Vec<ImportLine>,
+    /// Rows with money in but no date: skipped, for staff to check (a
+    /// totals row, or a credit a wrong date column hid). At most 50.
+    pub undated: Vec<UndatedRow>,
+    #[ts(type = "number")]
+    pub undated_count: usize,
 }
 
 impl Planned {
@@ -463,6 +480,8 @@ impl Planned {
             first_date: p.first_date.clone(),
             last_date: p.last_date.clone(),
             lines: p.lines.iter().take(PREVIEW_LINES).cloned().collect(),
+            undated: self.undated.clone(),
+            undated_count: self.undated_count,
         }
     }
 }
@@ -519,6 +538,16 @@ pub fn plan_import(
     let (format, kind, preset_id) =
         resolve_layout(request.layout, account.payload.csv_layout.as_ref())?;
     let parsed = read(bytes, &format).map_err(ImportError::File)?;
+    let last4 = &account.payload.account_last4;
+    if let Some(source) = &parsed.source_account {
+        let digits: String = source.chars().filter(char::is_ascii_digit).collect();
+        if !last4.is_empty() && digits.len() >= 4 && !digits.ends_with(last4.as_str()) {
+            return Err(file_error(format!(
+                "This file is for the account ending {}, not {last4}",
+                &digits[digits.len() - 4..]
+            )));
+        }
+    }
     if parsed.credits.len() > LINES_MAX {
         return Err(file_error(format!(
             "At most {LINES_MAX} credits a file; import a shorter period"
@@ -537,6 +566,7 @@ pub fn plan_import(
         .collect();
     let held = held(conn, &request.account_id, &keys, &ids)?;
     let debits_dropped = parsed.debits_dropped;
+    let (undated, undated_count) = (parsed.undated, parsed.undated_count);
     let deduped = dedupe(parsed.credits, &held);
     let lines = deduped
         .new
@@ -565,6 +595,8 @@ pub fn plan_import(
             lines,
         },
         debits_dropped,
+        undated,
+        undated_count,
     })
 }
 
@@ -593,6 +625,8 @@ pub fn import_file(
         debits_dropped: planned.debits_dropped,
         first_date,
         last_date,
+        undated: planned.undated,
+        undated_count: planned.undated_count,
     })
 }
 

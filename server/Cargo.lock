@@ -271,7 +271,6 @@ dependencies = [
 name = "banking"
 version = "0.1.0"
 dependencies = [
- "contacts",
  "contracts",
  "giving",
  "rusqlite",

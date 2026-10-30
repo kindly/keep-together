@@ -297,7 +297,70 @@ fn an_archived_account_takes_no_imports() {
         matches!(&refused, ImportError::Contract(ContractError::Rejected { reason, .. }) if reason == "account_inactive"),
         "{refused:?}"
     );
-    assert_eq!(count(&w.a, "bank_lines"), 0);
+    assert_eq!((count(&w.a, "bank_imports"), count(&w.a, "bank_lines")), (0, 0));
+    assert_eq!(count(&w.a, "revisions WHERE contract = 'banking.import'"), 0);
+}
+
+#[test]
+fn a_file_over_5_mb_or_10000_credits_is_refused_and_stores_nothing() {
+    let w = world();
+    let acc = new_account(&w.a, "Lloyds");
+    let big = vec![b'a'; banking::import::FILE_BYTES_MAX + 1];
+    let Err(ImportError::File(errors)) = import(&w.a, &acc, &big, lloyds()) else {
+        panic!("over 5 MB must be refused");
+    };
+    assert!(errors[0].message.contains("5 MB"), "{errors:?}");
+    // 10,001 credits, well under 5 MB.
+    let mut text = String::from("Transaction Date,Transaction Description,Debit Amount,Credit Amount\n");
+    for i in 0..=banking::import::LINES_MAX {
+        text.push_str(&format!("{:02}/11/2026,P{i},,1.00\n", i % 28 + 1));
+    }
+    let mapping = banking::ColumnMapping {
+        header: banking::HeaderRow::Find,
+        date: banking::Column::name("Transaction Date"),
+        amount: banking::AmountColumns::PaidInOut {
+            paid_in: banking::Column::name("Credit Amount"),
+            paid_out: banking::Column::name("Debit Amount"),
+        },
+        payer: None,
+        reference: None,
+        narrative: vec![banking::Column::name("Transaction Description")],
+        bank_id: None,
+        currency: None,
+    };
+    let Err(ImportError::File(errors)) =
+        import(&w.a, &acc, text.as_bytes(), Some(FileLayout::Mapping { mapping }))
+    else {
+        panic!("over 10,000 credits must be refused");
+    };
+    assert!(errors[0].message.contains("10000"), "{errors:?}");
+    assert_eq!((count(&w.a, "bank_imports"), count(&w.a, "bank_lines")), (0, 0));
+}
+
+#[test]
+fn an_ofx_file_for_another_account_is_refused() {
+    let w = world();
+    let acc = new_account(&w.a, "Barclays");
+    // The account ends 5678; the file says 12345678 (matches), then 87654321.
+    let ofx = String::from_utf8(fixture("statement.ofx")).unwrap();
+    assert_eq!(import(&w.a, &acc, ofx.as_bytes(), Some(FileLayout::Ofx)).unwrap().new_lines, 2);
+    let other = ofx.replace("<ACCTID>12345678", "<ACCTID>87654321");
+    let Err(ImportError::File(errors)) = import(&w.a, &acc, other.as_bytes(), Some(FileLayout::Ofx))
+    else {
+        panic!("another account's file must be refused");
+    };
+    assert!(errors[0].message.contains("ending 4321"), "{errors:?}");
+}
+
+#[test]
+fn dateless_rows_with_money_in_are_reported_with_the_import() {
+    let w = world();
+    let acc = new_account(&w.a, "Lloyds");
+    let mut file = lloyds_days([1]);
+    file.extend_from_slice(b",SO,'30-00-00,12345678,A JONES SO,,50.00,0,\n");
+    let done = import(&w.a, &acc, &file, lloyds()).unwrap();
+    assert_eq!((done.new_lines, done.undated_count), (1, 1));
+    assert_eq!((done.undated[0].line, done.undated[0].amount), (3, 5000));
 }
 
 #[test]
