@@ -122,7 +122,7 @@ the reference; `server/README.md` "Bank transfers" says where each lives.
    standing order, the number makes its instalment strong only when it is
    that standing order's own donor's.
 3. **A standing order's expected payment is strong only when the line
-   names the donor** (review b5r, the controller's call). Either the
+   names the donor** (review b5r; confirmed by the human, 2026-10-30). Either the
    line's payer is a known payer of that standing order's donor (matched
    to them before), or the line carries a Luhn-valid contact number that
    is theirs. Either way it needs the exact amount, and the line must
@@ -174,3 +174,8 @@ the reference; `server/README.md` "Bank transfers" says where each lives.
     "MONTHLY") would act as a payer, and anyone quoting it would pre-tick
     as a donor matched before. Rows already kept with a blank payer are
     skipped when read; no migration.
+11. **Erasure leaves a statement line's payer and reference as the bank
+    wrote them** (the human, 2026-10-30). A line is the bank's record of
+    money received (decision 1), kept with the financial history rule 3
+    preserves. Erasing a contact anonymises the contact and forgets their
+    remembered payers (decision 8); the line's text is not edited.
