@@ -49,7 +49,11 @@ vi.mock('../lib/data', () => ({
   useMembers: () => members,
   useDeclarations: () => ({ declarations: [], currentId: null }),
   useGiftWrites: () => mutations,
+  useBatch: (id: string | null) => ({
+    data: id === null ? undefined : { batch: { status: batchStatus } },
+  }),
 }))
+let batchStatus: 'open' | 'closed' = 'open'
 vi.mock('../components/contact-history', () => ({
   useHistoryMoments: () => ({ moments: [], loading: false, error: null }),
   MomentList: () => null,
@@ -109,6 +113,7 @@ beforeEach(() => {
   members = [{ userId: '1', name: 'Jo Staff' }]
   claimList = [{ id: 'claim7', number: 7, status: 'submitted' }]
   admin = true
+  batchStatus = 'open'
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -457,4 +462,28 @@ test('a cheque in a batch clears with its batch: no Mark cleared, and a link to 
   expect(button(el, 'Mark cleared')).toBeUndefined()
   expect(button(el, 'Mark bounced')).toBeDefined()
   expect(el.textContent).toContain('See the batch')
+})
+
+test('a gift in a closed batch holds Edit and Void, and says to reopen it; a cheque still bounces', () => {
+  gift = makeGift({
+    method: 'cheque',
+    status: 'pending',
+    payingInBatchId: 'b1',
+  })
+  batchStatus = 'closed'
+  render()
+  expect(el.querySelector('[data-testid="gift-slip-held"]')?.textContent).toBe(
+    'In a closed paying-in batch: reopen it first to edit or void this gift.',
+  )
+  expect(button(el, 'Edit').disabled).toBe(true)
+  expect(button(el, 'Void').disabled).toBe(true)
+  expect(button(el, 'Mark bounced').disabled).toBe(false)
+})
+
+test('a gift in an open batch can be edited and voided', () => {
+  gift = makeGift({ payingInBatchId: 'b1' })
+  render()
+  expect(el.querySelector('[data-testid="gift-slip-held"]')).toBeNull()
+  expect(button(el, 'Edit').disabled).toBe(false)
+  expect(button(el, 'Void').disabled).toBe(false)
 })

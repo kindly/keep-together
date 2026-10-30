@@ -95,15 +95,16 @@ export function useBatches(status?: BatchStatus, enabled = true) {
   })
 }
 
-/** One batch and its gifts. */
-export function useBatch(id: string) {
+/** One batch and its gifts (none asked for with a null id). */
+export function useBatch(id: string | null) {
   const { slug } = useTenant()
   return useQuery({
-    queryKey: keys.batch(slug, id),
+    queryKey: keys.batch(slug, id ?? ''),
+    enabled: id !== null,
     retry: false,
     queryFn: async (): Promise<PayingInBatchPage> => {
       const d = await get<PayingInBatchDetail>(
-        tenantPath(slug, 'bank', 'batches', id),
+        tenantPath(slug, 'bank', 'batches', id ?? ''),
       )
       return {
         batch: batchFromWire(d.batch),

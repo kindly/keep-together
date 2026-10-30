@@ -430,7 +430,30 @@ async fn b_never_sees_as_batches_and_as_ids_under_b_are_404() {
         .call("POST", "/api/t/beta/bank/batches", &g.bob, Some(json!({ "accountId": g.account })))
         .await;
     assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown_account")));
-    // A's batch id in B's record-gift: no such batch there, nothing kept.
+    // A's batch id in B's record-gift, with a real B code so the batch is
+    // what refuses it: no such batch there, nothing kept.
+    let b_category = ok(
+        &g.w,
+        "POST",
+        "/api/t/beta/sources",
+        &g.bob,
+        Some(json!({ "name": "Collections", "isActive": true })),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let b_code = ok(
+        &g.w,
+        "POST",
+        "/api/t/beta/sources",
+        &g.bob,
+        Some(json!({ "parentId": b_category, "name": "Tin", "isActive": true })),
+    )
+    .await["versionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let (s, out) = g
         .w
         .call(
@@ -443,12 +466,16 @@ async fn b_never_sees_as_batches_and_as_ids_under_b_are_404() {
                 "receivedOn": "2026-11-02",
                 "amount": 100,
                 "method": "cash",
-                "allocations": [{ "sourceCodeId": "0".repeat(32), "amount": 100 }],
+                "allocations": [{ "sourceCodeId": b_code, "amount": 100 }],
                 "payingInBatchId": id,
             })),
         )
         .await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown_batch")),
+        "{out}"
+    );
     let (s, list) = g.w.call("GET", "/api/t/beta/contacts", &g.bob, None).await;
     assert_eq!(s, StatusCode::OK);
     assert!(!list.to_string().contains("\"Bo\""), "{list}");

@@ -28,6 +28,7 @@ import {
 import { MomentList, useHistoryMoments } from '../components/contact-history'
 import {
   FEATURES,
+  useBatch,
   useClaims,
   useGift,
   useGiftWrites,
@@ -115,6 +116,12 @@ function GiftView({ gift }: { gift: Gift }) {
         'system')
   const warnings = giftWarnings(gift, localToday())
   const note = isVoid ? null : bankNote(gift)
+  // A gift on a closed (or matched) paying-in slip keeps its amount, date
+  // and method and stays voided or not until the batch reopens, as the
+  // server says (`batch_closed`). Unknown while its batch loads: held.
+  const batch = useBatch(gift.payingInBatchId)
+  const slipHeld =
+    gift.payingInBatchId !== null && batch.data?.batch.status !== 'open'
   const cheque = gift.method === 'cheque' && !isVoid
   const coverage = giftCoverage(declarations, gift)
 
@@ -288,11 +295,18 @@ function GiftView({ gift }: { gift: Gift }) {
           </ul>
         )}
 
+        {canWrite && !editing && slipHeld && (
+          <p data-testid="gift-slip-held" className="text-sm text-neutral-600">
+            In a closed paying-in batch: reopen it first to edit or void this
+            gift.
+          </p>
+        )}
         {canWrite && !editing && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               className={secondary}
+              disabled={slipHeld}
               onClick={() => setEditing(true)}
             >
               Edit
@@ -332,7 +346,7 @@ function GiftView({ gift }: { gift: Gift }) {
                 <button
                   type="button"
                   className={secondary}
-                  disabled={busy}
+                  disabled={busy || slipHeld}
                   onClick={() =>
                     setConfirming({
                       status: 'completed',
@@ -347,7 +361,7 @@ function GiftView({ gift }: { gift: Gift }) {
               <button
                 type="button"
                 className={secondary}
-                disabled={busy}
+                disabled={busy || slipHeld}
                 onClick={() => {
                   setVoidReason('')
                   setConfirming({
