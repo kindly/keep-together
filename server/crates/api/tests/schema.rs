@@ -316,6 +316,9 @@ const FIXTURES: &[&str] = &[
      INSERT INTO regular_gifts (seq, id, contact_id, status, entered_by, entered_at, kind)
      VALUES (3, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1ae', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
          'active', 1, 6600, 'standing_order');",
+    // v22: a contact's remembered payers forgotten (bank transfers step 4).
+    "INSERT INTO bank_payer_forgets (id, forgotten_at, version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', 6700, 1);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";

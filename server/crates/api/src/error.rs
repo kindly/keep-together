@@ -77,7 +77,7 @@ pub enum ApiError {
 }
 
 impl ApiError {
-    fn status(&self) -> StatusCode {
+    pub(crate) fn status(&self) -> StatusCode {
         match self {
             ApiError::Unauthenticated => StatusCode::UNAUTHORIZED,
             ApiError::Forbidden | ApiError::StepUpRequired => StatusCode::FORBIDDEN,

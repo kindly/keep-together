@@ -66,6 +66,10 @@ pub fn org_migrations() -> Migrations<'static> {
         // paying-in batches; `gifts` rebuilt with `bank_transfer` and
         // `cheque` and its line and batch; `regular_gifts.kind`
         M::up_with_hook("", rebuild_with_deferred_keys(BANK_TRANSFERS)),
+        // 22: matching statement lines (bank transfers step 4): a
+        // contact's remembered payers forgotten, and matched lines by
+        // payer key
+        M::up(banking::matching::MIGRATION),
     ])
 }
 

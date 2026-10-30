@@ -245,6 +245,21 @@ pub fn set_status(
     reason: Option<String>,
     source: Source,
 ) -> Result<Executed, ContractError> {
+    set_status_in(ctx, id, expected, status, reason, source, None)
+}
+
+/// [`set_status`] under the caller's `group` (the api's "void gift:
+/// frees statement line …"), or none: then a void that unlinks runs under
+/// one of its own.
+pub fn set_status_in(
+    ctx: &Ctx,
+    id: &str,
+    expected: i64,
+    status: Status,
+    reason: Option<String>,
+    source: Source,
+    group: Option<&CommandGroup>,
+) -> Result<Executed, ContractError> {
     let current: Option<(String, i64, bool, i64)> = ctx
         .tx
         .read()
@@ -266,25 +281,32 @@ pub fn set_status(
         });
     }
     if !(linked && status == Status::Void) {
-        return execute(
-            ctx,
-            &STATUS,
-            StatusPayload { status, reason },
-            Exec::update(id, Some(expected), source),
-        );
+        let exec = Exec::update(id, Some(expected), source);
+        let exec = match group {
+            Some(g) => exec.in_group(g),
+            None => exec,
+        };
+        return execute(ctx, &STATUS, StatusPayload { status, reason }, exec);
     }
-    let group = command_group(ctx, "void gift, unmatched from its statement line")?;
+    let own;
+    let group = match group {
+        Some(g) => g,
+        None => {
+            own = command_group(ctx, "void gift, unmatched from its statement line")?;
+            &own
+        }
+    };
     let done = execute(
         ctx,
         &STATUS,
         StatusPayload { status, reason },
-        Exec::update(id, Some(expected), source).in_group(&group),
+        Exec::update(id, Some(expected), source).in_group(group),
     )?;
     execute(
         ctx,
         &LINE,
         types::LinePayload { line_id: None },
-        Exec::update(id, Some(line_version), source).in_group(&group),
+        Exec::update(id, Some(line_version), source).in_group(group),
     )?;
     Ok(done)
 }

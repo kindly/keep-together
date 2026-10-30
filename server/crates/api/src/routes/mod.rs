@@ -2,6 +2,7 @@
 //! handlers get a [`Tenant`](crate::Tenant) and nothing else.
 
 mod address;
+mod bank_matching;
 mod banking;
 mod batches;
 mod comms;
@@ -33,6 +34,7 @@ pub fn router() -> Router {
     Router::new()
         .merge(address::router())
         .merge(banking::router())
+        .merge(bank_matching::router())
         .merge(batches::router())
         .merge(contacts::router())
         .merge(fields::router())

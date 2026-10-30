@@ -16,16 +16,22 @@
 //!   banking.import   — one file imported: its new `bank_lines` (content
 //!                      written once) and the duplicate count. Create-only
 //! ```
+//!
+//! Matching ([`matching`], [`suggest`]): a line's match state
+//! (`banking.lineMatch`, which derives the remembered payers), forgetting
+//! a contact's payers, not-a-donation rules, and the suggesters.
 
 pub mod account;
 pub mod csv;
 pub mod dates;
 pub mod dedupe;
 pub mod import;
+pub mod matching;
 pub mod money;
 pub mod ofx;
 pub mod presets;
 pub mod qif;
+pub mod suggest;
 mod text;
 
 use std::sync::LazyLock;
@@ -41,10 +47,16 @@ pub use import::{
     FileLayout, IMPORT, ImportError, ImportRequest, ImportRow, Imported, Planned, Preview,
     LineSummary, import_file, import_lines, import_of, imports, line_summary, plan_import,
 };
+pub use matching::{
+    FORGET_PAYERS, LINE_MATCH, LineMatchPayload, LineView, MatchState, RULE, RuleField,
+    RulePayload, RuleRow, forget_payers,
+};
 pub use presets::{AWAITING_SAMPLES, Preset, preset, presets};
+pub use suggest::{Confidence, Proposal, SUGGESTERS, Suggester, Suggestion, suggest};
 
 /// Every contract restore may meet in an org file's banking history.
-pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| Registry::new(&[&ACCOUNT, &IMPORT]));
+pub static REGISTRY: LazyLock<Registry> =
+    LazyLock::new(|| Registry::new(&[&ACCOUNT, &IMPORT, &LINE_MATCH, &FORGET_PAYERS, &RULE]));
 
 /// A new bank account (admins only: the route checks).
 pub fn create_account(
@@ -63,7 +75,12 @@ pub fn save_account(
     payload: AccountPayload,
     source: Source,
 ) -> Result<Executed, ContractError> {
-    execute(ctx, &ACCOUNT, payload, Exec::update(id, Some(expected), source))
+    execute(
+        ctx,
+        &ACCOUNT,
+        payload,
+        Exec::update(id, Some(expected), source),
+    )
 }
 
 /// Most row errors one read reports; past it the file is refused all the

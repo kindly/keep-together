@@ -18,7 +18,7 @@ use giftaid::{
 };
 use giving::types::{
     AllocationRow, GiftPage, GiftPayload, GiftSaved, GiftView, Method, RecentGift, SaveGift,
-    SetGiftStatus,
+    SetGiftStatus, Status,
 };
 use serde::{Deserialize, Serialize};
 use sources::CodeDescription;
@@ -116,14 +116,41 @@ async fn save(
 }
 
 /// `POST gifts/{id}/status {expected, status}`: void or un-void.
-/// Re-sending the current status changes nothing.
+/// Re-sending the current status changes nothing. Voiding the last gift
+/// on a statement line (made from it, or matched to it by hand) leaves
+/// the line unmatched, in the same command group; voiding one part of a
+/// line's split is `422 line_split` (unmatch the line instead).
 async fn status(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(req): Body<SetGiftStatus>,
 ) -> Result<Json<GiftSaved>, ApiError> {
     t.write(move |ctx| {
-        let done = giving::set_status(ctx, &id, req.expected, req.status, req.reason, Source::Ui)?;
+        let gift = giving::get(ctx.tx.read(), &id)?
+            .ok_or(ApiError::NotFound)?
+            .gift;
+        let line = gift
+            .bank_line_id
+            .filter(|_| req.status == Status::Void && gift.status != Status::Void);
+        let done = match line {
+            // A gift on a statement line: voiding it frees the line, in one
+            // command; one part of a split is refused (unmatch the line).
+            Some(line) => {
+                let group = super::bank_matching::void_group(ctx, &id, &line)?;
+                let done = giving::set_status_in(
+                    ctx,
+                    &id,
+                    req.expected,
+                    req.status,
+                    req.reason,
+                    Source::Ui,
+                    Some(&group),
+                )?;
+                super::bank_matching::free_emptied_line(ctx, &line, Source::Ui, &group)?;
+                done
+            }
+            None => giving::set_status(ctx, &id, req.expected, req.status, req.reason, Source::Ui)?,
+        };
         Ok(GiftSaved {
             view: view(ctx, &done.id)?,
             id: done.id,
