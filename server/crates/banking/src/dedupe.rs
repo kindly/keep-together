@@ -100,6 +100,7 @@ pub fn dedupe(lines: Vec<CreditLine>, held: &Held) -> Deduped {
 
     let mut out = Deduped::default();
     let mut next: HashMap<&str, u32> = HashMap::new();
+    let mut new_ids: HashSet<String> = HashSet::new();
     for (line, key) in &keyed {
         if line.bank_id.as_ref().is_some_and(|id| held.ids.contains(id)) {
             out.duplicates += 1;
@@ -115,8 +116,14 @@ pub fn dedupe(lines: Vec<CreditLine>, held: &Held) -> Deduped {
             .entry(key)
             .or_insert_with(|| held.count(key) as u32);
         *n += 1;
+        let mut line = line.clone();
+        // An id the bank repeats within one file identifies neither line;
+        // the first keeps it (an account holds an id once).
+        if line.bank_id.as_ref().is_some_and(|id| !new_ids.insert(id.clone())) {
+            line.bank_id = None;
+        }
         out.new.push(Keyed {
-            line: line.clone(),
+            line,
             key: key.clone(),
             occurrence: *n,
         });
@@ -217,6 +224,14 @@ mod tests {
         let d = dedupe(vec![reworded, with_id(line(3, 1000, "J SMITH"), "F2")], &held);
         assert_eq!((d.new.len(), d.duplicates), (1, 1));
         assert_eq!(d.new[0].line.bank_id.as_deref(), Some("F2"));
+    }
+
+    #[test]
+    fn an_id_repeated_within_a_file_is_kept_once() {
+        let file = vec![with_id(line(3, 1000, "J SMITH"), "A"), with_id(line(4, 500, "A JONES"), "A")];
+        let d = dedupe(file, &Held::new());
+        let ids: Vec<Option<&str>> = d.new.iter().map(|k| k.line.bank_id.as_deref()).collect();
+        assert_eq!(ids, [Some("A"), None]);
     }
 
     #[test]
