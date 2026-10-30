@@ -102,3 +102,20 @@ export function batchState(b: PayingInBatch): string {
   if (b.line) return `matched to the line of ${formatDay(b.line.postedOn)}`
   return b.status === 'open' ? 'open' : 'closed, not matched yet'
 }
+
+/** "Paid in £70.00 (2 gifts)": what the slip holds, not money received. */
+export function paidInLabel(b: PayingInBatch): string {
+  return `Paid in ${formatPence(b.giftsTotal)} (${b.giftCount} ${b.giftCount === 1 ? 'gift' : 'gifts'})`
+}
+
+/** "1 cheque pending £50.00, 1 bounced £20.00", or null with neither. */
+export function chequesLabel(b: PayingInBatch): string | null {
+  const f = b.figures
+  const parts = [
+    f.pendingCount > 0 &&
+      `${f.pendingCount} ${f.pendingCount === 1 ? 'cheque' : 'cheques'} pending ${formatPence(f.pendingTotal)}`,
+    f.bouncedCount > 0 &&
+      `${f.bouncedCount} bounced ${formatPence(f.bouncedTotal)}`,
+  ].filter(Boolean)
+  return parts.length ? parts.join(', ') : null
+}

@@ -23,12 +23,23 @@ export type { BatchStatus }
 
 export type PayingInBatch = Omit<
   PayingInBatchView,
-  'total' | 'giftsTotal' | 'line'
+  'total' | 'giftsTotal' | 'line' | 'figures'
 > & {
   /** The slip's total, once written. */
   total: bigint | null
-  /** What its gifts that aren't void add up to. */
+  /**
+   * What was paid in on the slip: every gift in it that isn't void, its
+   * pending and bounced cheques included (the bank credited the slip in
+   * full). Never money received: that is `figures.receivedTotal`.
+   */
   giftsTotal: bigint
+  figures: {
+    receivedTotal: bigint
+    pendingCount: number
+    pendingTotal: bigint
+    bouncedCount: number
+    bouncedTotal: bigint
+  }
   /** The statement line it is matched to, once matched. */
   line: { id: string; postedOn: string; amount: bigint } | null
 }
@@ -44,6 +55,13 @@ const batchFromWire = (b: PayingInBatchView): PayingInBatch => ({
   ...b,
   total: b.total === null ? null : BigInt(b.total),
   giftsTotal: BigInt(b.giftsTotal),
+  figures: {
+    receivedTotal: BigInt(b.figures.receivedTotal),
+    pendingCount: b.figures.pendingCount,
+    pendingTotal: BigInt(b.figures.pendingTotal),
+    bouncedCount: b.figures.bouncedCount,
+    bouncedTotal: BigInt(b.figures.bouncedTotal),
+  },
   line: b.line
     ? {
         id: b.line.id,

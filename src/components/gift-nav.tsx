@@ -31,6 +31,9 @@ function GiftSummary({ gift }: { gift: RecentGift }) {
         {formatPence(gift.amount)}
       </span>
       <span className="min-w-0 flex-1 truncate">{gift.contactName}</span>
+      {gift.notOnAStatement && (
+        <span className="text-xs text-amber-700">not on a statement yet</span>
+      )}
       {!received && (
         <span className="text-xs text-red-700">
           {STATUS_LABELS[gift.status]}

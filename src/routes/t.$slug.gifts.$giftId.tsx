@@ -379,7 +379,7 @@ function GiftView({ gift }: { gift: Gift }) {
               ? {
                   title: 'Mark this cheque bounced?',
                   description:
-                    'It didn’t clear: it stays on record but counts for nothing, and comes off its batch’s total.',
+                    'It didn’t clear: it counts for nothing. It stays on its paying-in slip, as the bank credited it: the bank takes it back as a debit of its own.',
                   confirm: 'Mark bounced',
                 }
               : confirming?.status === 'completed'

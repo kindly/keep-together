@@ -548,10 +548,12 @@ fn unmatching_a_batch_pends_its_cleared_cheques_again() {
     assert_eq!(read(&w.a, |c| giving::bank::batch_for_line(c, &slip)), None);
 }
 
-/// Un-voiding a cheque gives back `completed` only if it may clear (its
-/// batch matched); otherwise `pending`.
+/// Un-voiding a cheque in an open batch gives `pending`: it clears with
+/// its batch. Once the batch is closed (or matched) a gift on its slip is
+/// neither voided nor un-voided until it reopens (review b6r M2); its
+/// cheque still bounces.
 #[test]
-fn unvoiding_a_cheque_gives_pending_until_it_may_clear() {
+fn unvoiding_a_cheque_gives_pending_and_a_closed_batch_holds_its_gifts() {
     let w = world();
     let b = open_batch(&w);
     let cheque = cheque_in(&w, &b, 3000);
@@ -561,9 +563,13 @@ fn unvoiding_a_cheque_gives_pending_until_it_may_clear() {
 
     close_batch(&w, &b, 3000);
     match_to(&w, &b, &line(&w, 3000, "2026-10-20")).unwrap();
-    set_status(&w, &cheque, Status::Void).unwrap();
-    set_status(&w, &cheque, Status::Completed).unwrap();
     assert_eq!(gift(&w, &cheque).status, Status::Completed);
+    assert_eq!(
+        reason(set_status(&w, &cheque, Status::Void).unwrap_err()),
+        "batch_closed"
+    );
+    set_status(&w, &cheque, Status::Failed).unwrap();
+    assert_eq!(gift(&w, &cheque).status, Status::Failed);
 }
 
 /// A cheque's status follows its clearing, so a gift neither becomes a

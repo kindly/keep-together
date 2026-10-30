@@ -81,6 +81,13 @@ const batch = (over: Partial<PayingInBatch> = {}): PayingInBatch => ({
   closedAt: null,
   giftCount: 2,
   giftsTotal: 7000n,
+  figures: {
+    receivedTotal: 2000n,
+    pendingCount: 1,
+    pendingTotal: 5000n,
+    bouncedCount: 0,
+    bouncedTotal: 0n,
+  },
   version: 0,
   lineVersion: 0,
   ...over,
@@ -95,6 +102,7 @@ const gift = (over: Partial<BatchGift> = {}): BatchGift => ({
   receivedOn: '2026-11-02',
   method: 'cash',
   status: 'completed',
+  notOnAStatement: false,
   ...over,
 })
 
@@ -167,7 +175,8 @@ test('the list: where each batch stands; a viewer reads, opens none', async () =
     'open',
     'matched to the line of 4 Nov 2026; paid in 3 Nov 2026',
   ])
-  expect(el.textContent).toContain('2 gifts, £70.00')
+  expect(el.textContent).toContain('Paid in £70.00 (2 gifts)')
+  expect(el.textContent).toContain('1 cheque pending £50.00')
   expect(el.querySelector('form[aria-label="Open a batch"]')).toBeNull()
 })
 
@@ -191,7 +200,11 @@ test('an open batch: its gifts and total, record into it, close with the slip', 
   let done!: () => void
   writes.close.mockReturnValue(new Promise<void>((r) => (done = r)))
   await batchPage()
-  expect(byTestId('batch-gifts-total')).toBe('2, £70.00')
+  // What was paid in, not money received: its pending cheque shown apart.
+  expect(byTestId('batch-gifts-total')).toBe(
+    'Paid in £70.00 (2 gifts)1 cheque pending £50.00',
+  )
+  expect(byTestId('batch-received')).toBe('£20.00')
   expect(el.textContent).toContain('Cheque, pending')
   expect(
     [...el.querySelectorAll('a')]
@@ -262,4 +275,52 @@ test('a matched batch says so and offers nothing to change', async () => {
   expect(button('Reopen to add a gift')).toBeUndefined()
   expect(button('Close the batch')).toBeUndefined()
   expect(el.textContent).toContain('Cheque, bounced')
+})
+
+test('the slip’s details can be corrected, open or closed', async () => {
+  writes.save.mockResolvedValue({ id: 'b1', counter: 1 })
+  await batchPage()
+  await click(button('Edit the slip’s details'))
+  expect(document.activeElement?.textContent).toBe('The slip’s details')
+  const form = el.querySelector('form[aria-label="Edit the slip’s details"]')!
+  const [slip, date] = form.querySelectorAll('input')
+  expect(slip.value).toBe('12')
+  await setInput(slip, '000125')
+  await setInput(date, '2026-11-05')
+  await click(button('Save'))
+  expect(writes.save).toHaveBeenCalledWith(
+    'b1',
+    0,
+    '000125',
+    '2026-11-05',
+    null,
+  )
+  // Closed: its total stays required.
+  act(() => root.unmount())
+  root = createRoot(el)
+  page = {
+    batch: batch({
+      status: 'closed',
+      total: 7000n,
+      bankedOn: '2026-11-03',
+      version: 3,
+    }),
+    gifts: [],
+  }
+  await batchPage()
+  await click(button('Edit the slip’s details'))
+  const closed = el.querySelector('form[aria-label="Edit the slip’s details"]')!
+  const total = closed.querySelectorAll('input')[2]
+  expect(total.value).toBe('70.00')
+  await setInput(total, '')
+  expect(button('Save')?.disabled).toBe(true)
+  await setInput(total, '71.00')
+  await click(button('Save'))
+  expect(writes.save).toHaveBeenLastCalledWith(
+    'b1',
+    3,
+    '12',
+    '2026-11-03',
+    7100n,
+  )
 })

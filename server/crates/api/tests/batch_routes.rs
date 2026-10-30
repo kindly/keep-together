@@ -122,6 +122,74 @@ impl G {
         self.w.call("POST", &path, &self.sam, Some(body)).await
     }
 
+    /// Save the gift as it is with a new amount (and its one split).
+    async fn save_amount(&self, id: &str, pence: i64) -> (StatusCode, Value) {
+        let g = self.gift(id).await;
+        let body = json!({
+            "expected": g["giftVersion"],
+            "contactId": g["contactId"],
+            "receivedOn": g["receivedOn"],
+            "amount": pence,
+            "method": g["method"],
+            "reference": g["reference"],
+            "allocations": [{
+                "key": g["allocations"][0]["key"],
+                "sourceCodeId": g["allocations"][0]["sourceCodeId"],
+                "amount": pence,
+            }],
+        });
+        self.w
+            .call("POST", &format!("/api/t/alpha/gifts/{id}/save"), &self.sam, Some(body))
+            .await
+    }
+
+    async fn close(&self, id: &str, expected: i64, total: i64) {
+        ok(
+            &self.w,
+            "POST",
+            &format!("/api/t/alpha/bank/batches/{id}/close"),
+            &self.sam,
+            Some(json!({ "expected": expected, "bankedOn": "2026-11-03", "total": total })),
+        )
+        .await;
+    }
+
+    /// Match a closed batch to a statement line of `pence` on its account,
+    /// as reconcile (step 4) will: a Lloyds statement imported, then
+    /// `giving::bank::match_batch` in one transaction.
+    async fn match_to_line(&self, id: &str, pence: i64) {
+        let file = format!(
+            "Transaction Date,Transaction Type,Sort Code,Account Number,Transaction Description,Debit Amount,Credit Amount,Balance,\n\
+             04/11/2026,DEP,'30-00-00,12345678,PAYING IN,,{}.{:02},0,\n",
+            pence / 100,
+            pence % 100
+        );
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/api/t/alpha/bank/imports?accountId={}&fileName=s.csv&layout=%7B%22kind%22%3A%22preset%22%2C%22id%22%3A%22lloyds%22%7D",
+                self.account
+            ))
+            .header(axum::http::header::COOKIE, &self.ann)
+            .body(axum::body::Body::from(file))
+            .unwrap();
+        let res = tower::ServiceExt::oneshot(self.w.app.clone(), req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let db = self.w.store.org(&self.w.alpha.id).unwrap();
+        let line: String = db
+            .read(|c| {
+                c.query_row("SELECT id FROM bank_lines ORDER BY seq DESC LIMIT 1", [], |r| {
+                    r.get::<_, String>(0)
+                })
+            })
+            .unwrap();
+        contracts::transact(&db, Some(1), |ctx| {
+            let group = contracts::command_group(ctx, "match batch")?;
+            giving::bank::match_batch(ctx, id, 0, &line, contracts::Source::Ui, &group)
+        })
+        .unwrap();
+    }
+
     async fn batch(&self, id: &str) -> Value {
         ok(&self.w, "GET", &format!("/api/t/alpha/bank/batches/{id}"), &self.val, None).await
     }
@@ -259,8 +327,85 @@ async fn a_cheque_clears_by_hand_outside_a_batch_and_can_bounce() {
     assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("cheque_not_cleared")));
     let (s, out) = g.status(&batched, 1, "failed").await;
     assert_eq!((s, out["view"]["status"].as_str()), (StatusCode::OK, Some("failed")), "{out}");
-    // A bounced cheque leaves the batch's total.
-    assert_eq!(g.batch(&id).await["batch"]["giftsTotal"], 4000);
+    // A bounced cheque stays in what was paid in (the bank credited the
+    // slip in full; the bounce is a debit of its own), shown apart.
+    let b = &g.batch(&id).await["batch"];
+    assert_eq!(b["giftsTotal"], 4000);
+    assert_eq!(
+        (b["figures"]["bouncedCount"].as_i64(), b["figures"]["bouncedTotal"].as_i64()),
+        (Some(1), Some(4000))
+    );
+    assert_eq!(b["figures"]["receivedTotal"], 0);
+}
+
+#[tokio::test]
+async fn a_batch_s_figures_say_what_was_received_and_what_is_pending() {
+    let g = setup().await;
+    let id = g.open(&g.sam).await["id"].as_str().unwrap().to_owned();
+    g.record("cash", 2000, json!({ "payingInBatchId": id })).await;
+    g.record("cheque", 5000, json!({ "payingInBatchId": id })).await;
+    let b = &g.batch(&id).await["batch"];
+    assert_eq!((b["giftsTotal"].as_i64(), b["giftCount"].as_i64()), (Some(7000), Some(2)));
+    assert_eq!(
+        b["figures"],
+        json!({ "receivedTotal": 2000, "pendingCount": 1, "pendingTotal": 5000,
+                "bouncedCount": 0, "bouncedTotal": 0 })
+    );
+}
+
+/// A gift on a closed (or matched) slip keeps its amount, date and method
+/// and can't be voided or unvoided until the batch reopens; its cheque
+/// still bounces (and, matched, has cleared). Reopening a matched batch is
+/// refused, so a matched slip is fixed until reconcile unmatches it.
+#[tokio::test]
+async fn a_gift_in_a_closed_or_matched_batch_is_locked_but_a_cheque_still_bounces() {
+    let g = setup().await;
+    let id = g.open(&g.sam).await["id"].as_str().unwrap().to_owned();
+    let gift = |out: Value| out["giftId"].as_str().unwrap().to_owned();
+    let cash = gift(g.record("cash", 2000, json!({ "payingInBatchId": id })).await.1);
+    let cheque = gift(g.record("cheque", 5000, json!({ "payingInBatchId": id })).await.1);
+    let spare = gift(g.record("cash", 100, json!({ "payingInBatchId": id })).await.1);
+
+    // Open: edits and voids go through.
+    let (s, out) = g.save_amount(&cash, 2100).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (s, out) = g.save_amount(&cash, 2000).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let (s, _) = g.status(&spare, 1, "void").await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Closed: amount and void refused; the cheque bounces and clears back.
+    g.close(&id, 0, 7000).await;
+    let (s, out) = g.save_amount(&cash, 2500).await;
+    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    let (s, out) = g.status(&cash, 1, "void").await;
+    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    let (s, out) = g.status(&spare, 2, "completed").await;
+    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    let (s, out) = g.status(&cheque, 1, "failed").await;
+    assert_eq!((s, out["view"]["status"].as_str()), (StatusCode::OK, Some("failed")), "{out}");
+    let (s, _) = g.status(&cheque, 2, "pending").await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Reopened: editable again.
+    ok(&g.w, "POST", &format!("/api/t/alpha/bank/batches/{id}/reopen"), &g.sam, Some(json!({ "expected": 1 }))).await;
+    let (s, out) = g.save_amount(&cash, 2000).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+
+    // Matched: still locked, its cheque cleared, and it can't reopen.
+    g.close(&id, 2, 7000).await;
+    g.match_to_line(&id, 7000).await;
+    assert_eq!(g.gift(&cheque).await["status"], "completed");
+    let (s, out) = g.save_amount(&cash, 2500).await;
+    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    let (s, out) = g.status(&cash, 1, "void").await;
+    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    let (s, out) = g.status(&cheque, 4, "failed").await;
+    assert_eq!((s, out["view"]["status"].as_str()), (StatusCode::OK, Some("failed")), "{out}");
+    let (s, out) = g.w.call("POST", &format!("/api/t/alpha/bank/batches/{id}/reopen"), &g.sam, Some(json!({ "expected": 3 }))).await;
+    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_matched")));
+    let line = &g.batch(&id).await["batch"]["line"];
+    assert_eq!((line["postedOn"].as_str(), line["amount"].as_i64()), (Some("2026-11-04"), Some(7000)));
 }
 
 #[tokio::test]
@@ -285,6 +430,29 @@ async fn b_never_sees_as_batches_and_as_ids_under_b_are_404() {
         .call("POST", "/api/t/beta/bank/batches", &g.bob, Some(json!({ "accountId": g.account })))
         .await;
     assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown_account")));
+    // A's batch id in B's record-gift: no such batch there, nothing kept.
+    let (s, out) = g
+        .w
+        .call(
+            "POST",
+            "/api/t/beta/gifts/record",
+            &g.bob,
+            Some(json!({
+                "clientKey": contracts::new_id(),
+                "contact": { "kind": "individual", "firstName": "Bo", "lastName": "B", "name": "" },
+                "receivedOn": "2026-11-02",
+                "amount": 100,
+                "method": "cash",
+                "allocations": [{ "sourceCodeId": "0".repeat(32), "amount": 100 }],
+                "payingInBatchId": id,
+            })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    let (s, list) = g.w.call("GET", "/api/t/beta/contacts", &g.bob, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(!list.to_string().contains("\"Bo\""), "{list}");
     // A is untouched.
     assert_eq!(g.batch(&id).await["batch"]["version"], 0);
+    assert_eq!(g.batch(&id).await["batch"]["giftCount"], 0);
 }

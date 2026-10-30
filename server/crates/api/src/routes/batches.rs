@@ -44,6 +44,8 @@ pub struct PayingInBatchView {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub line: Option<banking::LineSummary>,
+    /// What `giftsTotal` (paid in on the slip) is made of.
+    pub figures: giving::batches::BatchFigures,
 }
 
 fn view_of(conn: &Connection, batch: PayingInBatchRow) -> Result<PayingInBatchView, ApiError> {
@@ -54,10 +56,12 @@ fn view_of(conn: &Connection, batch: PayingInBatchRow) -> Result<PayingInBatchVi
         Some(id) => banking::line_summary(conn, id)?,
         None => None,
     };
+    let figures = giving::batches::batch_figures(conn, &batch.id)?;
     Ok(PayingInBatchView {
         batch,
         account_name,
         line,
+        figures,
     })
 }
 

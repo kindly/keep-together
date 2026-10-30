@@ -1056,3 +1056,26 @@ test('Sign out in the drawer signs out and goes to the sign-in page', async () =
   expect(navigate).toHaveBeenLastCalledWith({ to: '/', replace: true })
   expect(paths()).toEqual(['/t/alpha', '/'])
 })
+
+test('my recent gifts mark a transfer by hand not on a statement yet', async () => {
+  gifts = [
+    gift({
+      method: 'bank_transfer',
+      notOnAStatement: true,
+      contactName: 'Tia Transfer',
+    }),
+  ]
+  await page(import('./t.$slug'))
+  const trigger = [...el.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Donations ▾',
+  )!
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+    )
+  })
+  const items = [...document.querySelectorAll('[role="menuitem"]')]
+  expect(items.at(-1)?.textContent).toBe(
+    '£20.00Tia Transfernot on a statement yet23 Oct 2026',
+  )
+})

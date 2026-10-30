@@ -384,6 +384,9 @@ pub struct RecentGift {
     pub method: Method,
     /// Every status stays in the list, marked.
     pub status: Status,
+    /// A bank transfer entered by hand that no statement line is matched
+    /// to yet (derived, as on the gift's page).
+    pub not_on_a_statement: bool,
 }
 
 /// `POST gifts/{id}/save`

@@ -3,8 +3,8 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useBankAccounts, useBatchWrites, useBatches } from '../lib/data'
 import type { PayingInBatch } from '../lib/data'
-import { formatDay, formatPence, refusal } from '../lib/gifts'
-import { batchState } from '../components/bank'
+import { formatDay, refusal } from '../lib/gifts'
+import { batchState, chequesLabel, paidInLabel } from '../components/bank'
 import { useCanWrite } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/bank/batches/')({
@@ -80,9 +80,11 @@ function BatchRow({ batch: b }: { batch: PayingInBatch }) {
           {b.bankedOn && `; paid in ${formatDay(b.bankedOn)}`}
         </span>
       </span>
-      <span className="text-neutral-700">
-        {b.giftCount} {b.giftCount === 1 ? 'gift' : 'gifts'},{' '}
-        {formatPence(b.giftsTotal)}
+      <span className="flex flex-col text-neutral-700 sm:items-end">
+        <span>{paidInLabel(b)}</span>
+        {chequesLabel(b) && (
+          <span className="text-xs text-neutral-600">{chequesLabel(b)}</span>
+        )}
       </span>
     </Link>
   )

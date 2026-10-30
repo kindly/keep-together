@@ -1,7 +1,8 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { batchLabel } from '../components/bank'
+import { batchLabel, chequesLabel, paidInLabel } from '../components/bank'
+import { localToday } from '../components/source-code-picker'
 import { useBatch, useBatchWrites } from '../lib/data'
 import type { BatchGift, PayingInBatch } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
@@ -86,9 +87,21 @@ function Batch({
         </p>
       </div>
       <dl className="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-neutral-500">Gifts</dt>
+        <dt className="text-neutral-500">On the slip</dt>
         <dd data-testid="batch-gifts-total">
-          {b.giftCount}, {formatPence(b.giftsTotal)}
+          {paidInLabel(b)}
+          {chequesLabel(b) && (
+            <span
+              data-testid="batch-cheques"
+              className="block text-xs text-neutral-600"
+            >
+              {chequesLabel(b)}
+            </span>
+          )}
+        </dd>
+        <dt className="text-neutral-500">Received so far</dt>
+        <dd data-testid="batch-received">
+          {formatPence(b.figures.receivedTotal)}
         </dd>
         {b.total !== null && (
           <>
@@ -176,6 +189,7 @@ function Batch({
 function BatchActions({ batch: b }: { batch: PayingInBatch }) {
   const writes = useBatchWrites()
   const [closing, setClosing] = useState(false)
+  const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const heading = useRef<HTMLHeadingElement>(null)
@@ -189,6 +203,7 @@ function BatchActions({ batch: b }: { batch: PayingInBatch }) {
     try {
       await f()
       setClosing(false)
+      setEditing(false)
     } catch (err) {
       setError(
         refusal(
@@ -202,17 +217,44 @@ function BatchActions({ batch: b }: { batch: PayingInBatch }) {
     }
   }
 
+  if (editing)
+    return (
+      <EditForm
+        batch={b}
+        busy={busy}
+        error={error}
+        onCancel={() => setEditing(false)}
+        onSave={(slip, bankedOn, total) =>
+          void attempt(() =>
+            writes.save(b.id, b.version, slip, bankedOn, total),
+          )
+        }
+      />
+    )
+  const edit = (
+    <button
+      type="button"
+      className={quiet}
+      disabled={busy}
+      onClick={() => setEditing(true)}
+    >
+      Edit the slip’s details
+    </button>
+  )
   if (b.status === 'closed')
     return (
       <div className="flex flex-col gap-2">
-        <button
-          type="button"
-          className={quiet}
-          disabled={busy}
-          onClick={() => void attempt(() => writes.reopen(b.id, b.version))}
-        >
-          {busy ? 'Reopening…' : 'Reopen to add a gift'}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={quiet}
+            disabled={busy}
+            onClick={() => void attempt(() => writes.reopen(b.id, b.version))}
+          >
+            {busy ? 'Reopening…' : 'Reopen to add a gift'}
+          </button>
+          {edit}
+        </div>
         {error && (
           <p role="alert" className="text-sm text-red-700">
             {error}
@@ -222,9 +264,16 @@ function BatchActions({ batch: b }: { batch: PayingInBatch }) {
     )
   if (!closing)
     return (
-      <button type="button" className={button} onClick={() => setClosing(true)}>
-        Close the batch
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className={button}
+          onClick={() => setClosing(true)}
+        >
+          Close the batch
+        </button>
+        {edit}
+      </div>
     )
   return (
     <CloseForm
@@ -256,9 +305,7 @@ function CloseForm({
   onClose: (bankedOn: string, total: bigint) => void
 }) {
   const [total, setTotal] = useState(() => penceToInput(b.giftsTotal))
-  const [bankedOn, setBankedOn] = useState(
-    () => b.bankedOn ?? new Date().toISOString().slice(0, 10),
-  )
+  const [bankedOn, setBankedOn] = useState(() => b.bankedOn ?? localToday())
   const pence = parsePounds(total)
   const totalProblem =
     pence === null || pence <= 0n ? 'Enter the slip’s total, over £0' : null
@@ -318,6 +365,122 @@ function CloseForm({
           disabled={busy || totalProblem !== null || !bankedOn}
         >
           {busy ? 'Closing…' : 'Close it'}
+        </button>
+        <button
+          type="button"
+          className={quiet}
+          disabled={busy}
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  )
+}
+
+/**
+ * The slip's details: its number and the date it was paid in, and once
+ * closed its total. Open or closed stays as it is (`bank/batches/{id}/
+ * save`); a stale save is said, and the page reads the batch again.
+ */
+function EditForm({
+  batch: b,
+  busy,
+  error,
+  onCancel,
+  onSave,
+}: {
+  batch: PayingInBatch
+  busy: boolean
+  error: string | null
+  onCancel: () => void
+  onSave: (slip: string, bankedOn: string | null, total: bigint | null) => void
+}) {
+  const closed = b.status === 'closed'
+  const [slip, setSlip] = useState(b.slipNumber)
+  const [bankedOn, setBankedOn] = useState(b.bankedOn ?? '')
+  const [total, setTotal] = useState(() =>
+    b.total === null ? '' : penceToInput(b.total),
+  )
+  const heading = useRef<HTMLHeadingElement>(null)
+  useEffect(() => heading.current?.focus(), [])
+  const pence = total.trim() === '' ? null : parsePounds(total)
+  const totalProblem =
+    closed && (pence === null || pence <= 0n)
+      ? 'Enter the slip’s total, over £0'
+      : !closed && total.trim() !== '' && (pence === null || pence <= 0n)
+        ? 'A total over £0, or leave it empty'
+        : null
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (totalProblem || (closed && !bankedOn)) return
+    onSave(slip, bankedOn || null, pence)
+  }
+
+  return (
+    <form
+      aria-label="Edit the slip’s details"
+      onSubmit={submit}
+      className="flex flex-col gap-3 rounded border border-neutral-300 p-3"
+    >
+      <h2 ref={heading} tabIndex={-1} className="font-medium outline-none">
+        The slip’s details
+      </h2>
+      <div className="flex flex-wrap gap-3">
+        <label className="flex flex-col gap-1 text-sm">
+          Slip number
+          <input
+            value={slip}
+            onChange={(e) => setSlip(e.target.value)}
+            className={`${field} w-40`}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          Paid in on
+          <input
+            type="date"
+            required={closed}
+            value={bankedOn}
+            onChange={(e) => setBankedOn(e.target.value)}
+            className={`${field} w-44`}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          Slip’s total (£)
+          <input
+            value={total}
+            inputMode="decimal"
+            onChange={(e) => setTotal(e.target.value)}
+            aria-invalid={totalProblem ? true : undefined}
+            aria-describedby={
+              totalProblem ? 'batch-edit-total-problem' : undefined
+            }
+            className={`${field} w-32`}
+          />
+          {totalProblem && (
+            <span
+              id="batch-edit-total-problem"
+              className="text-xs text-red-700"
+            >
+              {totalProblem}
+            </span>
+          )}
+        </label>
+      </div>
+      {error && (
+        <p role="alert" className="text-sm text-red-700">
+          {error}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          className={button}
+          disabled={busy || totalProblem !== null || (closed && !bankedOn)}
+        >
+          {busy ? 'Saving…' : 'Save'}
         </button>
         <button
           type="button"
