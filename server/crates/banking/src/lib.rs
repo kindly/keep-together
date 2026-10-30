@@ -1,30 +1,70 @@
 //! Bank statements: the group's bank accounts, statement imports and
 //! their credit lines, the outside record for gifts entered by hand
-//! (plan `bank-transfers.sv`). A domain crate: depends on `contracts`,
-//! `contacts` and `giving` through their public functions, never on
-//! `store` or `platform`; it can't name an organisation. Money is INTEGER
-//! pence (rule 7).
+//! (plan `bank-transfers.sv`, ADR 0027). A domain crate: depends on
+//! `contracts`, `contacts`, `giving` and `sources` through their public
+//! functions, never on `store` or `platform`; it can't name an
+//! organisation. Money is INTEGER pence (rule 7).
 //!
 //! Reading a file is pure: [`read`] turns its bytes into [`CreditLine`]s,
 //! and [`dedupe`] decides which of them are new for an account. Debits
 //! are dropped while the file is read and never stored. A file with any
 //! malformed row gives only errors, so nothing from it is stored.
+//!
+//! ```text
+//!   banking.account  — a named account: sort code, last four digits,
+//!                      default source code, saved CSV layout, active
+//!   banking.import   — one file imported: its new `bank_lines` (content
+//!                      written once) and the duplicate count. Create-only
+//! ```
 
+pub mod account;
 pub mod csv;
 pub mod dates;
 pub mod dedupe;
+pub mod import;
 pub mod money;
 pub mod ofx;
 pub mod presets;
 pub mod qif;
 mod text;
 
+use std::sync::LazyLock;
+
+use contracts::{ContractError, Ctx, Exec, Executed, Registry, Source, execute};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub use account::{ACCOUNT, Account, AccountPayload, AccountRow, CsvLayout, accounts};
 pub use csv::{AmountColumns, Column, ColumnMapping, HeaderRow};
 pub use dedupe::{Deduped, Held, Keyed, content_key, dedupe};
+pub use import::{
+    FileLayout, IMPORT, ImportError, ImportRequest, ImportRow, Imported, import_file,
+    import_lines, imports,
+};
 pub use presets::{AWAITING_SAMPLES, Preset, preset, presets};
+
+/// Every contract restore may meet in an org file's banking history.
+pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| Registry::new(&[&ACCOUNT, &IMPORT]));
+
+/// A new bank account (admins only: the route checks).
+pub fn create_account(
+    ctx: &Ctx,
+    payload: AccountPayload,
+    source: Source,
+) -> Result<Executed, ContractError> {
+    execute(ctx, &ACCOUNT, payload, Exec::create(source))
+}
+
+/// Saves an account; `expected` is its `version`.
+pub fn save_account(
+    ctx: &Ctx,
+    id: &str,
+    expected: i64,
+    payload: AccountPayload,
+    source: Source,
+) -> Result<Executed, ContractError> {
+    execute(ctx, &ACCOUNT, payload, Exec::update(id, Some(expected), source))
+}
 
 /// Most row errors one read reports; past it the file is refused all the
 /// same, with a last error saying how many more there were.

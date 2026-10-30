@@ -82,6 +82,7 @@ version = "0.1.0"
 dependencies = [
  "auth",
  "axum",
+ "banking",
  "base32",
  "bytes",
  "comms",
@@ -277,6 +278,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sources",
  "store",
  "tempfile",
  "thiserror",

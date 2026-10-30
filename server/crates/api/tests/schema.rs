@@ -496,6 +496,7 @@ fn every_contract_has_its_own_counter_column_and_its_upcasters() {
         &*sources::REGISTRY,
         &*giving::REGISTRY,
         &*giftaid::REGISTRY,
+        &*banking::REGISTRY,
     ];
     for c in registries.iter().flat_map(|r| r.contracts()) {
         let (ty, notnull, default): (String, bool, Option<String>) = conn

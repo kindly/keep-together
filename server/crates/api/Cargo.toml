@@ -11,6 +11,7 @@ contracts.workspace = true
 contacts.workspace = true
 giving.workspace = true
 giftaid.workspace = true
+banking.workspace = true
 auth.workspace = true
 comms.workspace = true
 platform.workspace = true
