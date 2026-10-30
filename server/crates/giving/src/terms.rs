@@ -30,7 +30,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::regular::{Frequency, RegularStatus};
+use crate::regular::{Frequency, Kind, RegularStatus};
 use crate::rules::{ALLOCATION_LIMIT, PENCE_MAX, format_pence, is_iso_date};
 use crate::terms_rules::{self, ChangeKind, Share, Terms};
 
@@ -404,6 +404,14 @@ impl Contract for RegularGiftTerms {
         next: &TermsState,
     ) -> Result<(), ContractError> {
         let t = &next.terms;
+        if t.frequency == Frequency::Quarterly
+            && crate::regular::kind_of(tx, &t.regular_gift_id)? == Some(Kind::DirectDebit)
+        {
+            return Err(ContractError::rejected(
+                "quarterly_direct_debit",
+                "A Direct Debit is monthly or yearly: only a standing order can be quarterly",
+            ));
+        }
         let status: Option<String> = tx
             .prepare_cached("SELECT status FROM regular_gifts WHERE id = ?1")?
             .query_row([&t.regular_gift_id], |r| r.get(0))
@@ -1243,7 +1251,7 @@ fn change_payload(
     let frequency = change.frequency.unwrap_or(before.frequency);
     let month = match frequency {
         Frequency::Monthly => None,
-        Frequency::Yearly => change.month.or(before.month),
+        Frequency::Yearly | Frequency::Quarterly => change.month.or(before.month),
     };
     let new = Terms {
         effective_on: change.effective_from.clone(),

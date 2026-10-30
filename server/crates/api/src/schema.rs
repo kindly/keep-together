@@ -70,6 +70,10 @@ pub fn org_migrations() -> Migrations<'static> {
         // contact's remembered payers forgotten, and matched lines by
         // payer key
         M::up(banking::matching::MIGRATION),
+        // 23: standing orders (bank transfers step 5): the terms'
+        // frequency widened to quarterly (a rebuild), a standing order's
+        // bank reference and its missed flag
+        M::up_with_hook("", rebuild_with_deferred_keys(giving::standing::MIGRATION)),
     ])
 }
 

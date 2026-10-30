@@ -47,12 +47,14 @@ pub const PAYMENTS_LIMIT: usize = 100;
 /// The longest reason kept from a provider (its own description).
 pub const REASON_MAX: usize = 500;
 
-/// How often a regular gift is collected.
+/// How often a regular gift is collected. Direct Debit is monthly or
+/// yearly (GoCardless's); a standing order may be quarterly too (g2q1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, rename = "RegularGiftFrequency")]
 pub enum Frequency {
     Monthly,
+    Quarterly,
     Yearly,
 }
 
@@ -60,17 +62,54 @@ impl Frequency {
     pub fn as_str(self) -> &'static str {
         match self {
             Frequency::Monthly => "monthly",
+            Frequency::Quarterly => "quarterly",
             Frequency::Yearly => "yearly",
         }
     }
 
     pub fn parse(s: &str) -> Self {
-        if s == "yearly" {
-            Frequency::Yearly
-        } else {
-            Frequency::Monthly
+        match s {
+            "yearly" => Frequency::Yearly,
+            "quarterly" => Frequency::Quarterly,
+            _ => Frequency::Monthly,
         }
     }
+}
+
+/// What kind of regular gift: a Direct Debit we collect through
+/// GoCardless, or a standing order the donor set up in their own bank
+/// (ADR 0027: no provider; its payments are statement lines).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename = "RegularGiftKind")]
+pub enum Kind {
+    #[default]
+    DirectDebit,
+    StandingOrder,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::DirectDebit => "direct_debit",
+            Kind::StandingOrder => "standing_order",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        if s == "standing_order" {
+            Kind::StandingOrder
+        } else {
+            Kind::DirectDebit
+        }
+    }
+}
+
+/// The kind of regular gift `id`, or `None`.
+pub fn kind_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<Kind>> {
+    conn.prepare_cached("SELECT kind FROM regular_gifts WHERE id = ?1")?
+        .query_row([id], |r| Ok(Kind::parse(&r.get::<_, String>(0)?)))
+        .optional()
 }
 
 /// Where a regular gift stands: `pending` until the donor's mandate is
@@ -151,8 +190,9 @@ impl PaymentStatus {
 
 // ── the set-up ─────────────────────────────────────────────────────────────
 
-/// `giving.regularGift` (v2): who it is from and the form's key, fixed
-/// once set up. The terms are its chain ([`crate::terms`]).
+/// `giving.regularGift` (v3): who it is from, its kind and the form's
+/// key, fixed once set up; a standing order's bank reference (what the
+/// donor quotes) too. The terms are its chain ([`crate::terms`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -161,6 +201,13 @@ pub struct RegularGiftPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub client_key: Option<String>,
+    /// v3; absent (before): a Direct Debit.
+    #[serde(default)]
+    pub kind: Kind,
+    /// v3: a standing order's reference, as the donor's bank shows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bank_reference: Option<String>,
 }
 
 /// What staff choose to set a regular gift up: the donor and the first
@@ -202,7 +249,11 @@ pub fn schedule_problems(
         (Frequency::Yearly, None) => {
             problems.push(Problem::new("month", "A yearly gift needs its month"))
         }
-        (Frequency::Yearly, Some(m)) if !(1..=12).contains(&m) => {
+        (Frequency::Quarterly, None) => problems.push(Problem::new(
+            "month",
+            "A quarterly gift needs the month of its first payment",
+        )),
+        (Frequency::Yearly | Frequency::Quarterly, Some(m)) if !(1..=12).contains(&m) => {
             problems.push(Problem::new("month", "Months are 1 to 12"))
         }
         (Frequency::Monthly, Some(_)) => {
@@ -212,10 +263,17 @@ pub fn schedule_problems(
     }
 }
 
-/// Refuse a set-up that can't be stored: [`schedule_problems`], no code,
-/// a client key too long.
+/// Refuse a Direct Debit set-up that can't be stored:
+/// [`schedule_problems`], quarterly (GoCardless's schedules are monthly
+/// or yearly), no code, a client key too long.
 pub fn prepare_setup(p: SetUp) -> Result<SetUp, ContractError> {
     let mut problems = Vec::new();
+    if p.frequency == Frequency::Quarterly {
+        problems.push(Problem::new(
+            "frequency",
+            "A Direct Debit is monthly or yearly",
+        ));
+    }
     schedule_problems(
         p.amount,
         p.frequency,
@@ -258,14 +316,34 @@ pub static REGULAR_GIFT: RegularGift = RegularGift;
 
 impl Contract for RegularGift {
     const NAME: &'static str = "giving.regularGift";
-    /// v2: the terms moved to the chain (ADR 0026).
-    const VERSION: u32 = 2;
+    /// v2: the terms moved to the chain (ADR 0026); v3: `kind` and
+    /// `bankReference` (ADR 0027).
+    const VERSION: u32 = 3;
     const ENTITY: &'static str = TABLE;
     const COUNTER: &'static str = "setup_version";
     type Payload = RegularGiftPayload;
     type State = SetUpState;
 
-    fn prepare(&self, p: RegularGiftPayload) -> Result<RegularGiftPayload, ContractError> {
+    fn prepare(&self, mut p: RegularGiftPayload) -> Result<RegularGiftPayload, ContractError> {
+        p.bank_reference = p
+            .bank_reference
+            .map(|r| r.trim().to_owned())
+            .filter(|r| !r.is_empty());
+        if p.kind == Kind::DirectDebit && p.bank_reference.is_some() {
+            return Err(ContractError::invalid(
+                "bankReference",
+                "Only a standing order has a bank reference",
+            ));
+        }
+        if p.bank_reference
+            .as_ref()
+            .is_some_and(|r| contacts::rules::too_long(r, crate::rules::REFERENCE_MAX))
+        {
+            return Err(ContractError::invalid(
+                "bankReference",
+                format!("At most {} characters", crate::rules::REFERENCE_MAX),
+            ));
+        }
         if p.client_key
             .as_ref()
             .is_some_and(|k| contacts::rules::too_long(k, CLIENT_KEY_MAX))
@@ -281,13 +359,16 @@ impl Contract for RegularGift {
     fn load(&self, tx: &OrgTx, id: &str) -> Result<SetUpState, ContractError> {
         tx.read()
             .prepare_cached(
-                "SELECT contact_id, entered_by, entered_at FROM regular_gifts WHERE id = ?1",
+                "SELECT contact_id, entered_by, entered_at, kind, bank_reference
+                 FROM regular_gifts WHERE id = ?1",
             )?
             .query_row([id], |r| {
                 Ok(SetUpState {
                     setup: RegularGiftPayload {
                         contact_id: r.get(0)?,
                         client_key: None,
+                        kind: Kind::parse(&r.get::<_, String>(3)?),
+                        bank_reference: r.get(4)?,
                     },
                     entered_by: r.get(1)?,
                     entered_at: r.get(2)?,
@@ -320,7 +401,11 @@ impl Contract for RegularGift {
     }
 
     /// v1 held the terms, which are the chain's first row now: dropped.
+    /// v2 had no kind (a Direct Debit) or reference: the same JSON.
     fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
+        if from == 2 {
+            return Some(payload);
+        }
         if from != 1 {
             return None;
         }
@@ -360,15 +445,18 @@ impl Contract for RegularGift {
             ));
         }
         tx.prepare_cached(
-            "INSERT INTO regular_gifts (id, contact_id, status, entered_by, entered_at, client_key)
-             VALUES (?1, ?2, 'pending', ?3, ?4, ?5)",
+            "INSERT INTO regular_gifts (id, contact_id, status, entered_by, entered_at, client_key,
+                 kind, bank_reference)
+             VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6, ?7)",
         )?
         .execute(params![
             id,
             t.contact_id,
             next.entered_by,
             next.entered_at,
-            t.client_key
+            t.client_key,
+            t.kind.as_str(),
+            t.bank_reference
         ])?;
         Ok(())
     }
@@ -547,6 +635,8 @@ pub fn create_regular_gift(
         RegularGiftPayload {
             contact_id: setup.contact_id.clone(),
             client_key: setup.client_key.clone(),
+            kind: Kind::DirectDebit,
+            bank_reference: None,
         },
         Exec::create_with_id(id, source).in_group(&group),
     )?
@@ -1214,6 +1304,7 @@ fn record(
                 client_key: None,
                 from_line: None,
                 paying_in_batch_id: None,
+                instalment: None,
                 origin: Some(ProviderRef {
                     provider: Provider::Gocardless,
                     payment_id: report.payment_id.clone(),
@@ -1316,6 +1407,7 @@ fn sync_gift(
                     client_key: None,
                     from_line: None,
                     paying_in_batch_id: None,
+                    instalment: None,
                     origin: None,
                 },
                 Exec::update(gift, None, Source::System).in_group(group),
@@ -1821,7 +1913,8 @@ fn fill(
     Ok(v)
 }
 
-/// One regular gift as of `today` (ISO), or `None`.
+/// One Direct Debit as of `today` (ISO), or `None` (a standing order is
+/// [`crate::standing`]'s).
 pub fn get_regular(
     conn: &Connection,
     id: &str,
@@ -1829,14 +1922,15 @@ pub fn get_regular(
 ) -> rusqlite::Result<Option<RegularGiftView>> {
     let found = conn
         .prepare_cached(&format!(
-            "SELECT {VIEW_COLUMNS} FROM regular_gifts WHERE id = ?1"
+            "SELECT {VIEW_COLUMNS} FROM regular_gifts WHERE id = ?1 AND kind = 'direct_debit'"
         ))?
         .query_row([id], view_row)
         .optional()?;
     found.map(|v| fill(conn, v, today)).transpose()
 }
 
-/// A contact's regular gifts as of `today` (ISO), newest set up first.
+/// A contact's Direct Debits as of `today` (ISO), newest set up first
+/// (its standing orders are [`crate::standing`]'s).
 pub fn regular_by_contact(
     conn: &Connection,
     contact_id: &str,
@@ -1844,7 +1938,8 @@ pub fn regular_by_contact(
 ) -> rusqlite::Result<Vec<RegularGiftView>> {
     let rows: Vec<RegularGiftView> = conn
         .prepare_cached(&format!(
-            "SELECT {VIEW_COLUMNS} FROM regular_gifts WHERE contact_id = ?1 ORDER BY seq DESC"
+            "SELECT {VIEW_COLUMNS} FROM regular_gifts
+             WHERE contact_id = ?1 AND kind = 'direct_debit' ORDER BY seq DESC"
         ))?
         .query_map([contact_id], view_row)?
         .collect::<rusqlite::Result<_>>()?;
@@ -2009,6 +2104,8 @@ pub fn adopt_subscription(
         RegularGiftPayload {
             contact_id: setup.contact_id.clone(),
             client_key: setup.client_key.clone(),
+            kind: Kind::DirectDebit,
+            bank_reference: None,
         },
         Exec::create_with_id(id, source).in_group(&group),
     )?

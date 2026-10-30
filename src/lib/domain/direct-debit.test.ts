@@ -35,10 +35,13 @@ describe('schedule', () => {
     ])
   })
 
-  test('monthly and yearly in words', () => {
+  test('monthly, quarterly and yearly in words', () => {
     expect(
       scheduleText({ frequency: 'monthly', dayOfMonth: 1, month: null }),
     ).toBe('every month on the 1st')
+    expect(
+      scheduleText({ frequency: 'quarterly', dayOfMonth: 10, month: 2 }),
+    ).toBe('every quarter on the 10th from February')
     expect(scheduleText({ frequency: 'yearly', dayOfMonth: 5, month: 3 })).toBe(
       'every year on 5th March',
     )

@@ -118,6 +118,18 @@ pub fn prepare_gift(mut p: GiftPayload) -> Result<GiftPayload, ContractError> {
             "A gift from a statement line is a bank transfer",
         ));
     }
+    if p.instalment.is_some() && (p.method != Method::BankTransfer || p.origin.is_some()) {
+        problems.push(Problem::new(
+            "method",
+            "A standing-order payment is a bank transfer",
+        ));
+    }
+    if p.instalment
+        .as_ref()
+        .is_some_and(|i| !is_iso_date(&i.scheduled_on))
+    {
+        problems.push(Problem::new("instalment", "Dates are YYYY-MM-DD"));
+    }
     if p.paying_in_batch_id.is_some() && !p.method.is_paid_in() {
         problems.push(Problem::new(
             "payingInBatchId",
@@ -264,6 +276,7 @@ mod tests {
             client_key: None,
             from_line: None,
             paying_in_batch_id: None,
+            instalment: None,
             origin: None,
         }
     }
@@ -407,6 +420,7 @@ mod tests {
             client_key: None,
             from_line: None,
             paying_in_batch_id: None,
+            instalment: None,
             origin: None,
         };
         assert!(prepare_gift(base()).is_ok());

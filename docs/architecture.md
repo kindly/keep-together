@@ -69,7 +69,7 @@ the domain reference is [research.md](research.md); how it runs is
   confirms it (human, 2026-10-23).
 - **Background:** in-process jobs (`api::jobs`) visit org files one at a
   time (`each_org`): session purge, field retires, idle handle close,
-  the hourly snapshot.
+  the hourly snapshot, standing orders' missed payments.
 - **Schema:** every org file is migrated to head at boot, copied first,
   failing the boot if one can't be.
 
@@ -79,7 +79,7 @@ the domain reference is [research.md](research.md); how it runs is
 |---|---|
 | `server/crates/store` | the files: pragmas, writer + reader pool per file, handle LRU, boot migration, event channels |
 | `server/crates/contracts` | `transact`, `execute`, revisions, command groups, restore + upcaster chain, child-row reconcile |
-| `server/crates/{contacts,sources,giving,giftaid,comms}` | domain modules: contracts, pure rules, reads, their tests |
+| `server/crates/{contacts,sources,giving,giftaid,comms,banking}` | domain modules: contracts, pure rules, reads, their tests |
 | `server/crates/{platform,auth}` | control plane and staff auth (`platform.db`) |
 | `server/crates/api` | the HTTP app, routes, SSE, jobs, backups, `schema.rs` (org migrations); commands spanning modules |
 | `server/crates/{cli,seed}` | `keep`, and the `riverside`/`perf` seeds |
@@ -95,7 +95,8 @@ the domain reference is [research.md](research.md); how it runs is
 | Module | Owns |
 |---|---|
 | `contacts` | Individual/Household/Organization contacts, their slices, identifiers, notes, relationships (ADR 0014); dropdown fields and their values (ADR 0023); the search projection |
-| `giving` | Contributions (gifts) and their allocations; later recurring giving, pledges, batches |
+| `giving` | Contributions (gifts: every payment attempt, ADR 0025) and their allocations; regular gifts and their terms chain (Direct Debit, standing orders: ADR 0026); paying-in batches and cheques; which statement line a gift is on; later pledges |
+| `banking` | Bank accounts, statement imports and their credit lines (the CSV/OFX/QIF readers, dedupe), matching lines (`banking.lineMatch`), remembered payers, not-a-donation rules and the suggesters (ADR 0027) |
 | `giftaid` | Declaration chain, coverage, HMRC IRmark; later claims and submission |
 | `consent` | Immutable consent log; derived communication preferences (not built yet) |
 | `comms` | Transactional-vs-marketing suppression, mail; later activities and mailing |
@@ -118,6 +119,25 @@ so there is no slot limit. A retire (`contacts.fieldRetire`) moves a
 field live → retiring → retired, clearing its values in batches in the
 background; a field or option never used can be deleted. Details:
 `server/README.md`, "Contacts".
+
+## Bank statements: the outside record
+
+Money that reaches the group's bank without a payment provider (bank
+transfers, standing orders, cash and cheques paid in on a slip) has one
+outside record: the bank statement (ADR 0027). Staff import a file
+(CSV, OFX or QIF; there is no open-banking feed yet), `banking` keeps its
+credit lines (content written once, debits never stored, duplicates of
+an overlapping file found by content), and each line is matched: made
+into gifts, matched to gifts entered by hand or to a paying-in batch,
+paid to a standing order's period, or marked not a donation. Suggestions
+rank the candidates on read; staff confirm every match ("Accept ticked"
+applies only what staff ticked). A match spans modules (`banking`'s
+line, `giving`'s gifts and batches), so the commands live in `api`, one
+transaction and one command group each, the line's own contract last
+against its counter. Reports and Gift Aid keep reading `gifts` only: a
+line that isn't matched counts for nothing, and a cheque counts once its
+batch is matched to its line. Details: `server/README.md`, "Bank
+transfers".
 
 ## Invariants the tests enforce
 

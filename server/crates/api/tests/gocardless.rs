@@ -4266,3 +4266,86 @@ async fn a_retry_under_the_same_key_answers_the_amount_first_asked() {
     .await;
     assert_eq!(again["amount"], 4000);
 }
+
+/// Review b5r M2: the GoCardless regular-gift routes are a Direct
+/// Debit's. A standing order (no provider, its own routes) is 404 on each
+/// of them, as an id that isn't one, with GoCardless on, and nothing is
+/// added to its chain.
+#[tokio::test]
+async fn a_standing_order_is_404_on_every_gocardless_regular_gift_route() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.ann).await;
+    let so = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{jo}/standing-orders"),
+        &t.sam,
+        Some(
+            json!({ "amount": 1000, "frequency": "monthly", "dayOfMonth": 5,
+            "sourceCodeId": t.code, "startsOn": "2026-01-05" }),
+        ),
+    )
+    .await;
+    let id = so["id"].as_str().unwrap();
+    let term = so["chain"][0]["id"].as_str().unwrap();
+    let change = json!({ "effectiveFrom": "2027-01-05", "amount": 1200 });
+    for (method, path, body) in [
+        ("GET", format!("/api/t/alpha/regular-gifts/{id}"), None),
+        (
+            "GET",
+            format!("/api/t/alpha/regular-gifts/{id}/expected"),
+            None,
+        ),
+        (
+            "POST",
+            format!("/api/t/alpha/regular-gifts/{id}/link"),
+            Some(json!({ "expected": 0 })),
+        ),
+        (
+            "POST",
+            format!("/api/t/alpha/regular-gifts/{id}/cancel"),
+            Some(json!({ "expected": 1 })),
+        ),
+        (
+            "POST",
+            format!("/api/t/alpha/regular-gifts/{id}/one-off"),
+            Some(
+                json!({ "amount": 500, "sourceCodeId": t.code, "clientKey": contracts::new_id() }),
+            ),
+        ),
+        (
+            "POST",
+            format!("/api/t/alpha/regular-gifts/{id}/terms"),
+            Some(change.clone()),
+        ),
+        (
+            "POST",
+            format!("/api/t/alpha/regular-gifts/{id}/terms/{term}"),
+            Some(json!({ "expected": 0, "effectiveFrom": "2027-01-05", "amount": 1200 })),
+        ),
+        (
+            "POST",
+            format!("/api/t/alpha/regular-gifts/{id}/terms/{term}/withdraw"),
+            Some(json!({ "expected": 0 })),
+        ),
+        (
+            "POST",
+            format!("/api/t/alpha/regular-gifts/{id}/terms/{term}/code"),
+            Some(json!({ "expected": 0, "changeCodeId": t.code })),
+        ),
+    ] {
+        let (s, out) = t.w.call(method, &path, &t.sam, body).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{method} {path}: {out}");
+    }
+    let after = ok(
+        &t.w,
+        "GET",
+        &format!("/api/t/alpha/standing-orders/{id}"),
+        &t.sam,
+        None,
+    )
+    .await;
+    assert_eq!(after["chain"].as_array().unwrap().len(), 1);
+    assert_eq!(after["status"], "active");
+}

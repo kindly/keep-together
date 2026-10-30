@@ -319,6 +319,16 @@ const FIXTURES: &[&str] = &[
     // v22: a contact's remembered payers forgotten (bank transfers step 4).
     "INSERT INTO bank_payer_forgets (id, forgotten_at, version)
      VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0', 6700, 1);",
+    // v23: a quarterly standing order, its reference, a missed payment.
+    "INSERT INTO regular_gift_terms (seq, id, regular_gift_id, effective_from, amount,
+         frequency, day_of_month, month, origin, entered_at, state)
+     VALUES (3, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1af', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1ae',
+         '2026-08-10', 3000, 'quarterly', 10, 8, 'setup', 6800, 'applied');
+     INSERT INTO regular_gift_term_allocations (id, term_id, position, source_code_id, amount)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e1b0', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1af', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 3000);
+     UPDATE regular_gifts SET bank_reference = 'SO 100016', missed_on = '2026-08-10',
+         missed_version = 1 WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1ae';",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";
@@ -1350,4 +1360,92 @@ fn a_contacts_remembered_payers_go_and_their_gifts_and_lines_stay() {
     assert!(shape(&conn, "SELECT id FROM bank_payers").is_empty());
     assert_eq!(shape(&conn, kept), gifts_before);
     assert_eq!(shape(&conn, lines), lines_before);
+}
+
+/// Step 23 rebuilds `regular_gift_terms` to widen its frequency: every
+/// column (name, type, NOT NULL, default), every CHECK but the widened
+/// one, every index, every row (all of each row's columns) and its
+/// allocations stay as they were at step 22; quarterly is stored and
+/// anything else still refused (review b5r L2).
+#[test]
+fn the_standing_order_step_widens_terms_and_keeps_every_row_column_and_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    file_at(tmp.path(), 22);
+    let mut conn = Connection::open(tmp.path().join(format!("orgs/{TENANT}.db"))).unwrap();
+    /// Every row of `sql`, every column of each, as text.
+    fn dump(conn: &Connection, sql: &str) -> Vec<String> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let n = stmt.column_count();
+        stmt.query_map([], |r| {
+            Ok((0..n)
+                .map(|i| match r.get_ref(i).unwrap() {
+                    rusqlite::types::ValueRef::Null => "NULL".to_owned(),
+                    rusqlite::types::ValueRef::Integer(v) => v.to_string(),
+                    rusqlite::types::ValueRef::Real(v) => v.to_string(),
+                    rusqlite::types::ValueRef::Text(t) => {
+                        format!("'{}'", String::from_utf8_lossy(t))
+                    }
+                    rusqlite::types::ValueRef::Blob(b) => format!("{b:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join("|"))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+    let shape = |conn: &Connection| {
+        (
+            dump(
+                conn,
+                "SELECT cid, name, type, \"notnull\", dflt_value, pk
+                 FROM pragma_table_info('regular_gift_terms') ORDER BY cid",
+            ),
+            dump(
+                conn,
+                "SELECT name, sql FROM sqlite_master WHERE tbl_name = 'regular_gift_terms'
+                 AND name NOT LIKE 'sqlite_autoindex%' ORDER BY type, name",
+            ),
+            dump(conn, "SELECT * FROM regular_gift_terms ORDER BY seq"),
+            dump(
+                conn,
+                "SELECT * FROM regular_gift_term_allocations ORDER BY id",
+            ),
+        )
+    };
+    let before = shape(&conn);
+    assert!(!before.2.is_empty() && !before.3.is_empty());
+    org_migrations().to_version(&mut conn, 23).unwrap();
+    let mut after = shape(&conn);
+    // The table's own SQL differs in the frequency CHECK alone.
+    for row in after.1.iter_mut() {
+        *row = row.replace(
+            "('monthly', 'quarterly', 'yearly')",
+            "('monthly', 'yearly')",
+        );
+    }
+    let normal = |rows: &[String]| -> Vec<String> {
+        rows.iter()
+            .map(|r| r.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect()
+    };
+    assert_eq!(after.0, before.0, "columns");
+    assert_eq!(normal(&after.1), normal(&before.1), "table and index SQL");
+    assert_eq!(after.2, before.2, "rows");
+    assert_eq!(after.3, before.3, "allocations");
+    let added = dump(
+        &conn,
+        "SELECT name FROM pragma_table_info('regular_gifts')
+         WHERE name IN ('bank_reference', 'missed_on', 'missed_version') ORDER BY cid",
+    );
+    assert_eq!(
+        added,
+        ["'bank_reference'", "'missed_on'", "'missed_version'"]
+    );
+    conn.execute_batch(FIXTURES[22]).unwrap();
+    let err = conn
+        .execute_batch("UPDATE regular_gift_terms SET frequency = 'weekly' WHERE seq = 3")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("CHECK constraint failed"), "{err}");
 }

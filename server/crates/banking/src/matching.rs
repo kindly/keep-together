@@ -59,11 +59,13 @@ pub const NOTE_MAX: usize = 500;
 
 /// A line's payer key: its payer and reference, trimmed of spaces and
 /// lower-cased (ASCII, as SQLite's `lower` and `trim` do, so the index
-/// agrees). `None` when both are blank: nothing to remember.
+/// agrees). `None` when the payer is blank: a reference alone ("DONATION")
+/// says nothing about who paid, so it never makes or matches a known
+/// payer (step 5 follow-up b).
 pub fn payer_key(payer: &str, reference: &str) -> Option<String> {
     let norm = |s: &str| s.trim_matches(' ').to_ascii_lowercase();
     let (p, r) = (norm(payer), norm(reference));
-    (!p.is_empty() || !r.is_empty()).then(|| format!("{p}|{r}"))
+    (!p.is_empty()).then(|| format!("{p}|{r}"))
 }
 
 // ── lines ──────────────────────────────────────────────────────────────────
@@ -472,11 +474,46 @@ pub fn payers_for(conn: &Connection, account: &str, key: &str) -> rusqlite::Resu
     .collect()
 }
 
+/// The posted date of the latest line before `line` on its account with
+/// the same payer key and amount, matched to gifts from `contact`: the
+/// payment before this one, for "make this a standing order".
+pub fn earlier_payment(
+    conn: &Connection,
+    line: &LineView,
+    key: &str,
+    contact: &str,
+) -> rusqlite::Result<Option<String>> {
+    let earlier: Vec<(String, String)> = conn
+        .prepare_cached(&format!(
+            "SELECT id, posted_on FROM bank_lines INDEXED BY bank_lines_matched_by_payer
+             WHERE account_id = ?1 AND {PAYER_KEY_SQL} = ?2 AND match_state = 'matched'
+                 AND amount = ?3 AND posted_on < ?4
+             ORDER BY posted_on DESC, seq DESC LIMIT 10"
+        ))?
+        .query_map(
+            params![line.account_id, key, line.amount, line.posted_on],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, posted_on) in earlier {
+        if giving::bank::gifts_on_line(conn, &id)?
+            .iter()
+            .any(|g| g.contact_id == contact)
+        {
+            return Ok(Some(posted_on));
+        }
+    }
+    Ok(None)
+}
+
 /// A contact's remembered payers, newest first (shown on the contact).
 pub fn payers_of(conn: &Connection, contact_id: &str) -> rusqlite::Result<Vec<Payer>> {
+    // A row with a blank payer (remembered before blank payers stopped
+    // counting) names no one: skipped.
     conn.prepare_cached(
         "SELECT account_id, contact_id, payer, reference, last_line_id, matched_at
-         FROM bank_payers WHERE contact_id = ?1 ORDER BY matched_at DESC",
+         FROM bank_payers WHERE contact_id = ?1 AND trim(payer) <> ''
+         ORDER BY matched_at DESC",
     )?
     .query_map([contact_id], payer_row)?
     .collect()
@@ -883,7 +920,9 @@ mod tests {
             payer_key("  A SMITH ", "100016").as_deref(),
             Some("a smith|100016")
         );
-        assert_eq!(payer_key("", "REF").as_deref(), Some("|ref"));
+        assert_eq!(payer_key("A SMITH", "").as_deref(), Some("a smith|"));
+        // A reference alone names no one.
+        assert_eq!(payer_key("", "DONATION"), None);
         assert_eq!(payer_key(" ", ""), None);
     }
 

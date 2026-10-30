@@ -55,6 +55,8 @@ pub fn router() -> Router {
         .route("/bank/lines/{id}/gifts", post(gifts_from_line))
         .route("/bank/lines/{id}/match-gifts", post(match_gifts))
         .route("/bank/lines/{id}/match-batch", post(match_batch))
+        .route("/bank/lines/{id}/instalment", post(instalment))
+        .route("/bank/lines/{id}/standing-order", post(standing_order))
         .route("/bank/lines/{id}/not-donation", post(not_donation))
         .route("/bank/lines/{id}/unmatch", post(unmatch))
         .route("/bank/accept", post(accept))
@@ -102,14 +104,14 @@ async fn lines(
     require_staff(&t)?;
     t.read(move |r| {
         banking::account::account(r, &id)?.ok_or(ApiError::NotFound)?;
-        let mut out = Vec::new();
-        for line in matching::lines(r, &id, q.state.unwrap_or(MatchState::Unmatched))? {
-            out.push(LineRow {
-                suggestions: banking::suggest(r, &line)?,
-                line,
-            });
-        }
-        Ok(out)
+        let lines = matching::lines(r, &id, q.state.unwrap_or(MatchState::Unmatched))?;
+        // One read of what every line's suggestions share (review b5r M3).
+        let suggestions = banking::suggest::suggest_lines(r, &lines)?;
+        Ok(lines
+            .into_iter()
+            .zip(suggestions)
+            .map(|(line, suggestions)| LineRow { line, suggestions })
+            .collect())
     })
     .await
     .map(Json)
@@ -410,6 +412,7 @@ pub fn gifts_from(
                 origin: None,
                 from_line: Some(line.id.clone()),
                 paying_in_batch_id: None,
+                instalment: None,
             },
             source,
             Some(&group),
@@ -650,6 +653,7 @@ pub fn unmatch_line(
         });
     }
     let group = line_group(ctx, "unmatch", &line)?;
+    let standing = giving::standing::on_line(ctx.tx.read(), &line.id)?;
     if let Some(batch) = giving::bank::batch_for_line(ctx.tx.read(), &line.id)? {
         let version = giving::bank::get_batch(ctx.tx.read(), &batch)?
             .ok_or(ContractError::NotFound)?
@@ -663,6 +667,12 @@ pub fn unmatch_line(
         source,
         &group,
     )?;
+    // The periods the line paid are open again: missed, if they are due
+    // long enough ago.
+    let today = giving::terms_rules::date_of_ms(ctx.at);
+    for so in standing {
+        giving::standing::refresh_missed(ctx, &so, &today, source, Some(&group))?;
+    }
     mark(
         ctx,
         &line.id,
@@ -739,6 +749,283 @@ pub fn free_emptied_line(
         Exec::update(line_id, None, source).in_group(group),
     )?;
     Ok(())
+}
+
+// ── standing orders (step 5) ───────────────────────────────────────────────
+
+/// `POST bank/lines/{id}/instalment {expected, regularGiftId,
+/// scheduledOn}`: the line pays standing order `regularGiftId`'s period
+/// due `scheduledOn` (a late payment its missed period too).
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "BankInstalment")]
+pub struct PayInstalment {
+    #[ts(type = "number")]
+    pub expected: i64,
+    pub regular_gift_id: String,
+    pub scheduled_on: String,
+}
+
+/// A gift made from the line for a standing order's period, in `group`:
+/// its donor, the line's amount and date, the terms' split (g2q6), and
+/// the period it pays; then the standing order's missed flag, refreshed.
+fn instalment_gift(
+    ctx: &Ctx,
+    line: &LineView,
+    regular_gift_id: &str,
+    scheduled_on: &str,
+    source: Source,
+    group: &CommandGroup,
+) -> Result<String, ContractError> {
+    let conn = ctx.tx.read();
+    let facts = giving::regular::facts(conn, regular_gift_id)?.ok_or(ContractError::NotFound)?;
+    giving::standing::check_payable(scheduled_on, &line.posted_on)?;
+    if giving::regular::kind_of(conn, regular_gift_id)?
+        != Some(giving::regular::Kind::StandingOrder)
+    {
+        return Err(ContractError::rejected(
+            "not_a_standing_order",
+            "Only a standing order’s payments are matched to it here",
+        ));
+    }
+    let split =
+        giving::standing::instalment_split(conn, regular_gift_id, scheduled_on, line.amount)?;
+    if split.is_empty() {
+        return Err(ContractError::rejected(
+            "not_expected",
+            "The standing order expects no payment due then",
+        ));
+    }
+    let gift = giving::create_gift(
+        ctx,
+        GiftPayload {
+            contact_id: facts.contact_id,
+            received_on: line.posted_on.clone(),
+            amount: line.amount,
+            method: Method::BankTransfer,
+            reference: Some(line.reference.clone()).filter(|r| !r.trim().is_empty()),
+            allocations: split
+                .into_iter()
+                .map(|s| AllocationRow {
+                    key: None,
+                    source_code_id: s.source_code_id,
+                    amount: s.amount,
+                })
+                .collect(),
+            client_key: None,
+            origin: None,
+            from_line: Some(line.id.clone()),
+            paying_in_batch_id: None,
+            instalment: Some(giving::types::Instalment {
+                regular_gift_id: regular_gift_id.to_owned(),
+                scheduled_on: scheduled_on.to_owned(),
+            }),
+        },
+        source,
+        Some(group),
+    )?;
+    giving::standing::refresh_missed(
+        ctx,
+        regular_gift_id,
+        &giving::terms_rules::date_of_ms(ctx.at),
+        source,
+        Some(group),
+    )?;
+    Ok(gift)
+}
+
+pub fn pay_instalment(
+    ctx: &Ctx,
+    line_id: &str,
+    req: PayInstalment,
+    source: Source,
+) -> Result<(), ContractError> {
+    let line = unmatched_line(ctx.tx.read(), line_id, req.expected)?;
+    let group = line_group(ctx, "standing order payment", &line)?;
+    instalment_gift(
+        ctx,
+        &line,
+        &req.regular_gift_id,
+        &req.scheduled_on,
+        source,
+        &group,
+    )?;
+    mark(
+        ctx,
+        &line.id,
+        req.expected,
+        MatchState::Matched,
+        None,
+        source,
+        &group,
+    )?;
+    Ok(())
+}
+
+async fn instalment(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+    Body(req): Body<PayInstalment>,
+) -> Result<Json<LineDetail>, ApiError> {
+    require_staff(&t)?;
+    t.write(move |ctx| {
+        pay_instalment(ctx, &id, req, Source::Ui)?;
+        detail(ctx.tx.read(), &id)
+    })
+    .await
+    .map(Json)
+}
+
+/// `POST bank/lines/{id}/standing-order {expected, contact, frequency,
+/// dayOfMonth, month?, sourceCodeId?, bankReference?}`: "make this a
+/// standing order" (g2q3), for the line's amount, its first payment the
+/// line itself.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "BankStandingOrderFromLine")]
+pub struct StandingOrderFromLine {
+    #[ts(type = "number")]
+    pub expected: i64,
+    pub contact: DonorRef,
+    pub frequency: giving::regular::Frequency,
+    pub day_of_month: u8,
+    #[serde(default)]
+    #[ts(optional)]
+    pub month: Option<u8>,
+    /// Omitted: the contact's acquisition code, else the account's default.
+    #[serde(default)]
+    #[ts(optional)]
+    pub source_code_id: Option<String>,
+    /// The reference the donor's bank shows, as staff type it; never
+    /// taken from the line.
+    #[serde(default)]
+    #[ts(optional)]
+    pub bank_reference: Option<String>,
+}
+
+/// A standing order made from a line, the line its first payment: in
+/// force from the due date in the line's month, which must be one it is
+/// due in (`month`).
+pub fn standing_order_from(
+    ctx: &Ctx,
+    line_id: &str,
+    req: StandingOrderFromLine,
+    source: Source,
+) -> Result<String, ContractError> {
+    let line = unmatched_line(ctx.tx.read(), line_id, req.expected)?;
+    let index = giving::terms_rules::month_index(&line.posted_on).ok_or(ContractError::NotFound)?;
+    let month = (index.rem_euclid(12) + 1) as u8;
+    let in_month = match (req.frequency, req.month) {
+        (giving::regular::Frequency::Monthly, _) => true,
+        (giving::regular::Frequency::Yearly, Some(m)) => m == month,
+        (giving::regular::Frequency::Quarterly, Some(m)) => {
+            (i32::from(month) - i32::from(m)).rem_euclid(3) == 0
+        }
+        (_, None) => true,
+    };
+    if !in_month {
+        return Err(ContractError::invalid(
+            "month",
+            "The line’s month must be one the standing order is due in",
+        ));
+    }
+    let starts_on = giving::terms_rules::day_in(index, req.day_of_month.clamp(1, 28));
+    // The line is its first payment: due on or before the line (review
+    // b5r L5).
+    if starts_on.as_str() > line.posted_on.as_str() {
+        return Err(ContractError::invalid(
+            "dayOfMonth",
+            "The first payment is this line: its day can’t be after the line’s date",
+        ));
+    }
+    let default_code = banking::account::account(ctx.tx.read(), &line.account_id)?
+        .and_then(|a| a.payload.default_source_code_id);
+    let group = line_group(ctx, "new standing order", &line)?;
+    let (contact_id, code) = match req.contact {
+        DonorRef::Existing(id) => {
+            if contacts::donors::kind_of(ctx.tx.read(), &id)?.is_none() {
+                return Err(ContractError::rejected(
+                    "unknown_contact",
+                    "Contact must exist",
+                ));
+            }
+            let code = req
+                .source_code_id
+                .or(contacts::acquisition::acquisition_of(ctx.tx.read(), &id)?
+                    .map(|c| c.version_id))
+                .or(default_code)
+                .ok_or_else(|| ContractError::invalid("sourceCodeId", "Pick a source code"))?;
+            (id, code)
+        }
+        DonorRef::New(new) => {
+            let code = req
+                .source_code_id
+                .or(default_code)
+                .ok_or_else(|| ContractError::invalid("sourceCodeId", "Pick a source code"))?;
+            let created = create_contact(
+                ctx,
+                Details {
+                    client_key: None,
+                    kind: new.kind,
+                    title: String::new(),
+                    first_name: new.first_name,
+                    last_name: new.last_name,
+                    nickname: String::new(),
+                    name: new.name,
+                    birth_date: None,
+                    is_deceased: false,
+                    deceased_date: None,
+                },
+                Some(code.clone()),
+                source,
+                &group,
+            )?;
+            (created.id, code)
+        }
+    };
+    let so = giving::standing::create_standing_order(
+        ctx,
+        &contact_id,
+        giving::standing::StandingOrderSetUp {
+            client_key: None,
+            amount: line.amount,
+            frequency: req.frequency,
+            day_of_month: req.day_of_month,
+            month: req.month,
+            source_code_id: code,
+            // Staff type the reference if they want one (review b5r
+            // round 3): the line's own is never taken for it.
+            bank_reference: req.bank_reference,
+            starts_on: starts_on.clone(),
+        },
+        source,
+        Some(&group),
+    )?;
+    instalment_gift(ctx, &line, &so, &starts_on, source, &group)?;
+    mark(
+        ctx,
+        &line.id,
+        req.expected,
+        MatchState::Matched,
+        None,
+        source,
+        &group,
+    )?;
+    Ok(so)
+}
+
+async fn standing_order(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+    Body(req): Body<StandingOrderFromLine>,
+) -> Result<Json<LineDetail>, ApiError> {
+    require_staff(&t)?;
+    t.write(move |ctx| {
+        standing_order_from(ctx, &id, req, Source::Ui)?;
+        detail(ctx.tx.read(), &id)
+    })
+    .await
+    .map(Json)
 }
 
 // ── accept ticked ──────────────────────────────────────────────────────────
@@ -818,6 +1105,40 @@ pub fn apply(ctx: &Ctx, item: AcceptItem, source: Source) -> Result<(), Contract
             },
             source,
         )?,
+        Proposal::Instalment {
+            regular_gift_id,
+            scheduled_on,
+        } => pay_instalment(
+            ctx,
+            &item.line_id,
+            PayInstalment {
+                expected: item.expected,
+                regular_gift_id,
+                scheduled_on,
+            },
+            source,
+        )?,
+        Proposal::NewStandingOrder {
+            contact_id,
+            frequency,
+            day_of_month,
+            month,
+        } => {
+            standing_order_from(
+                ctx,
+                &item.line_id,
+                StandingOrderFromLine {
+                    expected: item.expected,
+                    contact: DonorRef::Existing(contact_id),
+                    frequency,
+                    day_of_month,
+                    month,
+                    source_code_id: None,
+                    bank_reference: None,
+                },
+                source,
+            )?;
+        }
         Proposal::NotDonation { note, .. } => mark_not_donation(
             ctx,
             &item.line_id,

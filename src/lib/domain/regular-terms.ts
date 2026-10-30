@@ -91,7 +91,9 @@ export function annualValue(
   amount: bigint,
   frequency: RegularGiftFrequency,
 ): bigint {
-  return frequency === 'monthly' ? amount * 12n : amount
+  if (frequency === 'monthly') return amount * 12n
+  if (frequency === 'quarterly') return amount * 4n
+  return amount
 }
 
 function sameSplit(a: ReadonlyArray<Share>, b: ReadonlyArray<Share>): boolean {
@@ -137,16 +139,28 @@ export function monthIndex(date: string): number | undefined {
 export const ROLL_DAYS = 4
 
 /**
+ * Whether `t` is due in month `index` at all: every month when monthly,
+ * in its month when yearly, in its month and every third after when
+ * quarterly.
+ */
+function dueMonth(t: Terms, index: number): boolean {
+  const month = (index % 12) + 1
+  if (t.frequency === 'monthly') return true
+  if (t.month === null) return false
+  if (t.frequency === 'yearly') return t.month === month
+  return (((month - t.month) % 3) + 3) % 3 === 0
+}
+
+/**
  * Whether `date` is one of `t`'s payment dates: its day (or up to
- * ROLL_DAYS after), in its month when yearly.
+ * ROLL_DAYS after), in a month it is due in.
  */
 export function isDueDate(t: Terms, date: string): boolean {
   const index = monthIndex(date)
   const day = Number(date.slice(8, 10))
   if (index === undefined || date.length !== 10 || !Number.isInteger(day))
     return false
-  const inMonth = t.frequency === 'monthly' || t.month === (index % 12) + 1
-  return inMonth && day >= t.dayOfMonth && day <= t.dayOfMonth + ROLL_DAYS
+  return dueMonth(t, index) && day >= t.dayOfMonth && day <= t.dayOfMonth + ROLL_DAYS
 }
 
 export function monthLabel(index: number): string {
@@ -157,8 +171,7 @@ export function monthLabel(index: number): string {
 
 function dueIn(t: Terms, index: number): string | undefined {
   const day = `${monthLabel(index)}-${String(t.dayOfMonth).padStart(2, '0')}`
-  if (t.frequency === 'monthly') return day
-  return t.month === (index % 12) + 1 ? day : undefined
+  return dueMonth(t, index) ? day : undefined
 }
 
 /** The next `n` due dates after `date` under `t`. */
