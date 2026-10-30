@@ -40,6 +40,29 @@ test.describe('isolation', () => {
     await expect(page.locator('body')).not.toContainText(`Bravo`)
   })
 
+  test("B's bank statements are not A's to open", async ({ page, users }) => {
+    route(
+      '/t/$slug/bank/',
+      '/t/$slug/bank/import',
+      '/t/$slug/bank/imports/$importId',
+      '/t/$slug/settings/bank',
+    )
+    for (const path of [
+      'bank',
+      'bank/import',
+      'bank/imports/0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+      'settings/bank',
+    ]) {
+      await page.goto(`/t/${users.b.slug}/${path}`)
+      await expect(
+        page.getByText(`No group called “${users.b.slug}” that you belong to.`),
+      ).toBeVisible()
+      await expect(
+        page.getByRole('heading', { name: /Bank statements|Bank accounts/ }),
+      ).toHaveCount(0)
+    }
+  })
+
   test("B's settings are not A's to open", async ({ page, users }) => {
     route(
       '/t/$slug',

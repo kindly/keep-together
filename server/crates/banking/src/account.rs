@@ -266,23 +266,40 @@ pub struct AccountRow {
     pub version: i64,
     #[serde(flatten)]
     pub account: Account,
+    /// The default source code as it shows (`defaultSourceCodeId`'s).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub default_source_code: Option<sources::CodeDescription>,
+}
+
+/// One account as a list shows it, `None` if there is none.
+pub fn account_row(conn: &Connection, id: &str) -> Result<Option<AccountRow>, ContractError> {
+    let Some(account) = account(conn, id)? else {
+        return Ok(None);
+    };
+    let version = conn.query_row("SELECT version FROM bank_accounts WHERE id = ?1", [id], |r| {
+        r.get(0)
+    })?;
+    let default_source_code = match &account.payload.default_source_code_id {
+        Some(code) => sources::describe(conn, code)?,
+        None => None,
+    };
+    Ok(Some(AccountRow {
+        id: id.to_owned(),
+        version,
+        account,
+        default_source_code,
+    }))
 }
 
 /// Every account, in the order they were added.
 pub fn accounts(conn: &Connection) -> Result<Vec<AccountRow>, ContractError> {
-    let ids: Vec<(String, i64)> = conn
-        .prepare_cached("SELECT id, version FROM bank_accounts ORDER BY seq LIMIT ?1")?
-        .query_map([ACCOUNT_LIMIT], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let ids: Vec<String> = conn
+        .prepare_cached("SELECT id FROM bank_accounts ORDER BY seq LIMIT ?1")?
+        .query_map([ACCOUNT_LIMIT], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
-    ids.into_iter()
-        .map(|(id, version)| {
-            let account = account(conn, &id)?.ok_or(ContractError::NotFound)?;
-            Ok(AccountRow {
-                id,
-                version,
-                account,
-            })
-        })
+    ids.iter()
+        .map(|id| account_row(conn, id)?.ok_or(ContractError::NotFound))
         .collect()
 }
 

@@ -34,7 +34,7 @@ use contracts::{ContractError, Ctx, Exec, Executed, Registry, Source, execute};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub use account::{ACCOUNT, Account, AccountPayload, AccountRow, CsvLayout, accounts};
+pub use account::{ACCOUNT, Account, AccountPayload, AccountRow, CsvLayout, account_row, accounts};
 pub use csv::{AmountColumns, Column, ColumnMapping, HeaderRow, PeekRow};
 pub use dedupe::{Deduped, Held, Keyed, content_key, dedupe};
 pub use import::{

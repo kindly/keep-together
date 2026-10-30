@@ -171,3 +171,32 @@ export type {
   UnmatchedPayment,
   Upcoming,
 } from './rust/gocardless'
+export {
+  kindOfFile,
+  useBankAccounts,
+  useBankImport,
+  useBankImports,
+  useBankPresets,
+  useCreateBankAccount,
+  useImportStatement,
+  usePeekStatement,
+  usePreviewImport,
+  useSaveBankAccount,
+} from './rust/banking'
+export type {
+  BankAccountPayload,
+  BankAccountRow,
+  BankColumnMapping,
+  BankCsvLayout,
+  BankFileLayout,
+  BankImportRow,
+  BankImportView,
+  BankImportedOutcome,
+  BankLine,
+  BankPeekRow,
+  BankPreset,
+  BankPresets,
+  BankPreviewOutcome,
+  BankRowError,
+  BankUndated,
+} from './rust/banking'

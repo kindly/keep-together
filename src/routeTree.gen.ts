@@ -19,6 +19,8 @@ import { Route as TSlugIndexRouteImport } from './routes/t.$slug.index'
 import { Route as TSlugGiftaidRouteImport } from './routes/t.$slug.giftaid'
 import { Route as TSlugSettingsRouteImport } from './routes/t.$slug.settings'
 import { Route as TSlugTagsRouteImport } from './routes/t.$slug.tags'
+import { Route as TSlugBankIndexRouteImport } from './routes/t.$slug.bank.index'
+import { Route as TSlugBankImportRouteImport } from './routes/t.$slug.bank.import'
 import { Route as TSlugContactsIndexRouteImport } from './routes/t.$slug.contacts.index'
 import { Route as TSlugContactsContactIdRouteImport } from './routes/t.$slug.contacts.$contactId'
 import { Route as TSlugContactsNewRouteImport } from './routes/t.$slug.contacts.new'
@@ -33,6 +35,7 @@ import { Route as TSlugScansIndexRouteImport } from './routes/t.$slug.scans.inde
 import { Route as TSlugScansScanIdRouteImport } from './routes/t.$slug.scans.$scanId'
 import { Route as TSlugScansDeletableRouteImport } from './routes/t.$slug.scans.deletable'
 import { Route as TSlugSettingsIndexRouteImport } from './routes/t.$slug.settings.index'
+import { Route as TSlugSettingsBankRouteImport } from './routes/t.$slug.settings.bank'
 import { Route as TSlugSettingsFieldsRouteImport } from './routes/t.$slug.settings.fields'
 import { Route as TSlugSettingsGocardlessRouteImport } from './routes/t.$slug.settings.gocardless'
 import { Route as TSlugSettingsGroupsRouteImport } from './routes/t.$slug.settings.groups'
@@ -42,6 +45,7 @@ import { Route as TSlugSettingsMembersRouteImport } from './routes/t.$slug.setti
 import { Route as TSlugSettingsSourcesRouteImport } from './routes/t.$slug.settings.sources'
 import { Route as TSlugSettingsStorageRouteImport } from './routes/t.$slug.settings.storage'
 import { Route as TSlugSettingsTagsRouteImport } from './routes/t.$slug.settings.tags'
+import { Route as TSlugBankImportsImportIdRouteImport } from './routes/t.$slug.bank.imports.$importId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -91,6 +95,16 @@ const TSlugSettingsRoute = TSlugSettingsRouteImport.update({
 const TSlugTagsRoute = TSlugTagsRouteImport.update({
   id: '/tags',
   path: '/tags',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugBankIndexRoute = TSlugBankIndexRouteImport.update({
+  id: '/bank/',
+  path: '/bank/',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugBankImportRoute = TSlugBankImportRouteImport.update({
+  id: '/bank/import',
+  path: '/bank/import',
   getParentRoute: () => TSlugRoute,
 } as any)
 const TSlugContactsIndexRoute = TSlugContactsIndexRouteImport.update({
@@ -164,6 +178,11 @@ const TSlugSettingsIndexRoute = TSlugSettingsIndexRouteImport.update({
   path: '/',
   getParentRoute: () => TSlugSettingsRoute,
 } as any)
+const TSlugSettingsBankRoute = TSlugSettingsBankRouteImport.update({
+  id: '/bank',
+  path: '/bank',
+  getParentRoute: () => TSlugSettingsRoute,
+} as any)
 const TSlugSettingsFieldsRoute = TSlugSettingsFieldsRouteImport.update({
   id: '/fields',
   path: '/fields',
@@ -210,6 +229,12 @@ const TSlugSettingsTagsRoute = TSlugSettingsTagsRouteImport.update({
   path: '/tags',
   getParentRoute: () => TSlugSettingsRoute,
 } as any)
+const TSlugBankImportsImportIdRoute =
+  TSlugBankImportsImportIdRouteImport.update({
+    id: '/bank/imports/$importId',
+    path: '/bank/imports/$importId',
+    getParentRoute: () => TSlugRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -222,6 +247,7 @@ export interface FileRoutesByFullPath {
   '/t/$slug/settings': typeof TSlugSettingsRouteWithChildren
   '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/': typeof TSlugIndexRoute
+  '/t/$slug/bank/import': typeof TSlugBankImportRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/giftaid/$claimId': typeof TSlugGiftaidClaimIdRoute
@@ -232,6 +258,7 @@ export interface FileRoutesByFullPath {
   '/t/$slug/reports/expected': typeof TSlugReportsExpectedRoute
   '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
+  '/t/$slug/settings/bank': typeof TSlugSettingsBankRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/gocardless': typeof TSlugSettingsGocardlessRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
@@ -241,10 +268,12 @@ export interface FileRoutesByFullPath {
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/storage': typeof TSlugSettingsStorageRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
+  '/t/$slug/bank/': typeof TSlugBankIndexRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
   '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
   '/t/$slug/scans/': typeof TSlugScansIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
+  '/t/$slug/bank/imports/$importId': typeof TSlugBankImportsImportIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -254,6 +283,7 @@ export interface FileRoutesByTo {
   '/sign-in': typeof SignInRoute
   '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug': typeof TSlugIndexRoute
+  '/t/$slug/bank/import': typeof TSlugBankImportRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/giftaid/$claimId': typeof TSlugGiftaidClaimIdRoute
@@ -264,6 +294,7 @@ export interface FileRoutesByTo {
   '/t/$slug/reports/expected': typeof TSlugReportsExpectedRoute
   '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
+  '/t/$slug/settings/bank': typeof TSlugSettingsBankRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/gocardless': typeof TSlugSettingsGocardlessRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
@@ -273,10 +304,12 @@ export interface FileRoutesByTo {
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/storage': typeof TSlugSettingsStorageRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
+  '/t/$slug/bank': typeof TSlugBankIndexRoute
   '/t/$slug/contacts': typeof TSlugContactsIndexRoute
   '/t/$slug/giftaid': typeof TSlugGiftaidIndexRoute
   '/t/$slug/scans': typeof TSlugScansIndexRoute
   '/t/$slug/settings': typeof TSlugSettingsIndexRoute
+  '/t/$slug/bank/imports/$importId': typeof TSlugBankImportsImportIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -290,6 +323,7 @@ export interface FileRoutesById {
   '/t/$slug/settings': typeof TSlugSettingsRouteWithChildren
   '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/': typeof TSlugIndexRoute
+  '/t/$slug/bank/import': typeof TSlugBankImportRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/giftaid/$claimId': typeof TSlugGiftaidClaimIdRoute
@@ -300,6 +334,7 @@ export interface FileRoutesById {
   '/t/$slug/reports/expected': typeof TSlugReportsExpectedRoute
   '/t/$slug/scans/$scanId': typeof TSlugScansScanIdRoute
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
+  '/t/$slug/settings/bank': typeof TSlugSettingsBankRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
   '/t/$slug/settings/gocardless': typeof TSlugSettingsGocardlessRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
@@ -309,10 +344,12 @@ export interface FileRoutesById {
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/storage': typeof TSlugSettingsStorageRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
+  '/t/$slug/bank/': typeof TSlugBankIndexRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
   '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
   '/t/$slug/scans/': typeof TSlugScansIndexRoute
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
+  '/t/$slug/bank/imports/$importId': typeof TSlugBankImportsImportIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -327,6 +364,7 @@ export interface FileRouteTypes {
     | '/t/$slug/settings'
     | '/t/$slug/tags'
     | '/t/$slug/'
+    | '/t/$slug/bank/import'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/giftaid/$claimId'
@@ -337,6 +375,7 @@ export interface FileRouteTypes {
     | '/t/$slug/reports/expected'
     | '/t/$slug/scans/$scanId'
     | '/t/$slug/scans/deletable'
+    | '/t/$slug/settings/bank'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/gocardless'
     | '/t/$slug/settings/groups'
@@ -346,10 +385,12 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/storage'
     | '/t/$slug/settings/tags'
+    | '/t/$slug/bank/'
     | '/t/$slug/contacts/'
     | '/t/$slug/giftaid/'
     | '/t/$slug/scans/'
     | '/t/$slug/settings/'
+    | '/t/$slug/bank/imports/$importId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -359,6 +400,7 @@ export interface FileRouteTypes {
     | '/sign-in'
     | '/t/$slug/tags'
     | '/t/$slug'
+    | '/t/$slug/bank/import'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/giftaid/$claimId'
@@ -369,6 +411,7 @@ export interface FileRouteTypes {
     | '/t/$slug/reports/expected'
     | '/t/$slug/scans/$scanId'
     | '/t/$slug/scans/deletable'
+    | '/t/$slug/settings/bank'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/gocardless'
     | '/t/$slug/settings/groups'
@@ -378,10 +421,12 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/storage'
     | '/t/$slug/settings/tags'
+    | '/t/$slug/bank'
     | '/t/$slug/contacts'
     | '/t/$slug/giftaid'
     | '/t/$slug/scans'
     | '/t/$slug/settings'
+    | '/t/$slug/bank/imports/$importId'
   id:
     | '__root__'
     | '/'
@@ -394,6 +439,7 @@ export interface FileRouteTypes {
     | '/t/$slug/settings'
     | '/t/$slug/tags'
     | '/t/$slug/'
+    | '/t/$slug/bank/import'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/giftaid/$claimId'
@@ -404,6 +450,7 @@ export interface FileRouteTypes {
     | '/t/$slug/reports/expected'
     | '/t/$slug/scans/$scanId'
     | '/t/$slug/scans/deletable'
+    | '/t/$slug/settings/bank'
     | '/t/$slug/settings/fields'
     | '/t/$slug/settings/gocardless'
     | '/t/$slug/settings/groups'
@@ -413,10 +460,12 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/storage'
     | '/t/$slug/settings/tags'
+    | '/t/$slug/bank/'
     | '/t/$slug/contacts/'
     | '/t/$slug/giftaid/'
     | '/t/$slug/scans/'
     | '/t/$slug/settings/'
+    | '/t/$slug/bank/imports/$importId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -498,6 +547,20 @@ declare module '@tanstack/react-router' {
       path: '/tags'
       fullPath: '/t/$slug/tags'
       preLoaderRoute: typeof TSlugTagsRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/bank/': {
+      id: '/t/$slug/bank/'
+      path: '/bank'
+      fullPath: '/t/$slug/bank/'
+      preLoaderRoute: typeof TSlugBankIndexRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/bank/import': {
+      id: '/t/$slug/bank/import'
+      path: '/bank/import'
+      fullPath: '/t/$slug/bank/import'
+      preLoaderRoute: typeof TSlugBankImportRouteImport
       parentRoute: typeof TSlugRoute
     }
     '/t/$slug/contacts/': {
@@ -598,6 +661,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugSettingsIndexRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
+    '/t/$slug/settings/bank': {
+      id: '/t/$slug/settings/bank'
+      path: '/bank'
+      fullPath: '/t/$slug/settings/bank'
+      preLoaderRoute: typeof TSlugSettingsBankRouteImport
+      parentRoute: typeof TSlugSettingsRoute
+    }
     '/t/$slug/settings/fields': {
       id: '/t/$slug/settings/fields'
       path: '/fields'
@@ -661,6 +731,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugSettingsTagsRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
+    '/t/$slug/bank/imports/$importId': {
+      id: '/t/$slug/bank/imports/$importId'
+      path: '/bank/imports/$importId'
+      fullPath: '/t/$slug/bank/imports/$importId'
+      preLoaderRoute: typeof TSlugBankImportsImportIdRouteImport
+      parentRoute: typeof TSlugRoute
+    }
   }
 }
 
@@ -681,6 +758,7 @@ const TSlugGiftaidRouteWithChildren = TSlugGiftaidRoute._addFileChildren(
 )
 
 interface TSlugSettingsRouteChildren {
+  TSlugSettingsBankRoute: typeof TSlugSettingsBankRoute
   TSlugSettingsFieldsRoute: typeof TSlugSettingsFieldsRoute
   TSlugSettingsGocardlessRoute: typeof TSlugSettingsGocardlessRoute
   TSlugSettingsGroupsRoute: typeof TSlugSettingsGroupsRoute
@@ -694,6 +772,7 @@ interface TSlugSettingsRouteChildren {
 }
 
 const TSlugSettingsRouteChildren: TSlugSettingsRouteChildren = {
+  TSlugSettingsBankRoute: TSlugSettingsBankRoute,
   TSlugSettingsFieldsRoute: TSlugSettingsFieldsRoute,
   TSlugSettingsGocardlessRoute: TSlugSettingsGocardlessRoute,
   TSlugSettingsGroupsRoute: TSlugSettingsGroupsRoute,
@@ -715,6 +794,7 @@ interface TSlugRouteChildren {
   TSlugSettingsRoute: typeof TSlugSettingsRouteWithChildren
   TSlugTagsRoute: typeof TSlugTagsRoute
   TSlugIndexRoute: typeof TSlugIndexRoute
+  TSlugBankImportRoute: typeof TSlugBankImportRoute
   TSlugContactsContactIdRoute: typeof TSlugContactsContactIdRoute
   TSlugContactsNewRoute: typeof TSlugContactsNewRoute
   TSlugGiftsGiftIdRoute: typeof TSlugGiftsGiftIdRoute
@@ -723,8 +803,10 @@ interface TSlugRouteChildren {
   TSlugReportsExpectedRoute: typeof TSlugReportsExpectedRoute
   TSlugScansScanIdRoute: typeof TSlugScansScanIdRoute
   TSlugScansDeletableRoute: typeof TSlugScansDeletableRoute
+  TSlugBankIndexRoute: typeof TSlugBankIndexRoute
   TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
   TSlugScansIndexRoute: typeof TSlugScansIndexRoute
+  TSlugBankImportsImportIdRoute: typeof TSlugBankImportsImportIdRoute
 }
 
 const TSlugRouteChildren: TSlugRouteChildren = {
@@ -732,6 +814,7 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugSettingsRoute: TSlugSettingsRouteWithChildren,
   TSlugTagsRoute: TSlugTagsRoute,
   TSlugIndexRoute: TSlugIndexRoute,
+  TSlugBankImportRoute: TSlugBankImportRoute,
   TSlugContactsContactIdRoute: TSlugContactsContactIdRoute,
   TSlugContactsNewRoute: TSlugContactsNewRoute,
   TSlugGiftsGiftIdRoute: TSlugGiftsGiftIdRoute,
@@ -740,8 +823,10 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugReportsExpectedRoute: TSlugReportsExpectedRoute,
   TSlugScansScanIdRoute: TSlugScansScanIdRoute,
   TSlugScansDeletableRoute: TSlugScansDeletableRoute,
+  TSlugBankIndexRoute: TSlugBankIndexRoute,
   TSlugContactsIndexRoute: TSlugContactsIndexRoute,
   TSlugScansIndexRoute: TSlugScansIndexRoute,
+  TSlugBankImportsImportIdRoute: TSlugBankImportsImportIdRoute,
 }
 
 const TSlugRouteWithChildren = TSlugRoute._addFileChildren(TSlugRouteChildren)

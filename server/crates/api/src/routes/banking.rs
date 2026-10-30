@@ -77,15 +77,7 @@ async fn accounts(Extension(t): Extension<Tenant>) -> Result<Json<Vec<AccountRow
 }
 
 fn row(conn: &rusqlite::Connection, id: &str) -> Result<AccountRow, ApiError> {
-    let account = one_account(conn, id)?.ok_or(ApiError::NotFound)?;
-    let version = conn.query_row("SELECT version FROM bank_accounts WHERE id = ?1", [id], |r| {
-        r.get(0)
-    })?;
-    Ok(AccountRow {
-        id: id.to_owned(),
-        version,
-        account,
-    })
+    banking::account_row(conn, id)?.ok_or(ApiError::NotFound)
 }
 
 /// `GET bank/accounts/{id}`

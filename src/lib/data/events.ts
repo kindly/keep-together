@@ -107,6 +107,10 @@ const INVALIDATES: Partial<
   regular_gift_terms: (slug) => [keys.gocardless(slug)],
   direct_debit_payments: (slug) => [keys.gocardless(slug)],
   provider_requests: (slug) => [keys.gocardless(slug)],
+  // Bank transfers 6a: an account (its name and layout show on every
+  // import page) and an import (its account's list, its own page).
+  bank_accounts: (slug) => [keys.bank(slug)],
+  bank_imports: (slug) => [keys.bank(slug)],
 }
 
 /**

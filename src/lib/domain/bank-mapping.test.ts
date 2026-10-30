@@ -1,0 +1,78 @@
+import { describe, expect, it } from 'vitest'
+import { columnLabel, emptyPicks, mappingOf, missing } from './bank-mapping'
+import type { MappingPicks } from './bank-mapping'
+
+const lloydsHeader = [
+  'Transaction Date',
+  'Transaction Type',
+  'Sort Code',
+  'Account Number',
+  'Transaction Description',
+  'Debit Amount',
+  'Credit Amount',
+  'Balance',
+  '',
+]
+
+const lloydsPicks: MappingPicks = {
+  ...emptyPicks(),
+  date: 0,
+  amount: { kind: 'paidInOut', paidIn: 6, paidOut: 5 },
+  narrative: [4],
+}
+
+describe('bank column mapping', () => {
+  it('needs a date and the amount columns', () => {
+    expect(missing(emptyPicks())).toEqual([
+      'the date column',
+      'the amount column',
+    ])
+    expect(mappingOf(emptyPicks(), lloydsHeader)).toBeNull()
+    expect(missing(lloydsPicks)).toEqual([])
+  })
+
+  it('goes by header text when every picked column has its own name', () => {
+    expect(mappingOf(lloydsPicks, lloydsHeader)).toEqual({
+      header: { kind: 'find' },
+      date: { name: 'Transaction Date' },
+      amount: {
+        kind: 'paidInOut',
+        paidIn: { name: 'Credit Amount' },
+        paidOut: { name: 'Debit Amount' },
+      },
+      narrative: [{ name: 'Transaction Description' }],
+    })
+  })
+
+  it('goes by position, skipping the rows above, when a name is blank or repeated', () => {
+    const header = ['Date', 'Narrative', 'Narrative', 'Amount']
+    const picks: MappingPicks = {
+      ...emptyPicks(),
+      headerRow: 2,
+      date: 0,
+      amount: { kind: 'signed', column: 3 },
+      narrative: [1, 2],
+    }
+    expect(mappingOf(picks, header)).toEqual({
+      header: { kind: 'skip', rows: 3 },
+      date: { index: 0 },
+      amount: { kind: 'signed', column: { index: 3 } },
+      narrative: [{ index: 1 }, { index: 2 }],
+    })
+  })
+
+  it('matches names ignoring case and spacing, as the server does', () => {
+    const header = ['Date', ' date ', 'Amount']
+    const picks: MappingPicks = {
+      ...emptyPicks(),
+      date: 0,
+      amount: { kind: 'signed', column: 2 },
+    }
+    expect(mappingOf(picks, header)?.header).toEqual({ kind: 'skip', rows: 1 })
+  })
+
+  it('labels columns by letter and name', () => {
+    expect(columnLabel(0, ['Date'])).toBe('A: Date')
+    expect(columnLabel(27, [])).toBe('AB')
+  })
+})
