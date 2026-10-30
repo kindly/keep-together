@@ -106,20 +106,26 @@ export function ContactStandingOrders({
 export function RecordStandingOrderDialog({
   contactId,
   prefill,
+  line,
   onClose,
   onRecorded,
 }: {
   contactId: Id<'contacts'>
   prefill?: StandingOrderPrefill
+  /**
+   * "Make this a standing order" from this statement line: its amount is
+   * the line's, it is the first payment (so on or before the line's
+   * date), and the line is matched to it in the same command.
+   */
+  line?: { id: string; matchVersion: number; amount: bigint; postedOn: string }
   onClose: () => void
-  onRecorded?: (so: StandingOrder) => void
+  onRecorded?: (so: StandingOrder | null) => void
 }) {
   const writes = useStandingOrderWrites()
   const keyFor = useRequestKey()
+  const given = line?.amount ?? prefill?.amount
   const [amount, setAmount] = useState(
-    prefill?.amount === undefined
-      ? ''
-      : (Number(prefill.amount) / 100).toFixed(2),
+    given === undefined ? '' : (Number(given) / 100).toFixed(2),
   )
   const [frequency, setFrequency] = useState<RegularGiftFrequency>(
     prefill?.frequency ?? 'monthly',
@@ -129,10 +135,16 @@ export function RecordStandingOrderDialog({
   const [code, setCode] = useState<PickedCode>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [made, setMade] = useState<StandingOrder | null>(null)
+  const [made, setMade] = useState<string | null>(null)
   const typed = amountProblem(amount)
   const pence = parsePounds(amount)
-  const start = startsOn === '' ? null : startProblem(startsOn)
+  const start =
+    startsOn === ''
+      ? null
+      : (startProblem(startsOn) ??
+        (line && startsOn > line.postedOn
+          ? `This line is its first payment: on or before ${formatDay(line.postedOn)}`
+          : null))
   const schedule =
     startsOn !== '' && !start ? scheduleOf(startsOn, frequency) : null
   const ready =
@@ -153,12 +165,27 @@ export function RecordStandingOrderDialog({
         ...(reference.trim() !== '' && { bankReference: reference.trim() }),
         startsOn,
       }
-      const so = await writes.record(contactId, {
-        ...asked,
-        clientKey: keyFor(asked),
-      })
-      setMade(so)
-      onRecorded?.(so)
+      if (line) {
+        await writes.fromLine(line, {
+          contact: contactId,
+          frequency,
+          dayOfMonth: schedule.dayOfMonth,
+          ...(schedule.month !== null && { month: schedule.month }),
+          sourceCodeId: code.id,
+          ...(reference.trim() !== '' && {
+            bankReference: reference.trim(),
+          }),
+        })
+        setMade('Recorded, and this line matched as its first payment.')
+        onRecorded?.(null)
+      } else {
+        const so = await writes.record(contactId, {
+          ...asked,
+          clientKey: keyFor(asked),
+        })
+        setMade(`Recorded: ${standingText(so)}.`)
+        onRecorded?.(so)
+      }
     } catch (err) {
       setError(refusal(err, 'Couldn’t record it', 'Changed by someone else'))
     } finally {
@@ -175,7 +202,7 @@ export function RecordStandingOrderDialog({
     >
       {made ? (
         <p role="status" className="text-sm">
-          Recorded: {standingText(made)}.
+          {made}
         </p>
       ) : (
         <form
@@ -183,7 +210,13 @@ export function RecordStandingOrderDialog({
           onSubmit={(e) => void submit(e)}
           className="flex flex-col gap-3"
         >
-          <AmountField value={amount} onChange={setAmount} problem={typed} />
+          {line ? (
+            <p className="text-sm">
+              Amount: {formatPence(line.amount)}, the line’s
+            </p>
+          ) : (
+            <AmountField value={amount} onChange={setAmount} problem={typed} />
+          )}
           <div className="flex flex-wrap gap-3">
             <label className="flex flex-col gap-1 text-sm">
               How often

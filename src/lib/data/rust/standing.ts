@@ -13,6 +13,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
 import { useTenant } from '../../tenant'
+import type { BankLineDetail } from '../rust-types/BankLineDetail'
+import type { BankStandingOrderFromLine } from '../rust-types/BankStandingOrderFromLine'
 import type { EndStandingOrder } from '../rust-types/EndStandingOrder'
 import type { ExpectedRow } from '../rust-types/ExpectedRow'
 import type { MissedStandingOrder as WireMissed } from '../rust-types/MissedStandingOrder'
@@ -37,6 +39,12 @@ export type MissedStandingOrder = Omit<WireMissed, 'amount'> & {
 export type StandingOrderArgs = Omit<StandingOrderSetUp, 'amount'> & {
   amount: bigint
 }
+
+/** "Make this a standing order" from a statement line (its amount is the line's). */
+export type StandingOrderFromLineArgs = Omit<
+  BankStandingOrderFromLine,
+  'expected'
+>
 
 // ── wire → page ────────────────────────────────────────────────────────────
 
@@ -149,6 +157,31 @@ export function useStandingOrderWrites() {
           } satisfies StandingOrderSetUp,
         ),
       ),
+    /**
+     * "Make this a standing order" (g2q3): a standing order for the
+     * line's amount, the line its first payment, in one command against
+     * the line's `matchVersion`. Answers the line as the server read it
+     * back; the bank pages and the contact's standing orders read again.
+     */
+    fromLine: async (
+      line: { id: string; matchVersion: number },
+      args: StandingOrderFromLineArgs,
+    ) => {
+      try {
+        return await post<BankLineDetail>(
+          tenantPath(slug, 'bank', 'lines', line.id, 'standing-order'),
+          {
+            ...args,
+            expected: line.matchVersion,
+          } satisfies BankStandingOrderFromLine,
+        )
+      } finally {
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: keys.bank(slug) }),
+          qc.invalidateQueries({ queryKey: keys.standing(slug) }),
+        ])
+      }
+    },
     end: async (so: StandingOrder, reason: string | undefined) => {
       try {
         return landStandingOrder(

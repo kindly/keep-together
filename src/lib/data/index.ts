@@ -149,6 +149,7 @@ export type {
   MissedStandingOrder,
   StandingOrder,
   StandingOrderArgs,
+  StandingOrderFromLineArgs,
 } from './rust/standing'
 export {
   useDirectDebitWrites,

@@ -341,3 +341,42 @@ test('home: nothing at all while none has missed a payment', () => {
   render(<MissedStandingOrders />)
   expect(text()).toBe('')
 })
+
+test('from a statement line: the line’s amount, started on or before it, matched in one command', async () => {
+  const fromLine = vi.fn().mockResolvedValue({})
+  Object.assign(writes, { fromLine })
+  const recorded = vi.fn()
+  render(
+    <RecordStandingOrderDialog
+      contactId={'c1' as Id<'contacts'>}
+      prefill={{ frequency: 'monthly', startsOn: '2026-03-07' }}
+      line={{
+        id: 'l1',
+        matchVersion: 2,
+        amount: 2000n,
+        postedOn: '2026-03-07',
+      }}
+      onClose={() => {}}
+      onRecorded={recorded}
+    />,
+  )
+  expect(text()).toContain('Amount: £20.00, the line’s')
+  await type('First payment', '2026-03-08')
+  expect(text()).toContain('This line is its first payment')
+  click('Pick a code')
+  expect(button('Record').disabled).toBe(true)
+  await type('First payment', '2026-03-07')
+  await act(async () => button('Record').click())
+  expect(fromLine).toHaveBeenCalledWith(
+    { id: 'l1', matchVersion: 2, amount: 2000n, postedOn: '2026-03-07' },
+    {
+      contact: 'c1',
+      frequency: 'monthly',
+      dayOfMonth: 7,
+      sourceCodeId: 'v1',
+    },
+  )
+  expect(writes.record).not.toHaveBeenCalled()
+  expect(text()).toContain('this line matched as its first payment')
+  expect(recorded).toHaveBeenCalledTimes(1)
+})
