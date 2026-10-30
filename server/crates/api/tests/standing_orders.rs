@@ -166,7 +166,7 @@ impl S {
             &self.sam,
             Some(json!({
                 "amount": pence, "frequency": "monthly", "dayOfMonth": day_of(starts_on),
-                "sourceCodeId": self.code, "bankReference": "SO REF", "startsOn": starts_on,
+                "sourceCodeId": self.code, "bankReference": "SMITH123", "startsOn": starts_on,
             })),
         )
         .await
@@ -283,7 +283,7 @@ async fn a_standing_order_is_recorded_active_and_ended_with_nothing_expected_aft
     let so = s.standing(&jo, 1000, &start).await;
     assert_eq!(
         (so["status"].as_str(), so["bankReference"].as_str()),
-        (Some("active"), Some("SO REF"))
+        (Some("active"), Some("SMITH123"))
     );
     let mine = ok(
         &s.w,
@@ -489,7 +489,8 @@ async fn a_payment_is_missed_after_14_days_and_a_late_one_clears_it() {
 /// posted from 5 days before its due date to 15 after, with the exact
 /// amount; outside the window, or another amount, it isn't suggested.
 /// Strong (pre-ticked) only when the line identifies the donor (review
-/// b5r H1): B quotes the standing order's reference; C, inside the window
+/// b5r H1): B quotes the standing order's distinctive reference as whole
+/// tokens ("SMITH123" in "FPI SMITH123 DONATION"); C, inside the window
 /// too, is "amount and date only", never ticked. Two lines for one
 /// period: the second is refused on its own (`period_paid`, review b5r
 /// M1) and the rest of the accept applies.
@@ -507,11 +508,11 @@ async fn an_expected_payment_matches_inside_minus_5_plus_15_only() {
     };
     let lines = s
         .import(&[
-            credit(-6, 1500, "A", "SO REF"),
-            credit(-5, 1500, "B", "SO REF"),
+            credit(-6, 1500, "A", "SMITH123"),
+            credit(-5, 1500, "B", "FPI SMITH123 DONATION"),
             credit(15, 1500, "C", ""),
-            credit(16, 1500, "D", "SO REF"),
-            credit(2, 1501, "E", "SO REF"),
+            credit(16, 1500, "D", "SMITH123"),
+            credit(2, 1501, "E", "SMITH123"),
         ])
         .await;
     let instalments = |v: &Value| -> Vec<Value> {
@@ -942,7 +943,8 @@ async fn make_this_a_standing_order_is_offered_on_the_second_payment_not_the_fir
     )
     .await;
     assert_eq!(mine.as_array().unwrap().len(), 1);
-    assert_eq!(mine[0]["bankReference"], "MONTHLY");
+    // "MONTHLY" names no one: the reference is left for staff to fill in.
+    assert_eq!(mine[0]["bankReference"], Value::Null);
     let gift = ok(
         &s.w,
         "GET",

@@ -467,7 +467,6 @@ impl Suggester for StandingOrder {
                 .collect(),
             None => vec![],
         };
-        let text = format!("{} {}", line.reference, line.narrative).to_lowercase();
         for p in cx
             .standing()?
             .payments_for_line(&line.posted_on, line.amount)
@@ -483,9 +482,7 @@ impl Suggester for StandingOrder {
             let by_reference = p
                 .bank_reference
                 .as_deref()
-                .map(|r| r.trim().to_lowercase())
-                .filter(|r| !r.is_empty())
-                .is_some_and(|r| text.contains(&r));
+                .is_some_and(|r| reference_identifies(r, line));
             let by_payer = known.contains(&p.contact_id);
             let (confidence, reason) = match (by_reference, by_payer) {
                 (true, _) => (
@@ -515,6 +512,68 @@ impl Suggester for StandingOrder {
         }
         Ok(out)
     }
+}
+
+/// Words on statements that say nothing about who paid: a reference made
+/// of these alone identifies no one (review b5r round 2).
+pub const GENERIC_WORDS: &[&str] = &[
+    "DONATION",
+    "DONATIONS",
+    "GIFT",
+    "MONTHLY",
+    "QUARTERLY",
+    "YEARLY",
+    "ANNUAL",
+    "STANDING",
+    "ORDER",
+    "SO",
+    "STO",
+    "REF",
+    "REFERENCE",
+    "CHARITY",
+    "PAYMENT",
+    "TRANSFER",
+    "BGC",
+    "FPI",
+    "FASTER",
+    "PAYMENTS",
+];
+
+/// `text` as upper-cased alphanumeric runs: "FPI smith-123/don" is
+/// `["FPI", "SMITH", "123", "DON"]`.
+pub fn tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(str::to_uppercase)
+        .collect()
+}
+
+/// Whether a standing order's reference can name its donor on a
+/// statement: a digit and at least 4 letters or digits, or at least 6,
+/// and not only generic words ([`GENERIC_WORDS`]). "SMITH123" does;
+/// "MONTHLY", "SO REF" and "JO" don't. One that doesn't can be kept, but
+/// it never makes a match strong.
+pub fn is_distinctive(reference: &str) -> bool {
+    let words = tokens(reference);
+    let chars: usize = words.iter().map(|w| w.chars().count()).sum();
+    let digit = words.iter().any(|w| w.chars().any(|c| c.is_ascii_digit()));
+    let generic = words.iter().all(|w| GENERIC_WORDS.contains(&w.as_str()));
+    !words.is_empty() && !generic && (chars >= 6 || (digit && chars >= 4))
+}
+
+/// Whether `reference` names the payer of `line`: distinctive, and its
+/// tokens appear as one run of whole tokens in the line's reference or
+/// its narrative ("SMITH123" in "FPI SMITH123 DONATION"; never "SO REF"
+/// in "ALSO REFUND", nor "JO" in "JOHN SMITH").
+pub fn reference_identifies(reference: &str, line: &LineView) -> bool {
+    if !is_distinctive(reference) {
+        return false;
+    }
+    let want = tokens(reference);
+    [&line.reference, &line.narrative].iter().any(|field| {
+        let have = tokens(field);
+        have.windows(want.len()).any(|w| w == want.as_slice())
+    })
 }
 
 /// How far apart, in days, two payments are for each frequency.
@@ -736,6 +795,51 @@ mod tests {
             six_digit_runs("FP 100016 REF 1000160 12345 ABC/100024"),
             ["100016", "100024"]
         );
+    }
+
+    fn line(reference: &str, narrative: &str) -> LineView {
+        LineView {
+            id: "l".into(),
+            account_id: "a".into(),
+            import_id: "i".into(),
+            posted_on: "2026-10-01".into(),
+            amount: 1000,
+            payer: String::new(),
+            reference: reference.into(),
+            narrative: narrative.into(),
+            bank_id: None,
+            state: MatchState::Unmatched,
+            note: None,
+            matched_by: None,
+            matched_at: None,
+            match_version: 0,
+        }
+    }
+
+    #[test]
+    fn a_reference_names_the_donor_only_when_distinctive_and_whole() {
+        // Generic, or too short: never identifies anyone.
+        assert!(!is_distinctive("MONTHLY"));
+        assert!(!is_distinctive("SO REF"));
+        assert!(!is_distinctive("JO"));
+        assert!(!is_distinctive("monthly donation"));
+        assert!(is_distinctive("SMITH123"));
+        assert!(is_distinctive("JBLOGGS"));
+        assert!(is_distinctive("A123"));
+        assert!(!reference_identifies(
+            "MONTHLY",
+            &line("MONTHLY DONATION", "")
+        ));
+        assert!(!reference_identifies("SO REF", &line("", "ALSO REFUND")));
+        assert!(!reference_identifies("JO", &line("JOHN SMITH", "")));
+        assert!(reference_identifies(
+            "SMITH123",
+            &line("", "FPI SMITH123 DONATION")
+        ));
+        assert!(reference_identifies("smith-123", &line("SMITH 123", "")));
+        // Whole tokens only, in one run.
+        assert!(!reference_identifies("SMITH123", &line("XSMITH1234", "")));
+        assert!(!reference_identifies("JO BLOGGS", &line("JO X BLOGGS", "")));
     }
 
     #[test]
