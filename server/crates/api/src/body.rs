@@ -12,7 +12,9 @@
 //! On a phone's `/api/scan/{token}` upload the pairing's token and device
 //! cookie are checked first, the same way ([`crate::scans::phone::precheck`]).
 //! Scan uploads (phone and `/api/t/{slug}/scans…`) take at most
-//! [`crate::scans::UPLOAD_BODY_LIMIT`].
+//! [`crate::scans::UPLOAD_BODY_LIMIT`]. A bank statement upload takes at
+//! most [`banking::import::FILE_BYTES_MAX`], and past it answers `413
+//! too_large`.
 
 use std::time::Duration;
 
@@ -67,6 +69,7 @@ pub async fn buffer(State(state): State<AppState>, mut req: Request, next: Next)
     if let Some(slot) = slot {
         req.extensions_mut().insert(slot);
     }
+    let statement = post && is_tenant_statement(path);
     let limit = if path.starts_with("/api/auth/") {
         AUTH_BODY_LIMIT
     } else if phone && !post {
@@ -74,6 +77,8 @@ pub async fn buffer(State(state): State<AppState>, mut req: Request, next: Next)
         0
     } else if phone || is_tenant_scans(path) {
         crate::scans::UPLOAD_BODY_LIMIT
+    } else if statement {
+        banking::import::FILE_BYTES_MAX
     } else {
         BODY_LIMIT
     };
@@ -84,6 +89,7 @@ pub async fn buffer(State(state): State<AppState>, mut req: Request, next: Next)
             axum::Json(serde_json::json!({ "kind": "timeout" })),
         )
             .into_response(),
+        Ok(Err(_)) if statement => ApiError::TooLarge { limit }.into_response(),
         Ok(Err(_)) => ApiError::Invalid {
             problems: vec![contracts::Problem::new(
                 "body",
@@ -109,6 +115,16 @@ fn is_tenant_upload(path: &str) -> bool {
     };
     let parts: Vec<&str> = rest.split('/').collect();
     matches!(parts.as_slice(), ["scans"] | ["scans", _, "pages"])
+}
+
+/// `/api/t/{slug}/bank/imports`, `…/bank/imports/preview` and
+/// `…/bank/peek`: a statement file as the body.
+fn is_tenant_statement(path: &str) -> bool {
+    path.strip_prefix("/api/t/")
+        .and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(_, rest)| {
+            matches!(rest, "bank/imports" | "bank/imports/preview" | "bank/peek")
+        })
 }
 
 /// `/api/t/{slug}/scans…`: the signed-in phone's uploads and the scan

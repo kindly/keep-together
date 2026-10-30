@@ -35,11 +35,11 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub use account::{ACCOUNT, Account, AccountPayload, AccountRow, CsvLayout, accounts};
-pub use csv::{AmountColumns, Column, ColumnMapping, HeaderRow};
+pub use csv::{AmountColumns, Column, ColumnMapping, HeaderRow, PeekRow};
 pub use dedupe::{Deduped, Held, Keyed, content_key, dedupe};
 pub use import::{
-    FileLayout, IMPORT, ImportError, ImportRequest, ImportRow, Imported, import_file,
-    import_lines, imports,
+    FileLayout, IMPORT, ImportError, ImportRequest, ImportRow, Imported, Planned, Preview,
+    import_file, import_lines, import_of, imports, plan_import,
 };
 pub use presets::{AWAITING_SAMPLES, Preset, preset, presets};
 
@@ -167,6 +167,11 @@ pub fn read(bytes: &[u8], format: &Format) -> Result<Parsed, Vec<RowError>> {
         return Err(vec![RowError::new(0, message)]);
     }
     Ok(parsed)
+}
+
+/// The first rows of a CSV file as text, for mapping its columns.
+pub fn peek_csv(bytes: &[u8]) -> Result<Vec<PeekRow>, RowError> {
+    csv::peek(&text::decode(bytes))
 }
 
 /// Collects row errors up to [`ROW_ERRORS_MAX`], counting the rest.

@@ -11,7 +11,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use contracts::{
-    Command, Contract, ContractError, Ctx, Exec, OrgTx, Source, WriteTx, execute, mint_ids,
+    Command, CommandGroup, Contract, ContractError, Ctx, Exec, OrgTx, Source, WriteTx, execute,
+    mint_ids,
 };
 use giving::PENCE_MAX;
 use giving::rules::is_iso_date;
@@ -420,23 +421,58 @@ fn collect(
     Ok(())
 }
 
-/// Imports one statement file into an account: reads it, keeps only the
-/// lines the account doesn't hold yet, and records the import with them.
-/// A file that can't be read is [`ImportError::File`] and writes nothing.
-pub fn import_file(
-    ctx: &Ctx,
-    request: ImportRequest,
-    bytes: &[u8],
-    source: Source,
-) -> Result<Imported, ImportError> {
-    if bytes.len() > FILE_BYTES_MAX {
-        return Err(file_error(format!(
-            "The file is over {} MB",
-            FILE_BYTES_MAX / 1024 / 1024
-        )));
+/// A file read and deduped against an account, not yet stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Planned {
+    pub payload: ImportPayload,
+    pub debits_dropped: usize,
+}
+
+/// Lines a [`Preview`] shows.
+pub const PREVIEW_LINES: usize = 20;
+
+/// What an import would do, written nowhere: the counts and the first
+/// new lines, to check a column mapping before importing with it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "BankImportPreview")]
+pub struct Preview {
+    #[ts(type = "number")]
+    pub new_lines: usize,
+    #[ts(type = "number")]
+    pub duplicate_lines: usize,
+    #[ts(type = "number")]
+    pub debits_dropped: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub first_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_date: Option<String>,
+    /// The first [`PREVIEW_LINES`] new lines.
+    pub lines: Vec<ImportLine>,
+}
+
+impl Planned {
+    pub fn preview(&self) -> Preview {
+        let p = &self.payload;
+        Preview {
+            new_lines: p.lines.len(),
+            duplicate_lines: p.duplicate_lines as usize,
+            debits_dropped: self.debits_dropped,
+            first_date: p.first_date.clone(),
+            last_date: p.last_date.clone(),
+            lines: p.lines.iter().take(PREVIEW_LINES).cloned().collect(),
+        }
     }
-    let account = account(ctx.tx.read(), &request.account_id)?.ok_or(ContractError::NotFound)?;
-    let saved = || match &account.payload.csv_layout {
+}
+
+/// The layout a file is read with: the request's, else the account's.
+fn resolve_layout(
+    request: Option<FileLayout>,
+    saved: Option<&CsvLayout>,
+) -> Result<(Format, FileKind, Option<String>), ImportError> {
+    let saved = || match saved {
         Some(CsvLayout::Preset { id }) => Some(FileLayout::Preset { id: id.clone() }),
         Some(CsvLayout::Mapping { mapping }) => Some(FileLayout::Mapping {
             mapping: mapping.clone(),
@@ -444,10 +480,9 @@ pub fn import_file(
         None => None,
     };
     let layout = request
-        .layout
         .or_else(saved)
         .ok_or_else(|| file_error("Choose the bank's layout or map the columns"))?;
-    let (format, kind, preset_id) = match layout {
+    Ok(match layout {
         FileLayout::Preset { id } => {
             let p = preset(&id).ok_or_else(|| file_error(format!("No preset {id}")))?;
             (Format::Csv { mapping: p.mapping }, FileKind::Csv, Some(id))
@@ -455,7 +490,34 @@ pub fn import_file(
         FileLayout::Mapping { mapping } => (Format::Csv { mapping }, FileKind::Csv, None),
         FileLayout::Ofx => (Format::Ofx, FileKind::Ofx, None),
         FileLayout::Qif => (Format::Qif, FileKind::Qif, None),
-    };
+    })
+}
+
+/// Reads a statement file for an account and keeps only the lines it
+/// doesn't hold yet. Writes nothing: [`import_file`] stores the plan, and
+/// a preview shows it. A file that can't be read is
+/// [`ImportError::File`].
+pub fn plan_import(
+    conn: &Connection,
+    request: ImportRequest,
+    bytes: &[u8],
+) -> Result<Planned, ImportError> {
+    if bytes.len() > FILE_BYTES_MAX {
+        return Err(file_error(format!(
+            "The file is over {} MB",
+            FILE_BYTES_MAX / 1024 / 1024
+        )));
+    }
+    let account = account(conn, &request.account_id)?.ok_or(ContractError::NotFound)?;
+    if !account.payload.active {
+        return Err(ContractError::rejected(
+            "account_inactive",
+            "This account is archived; make it active to import into it",
+        )
+        .into());
+    }
+    let (format, kind, preset_id) =
+        resolve_layout(request.layout, account.payload.csv_layout.as_ref())?;
     let parsed = read(bytes, &format).map_err(ImportError::File)?;
     if parsed.credits.len() > LINES_MAX {
         return Err(file_error(format!(
@@ -473,7 +535,7 @@ pub fn import_file(
         .iter()
         .filter_map(|c| c.bank_id.as_deref())
         .collect();
-    let held = held(ctx.tx.read(), &request.account_id, &keys, &ids)?;
+    let held = held(conn, &request.account_id, &keys, &ids)?;
     let debits_dropped = parsed.debits_dropped;
     let deduped = dedupe(parsed.credits, &held);
     let lines = deduped
@@ -491,23 +553,44 @@ pub fn import_file(
             occurrence: k.occurrence,
         })
         .collect::<Vec<_>>();
-    let new_lines = lines.len();
-    let payload = ImportPayload {
-        account_id: request.account_id,
-        file_name: request.file_name,
-        format: kind,
-        preset: preset_id,
-        first_date: first_date.clone(),
-        last_date: last_date.clone(),
-        duplicate_lines: deduped.duplicates as i64,
-        lines,
+    Ok(Planned {
+        payload: ImportPayload {
+            account_id: request.account_id,
+            file_name: request.file_name,
+            format: kind,
+            preset: preset_id,
+            first_date,
+            last_date,
+            duplicate_lines: deduped.duplicates as i64,
+            lines,
+        },
+        debits_dropped,
+    })
+}
+
+/// Imports one statement file into an account: [`plan_import`], then the
+/// import recorded with its new lines, in the caller's transaction.
+pub fn import_file(
+    ctx: &Ctx,
+    request: ImportRequest,
+    bytes: &[u8],
+    source: Source,
+    group: Option<&CommandGroup>,
+) -> Result<Imported, ImportError> {
+    let planned = plan_import(ctx.tx.read(), request, bytes)?;
+    let p = &planned.payload;
+    let (new_lines, duplicate_lines) = (p.lines.len(), p.duplicate_lines as usize);
+    let (first_date, last_date) = (p.first_date.clone(), p.last_date.clone());
+    let exec = match group {
+        Some(g) => Exec::create(source).in_group(g),
+        None => Exec::create(source),
     };
-    let id = execute(ctx, &IMPORT, payload, Exec::create(source))?.id;
+    let id = execute(ctx, &IMPORT, planned.payload, exec)?.id;
     Ok(Imported {
         id,
         new_lines,
-        duplicate_lines: deduped.duplicates,
-        debits_dropped,
+        duplicate_lines,
+        debits_dropped: planned.debits_dropped,
         first_date,
         last_date,
     })
@@ -542,27 +625,44 @@ pub struct ImportRow {
 
 pub const IMPORTS_PAGE: i64 = 100;
 
+const IMPORT_COLUMNS: &str = "id, file_name, format, preset, first_date, last_date, new_lines,
+     duplicate_lines, imported_by, imported_at";
+
+fn import_row(r: &rusqlite::Row) -> rusqlite::Result<ImportRow> {
+    Ok(ImportRow {
+        id: r.get(0)?,
+        file_name: r.get(1)?,
+        format: FileKind::parse(&r.get::<_, String>(2)?).unwrap_or(FileKind::Csv),
+        preset: r.get(3)?,
+        first_date: r.get(4)?,
+        last_date: r.get(5)?,
+        new_lines: r.get(6)?,
+        duplicate_lines: r.get(7)?,
+        imported_by: r.get(8)?,
+        imported_at: r.get(9)?,
+    })
+}
+
+/// One import and the account it went into.
+pub fn import_of(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<(String, ImportRow)>, ContractError> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "SELECT {IMPORT_COLUMNS}, account_id FROM bank_imports WHERE id = ?1"
+        ))?
+        .query_row([id], |r| Ok((r.get(10)?, import_row(r)?)))
+        .optional()?)
+}
+
 /// An account's imports, newest first.
 pub fn imports(conn: &Connection, account_id: &str) -> Result<Vec<ImportRow>, ContractError> {
     Ok(conn
-        .prepare_cached(
-            "SELECT id, file_name, format, preset, first_date, last_date, new_lines,
-                    duplicate_lines, imported_by, imported_at
-             FROM bank_imports WHERE account_id = ?1 ORDER BY seq DESC LIMIT ?2",
-        )?
-        .query_map(params![account_id, IMPORTS_PAGE], |r| {
-            Ok(ImportRow {
-                id: r.get(0)?,
-                file_name: r.get(1)?,
-                format: FileKind::parse(&r.get::<_, String>(2)?).unwrap_or(FileKind::Csv),
-                preset: r.get(3)?,
-                first_date: r.get(4)?,
-                last_date: r.get(5)?,
-                new_lines: r.get(6)?,
-                duplicate_lines: r.get(7)?,
-                imported_by: r.get(8)?,
-                imported_at: r.get(9)?,
-            })
-        })?
+        .prepare_cached(&format!(
+            "SELECT {IMPORT_COLUMNS} FROM bank_imports WHERE account_id = ?1
+             ORDER BY seq DESC LIMIT ?2"
+        ))?
+        .query_map(params![account_id, IMPORTS_PAGE], import_row)?
         .collect::<Result<_, _>>()?)
 }

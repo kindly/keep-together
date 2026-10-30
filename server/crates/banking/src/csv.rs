@@ -127,14 +127,46 @@ impl ColumnMapping {
 }
 
 /// One CSV record and the file line it starts on (1-based).
-struct Record {
+pub(crate) struct Record {
     line: usize,
     fields: Vec<String>,
 }
 
+/// Rows [`peek`] returns, and the most cells and characters of each.
+pub const PEEK_ROWS: usize = 30;
+pub const PEEK_CELLS: usize = 60;
+pub const PEEK_CELL_CHARS: usize = 200;
+
+/// A raw CSV row, for mapping columns by eye.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[ts(export, rename = "BankPeekRow")]
+pub struct PeekRow {
+    #[ts(type = "number")]
+    pub line: usize,
+    pub cells: Vec<String>,
+}
+
+/// The first [`PEEK_ROWS`] rows of a CSV file, as text (cells cut to
+/// [`PEEK_CELL_CHARS`]): what the column-mapping screen shows.
+pub fn peek(text: &str) -> Result<Vec<PeekRow>, RowError> {
+    Ok(records(text)?
+        .into_iter()
+        .take(PEEK_ROWS)
+        .map(|r| PeekRow {
+            line: r.line,
+            cells: r
+                .fields
+                .into_iter()
+                .take(PEEK_CELLS)
+                .map(|c| c.chars().take(PEEK_CELL_CHARS).collect())
+                .collect(),
+        })
+        .collect())
+}
+
 /// Splits CSV text into records: `,`-separated, `"`-quoted fields with
 /// `""` for a quote, quoted newlines kept, CRLF or LF.
-fn records(text: &str) -> Result<Vec<Record>, RowError> {
+pub(crate) fn records(text: &str) -> Result<Vec<Record>, RowError> {
     let mut out = vec![];
     let mut fields = vec![];
     let mut field = String::new();
@@ -447,6 +479,17 @@ mod tests {
         let errors = read(&text, &signed()).unwrap_err();
         assert_eq!(errors.len(), crate::ROW_ERRORS_MAX + 1);
         assert_eq!(errors.last().unwrap().message, "…and 10 more rows");
+    }
+
+    #[test]
+    fn peek_shows_the_first_rows_raw() {
+        let mut text = String::from("Statement\nDate,\"Amount, GBP\"\n");
+        for i in 0..40 {
+            text.push_str(&format!("01/11/2026,{i}\n"));
+        }
+        let rows = peek(&text).unwrap();
+        assert_eq!(rows.len(), PEEK_ROWS);
+        assert_eq!(rows[1], PeekRow { line: 2, cells: vec!["Date".into(), "Amount, GBP".into()] });
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! handlers get a [`Tenant`](crate::Tenant) and nothing else.
 
 mod address;
+mod banking;
 mod comms;
 mod contacts;
 pub mod fields;
@@ -30,6 +31,7 @@ use crate::ApiError;
 pub fn router() -> Router {
     Router::new()
         .merge(address::router())
+        .merge(banking::router())
         .merge(contacts::router())
         .merge(fields::router())
         .merge(preferences::router())

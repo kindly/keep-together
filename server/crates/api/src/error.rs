@@ -46,6 +46,15 @@ pub enum ApiError {
     Invalid { problems: Vec<Problem> },
     /// 422: the handler refused the command (e.g. identity_immutable).
     Rejected { reason: String, message: String },
+    /// 422: a statement file can't be read as asked; nothing from it was
+    /// stored. Each row's problem by file line (0: the whole file), at
+    /// most 50 and then a count.
+    FileRows { rows: Vec<banking::RowError> },
+    /// 413: the upload is over `limit` bytes; nothing was read.
+    TooLarge {
+        #[ts(type = "number")]
+        limit: usize,
+    },
     /// 429: too many attempts; try again later.
     RateLimited,
     /// 429: this organisation's address lookups for the month are used
@@ -75,9 +84,10 @@ impl ApiError {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Gone => StatusCode::GONE,
             ApiError::Stale { .. } | ApiError::Duplicate { .. } => StatusCode::CONFLICT,
-            ApiError::Invalid { .. } | ApiError::Rejected { .. } => {
+            ApiError::Invalid { .. } | ApiError::Rejected { .. } | ApiError::FileRows { .. } => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
+            ApiError::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::RateLimited | ApiError::LookupCap => StatusCode::TOO_MANY_REQUESTS,
             ApiError::LookupUnavailable | ApiError::GocardlessUnavailable | ApiError::Busy => {
                 StatusCode::SERVICE_UNAVAILABLE
@@ -116,6 +126,15 @@ impl From<ContractError> for ApiError {
             ContractError::Invalid(problems) => ApiError::Invalid { problems },
             ContractError::Rejected { reason, message } => ApiError::Rejected { reason, message },
             other => ApiError::internal(other),
+        }
+    }
+}
+
+impl From<banking::ImportError> for ApiError {
+    fn from(err: banking::ImportError) -> Self {
+        match err {
+            banking::ImportError::File(rows) => ApiError::FileRows { rows },
+            banking::ImportError::Contract(e) => e.into(),
         }
     }
 }
