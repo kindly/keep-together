@@ -566,7 +566,8 @@ standing orders' reference and missed flag).
   `dates.rs` reads day-first). Debits are dropped as the file is read
   and never stored. One malformed row refuses the whole file, by line.
 - *Dedupe* (`dedupe.rs`): a line is keyed by its content (date, amount,
-  payer, reference, narrative: `dedupe_key`) and `occurrence` counts
+  payer, reference, narrative: `banking::dedupe::content_key`, stored as
+  `bank_lines.dedupe_key`) and `occurrence` counts
   identical lines, so two identical £10 standing orders on one day both
   survive and a re-import adds nothing. A bank id (OFX `FITID`, Bankline's
   reference) is used too: a held id is a duplicate whatever its content,
@@ -579,7 +580,9 @@ standing orders' reference and missed flag).
   line is `unmatched`, `matched` (to gifts, or to one paying-in batch) or
   `not_donation` (with a note), checked against giving's side at every
   commit; its projection `bank_payers` remembers who paid (payer and
-  reference, per account → contact), derived from confirmed matches.
+  reference, per account → contact), derived from confirmed matches. A
+  line with a blank payer never creates or matches a known payer: a
+  reference alone ("DONATION") names no one.
   `banking.forgetPayers` (`bank_payer_forgets`, keyed by the contact)
   forgets a contact's payers from a moment; no rebuild brings them back.
   `banking.rule` (`bank_rules`): "narrative contains GOCARDLESS → not a
@@ -591,9 +594,10 @@ standing orders' reference and missed flag).
   hand, rules, name only (never strong). Merged one per proposal, strong
   first; the best is pre-ticked when it is the only strong one. A
   standing order's expected payment (exact amount, due from 15 days
-  before the line to 5 after) is strong only when the line's payer is a
-  known payer of its donor; its bank reference, found as whole tokens,
-  only ranks it and says so. Suggesters take a `Context` that reads what
+  before the line to 5 after) is strong only when the line names its
+  donor: a known payer of theirs, or a Luhn-valid contact number that is
+  theirs. Its bank reference, found as whole tokens, only ranks it and
+  says so. Suggesters take a `Context` that reads what
   a request shares once (`suggest_lines`: the standing orders'
   schedule). The seam for more (an AI one, behind an org opt-in) is
   `suggest_with`.

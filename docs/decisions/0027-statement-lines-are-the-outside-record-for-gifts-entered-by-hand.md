@@ -118,12 +118,15 @@ the reference; `server/README.md` "Bank transfers" says where each lives.
 2. **A Luhn-valid contact number in a line's reference or narrative is
    a strong match on its own** (review b4r L1). The reference names the
    donor, and a gift made from the line takes the line's own amount and
-   date. A number whose check digit fails is never strong.
-3. **A standing order's expected payment is strong only through a known
-   payer** (review b5r, the controller's call). The line's payer must
-   have been matched to that standing order's donor before, with the
-   exact amount, and the line must arrive from 5 days before the due
-   date to 15 after.
+   date. A number whose check digit fails is never strong. For a
+   standing order, the number makes its instalment strong only when it is
+   that standing order's own donor's.
+3. **A standing order's expected payment is strong only when the line
+   names the donor** (review b5r, the controller's call). Either the
+   line's payer is a known payer of that standing order's donor (matched
+   to them before), or the line carries a Luhn-valid contact number that
+   is theirs. Either way it needs the exact amount, and the line must
+   arrive from 5 days before the due date to 15 after.
    - The first payment from a payer is always staff's to confirm; once
      it is, later ones pre-tick.
    - The standing order's bank reference, found in the line as whole
@@ -163,3 +166,11 @@ the reference; `server/README.md` "Bank transfers" says where each lives.
    matched meanwhile is `409 stale` with its match as it now is, before
    any other refusal. "Accept ticked" runs one transaction per line, so
    one stale line fails alone.
+10. **A blank payer is never a known payer** (follow-up b). The payer
+    key is the payer and the reference, and a line with a blank payer
+    gets none: it never creates a `bank_payers` row nor matches one, in
+    the known-payer suggester, a standing order's match or the "make this
+    a standing order" offer. Otherwise a generic reference ("DONATION",
+    "MONTHLY") would act as a payer, and anyone quoting it would pre-tick
+    as a donor matched before. Rows already kept with a blank payer are
+    skipped when read; no migration.
