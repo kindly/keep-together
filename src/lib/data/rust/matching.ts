@@ -118,6 +118,24 @@ export function useLines(
   })
 }
 
+/**
+ * An account's unmatched lines without suggestions (oldest first): what a
+ * picker chooses from.
+ */
+export function useLineChoices(accountId: string | null) {
+  const { slug } = useTenant()
+  return useQuery({
+    queryKey: keys.bankLines(slug, accountId ?? '', 'choices'),
+    enabled: accountId !== null,
+    queryFn: async (): Promise<Array<StatementLine>> => {
+      const rows = await get<Array<WireLine>>(
+        tenantPath(slug, 'bank', 'accounts', accountId ?? '', 'line-choices'),
+      )
+      return rows.map(lineFromWire)
+    },
+  })
+}
+
 /** One line, what it is matched to, and its suggestions. */
 export function useLine(id: string | null) {
   const { slug } = useTenant()

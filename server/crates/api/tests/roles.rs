@@ -152,6 +152,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /bank/accounts",
             "GET /bank/accounts/{id}",
             "GET /bank/accounts/{id}/imports",
+            "GET /bank/accounts/{id}/line-choices",
             "GET /bank/accounts/{id}/lines",
             "GET /bank/batches",
             "GET /bank/batches/{id}",

@@ -164,12 +164,31 @@ async fn hand_transfers_near_a_line_are_listed_within_the_window() {
 }
 
 #[tokio::test]
+async fn line_choices_are_the_unmatched_lines_without_suggestions() {
+    let p = setup().await;
+    let line = p.line(2, 1000, "J BLOGGS", "").await;
+    let list = ok(
+        &p.w,
+        "GET",
+        &format!("/api/t/alpha/bank/accounts/{}/line-choices", p.account),
+        &p.sam,
+        None,
+    )
+    .await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["id"], line["id"]);
+    assert!(list[0].get("suggestions").is_none());
+}
+
+#[tokio::test]
 async fn viewers_get_403_and_b_sees_none_of_a() {
     let p = setup().await;
     let jo = p.contact("Jo", "Bloggs").await;
     let line = p.line(2, 1000, "J BLOGGS", "").await;
     let line = line["id"].as_str().unwrap().to_owned();
+    let acc = p.account.clone();
     for (method, path) in [
+        ("GET", format!("/api/t/alpha/bank/accounts/{acc}/line-choices")),
         ("GET", format!("/api/t/alpha/contacts/{jo}/bank-payers")),
         ("POST", format!("/api/t/alpha/contacts/{jo}/bank-payers/forget")),
         ("GET", format!("/api/t/alpha/bank/lines/{line}/hand-transfers")),

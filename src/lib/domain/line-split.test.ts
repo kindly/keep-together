@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { payerAsPerson, remainderOf, splitProblems } from './line-split'
+import {
+  payerAsPerson,
+  remainderOf,
+  splitIssues,
+  splitProblems,
+} from './line-split'
+
+const found = { kind: 'existing' } as const
 
 describe('splitting a statement line', () => {
   it('the parts and the rest add up to the line exactly', () => {
@@ -9,22 +16,50 @@ describe('splitting a statement line', () => {
   })
 
   it('says what keeps a split from saving', () => {
-    const ok = { amount: 3000n, donor: true }
+    const ok = { amount: 3000n, donor: found }
     expect(splitProblems(6000n, [ok, ok], '')).toEqual([])
     expect(splitProblems(6000n, [ok], '')).toEqual([
       'Say what the rest of the line is (it isn’t a donation)',
     ])
     expect(splitProblems(6000n, [ok], 'Raffle tickets')).toEqual([])
     expect(
-      splitProblems(6000n, [ok, { amount: 4000n, donor: false }], ''),
+      splitProblems(6000n, [ok, { amount: 4000n, donor: null }], ''),
     ).toEqual([
       'Gift 2: choose the donor',
       'The gifts add up to more than the line',
     ])
-    expect(splitProblems(6000n, [{ amount: 0n, donor: true }], 'x')).toEqual([
+    expect(splitProblems(6000n, [{ amount: 0n, donor: found }], 'x')).toEqual([
       'Gift: an amount over £0',
     ])
     expect(splitProblems(6000n, [], '')).toContain('Add at least one gift')
+  })
+
+  it('each problem is beside its field, a new person’s names included', () => {
+    const issues = splitIssues(
+      6000n,
+      [
+        {
+          amount: 4000n,
+          donor: {
+            kind: 'new',
+            contactKind: 'individual',
+            firstName: '',
+            lastName: 'Smith',
+            name: '',
+          },
+        },
+        { amount: null, donor: found },
+      ],
+      '',
+    )
+    expect(issues.parts).toEqual([
+      { donor: 'A new person needs a first and a last name' },
+      { amount: 'An amount over £0' },
+    ])
+    expect(issues.rest).toBe(
+      'Say what the rest of the line is (it isn’t a donation)',
+    )
+    expect(issues.total).toBeUndefined()
   })
 
   it('a payer name as a person to start from', () => {
@@ -36,6 +71,7 @@ describe('splitting a statement line', () => {
       firstName: 'Mary Ann',
       lastName: 'Smith',
     })
+    expect(payerAsPerson('SMITH')).toEqual({ firstName: '', lastName: 'Smith' })
     expect(payerAsPerson('  ')).toEqual({ firstName: '', lastName: '' })
   })
 })

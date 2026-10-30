@@ -43,7 +43,7 @@ vi.mock('../lib/data', () => ({
             },
           },
   }),
-  useLines: () => ({ data: lines }),
+  useLineChoices: () => ({ data: lines }),
   useMatchWrites: () => matchWrites,
   useBankAccounts: () => ({
     data: [
@@ -397,6 +397,15 @@ test('a closed batch matches from its side to an unmatched line of its account',
   ]
   matchWrites.matchBatch.mockResolvedValue({})
   await batchPage()
+  // Nothing chosen for staff: the button waits for a pick.
+  expect(button('Match to this line')?.disabled).toBe(true)
+  await act(async () => {
+    const select = el.querySelector<HTMLSelectElement>(
+      'section[aria-label="Match to a statement line"] select',
+    )!
+    select.value = 'l9'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
   expect(el.textContent).toContain('The slip says £70.00; the line is £69.00.')
   await click(button('Match to this line'))
   expect(matchWrites.matchBatch).toHaveBeenCalledWith('l9', 0, 'b1', 3)

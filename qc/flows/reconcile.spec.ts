@@ -8,7 +8,8 @@ import { uniqueName } from './contact.helpers'
 // footer around Date, Description, Paid in, Paid out, Balance; CAF Bank's
 // preset waits for a real file, so its columns are mapped) is imported
 // with each credit quoting a donor's contact number, so each line has a
-// strong, pre-ticked suggestion; "Accept ticked" is timed from the click
+// strong, pre-ticked suggestion; "Accept ticked" over a page of 30 such
+// lines is timed from the click
 // to the page saying how many it matched (the server's answer). Then one
 // line matched by hand as not a donation, timed from the click to the
 // line saying so. Signed in as user A, an admin; accounts, contacts and
@@ -18,8 +19,8 @@ const RECONCILE = { type: 'route', description: '/t/$slug/bank/reconcile' }
 const LINE = { type: 'route', description: '/t/$slug/bank/lines/$lineId' }
 const RULES = { type: 'route', description: '/t/$slug/bank/rules' }
 
-/** Lines each "Accept ticked" sample matches. */
-const PER_SAMPLE = 5
+/** Lines each "Accept ticked" sample matches: about a statement page. */
+const PER_SAMPLE = 30
 
 const CAF_MAPPING = {
   kind: 'mapping',

@@ -1,7 +1,8 @@
 //! What the reconcile pages read beside step 4's matching routes (bank
 //! transfers 6b): a contact's remembered payers and forgetting them
-//! (g1q8: shown and removable on the contact), and the transfers entered
-//! by hand that a line could be matched to. Staff and admins only:
+//! (g1q8: shown and removable on the contact), the transfers entered
+//! by hand that a line could be matched to, and an account's unmatched
+//! lines to pick one from (no suggestions computed). Staff and admins only:
 //! payers are read from statement lines, which viewers never see (g1q9).
 
 use axum::extract::Path;
@@ -21,6 +22,7 @@ pub fn router() -> Router {
         .route("/contacts/{id}/bank-payers", get(payers))
         .route("/contacts/{id}/bank-payers/forget", post(forget))
         .route("/bank/lines/{id}/hand-transfers", get(hand_transfers))
+        .route("/bank/accounts/{id}/line-choices", get(line_choices))
 }
 
 fn require_staff(t: &Tenant) -> Result<(), ApiError> {
@@ -147,6 +149,27 @@ async fn hand_transfers(
                 })
             })
             .collect()
+    })
+    .await
+    .map(Json)
+}
+
+/// `GET bank/accounts/{id}/line-choices`: the account's unmatched lines,
+/// oldest first (at most 200), without suggestions: what a picker (a
+/// batch matched from its side) chooses from. The lines read with
+/// suggestions is step 4's `GET bank/accounts/{id}/lines`.
+async fn line_choices(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+) -> Result<Json<Vec<banking::matching::LineView>>, ApiError> {
+    require_staff(&t)?;
+    t.read(move |r| {
+        banking::account::account(r, &id)?.ok_or(ApiError::NotFound)?;
+        Ok(banking::matching::lines(
+            r,
+            &id,
+            banking::matching::MatchState::Unmatched,
+        )?)
     })
     .await
     .map(Json)

@@ -9,9 +9,10 @@ import {
   useBatch,
   useBatchWrites,
   useLine,
-  useLines,
+  useLineChoices,
   useMatchWrites,
 } from '../lib/data'
+import { nearestFirst } from '../lib/domain/reconcile'
 import type { BatchGift, PayingInBatch } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
 import { STATUS_LABELS, isReceived } from '../lib/domain/gift-status'
@@ -513,7 +514,7 @@ function EditForm({
 function BatchLine({ batch: b }: { batch: PayingInBatch }) {
   const writes = useMatchWrites()
   const line = useLine(b.line?.id ?? null)
-  const open = useLines(b.line ? null : b.accountId, 'unmatched')
+  const open = useLineChoices(b.line ? null : b.accountId)
   const [picked, setPicked] = useState('')
   const [asking, setAsking] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -566,8 +567,13 @@ function BatchLine({ batch: b }: { batch: PayingInBatch }) {
     )
   }
 
-  const lines = open.data ?? []
-  const chosen = lines.find((l) => l.id === (picked || lines.at(0)?.id))
+  // Nearest the slip first (amount, then date); none chosen for staff.
+  const lines = nearestFirst(
+    open.data ?? [],
+    { amount: b.total ?? b.giftsTotal, date: b.bankedOn },
+    (l) => ({ amount: l.amount, date: l.postedOn }),
+  )
+  const chosen = lines.find((l) => l.id === picked)
   return (
     <section
       aria-label="Match to a statement line"
@@ -585,10 +591,11 @@ function BatchLine({ batch: b }: { batch: PayingInBatch }) {
           <label className="flex flex-col gap-1 text-sm">
             Line
             <select
-              value={chosen?.id ?? ''}
+              value={picked}
               onChange={(e) => setPicked(e.target.value)}
               className={`${field} w-full max-w-lg`}
             >
+              <option value="">Choose a line…</option>
               {lines.map((l) => (
                 <option key={l.id} value={l.id}>
                   {formatDay(l.postedOn)}, {formatPence(l.amount)}

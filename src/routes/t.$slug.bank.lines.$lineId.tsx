@@ -12,7 +12,9 @@ import {
 import { SourceCodePicker } from '../components/source-code-picker'
 import type { ShownCode } from '../components/source-code-picker'
 import {
+  useBankAccounts,
   useBatches,
+  useDonor,
   useHandTransfers,
   useLine,
   useMatchWrites,
@@ -25,10 +27,11 @@ import type {
 } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
 import { STATUS_LABELS } from '../lib/domain/gift-status'
+import { nearestFirst } from '../lib/domain/reconcile'
 import {
   payerAsPerson,
   remainderOf,
-  splitProblems,
+  splitIssues,
 } from '../lib/domain/line-split'
 import type { DonorChoice } from '../lib/gift-form'
 import { formatDay, formatPence, parsePounds } from '../lib/gifts'
@@ -305,7 +308,6 @@ function SplitForm({
   focus: boolean
 }) {
   const writes = useMatchWrites()
-  const { busy, error, attempt } = useAttempt()
   const id = useId()
   const line = d.line
   const [parts, setParts] = useState<Array<Part>>(() => [
@@ -317,38 +319,88 @@ function SplitForm({
     },
   ])
   const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // The server's refusal, field by field (`parts[1].sourceCodeId`).
+  const [refused, setRefused] = useState<Record<string, string>>({})
   const amounts = parts.map((p) => parsePounds(p.amountText))
   const left = remainderOf(line.amount, amounts)
-  const problems = splitProblems(
+  const issues = splitIssues(
     line.amount,
-    parts.map((p, i) => ({ amount: amounts[i], donor: p.donor !== null })),
+    parts.map((p, i) => ({ amount: amounts[i], donor: p.donor })),
     note,
   )
-  const set = (key: number, patch: Partial<Part>) =>
+  const blocked =
+    issues.total !== undefined ||
+    issues.rest !== undefined ||
+    issues.parts.some((p) => p.donor || p.amount)
+  const set = (key: number, patch: Partial<Part>) => {
+    setRefused({})
     setParts((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)))
+  }
+  /** An input's wiring to its message, when it has one. */
+  const describedBy = (name: string, message: string | undefined) =>
+    message
+      ? {
+          'aria-invalid': true as const,
+          'aria-describedby': `${id}-${name}-error`,
+        }
+      : {}
+  const fieldError = (name: string, message: string | undefined) =>
+    message && (
+      <span id={`${id}-${name}-error`} className="text-xs text-red-700">
+        {message}
+      </span>
+    )
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
-    if (problems.length) return
+    if (blocked) return
     const sent: Array<SplitPart> = parts.map((p, i) => ({
       contact: donorRef(p.donor as DonorChoice),
       amount: amounts[i] as bigint,
       ...(p.code ? { sourceCodeId: p.code.id } : {}),
     }))
-    void attempt(() =>
-      writes.gifts(
+    setBusy(true)
+    setError(null)
+    setRefused({})
+    try {
+      await writes.gifts(
         line.id,
         line.matchVersion,
         sent,
         left > 0n ? { amount: left, note: note.trim() } : undefined,
-      ),
-    )
+      )
+    } catch (err) {
+      if (
+        err instanceof RustApiError &&
+        err.error.kind === 'invalid' &&
+        err.error.problems.every((p) =>
+          /^(parts\[\d+\]|remainder)/.test(p.field),
+        )
+      ) {
+        setRefused(
+          Object.fromEntries(
+            err.error.problems.map((p) => [p.field, p.message]),
+          ),
+        )
+        setError('Check the marked fields.')
+      } else setError(matchRefusal(err))
+    } finally {
+      setBusy(false)
+    }
   }
+
+  /** The server's word on part `i`, any of its fields. */
+  const refusedOn = (i: number, what: string) =>
+    Object.entries(refused).find(([f]) =>
+      f.startsWith(`parts[${i}]${what}`),
+    )?.[1]
 
   return (
     <form
       aria-label="Make gifts from the line"
-      onSubmit={submit}
+      onSubmit={(e) => void submit(e)}
       className="flex flex-col gap-3 rounded border border-neutral-300 p-3"
     >
       <FormHeading focus={focus}>Make gifts from the line</FormHeading>
@@ -356,97 +408,109 @@ function SplitForm({
         Dated {formatDay(line.postedOn)}, the day the money reached the bank;
         their amounts and date are the line’s and can’t be edited afterwards.
       </p>
-      {parts.map((p, i) => (
-        <fieldset
-          key={p.key}
-          className="flex flex-col gap-2 rounded border border-neutral-200 p-2"
-        >
-          <legend className="px-1 text-sm">
-            {parts.length > 1 ? `Gift ${i + 1}` : 'The gift'}
-          </legend>
-          {p.donor ? (
-            <ChosenDonor
-              donor={p.donor}
-              onChange={(donor) => set(p.key, { donor })}
-            />
-          ) : (
-            <div className="flex flex-col gap-1">
-              <label className="text-sm" htmlFor={`${id}-${p.key}-donor`}>
-                Donor
-              </label>
-              <DonorSearch
-                id={`${id}-${p.key}-donor`}
-                onPick={(donor) => set(p.key, { donor })}
+      {parts.map((p, i) => {
+        const donorIssue = issues.parts[i]?.donor ?? refusedOn(i, '.contact')
+        const amountIssue = issues.parts[i]?.amount ?? refusedOn(i, '.amount')
+        const codeIssue = refusedOn(i, '.sourceCodeId')
+        return (
+          <fieldset
+            key={p.key}
+            className="flex flex-col gap-2 rounded border border-neutral-200 p-2"
+          >
+            <legend className="px-1 text-sm">
+              {parts.length > 1 ? `Gift ${i + 1}` : 'The gift'}
+            </legend>
+            {p.donor ? (
+              <ChosenDonor
+                donor={p.donor}
+                onChange={(donor) => set(p.key, { donor })}
+                invalid={describedBy(`${p.key}-donor`, donorIssue)}
               />
-              {line.payer && (
+            ) : (
+              <div className="flex flex-col gap-1">
+                <label className="text-sm" htmlFor={`${id}-${p.key}-donor`}>
+                  Donor
+                </label>
+                <DonorSearch
+                  id={`${id}-${p.key}-donor`}
+                  onPick={(donor) => set(p.key, { donor })}
+                  {...describedBy(`${p.key}-donor`, donorIssue)}
+                />
+                {line.payer && (
+                  <button
+                    type="button"
+                    className="self-start text-sm underline"
+                    onClick={() =>
+                      set(p.key, {
+                        donor: {
+                          kind: 'new',
+                          contactKind: 'individual',
+                          ...payerAsPerson(line.payer),
+                          name: '',
+                          email: '',
+                        },
+                      })
+                    }
+                  >
+                    A new person from the payer: {line.payer}
+                  </button>
+                )}
+              </div>
+            )}
+            {fieldError(`${p.key}-donor`, donorIssue)}
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="flex flex-col gap-1 text-sm">
+                Amount (£)
+                <input
+                  value={p.amountText}
+                  inputMode="decimal"
+                  onChange={(e) => set(p.key, { amountText: e.target.value })}
+                  className={`${field} w-28`}
+                  {...describedBy(`${p.key}-amount`, amountIssue)}
+                />
+                {fieldError(`${p.key}-amount`, amountIssue)}
+              </label>
+              {parts.length > 1 && (
                 <button
                   type="button"
-                  className="self-start text-sm underline"
+                  className={quiet}
                   onClick={() =>
-                    set(p.key, {
-                      donor: {
-                        kind: 'new',
-                        contactKind: 'individual',
-                        ...payerAsPerson(line.payer),
-                        name: '',
-                        email: '',
-                      },
-                    })
+                    setParts((ps) => ps.filter((q) => q.key !== p.key))
                   }
                 >
-                  A new person from the payer: {line.payer}
+                  Remove this gift
                 </button>
               )}
             </div>
-          )}
-          <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1 text-sm">
-              Amount (£)
-              <input
-                value={p.amountText}
-                inputMode="decimal"
-                onChange={(e) => set(p.key, { amountText: e.target.value })}
-                className={`${field} w-28`}
-              />
-            </label>
-            {parts.length > 1 && (
-              <button
-                type="button"
-                className={quiet}
-                onClick={() =>
-                  setParts((ps) => ps.filter((q) => q.key !== p.key))
-                }
-              >
-                Remove this gift
-              </button>
-            )}
-          </div>
-          <SourceCodePicker
-            label="Source code (optional)"
-            value={p.code?.shown ?? null}
-            onPick={(entry) =>
-              set(p.key, {
-                code: {
-                  id: entry.versionId,
-                  shown: {
-                    code: entry.code,
-                    isActive: true,
-                    startDate: entry.startDate,
-                    endDate: entry.endDate,
+            <SourceCodePicker
+              label="Source code (optional)"
+              value={p.code?.shown ?? null}
+              onPick={(entry) =>
+                set(p.key, {
+                  code: {
+                    id: entry.versionId,
+                    shown: {
+                      code: entry.code,
+                      isActive: true,
+                      startDate: entry.startDate,
+                      endDate: entry.endDate,
+                    },
                   },
-                },
-              })
-            }
-            onClear={() => set(p.key, { code: null })}
-          />
-          {!p.code && (
-            <p className="text-xs text-neutral-500">
-              None picked: the donor’s own source code, else the account’s
-              default.
-            </p>
-          )}
-        </fieldset>
-      ))}
+                })
+              }
+              onClear={() => set(p.key, { code: null })}
+            />
+            {!p.code && (
+              <DefaultCode
+                donor={p.donor}
+                accountId={line.accountId}
+                on={line.postedOn}
+              />
+            )}
+            {fieldError(`${p.key}-code`, codeIssue)}
+          </fieldset>
+        )
+      })}
       <button
         type="button"
         className={quiet}
@@ -478,33 +542,27 @@ function SplitForm({
             ? `${formatPence(left)} of the line is left: it isn’t a donation.`
             : `The gifts are ${formatPence(-left)} more than the line.`}
       </p>
+      {issues.total === 'Add at least one gift' && (
+        <p className="text-sm text-red-700">{issues.total}</p>
+      )}
       {left > 0n && (
         <label className="flex flex-col gap-1 text-sm">
           What the rest is
           <input
             value={note}
             placeholder="Raffle tickets, a refund…"
-            onChange={(e) => setNote(e.target.value)}
+            onChange={(e) => {
+              setRefused({})
+              setNote(e.target.value)
+            }}
             className={`${field} w-full max-w-md`}
+            {...describedBy('rest', issues.rest ?? refused['remainder.note'])}
           />
+          {fieldError('rest', issues.rest ?? refused['remainder.note'])}
         </label>
       )}
-      {problems.length > 0 && (
-        <ul
-          className="list-disc pl-5 text-sm text-neutral-600"
-          data-testid="split-problems"
-        >
-          {problems.map((p) => (
-            <li key={p}>{p}</li>
-          ))}
-        </ul>
-      )}
       <Alert error={error} />
-      <button
-        type="submit"
-        className={button}
-        disabled={busy || problems.length > 0}
-      >
+      <button type="submit" className={button} disabled={busy || blocked}>
         {busy
           ? 'Saving…'
           : parts.length > 1
@@ -515,13 +573,48 @@ function SplitForm({
   )
 }
 
+/**
+ * The code a part with none picked takes (g2q6): the donor's acquisition
+ * code, else the account's default; named, so staff see what they accept.
+ */
+function DefaultCode({
+  donor,
+  accountId,
+  on,
+}: {
+  donor: DonorChoice | null
+  accountId: string
+  on: string
+}) {
+  const existing = donor?.kind === 'existing' ? donor.id : null
+  const info = useDonor(existing, on)
+  const accounts = useBankAccounts()
+  const fallback = accounts.data?.find((a) => a.id === accountId)
+    ?.defaultSourceCode?.code
+  const own = info?.acquisition?.code
+  return (
+    <p className="text-xs text-neutral-500" data-testid="split-default-code">
+      {own
+        ? `None picked: ${own}, the donor’s own source code.`
+        : fallback
+          ? `None picked: ${fallback}, the account’s default.`
+          : existing === null && donor === null
+            ? 'None picked: the donor’s own source code, else the account’s default.'
+            : 'None picked, and there is no default to fall back on: pick one.'}
+    </p>
+  )
+}
+
 /** A chosen donor: an existing contact's name, or a new one's fields. */
 function ChosenDonor({
   donor,
   onChange,
+  invalid,
 }: {
   donor: DonorChoice
   onChange: (d: DonorChoice | null) => void
+  /** A new donor's names' wiring to the part's donor message. */
+  invalid: { 'aria-invalid'?: true; 'aria-describedby'?: string }
 }) {
   if (donor.kind === 'existing')
     return (
@@ -557,6 +650,7 @@ function ChosenDonor({
               value={donor.firstName}
               onChange={(e) => set({ firstName: e.target.value })}
               className={`${field} w-40`}
+              {...(donor.firstName.trim() ? {} : invalid)}
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
@@ -565,6 +659,7 @@ function ChosenDonor({
               value={donor.lastName}
               onChange={(e) => set({ lastName: e.target.value })}
               className={`${field} w-40`}
+              {...(donor.lastName.trim() ? {} : invalid)}
             />
           </label>
         </div>
@@ -575,6 +670,7 @@ function ChosenDonor({
             value={donor.name}
             onChange={(e) => set({ name: e.target.value })}
             className={`${field} w-64`}
+            {...invalid}
           />
         </label>
       )}
@@ -616,7 +712,8 @@ function EnteredForm({
           writes.matchGifts(
             d.line.id,
             d.line.matchVersion,
-            picked,
+            // Only those still listed: one matched elsewhere meanwhile is gone.
+            chosen.map((g) => g.id),
             left > 0n ? { amount: left, note: note.trim() } : undefined,
           ),
         )
@@ -706,13 +803,16 @@ function BatchForm({
   const writes = useMatchWrites()
   const { busy, error, attempt } = useAttempt()
   const closed = useBatches('closed')
-  const candidates = (closed.data ?? []).filter(
-    (b) => b.accountId === d.line.accountId && b.line === null,
+  // Nearest the line first (amount, then date); none chosen for staff.
+  const candidates = nearestFirst(
+    (closed.data ?? []).filter(
+      (b) => b.accountId === d.line.accountId && b.line === null,
+    ),
+    { amount: d.line.amount, date: d.line.postedOn },
+    (b) => ({ amount: b.total, date: b.bankedOn }),
   )
   const [picked, setPicked] = useState<string>('')
-  const batch = candidates.find(
-    (b) => b.id === (picked || candidates.at(0)?.id),
-  )
+  const batch = candidates.find((b) => b.id === picked)
   return (
     <form
       aria-label="Match to a paying-in batch"
@@ -742,10 +842,11 @@ function BatchForm({
           <label className="flex flex-col gap-1 text-sm">
             Batch
             <select
-              value={batch?.id ?? ''}
+              value={picked}
               onChange={(e) => setPicked(e.target.value)}
               className={`${field} w-96 max-w-full`}
             >
+              <option value="">Choose a batch…</option>
               {candidates.map((b) => (
                 <option key={b.id} value={b.id}>
                   {b.slipNumber ? `Slip ${b.slipNumber}` : 'No slip number'}
@@ -841,8 +942,10 @@ function Matched({ detail: d }: { detail: LineDetail }) {
     d.gifts.length === 0 &&
       d.batchId === null &&
       'It goes back to unmatched, counting for nothing until matched again.',
-    (made.length > 0 || d.batchId !== null) &&
+    made.length > 0 &&
       'If a voided gift was claimed for Gift Aid, the next claim repays it.',
+    d.batchId !== null &&
+      'If one of its cheques was claimed for Gift Aid, the next claim repays it.',
   ].filter(Boolean)
   return (
     <section aria-label="What it is matched to" className="flex flex-col gap-3">

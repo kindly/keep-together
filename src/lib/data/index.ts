@@ -212,6 +212,7 @@ export {
   useForgetPayers,
   useHandTransfers,
   useLine,
+  useLineChoices,
   useLines,
   useMatchWrites,
   usePayers,

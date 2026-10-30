@@ -13,6 +13,7 @@ import type {
   LineWithSuggestions,
 } from '../lib/data'
 import { describe } from '../lib/data/rust/client'
+import { nameOnly, proposalKey } from '../lib/domain/reconcile'
 import { useCanWrite } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/bank/reconcile')({
@@ -129,8 +130,12 @@ function ReconcilePage() {
   )
 }
 
-/** Per line: the ticked suggestion's index, or none. */
-type Ticks = Record<string, number | null>
+/**
+ * Per line: the ticked suggestion's identity (`proposalKey`), or none.
+ * Not its index: a refetch can reorder or add suggestions, and a tick
+ * must never move to one staff didn't tick.
+ */
+type Ticks = Record<string, string | null>
 
 function Lines({
   accountId,
@@ -162,24 +167,28 @@ function Lines({
   if (lines.data === undefined)
     return <p className="text-sm text-neutral-500">Loading…</p>
   const rows = lines.data
-  const tickOf = (l: LineWithSuggestions) =>
-    l.id in ticks
-      ? ticks[l.id]
-      : (() => {
-          const i = l.suggestions.findIndex((s) => s.ticked)
-          return i < 0 ? null : i
-        })()
+  // A suggestion staff may tick: never one made from a name alone (g1q5).
+  const bulk = (l: LineWithSuggestions) =>
+    l.suggestions.filter((x) => !nameOnly(x))
+  const tickOf = (l: LineWithSuggestions): string | null => {
+    const key =
+      l.id in ticks
+        ? ticks[l.id]
+        : (() => {
+            const pre = bulk(l).find((x) => x.ticked)
+            return pre ? proposalKey(pre.proposal) : null
+          })()
+    // Gone or changed since it was ticked: no longer ticked.
+    return key !== null && bulk(l).some((x) => proposalKey(x.proposal) === key)
+      ? key
+      : null
+  }
   const ticked = rows.flatMap((l) => {
-    const i = tickOf(l)
-    return i === null || !l.suggestions[i]
-      ? []
-      : [
-          {
-            lineId: l.id,
-            expected: l.matchVersion,
-            proposal: l.suggestions[i].proposal,
-          },
-        ]
+    const key = tickOf(l)
+    const s = bulk(l).find((x) => proposalKey(x.proposal) === key)
+    return s
+      ? [{ lineId: l.id, expected: l.matchVersion, proposal: s.proposal }]
+      : []
   })
 
   async function accept() {
@@ -260,9 +269,9 @@ function LineCard({
   onTick,
 }: {
   line: LineWithSuggestions
-  tick: number | null
+  tick: string | null
   outcome?: AcceptOutcome
-  onTick: (i: number | null) => void
+  onTick: (key: string | null) => void
 }) {
   const { slug } = Route.useParams()
   return (
@@ -292,23 +301,45 @@ function LineCard({
       {l.suggestions.length > 0 && (
         <fieldset className="flex flex-col gap-1">
           <legend className="sr-only">Suggestions for this line</legend>
-          {l.suggestions.map((s, i) => (
-            <label key={i} className="flex items-start gap-2">
-              <input
-                type="checkbox"
-                className="mt-1"
-                checked={tick === i}
-                onChange={(e) => onTick(e.target.checked ? i : null)}
-              />
-              <span className="flex flex-col">
+          {l.suggestions.map((s) =>
+            nameOnly(s) ? (
+              <div
+                key={proposalKey(s.proposal)}
+                data-testid="name-only"
+                className="flex flex-col pl-6"
+              >
                 <span className="flex flex-wrap items-center gap-2">
                   <ConfidenceBadge s={s} />
                   {proposalText(s)}
                 </span>
-                <span className="text-xs text-neutral-600">{s.reason}</span>
-              </span>
-            </label>
-          ))}
+                <span className="text-xs text-neutral-600">
+                  {s.reason}. A name alone is never accepted in bulk: match it
+                  by hand to use it.
+                </span>
+              </div>
+            ) : (
+              <label
+                key={proposalKey(s.proposal)}
+                className="flex items-start gap-2"
+              >
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={tick === proposalKey(s.proposal)}
+                  onChange={(e) =>
+                    onTick(e.target.checked ? proposalKey(s.proposal) : null)
+                  }
+                />
+                <span className="flex flex-col">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <ConfidenceBadge s={s} />
+                    {proposalText(s)}
+                  </span>
+                  <span className="text-xs text-neutral-600">{s.reason}</span>
+                </span>
+              </label>
+            ),
+          )}
         </fieldset>
       )}
       {l.state === 'unmatched' && l.suggestions.length === 0 && (

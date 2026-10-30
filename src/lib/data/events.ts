@@ -88,11 +88,14 @@ const INVALIDATES: Partial<
   // record-gift save's contact writes come as `contacts` events.
   // A regular gift's card lists its payments' gifts (GoCardless D3):
   // the contacts' lists only, which never call GoCardless.
-  // A batch's page lists its gifts and their total (bank transfers 6b).
+  // A batch's page lists its gifts and their total (bank transfers 6b);
+  // a line's suggestions and the transfers it could match read gifts too:
+  // a transfer recorded by hand elsewhere drops a stale pre-tick.
   gifts: (slug) => [
     keys.gifts(slug),
     keys.regularGiftLists(slug),
     keys.batches(slug),
+    keys.bank(slug),
   ],
   gift_aid_declarations: (slug) => [keys.declarations(slug), keys.gifts(slug)],
   // G3: a claim shows in the list, on its page and in every preview
@@ -108,7 +111,8 @@ const INVALIDATES: Partial<
   // GoCardless D3: a regular gift (its set-up, mandate, terms), a
   // payment, a staff request for one: the cards, the unmatched list.
   // A payment's gift comes as a `gifts` event too.
-  regular_gifts: (slug) => [keys.gocardless(slug)],
+  // A standing order's expected payment is a suggestion (step 5).
+  regular_gifts: (slug) => [keys.gocardless(slug), keys.bank(slug)],
   regular_gift_terms: (slug) => [keys.gocardless(slug)],
   direct_debit_payments: (slug) => [keys.gocardless(slug)],
   provider_requests: (slug) => [keys.gocardless(slug)],

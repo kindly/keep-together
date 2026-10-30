@@ -25,6 +25,7 @@ let lines: Array<LineWithSuggestions> = []
 let detail: LineDetail | undefined
 let payers: Array<object> = []
 let rules: Array<object> = []
+let closedBatches: Array<object> = []
 const writes = {
   gifts: vi.fn(),
   matchGifts: vi.fn(),
@@ -43,10 +44,11 @@ vi.mock('../lib/data', () => ({
   useLine: () => ({ data: detail, error: null }),
   useMatchWrites: () => writes,
   useHandTransfers: () => ({ data: [] }),
-  useBatches: () => ({ data: [] }),
+  useBatches: () => ({ data: closedBatches }),
   useRules: () => ({ data: rules, error: null }),
   useRuleWrites: () => ruleWrites,
   usePayers: () => ({ data: payers }),
+  useDonor: () => undefined,
   useForgetPayers: () => forget,
 }))
 vi.mock('../lib/tenant', () => ({
@@ -133,6 +135,7 @@ beforeEach(() => {
   detail = undefined
   payers = []
   rules = []
+  closedBatches = []
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -280,9 +283,13 @@ test('a split adds up to the line as you type; the rest needs a note', async () 
     .map((l) => l.querySelector('input')!)
   expect(amounts[1].value).toBe('20.00')
   await setInput(amounts[1], '15')
-  expect(byTestId('split-problems')).toContain(
-    'Say what the rest of the line is',
-  )
+  // The rest's problem is beside its field.
+  const rest = labelled('What the rest is')
+  expect(rest.getAttribute('aria-invalid')).toBe('true')
+  expect(
+    document.getElementById(rest.getAttribute('aria-describedby')!)
+      ?.textContent,
+  ).toBe('Say what the rest of the line is (it isn’t a donation)')
   expect(button('Make these gifts')?.disabled).toBe(true)
   await setInput(labelled('What the rest is'), 'Raffle tickets')
   await click(button('Make these gifts'))
@@ -429,4 +436,109 @@ test('a contact’s payer details are listed for staff and forgotten after askin
   role = 'viewer'
   await act(async () => root.render(<BankPayers contactId="c1" />))
   expect(el.textContent).toBe('')
+})
+
+test('a tick follows its suggestion through a refetch, and goes when it does', async () => {
+  const jo = suggestion({ ticked: false })
+  const sam = suggestion({
+    proposal: { kind: 'newGift', contactId: 'c2' },
+    contactId: 'c2',
+    contactName: 'Sam Smith',
+    ticked: false,
+    reason: 'a known payer',
+  })
+  lines = [{ ...line(), suggestions: [jo, sam] }]
+  writes.accept.mockResolvedValue([])
+  await reconcile()
+  const box = (name: string) =>
+    [...el.querySelectorAll('label')]
+      .find((l) => l.textContent.includes(name))!
+      .querySelector('input')!
+  await act(async () => box('Sam Smith').click())
+  // A colleague's match elsewhere adds a suggestion ranked first.
+  const first = suggestion({
+    proposal: { kind: 'existingGifts', giftIds: ['g9'] },
+    contactId: 'c3',
+    contactName: 'Al New',
+    ticked: false,
+  })
+  lines = [{ ...line(), suggestions: [first, jo, sam] }]
+  await reconcile()
+  expect(box('Sam Smith').checked).toBe(true)
+  expect(box('Jo Bloggs').checked).toBe(false)
+  await click(button('Accept ticked (1)'))
+  expect(writes.accept).toHaveBeenLastCalledWith([
+    {
+      lineId: 'l1',
+      expected: 2,
+      proposal: { kind: 'newGift', contactId: 'c2' },
+    },
+  ])
+  // Sam's suggestion gone (a transfer recorded by hand elsewhere): no tick.
+  lines = [{ ...line(), suggestions: [first, jo] }]
+  await reconcile()
+  expect(button('Accept ticked (0)')?.disabled).toBe(true)
+})
+
+test('a name alone can’t be ticked for Accept ticked, only matched by hand', async () => {
+  lines = [
+    {
+      ...line(),
+      suggestions: [
+        suggestion({
+          confidence: 'suggested',
+          suggesters: ['nameOnly'],
+          reason: 'the payer’s name only',
+          ticked: true,
+        }),
+      ],
+    },
+  ]
+  await reconcile()
+  expect(el.querySelectorAll('input[type="checkbox"]')).toHaveLength(0)
+  expect(byTestId('name-only')).toContain(
+    'A name alone is never accepted in bulk',
+  )
+  expect(button('Accept ticked (0)')?.disabled).toBe(true)
+})
+
+test('a batch for the line is chosen by staff, never pre-selected', async () => {
+  detail = { line: line(), gifts: [], batchId: null, suggestions: [] }
+  await linePage()
+  closedBatches = [
+    {
+      id: 'b1',
+      accountId: 'acc1',
+      line: null,
+      slipNumber: '1',
+      bankedOn: '2026-10-01',
+      total: 500n,
+      lineVersion: 0,
+    },
+    {
+      id: 'b2',
+      accountId: 'acc1',
+      line: null,
+      slipNumber: '2',
+      bankedOn: '2026-11-02',
+      total: 6000n,
+      lineVersion: 4,
+    },
+  ]
+  writes.matchBatch.mockResolvedValue({})
+  await linePage()
+  await click(button('A paying-in batch'))
+  const select = el.querySelector<HTMLSelectElement>(
+    'form[aria-label="Match to a paying-in batch"] select',
+  )!
+  // Nearest first (the £60 slip), but nothing chosen: staff choose.
+  expect([...select.options].map((o) => o.value)).toEqual(['', 'b2', 'b1'])
+  expect(select.value).toBe('')
+  expect(button('Match to this batch')?.disabled).toBe(true)
+  await act(async () => {
+    select.value = 'b2'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await click(button('Match to this batch'))
+  expect(writes.matchBatch).toHaveBeenCalledWith('l1', 2, 'b2', 4)
 })
