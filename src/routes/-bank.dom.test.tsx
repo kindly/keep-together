@@ -494,6 +494,39 @@ test('no header row: the data starts on line 1, by position', async () => {
   })
 })
 
+test('line 1 taken for the column names is said before importing', async () => {
+  accounts = [account()]
+  // No header row, and a blank payer: by position, line 1 would be
+  // skipped as the names and its credit lost.
+  peek.mockResolvedValue([
+    { line: 1, cells: ['02/11/2026', '', '25.00', ''] },
+    { line: 2, cells: ['03/11/2026', 'A JONES', '10.00', ''] },
+  ])
+  preview.mockResolvedValue(outcome())
+  await importPage()
+  await chooseFile('statement.csv')
+  await click(button('Next'))
+  await click(button('Map the columns by hand'))
+  const select = (label: string, value: string) =>
+    act(async () => {
+      const l = [...el.querySelectorAll('label')].find(
+        (x) => x.querySelector('select') && x.textContent.startsWith(label),
+      )!
+      const s = l.querySelector('select')!
+      s.value = value
+      s.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+  await select('Date', '0')
+  await select('Amount column', '2')
+  expect(byTestId('bank-header-is-data')).toContain(
+    'Line 1 is a transaction, not column names',
+  )
+  expect(button('Preview with these columns')?.disabled).toBe(true)
+  await select('Which line', 'none')
+  expect(byTestId('bank-header-is-data')).toBeUndefined()
+  expect(button('Preview with these columns')?.disabled).toBe(false)
+})
+
 test('an admin reading a file another way keeps the saved layout by default', async () => {
   role = 'admin'
   preview.mockResolvedValue(outcome())

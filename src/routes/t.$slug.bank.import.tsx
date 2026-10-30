@@ -23,6 +23,7 @@ import { RustApiError, describe } from '../lib/data/rust/client'
 import {
   columnLabel,
   emptyPicks,
+  headerIsData,
   mappingOf,
   missing,
 } from '../lib/domain/bank-mapping'
@@ -510,7 +511,10 @@ function MapColumns({
   const header = Array.from({ length: width }, (_, i) =>
     picks.headerRow === null ? '' : (rows[picks.headerRow]?.cells[i] ?? ''),
   )
-  const mapping = mappingOf(picks, header)
+  // Line 1 of a file with no header row, picked as the names: refused by
+  // the server too, since its credit would be lost.
+  const headerData = headerIsData(picks, header)
+  const mapping = headerData ? null : mappingOf(picks, header)
   const set = (p: Partial<MappingPicks>) => setPicks({ ...picks, ...p })
   const amount = picks.amount
   return (
@@ -677,7 +681,17 @@ function MapColumns({
           ))}
         </div>
       </fieldset>
-      {!mapping && (
+      {headerData && (
+        <p
+          role="alert"
+          data-testid="bank-header-is-data"
+          className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-sm text-amber-900"
+        >
+          Line {rows[picks.headerRow ?? 0]?.line} is a transaction, not column
+          names: choose “No header row” above if the data starts on line 1.
+        </p>
+      )}
+      {!mapping && !headerData && (
         <p className="text-sm text-neutral-600">
           Still to choose: {missing(picks).join(', ')}.
         </p>

@@ -107,6 +107,25 @@ export function mappingOf(
   }
 }
 
+/** Money as a statement writes it (`12`, `-1,234.56`, `£5.00 CR`), as
+ * `banking::money` reads it, near enough to tell a number from a name. */
+const MONEY =
+  /^[-+(]?\s*£?\s*-?\d{1,3}(?:,\d{3})*(?:\d*)(?:\.\d+)?\)?\s*(?:CR|DR)?-?$/i
+
+/**
+ * Whether the row picked as the header is a transaction: its amount
+ * cell is money. The server refuses that mapping (its line 1 credit would
+ * be lost); the screen says so first.
+ */
+export function headerIsData(p: MappingPicks, header: Array<string>): boolean {
+  if (p.headerRow === null) return false
+  const amounts =
+    p.amount.kind === 'signed'
+      ? [p.amount.column]
+      : [p.amount.paidIn, p.amount.paidOut]
+  return amounts.some((i) => i !== null && MONEY.test((header[i] ?? '').trim()))
+}
+
 /** A column's label on the mapping screen: its letter and header text. */
 export function columnLabel(i: number, header: Array<string>): string {
   let n = i

@@ -258,6 +258,27 @@ impl Resolved<'_> {
     }
 }
 
+/// Whether the header row's amount cell(s), as `cell` reads them, are
+/// money: a transaction taken for the column names. Its credit would be
+/// lost unseen (and, found by name, next month's file would look for
+/// columns called `25.00`).
+fn amounts_are_money<'a>(mapping: &'a ColumnMapping, cell: impl Fn(&'a Column) -> &'a str) -> bool {
+    let amounts = match &mapping.amount {
+        AmountColumns::Signed { column } => vec![column],
+        AmountColumns::PaidInOut { paid_in, paid_out } => vec![paid_in, paid_out],
+    };
+    amounts
+        .into_iter()
+        .any(|c| matches!(parse_pence(cell(c), Decimal::Point), Ok(Some(_))))
+}
+
+fn taken_for_header(line: usize) -> RowError {
+    RowError::new(
+        line,
+        "This line is a transaction, not column names: choose \"No header row\"",
+    )
+}
+
 /// Reads a CSV statement with `mapping`.
 pub fn read(text: &str, mapping: &ColumnMapping) -> Result<Parsed, Vec<RowError>> {
     mapping.check().map_err(|m| vec![RowError::new(0, m)])?;
@@ -265,7 +286,22 @@ pub fn read(text: &str, mapping: &ColumnMapping) -> Result<Parsed, Vec<RowError>
     let mut parsed = Parsed::default();
 
     let (header_at, names) = match mapping.header {
-        HeaderRow::Skip { rows } => (usize::from(rows), vec![]),
+        HeaderRow::Skip { rows } => {
+            let rows = usize::from(rows);
+            // The last row passed over is the header: one whose amount is
+            // money is line 1 of a file with no header row, its credit
+            // about to be lost.
+            if let Some(last) = rows.checked_sub(1).and_then(|i| records.get(i)) {
+                let cell = |c: &Column| match c {
+                    Column::Index(i) => last.fields.get(usize::from(*i)).map_or("", String::as_str),
+                    Column::Name(_) => "",
+                };
+                if amounts_are_money(mapping, cell) {
+                    return Err(vec![taken_for_header(last.line)]);
+                }
+            }
+            (rows, vec![])
+        }
         HeaderRow::Find => {
             let wanted: Vec<String> = mapping
                 .columns()
@@ -291,22 +327,11 @@ pub fn read(text: &str, mapping: &ColumnMapping) -> Result<Parsed, Vec<RowError>
                     format!("No row has the columns {}", list.join(", ")),
                 )]);
             };
-            // A transaction taken for the column names: its amount is money.
-            // Its credit would be lost unseen, and next month's file would
-            // look for columns called `25.00`.
-            let amounts = match &mapping.amount {
-                AmountColumns::Signed { column } => vec![column],
-                AmountColumns::PaidInOut { paid_in, paid_out } => vec![paid_in, paid_out],
-            };
-            let money = amounts.iter().any(|c| match c {
-                Column::Name(n) => matches!(parse_pence(n, Decimal::Point), Ok(Some(_))),
-                Column::Index(_) => false,
-            });
-            if money {
-                return Err(vec![RowError::new(
-                    records[at].line,
-                    "This line is a transaction, not column names: choose \"No header row\"",
-                )]);
+            if amounts_are_money(mapping, |c| match c {
+                Column::Name(n) => n.as_str(),
+                Column::Index(_) => "",
+            }) {
+                return Err(vec![taken_for_header(records[at].line)]);
             }
             let names = records[at].fields.iter().map(|f| header_key(f)).collect();
             (at + 1, names)
@@ -591,6 +616,32 @@ mod tests {
         let errors = read(text, &mapping).unwrap_err();
         assert_eq!(errors[0].line, 1);
         assert!(errors[0].message.contains("No header row"), "{errors:?}");
+    }
+
+    #[test]
+    fn a_transaction_skipped_as_the_header_by_position_is_refused() {
+        // Line 1 is data with a blank payer, so its names weren't distinct
+        // and the mapping went by position, skipping it as the header.
+        let mapping = ColumnMapping {
+            header: HeaderRow::Skip { rows: 1 },
+            date: Column::Index(0),
+            amount: AmountColumns::PaidInOut {
+                paid_in: Column::Index(2),
+                paid_out: Column::Index(3),
+            },
+            payer: Some(Column::Index(1)),
+            reference: None,
+            narrative: vec![],
+            bank_id: None,
+            currency: None,
+        };
+        let text = "02/11/2026,,25.00,\n03/11/2026,A JONES,10.00,\n";
+        let errors = read(text, &mapping).unwrap_err();
+        assert_eq!(errors[0].line, 1);
+        assert!(errors[0].message.contains("No header row"), "{errors:?}");
+        // A real header row there reads as before.
+        let ok = format!("Date,Payer,In,Out\n{text}");
+        assert_eq!(read(&ok, &mapping).unwrap().credits.len(), 2);
     }
 
     #[test]

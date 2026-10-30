@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { columnLabel, emptyPicks, mappingOf, missing } from './bank-mapping'
+import {
+  columnLabel,
+  emptyPicks,
+  headerIsData,
+  mappingOf,
+  missing,
+} from './bank-mapping'
 import type { MappingPicks } from './bank-mapping'
 
 const lloydsHeader = [
@@ -86,6 +92,22 @@ describe('bank column mapping', () => {
       amount: { kind: 'signed', column: 2 },
     }
     expect(mappingOf(picks, header)?.header).toEqual({ kind: 'skip', rows: 1 })
+  })
+
+  it('a header row whose amount is money is a transaction', () => {
+    const picks: MappingPicks = {
+      ...emptyPicks(),
+      date: 0,
+      amount: { kind: 'paidInOut', paidIn: 2, paidOut: 3 },
+    }
+    expect(headerIsData(picks, ['02/11/2026', '', '25.00', ''])).toBe(true)
+    expect(headerIsData(picks, ['Date', 'Payer', 'In', 'Out'])).toBe(false)
+    for (const cell of ['12', '-1,234.56', '£5.00 CR', '(3.00)'])
+      expect(headerIsData(picks, ['d', '', cell, '']), cell).toBe(true)
+    // No header row: nothing is taken for one.
+    expect(headerIsData({ ...picks, headerRow: null }, ['', '', '25.00'])).toBe(
+      false,
+    )
   })
 
   it('labels columns by letter and name', () => {
