@@ -392,8 +392,10 @@ async fn create(
                     amount: t.amount,
                     interval_unit: t.frequency.as_str(),
                     day_of_month: t.day_of_month,
+                    // Quarterly never reaches GoCardless: the terms contract
+                    // refuses it on a Direct Debit.
                     month: match t.frequency {
-                        Frequency::Monthly => None,
+                        Frequency::Monthly | Frequency::Quarterly => None,
                         Frequency::Yearly => t
                             .month
                             .and_then(|m| MONTHS.get(usize::from(m).wrapping_sub(1)).copied()),

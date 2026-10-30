@@ -20,6 +20,7 @@ pub mod queries;
 pub mod regular;
 pub mod requests;
 pub mod rules;
+pub mod standing;
 pub mod terms;
 pub mod terms_rules;
 pub mod types;
@@ -135,6 +136,7 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &LINE,
         &PAYING_IN_BATCH,
         &bank::BATCH_LINE,
+        &standing::STANDING_ORDER_MISSED,
         &REGULAR_GIFT,
         &REGULAR_GIFT_MANDATE,
         &terms::REGULAR_GIFT_TERMS,

@@ -48,6 +48,21 @@ pub enum Proposal {
     ExistingGifts { gift_ids: Vec<String> },
     /// Not a donation, with the rule's note.
     NotDonation { rule_id: String, note: String },
+    /// A payment of this standing order, for the period due on
+    /// `scheduledOn` (its expected payment, step 5).
+    Instalment {
+        regular_gift_id: String,
+        scheduled_on: String,
+    },
+    /// "Make this a standing order" (g2q3): the payer paid the same amount
+    /// at a regular interval for the second time. Prefilled from the line;
+    /// the line becomes its first instalment.
+    NewStandingOrder {
+        contact_id: String,
+        frequency: giving::regular::Frequency,
+        day_of_month: u8,
+        month: Option<u8>,
+    },
 }
 
 /// One suggestion for a line.
@@ -100,12 +115,12 @@ pub trait Suggester: Sync {
     -> Result<Vec<Suggestion>, ContractError>;
 }
 
-/// The rule suggesters, in the order they rank. Step 5 adds the standing
-/// order's expected payment after `knownPayer`.
+/// The rule suggesters, in the order they rank.
 pub static SUGGESTERS: &[&dyn Suggester] = &[
     &ContactNumber,
     &KnownPayer,
-    // Step 5: the standing order's expected payment goes here.
+    &StandingOrder,
+    &StandingOrderOffer,
     &HandEntered,
     &Rules,
     &NameOnly,
@@ -156,6 +171,37 @@ pub fn suggest_with(
         !(matches!(&s.proposal, Proposal::NewGift { contact_id } if waiting.contains(contact_id))
             && s.suggesters.iter().all(|n| n == "nameOnly"))
     });
+    // A contact whose standing order this line pays: a plain new gift
+    // for them would leave the period missed. Its evidence (the number,
+    // the payer) joins the instalment's reasons instead.
+    let instalments: Vec<String> = merged
+        .iter()
+        .filter(|(_, s)| matches!(s.proposal, Proposal::Instalment { .. }))
+        .filter_map(|(_, s)| s.contact_id.clone())
+        .collect();
+    let mut folded: Vec<(String, String, Vec<String>)> = Vec::new();
+    merged.retain(|(_, s)| match &s.proposal {
+        Proposal::NewGift { contact_id } if instalments.contains(contact_id) => {
+            folded.push((contact_id.clone(), s.reason.clone(), s.suggesters.clone()));
+            false
+        }
+        _ => true,
+    });
+    for (contact, reason, suggesters) in folded {
+        if let Some((_, m)) = merged.iter_mut().find(|(_, m)| {
+            matches!(m.proposal, Proposal::Instalment { .. })
+                && m.contact_id.as_deref() == Some(contact.as_str())
+        }) {
+            if !m.reason.contains(&reason) {
+                m.reason = format!("{}; {reason}", m.reason);
+            }
+            for n in suggesters {
+                if !m.suggesters.contains(&n) {
+                    m.suggesters.push(n);
+                }
+            }
+        }
+    }
     merged.sort_by_key(|(rank, s)| (std::cmp::Reverse(s.confidence), *rank));
     let mut out: Vec<Suggestion> = merged.into_iter().map(|(_, s)| s).collect();
     let strong = out
@@ -362,6 +408,123 @@ fn display_payer(line: &LineView) -> String {
         ("", r) => format!("reference {r}"),
         (p, "") => p.to_owned(),
         (p, r) => format!("{p} ({r})"),
+    }
+}
+
+/// A standing order's expected payment (step 5): the exact amount, due
+/// from 15 days before the line to 5 days after it (−5/+15, as
+/// CiviBanking does), and not paid yet. Strong, so pre-ticked; outside
+/// the window it isn't suggested.
+pub struct StandingOrder;
+
+impl Suggester for StandingOrder {
+    fn name(&self) -> &'static str {
+        "standingOrder"
+    }
+
+    fn suggest(
+        &self,
+        conn: &Connection,
+        line: &LineView,
+    ) -> Result<Vec<Suggestion>, ContractError> {
+        let mut out = Vec::new();
+        for p in giving::standing::payments_for_line(conn, &line.posted_on, line.amount)? {
+            out.push(Suggestion::new(
+                line,
+                Proposal::Instalment {
+                    regular_gift_id: p.regular_gift_id,
+                    scheduled_on: p.due_on.clone(),
+                },
+                named(conn, &p.contact_id)?,
+                Confidence::Strong,
+                format!(
+                    "the {} standing order of {} due {}",
+                    p.frequency.as_str(),
+                    giving::format_pence(p.amount),
+                    p.due_on
+                ),
+                self.name(),
+            ));
+        }
+        Ok(out)
+    }
+}
+
+/// How far apart, in days, two payments are for each frequency.
+const INTERVALS: [(giving::regular::Frequency, std::ops::RangeInclusive<i64>); 3] = [
+    (giving::regular::Frequency::Monthly, 25..=35),
+    (giving::regular::Frequency::Quarterly, 85..=98),
+    (giving::regular::Frequency::Yearly, 355..=375),
+];
+
+/// "Make this a standing order" (g2q3): a payer matched before to a
+/// contact pays the same amount again at a regular interval (about a
+/// month, a quarter or a year). Offered on the second payment, never the
+/// first, and not when the contact has an active standing order for the
+/// amount. Only suggested: staff choose.
+pub struct StandingOrderOffer;
+
+impl Suggester for StandingOrderOffer {
+    fn name(&self) -> &'static str {
+        "standingOrderOffer"
+    }
+
+    fn suggest(
+        &self,
+        conn: &Connection,
+        line: &LineView,
+    ) -> Result<Vec<Suggestion>, ContractError> {
+        let Some(key) = payer_key(&line.payer, &line.reference) else {
+            return Ok(vec![]);
+        };
+        let (Some(day), Some(index)) = (
+            line.posted_on.get(8..10).and_then(|d| d.parse::<u8>().ok()),
+            giving::terms_rules::month_index(&line.posted_on),
+        ) else {
+            return Ok(vec![]);
+        };
+        let mut out = Vec::new();
+        for payer in payers_for(conn, &line.account_id, &key)? {
+            let contact = payer.contact_id;
+            if giving::standing::active_of_contact(conn, &contact, &line.posted_on)?
+                .iter()
+                .any(|(_, amount)| *amount == line.amount)
+            {
+                continue;
+            }
+            let Some(before) = crate::matching::earlier_payment(conn, line, &key, &contact)? else {
+                continue;
+            };
+            let (Some(a), Some(b)) = (
+                giving::terms_rules::day_number(&before),
+                giving::terms_rules::day_number(&line.posted_on),
+            ) else {
+                continue;
+            };
+            let Some((frequency, _)) = INTERVALS.iter().find(|(_, r)| r.contains(&(b - a))) else {
+                continue;
+            };
+            out.push(Suggestion::new(
+                line,
+                Proposal::NewStandingOrder {
+                    contact_id: contact.clone(),
+                    frequency: *frequency,
+                    day_of_month: day.min(28),
+                    month: (*frequency != giving::regular::Frequency::Monthly)
+                        .then(|| (index.rem_euclid(12) + 1) as u8),
+                },
+                named(conn, &contact)?,
+                Confidence::Suggested,
+                format!(
+                    "{} paid {} on {before} and again now: make this a {} standing order?",
+                    display_payer(line),
+                    giving::format_pence(line.amount),
+                    frequency.as_str()
+                ),
+                self.name(),
+            ));
+        }
+        Ok(out)
     }
 }
 

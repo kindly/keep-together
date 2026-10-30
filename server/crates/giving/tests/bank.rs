@@ -49,6 +49,7 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::MIGRATION_UNIFIED),
         M::up(giving::terms::MIGRATION),
         M::up(giving::bank::MIGRATION),
+        M::up(giving::standing::MIGRATION),
     ])
 }
 
@@ -188,6 +189,7 @@ fn payload(w: &World, method: Method, amount: i64) -> GiftPayload {
         origin: None,
         from_line: None,
         paying_in_batch_id: None,
+        instalment: None,
     }
 }
 
@@ -228,6 +230,7 @@ fn save(w: &World, id: &str, f: impl FnOnce(&mut GiftPayload)) -> Result<Execute
         origin: None,
         from_line: None,
         paying_in_batch_id: None,
+        instalment: None,
     };
     f(&mut p);
     tx(&w.a, |ctx| {

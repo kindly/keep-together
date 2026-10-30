@@ -34,8 +34,8 @@ use sources::{describe, mark_used};
 
 use crate::rules::{prepare_gift, prepare_status};
 use crate::types::{
-    AllocationRow, ClaimLockPayload, GiftPayload, Method, Provider, ProviderRef, Status,
-    StatusPayload,
+    AllocationRow, ClaimLockPayload, GiftPayload, Instalment, Method, Provider, ProviderRef,
+    Status, StatusPayload,
 };
 
 pub const TABLE: &str = "gifts";
@@ -113,6 +113,18 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
         .query_row([id], |r| {
             let line: Option<String> = r.get(12)?;
             let made: bool = r.get(13)?;
+            let provider: Option<String> = r.get(8)?;
+            let instalment = match (
+                &provider,
+                r.get::<_, Option<String>>(10)?,
+                r.get::<_, Option<String>>(11)?,
+            ) {
+                (None, Some(regular_gift_id), Some(scheduled_on)) => Some(Instalment {
+                    regular_gift_id,
+                    scheduled_on,
+                }),
+                _ => None,
+            };
             Ok(GiftState {
                 gift: GiftPayload {
                     contact_id: r.get(0)?,
@@ -122,14 +134,10 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
                     reference: r.get(4)?,
                     allocations: vec![],
                     client_key: None,
-                    origin: origin(
-                        r.get::<_, Option<String>>(8)?,
-                        r.get(9)?,
-                        r.get(10)?,
-                        r.get(11)?,
-                    ),
+                    origin: origin(provider, r.get(9)?, r.get(10)?, r.get(11)?),
                     from_line: line.clone().filter(|_| made),
                     paying_in_batch_id: r.get(14)?,
+                    instalment,
                 },
                 entered_by: r.get(5)?,
                 entered_at: r.get(6)?,
@@ -213,8 +221,8 @@ fn check_new_codes(
 impl Contract for Gift {
     const NAME: &'static str = "giving.gift";
     /// v2: `origin` (ADR 0025); v3: `origin.scheduledOn` (ADR 0026); v4:
-    /// `fromLine` and `payingInBatchId` (ADR 0027).
-    const VERSION: u32 = 4;
+    /// `fromLine` and `payingInBatchId` (ADR 0027); v5: `instalment`.
+    const VERSION: u32 = 5;
     const ENTITY: &'static str = TABLE;
     const COUNTER: &'static str = "gift_version";
     const PROJECTIONS: &'static [&'static str] = &[ALLOCATION_INDEX];
@@ -282,6 +290,12 @@ impl Contract for Gift {
             return Err(ContractError::rejected(
                 "identity_immutable",
                 "A gift’s statement line can’t change",
+            ));
+        }
+        if p.instalment.is_some() && p.instalment != current.gift.instalment {
+            return Err(ContractError::rejected(
+                "identity_immutable",
+                "A standing-order payment’s period can’t change",
             ));
         }
         if p.paying_in_batch_id.is_some() && p.paying_in_batch_id != current.gift.paying_in_batch_id
@@ -370,6 +384,7 @@ impl Contract for Gift {
                 origin: current.gift.origin.clone(),
                 from_line: current.gift.from_line.clone(),
                 paying_in_batch_id: current.gift.paying_in_batch_id.clone(),
+                instalment: current.gift.instalment.clone(),
                 ..p.clone()
             },
             restoring: command.source == Source::Restore,
@@ -424,6 +439,9 @@ impl Contract for Gift {
             if let Some(batch) = &g.paying_in_batch_id {
                 crate::bank::check_batch_open(tx, batch)?;
             }
+            if let Some(i) = &g.instalment {
+                crate::standing::check_instalment(tx, &g.contact_id, i)?;
+            }
             // A provider's gift and a cheque start pending: the status is
             // set next, in the same command group ([`crate::create_gift`],
             // [`crate::create_provider_gift`]).
@@ -450,8 +468,10 @@ impl Contract for Gift {
                 g.client_key,
                 o.map(|o| o.provider.as_str()),
                 o.map(|o| &o.payment_id),
-                o.and_then(|o| o.regular_gift_id.as_ref()),
-                o.and_then(|o| o.scheduled_on.as_ref()),
+                o.and_then(|o| o.regular_gift_id.as_ref())
+                    .or(g.instalment.as_ref().map(|i| &i.regular_gift_id)),
+                o.and_then(|o| o.scheduled_on.as_ref())
+                    .or(g.instalment.as_ref().map(|i| &i.scheduled_on)),
                 g.from_line,
                 g.from_line.is_some(),
                 g.paying_in_batch_id
@@ -482,10 +502,10 @@ impl Contract for Gift {
     }
 
     /// v1 had no origin (none: a save keeps the gift's own), v2's origin
-    /// no `scheduledOn` (none), v3 no line or batch (none: kept): the same
-    /// JSON reads as v4.
+    /// no `scheduledOn` (none), v3 no line or batch, v4 no instalment
+    /// (none: kept): the same JSON reads as v5.
     fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
-        (1..=3).contains(&from).then_some(payload)
+        (1..=4).contains(&from).then_some(payload)
     }
 
     fn project(&self, tx: &ProjectionTx, id: &str) -> Result<(), ContractError> {

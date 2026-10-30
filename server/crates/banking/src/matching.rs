@@ -472,6 +472,38 @@ pub fn payers_for(conn: &Connection, account: &str, key: &str) -> rusqlite::Resu
     .collect()
 }
 
+/// The posted date of the latest line before `line` on its account with
+/// the same payer key and amount, matched to gifts from `contact`: the
+/// payment before this one, for "make this a standing order".
+pub fn earlier_payment(
+    conn: &Connection,
+    line: &LineView,
+    key: &str,
+    contact: &str,
+) -> rusqlite::Result<Option<String>> {
+    let earlier: Vec<(String, String)> = conn
+        .prepare_cached(&format!(
+            "SELECT id, posted_on FROM bank_lines INDEXED BY bank_lines_matched_by_payer
+             WHERE account_id = ?1 AND {PAYER_KEY_SQL} = ?2 AND match_state = 'matched'
+                 AND amount = ?3 AND posted_on < ?4
+             ORDER BY posted_on DESC, seq DESC LIMIT 10"
+        ))?
+        .query_map(
+            params![line.account_id, key, line.amount, line.posted_on],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, posted_on) in earlier {
+        if giving::bank::gifts_on_line(conn, &id)?
+            .iter()
+            .any(|g| g.contact_id == contact)
+        {
+            return Ok(Some(posted_on));
+        }
+    }
+    Ok(None)
+}
+
 /// A contact's remembered payers, newest first (shown on the contact).
 pub fn payers_of(conn: &Connection, contact_id: &str) -> rusqlite::Result<Vec<Payer>> {
     conn.prepare_cached(

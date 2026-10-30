@@ -1111,8 +1111,9 @@ async fn adopt_subscription(
         .day_of_month
         .filter(|d| (1..=28).contains(d))
         .ok_or_else(unsupported)?;
+    // `frequency` is GoCardless's: monthly or yearly.
     let month = match frequency {
-        Frequency::Monthly => None,
+        Frequency::Monthly | Frequency::Quarterly => None,
         Frequency::Yearly => Some(
             sub.month
                 .as_deref()

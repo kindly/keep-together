@@ -389,6 +389,10 @@ pub fn standard(store: &Arc<Store>) -> Jobs {
         // Declaration scans: pairings, orphan blobs, discarded images.
         .register(crate::scans::PairingSweep(store.clone()))
         .register(crate::scans::OrphanSweep(store.clone()))
-        .register(crate::scans::DiscardPurge(store.clone()));
+        .register(crate::scans::DiscardPurge(store.clone()))
+        // Bank transfers step 5: standing orders' missed payments.
+        .register(crate::routes::standing_orders::StandingOrdersMissed(
+            store.clone(),
+        ));
     jobs
 }

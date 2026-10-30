@@ -401,6 +401,7 @@ pub fn record_gift(
         client_key: Some(req.client_key.clone()),
         from_line: None,
         paying_in_batch_id: req.paying_in_batch_id.filter(|b| !b.is_empty()),
+        instalment: None,
         origin: None,
     };
     let group = command_group(ctx, &giving::gift_group_name(ctx.tx.read(), &gift)?)?;

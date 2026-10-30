@@ -20,6 +20,7 @@ pub mod qc_seed;
 mod relationships;
 mod scans;
 mod sources;
+pub mod standing_orders;
 
 use axum::Router;
 use axum::extract::rejection::QueryRejection;
@@ -44,6 +45,7 @@ pub fn router() -> Router {
         .merge(relationships::router())
         .merge(comms::router())
         .merge(sources::router())
+        .merge(standing_orders::router())
         .merge(gifts::router())
         .merge(giftaid::router())
         .merge(giftaid_claims::router())

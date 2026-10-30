@@ -148,6 +148,22 @@ describe('regular gift terms', () => {
     ).toEqual(['2026-03-05', '2027-03-05', '2028-03-05'])
   })
 
+  test('a quarterly row is due in its month and every third after', () => {
+    const t: Terms = {
+      ...terms('2026-02-01', 3000, [s(STREET, 3000)]),
+      frequency: 'quarterly',
+      dayOfMonth: 10,
+      month: 2,
+    }
+    expect(
+      expectedPeriods([t], null, '2026-01-01', '2026-12-31').map((p) => p.dueOn),
+    ).toEqual(['2026-02-10', '2026-05-10', '2026-08-10', '2026-11-10'])
+    expect(isDueDate(t, '2026-05-12')).toBe(true)
+    expect(isDueDate(t, '2026-06-10')).toBe(false)
+    expect(annualValue(3000n, 'quarterly')).toBe(12000n)
+    expect(nextDue(t, '2026-11-10', 2)).toEqual(['2027-02-10', '2027-05-10'])
+  })
+
   test('next due lists the coming payment dates', () => {
     const t = terms('2026-09-05', 1000, street10)
     expect(nextDue(t, '2026-10-05', 3)).toEqual([

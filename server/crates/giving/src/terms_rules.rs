@@ -109,6 +109,7 @@ pub fn split_for_collected(split: &[Share], collected: i64) -> Vec<Share> {
 pub fn annual_value(amount: i64, frequency: Frequency) -> i64 {
     match frequency {
         Frequency::Monthly => amount.saturating_mul(12),
+        Frequency::Quarterly => amount.saturating_mul(4),
         Frequency::Yearly => amount,
     }
 }
@@ -178,9 +179,22 @@ pub fn month_index(date: &str) -> Option<i32> {
 /// Day on a weekend: four days).
 pub const ROLL_DAYS: u8 = 4;
 
+/// Whether `t` is due in month `index` at all: every month when monthly,
+/// in its month when yearly, and in its month and every third after when
+/// quarterly.
+fn due_month(t: &Terms, index: i32) -> bool {
+    let month = index.rem_euclid(12) + 1;
+    match (t.frequency, t.month.map(i32::from)) {
+        (Frequency::Monthly, _) => true,
+        (Frequency::Yearly, Some(m)) => m == month,
+        (Frequency::Quarterly, Some(m)) => (month - m).rem_euclid(3) == 0,
+        (_, None) => false,
+    }
+}
+
 /// Whether `date` (ISO) is one of `t`'s payment dates: its day of the
 /// month (or up to [`ROLL_DAYS`] after, where a weekend or holiday moved
-/// it), in its month when yearly.
+/// it), in a month it is due in.
 pub fn is_due_date(t: &Terms, date: &str) -> bool {
     let (Some(index), Some(day)) = (
         month_index(date),
@@ -188,11 +202,7 @@ pub fn is_due_date(t: &Terms, date: &str) -> bool {
     ) else {
         return false;
     };
-    let in_month = match t.frequency {
-        Frequency::Monthly => true,
-        Frequency::Yearly => t.month.map(i32::from) == Some(index.rem_euclid(12) + 1),
-    };
-    in_month && (t.day_of_month..=t.day_of_month + ROLL_DAYS).contains(&day)
+    due_month(t, index) && (t.day_of_month..=t.day_of_month + ROLL_DAYS).contains(&day)
 }
 
 /// Days since 1970-01-01 of an ISO date (Howard Hinnant's
@@ -251,11 +261,7 @@ pub fn day_in(index: i32, day: u8) -> String {
 
 /// When `t` is due in month `index`, if it is due that month at all.
 fn due_in(t: &Terms, index: i32) -> Option<String> {
-    match t.frequency {
-        Frequency::Monthly => Some(day_in(index, t.day_of_month)),
-        Frequency::Yearly => (t.month.map(i32::from) == Some(index.rem_euclid(12) + 1))
-            .then(|| day_in(index, t.day_of_month)),
-    }
+    due_month(t, index).then(|| day_in(index, t.day_of_month))
 }
 
 /// The due dates after `date` (ISO) under `t`, at most `n`, from the
@@ -298,7 +304,7 @@ pub struct ExpectedPeriod {
 /// day it was cancelled: nothing is expected from then). A row governs
 /// the months from the month of its `effective_on` until the next row's:
 /// a monthly row expects one payment a month, on its day; a yearly row
-/// one in its month.
+/// one in its month; a quarterly one in its month and every third after.
 pub fn expected_periods(
     chain: &[Terms],
     ended_on: Option<&str>,
@@ -355,6 +361,30 @@ mod tests {
             month: None,
             split,
         }
+    }
+
+    #[test]
+    fn a_quarterly_row_is_due_in_its_month_and_every_third_after() {
+        let t = Terms {
+            effective_on: "2026-02-01".into(),
+            amount: 3000,
+            frequency: Frequency::Quarterly,
+            day_of_month: 10,
+            month: Some(2),
+            split: vec![Share::new(STREET, 3000)],
+        };
+        let due: Vec<String> =
+            expected_periods(std::slice::from_ref(&t), None, "2026-01-01", "2026-12-31")
+                .into_iter()
+                .map(|p| p.due_on)
+                .collect();
+        assert_eq!(
+            due,
+            ["2026-02-10", "2026-05-10", "2026-08-10", "2026-11-10"]
+        );
+        assert!(is_due_date(&t, "2026-05-12") && !is_due_date(&t, "2026-06-10"));
+        assert_eq!(annual_value(3000, Frequency::Quarterly), 12_000);
+        assert_eq!(next_due(&t, "2026-11-10", 2), ["2027-02-10", "2027-05-10"]);
     }
 
     #[test]

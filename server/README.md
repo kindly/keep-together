@@ -532,7 +532,21 @@ known payer, transfer entered by hand, rules, name only; step 5 adds the
 standing order) and never stored or applied by themselves; "Accept
 ticked" applies each line in its own transaction. Remembered payers
 (`bank_payers`) are derived from confirmed matches;
-`banking::forget_payers` forgets a contact's (erasure, rule 3). Not
+`banking::forget_payers` forgets a contact's (erasure, rule 3).
+
+**Standing orders** (`giving::standing`, `api/src/routes/standing_orders.rs`,
+bank transfers step 5): regular gifts of kind `standing_order`, no
+provider, active from their set-up; monthly, quarterly (Direct Debit
+refuses quarterly: `giving.regularGiftTerms`) or yearly. Expected
+payments come from the terms chain; a statement line becomes one's
+instalment (`bank/lines/{id}/instalment`: a gift made from the line with
+`regularGiftId` and the period's `scheduledOn`, the terms' split), and
+"make this a standing order" makes one from a line. The standing-order
+suggester matches an unpaid expected payment for the exact amount from 5
+days before its due date to 15 after. A payment still unmatched 14 days
+after it was due is missed (`giving.standingOrderMissed`, set by the
+`standing-orders-missed` job over every org and by every match; a late
+payment clears it); staff decide what to do. Not
 built here: erasure itself (no anonymise exists yet); when it is built,
 it calls `banking::forget_payers` in its own command group. Voiding one
 part of a line's split is refused (`line_split`): unmatch the line.

@@ -128,20 +128,24 @@ struct Gift {
     id: String,
     contact_id: String,
     status: RegularStatus,
+    /// A standing order: expected from its first row, paid or not.
+    standing: bool,
     ended_on: Option<String>,
     chain: Vec<TermView>,
 }
 
 fn gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<Gift>> {
-    let row: Option<(String, String, Option<i64>)> = conn
-        .prepare_cached("SELECT contact_id, status, ended_at FROM regular_gifts WHERE id = ?1")?
-        .query_row([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let row: Option<(String, String, Option<i64>, String)> = conn
+        .prepare_cached(
+            "SELECT contact_id, status, ended_at, kind FROM regular_gifts WHERE id = ?1",
+        )?
+        .query_row([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map(Some)
         .or_else(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => Ok(None),
             e => Err(e),
         })?;
-    let Some((contact_id, status, ended_at)) = row else {
+    let Some((contact_id, status, ended_at, kind)) = row else {
         return Ok(None);
     };
     let status = RegularStatus::parse(&status);
@@ -149,6 +153,7 @@ fn gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<Gift>> {
         id: id.to_owned(),
         contact_id,
         status,
+        standing: crate::regular::Kind::parse(&kind) == crate::regular::Kind::StandingOrder,
         ended_on: ended_at.filter(|_| status.is_ended()).map(date_of_ms),
         chain: terms::chain(conn, id)?,
     }))
@@ -165,8 +170,11 @@ fn rows_of(
     let live: Vec<&TermView> = g.chain.iter().filter(|t| t.is_live()).collect();
     let rules: Vec<terms_rules::Terms> = live.iter().map(|t| t.rules()).collect();
     // Where expecting starts: its first payment's period, else (active
-    // with none yet) its first row.
+    // with none yet) its first row. A standing order is active from its
+    // set-up, so from its first row (a payment missed before the first
+    // one that came is still missed).
     let start = match paid.keys().next() {
+        _ if g.standing => rules.first().map(|t| t.effective_on.clone()),
         Some(first) => Some(format!("{first}-01")),
         None if g.status == RegularStatus::Active => rules.first().map(|t| t.effective_on.clone()),
         None => None,

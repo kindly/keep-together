@@ -214,6 +214,22 @@ pub struct GiftPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub paying_in_batch_id: Option<String>,
+    /// The standing order it is a payment of, and the due date of the
+    /// period it pays (v5, ADR 0027): create-only, a bank transfer's. A
+    /// save may leave it out: it never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub instalment: Option<Instalment>,
+}
+
+/// A standing-order payment's place: its regular gift and the due date
+/// of the period it pays (a late payment still pays its own period).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "GiftInstalment")]
+pub struct Instalment {
+    pub regular_gift_id: String,
+    pub scheduled_on: String,
 }
 
 /// The `giving.status` slice (v2: `reason`). Staff set `completed` or

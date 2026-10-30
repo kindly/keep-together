@@ -686,6 +686,7 @@ async fn a_line_is_matched_to_a_paying_in_batch_and_its_cheques_follow() {
                 origin: None,
                 from_line: None,
                 paying_in_batch_id: Some(b.clone()),
+                instalment: None,
             },
             Source::Ui,
             None,
