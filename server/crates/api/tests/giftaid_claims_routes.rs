@@ -14,10 +14,12 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-const DAY: i64 = 86_400_000;
-
+/// Today's UK date less `n` calendar days. Not the UK date of now less
+/// `n` × 24 hours: across a clock change that gives one date twice (or
+/// skips one), so `days_ago(6)` could equal `days_ago(5)` in the hour
+/// before midnight.
 fn days_ago(n: i64) -> String {
-    giftaid::uk_date(contracts::now_ms() - n * DAY)
+    giving::terms_rules::add_days(&giftaid::uk_date(contracts::now_ms()), -n).unwrap()
 }
 
 fn today() -> String {
@@ -546,7 +548,11 @@ async fn a_claim_freezes_its_gifts_and_locks_them() {
         "POST",
         &path,
         &c.ann,
-        Some(save(json!({ "receivedOn": days_ago(6) }))),
+        // A day before the gift's own date, whatever the clocks did.
+        Some(save(json!({
+            "receivedOn": giving::terms_rules::add_days(g["receivedOn"].as_str().unwrap(), -1)
+                .unwrap()
+        }))),
     )
     .await;
     assert_eq!(reason, "claimed_gift");
