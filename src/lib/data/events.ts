@@ -118,6 +118,12 @@ const INVALIDATES: Partial<
   bank_imports: (slug) => [keys.bank(slug)],
   // A batch, and its line once matched; a bank account's name shows on it.
   paying_in_batches: (slug) => [keys.batches(slug)],
+  // Bank transfers 4: a line's match (its gifts come as `gifts` events),
+  // a not-a-donation rule (it changes every line's suggestions), a
+  // contact's payers forgotten (likewise).
+  bank_lines: (slug) => [keys.bank(slug)],
+  bank_rules: (slug) => [keys.bank(slug)],
+  bank_payer_forgets: (slug) => [keys.bank(slug)],
 }
 
 /**

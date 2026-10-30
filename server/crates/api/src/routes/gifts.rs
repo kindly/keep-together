@@ -116,14 +116,21 @@ async fn save(
 }
 
 /// `POST gifts/{id}/status {expected, status}`: void or un-void.
-/// Re-sending the current status changes nothing.
+/// Re-sending the current status changes nothing. Voiding the last gift
+/// on a statement line (made from it, or matched to it by hand) leaves
+/// the line unmatched, in the same transaction.
 async fn status(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(req): Body<SetGiftStatus>,
 ) -> Result<Json<GiftSaved>, ApiError> {
     t.write(move |ctx| {
+        let line = giving::get(ctx.tx.read(), &id)?.and_then(|g| g.gift.bank_line_id);
         let done = giving::set_status(ctx, &id, req.expected, req.status, req.reason, Source::Ui)?;
+        // A statement line its void left empty is free again (ADR 0027).
+        if let Some(line) = line {
+            super::bank_matching::free_emptied_line(ctx, &line, Source::Ui)?;
+        }
         Ok(GiftSaved {
             view: view(ctx, &done.id)?,
             id: done.id,

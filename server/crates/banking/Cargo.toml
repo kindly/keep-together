@@ -8,6 +8,7 @@ publish.workspace = true
 # No dependency on store or platform: domain code takes a `Ctx` / a
 # `Connection` on one org file and can't name an organisation.
 [dependencies]
+contacts.workspace = true
 contracts.workspace = true
 giving.workspace = true
 sources.workspace = true

@@ -69,7 +69,7 @@ parameter is ignored and both columns measure the words index.)
 | `store` | `platform.db` (tenants, users, memberships, sessions, snapshots), `orgs/<tenant-id>.db` and each org's files db `files/<tenant-id>.db` (`store::files`: immutable blobs by SHA-256, opened with the org's handle, capped only if `KEEP_FILES_CAP_BYTES` says); pragmas (WAL, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout`, no `ATTACH`); per file one writer behind a fair mutex + a read-only reader pool + a checkpointer thread, none under Litestream (no checkpoint in a commit: `docs/ops.md`); locks waited for by 1 ms polls; the handle LRU; boot migration; each file's event channel |
 | `contracts` | the **only write path**: `transact`, `Contract`, `execute`, revisions, command groups, restore through upcasters, child-row reconcile, events |
 | `contacts` | the Contact aggregate: slices as contracts, dropdown fields, the FTS projection, list/search/get/history |
-| `sources`, `giving`, `giftaid`, `comms`, `banking` | domain crates: source codes, gifts (and their Gift Aid claim lock), Gift Aid declarations and claims (HMRC's schedule and claim XML), email suppressions, bank accounts and statement imports (the CSV/OFX/QIF readers and dedupe: ADR 0027) |
+| `sources`, `giving`, `giftaid`, `comms`, `banking` | domain crates: source codes, gifts (and their Gift Aid claim lock), Gift Aid declarations and claims (HMRC's schedule and claim XML), email suppressions, bank accounts and statement imports (the CSV/OFX/QIF readers and dedupe: ADR 0027), and matching their lines (`banking.lineMatch`, the suggesters, remembered payers, not-a-donation rules) |
 | `platform` | control plane: preferences (the three "staff can manage" contracts, `may_manage_list`), encrypted tenant settings, memberships and "last used" group as functions on a `platform.db` transaction, its own `platform.db` schema list |
 | `auth` | staff auth: credentials, second factors, sessions, invites, resets, rate limits, the auth log, in `platform.db` (its own `PlatformSchema`); `api::auth` is its HTTP |
 | `api` | axum app: dev session cookie, `/api/t/{slug}` → one `OrgDb`, SSE, `/boot`, jobs, `/healthz`, `Server-Timing`, JSON errors; `schema.rs` is the org migration list; `routes/` the domain routes and the QC seed. Commands spanning modules live here, in one transaction |
@@ -510,9 +510,29 @@ others are a payment provider's (`422 rejected provider_status` from
 staff). Every gift has one origin: `provider` (`gocardless`, later
 `stripe`) with `providerPaymentId` (unique per provider: one gift per
 payment for its whole life) and `regularGiftId` (empty for a one-off),
-or entered by hand (`provider` empty). Provider tables
-(`direct_debit_payments`) stay the provider's raw record; no cash table
-(a paying-in batch table comes with banking reconciliation).
+or made from a bank statement line (`bankLineId`, `madeFromLine`), or
+entered by hand (`provider` empty). Provider tables
+(`direct_debit_payments`) stay the provider's raw record, as statement
+lines (`bank_lines`) are for money that reached the bank (ADR 0027).
+Cash and cheques paid in together are a paying-in batch
+(`giving.payingInBatch`); a cheque is `pending` until its batch is
+matched to its statement line.
+
+**Matching statement lines** (`api/src/routes/bank_matching.rs`, ADR
+0027). A line is `unmatched`, `matched` (to gifts or one paying-in
+batch) or `not_donation` (`banking.lineMatch`, counter
+`match_version`). Every command (gifts from a line, split across
+contacts; matched to transfers entered by hand; to a batch; not a
+donation; unmatch) is one transaction and one named command group, with
+`banking.lineMatch` last against the line's `matchVersion`, so a line
+matched meanwhile is `409 stale`. Parts and remainder add up to the line
+exactly or `422`. Suggestions (`banking::suggest`) are computed on read
+by the suggesters in `banking::suggest::SUGGESTERS` (contact number,
+known payer, transfer entered by hand, rules, name only; step 5 adds the
+standing order) and never stored or applied by themselves; "Accept
+ticked" applies each line in its own transaction. Remembered payers
+(`bank_payers`) are derived from confirmed matches;
+`banking::forget_payers` forgets a contact's (erasure, rule 3).
 
 **Only `completed` is money received.** Income, reports, dashboards and
 Gift Aid read gifts through `giving::RECEIVED` (`status = 'completed'`,
