@@ -227,6 +227,7 @@ export type {
   BankRule,
   BankRuleField,
   BankSuggestion,
+  DonorRef,
   HandTransfer,
   LineDetail,
   LineGift,

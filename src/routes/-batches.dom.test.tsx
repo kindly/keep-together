@@ -24,10 +24,27 @@ const writes = {
   save: vi.fn(),
 }
 const navigate = vi.fn()
+let lines: Array<object> = []
+const matchWrites = { unmatch: vi.fn(), matchBatch: vi.fn() }
 vi.mock('../lib/data', () => ({
   useBatches: () => ({ data: list, error: null, refetch: vi.fn() }),
   useBatch: () => ({ data: page, error: null }),
   useBatchWrites: () => writes,
+  useLine: (id: string | null) => ({
+    data:
+      id === null
+        ? undefined
+        : {
+            line: {
+              id,
+              matchVersion: 1,
+              postedOn: '2026-11-04',
+              amount: 7000n,
+            },
+          },
+  }),
+  useLines: () => ({ data: lines }),
+  useMatchWrites: () => matchWrites,
   useBankAccounts: () => ({
     data: [
       { id: 'acc1', name: 'CAF current', active: true },
@@ -109,7 +126,13 @@ const gift = (over: Partial<BatchGift> = {}): BatchGift => ({
 let root: Root
 let el: HTMLDivElement
 beforeEach(() => {
-  for (const f of [...Object.values(writes), navigate]) f.mockReset()
+  for (const f of [
+    ...Object.values(writes),
+    ...Object.values(matchWrites),
+    navigate,
+  ])
+    f.mockReset()
+  lines = []
   role = 'staff'
   list = []
   page = {
@@ -323,4 +346,58 @@ test('the slip’s details can be corrected, open or closed', async () => {
     '2026-11-03',
     7100n,
   )
+})
+
+test('a matched batch unmatches from its line, after asking', async () => {
+  page = {
+    batch: batch({
+      status: 'closed',
+      total: 7000n,
+      bankedOn: '2026-11-03',
+      lineId: 'l1',
+      line: { id: 'l1', postedOn: '2026-11-04', amount: 7000n },
+    }),
+    gifts: [],
+  }
+  matchWrites.unmatch.mockResolvedValue({})
+  await batchPage()
+  await click(button('Unmatch from the statement line'))
+  const dialog = document.querySelector('[role="alertdialog"]')!
+  expect(dialog.textContent).toContain('Its cheques go back to pending')
+  await click(
+    [...dialog.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Unmatch',
+    ),
+  )
+  expect(matchWrites.unmatch).toHaveBeenCalledWith('l1', 1)
+})
+
+test('a closed batch matches from its side to an unmatched line of its account', async () => {
+  page = {
+    batch: batch({
+      status: 'closed',
+      total: 7000n,
+      bankedOn: '2026-11-03',
+      lineVersion: 3,
+    }),
+    gifts: [],
+  }
+  lines = [
+    {
+      id: 'l9',
+      accountId: 'acc1',
+      postedOn: '2026-11-04',
+      amount: 6900n,
+      payer: 'PAYING IN',
+      reference: '',
+      narrative: '',
+      matchVersion: 0,
+      suggestions: [],
+    },
+  ]
+  matchWrites.matchBatch.mockResolvedValue({})
+  await batchPage()
+  expect(el.textContent).toContain('The slip says £70.00; the line is £69.00.')
+  await click(button('Match to this line'))
+  expect(matchWrites.matchBatch).toHaveBeenCalledWith('l9', 0, 'b1', 3)
 })

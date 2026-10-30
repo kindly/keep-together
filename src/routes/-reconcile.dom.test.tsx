@@ -1,0 +1,432 @@
+// @vitest-environment happy-dom
+import { act } from 'react'
+import type { ComponentType, ReactNode } from 'react'
+import { createRoot } from 'react-dom/client'
+import type { Root } from 'react-dom/client'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import type {
+  BankSuggestion,
+  LineDetail,
+  LineWithSuggestions,
+  StatementLine,
+} from '../lib/data'
+import { RustApiError } from '../lib/data/rust/client'
+
+// Bank transfers 6b part 2: reconcile and a line. Strong suggestions
+// pre-ticked, a name never; "Accept ticked" applies only what is ticked
+// and shows only the server's answer, a line matched meanwhile said so;
+// a split adds up to the line as you type; unmatch says what it does;
+// rules; a contact's remembered payers. Never optimistic.
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+
+let role: 'admin' | 'staff' | 'viewer' = 'staff'
+let lines: Array<LineWithSuggestions> = []
+let detail: LineDetail | undefined
+let payers: Array<object> = []
+let rules: Array<object> = []
+const writes = {
+  gifts: vi.fn(),
+  matchGifts: vi.fn(),
+  matchBatch: vi.fn(),
+  notDonation: vi.fn(),
+  unmatch: vi.fn(),
+  accept: vi.fn(),
+}
+const ruleWrites = { create: vi.fn(), remove: vi.fn() }
+const forget = vi.fn()
+vi.mock('../lib/data', () => ({
+  useBankAccounts: () => ({
+    data: [{ id: 'acc1', name: 'CAF current', active: true }],
+  }),
+  useLines: () => ({ data: lines, error: null, refetch: vi.fn() }),
+  useLine: () => ({ data: detail, error: null }),
+  useMatchWrites: () => writes,
+  useHandTransfers: () => ({ data: [] }),
+  useBatches: () => ({ data: [] }),
+  useRules: () => ({ data: rules, error: null }),
+  useRuleWrites: () => ruleWrites,
+  usePayers: () => ({ data: payers }),
+  useForgetPayers: () => forget,
+}))
+vi.mock('../lib/tenant', () => ({
+  useTenant: () => ({ _id: 'tenantA', slug: 'alpha', role }),
+  useIsAdmin: () => role === 'admin',
+  useCanWrite: () => role !== 'viewer',
+}))
+vi.mock('@tanstack/react-router', () => ({
+  createFileRoute: () => (options: object) => ({
+    options,
+    useParams: () => ({ slug: 'alpha', lineId: 'l1' }),
+    useSearch: () => ({}),
+  }),
+  Link: ({
+    to,
+    params,
+    children,
+  }: {
+    to: string
+    params: Record<string, string>
+    children: ReactNode
+  }) => (
+    <a href={to.replace(/\$(\w+)/g, (_, k: string) => params[k])}>{children}</a>
+  ),
+}))
+vi.mock('../components/gift-form', () => ({
+  DonorSearch: ({ onPick }: { onPick: (d: object) => void }) => (
+    <button
+      type="button"
+      onClick={() =>
+        onPick({ kind: 'existing', id: 'c7', displayName: 'Dee Donor' })
+      }
+    >
+      Find Dee
+    </button>
+  ),
+}))
+vi.mock('../components/source-code-picker', () => ({
+  SourceCodePicker: () => null,
+  localToday: () => '2026-11-05',
+}))
+
+const line = (over: Partial<StatementLine> = {}): StatementLine => ({
+  id: 'l1',
+  accountId: 'acc1',
+  importId: 'i1',
+  postedOn: '2026-11-03',
+  amount: 6000n,
+  payer: 'J BLOGGS',
+  reference: '100016',
+  narrative: 'J BLOGGS 100016',
+  bankId: null,
+  state: 'unmatched',
+  note: null,
+  matchedBy: null,
+  matchedAt: null,
+  matchVersion: 2,
+  ...over,
+})
+
+const suggestion = (over: Partial<BankSuggestion> = {}): BankSuggestion => ({
+  lineId: 'l1',
+  proposal: { kind: 'newGift', contactId: 'c1' },
+  contactId: 'c1',
+  contactName: 'Jo Bloggs',
+  confidence: 'strong',
+  reason: 'contact no. 100016 in the reference',
+  suggesters: ['contactNumber'],
+  ticked: true,
+  ...over,
+})
+
+let root: Root
+let el: HTMLDivElement
+beforeEach(() => {
+  for (const f of [
+    ...Object.values(writes),
+    ...Object.values(ruleWrites),
+    forget,
+  ])
+    f.mockReset()
+  role = 'staff'
+  lines = []
+  detail = undefined
+  payers = []
+  rules = []
+  el = document.createElement('div')
+  document.body.append(el)
+  root = createRoot(el)
+})
+afterEach(() => {
+  act(() => root.unmount())
+  el.remove()
+  document.body.innerHTML = ''
+})
+
+async function render(module: Promise<{ Route: unknown }>) {
+  const { Route } = await module
+  const Page = (Route as { options: { component: ComponentType } }).options
+    .component
+  await act(async () => root.render(<Page />))
+}
+const reconcile = () => render(import('./t.$slug.bank.reconcile'))
+const linePage = () => render(import('./t.$slug.bank.lines.$lineId'))
+const button = (name: string | RegExp, scope: ParentNode = document.body) =>
+  [...scope.querySelectorAll('button')].find((b) =>
+    typeof name === 'string'
+      ? b.textContent === name
+      : name.test(b.textContent),
+  )
+const click = (b: HTMLElement | undefined) =>
+  act(async () => {
+    if (!b) throw new Error('no such button')
+    b.click()
+  })
+const byTestId = (id: string) =>
+  el.querySelector(`[data-testid="${id}"]`)?.textContent
+const setInput = (input: HTMLInputElement, value: string) =>
+  act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )!.set!.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+const labelled = (text: string) =>
+  [...el.querySelectorAll('label')]
+    .find((l) => l.textContent.startsWith(text))!
+    .querySelector('input')!
+
+test('viewers never see statement lines', async () => {
+  role = 'viewer'
+  await reconcile()
+  expect(el.textContent).toBe('Bank statements are for staff and admins.')
+  act(() => root.unmount())
+  root = createRoot(el)
+  await linePage()
+  expect(el.textContent).toBe('Bank statements are for staff and admins.')
+})
+
+test('strong is pre-ticked, a name never; accept sends only what is ticked', async () => {
+  lines = [
+    { ...line(), suggestions: [suggestion()] },
+    {
+      ...line({ id: 'l2', matchVersion: 0, payer: 'A JONES' }),
+      suggestions: [
+        suggestion({
+          lineId: 'l2',
+          proposal: { kind: 'newGift', contactId: 'c2' },
+          contactName: 'Ann Jones',
+          confidence: 'suggested',
+          reason: 'the payer’s name only',
+          ticked: false,
+        }),
+      ],
+    },
+    {
+      ...line({ id: 'l3', matchVersion: 5 }),
+      suggestions: [
+        suggestion({
+          lineId: 'l3',
+          proposal: { kind: 'notDonation', ruleId: 'r1', note: 'A payout' },
+          contactId: null,
+          contactName: null,
+          reason: 'narrative contains GOCARDLESS',
+        }),
+      ],
+    },
+  ]
+  let answer!: (v: unknown) => void
+  writes.accept.mockReturnValue(new Promise((r) => (answer = r)))
+  await reconcile()
+  const boxes = [
+    ...el.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+  ]
+  expect(boxes.map((b) => b.checked)).toEqual([true, false, true])
+  expect(el.textContent).toContain('the payer’s name only')
+  // Unticking one leaves it out.
+  await act(async () => boxes[2].click())
+  await click(button('Accept ticked (1)'))
+  expect(writes.accept).toHaveBeenCalledWith([
+    {
+      lineId: 'l1',
+      expected: 2,
+      proposal: { kind: 'newGift', contactId: 'c1' },
+    },
+  ])
+  // In flight: disabled, nothing claimed.
+  expect(button('Accepting…')?.disabled).toBe(true)
+  expect(byTestId('accept-summary')).toBeUndefined()
+  await act(async () =>
+    answer([
+      {
+        lineId: 'l1',
+        ok: false,
+        status: 409,
+        error: {
+          kind: 'stale',
+          contract: 'banking.lineMatch',
+          counter: 3,
+          current: {},
+        },
+      },
+    ]),
+  )
+  expect(byTestId('accept-summary')).toBe(
+    '0 matched, 1 not: changed meanwhile, reload',
+  )
+  expect(byTestId('line-outcome')).toBe(
+    'Changed meanwhile: someone else matched it. Reload to see.',
+  )
+})
+
+test('a split adds up to the line as you type; the rest needs a note', async () => {
+  detail = { line: line(), gifts: [], batchId: null, suggestions: [] }
+  writes.gifts.mockResolvedValue({})
+  await linePage()
+  expect(byTestId('split-sum')).toBe('The gifts add up to the line, £60.00.')
+  // A new person from the payer, then a second gift for someone found.
+  await click(button(/^A new person from the payer/))
+  expect(labelled('First name').value).toBe('J')
+  expect(labelled('Last name').value).toBe('Bloggs')
+  await setInput(labelled('Amount (£)'), '40')
+  expect(byTestId('split-sum')).toBe(
+    '£20.00 of the line is left: it isn’t a donation.',
+  )
+  await click(button('Split: add another gift'))
+  await click(button('Find Dee'))
+  const amounts = [...el.querySelectorAll('label')]
+    .filter((l) => l.textContent.startsWith('Amount (£)'))
+    .map((l) => l.querySelector('input')!)
+  expect(amounts[1].value).toBe('20.00')
+  await setInput(amounts[1], '15')
+  expect(byTestId('split-problems')).toContain(
+    'Say what the rest of the line is',
+  )
+  expect(button('Make these gifts')?.disabled).toBe(true)
+  await setInput(labelled('What the rest is'), 'Raffle tickets')
+  await click(button('Make these gifts'))
+  expect(writes.gifts).toHaveBeenCalledWith(
+    'l1',
+    2,
+    [
+      {
+        contact: {
+          kind: 'individual',
+          firstName: 'J',
+          lastName: 'Bloggs',
+          name: '',
+        },
+        amount: 4000n,
+      },
+      { contact: 'c7', amount: 1500n },
+    ],
+    { amount: 500n, note: 'Raffle tickets' },
+  )
+  // Over the line is said and blocked.
+  await setInput(amounts[1], '30')
+  expect(byTestId('split-sum')).toBe('The gifts are £10.00 more than the line.')
+})
+
+test('a line matched meanwhile is said so; not a donation needs a note', async () => {
+  detail = { line: line(), gifts: [], batchId: null, suggestions: [] }
+  writes.notDonation.mockRejectedValue(
+    new RustApiError(409, {
+      kind: 'stale',
+      contract: 'banking.lineMatch',
+      counter: 3,
+      current: {},
+    }),
+  )
+  await linePage()
+  await click(button('Not a donation'))
+  // Focus goes to the form's heading.
+  expect(document.activeElement?.textContent).toBe('Not a donation')
+  expect(button('Mark not a donation')?.disabled).toBe(true)
+  await setInput(labelled('What it is'), 'A grant')
+  await click(button('Mark not a donation'))
+  expect(writes.notDonation).toHaveBeenCalledWith('l1', 2, 'A grant')
+  expect(el.querySelector('[role="alert"]')?.textContent).toBe(
+    'Changed meanwhile: someone else matched this line. It has been read again.',
+  )
+})
+
+test('unmatch says what it does, then runs against the line’s version', async () => {
+  detail = {
+    line: line({ state: 'matched', matchVersion: 4 }),
+    gifts: [
+      {
+        id: 'g1',
+        contactId: 'c1',
+        contactName: 'Jo Bloggs',
+        receivedOn: '2026-11-03',
+        amount: 4000n,
+        status: 'completed',
+        fromLine: true,
+      },
+      {
+        id: 'g2',
+        contactId: 'c2',
+        contactName: 'Dee Donor',
+        receivedOn: '2026-11-01',
+        amount: 2000n,
+        status: 'completed',
+        fromLine: false,
+      },
+    ],
+    batchId: null,
+    suggestions: [],
+  }
+  writes.unmatch.mockResolvedValue({})
+  await linePage()
+  expect(el.textContent).toContain('made from the line')
+  expect(el.textContent).toContain('entered by hand')
+  await click(button('Unmatch'))
+  const dialog = document.querySelector('[role="alertdialog"]')!
+  expect(dialog.textContent).toContain('The gift made from it is voided.')
+  expect(dialog.textContent).toContain(
+    'The gift entered by hand is unlinked: “not on a statement yet” again.',
+  )
+  expect(dialog.textContent).toContain('the next claim repays it')
+  expect(writes.unmatch).not.toHaveBeenCalled()
+  await click(button('Unmatch', dialog))
+  expect(writes.unmatch).toHaveBeenCalledWith('l1', 4)
+})
+
+test('rules: added with the field, text and note; deleted after asking', async () => {
+  rules = [
+    {
+      id: 'r1',
+      version: 2,
+      accountId: null,
+      field: 'narrative',
+      contains: 'GOCARDLESS',
+      note: 'A payout',
+      active: true,
+    },
+  ]
+  ruleWrites.create.mockResolvedValue({})
+  ruleWrites.remove.mockResolvedValue({})
+  await render(import('./t.$slug.bank.rules'))
+  expect(el.textContent).toContain(
+    'The description contains “GOCARDLESS”, on every account — A payout',
+  )
+  await setInput(labelled('contains'), 'INTEREST')
+  await setInput(labelled('It is'), 'Bank interest')
+  await click(button('Add the rule'))
+  expect(ruleWrites.create).toHaveBeenCalledWith({
+    accountId: null,
+    field: 'narrative',
+    contains: 'INTEREST',
+    note: 'Bank interest',
+  })
+  await click(button('Delete'))
+  await click(button('Delete', document.querySelector('[role="alertdialog"]')!))
+  expect(ruleWrites.remove).toHaveBeenCalledWith('r1', 2)
+})
+
+test('a contact’s payer details are listed for staff and forgotten after asking', async () => {
+  payers = [
+    {
+      accountId: 'acc1',
+      contactId: 'c1',
+      payer: 'J BLOGGS',
+      reference: 'GIFT',
+      lastLineId: 'l1',
+      matchedAt: 0,
+      accountName: 'CAF current',
+    },
+  ]
+  forget.mockResolvedValue([])
+  const { BankPayers } = await import('../components/bank-payers')
+  await act(async () => root.render(<BankPayers contactId="c1" />))
+  expect(el.textContent).toContain('J BLOGGSGIFTCAF current')
+  await click(button('Forget these payer details'))
+  await click(button('Forget', document.querySelector('[role="alertdialog"]')!))
+  expect(forget).toHaveBeenCalled()
+  act(() => root.unmount())
+  root = createRoot(el)
+  role = 'viewer'
+  await act(async () => root.render(<BankPayers contactId="c1" />))
+  expect(el.textContent).toBe('')
+})

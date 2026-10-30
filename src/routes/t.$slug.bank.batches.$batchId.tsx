@@ -3,7 +3,15 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { batchLabel, chequesLabel, paidInLabel } from '../components/bank'
 import { localToday } from '../components/source-code-picker'
-import { useBatch, useBatchWrites } from '../lib/data'
+import { ConfirmDialog } from '../components/confirm-dialog'
+import { LineHeading, matchRefusal } from '../components/reconcile'
+import {
+  useBatch,
+  useBatchWrites,
+  useLine,
+  useLines,
+  useMatchWrites,
+} from '../lib/data'
 import type { BatchGift, PayingInBatch } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
 import { STATUS_LABELS, isReceived } from '../lib/domain/gift-status'
@@ -129,6 +137,7 @@ function Batch({
         </p>
       )}
       {canWrite && !b.line && <BatchActions batch={b} />}
+      {canWrite && (b.line || b.status === 'closed') && <BatchLine batch={b} />}
       <section aria-label="Gifts in this batch" className="flex flex-col gap-2">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
           <h2 className="font-medium">Gifts in this batch</h2>
@@ -492,5 +501,138 @@ function EditForm({
         </button>
       </div>
     </form>
+  )
+}
+
+/**
+ * The batch's statement line, from the batch's side: matched, it says
+ * which and can be unmatched (its cheques go back to pending); closed and
+ * unmatched, the account's unmatched lines to match it to (its cheques
+ * clear). Staff and admins only: viewers never see statement lines.
+ */
+function BatchLine({ batch: b }: { batch: PayingInBatch }) {
+  const writes = useMatchWrites()
+  const line = useLine(b.line?.id ?? null)
+  const open = useLines(b.line ? null : b.accountId, 'unmatched')
+  const [picked, setPicked] = useState('')
+  const [asking, setAsking] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function attempt(f: () => Promise<unknown>) {
+    setBusy(true)
+    setError(null)
+    try {
+      await f()
+    } catch (err) {
+      setError(matchRefusal(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const alert = error && (
+    <p role="alert" className="text-sm text-red-700">
+      {error}
+    </p>
+  )
+
+  if (b.line) {
+    const l = line.data?.line
+    return (
+      <section aria-label="Its statement line" className="flex flex-col gap-2">
+        <button
+          type="button"
+          className={quiet}
+          disabled={busy || !l}
+          onClick={() => setAsking(true)}
+        >
+          {busy ? 'Unmatching…' : 'Unmatch from the statement line'}
+        </button>
+        {alert}
+        <ConfirmDialog
+          open={asking}
+          title="Unmatch this batch from its statement line?"
+          description="Its cheques go back to pending until it is matched again. If a cheque was claimed for Gift Aid, the next claim repays it. The line goes back to unmatched."
+          confirm="Unmatch"
+          cancel="Cancel"
+          onCancel={() => setAsking(false)}
+          onConfirm={() => {
+            setAsking(false)
+            if (l) void attempt(() => writes.unmatch(l.id, l.matchVersion))
+          }}
+        />
+      </section>
+    )
+  }
+
+  const lines = open.data ?? []
+  const chosen = lines.find((l) => l.id === (picked || lines.at(0)?.id))
+  return (
+    <section
+      aria-label="Match to a statement line"
+      className="flex flex-col gap-2 rounded border border-neutral-200 p-3"
+    >
+      <h2 className="font-medium">Match to its statement line</h2>
+      {open.data === undefined ? (
+        <p className="text-sm text-neutral-500">Loading…</p>
+      ) : lines.length === 0 ? (
+        <p className="text-sm text-neutral-600">
+          No unmatched line on this account: import its statement first.
+        </p>
+      ) : (
+        <>
+          <label className="flex flex-col gap-1 text-sm">
+            Line
+            <select
+              value={chosen?.id ?? ''}
+              onChange={(e) => setPicked(e.target.value)}
+              className={`${field} w-full max-w-lg`}
+            >
+              {lines.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {formatDay(l.postedOn)}, {formatPence(l.amount)}
+                  {l.payer ? `, ${l.payer}` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          {chosen && (
+            <p className="text-sm">
+              <LineHeading line={chosen} />
+            </p>
+          )}
+          {chosen && b.total !== null && chosen.amount !== b.total && (
+            <p
+              role="status"
+              className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-sm text-amber-900"
+            >
+              The slip says {formatPence(b.total)}; the line is{' '}
+              {formatPence(chosen.amount)}. Matching shows the difference, never
+              forces it.
+            </p>
+          )}
+          <button
+            type="button"
+            className={button}
+            disabled={busy || !chosen}
+            onClick={() =>
+              chosen &&
+              void attempt(() =>
+                writes.matchBatch(
+                  chosen.id,
+                  chosen.matchVersion,
+                  b.id,
+                  b.lineVersion,
+                ),
+              )
+            }
+          >
+            {busy ? 'Matching…' : 'Match to this line'}
+          </button>
+        </>
+      )}
+      {alert}
+    </section>
   )
 }

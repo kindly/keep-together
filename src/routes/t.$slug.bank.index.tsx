@@ -34,11 +34,26 @@ function BankPage() {
     <main className="mx-auto flex max-w-4xl flex-col gap-4 p-4 sm:p-6">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-xl font-semibold">Bank statements</h1>
-        {accounts.data?.some((a) => a.active) && (
-          <Link to="/t/$slug/bank/import" params={{ slug }} className={button}>
-            Import a statement
-          </Link>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {accounts.data?.some((a) => a.active) && (
+            <Link
+              to="/t/$slug/bank/import"
+              params={{ slug }}
+              className={button}
+            >
+              Import a statement
+            </Link>
+          )}
+          {accounts.data?.length ? (
+            <Link
+              to="/t/$slug/bank/reconcile"
+              params={{ slug }}
+              className="self-start rounded border border-neutral-300 px-3 py-1 text-sm hover:bg-neutral-50"
+            >
+              Reconcile
+            </Link>
+          ) : null}
+        </div>
       </div>
       {accounts.error ? (
         <p role="alert" className="text-sm text-red-700">
