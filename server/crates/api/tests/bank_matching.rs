@@ -1687,3 +1687,81 @@ async fn a_line_matched_meanwhile_is_stale_for_every_direct_command() {
     }
     assert_eq!(m.line(&line).await["line"]["note"], "Refund");
 }
+
+/// Review b4r round 2: a transfer entered by hand and matched to a line
+/// keeps the line's amount, date and method (Gift Aid claims on them):
+/// saving it as £15 against a £10 line is `422 line_matched_fixed`; and
+/// voiding it while it is one part of a line's split is `line_split`,
+/// as for a part made from the line.
+#[tokio::test]
+async fn a_hand_matched_transfer_keeps_the_lines_terms_and_its_split() {
+    let m = setup().await;
+    let (jo, _) = m.contact("Jo", "Bloggs").await;
+    let (al, _) = m.contact("Al", "Other").await;
+    let mine = m.by_hand(&jo, 2, 1000).await;
+    let lines = m
+        .import(
+            "alpha",
+            &m.sam,
+            &m.account,
+            &[Credit {
+                days_ago: 2,
+                pence: 1500,
+                payer: "J AND A",
+                reference: "",
+            }],
+        )
+        .await;
+    let line = id(&lines[0]);
+    let (s, out) = m
+        .post(
+            &format!("bank/lines/{line}/match-gifts"),
+            json!({ "expected": m.version(&line).await, "giftIds": [mine],
+                "remainder": { "amount": 500, "note": "Al's, recorded below" } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let g = m.gift(&mine).await;
+    let mut save = g.clone();
+    save["expected"] = g["giftVersion"].clone();
+    save["amount"] = json!(1500);
+    save["allocations"][0]["amount"] = json!(1500);
+    let (s, reason) = refused(
+        &m.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{mine}/save"),
+        &m.sam,
+        Some(save),
+    )
+    .await;
+    assert_eq!(
+        (s, reason.as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "line_matched_fixed")
+    );
+    assert_eq!(m.gift(&mine).await["amount"], 1000);
+
+    // Unmatched, then split between Jo's hand-entered gift and Al's.
+    m.unmatch(&line).await;
+    let theirs = m.by_hand(&al, 2, 500).await;
+    let (s, out) = m
+        .post(
+            &format!("bank/lines/{line}/match-gifts"),
+            json!({ "expected": m.version(&line).await, "giftIds": [mine, theirs] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let g = m.gift(&theirs).await;
+    let (s, reason) = refused(
+        &m.w,
+        "POST",
+        &format!("/api/t/alpha/gifts/{theirs}/status"),
+        &m.sam,
+        Some(json!({ "expected": g["statusVersion"], "status": "void" })),
+    )
+    .await;
+    assert_eq!(
+        (s, reason.as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "line_split")
+    );
+    assert_eq!(m.line(&line).await["gifts"].as_array().unwrap().len(), 2);
+}

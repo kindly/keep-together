@@ -76,6 +76,9 @@ pub struct GiftState {
     /// the slip, so amount, date and method stay until it is reopened.
     #[serde(skip)]
     batch_closed: bool,
+    /// `giving.status`'s: void (a matched line no longer holds it).
+    #[serde(skip)]
+    void: bool,
 }
 
 pub(crate) fn load_allocations(
@@ -103,7 +106,8 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
                     claim_id, provider, provider_payment_id, regular_gift_id, scheduled_on,
                     bank_line_id, bank_line_made, paying_in_batch_id,
                     coalesce((SELECT b.status <> 'open' FROM paying_in_batches b
-                              WHERE b.id = paying_in_batch_id), 0)
+                              WHERE b.id = paying_in_batch_id), 0),
+                    status = 'void'
              FROM gifts WHERE id = ?1 /* any status: one gift */",
         )?
         .query_row([id], |r| {
@@ -134,6 +138,7 @@ fn load_gift(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftState>>
                 system: false,
                 linked_line: line.filter(|_| !made),
                 batch_closed: r.get(15)?,
+                void: r.get(16)?,
             })
         })
         .optional()?
@@ -247,6 +252,7 @@ impl Contract for Gift {
                 system,
                 linked_line: None,
                 batch_closed: false,
+                void: false,
             });
         };
         if p.contact_id != current.gift.contact_id {
@@ -343,11 +349,19 @@ impl Contract for Gift {
                 "Only cash and cheques are paid in on a slip",
             ));
         }
-        if current.linked_line.is_some() && now.method != Method::BankTransfer {
+        // A transfer entered by hand and matched to a statement line: the
+        // line agreed with its amount, date and method (a bank transfer),
+        // and Gift Aid claims on them. Unmatch it to change them.
+        if current.linked_line.is_some()
+            && !current.void
+            && (was.method != now.method
+                || was.amount != now.amount
+                || was.received_on != now.received_on)
+        {
             return Err(ContractError::rejected(
-                "line_method",
-                "This gift is matched to a statement line, so it is a bank transfer. \
-                 Unmatch the line first",
+                "line_matched_fixed",
+                "This gift is matched to a statement line: its amount, date and method \
+                 are the line’s. Unmatch it first",
             ));
         }
         Ok(GiftState {

@@ -886,11 +886,24 @@ fn a_transfer_entered_by_hand_is_received_at_once_and_not_on_a_statement_yet() {
     // Re-sending the same line is a no-op.
     let before = gift(&w, &id).line_version;
     assert_eq!(link(&w, &id, Some(&l)).unwrap().counter, before);
-    // Still staff's to edit, but a bank transfer while it's on the line.
-    assert_eq!(
-        reason(save(&w, &id, |p| p.method = Method::Card).unwrap_err()),
-        "line_method"
-    );
+    // While it is on the line, its amount, date and method are the
+    // line's (Gift Aid claims on them): unmatch it to change them (review
+    // b4r R2-M3). Its split across codes is still staff's.
+    for f in [
+        (|p: &mut GiftPayload| p.method = Method::Card) as fn(&mut GiftPayload),
+        |p| {
+            p.amount = 1500;
+            p.allocations[0].amount = 1500;
+        },
+        |p| p.received_on = "2026-10-16".into(),
+    ] {
+        assert_eq!(reason(save(&w, &id, f).unwrap_err()), "line_matched_fixed");
+    }
+    let second = code(&w.a, "Autumn appeal");
+    save(&w, &id, |p| {
+        p.allocations[0].source_code_id = second.clone()
+    })
+    .unwrap();
     // A void gift stops waiting.
     link(&w, &id, None).unwrap();
     set_status(&w, &id, Status::Void).unwrap();
