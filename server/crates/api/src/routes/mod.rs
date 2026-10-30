@@ -3,6 +3,7 @@
 
 mod address;
 mod bank_matching;
+mod bank_payers;
 mod banking;
 mod batches;
 mod comms;
@@ -36,6 +37,7 @@ pub fn router() -> Router {
         .merge(address::router())
         .merge(banking::router())
         .merge(bank_matching::router())
+        .merge(bank_payers::router())
         .merge(batches::router())
         .merge(contacts::router())
         .merge(fields::router())

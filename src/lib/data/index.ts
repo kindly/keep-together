@@ -207,3 +207,31 @@ export type {
   PayingInBatch,
   PayingInBatchPage,
 } from './rust/batches'
+export {
+  detailFromWire,
+  useForgetPayers,
+  useHandTransfers,
+  useLine,
+  useLines,
+  useMatchWrites,
+  usePayers,
+  useRuleWrites,
+  useRules,
+} from './rust/matching'
+export type {
+  AcceptOutcome,
+  BankConfidence,
+  BankMatchState,
+  BankPayerView,
+  BankProposal,
+  BankRule,
+  BankRuleField,
+  BankSuggestion,
+  HandTransfer,
+  LineDetail,
+  LineGift,
+  LineWithSuggestions,
+  Remainder,
+  SplitPart,
+  StatementLine,
+} from './rust/matching'
