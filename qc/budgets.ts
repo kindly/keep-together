@@ -184,7 +184,7 @@ export const budgets = {
   'scans.pair': infrequent,
   'scans.accept': infrequent,
   // Declaration scans step 5, the phone's page (qc/flows/scan-phone.spec.ts).
-  // PROVISIONAL, for the human's OK: recorded 2026-10-29 in runs tnoqzxpr,
+  // Approved (human, 2026-10-30): recorded 2026-10-29 in runs tnoqzxpr,
   // tnor0ywg, tnor1s78 with netem off and load about 8 (worst: open 63 ms,
   // sendPage 214 ms), 1.5× rounded up to 10 ms. scan.open: opening the
   // link, the phone page's first load (oncePerSession, as
@@ -194,8 +194,8 @@ export const budgets = {
   // recorded budget, a progress state), though it is one page.
   'scan.open': { kind: 'oncePerSession', maxMs: 100 },
   'scan.sendPage': { kind: 'bulk', maxMs: 330 },
-  // GoCardless D3 (qc/flows/gocardless-ui.spec.ts). PROVISIONAL, awaiting
-  // the human's OK: classes picked, not yet recorded. Opening Settings ›
+  // GoCardless D3 (qc/flows/gocardless-ui.spec.ts). Classes
+  // approved (human, 2026-10-30), not recorded. Opening Settings ›
   // GoCardless and the unmatched list are reads: repeatable. Setting up a
   // Direct Debit, a one-off on the mandate, an Instant Bank Pay link,
   // cancelling and matching a payment each create or end a record:
@@ -209,8 +209,8 @@ export const budgets = {
   'gocardless.instantPayment': infrequent,
   'gocardless.cancel': infrequent,
   'gocardless.match': infrequent,
-  // Declaration scans step 6 (qc/flows/scans-e2e.spec.ts). PROVISIONAL,
-  // AWAITING THE HUMAN'S OK: recorded 2026-10-29 in runs tnoxdojv,
+  // Declaration scans step 6 (qc/flows/scans-e2e.spec.ts). Approved
+  // (human, 2026-10-30): recorded 2026-10-29 in runs tnoxdojv,
   // tnoxdz0z, tnoxea0c with netem off and load under 2 (worst 182 ms),
   // 1.5× rounded up to 10 ms. scans.uploadToLaptop: Use page on the phone
   // to the page's thumbnail in the laptop's stack, so scan.sendPage's work,
@@ -219,7 +219,7 @@ export const budgets = {
   // shows "Preparing the page…").
   'scans.uploadToLaptop': { kind: 'bulk', maxMs: 280 },
   // Regular-gift terms step 6 (qc/flows/regular-terms.spec.ts).
-  // PROVISIONAL, awaiting the human's OK: classes picked, not recorded.
+  // Classes approved (human, 2026-10-30), not recorded.
   // Scheduling a change (the plan's "repeatable (100 ms)"), changing its
   // code and withdrawing it are edits of the regular gift: repeatable.
   // Opening the expected vs actual report is a read: repeatable.
