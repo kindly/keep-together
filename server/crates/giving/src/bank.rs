@@ -791,14 +791,15 @@ impl Contract for PayingInBatch {
 /// clear the batch's cheques and pend them again in the same command
 /// group; a restore is refused, since the cheques wouldn't follow. The
 /// line must be on the batch's own account and hold no gifts and no
-/// other batch.
-pub struct BatchLine;
-pub static BATCH_LINE: BatchLine = BatchLine;
+/// other batch. Crate-private, so nothing outside `giving` can run it
+/// without its cheques.
+pub(crate) struct BatchLine;
+pub(crate) static BATCH_LINE: BatchLine = BatchLine;
 
 /// The `giving.batchLine` slice as stored, plus what decides whether it
 /// may change (never serialised).
 #[derive(Clone, Debug, Serialize)]
-pub struct BatchLineState {
+pub(crate) struct BatchLineState {
     #[serde(flatten)]
     pub line: BatchLinePayload,
     #[serde(skip)]

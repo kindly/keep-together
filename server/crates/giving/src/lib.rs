@@ -30,7 +30,7 @@ use contracts::{
 };
 use rusqlite::{Connection, OptionalExtension};
 
-pub use bank::{BATCH_LINE, LINE, PAYING_IN_BATCH};
+pub use bank::{LINE, PAYING_IN_BATCH};
 pub use gift::{CLAIM_LOCK, GIFT, STATUS};
 pub use queries::{
     BY_CONTACT_LIMIT, HISTORY_PAGE_LIMIT, RECENT_LIMIT, by_contact, get, history, my_recent,
@@ -133,7 +133,7 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &CLAIM_LOCK,
         &LINE,
         &PAYING_IN_BATCH,
-        &BATCH_LINE,
+        &bank::BATCH_LINE,
         &REGULAR_GIFT,
         &REGULAR_GIFT_MANDATE,
         &terms::REGULAR_GIFT_TERMS,
