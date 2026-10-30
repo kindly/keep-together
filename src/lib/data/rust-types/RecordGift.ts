@@ -8,4 +8,9 @@ import type { HomeAddress } from "./HomeAddress";
 /**
  * `POST gifts/record`: the record-gift page's one save.
  */
-export type RecordGift = { clientKey: string, contact: DonorRef, home?: HomeAddress, receivedOn: string, amount: number, method: GiftMethod, reference?: string, allocations: Array<AllocationRow>, giftAid?: GiftAidTick, };
+export type RecordGift = { clientKey: string, contact: DonorRef, home?: HomeAddress, receivedOn: string, amount: number, method: GiftMethod, reference?: string, allocations: Array<AllocationRow>, giftAid?: GiftAidTick, 
+/**
+ * The open paying-in batch a cash gift or cheque goes into (ADR
+ * 0027, g2q5): optional.
+ */
+payingInBatchId?: string, };

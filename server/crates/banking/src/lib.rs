@@ -39,7 +39,7 @@ pub use csv::{AmountColumns, Column, ColumnMapping, HeaderRow, PeekRow};
 pub use dedupe::{Deduped, Held, Keyed, content_key, dedupe};
 pub use import::{
     FileLayout, IMPORT, ImportError, ImportRequest, ImportRow, Imported, Planned, Preview,
-    import_file, import_lines, import_of, imports, plan_import,
+    LineSummary, import_file, import_lines, import_of, imports, line_summary, plan_import,
 };
 pub use presets::{AWAITING_SAMPLES, Preset, preset, presets};
 

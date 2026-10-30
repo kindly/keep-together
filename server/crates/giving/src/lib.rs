@@ -13,6 +13,7 @@
 //! `/* any status: … */` comment, why it reads every status.
 
 pub mod bank;
+pub mod batches;
 pub mod expected;
 pub mod gift;
 pub mod queries;

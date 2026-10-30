@@ -3,6 +3,7 @@
 
 mod address;
 mod banking;
+mod batches;
 mod comms;
 mod contacts;
 pub mod fields;
@@ -32,6 +33,7 @@ pub fn router() -> Router {
     Router::new()
         .merge(address::router())
         .merge(banking::router())
+        .merge(batches::router())
         .merge(contacts::router())
         .merge(fields::router())
         .merge(preferences::router())
