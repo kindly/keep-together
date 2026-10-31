@@ -93,15 +93,32 @@ function LinePage() {
   )
 }
 
+/** The offer being set up, and the line as it was when it was opened. */
+type Offer = {
+  proposal: Extract<BankSuggestion['proposal'], { kind: 'newStandingOrder' }>
+  line: { id: string; matchVersion: number; amount: bigint; postedOn: string }
+}
+
 function Line({ detail: d }: { detail: LineDetail }) {
   const { line } = d
+  // Held above the state switch (review soui wiring L2): a save's answer
+  // refetches the line, matched by this save or by someone else, and
+  // what was said must outlive the suggestions it came from.
+  const [offer, setOffer] = useState<Offer | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   return (
     <>
       <div className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold">
           <LineHeading line={line} />
         </h1>
-        <p className="text-sm text-neutral-600" data-testid="line-state">
+        {/* A status (wiring L1): a match from a suggestion or the offer
+            unmounts what had focus; the new state is still announced. */}
+        <p
+          role="status"
+          className="text-sm text-neutral-600"
+          data-testid="line-state"
+        >
           {line.state === 'unmatched'
             ? 'Unmatched: it counts for nothing until it is matched.'
             : line.state === 'matched'
@@ -109,13 +126,44 @@ function Line({ detail: d }: { detail: LineDetail }) {
               : `Not a donation${line.note ? `: ${line.note}` : '.'}`}
         </p>
       </div>
+      {notice && (
+        <p
+          role="alert"
+          data-testid="line-notice"
+          className="text-sm text-red-700"
+        >
+          {notice}
+        </p>
+      )}
       {line.state === 'unmatched' ? (
         <>
-          <Suggestions detail={d} />
+          <Suggestions
+            detail={d}
+            onOffer={(proposal) =>
+              setOffer({
+                proposal,
+                line: {
+                  id: line.id,
+                  matchVersion: line.matchVersion,
+                  amount: line.amount,
+                  postedOn: line.postedOn,
+                },
+              })
+            }
+            onRefused={setNotice}
+          />
           <MatchForms detail={d} />
         </>
       ) : (
         <Matched detail={d} />
+      )}
+      {offer && (
+        <RecordStandingOrderDialog
+          contactId={offer.proposal.contactId as Id<'contacts'>}
+          prefill={{ frequency: offer.proposal.frequency }}
+          line={offer.line}
+          onClose={() => setOffer(null)}
+        />
       )}
     </>
   )
@@ -127,15 +175,20 @@ function Line({ detail: d }: { detail: LineDetail }) {
  * form in line mode (its code and reference staff's to choose, the
  * reference never prefilled; the line its first payment).
  */
-function Suggestions({ detail: d }: { detail: LineDetail }) {
+function Suggestions({
+  detail: d,
+  onOffer,
+  onRefused,
+}: {
+  detail: LineDetail
+  onOffer: (proposal: Offer['proposal']) => void
+  /** Said by the page: a 409's refetch unmounts this list. */
+  onRefused: (error: string | null) => void
+}) {
   const writes = useMatchWrites()
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [offer, setOffer] = useState<Extract<
-    BankSuggestion['proposal'],
-    { kind: 'newStandingOrder' }
-  > | null>(null)
   if (d.suggestions.length === 0) return null
+  const setError = onRefused
   async function use(s: BankSuggestion) {
     setBusy(true)
     setError(null)
@@ -183,11 +236,10 @@ function Suggestions({ detail: d }: { detail: LineDetail }) {
                 className={quiet}
                 disabled={busy}
                 data-testid="standing-order-offer"
-                onClick={() =>
-                  setOffer(
-                    s.proposal.kind === 'newStandingOrder' ? s.proposal : null,
-                  )
-                }
+                onClick={() => {
+                  if (s.proposal.kind === 'newStandingOrder')
+                    onOffer(s.proposal)
+                }}
               >
                 Set it up…
               </button>
@@ -204,24 +256,6 @@ function Suggestions({ detail: d }: { detail: LineDetail }) {
           </li>
         ))}
       </ul>
-      {offer && (
-        <RecordStandingOrderDialog
-          contactId={offer.contactId as Id<'contacts'>}
-          prefill={{ frequency: offer.frequency }}
-          line={{
-            id: d.line.id,
-            matchVersion: d.line.matchVersion,
-            amount: d.line.amount,
-            postedOn: d.line.postedOn,
-          }}
-          onClose={() => setOffer(null)}
-        />
-      )}
-      {error && (
-        <p role="alert" className="text-sm text-red-700">
-          {error}
-        </p>
-      )}
     </section>
   )
 }

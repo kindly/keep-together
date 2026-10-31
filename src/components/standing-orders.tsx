@@ -211,7 +211,15 @@ export function RecordStandingOrderDialog({
       const byField = fieldProblems(err)
       if (byField) setProblems(byField)
       else
-        setError(refusal(err, 'Couldn’t record it', 'Changed by someone else'))
+        setError(
+          refusal(
+            err,
+            'Couldn’t record it',
+            line
+              ? 'Not recorded: someone else matched this line meanwhile'
+              : 'Changed by someone else',
+          ),
+        )
     } finally {
       setBusy(false)
     }

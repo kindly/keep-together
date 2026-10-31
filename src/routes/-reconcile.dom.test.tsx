@@ -582,6 +582,66 @@ test('the offer to make a standing order opens the record form on the line, neve
   expect(byTestId('standing-order-dialog')).toBeUndefined()
 })
 
+test('a match from a suggestion is announced: the line’s state is a status', async () => {
+  detail = { line: line(), gifts: [], batchId: null, suggestions: [instalment] }
+  const matched: LineDetail = {
+    ...detail,
+    line: line({ state: 'matched', matchVersion: 3 }),
+    suggestions: [],
+  }
+  writes.accept.mockImplementation(() => {
+    // The answer comes with the refetch: the line is read back matched.
+    detail = matched
+    return Promise.resolve([{ lineId: 'l1', ok: true, line: matched }])
+  })
+  await linePage()
+  await click(button('Use this'))
+  await linePage()
+  const state = el.querySelector('[data-testid="line-state"]')!
+  expect(state.getAttribute('role')).toBe('status')
+  expect(state.textContent).toBe('Matched.')
+  expect(byTestId('line-notice')).toBeUndefined()
+})
+
+test('a 409 is still said once the refetch shows someone else’s match', async () => {
+  detail = { line: line(), gifts: [], batchId: null, suggestions: [instalment] }
+  writes.accept.mockImplementation(() => {
+    detail = {
+      line: line({ state: 'matched', matchVersion: 3 }),
+      gifts: [],
+      batchId: null,
+      suggestions: [],
+    }
+    return Promise.resolve([
+      { lineId: 'l1', ok: false, status: 409, error: null },
+    ])
+  })
+  await linePage()
+  await click(button('Use this'))
+  await linePage()
+  expect(byTestId('line-state')).toBe('Matched.')
+  expect(byTestId('line-notice')).toContain('someone else matched this line')
+})
+
+test('the record form outlives the refetch, on the line as it was opened', async () => {
+  detail = { line: line(), gifts: [], batchId: null, suggestions: [offer] }
+  await linePage()
+  await click(button('Set it up…'))
+  // Matched meanwhile (or by this save): the form stays to say which.
+  detail = {
+    line: line({ state: 'matched', matchVersion: 3 }),
+    gifts: [],
+    batchId: null,
+    suggestions: [],
+  }
+  await linePage()
+  expect(byTestId('line-state')).toBe('Matched.')
+  expect(byTestId('standing-order-dialog')).toBe('')
+  expect(opened).toMatchObject({ line: { id: 'l1', matchVersion: 2 } })
+  await act(async () => (opened!.onClose as () => void)())
+  expect(byTestId('standing-order-dialog')).toBeUndefined()
+})
+
 test('reconcile: the offer is its own, not a name-only match, and never tickable', async () => {
   lines = [{ ...line(), suggestions: [offer] }]
   await reconcile()

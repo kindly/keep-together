@@ -17,7 +17,7 @@
     "format": "prettier --write . && eslint --fix",
     "check": "pnpm check:server && pnpm check:ts",
     "check:ts": "pnpm typecheck && pnpm lint && pnpm test",
-    "check:server": "cd server && cargo clippy --all-targets -- -D warnings && cargo test",
+    "check:server": "cd server && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "qc": "node scripts/qc.mjs -- playwright test",
