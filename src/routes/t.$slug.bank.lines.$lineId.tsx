@@ -10,6 +10,7 @@ import {
   proposalText,
 } from '../components/reconcile'
 import { SourceCodePicker } from '../components/source-code-picker'
+import { RecordStandingOrderDialog } from '../components/standing-orders'
 import type { ShownCode } from '../components/source-code-picker'
 import {
   useBankAccounts,
@@ -33,6 +34,7 @@ import {
   remainderOf,
   splitIssues,
 } from '../lib/domain/line-split'
+import type { Id } from '../lib/domain/ids'
 import type { DonorChoice } from '../lib/gift-form'
 import { formatDay, formatPence, parsePounds } from '../lib/gifts'
 import { useCanWrite } from '../lib/tenant'
@@ -119,11 +121,20 @@ function Line({ detail: d }: { detail: LineDetail }) {
   )
 }
 
-/** The line's ranked suggestions, each applied on its own. */
+/**
+ * The line's ranked suggestions, each applied on its own. The offer to
+ * make a standing order never goes through accept: it opens the record
+ * form in line mode (its code and reference staff's to choose, the
+ * reference never prefilled; the line its first payment).
+ */
 function Suggestions({ detail: d }: { detail: LineDetail }) {
   const writes = useMatchWrites()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [offer, setOffer] = useState<Extract<
+    BankSuggestion['proposal'],
+    { kind: 'newStandingOrder' }
+  > | null>(null)
   if (d.suggestions.length === 0) return null
   async function use(s: BankSuggestion) {
     setBusy(true)
@@ -166,17 +177,46 @@ function Suggestions({ detail: d }: { detail: LineDetail }) {
               </span>
               <span className="text-xs text-neutral-600">{s.reason}</span>
             </span>
-            <button
-              type="button"
-              className={quiet}
-              disabled={busy}
-              onClick={() => void use(s)}
-            >
-              Use this
-            </button>
+            {s.proposal.kind === 'newStandingOrder' ? (
+              <button
+                type="button"
+                className={quiet}
+                disabled={busy}
+                data-testid="standing-order-offer"
+                onClick={() =>
+                  setOffer(
+                    s.proposal.kind === 'newStandingOrder' ? s.proposal : null,
+                  )
+                }
+              >
+                Set it up…
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={quiet}
+                disabled={busy}
+                onClick={() => void use(s)}
+              >
+                Use this
+              </button>
+            )}
           </li>
         ))}
       </ul>
+      {offer && (
+        <RecordStandingOrderDialog
+          contactId={offer.contactId as Id<'contacts'>}
+          prefill={{ frequency: offer.frequency }}
+          line={{
+            id: d.line.id,
+            matchVersion: d.line.matchVersion,
+            amount: d.line.amount,
+            postedOn: d.line.postedOn,
+          }}
+          onClose={() => setOffer(null)}
+        />
+      )}
       {error && (
         <p role="alert" className="text-sm text-red-700">
           {error}

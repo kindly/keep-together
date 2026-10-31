@@ -304,7 +304,7 @@ function LineCard({
             !bulkable(s) ? (
               <div
                 key={proposalKey(s.proposal)}
-                data-testid="name-only"
+                data-testid={nameOnly(s) ? 'name-only' : 'standing-order-offer'}
                 className="flex flex-col pl-6"
               >
                 <span className="flex flex-wrap items-center gap-2">

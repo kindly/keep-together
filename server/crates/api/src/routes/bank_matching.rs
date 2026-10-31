@@ -1072,7 +1072,8 @@ pub const ACCEPT_MAX: usize = 200;
 
 /// Apply one ticked suggestion through the same command as by hand. A
 /// line whose `matchVersion` moved since it was read is `stale` first,
-/// whatever else would refuse it (it was matched meanwhile).
+/// whatever else would refuse it (it was matched meanwhile). The offer to
+/// make a standing order is refused: never in an accept.
 pub fn apply(ctx: &Ctx, item: AcceptItem, source: Source) -> Result<(), ContractError> {
     let line = matching::line(ctx.tx.read(), &item.line_id)?.ok_or(ContractError::NotFound)?;
     if line.match_version != item.expected {
@@ -1118,26 +1119,14 @@ pub fn apply(ctx: &Ctx, item: AcceptItem, source: Source) -> Result<(), Contract
             },
             source,
         )?,
-        Proposal::NewStandingOrder {
-            contact_id,
-            frequency,
-            day_of_month,
-            month,
-        } => {
-            standing_order_from(
-                ctx,
-                &item.line_id,
-                StandingOrderFromLine {
-                    expected: item.expected,
-                    contact: DonorRef::Existing(contact_id),
-                    frequency,
-                    day_of_month,
-                    month,
-                    source_code_id: None,
-                    bank_reference: None,
-                },
-                source,
-            )?;
+        // Never through accept (soui L1): a standing order is set up one
+        // at a time, its code and reference chosen by staff
+        // (`bank/lines/{id}/standing-order`).
+        Proposal::NewStandingOrder { .. } => {
+            return Err(ContractError::rejected(
+                "one_at_a_time",
+                "Set up a standing order one at a time, from its line",
+            ));
         }
         Proposal::NotDonation { note, .. } => mark_not_donation(
             ctx,

@@ -1023,6 +1023,55 @@ async fn make_this_a_standing_order_is_offered_on_the_second_payment_not_the_fir
     assert_eq!(gift["regularGiftId"], mine[0]["id"]);
 }
 
+/// soui L1: the offer never goes through "Accept ticked", whatever the
+/// client sends: refused, the line left unmatched, no standing order.
+#[tokio::test]
+async fn accept_refuses_the_offer_to_make_a_standing_order() {
+    let s = setup().await;
+    let jo = s.contact("alpha", &s.ann, "Jo").await;
+    let on = due_at_least(10);
+    let lines = s
+        .import(&[Credit {
+            on: on.clone(),
+            pence: 2000,
+            payer: "JO GIVER",
+            reference: "MONTHLY",
+        }])
+        .await;
+    let line = id(&lines[0]);
+    let l = s.line(&line).await;
+    let out = ok(
+        &s.w,
+        "POST",
+        "/api/t/alpha/bank/accept",
+        &s.sam,
+        Some(
+            json!({ "items": [{ "lineId": line, "expected": l["line"]["matchVersion"],
+            "proposal": { "kind": "newStandingOrder", "contactId": jo, "frequency": "monthly",
+                "dayOfMonth": day_of(&on).min(28), "month": null } }] }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (
+            out[0]["status"].as_u64(),
+            out[0]["error"]["reason"].as_str()
+        ),
+        (Some(422), Some("one_at_a_time")),
+        "{out}"
+    );
+    assert_eq!(s.line(&line).await["line"]["state"], "unmatched");
+    let mine = ok(
+        &s.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/standing-orders"),
+        &s.ann,
+        None,
+    )
+    .await;
+    assert_eq!(mine, json!([]));
+}
+
 // ── the job, roles, isolation ──────────────────────────────────────────────
 
 /// The job visits every organisation (`each_org`): a missed payment in
