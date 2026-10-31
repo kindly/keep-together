@@ -17,7 +17,7 @@
 //! stays monthly or yearly (`giving.regularGiftTerms` refuses quarterly
 //! on one).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use contracts::{
     Command, CommandGroup, Contract, ContractError, Ctx, Exec, Executed, OrgTx, Problem, Source,
@@ -733,7 +733,12 @@ fn view(conn: &Connection, r: ViewRow, today: &str) -> rusqlite::Result<Standing
     let chain = terms::chain(conn, &r.id)?;
     Ok(StandingOrderView {
         contact_name: contacts::donors::name_of(conn, &r.contact_id)?.map(|(n, _)| n),
-        next_due_on: next_due_on(&chain, r.status, today),
+        next_due_on: next_due_on(
+            &chain,
+            r.status,
+            &expected::periods_paid(conn, &r.id)?,
+            today,
+        ),
         chain,
         expected: expected::for_regular_gift(conn, &r.id, &from, &to, today)?.unwrap_or_default(),
         id: r.id,
@@ -750,9 +755,15 @@ fn view(conn: &Connection, r: ViewRow, today: &str) -> rusqlite::Result<Standing
 }
 
 /// The first due date on or after `today` under the live chain, looking
-/// a year and a day ahead (the furthest a yearly payment can be); none
-/// for one ended.
-pub fn next_due_on(chain: &[TermView], status: RegularStatus, today: &str) -> Option<String> {
+/// a year and a day ahead (the furthest a yearly payment can be), passing
+/// over a period whose payment is already in (`paid`: it came early);
+/// none for one ended.
+pub fn next_due_on(
+    chain: &[TermView],
+    status: RegularStatus,
+    paid: &BTreeSet<String>,
+    today: &str,
+) -> Option<String> {
     if status.is_ended() {
         return None;
     }
@@ -761,11 +772,13 @@ pub fn next_due_on(chain: &[TermView], status: RegularStatus, today: &str) -> Op
         .filter(|t| t.is_live())
         .map(|t| t.rules())
         .collect();
-    let to = add_days(today, 366)?;
+    // A year and a day past today plus a period paid early: the one
+    // after it is still in range.
+    let to = add_days(today, 366 + 366)?;
     crate::terms_rules::expected_periods(&rules, None, today, &to)
         .into_iter()
+        .find(|p| !paid.contains(&p.period))
         .map(|p| p.due_on)
-        .next()
 }
 
 struct ViewRow {

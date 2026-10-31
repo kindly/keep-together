@@ -139,6 +139,13 @@ export function RecordStandingOrderDialog({
   // The server's 422s, by field: each shows on its own field.
   const [problems, setProblems] = useState<Partial<Record<string, string>>>({})
   const [made, setMade] = useState<string | null>(null)
+  // A field changed: its server error no longer speaks for it.
+  const edited = (...fields: Array<string>) =>
+    setProblems((p) =>
+      Object.fromEntries(
+        Object.entries(p).filter(([f]) => !fields.includes(f)),
+      ),
+    )
   const typed = amountProblem(amount) ?? problems.amount ?? null
   const pence = parsePounds(amount)
   // From a line, the first payment is the line itself, built as the
@@ -232,16 +239,24 @@ export function RecordStandingOrderDialog({
               Amount: {formatPence(line.amount)}, the line’s
             </p>
           ) : (
-            <AmountField value={amount} onChange={setAmount} problem={typed} />
+            <AmountField
+              value={amount}
+              onChange={(v) => {
+                setAmount(v)
+                edited('amount')
+              }}
+              problem={typed}
+            />
           )}
           <div className="flex flex-wrap gap-3">
             <label className="flex flex-col gap-1 text-sm">
               How often
               <select
                 value={frequency}
-                onChange={(e) =>
+                onChange={(e) => {
                   setFrequency(e.target.value as RegularGiftFrequency)
-                }
+                  edited('startsOn', 'dayOfMonth', 'month')
+                }}
                 className={field}
               >
                 <option value="monthly">Monthly</option>
@@ -262,7 +277,10 @@ export function RecordStandingOrderDialog({
                 <input
                   type="date"
                   value={startsOn}
-                  onChange={(e) => setStartsOn(e.target.value)}
+                  onChange={(e) => {
+                    setStartsOn(e.target.value)
+                    edited('startsOn', 'dayOfMonth', 'month')
+                  }}
                   aria-invalid={startShown ? true : undefined}
                   aria-describedby="standing-start-problem"
                   className={field}
@@ -282,7 +300,10 @@ export function RecordStandingOrderDialog({
             The donor’s reference (optional)
             <input
               value={reference}
-              onChange={(e) => setReference(e.target.value)}
+              onChange={(e) => {
+                setReference(e.target.value)
+                edited('bankReference')
+              }}
               maxLength={200}
               aria-invalid={problems.bankReference ? true : undefined}
               aria-describedby="standing-reference-problem"
@@ -300,7 +321,13 @@ export function RecordStandingOrderDialog({
               payments; a payer matched once is recognised after.
             </span>
           </label>
-          <CodeField code={code} onChange={setCode} />
+          <CodeField
+            code={code}
+            onChange={(c) => {
+              setCode(c)
+              edited('sourceCodeId')
+            }}
+          />
           {problems.sourceCodeId && (
             <p aria-live="polite" className="text-xs text-red-700">
               {problems.sourceCodeId}

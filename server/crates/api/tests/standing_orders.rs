@@ -1350,6 +1350,45 @@ async fn a_yearly_standing_order_knows_its_next_payment_far_ahead() {
     assert_eq!(ended["nextDueOn"], Value::Null);
 }
 
+/// Round 2 N2: a payment that came early (its line before the due date)
+/// pays its period, so the next due is the period after, not the one
+/// already in.
+#[tokio::test]
+async fn an_early_payment_moves_the_next_due_on_a_period() {
+    let s = setup().await;
+    let jo = s.contact("alpha", &s.ann, "Jo").await;
+    // Due a few days from now (within EARLY_DAYS of a line posted today).
+    let due = (2..=giving::standing::EARLY_DAYS)
+        .map(|n| shift(&days_ago(0), n))
+        .find(|d| day_of(d) <= 28)
+        .unwrap();
+    let so = id(&s.standing(&jo, 1000, &due).await);
+    assert_eq!(s.get_so(&so).await["nextDueOn"], due.as_str());
+    let lines = s
+        .import(&[Credit {
+            on: days_ago(0),
+            pence: 1000,
+            payer: "J GIVER",
+            reference: "SO REF",
+        }])
+        .await;
+    let line = id(&lines[0]);
+    let l = s.line(&line).await;
+    let (st, out) = s
+        .post(
+            &format!("bank/lines/{line}/instalment"),
+            json!({ "expected": l["line"]["matchVersion"], "regularGiftId": so, "scheduledOn": due }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+    // The same day next month.
+    let (y, m): (i32, u32) = (due[0..4].parse().unwrap(), due[5..7].parse().unwrap());
+    let (y, m) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    let next = format!("{y}-{m:02}-{}", &due[8..10]);
+    let after = s.get_so(&so).await;
+    assert_eq!(after["nextDueOn"], next.as_str(), "{after}");
+}
+
 /// M1: "make this a standing order" starts on the line's own day (capped
 /// at the 28th) in the line's month, whatever the frequency: what the
 /// form shows read-only (`lineSchedule` in src/lib/domain/
@@ -1391,5 +1430,45 @@ async fn a_standing_order_from_a_line_starts_on_the_lines_day_capped_at_28() {
     assert_eq!(
         (first["dayOfMonth"].as_u64(), first["month"].as_u64()),
         (Some(28), Some(u64::from(month)))
+    );
+
+    // Round 2 N3: quarterly the same, its month the line's own.
+    let bo = s.contact("alpha", &s.ann, "Bo").await;
+    let on = (60..120).map(days_ago).find(|d| day_of(d) >= 29).unwrap();
+    let lines = s
+        .import(&[Credit {
+            on: on.clone(),
+            pence: 4500,
+            payer: "BO GIVER",
+            reference: "",
+        }])
+        .await;
+    let l = s.line(&id(&lines[0])).await;
+    let month: u8 = on[5..7].parse().unwrap();
+    let (st, out) = s
+        .post(
+            &format!("bank/lines/{}/standing-order", id(&lines[0])),
+            json!({ "expected": l["line"]["matchVersion"], "contact": bo,
+                "frequency": "quarterly", "dayOfMonth": 28, "month": month }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+    let theirs = ok(
+        &s.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{bo}/standing-orders"),
+        &s.ann,
+        None,
+    )
+    .await;
+    let first = &theirs[0]["chain"][0];
+    assert_eq!(first["effectiveFrom"], format!("{}-28", &on[0..7]));
+    assert_eq!(
+        (
+            first["frequency"].as_str(),
+            first["dayOfMonth"].as_u64(),
+            first["month"].as_u64()
+        ),
+        (Some("quarterly"), Some(28), Some(u64::from(month)))
     );
 }

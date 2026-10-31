@@ -405,6 +405,11 @@ test('a 422 lands on its field, not as one line', async () => {
     document.getElementById('standing-reference-problem')!.textContent,
   ).toBe('Keep it to 18 characters')
   expect(document.querySelector('[role="dialog"] [role="alert"]')).toBeNull()
+  // Round 2 N1: changing the field clears what the server said of it.
+  await type('The donor’s reference', 'SHORTER')
+  expect(
+    document.getElementById('standing-reference-problem')!.textContent,
+  ).toBe('')
 })
 
 test('from a statement line: the line’s amount, its first payment the line itself, matched in one command', async () => {
