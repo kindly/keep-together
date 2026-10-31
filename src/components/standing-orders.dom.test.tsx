@@ -385,6 +385,39 @@ test('home: a list that couldn’t load says so, and tries again', () => {
   expect(refetchMissed).toHaveBeenCalledTimes(1)
 })
 
+test('from a line matched meanwhile: not recorded, and said so', async () => {
+  const fromLine = vi.fn().mockRejectedValue(
+    new RustApiError(409, {
+      kind: 'stale',
+      contract: 'banking.lineMatch',
+      counter: 2,
+      current: 3,
+    }),
+  )
+  Object.assign(writes, { fromLine })
+  const recorded = vi.fn()
+  render(
+    <RecordStandingOrderDialog
+      contactId={'c1' as Id<'contacts'>}
+      prefill={{ frequency: 'monthly' }}
+      line={{
+        id: 'l1',
+        matchVersion: 2,
+        amount: 2000n,
+        postedOn: '2026-03-07',
+      }}
+      onClose={() => {}}
+      onRecorded={recorded}
+    />,
+  )
+  click('Pick a code')
+  await act(async () => button('Record').click())
+  expect(document.querySelector('[role="alert"]')!.textContent).toContain(
+    'Not recorded: someone else matched this line meanwhile',
+  )
+  expect(recorded).not.toHaveBeenCalled()
+})
+
 test('a 422 lands on its field, not as one line', async () => {
   writes.record.mockRejectedValue(
     new RustApiError(422, {

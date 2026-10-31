@@ -15,7 +15,7 @@ pnpm dev               # the api and Vite, shared on the tailnet; prints the URL
 pnpm dev --local       # the same on this machine only
 pnpm dev:reset         # wipe server/data/ and reseed riverside, then as pnpm dev
 pnpm dev:share --off   # remove this checkout's tailnet entry (pnpm dev removes it on exit)
-pnpm check             # clippy + cargo test, then typecheck + lint + vitest (what CI runs)
+pnpm check             # fmt + clippy + cargo test, then typecheck + lint + vitest (what CI runs)
 pnpm qc                # the Playwright QC suite (qc/README.md)
 ```
 
