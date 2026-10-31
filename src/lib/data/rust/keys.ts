@@ -136,6 +136,16 @@ export const keys = {
     ['t', slug, 'bank', 'imports', accountId] as const,
   bankImport: (slug: string, id: string) =>
     ['t', slug, 'bank', 'import', id] as const,
+  /** Matching (bank transfers 6b): lines, a line, rules, payers. */
+  bankLines: (slug: string, accountId: string, state: string) =>
+    ['t', slug, 'bank', 'lines', accountId, state] as const,
+  bankLine: (slug: string, id: string) =>
+    ['t', slug, 'bank', 'line', id] as const,
+  bankHandTransfers: (slug: string, lineId: string, days: number) =>
+    ['t', slug, 'bank', 'handTransfers', lineId, days] as const,
+  bankRules: (slug: string) => ['t', slug, 'bank', 'rules'] as const,
+  bankPayers: (slug: string, contactId: string) =>
+    ['t', slug, 'bank', 'payers', contactId] as const,
   /**
    * Paying-in batches (bank transfers 6b): one prefix, so a batch's event
    * or one of its gifts' refetches the list and the batch.

@@ -68,6 +68,10 @@ export const PORTED: ReadonlyArray<RouteId> = [
   // Bank transfers 6b: paying-in batches.
   '/t/$slug/bank/batches/',
   '/t/$slug/bank/batches/$batchId',
+  // Bank transfers 6b part 2: reconcile, a line, the rules.
+  '/t/$slug/bank/reconcile',
+  '/t/$slug/bank/lines/$lineId',
+  '/t/$slug/bank/rules',
 ]
 
 const ported = new Set<string>(PORTED)

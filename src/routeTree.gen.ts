@@ -21,6 +21,8 @@ import { Route as TSlugSettingsRouteImport } from './routes/t.$slug.settings'
 import { Route as TSlugTagsRouteImport } from './routes/t.$slug.tags'
 import { Route as TSlugBankIndexRouteImport } from './routes/t.$slug.bank.index'
 import { Route as TSlugBankImportRouteImport } from './routes/t.$slug.bank.import'
+import { Route as TSlugBankReconcileRouteImport } from './routes/t.$slug.bank.reconcile'
+import { Route as TSlugBankRulesRouteImport } from './routes/t.$slug.bank.rules'
 import { Route as TSlugContactsIndexRouteImport } from './routes/t.$slug.contacts.index'
 import { Route as TSlugContactsContactIdRouteImport } from './routes/t.$slug.contacts.$contactId'
 import { Route as TSlugContactsNewRouteImport } from './routes/t.$slug.contacts.new'
@@ -48,6 +50,7 @@ import { Route as TSlugSettingsTagsRouteImport } from './routes/t.$slug.settings
 import { Route as TSlugBankBatchesIndexRouteImport } from './routes/t.$slug.bank.batches.index'
 import { Route as TSlugBankBatchesBatchIdRouteImport } from './routes/t.$slug.bank.batches.$batchId'
 import { Route as TSlugBankImportsImportIdRouteImport } from './routes/t.$slug.bank.imports.$importId'
+import { Route as TSlugBankLinesLineIdRouteImport } from './routes/t.$slug.bank.lines.$lineId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -107,6 +110,16 @@ const TSlugBankIndexRoute = TSlugBankIndexRouteImport.update({
 const TSlugBankImportRoute = TSlugBankImportRouteImport.update({
   id: '/bank/import',
   path: '/bank/import',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugBankReconcileRoute = TSlugBankReconcileRouteImport.update({
+  id: '/bank/reconcile',
+  path: '/bank/reconcile',
+  getParentRoute: () => TSlugRoute,
+} as any)
+const TSlugBankRulesRoute = TSlugBankRulesRouteImport.update({
+  id: '/bank/rules',
+  path: '/bank/rules',
   getParentRoute: () => TSlugRoute,
 } as any)
 const TSlugContactsIndexRoute = TSlugContactsIndexRouteImport.update({
@@ -247,6 +260,11 @@ const TSlugBankImportsImportIdRoute =
     path: '/bank/imports/$importId',
     getParentRoute: () => TSlugRoute,
   } as any)
+const TSlugBankLinesLineIdRoute = TSlugBankLinesLineIdRouteImport.update({
+  id: '/bank/lines/$lineId',
+  path: '/bank/lines/$lineId',
+  getParentRoute: () => TSlugRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -260,6 +278,8 @@ export interface FileRoutesByFullPath {
   '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/': typeof TSlugIndexRoute
   '/t/$slug/bank/import': typeof TSlugBankImportRoute
+  '/t/$slug/bank/reconcile': typeof TSlugBankReconcileRoute
+  '/t/$slug/bank/rules': typeof TSlugBankRulesRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/giftaid/$claimId': typeof TSlugGiftaidClaimIdRoute
@@ -287,6 +307,7 @@ export interface FileRoutesByFullPath {
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
   '/t/$slug/bank/batches/$batchId': typeof TSlugBankBatchesBatchIdRoute
   '/t/$slug/bank/imports/$importId': typeof TSlugBankImportsImportIdRoute
+  '/t/$slug/bank/lines/$lineId': typeof TSlugBankLinesLineIdRoute
   '/t/$slug/bank/batches/': typeof TSlugBankBatchesIndexRoute
 }
 export interface FileRoutesByTo {
@@ -298,6 +319,8 @@ export interface FileRoutesByTo {
   '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug': typeof TSlugIndexRoute
   '/t/$slug/bank/import': typeof TSlugBankImportRoute
+  '/t/$slug/bank/reconcile': typeof TSlugBankReconcileRoute
+  '/t/$slug/bank/rules': typeof TSlugBankRulesRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/giftaid/$claimId': typeof TSlugGiftaidClaimIdRoute
@@ -325,6 +348,7 @@ export interface FileRoutesByTo {
   '/t/$slug/settings': typeof TSlugSettingsIndexRoute
   '/t/$slug/bank/batches/$batchId': typeof TSlugBankBatchesBatchIdRoute
   '/t/$slug/bank/imports/$importId': typeof TSlugBankImportsImportIdRoute
+  '/t/$slug/bank/lines/$lineId': typeof TSlugBankLinesLineIdRoute
   '/t/$slug/bank/batches': typeof TSlugBankBatchesIndexRoute
 }
 export interface FileRoutesById {
@@ -340,6 +364,8 @@ export interface FileRoutesById {
   '/t/$slug/tags': typeof TSlugTagsRoute
   '/t/$slug/': typeof TSlugIndexRoute
   '/t/$slug/bank/import': typeof TSlugBankImportRoute
+  '/t/$slug/bank/reconcile': typeof TSlugBankReconcileRoute
+  '/t/$slug/bank/rules': typeof TSlugBankRulesRoute
   '/t/$slug/contacts/$contactId': typeof TSlugContactsContactIdRoute
   '/t/$slug/contacts/new': typeof TSlugContactsNewRoute
   '/t/$slug/giftaid/$claimId': typeof TSlugGiftaidClaimIdRoute
@@ -367,6 +393,7 @@ export interface FileRoutesById {
   '/t/$slug/settings/': typeof TSlugSettingsIndexRoute
   '/t/$slug/bank/batches/$batchId': typeof TSlugBankBatchesBatchIdRoute
   '/t/$slug/bank/imports/$importId': typeof TSlugBankImportsImportIdRoute
+  '/t/$slug/bank/lines/$lineId': typeof TSlugBankLinesLineIdRoute
   '/t/$slug/bank/batches/': typeof TSlugBankBatchesIndexRoute
 }
 export interface FileRouteTypes {
@@ -383,6 +410,8 @@ export interface FileRouteTypes {
     | '/t/$slug/tags'
     | '/t/$slug/'
     | '/t/$slug/bank/import'
+    | '/t/$slug/bank/reconcile'
+    | '/t/$slug/bank/rules'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/giftaid/$claimId'
@@ -410,6 +439,7 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/'
     | '/t/$slug/bank/batches/$batchId'
     | '/t/$slug/bank/imports/$importId'
+    | '/t/$slug/bank/lines/$lineId'
     | '/t/$slug/bank/batches/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -421,6 +451,8 @@ export interface FileRouteTypes {
     | '/t/$slug/tags'
     | '/t/$slug'
     | '/t/$slug/bank/import'
+    | '/t/$slug/bank/reconcile'
+    | '/t/$slug/bank/rules'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/giftaid/$claimId'
@@ -448,6 +480,7 @@ export interface FileRouteTypes {
     | '/t/$slug/settings'
     | '/t/$slug/bank/batches/$batchId'
     | '/t/$slug/bank/imports/$importId'
+    | '/t/$slug/bank/lines/$lineId'
     | '/t/$slug/bank/batches'
   id:
     | '__root__'
@@ -462,6 +495,8 @@ export interface FileRouteTypes {
     | '/t/$slug/tags'
     | '/t/$slug/'
     | '/t/$slug/bank/import'
+    | '/t/$slug/bank/reconcile'
+    | '/t/$slug/bank/rules'
     | '/t/$slug/contacts/$contactId'
     | '/t/$slug/contacts/new'
     | '/t/$slug/giftaid/$claimId'
@@ -489,6 +524,7 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/'
     | '/t/$slug/bank/batches/$batchId'
     | '/t/$slug/bank/imports/$importId'
+    | '/t/$slug/bank/lines/$lineId'
     | '/t/$slug/bank/batches/'
   fileRoutesById: FileRoutesById
 }
@@ -585,6 +621,20 @@ declare module '@tanstack/react-router' {
       path: '/bank/import'
       fullPath: '/t/$slug/bank/import'
       preLoaderRoute: typeof TSlugBankImportRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/bank/reconcile': {
+      id: '/t/$slug/bank/reconcile'
+      path: '/bank/reconcile'
+      fullPath: '/t/$slug/bank/reconcile'
+      preLoaderRoute: typeof TSlugBankReconcileRouteImport
+      parentRoute: typeof TSlugRoute
+    }
+    '/t/$slug/bank/rules': {
+      id: '/t/$slug/bank/rules'
+      path: '/bank/rules'
+      fullPath: '/t/$slug/bank/rules'
+      preLoaderRoute: typeof TSlugBankRulesRouteImport
       parentRoute: typeof TSlugRoute
     }
     '/t/$slug/contacts/': {
@@ -776,6 +826,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugBankImportsImportIdRouteImport
       parentRoute: typeof TSlugRoute
     }
+    '/t/$slug/bank/lines/$lineId': {
+      id: '/t/$slug/bank/lines/$lineId'
+      path: '/bank/lines/$lineId'
+      fullPath: '/t/$slug/bank/lines/$lineId'
+      preLoaderRoute: typeof TSlugBankLinesLineIdRouteImport
+      parentRoute: typeof TSlugRoute
+    }
   }
 }
 
@@ -833,6 +890,8 @@ interface TSlugRouteChildren {
   TSlugTagsRoute: typeof TSlugTagsRoute
   TSlugIndexRoute: typeof TSlugIndexRoute
   TSlugBankImportRoute: typeof TSlugBankImportRoute
+  TSlugBankReconcileRoute: typeof TSlugBankReconcileRoute
+  TSlugBankRulesRoute: typeof TSlugBankRulesRoute
   TSlugContactsContactIdRoute: typeof TSlugContactsContactIdRoute
   TSlugContactsNewRoute: typeof TSlugContactsNewRoute
   TSlugGiftsGiftIdRoute: typeof TSlugGiftsGiftIdRoute
@@ -846,6 +905,7 @@ interface TSlugRouteChildren {
   TSlugScansIndexRoute: typeof TSlugScansIndexRoute
   TSlugBankBatchesBatchIdRoute: typeof TSlugBankBatchesBatchIdRoute
   TSlugBankImportsImportIdRoute: typeof TSlugBankImportsImportIdRoute
+  TSlugBankLinesLineIdRoute: typeof TSlugBankLinesLineIdRoute
   TSlugBankBatchesIndexRoute: typeof TSlugBankBatchesIndexRoute
 }
 
@@ -855,6 +915,8 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugTagsRoute: TSlugTagsRoute,
   TSlugIndexRoute: TSlugIndexRoute,
   TSlugBankImportRoute: TSlugBankImportRoute,
+  TSlugBankReconcileRoute: TSlugBankReconcileRoute,
+  TSlugBankRulesRoute: TSlugBankRulesRoute,
   TSlugContactsContactIdRoute: TSlugContactsContactIdRoute,
   TSlugContactsNewRoute: TSlugContactsNewRoute,
   TSlugGiftsGiftIdRoute: TSlugGiftsGiftIdRoute,
@@ -868,6 +930,7 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugScansIndexRoute: TSlugScansIndexRoute,
   TSlugBankBatchesBatchIdRoute: TSlugBankBatchesBatchIdRoute,
   TSlugBankImportsImportIdRoute: TSlugBankImportsImportIdRoute,
+  TSlugBankLinesLineIdRoute: TSlugBankLinesLineIdRoute,
   TSlugBankBatchesIndexRoute: TSlugBankBatchesIndexRoute,
 }
 

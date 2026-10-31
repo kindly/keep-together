@@ -236,6 +236,15 @@ export const budgets = {
   // infrequent.
   'gift.recordCheque': infrequent,
   'batch.close': infrequent,
+  // Bank transfers 6b part 2 (qc/flows/reconcile.spec.ts). PROVISIONAL:
+  // proposed by builder-bkp for the human's OK. "Accept ticked" applies
+  // several lines at once (30 a sample): bulk, its budget recorded
+  // 2026-10-31 in runs tnr2xmr6, tnr33uj5, tnr39er1 (QC_NO_NETEM=1, the
+  // normal 6 workers, started at load under 4; worst 177 ms), 1.5×
+  // rounded up to 10 ms. Matching a line by hand makes or ends a record:
+  // infrequent.
+  'bank.acceptTicked': { kind: 'bulk', maxMs: 270 },
+  'bank.matchLine': infrequent,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },
@@ -258,11 +267,15 @@ export function budgetFor(name: FlowName): Budget {
  * Routes behind `bulk` flows (`METHOD /path`, as qc/server.ts names them):
  * an action over many records at once. Exempt from the 100 ms server rule
  * like their flows (human, 2026-10-18), each with its own limit in ms,
- * recorded like the `bulk` flow budgets. None on the Rust backend yet:
- * B1's bulk set (`POST /t/:slug/contacts/bulk-set-field`) is held to the
+ * recorded like the `bulk` flow budgets. Reconcile's "Accept ticked"
+ * (`POST /t/:slug/bank/accept`, 30 lines a call) is PROVISIONAL for the
+ * human's OK: worst 155.1 ms over runs tnr2xmr6, tnr33uj5, tnr39er1
+ * (QC_NO_NETEM=1), × 1.5, rounded up to 240 ms. B1's bulk set (`POST /t/:slug/contacts/bulk-set-field`) is held to the
  * ordinary 100 ms; its Convex limit was 370 ms (bulkTag's worst, 242.6 ms
  * over runs tn357fbu, tn35ew84, tn35t6tx, × 1.5, rounded up).
  * Convex's server exception (a list re-run reading a grown pinned page)
  * went with Convex's paged list.
  */
-export const BULK_ROUTES: Record<string, number> = {}
+export const BULK_ROUTES: Record<string, number> = {
+  'POST /t/:slug/bank/accept': 240,
+}

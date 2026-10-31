@@ -6,6 +6,7 @@ import { contactSeed, dropContactSeed } from '../lib/contact-seed'
 import { FEATURES, preloadContact, useContact } from '../lib/data'
 import { ContactForm } from '../components/contact-form'
 import { ContactGiftAid } from '../components/contact-giftaid'
+import { BankPayers } from '../components/bank-payers'
 import { ContactGifts } from '../components/contact-gifts'
 import { ContactDirectDebit } from '../components/direct-debit'
 import { RegularGiftTerms } from '../components/regular-terms'
@@ -65,6 +66,8 @@ function ContactPage() {
               {(gift) => <RegularGiftTerms gift={gift} />}
             </ContactDirectDebit>
           )}
+          {/* Staff and admins: from statement lines (bank transfers 6b). */}
+          {FEATURES.gifts && <BankPayers contactId={id} />}
           {/* Only a person can make a Gift Aid declaration (HMRC 3.6.7). */}
           {FEATURES.gifts && data.contact.kind === 'individual' && (
             <ContactGiftAid contactId={id} />

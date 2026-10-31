@@ -55,6 +55,7 @@ export const DONATIONS = {
   unmatched: 'Unmatched payments',
   bank: 'Bank statements',
   batches: 'Paying-in batches',
+  reconcile: 'Reconcile',
   expected: 'Expected vs actual',
   loading: 'Loading…',
   none: 'None yet.',
@@ -203,6 +204,20 @@ export function BankStatementsAction(props: AnchorProps) {
   )
 }
 
+/** "Reconcile": statement lines to match (staff and admins). */
+export function ReconcileAction(props: AnchorProps) {
+  const tenant = useTenant()
+  return (
+    <Link
+      to="/t/$slug/bank/reconcile"
+      params={{ slug: tenant.slug }}
+      {...props}
+    >
+      {DONATIONS.reconcile}
+    </Link>
+  )
+}
+
 /** "Paying-in batches": cash and cheques paid in together. */
 export function BatchesAction(props: AnchorProps) {
   const tenant = useTenant()
@@ -301,6 +316,9 @@ export function DonationsMenu() {
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <BankStatementsAction />
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <ReconcileAction />
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <BatchesAction />

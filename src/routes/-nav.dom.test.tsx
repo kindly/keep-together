@@ -458,13 +458,15 @@ test('the Donations menu: Record a gift, then my recent gifts, each a link', asy
   expect(items[0].getAttribute('aria-disabled')).toBeNull()
   expect(items[1].textContent).toBe('Bank statements')
   expect(items[1].getAttribute('href')).toBe('/t/alpha/bank')
-  expect(items[2].textContent).toBe('Paying-in batches')
-  expect(items[2].getAttribute('href')).toBe('/t/alpha/bank/batches')
-  expect(items.slice(3).map((i) => i.textContent)).toEqual([
+  expect(items[2].textContent).toBe('Reconcile')
+  expect(items[2].getAttribute('href')).toBe('/t/alpha/bank/reconcile')
+  expect(items[3].textContent).toBe('Paying-in batches')
+  expect(items[3].getAttribute('href')).toBe('/t/alpha/bank/batches')
+  expect(items.slice(4).map((i) => i.textContent)).toEqual([
     '£1,234.56Acme Ltd23 Oct 2026',
     '£20.00Jo Bloggsvoid23 Oct 2026',
   ])
-  expect(items.slice(3).map((i) => i.getAttribute('href'))).toEqual([
+  expect(items.slice(4).map((i) => i.getAttribute('href'))).toEqual([
     '/t/alpha/gifts/g2',
     '/t/alpha/gifts/g1',
   ])
@@ -487,9 +489,10 @@ test('with GoCardless on, the Donations menu lists Unmatched payments for staff,
     ].map((i) => [i.textContent, i.getAttribute('href')])
   }
   tenants = [group('alpha', { role: 'staff' })]
-  expect((await items()).slice(0, 5)).toEqual([
+  expect((await items()).slice(0, 6)).toEqual([
     ['Record a gift', '/t/alpha/gifts/new'],
     ['Bank statements', '/t/alpha/bank'],
+    ['Reconcile', '/t/alpha/bank/reconcile'],
     ['Paying-in batches', '/t/alpha/bank/batches'],
     ['Unmatched payments', '/t/alpha/gocardless/unmatched'],
     ['Expected vs actual', '/t/alpha/reports/expected'],
@@ -797,6 +800,7 @@ test('the drawer lists every destination, Donations flattened, then the account'
     ['Contacts', '/t/alpha/contacts'],
     ['Record a gift', '/t/alpha/gifts/new'],
     ['Bank statements', '/t/alpha/bank'],
+    ['Reconcile', '/t/alpha/bank/reconcile'],
     ['Paying-in batches', '/t/alpha/bank/batches'],
     ['£1,234.56Acme Ltd23 Oct 2026', '/t/alpha/gifts/g2'],
     ['£20.00Jo Bloggsvoid23 Oct 2026', '/t/alpha/gifts/g1'],
@@ -999,6 +1003,7 @@ test('Donations: a 44px toggle, collapsed by default, opening and closing in pla
   expect(shown(region).map(([t]) => t)).toEqual([
     'Record a gift',
     'Bank statements',
+    'Reconcile',
     'Paying-in batches',
     '£20.00Jo Bloggs23 Oct 2026',
   ])

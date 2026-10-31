@@ -204,3 +204,27 @@ describe('declaration scans', () => {
     )
   })
 })
+
+describe('bank transfers 6b events', () => {
+  // A transfer recorded by hand elsewhere changes a line's suggestions (the
+  // hand-entered suggester), so a stale pre-tick can't make a second gift.
+  test('a gift event refetches the lines, a line, and the transfers it could match', async () => {
+    const qc = new QueryClient()
+    const reads = [
+      keys.bankLines(SLUG, 'acc1', 'unmatched'),
+      keys.bankLine(SLUG, 'l1'),
+      keys.bankHandTransfers(SLUG, 'l1', 14),
+    ]
+    for (const k of reads) qc.setQueryData(k, {})
+    applyEvent(qc, SLUG, event('gifts', 'giving.gift'))
+    expect(stale(qc)).toEqual(reads.map((k) => JSON.stringify(k)).sort())
+    // Invalidations coalesce per key while one runs: let it finish.
+    await new Promise((done) => setTimeout(done))
+    const qc2 = new QueryClient()
+    qc2.setQueryData(keys.bankLines(SLUG, 'acc1', 'unmatched'), {})
+    applyEvent(qc2, SLUG, event('regular_gifts', 'giving.regularGift'))
+    expect(stale(qc2)).toEqual([
+      JSON.stringify(keys.bankLines(SLUG, 'acc1', 'unmatched')),
+    ])
+  })
+})
