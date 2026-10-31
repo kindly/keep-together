@@ -16,7 +16,11 @@ import type {
   TestCase,
   TestResult,
 } from '@playwright/test/reporter'
-import QcReporter, { pendingBanner, summarise } from './reporter'
+import QcReporter, {
+  failedLinkBanner,
+  pendingBanner,
+  summarise,
+} from './reporter'
 import type { HistoryLine } from './reporter'
 import type { SetupRetry } from './retries'
 import { readRoutes } from './coverage'
@@ -137,6 +141,49 @@ describe('pendingBanner', () => {
   })
 })
 
+describe('failedLinkBanner', () => {
+  // The nightly of 2026-10-30: first-hop pings of 250 and 213 ms.
+  const at = (hms: string) => Date.parse(`2026-10-30T${hms}Z`)
+  const link = {
+    gateway: '192.168.1.1',
+    watched: true,
+    pings: [
+      [at('03:01:10'), 2.1],
+      [at('03:01:15.218'), 250],
+      [at('03:01:52.189'), 213],
+    ] as Array<[number, number]>,
+    lost: [],
+  }
+
+  test('names the failed tests that overlapped a stall, and only those', () => {
+    const out = failedLinkBanner(
+      [
+        { title: 'contacts › nav', from: at('03:01:15'), to: at('03:01:21') },
+        { title: 'quiet', from: at('03:01:30'), to: at('03:01:40') },
+        { title: 'gifts › cancel', from: at('03:01:49'), to: at('03:02:08') },
+      ],
+      link,
+    ).join('\n')
+    expect(out).toMatch(/LINK: 2 failed tests overlapped a first-hop stall/)
+    expect(out).toContain(
+      'contacts › nav: the first hop at up to 250 ms during it (03:01:15–03:01:21 UTC)',
+    )
+    expect(out).toContain('gifts › cancel: the first hop at up to 213 ms')
+    expect(out).not.toContain('quiet')
+  })
+
+  test('nothing when no failure overlapped one, or the link was not watched', () => {
+    const quiet = [{ title: 'q', from: at('03:01:30'), to: at('03:01:40') }]
+    expect(failedLinkBanner(quiet, link)).toEqual([])
+    expect(
+      failedLinkBanner([{ ...quiet[0], from: at('03:01:15') }], {
+        ...link,
+        watched: false,
+      }),
+    ).toEqual([])
+  })
+})
+
 describe('onEnd: the server rule, pending ports and coverage', () => {
   const routes = readRoutes()
   const repo = process.cwd()
@@ -170,6 +217,8 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
       mailOff?: Array<Array<string>>
       /** Set-up calls retried this run (qc/retries.ts). */
       retries?: Array<SetupRetry>
+      /** Tests skipped off the GoCardless fake: title path, routes. */
+      notFake?: Array<{ title: Array<string>; routes: Array<string> }>
       filtered?: boolean
     } = {},
   ) => {
@@ -223,6 +272,20 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
         {
           status: 'passed',
           annotations: [{ type: 'mailOff', description: 'x' }],
+        } as unknown as TestResult,
+      )
+    for (const t of opts.notFake ?? [])
+      reporter.onTestEnd(
+        {
+          annotations: [],
+          titlePath: () => ['', 'chromium', ...t.title],
+        } as unknown as TestCase,
+        {
+          status: 'skipped',
+          annotations: [
+            ...t.routes.map((r) => ({ type: 'route', description: r })),
+            { type: 'gocardlessNotFake', description: 'KEEP_GOCARDLESS=sandbox' },
+          ],
         } as unknown as TestResult,
       )
     const res = await reporter.onEnd({ status: 'passed' } as FullResult)
@@ -360,6 +423,50 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     const none = await runReporter('r3', records('r3'))
     expect(none.out).not.toContain('SETUP RETRIES')
     expect(none.history.every((l) => !('setupRetries' in l))).toBe(true)
+  })
+
+  test('off the GoCardless fake: its flows and routes are listed, not failed (nightly 2026-10-30)', async () => {
+    const fakeRoutes = [
+      '/t/$slug/gocardless/unmatched',
+      '/t/$slug/reports/expected',
+    ]
+    const ported = routes.filter((r) => isPorted(r))
+    const covered = ported.filter((r) => !fakeRoutes.includes(r))
+    const notFake = [
+      {
+        title: ['flows/gocardless-ui.spec.ts', 'unmatched payments'],
+        routes: [fakeRoutes[0]],
+      },
+      {
+        title: ['flows/regular-terms.spec.ts', 'the expected vs actual report'],
+        routes: [fakeRoutes[1], '/t/$slug/contacts/$contactId'],
+      },
+    ]
+    const r = await runReporter('g1', records('g1'), {
+      covered,
+      notFake,
+      filtered: false,
+    })
+    expect(r.gates.filter((g) => g.includes('coverage:'))).toEqual([])
+    // The failing "not timed" names none of them (the banner does).
+    const notTimed = r.out
+      .split('\n')
+      .find((l) => l.includes('(in qc/budgets.ts without'))
+    expect(notTimed).not.toMatch(/gocardless\.|terms\.|expected\.report/)
+    expect(r.out).toMatch(
+      /GOCARDLESS NOT FAKE on the target \(KEEP_GOCARDLESS=sandbox\): 2 tests skipped; the GoCardless screens were NOT tested:\n!! flows\/gocardless-ui\.spec\.ts › unmatched payments\n!! flows\/regular-terms\.spec\.ts › the expected vs actual report\n!! not timed: [^\n]*gocardless\.settings[^\n]*expected\.report[^\n]*\n!! not covered: \/t\/\$slug\/gocardless\/unmatched, \/t\/\$slug\/reports\/expected/,
+    )
+    // On the fake (nothing skipped for its mode) they fail as before.
+    const fake = await runReporter('g2', records('g2'), {
+      covered,
+      filtered: false,
+    })
+    expect(fake.status).toBe('failed')
+    expect(fake.out).not.toContain('GOCARDLESS NOT FAKE')
+    expect(fake.gates.join('\n')).toMatch(
+      /coverage: no test that ran covers \/t\/\$slug\/gocardless\/unmatched, \/t\/\$slug\/reports\/expected/,
+    )
+    expect(fake.out).toMatch(/not timed: [^\n]*gocardless\.settings/)
   })
 
   test('pendingPort tests are counted, and unported routes need no flow', async () => {

@@ -66,11 +66,18 @@ export interface Budget {
   pendingPort?: string
   /** Approved exception, "<reason> (<who> <date>)": over budget never fails. */
   knownOver?: string
+  /**
+   * Timed only against the GoCardless fake: untimed in a run whose tests
+   * skipped for another mode (`gocardlessNotFake`, staging's sandbox), it
+   * is listed in the GOCARDLESS banner instead of failing the run.
+   */
+  fakeGoCardless?: true
 }
 
 const repeatable = { kind: 'repeatable', maxMs: 150, targetMs: 100 } as const
 const infrequent = { kind: 'infrequent', maxMs: 200, targetMs: 150 } as const
 const rare = { kind: 'rare', maxMs: 250, targetMs: 200 } as const
+const fake = { fakeGoCardless: true } as const
 
 export const budgets = {
   // Step 9b, recorded 2026-10-18 in runs tn357fbu, tn35ew84, tn35t6tx
@@ -202,13 +209,13 @@ export const budgets = {
   // infrequent. All but matching wait for GoCardless itself (the fake,
   // locally; the real one adds its own round trip), so the line may need
   // its own class once recorded.
-  'gocardless.settings': repeatable,
-  'gocardless.unmatched': repeatable,
-  'gocardless.setUp': infrequent,
-  'gocardless.oneOff': infrequent,
-  'gocardless.instantPayment': infrequent,
-  'gocardless.cancel': infrequent,
-  'gocardless.match': infrequent,
+  'gocardless.settings': { ...repeatable, ...fake },
+  'gocardless.unmatched': { ...repeatable, ...fake },
+  'gocardless.setUp': { ...infrequent, ...fake },
+  'gocardless.oneOff': { ...infrequent, ...fake },
+  'gocardless.instantPayment': { ...infrequent, ...fake },
+  'gocardless.cancel': { ...infrequent, ...fake },
+  'gocardless.match': { ...infrequent, ...fake },
   // Declaration scans step 6 (qc/flows/scans-e2e.spec.ts). Approved
   // (human, 2026-10-30): recorded 2026-10-29 in runs tnoxdojv,
   // tnoxdz0z, tnoxea0c with netem off and load under 2 (worst 182 ms),
@@ -224,11 +231,11 @@ export const budgets = {
   // code and withdrawing it are edits of the regular gift: repeatable.
   // Opening the expected vs actual report is a read: repeatable.
   // Adopting a subscription makes a regular gift: infrequent.
-  'terms.change': repeatable,
-  'terms.code': repeatable,
-  'terms.withdraw': repeatable,
-  'expected.report': repeatable,
-  'gocardless.adopt': infrequent,
+  'terms.change': { ...repeatable, ...fake },
+  'terms.code': { ...repeatable, ...fake },
+  'terms.withdraw': { ...repeatable, ...fake },
+  'expected.report': { ...repeatable, ...fake },
+  'gocardless.adopt': { ...infrequent, ...fake },
   // Bank transfers 6b (qc/flows/batches.spec.ts). PROVISIONAL: classes
   // proposed by builder-bkp for the human's OK, not recorded. Recording a
   // cheque into a batch makes a gift (gift.record's class); closing a

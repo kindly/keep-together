@@ -58,7 +58,6 @@ use contacts::form::{create, save_form};
 use contacts::identifiers::{
     IDENTIFIER_TYPE, IDENTIFIERS, IdentifierRow, IdentifierTypePayload, Identifiers,
 };
-use contacts::queries::{ListQuery, list};
 use contacts::types::{
     ChannelLabel, CreateContact, Details, EmailRow, Expected, FieldOptionPayload, FieldPayload,
     Kind, Methods, SaveForm,
@@ -186,20 +185,16 @@ fn person(kind: Kind, first: &str, last: &str, name: &str) -> Details {
     }
 }
 
+/// The seed's own contacts (Ada, Charles, the Trust) in an existing
+/// world: the group's first three numbers, since `side` made them before
+/// anything else. Not the list's first page: a crowd (`qc/crowd`) can
+/// fill that with names sorting before Ada's.
 fn contact_ids(db: &OrgDb) -> Result<Vec<String>, ContractError> {
-    let mut rows = db
-        .read(|r| {
-            list(
-                r,
-                &ListQuery {
-                    include_archived: Some(true),
-                    ..Default::default()
-                },
-            )
-        })?
-        .rows;
-    rows.sort_by_key(|r| r.number);
-    Ok(rows.into_iter().map(|r| r.id).collect())
+    Ok(db.read(|r| {
+        r.prepare("SELECT id FROM contacts ORDER BY number LIMIT 3")?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()
+    })?)
 }
 
 /// The Trust's gifts and Ada's declarations, as seeded.

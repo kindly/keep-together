@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures'
+import { expect, skipUnlessFakeGoCardless, test } from '../fixtures'
 import type { Page } from '@playwright/test'
 import type { GoCardlessStatus } from '../../src/lib/data/rust-types/GoCardlessStatus'
 import type { RegularGiftSaved } from '../../src/lib/data/rust-types/RegularGiftSaved'
@@ -69,13 +69,13 @@ test.describe('GoCardless (fake)', { annotation: GIFT_ROUTE }, () => {
     instance,
   }) => {
     const slug = users.a.slug
-    await page.goto(`/t/${slug}/settings`)
     const status = await json<GoCardlessStatus>(
       page,
       'GET',
       `/api/t/${slug}/gocardless`,
     )
-    test.skip(status.mode !== 'fake', 'needs KEEP_GOCARDLESS=fake')
+    skipUnlessFakeGoCardless(status.mode)
+    await page.goto(`/t/${slug}/settings`)
 
     // Connect: the consent page, then back to the group's settings.
     const { url } = await json<{ url: string }>(

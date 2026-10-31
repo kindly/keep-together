@@ -163,6 +163,12 @@ Banners to look for:
   Passing, but a recurring hang is a bug to chase.
 - **`MAIL OFF`**: the target had mail off, and these tests checked the
   `mail_off` refusal instead of the email path (see Staging).
+- **`GOCARDLESS NOT FAKE`**: the target runs GoCardless in another mode
+  (staging: `sandbox`), so the specs that drive the fake's consent page
+  and simulators skipped (`skipUnlessFakeGoCardless`, before loading a
+  page). The banner lists them, the flows (`fakeGoCardless` in
+  `qc/budgets.ts`) and routes they alone cover; those don't fail the
+  "not timed" and coverage gates. The GoCardless screens were not tested.
 - **`RTT over 150 ms`**: the link is too slow to judge latency. Behaviour
   is still checked, but latency asserts were skipped. Rerun on a better
   link.
@@ -174,6 +180,10 @@ Banners to look for:
   at 50 ms or more instead of its usual 2–5 ms. Judged as usual: the
   banner says where the time went, it doesn't excuse it. It matters for
   the staging run; the local pool's traffic never leaves the machine.
+  A second `LINK` banner names failed tests that overlapped a stall.
+  A failed test also carries a `requests` attachment: its context's
+  requests that got no answer, failed, or took a second or more. A hang
+  there with the first hop quiet points at the target, not the link.
 - **`QC RUN FAILED, whatever the test counts above say`**: a gate the
   tests can't see failed: the coverage gate, a flow in `qc/budgets.ts`
   that nothing timed, the server rule, or the worker-setup sign-in over

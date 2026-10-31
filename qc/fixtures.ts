@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { test as base, expect } from '@playwright/test'
-import type { BrowserContext, Page } from '@playwright/test'
+import type { BrowserContext, Page, Request } from '@playwright/test'
 import { assertFlow, probeRtt, runFlow, runId, tapContext } from './timing'
 import type { FlowName } from './budgets'
 import type { FlowRecord, FlowStep } from './timing'
@@ -284,6 +284,22 @@ export function mailOff(world: World): boolean {
   return world.mailOff
 }
 
+/**
+ * Skip a test that drives the GoCardless fake (its consent page and
+ * simulators) when the target runs another mode (staging: `sandbox`).
+ * Annotated `gocardlessNotFake`, so the run excuses its flows (qc/budgets.ts
+ * `fakeGoCardless`) and the routes only it covers, and the GOCARDLESS
+ * banner lists what went untested. `mode` is GET /api/t/{slug}/gocardless's.
+ */
+export function skipUnlessFakeGoCardless(mode: string) {
+  if (mode === 'fake') return
+  base.info().annotations.push({
+    type: 'gocardlessNotFake',
+    description: `KEEP_GOCARDLESS=${mode}`,
+  })
+  base.skip(true, `needs KEEP_GOCARDLESS=fake; the target runs ${mode}`)
+}
+
 type Flow = <TArg = undefined>(
   page: Page,
   name: FlowName,
@@ -463,10 +479,45 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     context.on('weberror', (e) =>
       log.push(`${at()} pageerror ${e.error().stack ?? String(e.error())}`),
     )
+    // Its requests, so a failure says whether one hung (the network or the
+    // server) or was never sent (the page): three hangs on staging in the
+    // nightly of 2026-10-30 left nothing to tell them apart.
+    const sent = new Map<Request, number>()
+    // A request's outcome: its time in ms, or why it failed.
+    const ended = new Map<Request, number | string>()
+    const since = (r: Request) => Date.now() - (sent.get(r) ?? Date.now())
+    context.on('request', (r) => sent.set(r, Date.now()))
+    context.on('requestfinished', (r) => ended.set(r, since(r)))
+    context.on('requestfailed', (r) =>
+      ended.set(r, `failed after ${since(r)} ms: ${r.failure()?.errorText}`),
+    )
     await use(context)
-    if (testInfo.status !== testInfo.expectedStatus && log.length) {
+    if (testInfo.status === testInfo.expectedStatus) return
+    if (log.length) {
       await testInfo.attach('console', {
         body: log.join('\n'),
+        contentType: 'text/plain',
+      })
+    }
+    const odd = [...sent]
+      .filter(([r]) => {
+        // The event stream stays open by design.
+        if (new URL(r.url()).pathname.endsWith('/events')) return false
+        const end = ended.get(r)
+        return typeof end !== 'number' || end >= 1000
+      })
+      .map(([r, t]) => {
+        const end = ended.get(r) ?? `NO ANSWER after ${since(r)} ms`
+        const took = typeof end === 'number' ? `${end} ms` : end
+        // The outcome before the url: the terminal reporter cuts long lines.
+        return `${new Date(t).toISOString().slice(11, 23)} ${took} · ${r.method()} ${r.url()}`
+      })
+    if (odd.length) {
+      await testInfo.attach('requests', {
+        body: [
+          'Requests unanswered at the end of the test, failed, or slower than 1 s (a page dropped by a navigation leaves its pending ones unanswered):',
+          ...odd,
+        ].join('\n'),
         contentType: 'text/plain',
       })
     }
