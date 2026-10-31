@@ -374,6 +374,21 @@ impl T {
             .as_u16()
     }
 
+    /// A `POST` as a provider's server sends it: its own `Origin`.
+    async fn post_from_gocardless(&self, path: &str, body: &str, signature: &str) -> u16 {
+        self.http
+            .post(format!("{}{path}", self.base))
+            .header("Content-Type", "application/json")
+            .header("Origin", "https://api-sandbox.gocardless.com")
+            .header(SIGNATURE_HEADER, signature)
+            .body(body.to_owned())
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+
     /// ADR 0025's consistency check: every matched payment of `slug` has
     /// exactly one gift agreeing with it.
     fn consistent(&self, slug: &str) {
@@ -567,6 +582,46 @@ async fn a_webhook_needs_gocardless_signature_and_each_event_counts_once() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     let _ = res.into_body().collect().await;
+}
+
+/// GoCardless posts with its own `Origin` (staging, 2026-10-31: 403 from
+/// the CSRF guard before the signature was read). The webhook is exempt
+/// by exact path; its signature still decides, and every other `/api`
+/// `POST` from that origin, near misses included, is still refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_webhook_from_gocardless_origin_passes_csrf_and_only_that_path_does() {
+    let t = setup().await;
+    let status = t.connect("alpha", &t.ann).await;
+    let org = status["organisationId"].as_str().unwrap();
+    let body = json!({"events": [
+        {"id": "EVorigin1", "resource_type": "creditors", "action": "updated",
+         "links": {"organisation": org}}
+    ]})
+    .to_string();
+    let good = sign(api::gocardless::fake::WEBHOOK_SECRET, body.as_bytes());
+    let hook = "/api/gocardless/webhook";
+    assert_eq!(
+        t.post_from_gocardless(hook, &body, "00").await,
+        498,
+        "a bad signature is the handler's 498, not the guard's 403"
+    );
+    assert!(t.events().is_empty());
+    assert_eq!(t.post_from_gocardless(hook, &body, &good).await, 204);
+    t.settle().await;
+    assert_eq!(t.events().len(), 1);
+    for path in [
+        "/api/gocardless/webhook/x",
+        "/api/gocardless/webhookx",
+        "/api/gocardless/webhook/",
+        "/api/groups/alpha/opened",
+        "/api/auth/sign-in",
+    ] {
+        assert_eq!(
+            t.post_from_gocardless(path, &body, &good).await,
+            403,
+            "{path} from a foreign origin"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
