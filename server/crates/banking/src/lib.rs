@@ -44,8 +44,8 @@ pub use account::{ACCOUNT, Account, AccountPayload, AccountRow, CsvLayout, accou
 pub use csv::{AmountColumns, Column, ColumnMapping, HeaderRow, PeekRow};
 pub use dedupe::{Deduped, Held, Keyed, content_key, dedupe};
 pub use import::{
-    FileLayout, IMPORT, ImportError, ImportRequest, ImportRow, Imported, Planned, Preview,
-    LineSummary, import_file, import_lines, import_of, imports, line_summary, plan_import,
+    FileLayout, IMPORT, ImportError, ImportRequest, ImportRow, Imported, LineSummary, Planned,
+    Preview, import_file, import_lines, import_of, imports, line_summary, plan_import,
 };
 pub use matching::{
     FORGET_PAYERS, LINE_MATCH, LineMatchPayload, LineView, MatchState, RULE, RuleField,

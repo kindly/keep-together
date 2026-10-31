@@ -32,7 +32,11 @@ impl Column {
 /// positive pence; a paid-in column's sign is ignored (some banks sign
 /// both).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 #[ts(export, rename = "BankAmountColumns")]
 pub enum AmountColumns {
     Signed { column: Column },
@@ -343,7 +347,13 @@ pub fn read(text: &str, mapping: &ColumnMapping) -> Result<Parsed, Vec<RowError>
 
     let mut errors = Errors::default();
     for record in records.iter().skip(header_at) {
-        let keys = || record.fields.iter().map(|f| header_key(f)).collect::<Vec<_>>();
+        let keys = || {
+            record
+                .fields
+                .iter()
+                .map(|f| header_key(f))
+                .collect::<Vec<_>>()
+        };
         let blank = record.fields.iter().all(|f| f.trim().is_empty());
         // A header repeated further down (Lloyds: one per export joined).
         if blank || header_keys.as_ref().is_some_and(|h| *h == keys()) {
@@ -481,7 +491,11 @@ mod tests {
                     03/11/2026,A JONES,,5\n";
         let p = read(text, &signed()).unwrap();
         assert_eq!(p.debits_dropped, 1);
-        let got: Vec<_> = p.credits.iter().map(|c| (c.posted_on.as_str(), c.amount)).collect();
+        let got: Vec<_> = p
+            .credits
+            .iter()
+            .map(|c| (c.posted_on.as_str(), c.amount))
+            .collect();
         assert_eq!(got, [("2026-11-01", 1000), ("2026-11-03", 500)]);
         assert_eq!(p.credits[0].payer.as_deref(), Some("J SMITH"));
         assert_eq!(p.credits[0].reference.as_deref(), Some("100016"));
@@ -527,7 +541,13 @@ mod tests {
         assert_eq!(p.credits[1].line, 8);
         assert_eq!(p.rows_skipped, 8);
         // The totals row carries money in, so it is reported, not lost.
-        assert_eq!(p.undated, [crate::UndatedRow { line: 9, amount: 1500 }]);
+        assert_eq!(
+            p.undated,
+            [crate::UndatedRow {
+                line: 9,
+                amount: 1500
+            }]
+        );
     }
 
     #[test]
@@ -541,14 +561,23 @@ mod tests {
                     02/11/2026,B BROWN,,5.00\n";
         let p = read(text, &signed()).unwrap();
         assert_eq!(p.credits.len(), 2);
-        assert_eq!(p.undated, [crate::UndatedRow { line: 3, amount: 5000 }]);
+        assert_eq!(
+            p.undated,
+            [crate::UndatedRow {
+                line: 3,
+                amount: 5000
+            }]
+        );
         assert_eq!(p.undated_count, 1);
         let mut many = String::from("Date,Payer,Reference,Amount\n01/11/2026,J,,1.00\n");
         for _ in 0..60 {
             many.push_str(",X,,1.00\n");
         }
         let p = read(&many, &signed()).unwrap();
-        assert_eq!((p.undated.len(), p.undated_count), (crate::ROW_ERRORS_MAX, 60));
+        assert_eq!(
+            (p.undated.len(), p.undated_count),
+            (crate::ROW_ERRORS_MAX, 60)
+        );
     }
 
     #[test]
@@ -652,7 +681,13 @@ mod tests {
         }
         let rows = peek(&text).unwrap();
         assert_eq!(rows.len(), PEEK_ROWS);
-        assert_eq!(rows[1], PeekRow { line: 2, cells: vec!["Date".into(), "Amount, GBP".into()] });
+        assert_eq!(
+            rows[1],
+            PeekRow {
+                line: 2,
+                cells: vec!["Date".into(), "Amount, GBP".into()]
+            }
+        );
     }
 
     #[test]

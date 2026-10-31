@@ -43,12 +43,12 @@ pub fn batch_figures(conn: &Connection, batch_id: &str) -> rusqlite::Result<Batc
          WHERE paying_in_batch_id = ?1 AND method = 'cheque' AND status = ?2
          /* any status: the batch's cheques in one status */",
     )?;
-    let (pending_count, pending_total) =
-        by_status.query_row(params![batch_id, Status::Pending.as_str()], |r| {
+    let (pending_count, pending_total) = by_status
+        .query_row(params![batch_id, Status::Pending.as_str()], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?;
-    let (bounced_count, bounced_total) =
-        by_status.query_row(params![batch_id, Status::Failed.as_str()], |r| {
+    let (bounced_count, bounced_total) = by_status
+        .query_row(params![batch_id, Status::Failed.as_str()], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?;
     Ok(BatchFigures {

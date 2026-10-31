@@ -122,7 +122,10 @@ pub struct ImportContract;
 pub static IMPORT: ImportContract = ImportContract;
 
 fn is_key(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn prepare_import(mut p: ImportPayload) -> Result<ImportPayload, ContractError> {
@@ -149,10 +152,16 @@ fn prepare_import(mut p: ImportPayload) -> Result<ImportPayload, ContractError> 
     }
     for line in &p.lines {
         if line.amount <= 0 || line.amount > PENCE_MAX {
-            return Err(ContractError::invalid("lines", "A line is a credit in pence"));
+            return Err(ContractError::invalid(
+                "lines",
+                "A line is a credit in pence",
+            ));
         }
         if !is_iso_date(&line.posted_on) || !is_key(&line.dedupe_key) || line.occurrence < 1 {
-            return Err(ContractError::invalid("lines", "A line's date or key is not one"));
+            return Err(ContractError::invalid(
+                "lines",
+                "A line's date or key is not one",
+            ));
         }
     }
     mint_ids(&mut p.lines, |l| &mut l.id);

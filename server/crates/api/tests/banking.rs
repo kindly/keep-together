@@ -48,7 +48,10 @@ fn world() -> World {
     World { _tmp: tmp, a, b }
 }
 
-fn tx<T, E: From<rusqlite::Error>>(db: &OrgDb, f: impl FnOnce(&Ctx) -> Result<T, E>) -> Result<T, E> {
+fn tx<T, E: From<rusqlite::Error>>(
+    db: &OrgDb,
+    f: impl FnOnce(&Ctx) -> Result<T, E>,
+) -> Result<T, E> {
     contracts::transact(db, Some(ANN), f)
 }
 
@@ -57,7 +60,10 @@ fn read<T>(db: &OrgDb, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> T 
 }
 
 fn fixture(name: &str) -> Vec<u8> {
-    let path = format!("{}/../banking/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/../banking/tests/fixtures/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
@@ -113,13 +119,17 @@ fn lloyds_days(days: impl IntoIterator<Item = u32>) -> Vec<u8> {
         "Transaction Date,Transaction Type,Sort Code,Account Number,Transaction Description,Debit Amount,Credit Amount,Balance,\n",
     );
     for d in days {
-        text.push_str(&format!("{d:02}/11/2026,SO,'30-00-00,12345678,J SMITH SO,,10.00,0,\n"));
+        text.push_str(&format!(
+            "{d:02}/11/2026,SO,'30-00-00,12345678,J SMITH SO,,10.00,0,\n"
+        ));
     }
     text.into_bytes()
 }
 
 fn lloyds() -> Option<FileLayout> {
-    Some(FileLayout::Preset { id: "lloyds".into() })
+    Some(FileLayout::Preset {
+        id: "lloyds".into(),
+    })
 }
 
 #[test]
@@ -133,7 +143,10 @@ fn an_account_saves_with_its_counter_and_keeps_who_created_it() {
     assert!(matches!(stale, ContractError::Stale { .. }), "{stale:?}");
     let rows = read(&w.a, |c| Ok(accounts(c).unwrap()));
     assert_eq!(rows.len(), 1);
-    assert_eq!((rows[0].version, rows[0].account.payload.active), (1, false));
+    assert_eq!(
+        (rows[0].version, rows[0].account.payload.active),
+        (1, false)
+    );
     assert_eq!(rows[0].account.created_by, Some(ANN));
     assert_eq!(rows[0].account.payload.sort_code, "600001");
 }
@@ -142,7 +155,10 @@ fn an_account_saves_with_its_counter_and_keeps_who_created_it() {
 fn account_names_are_unique_and_a_default_code_must_be_a_version() {
     let w = world();
     new_account(&w.a, "CAF current");
-    let clash = tx(&w.a, |ctx| create_account(ctx, payload("caf CURRENT"), Source::Ui)).unwrap_err();
+    let clash = tx(&w.a, |ctx| {
+        create_account(ctx, payload("caf CURRENT"), Source::Ui)
+    })
+    .unwrap_err();
     assert!(
         matches!(&clash, ContractError::Rejected { reason, .. } if reason == "duplicate_account_name"),
         "{clash:?}"
@@ -167,7 +183,11 @@ fn account_names_are_unique_and_a_default_code_must_be_a_version() {
     .version_id;
     // A category is not a version.
     p.default_source_code_id = Some(read(&w.a, |c| {
-        c.query_row("SELECT id FROM source_codes WHERE level = 'category'", [], |r| r.get(0))
+        c.query_row(
+            "SELECT id FROM source_codes WHERE level = 'category'",
+            [],
+            |r| r.get(0),
+        )
     }));
     let bad = tx(&w.a, |ctx| create_account(ctx, p.clone(), Source::Ui)).unwrap_err();
     assert!(matches!(bad, ContractError::Invalid(_)), "{bad:?}");
@@ -194,9 +214,15 @@ fn reimporting_the_same_file_adds_nothing() {
     assert_eq!(count(&w.a, "bank_lines"), 4);
     // Both imports are recorded: "0 new, 4 already imported".
     let list = read(&w.a, |c| Ok(imports(c, &acc).unwrap()));
-    let counts: Vec<(i64, i64)> = list.iter().map(|i| (i.new_lines, i.duplicate_lines)).collect();
+    let counts: Vec<(i64, i64)> = list
+        .iter()
+        .map(|i| (i.new_lines, i.duplicate_lines))
+        .collect();
     assert_eq!(counts, [(0, 4), (4, 0)]);
-    assert_eq!(list[1].preset.as_deref(), Some("natwest-bankline-statement"));
+    assert_eq!(
+        list[1].preset.as_deref(),
+        Some("natwest-bankline-statement")
+    );
 }
 
 #[test]
@@ -238,7 +264,12 @@ fn a_bank_id_is_used_when_the_file_has_one() {
     let w = world();
     let acc = new_account(&w.a, "Barclays");
     let ofx = fixture("statement.ofx");
-    assert_eq!(import(&w.a, &acc, &ofx, Some(FileLayout::Ofx)).unwrap().new_lines, 2);
+    assert_eq!(
+        import(&w.a, &acc, &ofx, Some(FileLayout::Ofx))
+            .unwrap()
+            .new_lines,
+        2
+    );
     // The bank rewords a narrative between downloads but keeps its FITID.
     let reworded = String::from_utf8(ofx)
         .unwrap()
@@ -263,8 +294,14 @@ fn a_malformed_file_stores_nothing() {
         panic!("a malformed row must refuse the file");
     };
     assert_eq!(errors[0].line, 5);
-    assert_eq!((count(&w.a, "bank_imports"), count(&w.a, "bank_lines")), (0, 0));
-    assert_eq!(count(&w.a, "revisions WHERE contract = 'banking.import'"), 0);
+    assert_eq!(
+        (count(&w.a, "bank_imports"), count(&w.a, "bank_lines")),
+        (0, 0)
+    );
+    assert_eq!(
+        count(&w.a, "revisions WHERE contract = 'banking.import'"),
+        0
+    );
 }
 
 #[test]
@@ -275,7 +312,12 @@ fn the_saved_layout_is_used_unless_another_is_asked_for() {
     // no transactions.
     let wrong = import(&w.a, &acc, &lloyds_days([1]), None);
     assert!(matches!(wrong, Err(ImportError::File(_))));
-    assert_eq!(import(&w.a, &acc, &lloyds_days([1]), lloyds()).unwrap().new_lines, 1);
+    assert_eq!(
+        import(&w.a, &acc, &lloyds_days([1]), lloyds())
+            .unwrap()
+            .new_lines,
+        1
+    );
     let mut p = payload("Lloyds");
     p.csv_layout = None;
     tx(&w.a, |ctx| save_account(ctx, &acc, 0, p, Source::Ui)).unwrap();
@@ -297,8 +339,14 @@ fn an_archived_account_takes_no_imports() {
         matches!(&refused, ImportError::Contract(ContractError::Rejected { reason, .. }) if reason == "account_inactive"),
         "{refused:?}"
     );
-    assert_eq!((count(&w.a, "bank_imports"), count(&w.a, "bank_lines")), (0, 0));
-    assert_eq!(count(&w.a, "revisions WHERE contract = 'banking.import'"), 0);
+    assert_eq!(
+        (count(&w.a, "bank_imports"), count(&w.a, "bank_lines")),
+        (0, 0)
+    );
+    assert_eq!(
+        count(&w.a, "revisions WHERE contract = 'banking.import'"),
+        0
+    );
 }
 
 #[test]
@@ -311,7 +359,8 @@ fn a_file_over_5_mb_or_10000_credits_is_refused_and_stores_nothing() {
     };
     assert!(errors[0].message.contains("5 MB"), "{errors:?}");
     // 10,001 credits, well under 5 MB.
-    let mut text = String::from("Transaction Date,Transaction Description,Debit Amount,Credit Amount\n");
+    let mut text =
+        String::from("Transaction Date,Transaction Description,Debit Amount,Credit Amount\n");
     for i in 0..=banking::import::LINES_MAX {
         text.push_str(&format!("{:02}/11/2026,P{i},,1.00\n", i % 28 + 1));
     }
@@ -328,13 +377,19 @@ fn a_file_over_5_mb_or_10000_credits_is_refused_and_stores_nothing() {
         bank_id: None,
         currency: None,
     };
-    let Err(ImportError::File(errors)) =
-        import(&w.a, &acc, text.as_bytes(), Some(FileLayout::Mapping { mapping }))
-    else {
+    let Err(ImportError::File(errors)) = import(
+        &w.a,
+        &acc,
+        text.as_bytes(),
+        Some(FileLayout::Mapping { mapping }),
+    ) else {
         panic!("over 10,000 credits must be refused");
     };
     assert!(errors[0].message.contains("10000"), "{errors:?}");
-    assert_eq!((count(&w.a, "bank_imports"), count(&w.a, "bank_lines")), (0, 0));
+    assert_eq!(
+        (count(&w.a, "bank_imports"), count(&w.a, "bank_lines")),
+        (0, 0)
+    );
 }
 
 #[test]
@@ -343,9 +398,15 @@ fn an_ofx_file_for_another_account_is_refused() {
     let acc = new_account(&w.a, "Barclays");
     // The account ends 5678; the file says 12345678 (matches), then 87654321.
     let ofx = String::from_utf8(fixture("statement.ofx")).unwrap();
-    assert_eq!(import(&w.a, &acc, ofx.as_bytes(), Some(FileLayout::Ofx)).unwrap().new_lines, 2);
+    assert_eq!(
+        import(&w.a, &acc, ofx.as_bytes(), Some(FileLayout::Ofx))
+            .unwrap()
+            .new_lines,
+        2
+    );
     let other = ofx.replace("<ACCTID>12345678", "<ACCTID>87654321");
-    let Err(ImportError::File(errors)) = import(&w.a, &acc, other.as_bytes(), Some(FileLayout::Ofx))
+    let Err(ImportError::File(errors)) =
+        import(&w.a, &acc, other.as_bytes(), Some(FileLayout::Ofx))
     else {
         panic!("another account's file must be refused");
     };
@@ -403,7 +464,10 @@ fn another_organisations_lines_never_count() {
         matches!(missing, ImportError::Contract(ContractError::NotFound)),
         "{missing:?}"
     );
-    assert_eq!((count(&w.a, "bank_lines"), count(&w.b, "bank_lines")), (4, 4));
+    assert_eq!(
+        (count(&w.a, "bank_lines"), count(&w.b, "bank_lines")),
+        (4, 4)
+    );
     assert_eq!(read(&w.b, |c| Ok(imports(c, &a).unwrap())).len(), 0);
     assert_eq!(read(&w.b, |c| Ok(accounts(c).unwrap())).len(), 1);
 }

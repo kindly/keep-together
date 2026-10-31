@@ -111,8 +111,14 @@ fn qif_date(value: &str) -> Result<String, String> {
 /// Whether a `!` line starts transactions (`!Type:Bank`, `!Type:CCard`,
 /// …) rather than `!Account`, `!Option` or a category list.
 fn transactions_follow(line: &str) -> bool {
-    let header = line.trim_start().get(1..).unwrap_or("").to_ascii_lowercase();
-    header.starts_with("type:") && !header.starts_with("type:cat") && !header.starts_with("type:class")
+    let header = line
+        .trim_start()
+        .get(1..)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    header.starts_with("type:")
+        && !header.starts_with("type:cat")
+        && !header.starts_with("type:class")
 }
 
 fn transaction(r: &Record) -> Result<Movement, String> {

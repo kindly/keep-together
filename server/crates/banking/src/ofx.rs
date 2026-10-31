@@ -69,11 +69,9 @@ pub fn read(text: &str) -> Result<Parsed, Vec<RowError>> {
     let mut parsed = Parsed::default();
     let mut errors = Errors::default();
     let mut current: Option<Transaction> = None;
-    let finish = |t: Transaction, parsed: &mut Parsed, errors: &mut Errors| {
-        match transaction(&t) {
-            Ok(movement) => parsed.take(movement),
-            Err(message) => errors.push(t.line, message),
-        }
+    let finish = |t: Transaction, parsed: &mut Parsed, errors: &mut Errors| match transaction(&t) {
+        Ok(movement) => parsed.take(movement),
+        Err(message) => errors.push(t.line, message),
     };
     for (line, tag, value) in tags {
         let tag = tag.to_ascii_uppercase();
@@ -162,7 +160,10 @@ mod tests {
         assert_eq!(p.debits_dropped, 1);
         assert_eq!(p.credits.len(), 1);
         let c = &p.credits[0];
-        assert_eq!((c.line, c.posted_on.as_str(), c.amount), (8, "2026-11-03", 1000));
+        assert_eq!(
+            (c.line, c.posted_on.as_str(), c.amount),
+            (8, "2026-11-03", 1000)
+        );
         assert_eq!(c.bank_id.as_deref(), Some("A1"));
         assert_eq!(c.payer.as_deref(), Some("J SMITH"));
         assert_eq!(c.narrative, "J SMITH 100016");
@@ -180,8 +181,14 @@ mod tests {
 
     #[test]
     fn one_account_per_file_and_its_id_is_kept() {
-        let one = SGML.replace("<CURDEF>GBP", "<CURDEF>GBP\n<BANKACCTFROM><BANKID>200000<ACCTID>12345678</BANKACCTFROM>");
-        assert_eq!(read(&one).unwrap().source_account.as_deref(), Some("12345678"));
+        let one = SGML.replace(
+            "<CURDEF>GBP",
+            "<CURDEF>GBP\n<BANKACCTFROM><BANKID>200000<ACCTID>12345678</BANKACCTFROM>",
+        );
+        assert_eq!(
+            read(&one).unwrap().source_account.as_deref(),
+            Some("12345678")
+        );
         let two = SGML.replace(
             "</STMTRS>",
             "</STMTRS><STMTRS><CURDEF>GBP<BANKTRANLIST></BANKTRANLIST></STMTRS>",

@@ -86,7 +86,10 @@ fn digits_or_empty(field: &str, value: &str, len: usize) -> Result<String, Contr
     if digits.is_empty() || (digits.len() == len && digits.bytes().all(|b| b.is_ascii_digit())) {
         Ok(digits)
     } else {
-        Err(ContractError::invalid(field, format!("{len} digits, or leave it empty")))
+        Err(ContractError::invalid(
+            field,
+            format!("{len} digits, or leave it empty"),
+        ))
     }
 }
 
@@ -106,7 +109,10 @@ fn prepare_account(mut p: AccountPayload) -> Result<AccountPayload, ContractErro
     p.default_source_code_id = p.default_source_code_id.filter(|id| !id.is_empty());
     match &p.csv_layout {
         Some(CsvLayout::Preset { id }) if preset(id).is_none() => {
-            return Err(ContractError::invalid("csvLayout", format!("No preset {id}")));
+            return Err(ContractError::invalid(
+                "csvLayout",
+                format!("No preset {id}"),
+            ));
         }
         Some(CsvLayout::Mapping { mapping }) => {
             mapping
@@ -210,7 +216,11 @@ impl Contract for AccountContract {
                 format!("There is already an account called {name}"),
             ));
         }
-        let layout = p.csv_layout.as_ref().map(serde_json::to_string).transpose()?;
+        let layout = p
+            .csv_layout
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         if before.is_some() {
             // Who created it, and when, are never this slice's to change.
             tx.prepare_cached(
@@ -277,9 +287,11 @@ pub fn account_row(conn: &Connection, id: &str) -> Result<Option<AccountRow>, Co
     let Some(account) = account(conn, id)? else {
         return Ok(None);
     };
-    let version = conn.query_row("SELECT version FROM bank_accounts WHERE id = ?1", [id], |r| {
-        r.get(0)
-    })?;
+    let version = conn.query_row(
+        "SELECT version FROM bank_accounts WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
     let default_source_code = match &account.payload.default_source_code_id {
         Some(code) => sources::describe(conn, code)?,
         None => None,
@@ -313,7 +325,9 @@ mod tests {
             sort_code: "40-52-40".into(),
             account_last4: " 1234".into(),
             default_source_code_id: Some(String::new()),
-            csv_layout: Some(CsvLayout::Preset { id: "lloyds".into() }),
+            csv_layout: Some(CsvLayout::Preset {
+                id: "lloyds".into(),
+            }),
             active: true,
         }
     }
@@ -322,7 +336,11 @@ mod tests {
     fn prepare_cleans_and_checks() {
         let p = prepare_account(payload()).unwrap();
         assert_eq!(
-            (p.name.as_str(), p.sort_code.as_str(), p.account_last4.as_str()),
+            (
+                p.name.as_str(),
+                p.sort_code.as_str(),
+                p.account_last4.as_str()
+            ),
             ("CAF current", "405240", "1234")
         );
         assert_eq!(p.default_source_code_id, None);
@@ -335,7 +353,9 @@ mod tests {
         assert!(bad(|p| p.name = "x".repeat(NAME_MAX + 1)));
         assert!(bad(|p| p.sort_code = "40524".into()));
         assert!(bad(|p| p.account_last4 = "12345678".into()));
-        assert!(bad(|p| p.csv_layout = Some(CsvLayout::Preset { id: "caf".into() })));
+        assert!(bad(
+            |p| p.csv_layout = Some(CsvLayout::Preset { id: "caf".into() })
+        ));
         assert!(!bad(|p| {
             p.sort_code = String::new();
             p.account_last4 = String::new();

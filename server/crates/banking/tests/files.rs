@@ -29,7 +29,11 @@ fn every_preset_has_a_sample_file() {
     for p in presets() {
         let parsed = read_preset(p.id);
         assert!(!parsed.credits.is_empty(), "{}", p.id);
-        assert!(parsed.debits_dropped > 0, "{}: the sample should hold a debit", p.id);
+        assert!(
+            parsed.debits_dropped > 0,
+            "{}: the sample should hold a debit",
+            p.id
+        );
     }
 }
 
@@ -39,7 +43,11 @@ fn natwest_bankline_statement() {
     assert_eq!(
         summary(&p.credits),
         [
-            ("2026-11-02", 2500, "J SMITH 100016 DONATION FP 02/11/26 1032"),
+            (
+                "2026-11-02",
+                2500,
+                "J SMITH 100016 DONATION FP 02/11/26 1032"
+            ),
             ("2026-11-03", 1000, "A JONES STANDING ORDER"),
             ("2026-11-03", 1000, "A JONES STANDING ORDER"),
             ("2026-11-04", 125_000, "SMITH, P & R GIFT"),

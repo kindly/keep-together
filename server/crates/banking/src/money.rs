@@ -60,18 +60,16 @@ pub fn parse_pence(value: &str, decimal: Decimal) -> Result<Option<i64>, String>
 
     let decimal_at = match decimal {
         Decimal::Point => s.rfind('.'),
-        Decimal::PointOrComma => s.rfind(['.', ',']).filter(|&i| {
-            s.as_bytes()[i] == b'.' || (1..=2).contains(&(s.len() - i - 1))
-        }),
+        Decimal::PointOrComma => s
+            .rfind(['.', ','])
+            .filter(|&i| s.as_bytes()[i] == b'.' || (1..=2).contains(&(s.len() - i - 1))),
     };
     let (whole, fraction) = match decimal_at {
         Some(i) => (&s[..i], &s[i + 1..]),
         None => (s, ""),
     };
     let whole = ungroup(whole).ok_or_else(bad)?;
-    if !fraction.bytes().all(|b| b.is_ascii_digit())
-        || (whole.is_empty() && fraction.is_empty())
-    {
+    if !fraction.bytes().all(|b| b.is_ascii_digit()) || (whole.is_empty() && fraction.is_empty()) {
         return Err(bad());
     }
     let (pence_digits, extra) = fraction.split_at(fraction.len().min(2));
@@ -133,7 +131,9 @@ mod tests {
 
     #[test]
     fn signs_in_every_spelling() {
-        for neg in ["-12.00", "12.00-", "(12.00)", "12.00 DR", "-£12.00", "£-12.00"] {
+        for neg in [
+            "-12.00", "12.00-", "(12.00)", "12.00 DR", "-£12.00", "£-12.00",
+        ] {
             assert_eq!(p(neg), Ok(Some(-1200)), "{neg}");
         }
         for pos in ["+12.00", "12.00 CR", "12.00cr"] {
@@ -145,7 +145,9 @@ mod tests {
 
     #[test]
     fn junk_is_refused() {
-        for bad in ["12.345", "1,23.00", "abc", "12.3.4", "£", "-", "1e5", "12,5"] {
+        for bad in [
+            "12.345", "1,23.00", "abc", "12.3.4", "£", "-", "1e5", "12,5",
+        ] {
             assert!(p(bad).is_err(), "{bad}");
         }
         assert!(p("99999999999999999999").is_err());

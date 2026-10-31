@@ -16,7 +16,10 @@ use tower::ServiceExt;
 const NONE: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0";
 
 fn fixture(name: &str) -> Vec<u8> {
-    let path = format!("{}/../banking/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/../banking/tests/fixtures/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
@@ -26,7 +29,9 @@ fn lloyds_days(days: impl IntoIterator<Item = u32>) -> Vec<u8> {
         "Transaction Date,Transaction Type,Sort Code,Account Number,Transaction Description,Debit Amount,Credit Amount,Balance,\n",
     );
     for d in days {
-        text.push_str(&format!("{d:02}/11/2026,SO,'30-00-00,12345678,J SMITH SO,,10.00,0,\n"));
+        text.push_str(&format!(
+            "{d:02}/11/2026,SO,'30-00-00,12345678,J SMITH SO,,10.00,0,\n"
+        ));
     }
     text.into_bytes()
 }
@@ -112,7 +117,14 @@ async fn viewers_see_nothing_and_only_admins_set_accounts_up() {
         w.login("val@alpha.org").await,
     );
     let acc = new_account(&w, "alpha", &ann, lloyds()).await;
-    let (_, done) = import(&w, "alpha", &sam, &query(&acc, None, false), lloyds_days([1])).await;
+    let (_, done) = import(
+        &w,
+        "alpha",
+        &sam,
+        &query(&acc, None, false),
+        lloyds_days([1]),
+    )
+    .await;
     let imp = done["id"].as_str().unwrap().to_owned();
     for path in [
         "/bank/presets".to_owned(),
@@ -136,16 +148,31 @@ async fn viewers_see_nothing_and_only_admins_set_accounts_up() {
         assert_eq!(s, StatusCode::FORBIDDEN, "viewer POST {path}");
     }
     let (s, _) = w
-        .call("POST", "/api/t/alpha/bank/accounts", &sam, Some(account("Other", None)))
+        .call(
+            "POST",
+            "/api/t/alpha/bank/accounts",
+            &sam,
+            Some(account("Other", None)),
+        )
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     let save = json!({ "expected": 0, "name": "Renamed", "active": true });
     let (s, _) = w
-        .call("POST", &format!("/api/t/alpha/bank/accounts/{acc}/save"), &sam, Some(save.clone()))
+        .call(
+            "POST",
+            &format!("/api/t/alpha/bank/accounts/{acc}/save"),
+            &sam,
+            Some(save.clone()),
+        )
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     let (s, _) = w
-        .call("POST", &format!("/api/t/alpha/bank/accounts/{acc}/save"), &ann, Some(save))
+        .call(
+            "POST",
+            &format!("/api/t/alpha/bank/accounts/{acc}/save"),
+            &ann,
+            Some(save),
+        )
         .await;
     assert_eq!(s, StatusCode::OK);
 }
@@ -155,25 +182,47 @@ async fn an_account_saves_with_expected_and_answers_409_when_stale() {
     let w = world();
     let ann = w.login("ann@alpha.org").await;
     let acc = new_account(&w, "alpha", &ann, None).await;
-    let (_, read) = w.call("GET", &format!("/api/t/alpha/bank/accounts/{acc}"), &ann, None).await;
-    assert_eq!((read["version"].as_i64(), read["sortCode"].as_str()), (Some(0), Some("300000")));
+    let (_, read) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/bank/accounts/{acc}"),
+            &ann,
+            None,
+        )
+        .await;
+    assert_eq!(
+        (read["version"].as_i64(), read["sortCode"].as_str()),
+        (Some(0), Some("300000"))
+    );
     let url = format!("/api/t/alpha/bank/accounts/{acc}/save");
     let mut save = account("CAF current", lloyds());
     save["expected"] = json!(0);
     let (s, out) = w.call("POST", &url, &ann, Some(save.clone())).await;
     assert_eq!((s, out["counter"].as_i64()), (StatusCode::OK, Some(1)));
     let (s, out) = w.call("POST", &url, &ann, Some(save)).await;
-    assert_eq!((s, out["kind"].as_str()), (StatusCode::CONFLICT, Some("stale")));
+    assert_eq!(
+        (s, out["kind"].as_str()),
+        (StatusCode::CONFLICT, Some("stale"))
+    );
     assert_eq!(out["current"]["name"], "CAF current");
     let (_, presets) = w.call("GET", "/api/t/alpha/bank/presets", &ann, None).await;
-    assert!(presets["presets"].as_array().unwrap().iter().all(|p| p["verified"] == false));
+    assert!(
+        presets["presets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["verified"] == false)
+    );
     assert_eq!(presets["awaitingSamples"][0], "CAF Bank");
 }
 
 #[tokio::test]
 async fn import_preview_then_import_then_nothing_new() {
     let w = world();
-    let (ann, sam) = (w.login("ann@alpha.org").await, w.login("sam@alpha.org").await);
+    let (ann, sam) = (
+        w.login("ann@alpha.org").await,
+        w.login("sam@alpha.org").await,
+    );
     let acc = new_account(
         &w,
         "alpha",
@@ -191,25 +240,60 @@ async fn import_preview_then_import_then_nothing_new() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{preview}");
-    assert_eq!((preview["newLines"].as_i64(), preview["debitsDropped"].as_i64()), (Some(4), Some(1)));
+    assert_eq!(
+        (
+            preview["newLines"].as_i64(),
+            preview["debitsDropped"].as_i64()
+        ),
+        (Some(4), Some(1))
+    );
     assert_eq!(preview["lines"][0]["amount"], 2500);
     // A preview writes nothing.
-    let (_, list) = w.call("GET", &format!("/api/t/alpha/bank/accounts/{acc}/imports"), &sam, None).await;
+    let (_, list) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/bank/accounts/{acc}/imports"),
+            &sam,
+            None,
+        )
+        .await;
     assert_eq!(list.as_array().unwrap().len(), 0);
 
     let (s, done) = import(&w, "alpha", &sam, &q, file.clone()).await;
     assert_eq!(s, StatusCode::OK, "{done}");
     assert_eq!(
-        (done["newLines"].as_i64(), done["duplicateLines"].as_i64(), done["firstDate"].as_str(), done["lastDate"].as_str()),
+        (
+            done["newLines"].as_i64(),
+            done["duplicateLines"].as_i64(),
+            done["firstDate"].as_str(),
+            done["lastDate"].as_str()
+        ),
         (Some(4), Some(0), Some("2026-11-02"), Some("2026-11-04"))
     );
     let (_, again) = import(&w, "alpha", &sam, &q, file).await;
-    assert_eq!((again["newLines"].as_i64(), again["duplicateLines"].as_i64()), (Some(0), Some(4)));
+    assert_eq!(
+        (again["newLines"].as_i64(), again["duplicateLines"].as_i64()),
+        (Some(0), Some(4))
+    );
 
-    let (_, list) = w.call("GET", &format!("/api/t/alpha/bank/accounts/{acc}/imports"), &sam, None).await;
+    let (_, list) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/bank/accounts/{acc}/imports"),
+            &sam,
+            None,
+        )
+        .await;
     assert_eq!(list.as_array().unwrap().len(), 2);
     let id = done["id"].as_str().unwrap();
-    let (s, detail) = w.call("GET", &format!("/api/t/alpha/bank/imports/{id}"), &sam, None).await;
+    let (s, detail) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/bank/imports/{id}"),
+            &sam,
+            None,
+        )
+        .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(detail["accountId"], acc.as_str());
     assert_eq!(detail["import"]["preset"], "natwest-bankline-statement");
@@ -224,14 +308,37 @@ async fn an_unreadable_file_is_422_by_line_and_stores_nothing() {
     let mut file = lloyds_days(1..=3);
     file.extend_from_slice(b"31/02/2026,SO,'30-00-00,12345678,BAD,,ten,0,\n");
     let (s, out) = import(&w, "alpha", &ann, &query(&acc, None, false), file).await;
-    assert_eq!((s, out["kind"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("file_rows")));
+    assert_eq!(
+        (s, out["kind"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("file_rows"))
+    );
     assert_eq!(out["rows"][0]["line"], 5);
-    assert!(out["rows"][0]["message"].as_str().unwrap().contains("date"), "{out}");
-    let (_, list) = w.call("GET", &format!("/api/t/alpha/bank/accounts/{acc}/imports"), &ann, None).await;
+    assert!(
+        out["rows"][0]["message"].as_str().unwrap().contains("date"),
+        "{out}"
+    );
+    let (_, list) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/bank/accounts/{acc}/imports"),
+            &ann,
+            None,
+        )
+        .await;
     assert_eq!(list.as_array().unwrap().len(), 0);
     // A layout that isn't one.
-    let (s, out) = import(&w, "alpha", &ann, &format!("accountId={acc}&fileName=x&layout=%7B"), lloyds_days([1])).await;
-    assert_eq!((s, out["kind"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid")));
+    let (s, out) = import(
+        &w,
+        "alpha",
+        &ann,
+        &format!("accountId={acc}&fileName=x&layout=%7B"),
+        lloyds_days([1]),
+    )
+    .await;
+    assert_eq!(
+        (s, out["kind"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid"))
+    );
 }
 
 #[tokio::test]
@@ -241,11 +348,27 @@ async fn a_file_over_5_mb_is_413() {
     let acc = new_account(&w, "alpha", &ann, lloyds()).await;
     let big = vec![b'a'; banking::import::FILE_BYTES_MAX + 1];
     let (s, out) = import(&w, "alpha", &ann, &query(&acc, None, false), big).await;
-    assert_eq!((s, out["kind"].as_str()), (StatusCode::PAYLOAD_TOO_LARGE, Some("too_large")));
-    assert_eq!(out["limit"].as_u64(), Some(banking::import::FILE_BYTES_MAX as u64));
+    assert_eq!(
+        (s, out["kind"].as_str()),
+        (StatusCode::PAYLOAD_TOO_LARGE, Some("too_large"))
+    );
+    assert_eq!(
+        out["limit"].as_u64(),
+        Some(banking::import::FILE_BYTES_MAX as u64)
+    );
     // Over the ordinary 2 MB but under 5: read, and refused for its rows.
-    let (s, out) = import(&w, "alpha", &ann, &query(&acc, None, false), vec![b'a'; 3 << 20]).await;
-    assert_eq!((s, out["kind"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("file_rows")));
+    let (s, out) = import(
+        &w,
+        "alpha",
+        &ann,
+        &query(&acc, None, false),
+        vec![b'a'; 3 << 20],
+    )
+    .await;
+    assert_eq!(
+        (s, out["kind"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("file_rows"))
+    );
 }
 
 #[tokio::test]
@@ -256,18 +379,38 @@ async fn an_archived_account_is_422_account_inactive() {
     let mut save = account("Current", lloyds());
     save["active"] = json!(false);
     save["expected"] = json!(0);
-    w.call("POST", &format!("/api/t/alpha/bank/accounts/{acc}/save"), &ann, Some(save)).await;
-    let (s, out) = import(&w, "alpha", &ann, &query(&acc, None, false), lloyds_days([1])).await;
+    w.call(
+        "POST",
+        &format!("/api/t/alpha/bank/accounts/{acc}/save"),
+        &ann,
+        Some(save),
+    )
+    .await;
+    let (s, out) = import(
+        &w,
+        "alpha",
+        &ann,
+        &query(&acc, None, false),
+        lloyds_days([1]),
+    )
+    .await;
     assert_eq!(
         (s, out["kind"].as_str(), out["reason"].as_str()),
-        (StatusCode::UNPROCESSABLE_ENTITY, Some("rejected"), Some("account_inactive"))
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("rejected"),
+            Some("account_inactive")
+        )
     );
 }
 
 #[tokio::test]
 async fn a_mapping_is_kept_with_the_import_once_and_staff_cant_replace_it() {
     let w = world();
-    let (ann, sam) = (w.login("ann@alpha.org").await, w.login("sam@alpha.org").await);
+    let (ann, sam) = (
+        w.login("ann@alpha.org").await,
+        w.login("sam@alpha.org").await,
+    );
     let acc = new_account(&w, "alpha", &ann, None).await;
     let mapping = json!({ "kind": "mapping", "mapping": {
         "header": { "kind": "find" },
@@ -277,26 +420,92 @@ async fn a_mapping_is_kept_with_the_import_once_and_staff_cant_replace_it() {
         "narrative": [{ "name": "Transaction Description" }]
     }});
     // No layout saved, none sent: one file error, nothing stored.
-    let (s, out) = import(&w, "alpha", &sam, &query(&acc, None, false), lloyds_days([1])).await;
-    assert_eq!((s, out["rows"][0]["line"].as_i64()), (StatusCode::UNPROCESSABLE_ENTITY, Some(0)));
-    let (s, out) = import(&w, "alpha", &sam, &query(&acc, Some(mapping.clone()), true), lloyds_days([1])).await;
-    assert_eq!((s, out["newLines"].as_i64()), (StatusCode::OK, Some(1)), "{out}");
-    let (_, read) = w.call("GET", &format!("/api/t/alpha/bank/accounts/{acc}"), &sam, None).await;
+    let (s, out) = import(
+        &w,
+        "alpha",
+        &sam,
+        &query(&acc, None, false),
+        lloyds_days([1]),
+    )
+    .await;
+    assert_eq!(
+        (s, out["rows"][0]["line"].as_i64()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some(0))
+    );
+    let (s, out) = import(
+        &w,
+        "alpha",
+        &sam,
+        &query(&acc, Some(mapping.clone()), true),
+        lloyds_days([1]),
+    )
+    .await;
+    assert_eq!(
+        (s, out["newLines"].as_i64()),
+        (StatusCode::OK, Some(1)),
+        "{out}"
+    );
+    let (_, read) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/bank/accounts/{acc}"),
+            &sam,
+            None,
+        )
+        .await;
     assert_eq!(read["csvLayout"]["kind"], "mapping");
     assert_eq!(read["version"], 1);
     // Next time the saved mapping is used.
-    let (_, out) = import(&w, "alpha", &sam, &query(&acc, None, false), lloyds_days([1, 2])).await;
+    let (_, out) = import(
+        &w,
+        "alpha",
+        &sam,
+        &query(&acc, None, false),
+        lloyds_days([1, 2]),
+    )
+    .await;
     assert_eq!(out["newLines"], 1);
     // Staff can't replace a saved layout; nothing is imported either.
-    let (s, _) = import(&w, "alpha", &sam, &query(&acc, lloyds(), true), lloyds_days([3])).await;
+    let (s, _) = import(
+        &w,
+        "alpha",
+        &sam,
+        &query(&acc, lloyds(), true),
+        lloyds_days([3]),
+    )
+    .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
-    let (_, list) = w.call("GET", &format!("/api/t/alpha/bank/accounts/{acc}/imports"), &sam, None).await;
+    let (_, list) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/bank/accounts/{acc}/imports"),
+            &sam,
+            None,
+        )
+        .await;
     assert_eq!(list.as_array().unwrap().len(), 2);
     // An admin can.
-    let (s, _) = import(&w, "alpha", &ann, &query(&acc, lloyds(), true), lloyds_days([3])).await;
+    let (s, _) = import(
+        &w,
+        "alpha",
+        &ann,
+        &query(&acc, lloyds(), true),
+        lloyds_days([3]),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    let (_, read) = w.call("GET", &format!("/api/t/alpha/bank/accounts/{acc}"), &sam, None).await;
-    assert_eq!(read["csvLayout"], json!({ "kind": "preset", "id": "lloyds" }));
+    let (_, read) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/bank/accounts/{acc}"),
+            &sam,
+            None,
+        )
+        .await;
+    assert_eq!(
+        read["csvLayout"],
+        json!({ "kind": "preset", "id": "lloyds" })
+    );
 }
 
 #[tokio::test]
@@ -312,11 +521,25 @@ async fn a_headerless_file_imports_from_line_1_and_its_layout_is_kept() {
         "amount": { "kind": "signed", "column": { "index": 2 } },
         "narrative": [{ "index": 1 }]
     }});
-    let (s, out) = import(&w, "alpha", &sam, &query(&acc, Some(headerless), true), file.clone()).await;
-    assert_eq!((s, out["newLines"].as_i64()), (StatusCode::OK, Some(2)), "{out}");
+    let (s, out) = import(
+        &w,
+        "alpha",
+        &sam,
+        &query(&acc, Some(headerless), true),
+        file.clone(),
+    )
+    .await;
+    assert_eq!(
+        (s, out["newLines"].as_i64()),
+        (StatusCode::OK, Some(2)),
+        "{out}"
+    );
     // Next month, the kept layout reads line 1 again.
     let (_, out) = import(&w, "alpha", &sam, &query(&acc, None, false), file).await;
-    assert_eq!((out["newLines"].as_i64(), out["duplicateLines"].as_i64()), (Some(0), Some(2)));
+    assert_eq!(
+        (out["newLines"].as_i64(), out["duplicateLines"].as_i64()),
+        (Some(0), Some(2))
+    );
     // Line 1 taken for the column names: refused, pointing at the choice.
     let by_name = json!({ "kind": "mapping", "mapping": {
         "header": { "kind": "find" },
@@ -332,8 +555,16 @@ async fn a_headerless_file_imports_from_line_1_and_its_layout_is_kept() {
         b"02/11/2026,J SMITH,25.00\n".to_vec(),
     )
     .await;
-    assert_eq!((s, out["rows"][0]["line"].as_i64()), (StatusCode::UNPROCESSABLE_ENTITY, Some(1)));
-    assert!(out["rows"][0]["message"].as_str().unwrap().contains("No header row"));
+    assert_eq!(
+        (s, out["rows"][0]["line"].as_i64()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some(1))
+    );
+    assert!(
+        out["rows"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("No header row")
+    );
 }
 
 #[tokio::test]
@@ -350,9 +581,19 @@ async fn peek_shows_the_first_rows() {
 #[tokio::test]
 async fn b_never_sees_a_and_as_ids_under_b_are_404() {
     let w = world();
-    let (ann, bob) = (w.login("ann@alpha.org").await, w.login("bob@beta.org").await);
+    let (ann, bob) = (
+        w.login("ann@alpha.org").await,
+        w.login("bob@beta.org").await,
+    );
     let acc = new_account(&w, "alpha", &ann, lloyds()).await;
-    let (_, done) = import(&w, "alpha", &ann, &query(&acc, None, false), lloyds_days([1])).await;
+    let (_, done) = import(
+        &w,
+        "alpha",
+        &ann,
+        &query(&acc, None, false),
+        lloyds_days([1]),
+    )
+    .await;
     let imp = done["id"].as_str().unwrap().to_owned();
 
     let (s, list) = w.call("GET", "/api/t/beta/bank/accounts", &bob, None).await;
@@ -363,12 +604,25 @@ async fn b_never_sees_a_and_as_ids_under_b_are_404() {
         format!("/bank/imports/{imp}"),
         format!("/bank/accounts/{NONE}"),
     ] {
-        let (s, out) = w.call("GET", &format!("/api/t/beta{path}"), &bob, None).await;
-        assert_eq!((s, out["kind"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")), "{path}");
+        let (s, out) = w
+            .call("GET", &format!("/api/t/beta{path}"), &bob, None)
+            .await;
+        assert_eq!(
+            (s, out["kind"].as_str()),
+            (StatusCode::NOT_FOUND, Some("not_found")),
+            "{path}"
+        );
     }
     let mut save = account("Mine now", None);
     save["expected"] = json!(0);
-    let (s, _) = w.call("POST", &format!("/api/t/beta/bank/accounts/{acc}/save"), &bob, Some(save)).await;
+    let (s, _) = w
+        .call(
+            "POST",
+            &format!("/api/t/beta/bank/accounts/{acc}/save"),
+            &bob,
+            Some(save),
+        )
+        .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     for path in ["imports", "imports/preview"] {
         let url = format!("/api/t/beta/bank/{path}?{}", query(&acc, lloyds(), false));
@@ -378,8 +632,22 @@ async fn b_never_sees_a_and_as_ids_under_b_are_404() {
     // A's own file is untouched by B's attempts, and B's import of the
     // same file is all new there.
     let b_acc = new_account(&w, "beta", &bob, lloyds()).await;
-    let (_, out) = import(&w, "beta", &bob, &query(&b_acc, None, false), lloyds_days([1])).await;
+    let (_, out) = import(
+        &w,
+        "beta",
+        &bob,
+        &query(&b_acc, None, false),
+        lloyds_days([1]),
+    )
+    .await;
     assert_eq!(out["newLines"], 1);
-    let (_, list) = w.call("GET", &format!("/api/t/alpha/bank/accounts/{acc}/imports"), &ann, None).await;
+    let (_, list) = w
+        .call(
+            "GET",
+            &format!("/api/t/alpha/bank/accounts/{acc}/imports"),
+            &ann,
+            None,
+        )
+        .await;
     assert_eq!(list.as_array().unwrap().len(), 1);
 }

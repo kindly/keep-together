@@ -43,11 +43,25 @@ async fn setup() -> P {
     let sam = w.login("sam@alpha.org").await;
     let val = w.login("val@alpha.org").await;
     let bob = w.login("bob@beta.org").await;
-    let category = ok(&w, "POST", "/api/t/alpha/sources", &ann, Some(json!({ "name": "Unsolicited", "isActive": true }))).await["id"]
+    let category = ok(
+        &w,
+        "POST",
+        "/api/t/alpha/sources",
+        &ann,
+        Some(json!({ "name": "Unsolicited", "isActive": true })),
+    )
+    .await["id"]
         .as_str()
         .unwrap()
         .to_owned();
-    let code = ok(&w, "POST", "/api/t/alpha/sources", &ann, Some(json!({ "parentId": category, "name": "Transfer", "isActive": true }))).await["versionId"]
+    let code = ok(
+        &w,
+        "POST",
+        "/api/t/alpha/sources",
+        &ann,
+        Some(json!({ "parentId": category, "name": "Transfer", "isActive": true })),
+    )
+    .await["versionId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -62,7 +76,15 @@ async fn setup() -> P {
         .as_str()
         .unwrap()
         .to_owned();
-    P { w, ann, sam, val, bob, code, account }
+    P {
+        w,
+        ann,
+        sam,
+        val,
+        bob,
+        code,
+        account,
+    }
 }
 
 impl P {
@@ -92,7 +114,10 @@ impl P {
         let detail = ok(
             &self.w,
             "GET",
-            &format!("/api/t/alpha/bank/imports/{}", import["id"].as_str().unwrap()),
+            &format!(
+                "/api/t/alpha/bank/imports/{}",
+                import["id"].as_str().unwrap()
+            ),
             &self.sam,
             None,
         )
@@ -101,7 +126,14 @@ impl P {
     }
 
     async fn contact(&self, first: &str, last: &str) -> String {
-        ok(&self.w, "POST", "/api/t/alpha/contacts", &self.ann, Some(person(first, last))).await["id"]
+        ok(
+            &self.w,
+            "POST",
+            "/api/t/alpha/contacts",
+            &self.ann,
+            Some(person(first, last)),
+        )
+        .await["id"]
             .as_str()
             .unwrap()
             .to_owned()
@@ -122,19 +154,57 @@ async fn a_matched_payer_is_remembered_on_the_contact_until_forgotten() {
         Some(json!({ "expected": 0, "parts": [{ "contact": jo, "amount": 2500 }] })),
     )
     .await;
-    let payers = ok(&p.w, "GET", &format!("/api/t/alpha/contacts/{jo}/bank-payers"), &p.sam, None).await;
+    let payers = ok(
+        &p.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/bank-payers"),
+        &p.sam,
+        None,
+    )
+    .await;
     assert_eq!(payers.as_array().unwrap().len(), 1, "{payers}");
     assert_eq!(
-        (payers[0]["payer"].as_str(), payers[0]["reference"].as_str(), payers[0]["accountName"].as_str()),
+        (
+            payers[0]["payer"].as_str(),
+            payers[0]["reference"].as_str(),
+            payers[0]["accountName"].as_str()
+        ),
         (Some("J BLOGGS"), Some("GIFT"), Some("CAF current"))
     );
-    let left = ok(&p.w, "POST", &format!("/api/t/alpha/contacts/{jo}/bank-payers/forget"), &p.sam, None).await;
+    let left = ok(
+        &p.w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{jo}/bank-payers/forget"),
+        &p.sam,
+        None,
+    )
+    .await;
     assert_eq!(left, json!([]));
-    let again = ok(&p.w, "GET", &format!("/api/t/alpha/contacts/{jo}/bank-payers"), &p.sam, None).await;
+    let again = ok(
+        &p.w,
+        "GET",
+        &format!("/api/t/alpha/contacts/{jo}/bank-payers"),
+        &p.sam,
+        None,
+    )
+    .await;
     assert_eq!(again, json!([]));
     // The money stays: the gift and the line.
-    let detail = ok(&p.w, "GET", &format!("/api/t/alpha/bank/lines/{id}"), &p.sam, None).await;
-    assert_eq!((detail["line"]["state"].as_str(), detail["gifts"][0]["amount"].as_i64()), (Some("matched"), Some(2500)));
+    let detail = ok(
+        &p.w,
+        "GET",
+        &format!("/api/t/alpha/bank/lines/{id}"),
+        &p.sam,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (
+            detail["line"]["state"].as_str(),
+            detail["gifts"][0]["amount"].as_i64()
+        ),
+        (Some("matched"), Some(2500))
+    );
 }
 
 #[tokio::test]
@@ -151,12 +221,34 @@ async fn hand_transfers_near_a_line_are_listed_within_the_window() {
             "allocations": [{ "sourceCodeId": p.code, "amount": pence }],
         })
     };
-    let near = ok(&p.w, "POST", "/api/t/alpha/gifts/record", &p.sam, Some(record(5, 1000))).await;
-    ok(&p.w, "POST", "/api/t/alpha/gifts/record", &p.sam, Some(record(40, 1000))).await;
+    let near = ok(
+        &p.w,
+        "POST",
+        "/api/t/alpha/gifts/record",
+        &p.sam,
+        Some(record(5, 1000)),
+    )
+    .await;
+    ok(
+        &p.w,
+        "POST",
+        "/api/t/alpha/gifts/record",
+        &p.sam,
+        Some(record(40, 1000)),
+    )
+    .await;
     let line = p.line(2, 1000, "J BLOGGS", "").await;
-    let path = format!("/api/t/alpha/bank/lines/{}/hand-transfers", line["id"].as_str().unwrap());
+    let path = format!(
+        "/api/t/alpha/bank/lines/{}/hand-transfers",
+        line["id"].as_str().unwrap()
+    );
     let list = ok(&p.w, "GET", &path, &p.sam, None).await;
-    let ids: Vec<&str> = list.as_array().unwrap().iter().map(|g| g["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids, [near["giftId"].as_str().unwrap()]);
     assert_eq!(list[0]["contactName"], "Jo Bloggs");
     let wide = ok(&p.w, "GET", &format!("{path}?days=60"), &p.sam, None).await;
@@ -188,17 +280,35 @@ async fn viewers_get_403_and_b_sees_none_of_a() {
     let line = line["id"].as_str().unwrap().to_owned();
     let acc = p.account.clone();
     for (method, path) in [
-        ("GET", format!("/api/t/alpha/bank/accounts/{acc}/line-choices")),
+        (
+            "GET",
+            format!("/api/t/alpha/bank/accounts/{acc}/line-choices"),
+        ),
         ("GET", format!("/api/t/alpha/contacts/{jo}/bank-payers")),
-        ("POST", format!("/api/t/alpha/contacts/{jo}/bank-payers/forget")),
-        ("GET", format!("/api/t/alpha/bank/lines/{line}/hand-transfers")),
+        (
+            "POST",
+            format!("/api/t/alpha/contacts/{jo}/bank-payers/forget"),
+        ),
+        (
+            "GET",
+            format!("/api/t/alpha/bank/lines/{line}/hand-transfers"),
+        ),
     ] {
         let (s, _) = p.w.call(method, &path, &p.val, None).await;
         assert_eq!(s, StatusCode::FORBIDDEN, "viewer {method} {path}");
-        let (s, _) = p.w.call(method, &path.replace("/alpha/", "/beta/"), &p.bob, None).await;
+        let (s, _) =
+            p.w.call(method, &path.replace("/alpha/", "/beta/"), &p.bob, None)
+                .await;
         assert_eq!(s, StatusCode::NOT_FOUND, "B {method} {path}");
     }
     // A untouched: B's forget never reached it, nor ann's role a viewer's.
-    let (s, _) = p.w.call("GET", &format!("/api/t/alpha/contacts/{jo}/bank-payers"), &p.ann, None).await;
+    let (s, _) =
+        p.w.call(
+            "GET",
+            &format!("/api/t/alpha/contacts/{jo}/bank-payers"),
+            &p.ann,
+            None,
+        )
+        .await;
     assert_eq!(s, StatusCode::OK);
 }

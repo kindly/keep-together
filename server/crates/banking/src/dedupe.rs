@@ -94,10 +94,8 @@ pub struct Deduped {
 /// Splits a file's credits into new lines and duplicates of `held`.
 pub fn dedupe(lines: Vec<CreditLine>, held: &Held) -> Deduped {
     let file_ids: HashSet<&str> = lines.iter().filter_map(|l| l.bank_id.as_deref()).collect();
-    let keyed: Vec<(CreditLine, String)> = lines
-        .iter()
-        .map(|l| (l.clone(), content_key(l)))
-        .collect();
+    let keyed: Vec<(CreditLine, String)> =
+        lines.iter().map(|l| (l.clone(), content_key(l))).collect();
 
     // Per key, the held lines this file's ids don't account for (no id,
     // or one the bank has since reissued): that many of the file's lines
@@ -117,7 +115,11 @@ pub fn dedupe(lines: Vec<CreditLine>, held: &Held) -> Deduped {
     let mut next: HashMap<&str, u32> = HashMap::new();
     let mut new_ids: HashSet<String> = HashSet::new();
     for (line, key) in &keyed {
-        if line.bank_id.as_ref().is_some_and(|id| held.ids.contains(id)) {
+        if line
+            .bank_id
+            .as_ref()
+            .is_some_and(|id| held.ids.contains(id))
+        {
             out.duplicates += 1;
             continue;
         }
@@ -127,14 +129,16 @@ pub fn dedupe(lines: Vec<CreditLine>, held: &Held) -> Deduped {
             out.duplicates += 1;
             continue;
         }
-        let n = next
-            .entry(key)
-            .or_insert_with(|| held.last(key));
+        let n = next.entry(key).or_insert_with(|| held.last(key));
         *n += 1;
         let mut line = line.clone();
         // An id the bank repeats within one file identifies neither line;
         // the first keeps it (an account holds an id once).
-        if line.bank_id.as_ref().is_some_and(|id| !new_ids.insert(id.clone())) {
+        if line
+            .bank_id
+            .as_ref()
+            .is_some_and(|id| !new_ids.insert(id.clone()))
+        {
             line.bank_id = None;
         }
         out.new.push(Keyed {
@@ -185,7 +189,11 @@ mod tests {
         assert_eq!(content_key(&a), content_key(&b));
         b.line = 99;
         assert_eq!(content_key(&a), content_key(&b));
-        for other in [line(4, 1000, "J SMITH"), line(3, 1001, "J SMITH"), line(3, 1000, "A JONES")] {
+        for other in [
+            line(4, 1000, "J SMITH"),
+            line(3, 1001, "J SMITH"),
+            line(3, 1000, "A JONES"),
+        ] {
             assert_ne!(content_key(&a), content_key(&other));
         }
     }
@@ -202,7 +210,11 @@ mod tests {
 
     #[test]
     fn an_overlapping_file_adds_only_the_new_days() {
-        let days = |from, to| (from..=to).map(|d| line(d, 1000, "J SMITH")).collect::<Vec<_>>();
+        let days = |from, to| {
+            (from..=to)
+                .map(|d| line(d, 1000, "J SMITH"))
+                .collect::<Vec<_>>()
+        };
         let mut held = Held::new();
         import(&mut held, days(1, 10));
         let overlap = dedupe(days(5, 15), &held);
@@ -236,7 +248,10 @@ mod tests {
         let d = dedupe(vec![reworded.clone()], &held);
         assert_eq!((d.new.len(), d.duplicates), (0, 1));
         // A new id with that same content is a second payment.
-        let d = dedupe(vec![reworded, with_id(line(3, 1000, "J SMITH"), "F2")], &held);
+        let d = dedupe(
+            vec![reworded, with_id(line(3, 1000, "J SMITH"), "F2")],
+            &held,
+        );
         assert_eq!((d.new.len(), d.duplicates), (1, 1));
         assert_eq!(d.new[0].line.bank_id.as_deref(), Some("F2"));
     }
@@ -255,7 +270,10 @@ mod tests {
 
     #[test]
     fn an_id_repeated_within_a_file_is_kept_once() {
-        let file = vec![with_id(line(3, 1000, "J SMITH"), "A"), with_id(line(4, 500, "A JONES"), "A")];
+        let file = vec![
+            with_id(line(3, 1000, "J SMITH"), "A"),
+            with_id(line(4, 500, "A JONES"), "A"),
+        ];
         let d = dedupe(file, &Held::new());
         let ids: Vec<Option<&str>> = d.new.iter().map(|k| k.line.bank_id.as_deref()).collect();
         assert_eq!(ids, [Some("A"), None]);
@@ -264,10 +282,16 @@ mod tests {
     #[test]
     fn reissued_bank_ids_fall_back_to_content() {
         let mut held = Held::new();
-        let file = vec![with_id(line(3, 1000, "J SMITH"), "A"), with_id(line(3, 1000, "J SMITH"), "B")];
+        let file = vec![
+            with_id(line(3, 1000, "J SMITH"), "A"),
+            with_id(line(3, 1000, "J SMITH"), "B"),
+        ];
         import(&mut held, file);
         // The same two payments, downloaded again with fresh ids.
-        let file = vec![with_id(line(3, 1000, "J SMITH"), "C"), with_id(line(3, 1000, "J SMITH"), "D")];
+        let file = vec![
+            with_id(line(3, 1000, "J SMITH"), "C"),
+            with_id(line(3, 1000, "J SMITH"), "D"),
+        ];
         let d = dedupe(file, &held);
         assert_eq!((d.new.len(), d.duplicates), (0, 2));
     }

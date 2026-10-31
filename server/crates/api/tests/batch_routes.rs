@@ -113,7 +113,14 @@ impl G {
     }
 
     async fn gift(&self, id: &str) -> Value {
-        ok(&self.w, "GET", &format!("/api/t/alpha/gifts/{id}"), &self.sam, None).await
+        ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/alpha/gifts/{id}"),
+            &self.sam,
+            None,
+        )
+        .await
     }
 
     async fn status(&self, id: &str, expected: i64, to: &str) -> (StatusCode, Value) {
@@ -139,7 +146,12 @@ impl G {
             }],
         });
         self.w
-            .call("POST", &format!("/api/t/alpha/gifts/{id}/save"), &self.sam, Some(body))
+            .call(
+                "POST",
+                &format!("/api/t/alpha/gifts/{id}/save"),
+                &self.sam,
+                Some(body),
+            )
             .await
     }
 
@@ -173,14 +185,18 @@ impl G {
             .header(axum::http::header::COOKIE, &self.ann)
             .body(axum::body::Body::from(file))
             .unwrap();
-        let res = tower::ServiceExt::oneshot(self.w.app.clone(), req).await.unwrap();
+        let res = tower::ServiceExt::oneshot(self.w.app.clone(), req)
+            .await
+            .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let db = self.w.store.org(&self.w.alpha.id).unwrap();
         let line: String = db
             .read(|c| {
-                c.query_row("SELECT id FROM bank_lines ORDER BY seq DESC LIMIT 1", [], |r| {
-                    r.get::<_, String>(0)
-                })
+                c.query_row(
+                    "SELECT id FROM bank_lines ORDER BY seq DESC LIMIT 1",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
             })
             .unwrap();
         contracts::transact(&db, Some(1), |ctx| {
@@ -191,7 +207,14 @@ impl G {
     }
 
     async fn batch(&self, id: &str) -> Value {
-        ok(&self.w, "GET", &format!("/api/t/alpha/bank/batches/{id}"), &self.val, None).await
+        ok(
+            &self.w,
+            "GET",
+            &format!("/api/t/alpha/bank/batches/{id}"),
+            &self.val,
+            None,
+        )
+        .await
     }
 }
 
@@ -199,57 +222,137 @@ impl G {
 async fn a_batch_opens_takes_cash_and_cheques_closes_and_reopens() {
     let g = setup().await;
     let opened = g.open(&g.sam).await;
-    assert_eq!((opened["status"].as_str(), opened["accountName"].as_str()), (Some("open"), Some("CAF current")));
+    assert_eq!(
+        (opened["status"].as_str(), opened["accountName"].as_str()),
+        (Some("open"), Some("CAF current"))
+    );
     assert_eq!(opened["version"], 0);
     let id = opened["id"].as_str().unwrap();
     let batch = json!({ "payingInBatchId": id });
     let (s, cash) = g.record("cash", 2000, batch.clone()).await;
     assert_eq!(s, StatusCode::OK, "{cash}");
     let (_, cheque) = g
-        .record("cheque", 5000, json!({ "payingInBatchId": id, "reference": "100231" }))
+        .record(
+            "cheque",
+            5000,
+            json!({ "payingInBatchId": id, "reference": "100231" }),
+        )
         .await;
     // Cash counts at once; the cheque is pending until its batch matches.
-    assert_eq!(g.gift(cash["giftId"].as_str().unwrap()).await["status"], "completed");
+    assert_eq!(
+        g.gift(cash["giftId"].as_str().unwrap()).await["status"],
+        "completed"
+    );
     let c = g.gift(cheque["giftId"].as_str().unwrap()).await;
-    assert_eq!((c["status"].as_str(), c["reference"].as_str()), (Some("pending"), Some("100231")));
+    assert_eq!(
+        (c["status"].as_str(), c["reference"].as_str()),
+        (Some("pending"), Some("100231"))
+    );
     assert_eq!(c["payingInBatchId"], id);
     // A transfer has no slip.
     let (s, out) = g.record("bank_transfer", 1000, batch.clone()).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
 
     let detail = g.batch(id).await;
-    assert_eq!((detail["batch"]["giftCount"].as_i64(), detail["batch"]["giftsTotal"].as_i64()), (Some(2), Some(7000)));
-    let methods: Vec<&str> = detail["gifts"].as_array().unwrap().iter().map(|g| g["method"].as_str().unwrap()).collect();
+    assert_eq!(
+        (
+            detail["batch"]["giftCount"].as_i64(),
+            detail["batch"]["giftsTotal"].as_i64()
+        ),
+        (Some(2), Some(7000))
+    );
+    let methods: Vec<&str> = detail["gifts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["method"].as_str().unwrap())
+        .collect();
     assert_eq!(methods, ["cash", "cheque"]);
     assert_eq!(detail["gifts"][0]["contactName"], "Jo Bloggs");
 
     // Closing needs the slip's total and date; a difference isn't refused.
     let url = |what: &str| format!("/api/t/alpha/bank/batches/{id}/{what}");
-    let (s, out) = g.w.call("POST", &url("close"), &g.sam, Some(json!({ "expected": 0, "bankedOn": "", "total": 6900 }))).await;
-    assert_eq!((s, out["kind"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid")));
-    let closed = ok(&g.w, "POST", &url("close"), &g.sam, Some(json!({ "expected": 0, "bankedOn": "2026-11-03", "total": 6900 }))).await;
+    let (s, out) =
+        g.w.call(
+            "POST",
+            &url("close"),
+            &g.sam,
+            Some(json!({ "expected": 0, "bankedOn": "", "total": 6900 })),
+        )
+        .await;
+    assert_eq!(
+        (s, out["kind"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid"))
+    );
+    let closed = ok(
+        &g.w,
+        "POST",
+        &url("close"),
+        &g.sam,
+        Some(json!({ "expected": 0, "bankedOn": "2026-11-03", "total": 6900 })),
+    )
+    .await;
     assert_eq!(closed["counter"], 1);
     let detail = g.batch(id).await;
-    assert_eq!((detail["batch"]["status"].as_str(), detail["batch"]["total"].as_i64()), (Some("closed"), Some(6900)));
+    assert_eq!(
+        (
+            detail["batch"]["status"].as_str(),
+            detail["batch"]["total"].as_i64()
+        ),
+        (Some("closed"), Some(6900))
+    );
     // Closed: no more gifts go in.
     let (s, out) = g.record("cash", 500, batch.clone()).await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed"))
+    );
     // A stale save is 409 with the batch as it is.
     let (s, out) = g.w.call("POST", &url("save"), &g.sam, Some(json!({ "expected": 0, "slipNumber": "9", "bankedOn": "2026-11-03", "total": 6900 }))).await;
-    assert_eq!((s, out["kind"].as_str()), (StatusCode::CONFLICT, Some("stale")));
+    assert_eq!(
+        (s, out["kind"].as_str()),
+        (StatusCode::CONFLICT, Some("stale"))
+    );
     assert_eq!(out["current"]["status"], "closed");
     ok(&g.w, "POST", &url("save"), &g.sam, Some(json!({ "expected": 1, "slipNumber": "000124", "bankedOn": "2026-11-03", "total": 7000 }))).await;
     // Reopened, it takes the gift left out.
-    ok(&g.w, "POST", &url("reopen"), &g.sam, Some(json!({ "expected": 2 }))).await;
+    ok(
+        &g.w,
+        "POST",
+        &url("reopen"),
+        &g.sam,
+        Some(json!({ "expected": 2 })),
+    )
+    .await;
     let (s, _) = g.record("cash", 500, batch).await;
     assert_eq!(s, StatusCode::OK);
     let detail = g.batch(id).await;
-    assert_eq!((detail["batch"]["status"].as_str(), detail["batch"]["slipNumber"].as_str()), (Some("open"), Some("000124")));
+    assert_eq!(
+        (
+            detail["batch"]["status"].as_str(),
+            detail["batch"]["slipNumber"].as_str()
+        ),
+        (Some("open"), Some("000124"))
+    );
     assert_eq!(detail["batch"]["giftsTotal"], 7500);
     // The list: every member reads it.
-    let list = ok(&g.w, "GET", "/api/t/alpha/bank/batches?status=open", &g.val, None).await;
+    let list = ok(
+        &g.w,
+        "GET",
+        "/api/t/alpha/bank/batches?status=open",
+        &g.val,
+        None,
+    )
+    .await;
     assert_eq!(list.as_array().unwrap().len(), 1);
-    let none = ok(&g.w, "GET", "/api/t/alpha/bank/batches?status=closed", &g.val, None).await;
+    let none = ok(
+        &g.w,
+        "GET",
+        "/api/t/alpha/bank/batches?status=closed",
+        &g.val,
+        None,
+    )
+    .await;
     assert_eq!(none, json!([]));
 }
 
@@ -257,15 +360,36 @@ async fn a_batch_opens_takes_cash_and_cheques_closes_and_reopens() {
 async fn viewers_read_batches_and_write_nothing() {
     let g = setup().await;
     let id = g.open(&g.ann).await["id"].as_str().unwrap().to_owned();
-    let (s, _) = g.w.call("GET", "/api/t/alpha/bank/batches", &g.val, None).await;
+    let (s, _) =
+        g.w.call("GET", "/api/t/alpha/bank/batches", &g.val, None)
+            .await;
     assert_eq!(s, StatusCode::OK);
-    let (s, _) = g.w.call("GET", &format!("/api/t/alpha/bank/batches/{id}"), &g.val, None).await;
+    let (s, _) =
+        g.w.call(
+            "GET",
+            &format!("/api/t/alpha/bank/batches/{id}"),
+            &g.val,
+            None,
+        )
+        .await;
     assert_eq!(s, StatusCode::OK);
     for (path, body) in [
-        ("/api/t/alpha/bank/batches".to_owned(), json!({ "accountId": g.account })),
-        (format!("/api/t/alpha/bank/batches/{id}/save"), json!({ "expected": 0 })),
-        (format!("/api/t/alpha/bank/batches/{id}/close"), json!({ "expected": 0, "bankedOn": "2026-11-03", "total": 100 })),
-        (format!("/api/t/alpha/bank/batches/{id}/reopen"), json!({ "expected": 0 })),
+        (
+            "/api/t/alpha/bank/batches".to_owned(),
+            json!({ "accountId": g.account }),
+        ),
+        (
+            format!("/api/t/alpha/bank/batches/{id}/save"),
+            json!({ "expected": 0 }),
+        ),
+        (
+            format!("/api/t/alpha/bank/batches/{id}/close"),
+            json!({ "expected": 0, "bankedOn": "2026-11-03", "total": 100 }),
+        ),
+        (
+            format!("/api/t/alpha/bank/batches/{id}/reopen"),
+            json!({ "expected": 0 }),
+        ),
     ] {
         let (s, _) = g.w.call("POST", &path, &g.val, Some(body)).await;
         assert_eq!(s, StatusCode::FORBIDDEN, "{path}");
@@ -283,26 +407,46 @@ async fn an_archived_account_takes_no_new_batch() {
         Some(json!({ "expected": 0, "name": "CAF current", "active": false })),
     )
     .await;
-    let (s, out) = g
-        .w
-        .call("POST", "/api/t/alpha/bank/batches", &g.sam, Some(json!({ "accountId": g.account })))
+    let (s, out) =
+        g.w.call(
+            "POST",
+            "/api/t/alpha/bank/batches",
+            &g.sam,
+            Some(json!({ "accountId": g.account })),
+        )
         .await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("account_inactive")));
-    let (s, out) = g
-        .w
-        .call("POST", "/api/t/alpha/bank/batches", &g.sam, Some(json!({ "accountId": "0".repeat(32) })))
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("account_inactive"))
+    );
+    let (s, out) =
+        g.w.call(
+            "POST",
+            "/api/t/alpha/bank/batches",
+            &g.sam,
+            Some(json!({ "accountId": "0".repeat(32) })),
+        )
         .await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown_account")));
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown_account"))
+    );
 }
 
 #[tokio::test]
 async fn a_transfer_by_hand_is_completed_and_not_on_a_statement_yet() {
     let g = setup().await;
-    let (s, out) = g.record("bank_transfer", 2500, json!({ "reference": "100016 GIFT" })).await;
+    let (s, out) = g
+        .record("bank_transfer", 2500, json!({ "reference": "100016 GIFT" }))
+        .await;
     assert_eq!(s, StatusCode::OK, "{out}");
     let gift = g.gift(out["giftId"].as_str().unwrap()).await;
     assert_eq!(
-        (gift["status"].as_str(), gift["notOnAStatement"].as_bool(), gift["reference"].as_str()),
+        (
+            gift["status"].as_str(),
+            gift["notOnAStatement"].as_bool(),
+            gift["reference"].as_str()
+        ),
         (Some("completed"), Some(true), Some("100016 GIFT"))
     );
     // Cash carries no reference; a cheque its number.
@@ -313,26 +457,48 @@ async fn a_transfer_by_hand_is_completed_and_not_on_a_statement_yet() {
 #[tokio::test]
 async fn a_cheque_clears_by_hand_outside_a_batch_and_can_bounce() {
     let g = setup().await;
-    let (_, loose) = g.record("cheque", 3000, json!({ "reference": "200001" })).await;
+    let (_, loose) = g
+        .record("cheque", 3000, json!({ "reference": "200001" }))
+        .await;
     let loose = loose["giftId"].as_str().unwrap().to_owned();
     let (s, out) = g.status(&loose, 1, "completed").await;
-    assert_eq!((s, out["view"]["status"].as_str()), (StatusCode::OK, Some("completed")), "{out}");
+    assert_eq!(
+        (s, out["view"]["status"].as_str()),
+        (StatusCode::OK, Some("completed")),
+        "{out}"
+    );
     let (s, out) = g.status(&loose, 2, "failed").await;
-    assert_eq!((s, out["view"]["status"].as_str()), (StatusCode::OK, Some("failed")), "{out}");
+    assert_eq!(
+        (s, out["view"]["status"].as_str()),
+        (StatusCode::OK, Some("failed")),
+        "{out}"
+    );
 
     let id = g.open(&g.sam).await["id"].as_str().unwrap().to_owned();
-    let (_, batched) = g.record("cheque", 4000, json!({ "payingInBatchId": id })).await;
+    let (_, batched) = g
+        .record("cheque", 4000, json!({ "payingInBatchId": id }))
+        .await;
     let batched = batched["giftId"].as_str().unwrap().to_owned();
     let (s, out) = g.status(&batched, 1, "completed").await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("cheque_not_cleared")));
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("cheque_not_cleared"))
+    );
     let (s, out) = g.status(&batched, 1, "failed").await;
-    assert_eq!((s, out["view"]["status"].as_str()), (StatusCode::OK, Some("failed")), "{out}");
+    assert_eq!(
+        (s, out["view"]["status"].as_str()),
+        (StatusCode::OK, Some("failed")),
+        "{out}"
+    );
     // A bounced cheque stays in what was paid in (the bank credited the
     // slip in full; the bounce is a debit of its own), shown apart.
     let b = &g.batch(&id).await["batch"];
     assert_eq!(b["giftsTotal"], 4000);
     assert_eq!(
-        (b["figures"]["bouncedCount"].as_i64(), b["figures"]["bouncedTotal"].as_i64()),
+        (
+            b["figures"]["bouncedCount"].as_i64(),
+            b["figures"]["bouncedTotal"].as_i64()
+        ),
         (Some(1), Some(4000))
     );
     assert_eq!(b["figures"]["receivedTotal"], 0);
@@ -342,10 +508,15 @@ async fn a_cheque_clears_by_hand_outside_a_batch_and_can_bounce() {
 async fn a_batch_s_figures_say_what_was_received_and_what_is_pending() {
     let g = setup().await;
     let id = g.open(&g.sam).await["id"].as_str().unwrap().to_owned();
-    g.record("cash", 2000, json!({ "payingInBatchId": id })).await;
-    g.record("cheque", 5000, json!({ "payingInBatchId": id })).await;
+    g.record("cash", 2000, json!({ "payingInBatchId": id }))
+        .await;
+    g.record("cheque", 5000, json!({ "payingInBatchId": id }))
+        .await;
     let b = &g.batch(&id).await["batch"];
-    assert_eq!((b["giftsTotal"].as_i64(), b["giftCount"].as_i64()), (Some(7000), Some(2)));
+    assert_eq!(
+        (b["giftsTotal"].as_i64(), b["giftCount"].as_i64()),
+        (Some(7000), Some(2))
+    );
     assert_eq!(
         b["figures"],
         json!({ "receivedTotal": 2000, "pendingCount": 1, "pendingTotal": 5000,
@@ -362,9 +533,21 @@ async fn a_gift_in_a_closed_or_matched_batch_is_locked_but_a_cheque_still_bounce
     let g = setup().await;
     let id = g.open(&g.sam).await["id"].as_str().unwrap().to_owned();
     let gift = |out: Value| out["giftId"].as_str().unwrap().to_owned();
-    let cash = gift(g.record("cash", 2000, json!({ "payingInBatchId": id })).await.1);
-    let cheque = gift(g.record("cheque", 5000, json!({ "payingInBatchId": id })).await.1);
-    let spare = gift(g.record("cash", 100, json!({ "payingInBatchId": id })).await.1);
+    let cash = gift(
+        g.record("cash", 2000, json!({ "payingInBatchId": id }))
+            .await
+            .1,
+    );
+    let cheque = gift(
+        g.record("cheque", 5000, json!({ "payingInBatchId": id }))
+            .await
+            .1,
+    );
+    let spare = gift(
+        g.record("cash", 100, json!({ "payingInBatchId": id }))
+            .await
+            .1,
+    );
 
     // Open: edits and voids go through.
     let (s, out) = g.save_amount(&cash, 2100).await;
@@ -377,18 +560,38 @@ async fn a_gift_in_a_closed_or_matched_batch_is_locked_but_a_cheque_still_bounce
     // Closed: amount and void refused; the cheque bounces and clears back.
     g.close(&id, 0, 7000).await;
     let (s, out) = g.save_amount(&cash, 2500).await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed"))
+    );
     let (s, out) = g.status(&cash, 1, "void").await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed"))
+    );
     let (s, out) = g.status(&spare, 2, "completed").await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed"))
+    );
     let (s, out) = g.status(&cheque, 1, "failed").await;
-    assert_eq!((s, out["view"]["status"].as_str()), (StatusCode::OK, Some("failed")), "{out}");
+    assert_eq!(
+        (s, out["view"]["status"].as_str()),
+        (StatusCode::OK, Some("failed")),
+        "{out}"
+    );
     let (s, _) = g.status(&cheque, 2, "pending").await;
     assert_eq!(s, StatusCode::OK);
 
     // Reopened: editable again.
-    ok(&g.w, "POST", &format!("/api/t/alpha/bank/batches/{id}/reopen"), &g.sam, Some(json!({ "expected": 1 }))).await;
+    ok(
+        &g.w,
+        "POST",
+        &format!("/api/t/alpha/bank/batches/{id}/reopen"),
+        &g.sam,
+        Some(json!({ "expected": 1 })),
+    )
+    .await;
     let (s, out) = g.save_amount(&cash, 2000).await;
     assert_eq!(s, StatusCode::OK, "{out}");
 
@@ -397,15 +600,38 @@ async fn a_gift_in_a_closed_or_matched_batch_is_locked_but_a_cheque_still_bounce
     g.match_to_line(&id, 7000).await;
     assert_eq!(g.gift(&cheque).await["status"], "completed");
     let (s, out) = g.save_amount(&cash, 2500).await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed"))
+    );
     let (s, out) = g.status(&cash, 1, "void").await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed")));
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_closed"))
+    );
     let (s, out) = g.status(&cheque, 4, "failed").await;
-    assert_eq!((s, out["view"]["status"].as_str()), (StatusCode::OK, Some("failed")), "{out}");
-    let (s, out) = g.w.call("POST", &format!("/api/t/alpha/bank/batches/{id}/reopen"), &g.sam, Some(json!({ "expected": 3 }))).await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_matched")));
+    assert_eq!(
+        (s, out["view"]["status"].as_str()),
+        (StatusCode::OK, Some("failed")),
+        "{out}"
+    );
+    let (s, out) =
+        g.w.call(
+            "POST",
+            &format!("/api/t/alpha/bank/batches/{id}/reopen"),
+            &g.sam,
+            Some(json!({ "expected": 3 })),
+        )
+        .await;
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("batch_matched"))
+    );
     let line = &g.batch(&id).await["batch"]["line"];
-    assert_eq!((line["postedOn"].as_str(), line["amount"].as_i64()), (Some("2026-11-04"), Some(7000)));
+    assert_eq!(
+        (line["postedOn"].as_str(), line["amount"].as_i64()),
+        (Some("2026-11-04"), Some(7000))
+    );
 }
 
 #[tokio::test]
@@ -414,22 +640,49 @@ async fn b_never_sees_as_batches_and_as_ids_under_b_are_404() {
     let id = g.open(&g.sam).await["id"].as_str().unwrap().to_owned();
     let list = ok(&g.w, "GET", "/api/t/beta/bank/batches", &g.bob, None).await;
     assert_eq!(list, json!([]));
-    let (s, out) = g.w.call("GET", &format!("/api/t/beta/bank/batches/{id}"), &g.bob, None).await;
-    assert_eq!((s, out["kind"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+    let (s, out) =
+        g.w.call(
+            "GET",
+            &format!("/api/t/beta/bank/batches/{id}"),
+            &g.bob,
+            None,
+        )
+        .await;
+    assert_eq!(
+        (s, out["kind"].as_str()),
+        (StatusCode::NOT_FOUND, Some("not_found"))
+    );
     for (what, body) in [
         ("save", json!({ "expected": 0 })),
-        ("close", json!({ "expected": 0, "bankedOn": "2026-11-03", "total": 100 })),
+        (
+            "close",
+            json!({ "expected": 0, "bankedOn": "2026-11-03", "total": 100 }),
+        ),
         ("reopen", json!({ "expected": 0 })),
     ] {
-        let (s, _) = g.w.call("POST", &format!("/api/t/beta/bank/batches/{id}/{what}"), &g.bob, Some(body)).await;
+        let (s, _) =
+            g.w.call(
+                "POST",
+                &format!("/api/t/beta/bank/batches/{id}/{what}"),
+                &g.bob,
+                Some(body),
+            )
+            .await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{what}");
     }
     // A's account and batch don't exist in B's file.
-    let (s, out) = g
-        .w
-        .call("POST", "/api/t/beta/bank/batches", &g.bob, Some(json!({ "accountId": g.account })))
+    let (s, out) =
+        g.w.call(
+            "POST",
+            "/api/t/beta/bank/batches",
+            &g.bob,
+            Some(json!({ "accountId": g.account })),
+        )
         .await;
-    assert_eq!((s, out["reason"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown_account")));
+    assert_eq!(
+        (s, out["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("unknown_account"))
+    );
     // A's batch id in B's record-gift, with a real B code so the batch is
     // what refuses it: no such batch there, nothing kept.
     let b_category = ok(
@@ -454,9 +707,8 @@ async fn b_never_sees_as_batches_and_as_ids_under_b_are_404() {
         .as_str()
         .unwrap()
         .to_owned();
-    let (s, out) = g
-        .w
-        .call(
+    let (s, out) =
+        g.w.call(
             "POST",
             "/api/t/beta/gifts/record",
             &g.bob,

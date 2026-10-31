@@ -128,7 +128,11 @@ pub fn my_recent(conn: &Connection, user: i64) -> rusqlite::Result<Vec<RecentGif
                 received_on: r.get(4)?,
                 method,
                 status,
-                not_on_a_statement: crate::bank::not_on_a_statement(method, status, line.as_deref()),
+                not_on_a_statement: crate::bank::not_on_a_statement(
+                    method,
+                    status,
+                    line.as_deref(),
+                ),
             })
         })?
         .collect::<rusqlite::Result<_>>()?;

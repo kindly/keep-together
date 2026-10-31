@@ -92,7 +92,10 @@ pub async fn buffer(State(state): State<AppState>, mut req: Request, next: Next)
         // Past the limit is 413; a body that broke off for any other
         // reason is the client's 400.
         Ok(Err(e)) if statement => {
-            if e.into_inner().downcast::<http_body_util::LengthLimitError>().is_ok() {
+            if e.into_inner()
+                .downcast::<http_body_util::LengthLimitError>()
+                .is_ok()
+            {
                 ApiError::TooLarge { limit }.into_response()
             } else {
                 (

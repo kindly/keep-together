@@ -19,7 +19,10 @@ pub fn day_first(value: &str) -> Result<String, String> {
         .rsplit_once(' ')
         .filter(has_time)
         .map_or(original, |(date, _)| date.trim_end());
-    let date = date.split_once('T').filter(has_time).map_or(date, |(d, _)| d);
+    let date = date
+        .split_once('T')
+        .filter(has_time)
+        .map_or(date, |(d, _)| d);
     let date = date.replace('\'', "/");
     let parts: Vec<&str> = date
         .split(['/', '-', '.', ' '])
@@ -28,11 +31,7 @@ pub fn day_first(value: &str) -> Result<String, String> {
     let [a, b, c] = parts[..] else {
         return Err(bad());
     };
-    let (year, month, day) = if a.len() == 4 {
-        (a, b, c)
-    } else {
-        (c, b, a)
-    };
+    let (year, month, day) = if a.len() == 4 { (a, b, c) } else { (c, b, a) };
     let number = |s: &str| {
         (!s.is_empty() && s.len() <= 4 && s.bytes().all(|b| b.is_ascii_digit()))
             .then(|| s.parse::<u32>().ok())
@@ -102,7 +101,16 @@ mod tests {
 
     #[test]
     fn impossible_dates_are_refused() {
-        for v in ["31/02/2026", "13/13/2026", "29/02/2025", "Total", "", "3/11", "3 Smarch 2026", "1/1/123"] {
+        for v in [
+            "31/02/2026",
+            "13/13/2026",
+            "29/02/2025",
+            "Total",
+            "",
+            "3/11",
+            "3 Smarch 2026",
+            "1/1/123",
+        ] {
             assert!(day_first(v).is_err(), "{v}");
         }
         assert_eq!(day_first("29/02/2028").as_deref(), Ok("2028-02-29"));

@@ -18,8 +18,8 @@ use axum::{Extension, Json, Router};
 use banking::account::account as one_account;
 use banking::import::ImportLine;
 use banking::{
-    AccountPayload, AccountRow, CsvLayout, FileLayout, ImportRequest, ImportRow, Imported,
-    PeekRow, Preset, Preview,
+    AccountPayload, AccountRow, CsvLayout, FileLayout, ImportRequest, ImportRow, Imported, PeekRow,
+    Preset, Preview,
 };
 use contracts::{Executed, Problem, Source, command_group};
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,10 @@ async fn presets(Extension(t): Extension<Tenant>) -> Result<Json<Presets>, ApiEr
     require_staff(&t)?;
     Ok(Json(Presets {
         presets: banking::presets(),
-        awaiting_samples: banking::AWAITING_SAMPLES.iter().map(|b| b.to_string()).collect(),
+        awaiting_samples: banking::AWAITING_SAMPLES
+            .iter()
+            .map(|b| b.to_string())
+            .collect(),
     }))
 }
 
