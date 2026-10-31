@@ -115,6 +115,13 @@ for (const [phone, device] of Object.entries(PHONES)) {
       const { id, path } = await startPairing(instance, users.a)
       const requests: Array<Request> = []
       page.on('request', (r) => requests.push(r))
+      // A request still in flight when a sample's `about:blank` drops its
+      // page never settles, and its allHeaders() never resolves (on
+      // staging, where the network is slower than loopback: the nightly of
+      // 2026-10-30). Those keep their provisional headers, Referer included.
+      const settled = new Set<Request>()
+      page.on('requestfinished', (r) => settled.add(r))
+      page.on('requestfailed', (r) => settled.add(r))
 
       await flow(page, 'scan.open', {
         // Each sample opens the link afresh (this phone holds it already).
@@ -213,7 +220,8 @@ for (const [phone, device] of Object.entries(PHONES)) {
         if (!url.pathname.startsWith(`/api/scan/${token}`)) {
           expect(url.pathname).not.toContain(token)
         }
-        const referer = (await r.allHeaders()).referer as string | undefined
+        const headers = settled.has(r) ? await r.allHeaders() : r.headers()
+        const referer = headers.referer as string | undefined
         expect(referer ?? '').not.toContain(token)
       }
     })

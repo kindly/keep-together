@@ -1,4 +1,4 @@
-import { expect, test } from '../fixtures'
+import { expect, skipUnlessFakeGoCardless, test } from '../fixtures'
 import type { Page } from '@playwright/test'
 import type { GoCardlessStatus } from '../../src/lib/data/rust-types/GoCardlessStatus'
 import type { RegularGiftSaved } from '../../src/lib/data/rust-types/RegularGiftSaved'
@@ -67,9 +67,10 @@ async function consent(page: Page, account: string | null) {
 
 /** Connected, through the API and the consent page; the account kept. */
 async function connected(page: Page, slug: string): Promise<GoCardlessStatus> {
-  if (!page.url().startsWith('http')) await page.goto(`/t/${slug}/contacts`)
+  // The mode first: off the fake, skip before loading anything.
   const now = await statusOf(page, slug)
-  test.skip(now.mode !== 'fake', 'needs KEEP_GOCARDLESS=fake')
+  skipUnlessFakeGoCardless(now.mode)
+  if (!page.url().startsWith('http')) await page.goto(`/t/${slug}/contacts`)
   if (now.connected) return now
   const { url } = await json<{ url: string }>(
     page,

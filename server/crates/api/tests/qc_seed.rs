@@ -63,8 +63,22 @@ async fn qc_seed_builds_the_same_world_and_only_when_enabled() {
         world["tenants"][0]["contactIds"].as_array().unwrap().len(),
         3
     );
-    let (_, again) = post(&app, "/api/dev/qc-seed", req).await;
+    let (_, again) = post(&app, "/api/dev/qc-seed", req.clone()).await;
     assert_eq!(again["tenants"], world["tenants"]);
+
+    // A replacement worker re-seeds after the paged list's crowd: more
+    // than a page of names sorting before Ada's. It still gets the seed's
+    // own contacts, the Trust's gift and Ada's declarations (the nightly
+    // of 2026-10-30, isolation.spec.ts).
+    let (s, _) = post(
+        &app,
+        "/api/dev/qc-crowd",
+        json!({ "slug": "qc-r7w0-b", "lastName": "Aardvark", "count": 150 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, after_crowd) = post(&app, "/api/dev/qc-seed", req).await;
+    assert_eq!(after_crowd["tenants"], world["tenants"]);
 
     // qcSeed.test.ts › each side's Street category holds its own detail;
     // Event holds Gala; nothing else. And: Charles and the Trust coded

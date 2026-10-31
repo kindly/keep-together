@@ -471,6 +471,30 @@ function linkBanner(
 }
 
 /**
+ * Failed tests that overlapped a first-hop stall: worth reading their
+ * `requests` attachment before blaming the app. Never changes a verdict.
+ */
+export function failedLinkBanner(
+  failed: Array<{ title: string; from: number; to: number }>,
+  link: LinkFile | null,
+): Array<string> {
+  if (!link?.watched) return []
+  const hits = failed.flatMap(({ title, from, to }) => {
+    const ms = linkDuring(link, from, to)
+    return ms !== null && ms >= STALL_MS
+      ? [
+          `${title}: the first hop at up to ${ms} ms during it (${new Date(from).toISOString().slice(11, 19)}–${new Date(to).toISOString().slice(11, 19)} UTC)`,
+        ]
+      : []
+  })
+  if (!hits.length) return []
+  return banner([
+    `LINK: ${hits.length} failed test${hits.length === 1 ? '' : 's'} overlapped a first-hop stall (ping ${link.gateway} ≥ ${STALL_MS} ms). They failed as usual; see each one's requests attachment for what hung.`,
+    ...hits,
+  ])
+}
+
+/**
  * What the Rust backend doesn't serve yet (migration-rust.sv), on every
  * run: the pendingPort flows (qc/budgets.ts), the tests skipped for them
  * (qc/pending.ts) and the unported routes, by the step that ports them.
@@ -512,6 +536,25 @@ export function mailOffBanner(tests: Array<string>): Array<string> {
   ])
 }
 
+/**
+ * The GoCardless fake's tests skipped for the target's mode (staging's
+ * sandbox): what they would have tested, so a pass doesn't hide it.
+ */
+export function notFakeBanner(
+  tests: Map<string, string>,
+  flows: Array<string>,
+  routes: Array<string>,
+): Array<string> {
+  if (!tests.size) return []
+  const modes = [...new Set(tests.values())].sort().join(', ')
+  return banner([
+    `GOCARDLESS NOT FAKE on the target (${modes}): ${tests.size} test${tests.size === 1 ? '' : 's'} skipped; the GoCardless screens were NOT tested:`,
+    ...[...tests.keys()].sort(),
+    ...(flows.length ? [`not timed: ${flows.join(', ')}`] : []),
+    ...(routes.length ? [`not covered: ${routes.join(', ')}`] : []),
+  ])
+}
+
 const banner = (lines: Array<string>) => {
   const bar = '!'.repeat(72)
   return [bar, ...lines.map((l) => `!! ${l}`), bar]
@@ -524,6 +567,12 @@ export default class QcReporter implements Reporter {
   private pending = new Map<string, number>()
   /** Tests that ran their mail-off variant, by title path. */
   private mailOff = new Set<string>()
+  /** Tests skipped off the GoCardless fake: title path → mode. */
+  private notFake = new Map<string, string>()
+  /** The routes those tests are annotated with. */
+  private notFakeRoutes = new Set<string>()
+  /** Failed tests and when they ran (epoch ms), for the LINK banner. */
+  private failed: Array<{ title: string; from: number; to: number }> = []
 
   onBegin(config: FullConfig) {
     this.filtered = isFiltered(config.argv)
@@ -538,6 +587,27 @@ export default class QcReporter implements Reporter {
     // Retries add the annotation again: one entry per test.
     if (result.annotations.some((a) => a.type === 'mailOff'))
       this.mailOff.add(test.titlePath().filter(Boolean).slice(1).join(' › '))
+    const notFake = result.annotations.find(
+      (a) => a.type === 'gocardlessNotFake',
+    )
+    if (notFake && result.status === 'skipped') {
+      this.notFake.set(
+        test.titlePath().filter(Boolean).slice(1).join(' › '),
+        notFake.description ?? '',
+      )
+      for (const a of [...test.annotations, ...result.annotations]) {
+        if (a.type === 'route' && a.description)
+          this.notFakeRoutes.add(a.description)
+      }
+    }
+    if (result.status === 'failed' || result.status === 'timedOut') {
+      const from = result.startTime.getTime()
+      this.failed.push({
+        title: test.titlePath().filter(Boolean).slice(1).join(' › '),
+        from,
+        to: from + result.duration,
+      })
+    }
     // A skipped test proves nothing about its route.
     if (result.status === 'skipped') return
     for (const a of [...test.annotations, ...result.annotations]) {
@@ -626,6 +696,7 @@ export default class QcReporter implements Reporter {
       out.push(`qc ${id}: no flows timed`)
     }
 
+    out.push(...failedLinkBanner(this.failed, readLink(runDir(id))))
     out.push(...knownOverBanner(summary))
     const routes = readRoutes()
     out.push(...pendingBanner(this.pending, routes))
@@ -633,11 +704,18 @@ export default class QcReporter implements Reporter {
     out.push(...retryBanner(retries, past, env))
 
     const timed = new Set(records.map((r) => r.flow))
+    const offFake = this.notFake.size > 0
     const untimed = (Object.entries(budgets) as Array<[FlowName, Budget]>)
       .filter(([name, b]) => !b.selfTest && !b.pendingPort && !timed.has(name))
-      .map(([name, b]) => ({ name, pending: b.pending === true }))
+      .map(([name, b]) => ({
+        name,
+        pending: b.pending === true,
+        notFake: offFake && b.fakeGoCardless === true,
+      }))
     const pending = untimed.filter((u) => u.pending).map((u) => u.name)
-    const missing = untimed.filter((u) => !u.pending).map((u) => u.name)
+    const missing = untimed
+      .filter((u) => !u.pending && !u.notFake)
+      .map((u) => u.name)
     if (pending.length) {
       out.push(`not timed yet (pending): ${pending.join(', ')}`)
     }
@@ -648,8 +726,20 @@ export default class QcReporter implements Reporter {
     }
 
     // Routes being ported are listed in the pendingPort banner instead.
+    // So are those only the GoCardless fake's skipped tests cover.
     const all = coverageGaps(routes, this.routes)
-    const gaps = { ...all, uncovered: all.uncovered.filter(isPorted) }
+    const ported = all.uncovered.filter(isPorted)
+    const gaps = {
+      ...all,
+      uncovered: ported.filter((r) => !this.notFakeRoutes.has(r)),
+    }
+    out.push(
+      ...notFakeBanner(
+        this.notFake,
+        untimed.filter((u) => u.notFake).map((u) => u.name),
+        ported.filter((r) => this.notFakeRoutes.has(r)),
+      ),
+    )
     const gapMsgs = [
       ...(gaps.uncovered.length
         ? [
