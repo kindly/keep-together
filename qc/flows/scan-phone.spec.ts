@@ -348,6 +348,9 @@ for (const [phone, device] of Object.entries(PHONES)) {
       await photograph(page)
       await context.setOffline(true)
       await page.getByRole('button', { name: 'Use page' }).click()
+      // A new page is `waiting` before its first try: wait for that try to
+      // fail, or closing races the upload (and it may land).
+      await expect(page.locator('[data-retrying="offline"]')).toBeVisible()
       await page.waitForFunction(lastPageIs, 'waiting')
       await page.close()
       await context.setOffline(false)

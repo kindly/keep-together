@@ -11,7 +11,7 @@ export type ScanSitting = { orgName: string, purpose: ScanPurpose, expiresAt: nu
  */
 idleExpiresAt: number, uploadsLeft: number, maxPages: number, maxPageBytes: number, 
 /**
- * This sitting's scans, oldest first: ids and page counts, nothing
+ * This sitting's scans, oldest first: ids and page ids, nothing
  * else.
  */
 scans: Array<SittingScan>, };

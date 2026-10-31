@@ -128,6 +128,8 @@ test('the page logs nothing (the token is in its URL)', async () => {
 const A = 'a'.repeat(32)
 const P1 = '1'.repeat(32)
 const P2 = '2'.repeat(32)
+/** Page 1's id: the server's own, since a first page sends none. */
+const S1 = 'c'.repeat(32)
 
 async function keptPages() {
   const { memoryPersist } = await import('./persist')
@@ -154,7 +156,7 @@ test('a reload sends kept pages again, once, with their ids, and reopens the sca
   const store = await keptPages()
   fetch.mockImplementation((url) =>
     url.endsWith(TOKEN)
-      ? json(200, { ...SITTING, scans: [{ id: A, pages: 1, open: true }] })
+      ? json(200, { ...SITTING, scans: [{ id: A, pageIds: [S1], open: true }] })
       : json(200, { scanId: A, pages: 2, uploadsLeft: 298 }),
   )
   const screen = await open(`#${TOKEN}`)
@@ -169,11 +171,31 @@ test('a reload sends kept pages again, once, with their ids, and reopens the sca
   expect(store.pages.size).toBe(0)
 })
 
+test('a reload with a kept page the server already has: sent nowhere, counted once', async () => {
+  // Page 2's upload landed, but the tab was thrown away before the answer
+  // (scan-phone.spec.ts "a page kept on the phone…"): it showed
+  // "This scan: 3 pages".
+  const store = await keptPages()
+  fetch.mockImplementation((url) =>
+    url.endsWith(TOKEN)
+      ? json(200, { ...SITTING, scans: [{ id: A, pageIds: [S1, P2], open: true }] })
+      : json(500, {}),
+  )
+  const screen = await open(`#${TOKEN}`)
+  expect(fetch.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(
+    false,
+  )
+  expect(screen.dataset.screen).toBe('scan')
+  expect(screen.querySelector('h2')?.textContent).toBe('This scan: 2 pages')
+  expect(document.body.textContent).not.toContain('Picked up')
+  expect(store.pages.size).toBe(0)
+})
+
 test('kept pages wait out no signal, still kept', async () => {
   const store = await keptPages()
   fetch.mockImplementation((url) =>
     url.endsWith(TOKEN)
-      ? json(200, { ...SITTING, scans: [{ id: A, pages: 1, open: true }] })
+      ? json(200, { ...SITTING, scans: [{ id: A, pageIds: [S1], open: true }] })
       : Promise.reject(new TypeError('Load failed')),
   )
   await open(`#${TOKEN}`)

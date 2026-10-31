@@ -59,7 +59,7 @@ pub struct ScanSitting {
     pub max_pages: usize,
     #[ts(type = "number")]
     pub max_page_bytes: i64,
-    /// This sitting's scans, oldest first: ids and page counts, nothing
+    /// This sitting's scans, oldest first: ids and page ids, nothing
     /// else.
     pub scans: Vec<SittingScan>,
 }
@@ -69,7 +69,11 @@ pub struct ScanSitting {
 #[ts(export)]
 pub struct SittingScan {
     pub id: String,
-    pub pages: usize,
+    /// Its pages' ids, in order. A next page's is the phone's own
+    /// `pageId`, so a reload knows which kept pages landed even when the
+    /// answer was lost (a first page's is the server's: its scan's id
+    /// says it landed).
+    pub page_ids: Vec<String>,
     /// Still a draft: pages can be added.
     pub open: bool,
 }
@@ -200,7 +204,7 @@ async fn sitting(state: &AppState, live: Live) -> Result<ScanSitting, ApiError> 
                 .into_iter()
                 .map(|s| SittingScan {
                     id: s.id,
-                    pages: s.pages.len(),
+                    page_ids: s.pages.into_iter().map(|p| p.id).collect(),
                     open: s.status == Status::Draft && s.image_deleted_at.is_none(),
                 })
                 .collect(),
