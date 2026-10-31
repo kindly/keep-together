@@ -7,7 +7,8 @@
 //!   `Origin` must be the app's (`KEEP_APP_ORIGIN`) or the request's own
 //!   host. A request with neither header isn't from a browser (browsers
 //!   send `Origin` on every cross-origin `POST`), so it can't carry a
-//!   victim's cookie by itself and passes.
+//!   victim's cookie by itself and passes. [`SIGNED_ROUTES`] are
+//!   exempt.
 //! - [`dev_host`]: `/api/dev/*` only when `Host` is loopback (or absent),
 //!   so a DNS-rebinding page, or Vite's proxy reached over the tailnet,
 //!   can't use the dev login.
@@ -46,10 +47,22 @@ pub fn same_origin(headers: &HeaderMap, app_origin: &str) -> bool {
     origin == format!("https://{h}") || origin == format!("http://{h}")
 }
 
+/// `POST` routes a provider's server calls with its own `Origin`: they
+/// read no session cookie and each authenticates the request by its
+/// signature, so the origin check has nothing to protect. Exact paths,
+/// never prefixes, so nothing else slips under them.
+pub const SIGNED_ROUTES: &[&str] = &[
+    // GoCardless webhooks: HMAC in `Webhook-Signature`, 498 when wrong.
+    "/api/gocardless/webhook",
+];
+
 pub async fn csrf(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
+    let path = req.uri().path();
+    let signed = *req.method() == Method::POST && SIGNED_ROUTES.contains(&path);
     if !safe
-        && req.uri().path().starts_with("/api/")
+        && !signed
+        && path.starts_with("/api/")
         && !same_origin(req.headers(), &state.auth.config.app_origin)
     {
         return ApiError::Forbidden.into_response();
@@ -113,5 +126,12 @@ mod tests {
             app
         ));
         assert!(!same_origin(&headers(&[("origin", "null")]), app));
+    }
+
+    /// Adding a route here skips the origin check: it must read no
+    /// session and verify a signature, so the list is pinned.
+    #[test]
+    fn only_the_gocardless_webhook_skips_the_origin_check() {
+        assert_eq!(SIGNED_ROUTES, ["/api/gocardless/webhook"]);
     }
 }
