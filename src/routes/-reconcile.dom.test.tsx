@@ -86,6 +86,15 @@ vi.mock('../components/gift-form', () => ({
     </button>
   ),
 }))
+// The record form is its own (standing-orders.dom.test.tsx): here, what
+// the line page opens it with.
+let opened: Record<string, unknown> | null = null
+vi.mock('../components/standing-orders', () => ({
+  RecordStandingOrderDialog: (props: Record<string, unknown>) => {
+    opened = props
+    return <div data-testid="standing-order-dialog" />
+  },
+}))
 vi.mock('../components/source-code-picker', () => ({
   SourceCodePicker: () => null,
   localToday: () => '2026-11-05',
@@ -136,6 +145,7 @@ beforeEach(() => {
   payers = []
   rules = []
   closedBatches = []
+  opened = null
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -500,6 +510,87 @@ test('a name alone can’t be ticked for Accept ticked, only matched by hand', a
     'A name alone is never accepted in bulk',
   )
   expect(button('Accept ticked (0)')?.disabled).toBe(true)
+})
+
+const instalment = suggestion({
+  proposal: {
+    kind: 'instalment',
+    regularGiftId: 'r1',
+    scheduledOn: '2026-11-05',
+  },
+  reason: 'J BLOGGS paid it before; reference SMITH123 matches',
+  suggesters: ['standingOrder'],
+})
+const offer = suggestion({
+  proposal: {
+    kind: 'newStandingOrder',
+    contactId: 'c1',
+    frequency: 'monthly',
+    dayOfMonth: 3,
+    month: null,
+  },
+  confidence: 'suggested',
+  reason: 'Jo Bloggs gave £60.00 a month ago',
+  suggesters: ['standingOrderOffer'],
+  ticked: false,
+})
+
+test('a line: a standing order’s payment says which and why, and is used as it is', async () => {
+  detail = {
+    line: line(),
+    gifts: [],
+    batchId: null,
+    suggestions: [instalment],
+  }
+  writes.accept.mockResolvedValue([{ lineId: 'l1', ok: true, line: detail }])
+  await linePage()
+  const shown = el.querySelector('[aria-label="Suggestions"] li')!.textContent
+  expect(shown).toContain('Jo Bloggs’s standing order payment due 5 Nov 2026')
+  expect(shown).toContain('J BLOGGS paid it before; reference SMITH123 matches')
+  expect(shown).toContain('strong')
+  await click(button('Use this'))
+  expect(writes.accept).toHaveBeenCalledWith([
+    { lineId: 'l1', expected: 2, proposal: instalment.proposal },
+  ])
+})
+
+test('the offer to make a standing order opens the record form on the line, never accept', async () => {
+  detail = {
+    line: line(),
+    gifts: [],
+    batchId: null,
+    suggestions: [offer],
+  }
+  await linePage()
+  const shown = el.querySelector('[aria-label="Suggestions"] li')!.textContent
+  expect(shown).toContain('Make this a standing order for Jo Bloggs')
+  expect(shown).toContain('Jo Bloggs gave £60.00 a month ago')
+  expect(button('Use this')).toBeUndefined()
+  expect(byTestId('standing-order-dialog')).toBeUndefined()
+  await click(button('Set it up…'))
+  expect(writes.accept).not.toHaveBeenCalled()
+  expect(byTestId('standing-order-dialog')).toBe('')
+  // Line mode: the line's amount and date; the offer's frequency; no
+  // reference (staff type one; the line's is never taken for it).
+  expect(opened).toMatchObject({
+    contactId: 'c1',
+    prefill: { frequency: 'monthly' },
+    line: { id: 'l1', matchVersion: 2, amount: 6000n, postedOn: '2026-11-03' },
+  })
+  expect(Object.keys(opened!.prefill as object)).toEqual(['frequency'])
+  await act(async () => (opened!.onClose as () => void)())
+  expect(byTestId('standing-order-dialog')).toBeUndefined()
+})
+
+test('reconcile: the offer is its own, not a name-only match, and never tickable', async () => {
+  lines = [{ ...line(), suggestions: [offer] }]
+  await reconcile()
+  expect(el.querySelectorAll('input[type="checkbox"]')).toHaveLength(0)
+  expect(byTestId('name-only')).toBeUndefined()
+  expect(byTestId('standing-order-offer')).toContain(
+    'Make this a standing order for Jo Bloggs',
+  )
+  expect(byTestId('standing-order-offer')).toContain('one at a time')
 })
 
 test('a batch for the line is chosen by staff, never pre-selected', async () => {

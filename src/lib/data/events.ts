@@ -96,6 +96,8 @@ const INVALIDATES: Partial<
     keys.regularGiftLists(slug),
     keys.batches(slug),
     keys.bank(slug),
+    // A standing order's expected vs actual reads its instalments.
+    keys.standing(slug),
   ],
   gift_aid_declarations: (slug) => [keys.declarations(slug), keys.gifts(slug)],
   // G3: a claim shows in the list, on its page and in every preview
@@ -112,9 +114,17 @@ const INVALIDATES: Partial<
   // payment, a staff request for one: the cards, the unmatched list.
   // A payment's gift comes as a `gifts` event too.
   // A standing order's expected payment is a suggestion (step 5).
-  regular_gifts: (slug) => [keys.gocardless(slug), keys.bank(slug)],
+  regular_gifts: (slug) => [
+    keys.gocardless(slug),
+    keys.bank(slug),
+    keys.standing(slug),
+  ],
   // A standing order's terms give its expected payments: suggestions.
-  regular_gift_terms: (slug) => [keys.gocardless(slug), keys.bank(slug)],
+  regular_gift_terms: (slug) => [
+    keys.gocardless(slug),
+    keys.bank(slug),
+    keys.standing(slug),
+  ],
   direct_debit_payments: (slug) => [keys.gocardless(slug)],
   provider_requests: (slug) => [keys.gocardless(slug)],
   // Bank transfers 6a: an account (its name and layout show on every

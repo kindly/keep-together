@@ -245,6 +245,11 @@ export const budgets = {
   // infrequent.
   'bank.acceptTicked': { kind: 'bulk', maxMs: 270 },
   'bank.matchLine': infrequent,
+  // Bank transfers 6b part 3 (qc/flows/standing-orders.spec.ts).
+  // PROVISIONAL: proposed by builder-rgt for the human's OK, not
+  // recorded. Recording a standing order makes a regular gift, as
+  // setting up a Direct Debit or adopting a subscription does: infrequent.
+  'standingOrder.record': infrequent,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
   'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },

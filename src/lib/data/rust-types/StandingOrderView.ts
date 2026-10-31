@@ -10,7 +10,13 @@ export type StandingOrderView = { id: string, contactId: string, contactName: st
 /**
  * The oldest missed payment's due date: staff decide (g2q2).
  */
-missedOn: string | null, endedReason: string | null, endedAt: number | null, chain: Array<TermView>, 
+missedOn: string | null, 
+/**
+ * The next payment due, on or after today, from the terms chain
+ * (however far ahead: a yearly one's may be 11 months off); none
+ * once it has ended.
+ */
+nextDueOn: string | null, endedReason: string | null, endedAt: number | null, chain: Array<TermView>, 
 /**
  * The last 12 months to the next 3, as of today.
  */

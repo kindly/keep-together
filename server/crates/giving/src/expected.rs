@@ -17,7 +17,7 @@
 //! from the first payment collected at the new amount; one never
 //! collected is "not realised".
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -121,6 +121,16 @@ fn paid_by_period(conn: &Connection, id: &str) -> rusqlite::Result<BTreeMap<Stri
         );
     }
     Ok(out)
+}
+
+/// The periods (`YYYY-MM`) of regular gift `id` a payment has already
+/// come in for, or is on its way for: completed or pending.
+pub(crate) fn periods_paid(conn: &Connection, id: &str) -> rusqlite::Result<BTreeSet<String>> {
+    Ok(paid_by_period(conn, id)?
+        .into_iter()
+        .filter(|(_, p)| matches!(p.status, Status::Completed | Status::Pending))
+        .map(|(period, _)| period)
+        .collect())
 }
 
 /// A regular gift's facts the expected side needs.

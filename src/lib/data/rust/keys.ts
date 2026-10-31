@@ -123,6 +123,15 @@ export const keys = {
   ) => ['t', slug, 'gocardless', 'report', args] as const,
   unknownSubscriptions: (slug: string) =>
     ['t', slug, 'gocardless', 'unknown'] as const,
+  /**
+   * Standing orders (bank transfers 6b part 3): a contact's, the missed
+   * list. One prefix, so a regular gift's, a gift's or a line's event
+   * refetches whatever shows one.
+   */
+  standing: (slug: string) => ['t', slug, 'standing'] as const,
+  standingOrders: (slug: string, contactId: string) =>
+    ['t', slug, 'standing', 'contact', contactId] as const,
+  standingMissed: (slug: string) => ['t', slug, 'standing', 'missed'] as const,
   /** The charity's HMRC details (Settings). */
   hmrcDetails: (slug: string) => ['t', slug, 'hmrcDetails'] as const,
   /**

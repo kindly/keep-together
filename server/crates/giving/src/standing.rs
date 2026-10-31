@@ -17,7 +17,7 @@
 //! stays monthly or yearly (`giving.regularGiftTerms` refuses quarterly
 //! on one).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use contracts::{
     Command, CommandGroup, Contract, ContractError, Ctx, Exec, Executed, OrgTx, Problem, Source,
@@ -704,6 +704,10 @@ pub struct StandingOrderView {
     pub bank_reference: Option<String>,
     /// The oldest missed payment's due date: staff decide (g2q2).
     pub missed_on: Option<String>,
+    /// The next payment due, on or after today, from the terms chain
+    /// (however far ahead: a yearly one's may be 11 months off); none
+    /// once it has ended.
+    pub next_due_on: Option<String>,
     pub ended_reason: Option<String>,
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
@@ -726,9 +730,16 @@ fn view(conn: &Connection, r: ViewRow, today: &str) -> rusqlite::Result<Standing
         Some(i) => (month_label(i - 11), month_label(i + 3)),
         None => (String::new(), String::new()),
     };
+    let chain = terms::chain(conn, &r.id)?;
     Ok(StandingOrderView {
         contact_name: contacts::donors::name_of(conn, &r.contact_id)?.map(|(n, _)| n),
-        chain: terms::chain(conn, &r.id)?,
+        next_due_on: next_due_on(
+            &chain,
+            r.status,
+            &expected::periods_paid(conn, &r.id)?,
+            today,
+        ),
+        chain,
         expected: expected::for_regular_gift(conn, &r.id, &from, &to, today)?.unwrap_or_default(),
         id: r.id,
         contact_id: r.contact_id,
@@ -741,6 +752,33 @@ fn view(conn: &Connection, r: ViewRow, today: &str) -> rusqlite::Result<Standing
         mandate_version: r.mandate_version,
         missed_version: r.missed_version,
     })
+}
+
+/// The first due date on or after `today` under the live chain, looking
+/// a year and a day ahead (the furthest a yearly payment can be), passing
+/// over a period whose payment is already in (`paid`: it came early);
+/// none for one ended.
+pub fn next_due_on(
+    chain: &[TermView],
+    status: RegularStatus,
+    paid: &BTreeSet<String>,
+    today: &str,
+) -> Option<String> {
+    if status.is_ended() {
+        return None;
+    }
+    let rules: Vec<crate::terms_rules::Terms> = chain
+        .iter()
+        .filter(|t| t.is_live())
+        .map(|t| t.rules())
+        .collect();
+    // A year and a day past today plus a period paid early: the one
+    // after it is still in range.
+    let to = add_days(today, 366 + 366)?;
+    crate::terms_rules::expected_periods(&rules, None, today, &to)
+        .into_iter()
+        .find(|p| !paid.contains(&p.period))
+        .map(|p| p.due_on)
 }
 
 struct ViewRow {

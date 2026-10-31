@@ -140,6 +140,18 @@ export type {
   ScanView,
 } from './rust/scans'
 export {
+  landStandingOrder,
+  useMissedStandingOrders,
+  useStandingOrderWrites,
+  useStandingOrders,
+} from './rust/standing'
+export type {
+  MissedStandingOrder,
+  StandingOrder,
+  StandingOrderArgs,
+  StandingOrderFromLineArgs,
+} from './rust/standing'
+export {
   useDirectDebitWrites,
   useExpectedPeriods,
   useExpectedReport,

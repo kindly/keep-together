@@ -1,5 +1,6 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { RecentGifts, RecordGiftAction } from '../components/gift-nav'
+import { MissedStandingOrders } from '../components/standing-orders'
 import { useCanWrite, useTenant } from '../lib/tenant'
 import { FEATURES } from '../lib/data'
 
@@ -43,6 +44,8 @@ function GroupHome() {
           <RecentGifts />
         </section>
       )}
+      {/* Nothing until a standing order has missed a payment (g2q2). */}
+      {FEATURES.gifts && <MissedStandingOrders />}
     </main>
   )
 }

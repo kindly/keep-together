@@ -10,6 +10,7 @@ import { BankPayers } from '../components/bank-payers'
 import { ContactGifts } from '../components/contact-gifts'
 import { ContactDirectDebit } from '../components/direct-debit'
 import { RegularGiftTerms } from '../components/regular-terms'
+import { ContactStandingOrders } from '../components/standing-orders'
 import { ContactHistory } from '../components/contact-history'
 import { ContactNotes } from '../components/contact-notes'
 import { LeaveGuard } from '../components/leave-guard'
@@ -66,6 +67,8 @@ function ContactPage() {
               {(gift) => <RegularGiftTerms gift={gift} />}
             </ContactDirectDebit>
           )}
+          {/* Standing orders: the donor's own bank, no provider. */}
+          {FEATURES.gifts && <ContactStandingOrders contactId={id} />}
           {/* Staff and admins: from statement lines (bank transfers 6b). */}
           {FEATURES.gifts && <BankPayers contactId={id} />}
           {/* Only a person can make a Gift Aid declaration (HMRC 3.6.7). */}
