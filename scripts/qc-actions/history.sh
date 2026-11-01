@@ -12,6 +12,12 @@
 #       wrong: the run must not go on with an empty history and then
 #       upload it as the newest, which would cut the chain.
 #
+#       Looks back over qc.yml's last 100 completed runs on main. With
+#       none of them holding one, the chain restarts empty: a warning,
+#       the step output `chain=restarted`, and report.sh puts it in the
+#       run's summary heading, its runs.log line (history=restarted) and
+#       any issue. `chain=new` when there is no run yet at all.
+#
 #       Trusted only from this workflow's own runs: the newest unexpired
 #       `qc-history` of a *completed qc.yml run on main of this repo*
 #       (event schedule, workflow_dispatch or workflow_run; the head
@@ -72,6 +78,10 @@ sanitize() {
   fi
 }
 
+# fetch's outcome, as the step output `chain` when run in Actions:
+# continued, new (no run yet) or restarted (runs, but no history).
+chain() { [ -z "${GITHUB_OUTPUT:-}" ] || echo "chain=$1" >>"$GITHUB_OUTPUT"; }
+
 fetch() {
   local dir=$1 runs id aid tmp entries f max=${QC_HISTORY_MAX_BYTES:-67108864}
   mkdir -p "$dir"
@@ -79,7 +89,7 @@ fetch() {
   : >"$dir/runs.log"
   [ -n "${GH_REPO:-}" ] || die "GH_REPO is unset"
   # This workflow's completed runs on main of this repo, newest first.
-  runs=$(gh api "repos/$GH_REPO/actions/workflows/qc.yml/runs?branch=main&status=completed&per_page=30" \
+  runs=$(gh api "repos/$GH_REPO/actions/workflows/qc.yml/runs?branch=main&status=completed&per_page=100" \
     --jq '[.workflow_runs[]
       | select(.head_branch == "main" and .path == ".github/workflows/qc.yml"
         and .repository.full_name == $ENV.GH_REPO
@@ -95,8 +105,15 @@ fetch() {
       die "could not list run $id's artifacts"
     [ -z "$aid" ] || break
   done
-  if [ -z "$aid" ]; then
-    echo "::notice::no qc-history artifact from a qc.yml run on main yet: this run starts the chain"
+  if [ -z "$aid" ] && [ -z "$runs" ]; then
+    echo "::notice::no qc.yml run on main yet: this run starts the history chain"
+    chain new
+    return 0
+  elif [ -z "$aid" ]; then
+    # Runs, but none of the last 100 left a history: the chain restarts
+    # empty (drift and the streak with it). Said loudly, never quietly.
+    echo "::warning::none of the last $(wc -w <<<"$runs") qc.yml runs on main left a qc-history artifact: the history chain RESTARTS empty with this run (drift and the streak start over)"
+    chain restarted
     return 0
   fi
   [[ $aid =~ ^[0-9]+$ ]] || die "an artifact id that isn't a number"
@@ -117,6 +134,7 @@ fetch() {
   done
   rm -rf "$tmp"
   sanitize "$dir/history.jsonl" "$dir/runs.log"
+  chain continued
   echo "history: artifact $aid of run $id, $(wc -l <"$dir/history.jsonl") history lines, $(wc -l <"$dir/runs.log") runs"
 }
 

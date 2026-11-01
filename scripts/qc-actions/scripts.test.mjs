@@ -62,7 +62,7 @@ answer() {
   if [ -n "$jqx" ]; then jq -r "$jqx" "$S/$1"; else cat "$S/$1"; fi
 }
 case "$1 $2" in
-"api repos/o/r/actions/workflows/qc.yml/runs?branch=main&status=completed&per_page=30") answer qc-runs.json ;;
+"api repos/o/r/actions/workflows/qc.yml/runs?branch=main&status=completed&per_page=100") answer qc-runs.json ;;
 "api repos/o/r/actions/runs/"*"/artifacts?name=qc-history")
   id=\${2#repos/o/r/actions/runs/}; id=\${id%%/*}
   [ -f "$S/run-$id-artifacts.json" ] || echo '{"artifacts":[]}' >"$S/run-$id-artifacts.json"
@@ -125,6 +125,7 @@ function sh(script, args, env = {}) {
   const out = path.join(dir, 'gh-output')
   const summary = path.join(dir, 'summary')
   rmSync(out, { force: true })
+  rmSync(summary, { force: true })
   const r = spawnSync('bash', [path.join(here, script), ...args], {
     cwd: ws(),
     env: {
@@ -460,17 +461,46 @@ describe('report.sh: the verdict', () => {
     expect(issues()).toEqual([])
   })
 
-  test('keep-qc runs a commit that isn’t on main: void commit-not-on-main, nothing run (L1)', () => {
-    const r = report({
-      STEPS:
-        'commit=success checkout=success onmain=failure install=skipped history=skipped',
-      QC_OUTCOME: 'skipped',
-      QC_EXIT: '',
-      QC_CHECK: '',
-    })
-    expect(r.code).toBe(0)
+  const notRun = {
+    STEPS:
+      'commit=success checkout=success onmain=failure install=skipped history=skipped',
+    QC_OUTCOME: 'skipped',
+    QC_EXIT: '',
+    QC_CHECK: '',
+  }
+
+  test('keep-qc runs a commit that isn’t on main: void commit-not-on-main, nothing run, and it alerts the first time (L1, L4)', () => {
+    const r = report({ ...notRun, ONMAIN: 'not-on-main' })
+    expect(r.code).toBe(1)
     expect(runsLog()[0]).toMatch(/ result=void reason=commit-not-on-main$/)
-    expect(issues()).toEqual([])
+    const [issue] = issues()
+    expect(issue.slice(1, 3)).toEqual(['issue', 'create'])
+    expect(issue[issue.indexOf('--body') + 1]).toContain(
+      "isn't on main: a deploy from somewhere else, or tampering",
+    )
+  })
+
+  test('a git error in the on-main check is an error, not "not on main" (L4)', () => {
+    const r = report(notRun)
+    expect(r.code).toBe(1)
+    expect(runsLog()[0]).toMatch(/ result=error step=onmain$/)
+  })
+
+  test('a restarted history chain is said loudly: summary heading, runs.log, the issue (L5)', () => {
+    const r = report({ HISTORY_CHAIN: 'restarted' })
+    expect(r.code).toBe(0)
+    expect(r.summary).toMatch(
+      /^### QC against keep-qc: pass \(HISTORY CHAIN RESTARTED\)/,
+    )
+    expect(r.summary).toContain('none of the last 100 qc.yml runs on main')
+    expect(runsLog()[0]).toMatch(/ result=pass .* history=restarted$/)
+    report({ HISTORY_CHAIN: 'restarted', QC_EXIT: '1' })
+    const body = issues()[0][issues()[0].indexOf('--body') + 1]
+    expect(body).toContain('history chain RESTARTED')
+    // A first run, or one that went on from the last: nothing said.
+    const quiet = report({ HISTORY_CHAIN: 'continued' })
+    expect(quiet.summary).not.toContain('RESTARTED')
+    expect(runsLog()[0]).not.toContain('history=')
   })
 
   test('record mode: result=record, never an alert, whatever QC said', () => {
@@ -538,7 +568,8 @@ describe('history.sh: the artifact chain', () => {
   test('fetch: none yet is an empty start; else the newest qc.yml run on main with one', () => {
     const none = sh('history.sh', ['fetch', into()])
     expect(none.code, none.stderr + none.stdout).toBe(0)
-    expect(none.stdout).toContain('::notice::no qc-history artifact')
+    expect(none.stdout).toContain('::notice::no qc.yml run on main yet')
+    expect(none.outputs.chain).toBe('new')
     expect(read(path.join(into(), 'history.jsonl'))).toBe('')
     set('qc-runs.json', {
       workflow_runs: [ghRun(5), ghRun(7), ghRun(6, { event: 'workflow_run' })],
@@ -558,6 +589,20 @@ describe('history.sh: the artifact chain', () => {
     ])
     expect(read(path.join(into(), 'history.jsonl'))).toContain('"runId":"r6"')
     expect(read(path.join(into(), 'runs.log'))).toBe(RUNS_LINE + '\n')
+    expect(r.outputs.chain).toBe('continued')
+  })
+
+  test('fetch: runs but no history in the last 100: the chain restarts, loudly (L5)', () => {
+    set('qc-runs.json', { workflow_runs: [ghRun(1), ghRun(2)] })
+    const r = sh('history.sh', ['fetch', into()])
+    expect(r.code, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(
+      /::warning::none of the last 2 qc\.yml runs on main left a qc-history artifact: the history chain RESTARTS/,
+    )
+    expect(r.outputs.chain).toBe('restarted')
+    expect(read(path.join(into(), 'history.jsonl'))).toBe('')
+    // It looks back over 100 runs, not 30.
+    expect(argv()[0][2]).toContain('per_page=100')
   })
 
   test('fetch: never from another workflow, branch, fork, or a pull request’s event', () => {

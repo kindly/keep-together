@@ -871,7 +871,9 @@ token is never printed.
    the specs match the app. That commit must be on `main` (`git
    merge-base --is-ancestor`), checked before anything of it is
    installed or run: otherwise the run is `void
-   reason=commit-not-on-main`. The workflow's own scripts come from the
+   reason=commit-not-on-main` and alerts at once (a deploy from
+   somewhere else, or tampering). A git error in that check is `error
+   step=onmain`, never read as "not on main". The workflow's own scripts come from the
    workflow's commit (`.qc-actions/`), so its steps and scripts match.
 2. `pnpm install`, Playwright's chromium (cached by lockfile), and the
    last run's history (below).
@@ -921,7 +923,12 @@ step validates it again before seeding the reporter. The verdict builds
 the next link: this run's `history.jsonl` when the check cleared it,
 otherwise the last run's, plus this run's `runs.log` line; history is
 trimmed to the last 60 runs. When the QC step's check refused, no link
-is uploaded and the chain goes on from the one before. If the last one can't be read,
+is uploaded and the chain goes on from the one before. `fetch` looks back
+over qc.yml's last 100 completed runs on main; if runs exist but none of
+them left a link, the chain **restarts** empty (drift and the streak
+start over), and the run says so loudly: a warning annotation, `(HISTORY
+CHAIN RESTARTED)` in the job summary's heading, `history=restarted` on
+its `runs.log` line, and a line in any issue it raises. If the last one can't be read,
 the run is `error step=history` and no new link is uploaded, since an
 empty one uploaded as the newest would cut the chain. With none at all
 (the first run, or 90 days without one) the chain starts again.
@@ -934,7 +941,7 @@ empty one uploaded as the newest would cut the chain. With none at all
 | `pass` | QC passed against one deploy, latency judged | none |
 | `fail` | QC failed: a test, a budget, a gate; also when keep-qc couldn't be asked afterwards (`qc-check=unknown`) | issue |
 | `error` | the run broke before QC could judge (`step=`: the first step that failed, `qc`, `artifact-check`, `no-history-lines`) | issue |
-| `void` | can't be trusted either way (`reason=`: `commit-changed`, `qc-check-unknown` after a pass, `rtt-over-ceiling`, `no-budgets`, `commit-not-on-main`) | issue only when lasting |
+| `void` | can't be trusted either way (`reason=`: `commit-changed`, `qc-check-unknown` after a pass, `rtt-over-ceiling`, `no-budgets`, `commit-not-on-main`) | issue only when lasting; `commit-not-on-main` at once |
 | `record` | a `mode=record` run: measured, nothing judged | none |
 
 Lasting voids are the house's rule: the last 2 runs both void, or 36 h

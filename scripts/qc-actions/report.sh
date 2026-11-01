@@ -11,7 +11,8 @@
 #           after a pass (qc-check-unknown), a worker over the RTT ceiling
 #           (rtt-over-ceiling), flows with no budget on this target yet
 #           (no-budgets: plan step A3 records them), or keep-qc running a
-#           commit that isn't on main (commit-not-on-main: never run)
+#           commit that isn't on main (commit-not-on-main: never run, and
+#           it alerts the first time: a misdeploy or tampering)
 #   record  a mode=record run: measured, nothing judged
 #
 # It writes one runs.log line (into the next qc-history artifact, built
@@ -60,8 +61,10 @@ result="" extra=""
 # failure).
 for s in ${STEPS:-}; do
   name=$(word "${s%%=*}") outcome=${s#*=}
-  if [ "$name" = onmain ] && [ "$outcome" = failure ]; then
-    # keep-qc runs a commit that isn't on main: not run, no verdict.
+  if [ "$name" = onmain ] && [ "$outcome" = failure ] && [ "${ONMAIN:-}" = not-on-main ]; then
+    # keep-qc runs a commit that isn't on main: not run, no verdict, but
+    # a misdeploy or tampering, so it alerts the first time (below). A
+    # git error there is an error step=onmain, as any failing step.
     result=void extra="reason=commit-not-on-main"
     break
   elif [ "$outcome" != success ]; then
@@ -109,6 +112,12 @@ if [ -z "$result" ]; then
   fi
 fi
 
+# The history chain restarted (history.sh fetch found none to go on).
+restarted=""
+if [ "${HISTORY_CHAIN:-}" = restarted ]; then
+  restarted="history chain RESTARTED: none of the last 100 qc.yml runs on main left a qc-history artifact, so drift and the streak start over from this run"
+  extra="$extra history=restarted"
+fi
 line="$(date -u +%Y-%m-%dT%H:%M:%SZ) run=${run_id:-none} event=${event:-none} commit=${commit:-none} result=$result $extra"
 line=${line% }
 echo "runs.log: $line"
@@ -148,13 +157,18 @@ alert=0 note=""
 case $result in
 fail | error) alert=1 ;;
 void)
-  if [ "$(field reason "$line")" != no-budgets ] && note=$(voids_persist); then alert=1; fi
+  if [ "$(field reason "$line")" = commit-not-on-main ]; then
+    alert=1 note="keep-qc serves $commit, which isn't on main: a deploy from somewhere else, or tampering. QC didn't run it."
+  elif [ "$(field reason "$line")" != no-budgets ] && note=$(voids_persist); then
+    alert=1
+  fi
   ;;
 esac
 
 # ---- the summary and the issue ------------------------------------------------
 {
-  printf '### QC against keep-qc: %s\n\n' "$result"
+  printf '### QC against keep-qc: %s%s\n\n' "$result" "${restarted:+ (HISTORY CHAIN RESTARTED)}"
+  [ -z "$restarted" ] || printf '> **%s**\n\n' "$restarted"
   [ -z "$note" ] || printf '%s\n\n' "$note"
   printf -- '- commit: `%s`\n' "${commit:-unknown}"
   printf -- '- runs.log: `%s`\n' "$line"
@@ -169,6 +183,7 @@ report_issue() {
   body=$(
     printf 'QC against keep-qc (GitHub Actions): **%s**\n\n' "$result"
     [ -z "$note" ] || printf '%s\n\n' "$note"
+    [ -z "$restarted" ] || printf '**%s**\n\n' "$restarted"
     printf -- '- commit: %s\n' "${commit:-unknown}"
     printf -- '- runs.log: `%s`\n' "$line"
     [ -z "$failed" ] || printf -- '- flows that failed: %s\n' "${failed//,/, }"

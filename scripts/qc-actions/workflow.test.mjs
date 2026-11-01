@@ -215,6 +215,8 @@ describe('the steps', () => {
     const before = steps.slice(1, indexOf(byId('qc'))).map((s) => s.id)
     expect(named).toEqual(before)
     expect(r.env.QC_CHECK).toBe('${{ steps.qc.outputs.check }}')
+    expect(r.env.ONMAIN).toBe('${{ steps.onmain.outputs.verdict }}')
+    expect(r.env.HISTORY_CHAIN).toBe('${{ steps.history.outputs.chain }}')
     // Issues need the GitHub token; the QC token it never has.
     expect(r.env.GH_TOKEN).toBe('${{ github.token }}')
   })
@@ -416,9 +418,17 @@ test('the on-main step: main’s commits pass, a branch’s is refused', () => {
     git('commit', '-q', '--allow-empty', '-m', 'x')
     const x = git('rev-parse', 'HEAD')
     expect(runStep('onmain', { SHA: a }, { cwd: repo }).code).toBe(0)
+    expect(runStep('onmain', { SHA: a }, { cwd: repo }).outputs).toBe('')
     const r = runStep('onmain', { SHA: x }, { cwd: repo })
     expect(r.code).not.toBe(0)
     expect(r.stdout).toContain("isn't on main")
+    expect(r.outputs).toBe('verdict=not-on-main\n')
+    // A git error (no origin/main) is not "not on main" (L4).
+    git('update-ref', '-d', 'refs/remotes/origin/main')
+    const broken = runStep('onmain', { SHA: a }, { cwd: repo })
+    expect(broken.code).not.toBe(0)
+    expect(broken.outputs).toBe('')
+    expect(broken.stdout).toContain('could not tell whether')
   } finally {
     rmSync(repo, { recursive: true, force: true })
   }

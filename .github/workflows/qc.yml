@@ -153,9 +153,18 @@ jobs:
       - name: keep-qc's commit is on main
         id: onmain
         if: ${{ steps.gate.outputs.go == 'true' }}
+        # merge-base exits 1 for "not an ancestor" and otherwise for a git
+        # error: only the first is "not on main" (an alert: a misdeploy or
+        # tampering); a git error is an error.
         run: |
-          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+          rc=0
+          git merge-base --is-ancestor "$SHA" origin/main || rc=$?
+          if [ "$rc" = 1 ]; then
             echo "::error::keep-qc runs $SHA, which isn't on main: not running it."
+            echo "verdict=not-on-main" >>"$GITHUB_OUTPUT"
+            exit 1
+          elif [ "$rc" != 0 ]; then
+            echo "::error::could not tell whether $SHA is on main (git merge-base exited $rc)."
             exit 1
           fi
         env:
@@ -237,6 +246,8 @@ jobs:
             browser-cache=${{ steps.browser-cache.outcome }}
             browsers=${{ steps.browsers.outcome }}
             history=${{ steps.history.outcome }}
+          ONMAIN: ${{ steps.onmain.outputs.verdict }}
+          HISTORY_CHAIN: ${{ steps.history.outputs.chain }}
           QC_OUTCOME: ${{ steps.qc.outcome }}
           QC_EXIT: ${{ steps.qc.outputs.exit }}
           QC_FLOWS: ${{ steps.qc.outputs.flows }}
