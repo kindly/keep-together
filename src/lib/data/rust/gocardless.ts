@@ -179,26 +179,35 @@ export function useRegularGifts(
  * single read, the one that asks GoCardless): read when a live card
  * shows, kept five minutes, and refetched by no event, so activity
  * elsewhere never costs a GoCardless call per open card. A terms write
- * refetches it (the amounts change). Undefined while loading.
+ * refetches it (the amounts change). With it, whether those dates are
+ * GoCardless's own (confirmed) or projected. Undefined while loading.
  */
 export function useRegularGiftForecast(
   id: string,
   /** The gift's status as listed: a new status reads it afresh. */
   status: string,
   enabled = true,
-): Array<Upcoming> | undefined {
+): Forecast | undefined {
   const { slug } = useTenant()
   return useQuery({
     queryKey: keys.regularGiftForecast(slug, id, status),
     enabled,
     staleTime: 5 * 60_000,
     retry: false,
-    queryFn: async () =>
-      regularGiftFromWire(
+    queryFn: async (): Promise<Forecast> => {
+      const v = regularGiftFromWire(
         await get<RegularGiftView>(tenantPath(slug, 'regular-gifts', id)),
-      ).upcoming,
+      )
+      return { upcoming: v.upcoming, upcomingConfirmed: v.upcomingConfirmed }
+    },
   }).data
 }
+
+/**
+ * A card's next payments from the gift's own read, and whether they are
+ * GoCardless's schedule (`upcomingConfirmed`) or the app's projection.
+ */
+export type Forecast = Pick<RegularGift, 'upcoming' | 'upcomingConfirmed'>
 
 /** Payments nobody could be matched to, newest first; any member. */
 export function useUnmatchedPayments(): {

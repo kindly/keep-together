@@ -137,6 +137,7 @@ function gift(over: Partial<RegularGift> = {}): RegularGift {
       { chargeDate: '2026-12-01', amount: 1000n, changeable: true },
       { chargeDate: '2027-01-04', amount: 1000n, changeable: true },
     ],
+    upcomingConfirmed: true,
     lastFailure: null,
     payments: [],
     connected: true,

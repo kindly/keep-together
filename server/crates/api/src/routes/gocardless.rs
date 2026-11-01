@@ -155,6 +155,11 @@ async fn by_contact(
     .map(Json)
 }
 
+/// How long a regular gift's read waits for GoCardless's forecast (its
+/// subscription's schedule, or its mandate's first possible charge date)
+/// before showing the app's own projection instead.
+pub const FORECAST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// `GET regular-gifts/{id}`: with its chain, and `upcoming`: the next
 /// payments to pick a change's date from, GoCardless's own forecast
 /// while connected with a subscription (else the chain's projection),
@@ -174,14 +179,38 @@ async fn one(
             Ok((v, token))
         })
         .await?;
+    // A read: GoCardless gets FORECAST_TIMEOUT, then the app's projection
+    // (or estimate) stands, marked unconfirmed (review G3 L1).
     let forecast = match (&token, &v.subscription_id, v.status.is_ended()) {
-        (Some(token), Some(sb), false) => gc.api.get_subscription(token, sb).await.ok(),
+        (Some(token), Some(sb), false) => {
+            tokio::time::timeout(FORECAST_TIMEOUT, gc.api.get_subscription(token, sb))
+                .await
+                .ok()
+                .and_then(Result::ok)
+        }
         _ => None,
     };
+    // Before a subscription exists, its first payment can't come before
+    // GoCardless could collect: the mandate's own date once there is one,
+    // else the lead-time estimate. With one, its own schedule (or, if
+    // GoCardless can't be asked, the projection from today).
+    let day = today();
+    let earliest = match (&v.subscription_id, &v.mandate_id, &token) {
+        (Some(_), _, _) => day.clone(),
+        (None, Some(md), Some(token)) if !v.status.is_ended() => {
+            tokio::time::timeout(FORECAST_TIMEOUT, gc.api.get_mandate(token, md))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|m| m.next_possible_charge_date)
+                .unwrap_or_else(|| regular::estimated_first_charge(&day))
+        }
+        _ => regular::estimated_first_charge(&day),
+    };
+    let confirmed = forecast.is_some();
     let (rid, connected) = (v.id.clone(), token.is_some());
     let out = t
         .read(move |r| {
-            let day = today();
             let upcoming = match forecast {
                 Some(sub) => sub
                     .upcoming
@@ -195,10 +224,11 @@ async fn one(
                     })
                     .collect::<rusqlite::Result<_>>()?,
                 None if v.status.is_ended() => vec![],
-                None => regular::projected_upcoming(r, &rid, &day, 10)?,
+                None => regular::projected_upcoming(r, &rid, &day, &earliest, 10)?,
             };
             Ok(RegularGiftView {
                 upcoming,
+                upcoming_confirmed: confirmed,
                 ..with_connection(v, connected)
             })
         })

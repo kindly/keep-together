@@ -61,6 +61,7 @@ function wire(over: Partial<RegularGiftView> = {}): RegularGiftView {
     scheduled: null,
     changeNotCoded: false,
     upcoming: [],
+    upcomingConfirmed: true,
     lastFailure: null,
     payments: [],
     connected: true,

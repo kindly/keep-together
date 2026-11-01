@@ -45,6 +45,11 @@ scheduled: TermView | null,
  */
 changeNotCoded: boolean, upcoming: Array<UpcomingPayment>, 
 /**
+ * `upcoming` is GoCardless's own schedule (its subscription), not
+ * this server's projection: only then are its dates confirmed.
+ */
+upcomingConfirmed: boolean, 
+/**
  * The latest failed payment, if the latest payment failed.
  */
 lastFailure: DirectDebitPaymentRow | null, payments: Array<DirectDebitPaymentRow>, connected: boolean, };
