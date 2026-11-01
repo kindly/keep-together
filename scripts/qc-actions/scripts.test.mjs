@@ -62,8 +62,16 @@ answer() {
   if [ -n "$jqx" ]; then jq -r "$jqx" "$S/$1"; else cat "$S/$1"; fi
 }
 case "$1 $2" in
-"api repos/o/r/actions/artifacts?name=qc-history&per_page=100") answer artifacts.json ;;
-"api repos/o/r/actions/artifacts/"*"/zip") [ ! -f "$S/fail-zip" ] || exit 1; cat "$S/artifact.zip" ;;
+"api repos/o/r/actions/workflows/qc.yml/runs?branch=main&status=completed&per_page=30") answer qc-runs.json ;;
+"api repos/o/r/actions/runs/"*"/artifacts?name=qc-history")
+  id=\${2#repos/o/r/actions/runs/}; id=\${id%%/*}
+  [ -f "$S/run-$id-artifacts.json" ] || echo '{"artifacts":[]}' >"$S/run-$id-artifacts.json"
+  answer "run-$id-artifacts.json"
+  ;;
+"api repos/o/r/actions/artifacts/"*"/zip")
+  [ ! -f "$S/fail-zip" ] || exit 1
+  id=\${2#repos/o/r/actions/artifacts/}; cat "$S/artifact-\${id%%/*}.zip"
+  ;;
 "issue list") answer issues.json ;;
 "issue comment" | "issue create" | "label create") ;;
 "run list") answer runs.json ;;
@@ -91,7 +99,7 @@ beforeEach(() => {
     ['curl', CURL],
   ])
     writeFileSync(path.join(bin, n), body, { mode: 0o755 })
-  set('artifacts.json', { artifacts: [] })
+  set('qc-runs.json', { workflow_runs: [] })
   set('issues.json', [])
   set('runs.json', [])
 })
@@ -232,6 +240,22 @@ describe('run.sh: QC, then the check', () => {
     expect(r.outputs).toMatchObject({ exit: '0', flows: '1', check: 'refused' })
     expect(r.stdout).toContain("KEEP_QC_TOKEN's value is in 1 place(s)")
     expect(r.stdout).not.toContain(TOKEN)
+  })
+
+  test('the last history is validated again before it seeds the reporter', () => {
+    writeFileSync(
+      path.join(dir, 'prev', 'history.jsonl'),
+      [line('old', 'contact.save'), '{"forged":true}', 'junk'].join('\n') +
+        '\n',
+    )
+    set('lines', line('r1', 'contact.save') + '\n')
+    const r = run()
+    expect(r.code).toBe(0)
+    const h = read(ws('qc-results', 'history.jsonl'))
+      .split('\n')
+      .filter(Boolean)
+    expect(h.map((l) => JSON.parse(l).runId)).toEqual(['old', 'r1'])
+    expect(r.outputs.flows).toBe('1')
   })
 
   test('no token in its env: QC can’t be checked, so nothing is cleared', () => {
@@ -406,6 +430,49 @@ describe('report.sh: the verdict', () => {
     expect(r.summary).toContain('no budgets on this target yet for 120 flows')
   })
 
+  test('no-budgets voids are not among the voids in a row, and restart the 36 h clock (L2)', () => {
+    const nb = (h, run) =>
+      `${hoursAgo(h)} run=${run} event=push commit=${SHA} result=void reason=no-budgets`
+    // A no-budgets void, then one real void: not two in a row.
+    writeFileSync(path.join(dir, 'prev', 'runs.log'), nb(1, 1) + '\n')
+    set('healthz', JSON.stringify({ commit: SHA2 }))
+    expect(report().code).toBe(0)
+    expect(issues()).toEqual([])
+    // Two real voids around a no-budgets one: two in a row, it alerts.
+    writeFileSync(
+      path.join(dir, 'prev', 'runs.log'),
+      [
+        `${hoursAgo(3)} run=1 event=push commit=${SHA} result=void reason=commit-changed now=${SHA2}`,
+        nb(2, 2),
+      ].join('\n') + '\n',
+    )
+    expect(report().code).toBe(1)
+    // 40 h since the last pass, but a no-budgets run 10 h ago: no alert.
+    rmSync(path.join(S, 'argv.log'))
+    writeFileSync(
+      path.join(dir, 'prev', 'runs.log'),
+      [
+        `${hoursAgo(40)} run=1 event=schedule commit=${SHA} result=pass flows=1`,
+        nb(10, 2),
+      ].join('\n') + '\n',
+    )
+    expect(report().code).toBe(0)
+    expect(issues()).toEqual([])
+  })
+
+  test('keep-qc runs a commit that isn’t on main: void commit-not-on-main, nothing run (L1)', () => {
+    const r = report({
+      STEPS:
+        'commit=success checkout=success onmain=failure install=skipped history=skipped',
+      QC_OUTCOME: 'skipped',
+      QC_EXIT: '',
+      QC_CHECK: '',
+    })
+    expect(r.code).toBe(0)
+    expect(runsLog()[0]).toMatch(/ result=void reason=commit-not-on-main$/)
+    expect(issues()).toEqual([])
+  })
+
   test('record mode: result=record, never an alert, whatever QC said', () => {
     const r = report({ MODE: 'record', QC_EXIT: '1' })
     expect(r.code).toBe(0)
@@ -448,45 +515,146 @@ describe('report.sh: the verdict', () => {
 })
 
 describe('history.sh: the artifact chain', () => {
-  test('fetch: none yet is an empty start; the newest unexpired one otherwise', () => {
-    const into = path.join(dir, 'h')
-    const none = sh('history.sh', ['fetch', into])
-    expect(none.code, none.stderr + none.stdout).toBe(0)
-    expect(none.stdout).toContain('::notice::no qc-history artifact yet')
-    expect(read(path.join(into, 'history.jsonl'))).toBe('')
-    set('artifacts.json', {
-      artifacts: [
-        { id: 7, expired: false, created_at: '2026-11-01T03:00:00Z' },
-        { id: 9, expired: true, created_at: '2026-11-02T03:00:00Z' },
-        { id: 8, expired: false, created_at: '2026-11-01T09:00:00Z' },
-      ],
+  // A run of a workflow, as GitHub's API lists it.
+  const ghRun = (id, over = {}) => ({
+    id,
+    path: '.github/workflows/qc.yml',
+    head_branch: 'main',
+    event: 'schedule',
+    created_at: `2026-11-0${id}T03:00:00Z`,
+    repository: { full_name: 'o/r' },
+    head_repository: { full_name: 'o/r' },
+    ...over,
+  })
+  const artifactOf = (run, aid, entries, expired = false) => {
+    set(`run-${run}-artifacts.json`, {
+      artifacts: [{ id: aid, name: 'qc-history', expired }],
     })
-    set(
-      'artifact.zip',
-      zip([
-        ['history.jsonl', line('r8', 'x') + '\n'],
-        ['runs.log', 'one\n'],
-      ]),
-    )
-    const r = sh('history.sh', ['fetch', into])
-    expect(r.code).toBe(0)
+    set(`artifact-${aid}.zip`, zip(entries))
+  }
+  const RUNS_LINE = `2026-11-01T03:00:00Z run=5 event=schedule commit=${SHA} result=pass flows=1`
+  const into = () => path.join(dir, 'h')
+
+  test('fetch: none yet is an empty start; else the newest qc.yml run on main with one', () => {
+    const none = sh('history.sh', ['fetch', into()])
+    expect(none.code, none.stderr + none.stdout).toBe(0)
+    expect(none.stdout).toContain('::notice::no qc-history artifact')
+    expect(read(path.join(into(), 'history.jsonl'))).toBe('')
+    set('qc-runs.json', {
+      workflow_runs: [ghRun(5), ghRun(7), ghRun(6, { event: 'workflow_run' })],
+    })
+    // Run 7, the newest, has none (or only an expired one): run 6's is taken.
+    artifactOf(7, 70, [['history.jsonl', line('r7', 'x') + '\n']], true)
+    artifactOf(6, 60, [
+      ['history.jsonl', line('r6', 'x') + '\n'],
+      ['runs.log', RUNS_LINE + '\n'],
+    ])
+    artifactOf(5, 50, [['history.jsonl', line('r5', 'x') + '\n']])
+    const r = sh('history.sh', ['fetch', into()])
+    expect(r.code, r.stderr).toBe(0)
     expect(argv().at(-1).slice(1, 3)).toEqual([
       'api',
-      'repos/o/r/actions/artifacts/8/zip',
+      'repos/o/r/actions/artifacts/60/zip',
     ])
-    expect(read(path.join(into, 'history.jsonl'))).toContain('"runId":"r8"')
-    expect(read(path.join(into, 'runs.log'))).toBe('one\n')
+    expect(read(path.join(into(), 'history.jsonl'))).toContain('"runId":"r6"')
+    expect(read(path.join(into(), 'runs.log'))).toBe(RUNS_LINE + '\n')
+  })
+
+  test('fetch: never from another workflow, branch, fork, or a pull request’s event', () => {
+    set('qc-runs.json', {
+      workflow_runs: [
+        ghRun(1),
+        ghRun(2, { path: '.github/workflows/ci.yml' }),
+        ghRun(3, { head_branch: 'feat/x' }),
+        ghRun(4, { head_repository: { full_name: 'evil/r' } }),
+        ghRun(5, { event: 'pull_request' }),
+        ghRun(6, { event: 'push' }),
+        ghRun(7, { repository: { full_name: 'evil/r' } }),
+      ],
+    })
+    for (const run of [2, 3, 4, 5, 6, 7])
+      artifactOf(run, run * 10, [
+        ['history.jsonl', line(`forged${run}`, 'x') + '\n'],
+      ])
+    artifactOf(1, 10, [['history.jsonl', line('r1', 'x') + '\n']])
+    const r = sh('history.sh', ['fetch', into()])
+    expect(r.code, r.stderr).toBe(0)
+    expect(read(path.join(into(), 'history.jsonl'))).toContain('"runId":"r1"')
+    expect(read(path.join(into(), 'history.jsonl'))).not.toContain('forged')
+    // Only run 1's artifacts were ever asked for.
+    expect(
+      argv()
+        .filter((a) => a[0] === 'gh' && /\/runs\/\d+\/artifacts/.test(a[2]))
+        .map((a) => a[2]),
+    ).toEqual(['repos/o/r/actions/runs/1/artifacts?name=qc-history'])
+  })
+
+  test('fetch: a link entry, or any other entry, is refused; nothing is ever written from the zip', () => {
+    set('qc-runs.json', { workflow_runs: [ghRun(1)] })
+    // history.jsonl -> /proc/self/environ: would copy GH_TOKEN out.
+    artifactOf(1, 10, [['history.jsonl', '/proc/self/environ', 0o120777]])
+    const link = sh('history.sh', ['fetch', into()], {
+      GH_TOKEN: 'ghs_secret_value_1234567890',
+    })
+    expect(link.code).toBe(1)
+    expect(link.stderr).toContain('holds a link')
+    expect(read(path.join(into(), 'history.jsonl'))).toBe('')
+    artifactOf(1, 10, [
+      ['history.jsonl', line('r1', 'x') + '\n'],
+      ['../escape', 'x'],
+    ])
+    const other = sh('history.sh', ['fetch', into()])
+    expect(other.code).toBe(1)
+    expect(other.stderr).toContain('holds ../escape')
+    expect(existsSync(path.join(dir, 'escape'))).toBe(false)
+  })
+
+  test('fetch: forged and oversized lines are dropped, every line validated', () => {
+    set('qc-runs.json', { workflow_runs: [ghRun(1)] })
+    artifactOf(1, 10, [
+      [
+        'history.jsonl',
+        [
+          line('r1', 'ok'),
+          '{"runId":"r1"}',
+          '[1,2]',
+          'not json',
+          JSON.stringify({
+            runId: 'r1',
+            flow: 'big',
+            samplesMs: ['x'.repeat(1_100_000)],
+          }),
+        ].join('\n') + '\n',
+      ],
+      [
+        'runs.log',
+        [
+          RUNS_LINE,
+          `2026-11-02T03:00:00Z run=6 event=schedule commit=${SHA} result=pass flows=1 $(touch x)`,
+          'streak: 7 passing nights',
+          `2026-11-02T03:00:00Z run=6 event=schedule commit=${SHA} result=great`,
+        ].join('\n') + '\n',
+      ],
+    ])
+    const r = sh('history.sh', ['fetch', into()])
+    expect(r.code, r.stderr).toBe(0)
+    const h = read(path.join(into(), 'history.jsonl'))
+      .split('\n')
+      .filter(Boolean)
+    expect(h.map((l) => JSON.parse(l).flow)).toEqual(['ok'])
+    expect(read(path.join(into(), 'runs.log'))).toBe(RUNS_LINE + '\n')
+    expect(r.stderr).toContain('dropped 4 history line(s)')
+    expect(r.stderr).toContain('dropped 3 runs.log line(s)')
   })
 
   test('fetch: GitHub failing is a failure, never an empty history', () => {
-    set('fail-artifacts.json', '')
-    expect(sh('history.sh', ['fetch', path.join(dir, 'h')]).code).toBe(1)
-    rmSync(path.join(S, 'fail-artifacts.json'))
-    set('artifacts.json', {
-      artifacts: [{ id: 1, expired: false, created_at: 'x' }],
-    })
+    set('fail-qc-runs.json', '')
+    expect(sh('history.sh', ['fetch', into()]).code).toBe(1)
+    rmSync(path.join(S, 'fail-qc-runs.json'))
+    set('qc-runs.json', { workflow_runs: [ghRun(1)] })
+    artifactOf(1, 10, [['history.jsonl', '']])
     set('fail-zip', '')
-    expect(sh('history.sh', ['fetch', path.join(dir, 'h')]).code).toBe(1)
+    expect(sh('history.sh', ['fetch', into()]).code).toBe(1)
   })
 
   test('build: the last N runs of history, unreadable lines dropped; runs.log appended', () => {
@@ -520,13 +688,24 @@ describe('status.sh: the streak', () => {
   const pass = (at, run) =>
     `${at} run=${run} event=schedule commit=${SHA} result=pass flows=120 over=0 rtt=84`
   const withLog = (lines, runs = []) => {
-    set('artifacts.json', {
-      artifacts: [
-        { id: 3, expired: false, created_at: '2026-11-05T03:00:00Z' },
+    set('qc-runs.json', {
+      workflow_runs: [
+        {
+          id: 3,
+          path: '.github/workflows/qc.yml',
+          head_branch: 'main',
+          event: 'schedule',
+          created_at: '2026-11-05T03:00:00Z',
+          repository: { full_name: 'o/r' },
+          head_repository: { full_name: 'o/r' },
+        },
       ],
     })
+    set('run-3-artifacts.json', {
+      artifacts: [{ id: 30, name: 'qc-history', expired: false }],
+    })
     set(
-      'artifact.zip',
+      'artifact-30.zip',
       zip([
         ['history.jsonl', ''],
         ['runs.log', lines.join('\n') + '\n'],
@@ -599,5 +778,37 @@ describe('status.sh: the streak', () => {
     )
     expect(r.stdout).toContain('streak: 0 passing night(s)')
     expect(r.stdout).toMatch(/running +5 \(workflow_dispatch, in_progress/)
+  })
+})
+
+describe('check-uploads.sh: the GitHub token, over everything that may go up', () => {
+  const GH = 'ghs_' + 'x1'.repeat(18)
+  const up = (env = {}) =>
+    sh('check-uploads.sh', [path.join(dir, 'next')], {
+      GH_TOKEN: GH,
+      CHECK_SECRETS: 'GH_TOKEN',
+      ...env,
+    })
+
+  test('clean when nothing holds it; nothing to upload is clean too', () => {
+    expect(up().outputs.check).toBe('clean')
+    mkdirSync(ws('qc-results'), { recursive: true })
+    writeFileSync(ws('qc-results', 'history.jsonl'), line('r1', 'x') + '\n')
+    mkdirSync(path.join(dir, 'next'))
+    writeFileSync(path.join(dir, 'next', 'runs.log'), 'fine\n')
+    const r = up()
+    expect(r.code).toBe(0)
+    expect(r.outputs.check).toBe('clean')
+    expect(r.stdout).toContain('no GH_TOKEN in any')
+  })
+
+  test('the token in the next history link, or in QC’s output: refused, never printed', () => {
+    mkdirSync(path.join(dir, 'next'))
+    writeFileSync(path.join(dir, 'next', 'history.jsonl'), `GH_TOKEN=${GH}\n`)
+    const r = up()
+    expect(r.code).toBe(1)
+    expect(r.outputs.check).toBe('refused')
+    expect(r.stdout).not.toContain(GH)
+    expect(up({ GH_TOKEN: '' }).outputs.check).toBe('refused')
   })
 })

@@ -9,16 +9,18 @@
 #   void    can't be trusted either way (reason=): keep-qc changed during
 #           the run (commit-changed), keep-qc couldn't be asked afterwards
 #           after a pass (qc-check-unknown), a worker over the RTT ceiling
-#           (rtt-over-ceiling), or flows with no budget on this target yet
-#           (no-budgets: plan step A3 records them)
+#           (rtt-over-ceiling), flows with no budget on this target yet
+#           (no-budgets: plan step A3 records them), or keep-qc running a
+#           commit that isn't on main (commit-not-on-main: never run)
 #   record  a mode=record run: measured, nothing judged
 #
 # It writes one runs.log line (into the next qc-history artifact, built
 # here), the job summary, and on fail or error opens the `qc-nightly`
 # issue or comments on the open one. So do voids that keep coming: the
 # last 2 runs void, or 36 h with no pass, fail or error. `no-budgets`
-# voids never alert on their own (expected until A3), and record runs
-# are neither.
+# voids never alert and never count among those voids, and they restart
+# the 36 h clock (everything but latency was judged); record runs don't
+# count at all.
 #
 # It never sees KEEP_QC_TOKEN. Everything it writes is built from the
 # fields below, each checked to be a word or a number first.
@@ -58,7 +60,11 @@ result="" extra=""
 # failure).
 for s in ${STEPS:-}; do
   name=$(word "${s%%=*}") outcome=${s#*=}
-  if [ "$outcome" != success ]; then
+  if [ "$name" = onmain ] && [ "$outcome" = failure ]; then
+    # keep-qc runs a commit that isn't on main: not run, no verdict.
+    result=void extra="reason=commit-not-on-main"
+    break
+  elif [ "$outcome" != success ]; then
     result=error extra="step=${name:-unknown}"
     break
   fi
@@ -121,14 +127,17 @@ fi
 field() { sed -nE "s/.* $1=([^ ]*).*/\1/p" <<<"$2"; }
 # The last 2 runs void (this one and the one before), or no pass, fail or
 # error for 36 h (since the first run, if none yet). Prints why.
+# Record runs judge nothing and don't count. A no-budgets void judged
+# everything but latency (expected until A3): it isn't one of the voids
+# in a row, and it restarts the 36 h clock like a pass.
 voids_persist() {
   local all judged since
   all=$( { [ ! -f "$runs_log" ] || cat "$runs_log"; printf '%s\n' "$line"; } | grep -v ' result=record' )
-  if [ "$(tail -n 2 <<<"$all" | grep -cE ' result=void( |$)')" = 2 ]; then
+  if [ "$(grep -v ' reason=no-budgets' <<<"$all" | tail -n 2 | grep -cE ' result=void( |$)')" = 2 ]; then
     echo "The last 2 runs were void: no verdict, and the streak isn't moving."
     return 0
   fi
-  judged=$(grep -E ' result=(pass|fail|error)( |$)' <<<"$all" | tail -n 1)
+  judged=$(grep -E ' result=(pass|fail|error)( |$)| reason=no-budgets( |$)' <<<"$all" | tail -n 1)
   since=${judged:-$(head -n 1 <<<"$all")}
   since=${since%% *}
   (($(date +%s) - $(date -d "$since" +%s) > 36 * 3600)) || return 1

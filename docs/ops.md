@@ -653,8 +653,8 @@ against a **dedicated QC sandbox account**. Nobody uses it by hand.
   the `qc` environment empty if `qc.sh` hasn't yet; `qc.sh` then adds the
   branch rule.) It shares the concurrency group `keep-qc` with QC's
   workflow, and its smoke test waits until `/healthz` reports the commit
-  it built. When it deployed, `deploy.yml` then runs QC against it
-  (`qc.yml`; "Nightly QC" below).
+  it built. When a push's Deploy run succeeds, `qc.yml` runs QC against
+  keep-qc (`workflow_run`; "Nightly QC" below).
 
 **Setting it up** (the human, in this order, after this lands on main;
 every deploy is built by Actions from `main`, never from a working tree):
@@ -833,9 +833,11 @@ Both open or comment on the same `qc-nightly` issue.
 
 ### On GitHub Actions (keep-qc)
 
-**When.** `deploy.yml` calls `qc.yml` after `deploy-qc`, but only when
-that job actually deployed (not while it skips before keep-qc is set
-up). Also nightly at 03:00 UTC, and from Actions › QC › Run workflow
+**When.** After every Deploy run that succeeded, was a push, to `main`,
+of this repo (`workflow_run`; QC takes nothing from that run, it reads
+`/healthz` as every run does). Deploy doesn't call or wait for it, so
+staging's deploys never queue behind QC. A Deploy dispatched by hand
+doesn't start one: run QC by hand after it. Also nightly at 03:00 UTC, and from Actions › QC › Run workflow
 with `mode` `assert` or `record` (record measures and judges nothing,
 for recording budgets, plan step A3). It **never runs on a pull
 request**: the workflow has no such trigger, its job refuses any ref
@@ -849,14 +851,16 @@ in its `env`: never in `run:` text, never echoed (GitHub masks it in the
 log anyway), never in a browser context (`qc/fixtures.ts` sends it from
 Node only). The step holding it has no GitHub token, and the checkouts
 keep no credentials. The workflow's permissions are `contents: read`,
-`issues: write` and `actions: read`, and `deploy.yml` passes it no
-secrets. **Artifacts are public**, so before anything is uploaded the QC
-step checks every file of `qc-results/` and `qc-report/` for the token's
-value (`scripts/qc-actions/check-artifacts.mjs`). The check looks inside
+`issues: write` and `actions: read`. **Artifacts are public**, so before
+anything is uploaded every file is checked for each secret the job's
+steps see (`scripts/qc-actions/check-artifacts.mjs`): the QC step checks
+`qc-results/` and `qc-report/` for `KEEP_QC_TOKEN`, and a later step
+(`check-uploads.sh`) checks those and the next history link for the
+job's GitHub token, which the verdict step holds. The check looks inside
 Playwright's traces and attachment zips, gzip, and the HTML report's
 base64 data. It matches the token in any case, and as JSON, URL or
 base64 would write it, in contents and in file names. It **fails
-closed**: the uploads run only when it said `clean`. A hit, or anything
+closed**: an upload runs only when every check covering it said `clean`. A hit, or anything
 it couldn't open (a symlink, a zip it can't read), is `error
 step=artifact-check` and nothing goes up. The places are named; the
 token is never printed.
@@ -864,7 +868,10 @@ token is never printed.
 **A run** (one job, `qc`, in the environment `qc`):
 
 1. Reads `commit` from `$QC_URL/healthz` and checks that commit out, so
-   the specs match the app. The workflow's own scripts come from the
+   the specs match the app. That commit must be on `main` (`git
+   merge-base --is-ancestor`), checked before anything of it is
+   installed or run: otherwise the run is `void
+   reason=commit-not-on-main`. The workflow's own scripts come from the
    workflow's commit (`.qc-actions/`), so its steps and scripts match.
 2. `pnpm install`, Playwright's chromium (cached by lockfile), and the
    last run's history (below).
@@ -874,16 +881,15 @@ token is never printed.
    `/healthz` again: a different commit means keep-qc was redeployed
    during the run, so the run is `void`. It then writes the run's
    `runs.log` line and the job summary, and raises the issue.
-5. Uploads `qc-results` and `qc-report` (30 days), only if the check
-   said `clean`, and the next `qc-history` link (90 days).
+5. Checks everything that may go up for the GitHub token, then uploads
+   `qc-results` and `qc-report` (30 days) and the next `qc-history` link
+   (90 days), each only if its checks said `clean`.
 
 **Concurrency.** QC's job and `deploy-qc` share the group `keep-qc`
 (`cancel-in-progress: false`): a deploy waits for a run in progress, and
 a run waits for a deploy. GitHub keeps one running and one pending per
 group, so a newer pending job replaces an older pending one, a pending
-deploy included; the next push deploys again. The Deploy run now lasts
-until its QC finishes, so a push made meanwhile waits in Deploy's own
-group too, and only the newest waiting push deploys.
+deploy included; the next push deploys again.
 
 **No netem, no first-hop watch.** The runner is GitHub's (a US Azure
 region, usually), so the house's LINK watch would watch Azure's network:
@@ -901,11 +907,21 @@ BUDGETS` banner says so), while behaviour, the server rule, coverage and
 isolation are judged as usual.
 
 **History** is an artifact chain (g2q8): `scripts/qc-actions/history.sh
-fetch` downloads the newest unexpired `qc-history` artifact
-(`history.jsonl` and `runs.log`) before QC, and the verdict builds the
-next one. It carries this run's `history.jsonl` only when the check
-cleared it, otherwise the last run's, plus this run's `runs.log` line;
-history is trimmed to the last 60 runs. If the last one can't be read,
+fetch` takes the `qc-history` artifact (`history.jsonl` and `runs.log`)
+of the newest completed **qc.yml run on `main` of this repo** that has
+one (events schedule, dispatch or `workflow_run`), never the newest of
+that name repo-wide: `ci.yml` runs a pull request's own workflow file,
+which could upload one and forge the history and the streak. The zip is
+read with `unzip -p`, so nothing from it is written as a file or
+followed as a link; any entry but those two names, or a link, is
+refused, and so is one over 64 MiB. Every line is then validated (a
+history line is a JSON object with `runId`, `flow` and `samplesMs`, under
+1 MiB; a `runs.log` line has the shape `report.sh` writes), and the QC
+step validates it again before seeding the reporter. The verdict builds
+the next link: this run's `history.jsonl` when the check cleared it,
+otherwise the last run's, plus this run's `runs.log` line; history is
+trimmed to the last 60 runs. When the QC step's check refused, no link
+is uploaded and the chain goes on from the one before. If the last one can't be read,
 the run is `error step=history` and no new link is uploaded, since an
 empty one uploaded as the newest would cut the chain. With none at all
 (the first run, or 90 days without one) the chain starts again.
@@ -918,22 +934,21 @@ empty one uploaded as the newest would cut the chain. With none at all
 | `pass` | QC passed against one deploy, latency judged | none |
 | `fail` | QC failed: a test, a budget, a gate; also when keep-qc couldn't be asked afterwards (`qc-check=unknown`) | issue |
 | `error` | the run broke before QC could judge (`step=`: the first step that failed, `qc`, `artifact-check`, `no-history-lines`) | issue |
-| `void` | can't be trusted either way (`reason=`: `commit-changed`, `qc-check-unknown` after a pass, `rtt-over-ceiling`, `no-budgets`) | issue only when lasting |
+| `void` | can't be trusted either way (`reason=`: `commit-changed`, `qc-check-unknown` after a pass, `rtt-over-ceiling`, `no-budgets`, `commit-not-on-main`) | issue only when lasting |
 | `record` | a `mode=record` run: measured, nothing judged | none |
 
 Lasting voids are the house's rule: the last 2 runs both void, or 36 h
-with no pass, fail or error. A `no-budgets` void never alerts on its
-own: it is what every run says until A3. A fail, an error or a lasting
+with no pass, fail or error. A `no-budgets` void, what every run says
+until A3, never alerts, never counts among the 2, and restarts the 36 h
+clock (everything but latency was judged). A fail, an error or a lasting
 void also fails the job (red in Actions).
 
 **The streak** (`scripts/qc-actions/status.sh [N]`, gh logged in):
-the last N runs from the newest artifact's `runs.log` (post-deploy runs
-included), plus the scheduled and dispatched runs `gh run list
+the last N runs from the newest artifact's `runs.log`, plus the scheduled and dispatched runs `gh run list
 --workflow qc.yml` knows that never wrote a line (cancelled or killed),
 shown as `no-record`. Then the passing nights in a row (noon to noon
 UTC; any run that isn't a pass ends it, and so does a night with no
-run), the run in progress and the open issue. Post-deploy runs are
-listed under Deploy in Actions, not under QC.
+run), the run in progress and the open issue.
 
 ### The house nightly (staging, until R1)
 

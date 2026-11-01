@@ -122,8 +122,9 @@ KEEP_QC_TOKEN=… QC_TARGET_URL=https://keep-qc.fly.dev pnpm qc --target qc
 ```
 
 **On Actions** (docs/ops.md "Nightly QC"): `.github/workflows/qc.yml`
-runs `--target qc` after every keep-qc deploy, nightly at 03:00 UTC and
-by hand, on `main` only and never on a pull request. Its runner is far
+runs `--target qc` after every successful Deploy of a push to `main`,
+nightly at 03:00 UTC and by hand, on `main` only, never on a pull
+request, and only for a commit on `main`. Its runner is far
 from London, so on `qc`:
 
 - **budgets are the target's own** (see Budgets): none until plan step
@@ -132,11 +133,12 @@ from London, so on `qc`:
 - **the first-hop watch is off**: the header says `link: not watched
   (Actions runner)`, and there's no LINK banner. The RTT is still
   recorded on every line;
-- **every file is checked for the token before upload**
+- **every file is checked for every secret the job sees before upload**
   (`scripts/qc-actions/check-artifacts.mjs`), and nothing goes up unless
-  the check passed: the repo, and so its artifacts, are public;
-- **history is an artifact chain**: each run starts from the last run's
-  `history.jsonl` (drift and the retry banner see the runs before), and
+  the checks passed: the repo, and so its artifacts, are public;
+- **history is an artifact chain**: each run starts from the last
+  qc.yml run's `history.jsonl` on `main`, every line validated (drift and
+  the retry banner see the runs before), and
   `scripts/qc-actions/status.sh` shows the runs and the streak.
 
 **The house nightly** runs `--target staging` every night at 03:00

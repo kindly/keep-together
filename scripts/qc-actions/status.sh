@@ -9,7 +9,7 @@
 # Needs gh, logged in with read access to the repo (GH_REPO, or the
 # checkout's origin). Results come from the runs.log in the newest
 # qc-history artifact (scripts/qc-actions/report.sh writes a line per
-# run, post-deploy runs included). `gh run list --workflow qc.yml` adds
+# run). `gh run list --workflow qc.yml` adds
 # the scheduled and dispatched runs that never got as far as writing one
 # (cancelled, or killed): they show as `no-record` and end the streak.
 set -euo pipefail
@@ -97,4 +97,4 @@ printf '%-8s %s\n' running "${busy:-none}"
 issue=$(gh issue list --label qc-nightly --state open \
   --json number,title --jq '.[0] | select(.) | "#\(.number) \(.title)"' 2>/dev/null || echo "(gh failed)")
 printf '%-8s %s\n' issue "${issue:-none open}"
-printf '%-8s %s\n' runs "gh run list --workflow qc.yml (post-deploy runs are under deploy.yml)"
+printf '%-8s %s\n' runs "gh run list --workflow qc.yml"

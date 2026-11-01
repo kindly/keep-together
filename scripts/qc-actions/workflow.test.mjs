@@ -32,26 +32,37 @@ const indexOf = (s) => steps.indexOf(s)
 const CLEAN = "steps.qc.outputs.check == 'clean'"
 
 describe('triggers', () => {
-  test('after keep-qc deploys, nightly at 03:00, by hand with a mode; never a pull request', () => {
+  test('after Deploy on main, nightly at 03:00, by hand with a mode; never a pull request', () => {
     expect(Object.keys(qc.on).sort()).toEqual([
       'schedule',
-      'workflow_call',
       'workflow_dispatch',
+      'workflow_run',
     ])
+    expect(qc.on.workflow_run).toEqual({
+      workflows: ['Deploy'],
+      types: ['completed'],
+      branches: ['main'],
+    })
+    expect(deploy.name).toBe('Deploy')
     expect(qc.on.schedule).toEqual([{ cron: '0 3 * * *' }])
     expect(qc.on.workflow_dispatch.inputs.mode).toMatchObject({
       type: 'choice',
       options: ['assert', 'record'],
       default: 'assert',
     })
-    expect(qc.on.workflow_call.inputs.mode.default).toBe('assert')
     // Not even in a comment: nothing to copy from.
     expect(qcText).not.toMatch(/pull_request/)
     expect(deployText).not.toMatch(/pull_request/)
   })
 
   test('main only: the qc job never starts elsewhere; the refuse job fails loudly instead', () => {
-    expect(job.if).toBe("${{ github.ref == 'refs/heads/main' }}")
+    expect(job.if).toBe(
+      "github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || " +
+        "(github.event.workflow_run.conclusion == 'success' && " +
+        "github.event.workflow_run.event == 'push' && " +
+        "github.event.workflow_run.head_branch == 'main' && " +
+        'github.event.workflow_run.head_repository.full_name == github.repository))',
+    )
     expect(qc.jobs.refuse.if).toBe("${{ github.ref != 'refs/heads/main' }}")
     expect(qc.jobs.refuse.environment).toBeUndefined()
     expect(qc.jobs.refuse.steps[0].run).toMatch(/exit 1/)
@@ -120,6 +131,15 @@ describe('the token', () => {
 })
 
 describe('the commit', () => {
+  test('a commit that isn’t on main is never installed: checked right after the checkout', () => {
+    expect(byId('checkout').with['fetch-depth']).toBe(0)
+    const o = byId('onmain')
+    expect(indexOf(o)).toBe(indexOf(byId('checkout')) + 1)
+    expect(o.env).toEqual({ SHA: '${{ steps.commit.outputs.sha }}' })
+    expect(o.run).toMatch(/git merge-base --is-ancestor "\$SHA" origin\/main/)
+    expect(indexOf(o)).toBeLessThan(indexOf(byId('install')))
+  })
+
   test('the app is checked out at what /healthz reported; the scripts at the workflow’s own commit', () => {
     expect(byId('checkout').with.ref).toBe('${{ steps.commit.outputs.sha }}')
     expect(byId('scripts').with).toMatchObject({
@@ -146,12 +166,14 @@ describe('the steps', () => {
     const order = [
       'commit',
       'checkout',
+      'onmain',
       'scripts',
       'install',
       'browsers',
       'history',
       'qc',
       'report',
+      'ghcheck',
     ]
     const at = order.map((id) => indexOf(byId(id)))
     expect(at).toEqual([...at].sort((a, b) => a - b))
@@ -203,14 +225,25 @@ describe('the artifact check comes before every upload', () => {
     s.uses?.startsWith('actions/upload-artifact@'),
   )
 
-  test('three uploads, all after the QC step (which ends with the check)', () => {
+  test('three uploads, all after both checks: the QC step’s (KEEP_QC_TOKEN) and the GitHub token’s', () => {
     expect(uploads.map((u) => u.with.name)).toEqual([
       'qc-results',
       'qc-report',
       'qc-history',
     ])
-    for (const u of uploads)
-      expect(indexOf(u)).toBeGreaterThan(indexOf(byId('qc')))
+    for (const u of uploads) {
+      expect(indexOf(u)).toBeGreaterThan(indexOf(byId('ghcheck')))
+      expect(u.if).toMatch(/steps\.ghcheck\.outputs\.check == 'clean'/)
+    }
+    const g = byId('ghcheck')
+    expect(g.if).toBe("${{ always() && steps.gate.outputs.go == 'true' }}")
+    expect(g.env).toEqual({
+      GH_TOKEN: '${{ github.token }}',
+      CHECK_SECRETS: 'GH_TOKEN',
+    })
+    expect(g.run).toBe(
+      '.qc-actions/scripts/qc-actions/check-uploads.sh "$RUNNER_TEMP/qc-history"',
+    )
     expect(
       readFileSync(path.join(root, 'scripts/qc-actions/run.sh'), 'utf8'),
     ).toMatch(
@@ -220,14 +253,18 @@ describe('the artifact check comes before every upload', () => {
 
   test('QC’s output goes up only when the check said clean', () => {
     for (const u of uploads.filter((x) => x.with.name !== 'qc-history')) {
-      expect(u.if).toBe(`\${{ always() && ${CLEAN} }}`)
+      expect(u.if).toBe(
+        `\${{ always() && ${CLEAN} && steps.ghcheck.outputs.check == 'clean' }}`,
+      )
       expect(['qc-results/', 'qc-report/']).toContain(u.with.path)
     }
   })
 
   test('the history link is built by the verdict from checked history only, and only when the last one was read', () => {
     const h = uploads.find((u) => u.with.name === 'qc-history')
-    expect(h.if).toBe("${{ always() && steps.history.outcome == 'success' }}")
+    expect(h.if).toBe(
+      "${{ always() && steps.history.outcome == 'success' && steps.qc.outputs.check != 'refused' && steps.ghcheck.outputs.check == 'clean' }}",
+    )
     expect(h.with.path).toBe('${{ runner.temp }}/qc-history/')
     expect(h.with['retention-days']).toBe(90)
     const report = readFileSync(
@@ -240,25 +277,23 @@ describe('the artifact check comes before every upload', () => {
   })
 })
 
-describe('deploy.yml calls it after deploy-qc', () => {
-  test('only when deploy-qc deployed, with no secrets passed and the same permissions', () => {
-    const call = deploy.jobs.qc
-    expect(call).toEqual({
-      needs: 'deploy-qc',
-      if: "${{ needs.deploy-qc.outputs.deployed == 'true' }}",
-      permissions: { contents: 'read', issues: 'write', actions: 'read' },
-      uses: './.github/workflows/qc.yml',
-      with: { mode: 'assert' },
-    })
-    expect(deploy.jobs['deploy-qc'].outputs).toEqual({
-      deployed: '${{ steps.gate.outputs.go }}',
-    })
+describe('Deploy neither calls QC nor waits for it', () => {
+  test('no job of deploy.yml uses qc.yml; QC follows it by workflow_run', () => {
+    expect(Object.keys(deploy.jobs).sort()).toEqual([
+      'checks',
+      'deploy',
+      'deploy-qc',
+    ])
+    expect(deployText).not.toMatch(/uses: \.\/\.github\/workflows\/qc\.yml/)
     expect(deployText).not.toMatch(/secrets: inherit/)
+    expect(qc.on).not.toHaveProperty('workflow_call')
+    // QC takes nothing from the Deploy run: no artifact, no head checkout.
+    expect(qcText).not.toMatch(/workflow_run\.(head_sha|id)|run-id:/)
   })
 })
 
 // The gate's and the commit step's shell, as Actions runs it (bash -e).
-function runStep(id, env, { curl } = {}) {
+function runStep(id, env, { curl, cwd } = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'qc-step-'))
   const out = path.join(dir, 'out')
   try {
@@ -269,6 +304,7 @@ function runStep(id, env, { curl } = {}) {
         mode: 0o755,
       })
     const r = spawnSync('bash', ['-e', '-c', byId(id).run], {
+      cwd,
       env: { PATH: `${bin}:${process.env.PATH}`, GITHUB_OUTPUT: out, ...env },
       encoding: 'utf8',
     })
@@ -354,4 +390,36 @@ test('the parser this rests on reads the YAML it claims to', () => {
   })
   for (const bad of ['a: &x 1', 'a: {b: 1}', 'a: 1\n---\nb: 2', 'a:\n\tb: 1'])
     expect(() => parse(bad), bad).toThrow()
+})
+
+test('the on-main step: main’s commits pass, a branch’s is refused', () => {
+  const repo = mkdtempSync(path.join(os.tmpdir(), 'qc-onmain-'))
+  const git = (...a) =>
+    spawnSync('git', a, {
+      cwd: repo,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 't',
+        GIT_AUTHOR_EMAIL: 't@t',
+        GIT_COMMITTER_NAME: 't',
+        GIT_COMMITTER_EMAIL: 't@t',
+      },
+    }).stdout.trim()
+  try {
+    git('init', '-q', '-b', 'main')
+    git('commit', '-q', '--allow-empty', '-m', 'a')
+    const a = git('rev-parse', 'HEAD')
+    git('commit', '-q', '--allow-empty', '-m', 'b')
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+    git('checkout', '-q', '-b', 'fork', a)
+    git('commit', '-q', '--allow-empty', '-m', 'x')
+    const x = git('rev-parse', 'HEAD')
+    expect(runStep('onmain', { SHA: a }, { cwd: repo }).code).toBe(0)
+    const r = runStep('onmain', { SHA: x }, { cwd: repo })
+    expect(r.code).not.toBe(0)
+    expect(r.stdout).toContain("isn't on main")
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
 })

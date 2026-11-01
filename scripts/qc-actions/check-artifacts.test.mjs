@@ -65,7 +65,7 @@ describe('check', () => {
     expect(check(both(), TOKEN)).toEqual([])
     const r = run({ KEEP_QC_TOKEN: TOKEN })
     expect(r.code).toBe(0)
-    expect(r.out).toMatch(/3 files, no token in any/)
+    expect(r.out).toMatch(/3 files, no KEEP_QC_TOKEN in any/)
   })
 
   test('the token as it is, in any case, as JSON and URL would write it', () => {
@@ -218,6 +218,23 @@ describe('fails closed', () => {
     const r = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8' })
     expect(r.status).toBe(2)
   })
+})
+
+test('CHECK_SECRETS: every secret it names is looked for, and each must be set', () => {
+  const GH = 'ghs_' + 'ab'.repeat(18)
+  writeFileSync(at('qc-results', 'env.txt'), `GH_TOKEN=${GH}`)
+  expect(check(both(), { KEEP_QC_TOKEN: TOKEN, GH_TOKEN: GH })).toHaveLength(1)
+  expect(check(both(), TOKEN)).toEqual([])
+  const r = run({ GH_TOKEN: GH, CHECK_SECRETS: 'GH_TOKEN' })
+  expect(r.code).toBe(1)
+  expect(r.out).toContain('a value of GH_TOKEN is in 1 place(s)')
+  expect(r.out).not.toContain(GH)
+  const missing = run({
+    KEEP_QC_TOKEN: TOKEN,
+    CHECK_SECRETS: 'KEEP_QC_TOKEN GH_TOKEN',
+  })
+  expect(missing.code).toBe(2)
+  expect(missing.out).toContain('GH_TOKEN is unset or shorter')
 })
 
 test('unzip reads what it wrote; redact blanks the token in any case', () => {

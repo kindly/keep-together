@@ -44,10 +44,12 @@ put() { printf '%s=%s\n' "$1" "$(word "$2")" >>"$out"; }
 
 history=qc-results/history.jsonl
 mkdir -p qc-results
-if [ -f "$prev/history.jsonl" ]; then
-  cp "$prev/history.jsonl" "$history"
-else
-  : >"$history"
+# A plain file only, never followed as a link, and every line validated
+# again (history.sh fetch already did): what seeds the reporter is QC's.
+: >"$history"
+if [ -f "$prev/history.jsonl" ] && [ ! -L "$prev/history.jsonl" ]; then
+  cat "$prev/history.jsonl" >"$history"
+  "$here/history.sh" sanitize "$history" - || : >"$history"
 fi
 before=$(wc -l <"$history")
 

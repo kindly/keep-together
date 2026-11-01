@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 // The artifact token check (plan gocardless-sandbox-qc.sv, A2): refuse to
-// upload QC's output if KEEP_QC_TOKEN's value is anywhere in it.
+// upload QC's output if a secret's value is anywhere in it.
 //
 //   KEEP_QC_TOKEN=… node scripts/qc-actions/check-artifacts.mjs <dir|file>…
+//   GH_TOKEN=… CHECK_SECRETS=GH_TOKEN node …/check-artifacts.mjs <dir|file>…
+//
+// CHECK_SECRETS names the env variables whose values are looked for
+// (space-separated; default KEEP_QC_TOKEN): each step checks for the
+// secrets it can see, and every one named must be set.
 //
 // The repo is public, so its Actions artifacts are too, and a Playwright
 // trace or report keeps whatever a test sent. QC never puts the token in
@@ -38,10 +43,10 @@ export class Unchecked extends Error {}
  * Every way the token may be written, as Buffers. `caseless` ones are
  * matched against a lower-cased copy of the haystack.
  */
-export function needles(token) {
+export function needles(token, name = 'KEEP_QC_TOKEN') {
   if (typeof token !== 'string' || token.length < MIN_TOKEN_LENGTH)
     throw new Unchecked(
-      `KEEP_QC_TOKEN is unset or shorter than ${MIN_TOKEN_LENGTH} characters: nothing can be checked`,
+      `${name} is unset or shorter than ${MIN_TOKEN_LENGTH} characters: nothing can be checked`,
     )
   const caseless = new Set(
     [token, encodeURIComponent(token), JSON.stringify(token).slice(1, -1)].map(
@@ -244,7 +249,16 @@ export function files(paths) {
  * clean); throws Unchecked when something couldn't be checked.
  */
 export function check(paths, token) {
-  const n = needles(token)
+  // A string is KEEP_QC_TOKEN's value; an object maps names to values.
+  const secrets =
+    typeof token === 'object' && token ? token : { KEEP_QC_TOKEN: token }
+  const all = Object.entries(secrets).map(([name, v]) => needles(v, name))
+  if (!all.length)
+    throw new Unchecked('no secret named: nothing can be checked')
+  const n = {
+    caseless: all.flatMap((x) => x.caseless),
+    exact: all.flatMap((x) => x.exact),
+  }
   const hits = []
   for (const f of files(paths)) {
     if (hasNeedle(Buffer.from(f, 'utf8'), n)) hits.push(`${f} (name)`)
@@ -260,15 +274,27 @@ export function check(paths, token) {
 }
 
 /** `s` with the token (in any case) blanked: for what this prints. */
-export function redact(s, token) {
+export function redact(s, token, name = 'KEEP_QC_TOKEN') {
   // A token too short to check is too short to blank sensibly.
   if (!token || token.length < MIN_TOKEN_LENGTH) return String(s)
   const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return String(s).replace(new RegExp(esc, 'gi'), '[KEEP_QC_TOKEN]')
+  return String(s).replace(new RegExp(esc, 'gi'), `[${name}]`)
 }
 
+/** The secrets CHECK_SECRETS names (default KEEP_QC_TOKEN), from the env. */
+export function secretsFromEnv(env = process.env) {
+  const names = (env.CHECK_SECRETS || 'KEEP_QC_TOKEN')
+    .split(/\s+/)
+    .filter(Boolean)
+  return Object.fromEntries(names.map((n) => [n, env[n]]))
+}
+
+const redactAll = (s, secrets) =>
+  Object.entries(secrets).reduce((acc, [n, v]) => redact(acc, v, n), String(s))
+
 function main() {
-  const token = process.env.KEEP_QC_TOKEN
+  const secrets = secretsFromEnv()
+  const named = Object.keys(secrets).join(', ')
   const paths = process.argv.slice(2)
   if (!paths.length) {
     console.error('usage: KEEP_QC_TOKEN=… check-artifacts.mjs <dir|file>…')
@@ -276,21 +302,21 @@ function main() {
   }
   try {
     const n = files(paths).length
-    const hits = check(paths, token)
+    const hits = check(paths, secrets)
     if (hits.length) {
       console.log(
-        `::error::KEEP_QC_TOKEN's value is in ${hits.length} place(s) of QC's output: nothing will be uploaded.`,
+        `::error::${named === 'KEEP_QC_TOKEN' ? "KEEP_QC_TOKEN's value" : `a value of ${named}`} is in ${hits.length} place(s) of QC's output: nothing will be uploaded.`,
       )
-      for (const h of hits) console.log(`  ${redact(h, token)}`)
+      for (const h of hits) console.log(`  ${redactAll(h, secrets)}`)
       process.exit(1)
     }
     console.log(
-      `artifact check: ${n} files, no token in any (${paths.join(', ')})`,
+      `artifact check: ${n} files, no ${named} in any (${paths.join(', ')})`,
     )
   } catch (err) {
     if (!(err instanceof Unchecked)) throw err
     console.log(
-      `::error::artifact check could not check everything: ${redact(err.message, token)}. Nothing will be uploaded.`,
+      `::error::artifact check could not check everything: ${redactAll(err.message, secrets)}. Nothing will be uploaded.`,
     )
     process.exit(2)
   }
@@ -302,7 +328,7 @@ if (process.argv[1] === import.meta.filename) {
   } catch (err) {
     // Never the token: only the error's own message.
     console.log(
-      `::error::artifact check failed: ${redact(err?.message ?? err, process.env.KEEP_QC_TOKEN)}. Nothing will be uploaded.`,
+      `::error::artifact check failed: ${redactAll(err?.message ?? err, secretsFromEnv())}. Nothing will be uploaded.`,
     )
     process.exit(2)
   }

@@ -2,24 +2,40 @@ name: QC
 
 # The QC suite (qc/README.md) against keep-qc, QC's own app, from GitHub's
 # runners (plan factory/plans/gocardless-sandbox-qc.sv, A2; docs/ops.md
-# "keep-qc" and "Nightly QC"). After every keep-qc deploy (deploy.yml
-# calls it), nightly at 03:00 UTC, and by hand (Run workflow; mode=record
-# measures and judges nothing, for recording budgets: plan step A3).
+# "keep-qc" and "Nightly QC"). After every successful Deploy of a push
+# to main (`workflow_run`), nightly at 03:00 UTC, and by hand (Run
+# workflow; mode=record measures and judges nothing, for recording
+# budgets: plan step A3).
 #
 # This repo is public, so everything here is written for that:
 # - **No pull-request trigger of either kind**, ever: nothing from a fork
-#   or a branch reaches the job (workflow.test.mjs refuses the word). It runs only on `main`: the `qc`
-#   job refuses any other ref (the `refuse` job fails loudly instead), and
-#   the GitHub environment `qc` lets only `main` use it either.
+#   or a branch reaches the job (workflow.test.mjs refuses the word). It
+#   runs only on `main`: the `qc` job refuses any other ref (the `refuse`
+#   job fails loudly instead), and the GitHub environment `qc` lets only
+#   `main` use it either.
+# - **After Deploy** (`workflow_run`) only when that run succeeded, was a
+#   push, to main, of this repo, not a fork's. QC takes nothing from the
+#   Deploy run (no artifact, no checkout of its head): it reads keep-qc's
+#   /healthz as every run does. Deploy ends when keep-qc is deployed, so
+#   staging's deploys never wait behind QC.
 # - **KEEP_QC_TOKEN** lives only on the environment `qc`, and only the QC
 #   step has it, in its `env`: never in `run:` text, never echoed, never
 #   in a browser context (qc/fixtures.ts sends it from Node). GitHub
 #   masks it in the log.
-# - **Artifacts are public.** Before anything is uploaded, the QC step
-#   checks every file of qc-results/ and qc-report/ for the token's value
+# - **Artifacts are public.** Before anything is uploaded, every file is
+#   checked for each secret the job's steps can see
 #   (scripts/qc-actions/check-artifacts.mjs, which opens traces, zips and
-#   the HTML report's data). It fails closed: the uploads run only when
-#   the check said `clean`.
+#   the HTML report's data): the QC step for KEEP_QC_TOKEN (the only step
+#   that has it), a later step for the job's GitHub token. It fails
+#   closed: an upload runs only when every check that covers it said
+#   `clean`.
+# - **History is only this workflow's own.** The last run's history comes
+#   from a completed qc.yml run on main of this repo (never the newest
+#   artifact of that name repo-wide, which a pull request's run could
+#   upload), read entry by entry without ever writing or following a
+#   link, and every line is validated before use (history.sh).
+# - **Only main's code runs.** The commit /healthz names must be on main,
+#   or the run is void before anything is installed.
 # - The token has the least it needs: contents read, issues write (the
 #   qc-nightly issue), actions read (the last run's history artifact).
 #   Checkouts don't keep it (persist-credentials: false).
@@ -40,12 +56,10 @@ name: QC
 # status.sh. Tested by scripts/qc-actions/workflow.test.mjs.
 
 on:
-  workflow_call:
-    inputs:
-      mode:
-        description: assert, or record (measure only)
-        type: string
-        default: assert
+  workflow_run:
+    workflows: [Deploy]
+    types: [completed]
+    branches: [main]
   schedule:
     - cron: '0 3 * * *'
   workflow_dispatch:
@@ -73,8 +87,15 @@ jobs:
           echo "::error::QC runs only on main (this run is on $GITHUB_REF)."
           exit 1
 
+  # After Deploy: only a successful push to main of this repo.
   qc:
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: qc
@@ -122,7 +143,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.commit.outputs.sha }}
+          # All of main too, for the check below.
+          fetch-depth: 0
           persist-credentials: false
+      # Only main's code is installed and run with the token: a commit
+      # /healthz names that isn't on main voids the run here, before
+      # `pnpm install` runs anything of it (report.sh: reason
+      # commit-not-on-main).
+      - name: keep-qc's commit is on main
+        id: onmain
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        run: |
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::keep-qc runs $SHA, which isn't on main: not running it."
+            exit 1
+          fi
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
       # This workflow's own scripts, from the workflow's commit, so the
       # steps and the scripts they call always match.
       - name: Check out the workflow's scripts
@@ -192,6 +229,7 @@ jobs:
           STEPS: >-
             commit=${{ steps.commit.outcome }}
             checkout=${{ steps.checkout.outcome }}
+            onmain=${{ steps.onmain.outcome }}
             scripts=${{ steps.scripts.outcome }}
             pnpm=${{ steps.pnpm.outcome }}
             node=${{ steps.node.outcome }}
@@ -217,10 +255,19 @@ jobs:
           EVENT: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-      # Uploads: only what the check cleared. A check that refused, or
+      # Everything that may go up, checked for the job's GitHub token (the
+      # verdict step had it). The QC step checked for KEEP_QC_TOKEN.
+      - name: Check the uploads for the GitHub token
+        id: ghcheck
+        if: ${{ always() && steps.gate.outputs.go == 'true' }}
+        run: .qc-actions/scripts/qc-actions/check-uploads.sh "$RUNNER_TEMP/qc-history"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_SECRETS: GH_TOKEN
+      # Uploads: only what every check cleared. A check that refused, or
       # never ran, leaves `check` unset or not `clean`: nothing goes up.
       - name: Upload qc-results
-        if: ${{ always() && steps.qc.outputs.check == 'clean' }}
+        if: ${{ always() && steps.qc.outputs.check == 'clean' && steps.ghcheck.outputs.check == 'clean' }}
         uses: actions/upload-artifact@v4
         with:
           name: qc-results
@@ -229,7 +276,7 @@ jobs:
           if-no-files-found: ignore
           overwrite: true
       - name: Upload qc-report
-        if: ${{ always() && steps.qc.outputs.check == 'clean' }}
+        if: ${{ always() && steps.qc.outputs.check == 'clean' && steps.ghcheck.outputs.check == 'clean' }}
         uses: actions/upload-artifact@v4
         with:
           name: qc-report
@@ -240,9 +287,12 @@ jobs:
       # The next link of the history chain (report.sh built it): this
       # run's history only if the check cleared it, else the last run's,
       # plus this run's runs.log line. Not when the last one couldn't be
-      # read: an empty one uploaded as the newest would cut the chain.
+      # read (an empty one uploaded as the newest would cut the chain),
+      # nor when the QC step's check refused (the last run's history,
+      # seeded into qc-results/, was checked with it): the chain then
+      # goes on from the link before.
       - name: Upload qc-history
-        if: ${{ always() && steps.history.outcome == 'success' }}
+        if: ${{ always() && steps.history.outcome == 'success' && steps.qc.outputs.check != 'refused' && steps.ghcheck.outputs.check == 'clean' }}
         uses: actions/upload-artifact@v4
         with:
           name: qc-history

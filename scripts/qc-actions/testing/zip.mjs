@@ -1,4 +1,4 @@
-// A zip writer for the qc-actions tests: [name, contents] entries,
+// A zip writer for the qc-actions tests: [name, contents, unix mode?] entries,
 // deflated unless `store`, with zip64 fields when `zip64` (as yazl,
 // Playwright's zip writer, can).
 import { crc32, deflateRawSync } from 'node:zlib'
@@ -8,7 +8,7 @@ export function zip(entries, { store = false, zip64 = false } = {}) {
   const locals = []
   const central = []
   let offset = 0
-  for (const [name, body] of entries) {
+  for (const [name, body, mode] of entries) {
     const n = Buffer.from(name)
     const raw = Buffer.from(body)
     const data = store ? raw : deflateRawSync(raw)
@@ -33,6 +33,12 @@ export function zip(entries, { store = false, zip64 = false } = {}) {
     }
     const c = Buffer.alloc(46)
     c.writeUInt32LE(0x02014b50, 0)
+    // A unix mode (a symlink: 0o120777) makes the entry unix-made, as
+    // Info-ZIP writes one.
+    if (mode !== undefined) {
+      c.writeUInt16LE(0x031e, 4)
+      c.writeUInt32LE((mode << 16) >>> 0, 38)
+    }
     c.writeUInt16LE(method, 10)
     c.writeUInt32LE(crc32(raw), 16)
     c.writeUInt32LE(zip64 ? 0xffffffff : data.length, 20)
