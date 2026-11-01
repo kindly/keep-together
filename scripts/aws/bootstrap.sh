@@ -39,7 +39,9 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 confirm() { local a; read -r -p "$1 [y/N] " a; [[ $a == [yY]* ]]; }
 
 say "Preflight"
-aws --version 2>&1 | grep -q '^aws-cli/2' || die "needs AWS CLI v2"
+# Captured, then grepped: no `| grep -q` under pipefail.
+awsv=$(aws --version 2>&1) || die "aws --version failed"
+grep -q '^aws-cli/2' <<<"$awsv" || die "needs AWS CLI v2"
 me=$(aws sts get-caller-identity --query Arn --output text) ||
   die "not signed in: aws sso login --profile $AWS_PROFILE"
 account=$(aws sts get-caller-identity --query Account --output text)

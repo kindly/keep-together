@@ -52,8 +52,13 @@ gh auth status >/dev/null 2>&1 || die "not signed in to GitHub: gh auth login"
 # (it differs between commands and versions). An empty list is normal.
 names() { jq -r '.[]? | (.Name // .name // empty)'; }
 
+# Captured, then grepped: never `cmd | grep -q` under pipefail. grep -q
+# quits at its match, the writer can die of SIGPIPE, and pipefail then
+# reads a match as a miss (here: a second `apps create`).
 say "App $APP"
-if fly apps list --json | names | grep -qx "$APP"; then
+apps=$(fly apps list --json) || die "fly apps list failed"
+apps=$(names <<<"$apps") || die "could not read fly apps list's answer"
+if grep -qx -- "$APP" <<<"$apps"; then
   echo "exists"
 else
   run fly apps create "$APP" --org "$ORG"

@@ -42,7 +42,9 @@ say() { printf '\n== %s\n' "$*"; }
 run() { printf '+ %s\n' "$*" >&2; "$@"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-aws --version 2>&1 | grep -q '^aws-cli/2' || die "needs AWS CLI v2"
+# Captured, then grepped: no `| grep -q` under pipefail.
+awsv=$(aws --version 2>&1) || die "aws --version failed"
+grep -q '^aws-cli/2' <<<"$awsv" || die "needs AWS CLI v2"
 prod=(--profile keep-prod --region "$REGION")
 backup=(--profile keep-backup --region "$REGION")
 prod_account=$(aws sts get-caller-identity "${prod[@]}" --query Account --output text) ||

@@ -57,7 +57,10 @@ restore() {
   set_aside "$target"
   run cp "$copy" "$target"
   if [[ "$apply" == "--apply" ]] && command -v sqlite3 >/dev/null; then
-    sqlite3 "$target" "PRAGMA integrity_check;" | grep -qx ok \
+    # Captured, then compared (no `| grep -q` under pipefail).
+    local check
+    check=$(sqlite3 "$target" "PRAGMA integrity_check;") || check=""
+    [[ "$check" == ok ]] \
       || { echo "integrity check failed on $target" >&2; exit 1; }
   fi
 }

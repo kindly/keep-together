@@ -29,7 +29,9 @@ say() { printf '\n== %s\n' "$*"; }
 run() { printf '+ %s\n' "$*" >&2; "$@"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-aws --version 2>&1 | grep -q '^aws-cli/2' || die "needs AWS CLI v2"
+# Captured, then grepped: no `| grep -q` under pipefail.
+awsv=$(aws --version 2>&1) || die "aws --version failed"
+grep -q '^aws-cli/2' <<<"$awsv" || die "needs AWS CLI v2"
 command -v jq >/dev/null || die "needs jq"
 tx=(--profile keep-mail-tx --region "$REGION")
 prod=(--profile keep-prod --region "$REGION")
@@ -53,8 +55,10 @@ say "Route 53 records (keep-prod)"
 zone_id=$(aws route53 list-hosted-zones-by-name "${prod[@]}" --dns-name "$ZONE." \
   --query "HostedZones[?Name=='$ZONE.' && Config.PrivateZone==\`false\`].Id | [0]" --output text)
 [[ $zone_id == /hostedzone/* ]] || die "no public hosted zone $ZONE in keep-prod"
-aws route53 list-hosted-zones-by-name "${prod[@]}" --dns-name "$DOMAIN." \
-  --query "HostedZones[?Name=='$DOMAIN.'].Id" --output text | grep -q . &&
+own=$(aws route53 list-hosted-zones-by-name "${prod[@]}" --dns-name "$DOMAIN." \
+  --query "HostedZones[?Name=='$DOMAIN.'].Id" --output text) ||
+  die "could not list $DOMAIN's hosted zones"
+! grep -q . <<<"$own" ||
   die "$DOMAIN has its own hosted zone; this script writes to $ZONE only"
 
 # name type value (TXT values with their quotes)

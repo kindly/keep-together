@@ -36,7 +36,9 @@ say() { printf '\n== %s\n' "$*"; }
 run() { printf '+ %s\n' "$*" >&2; "$@"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-aws --version 2>&1 | grep -q '^aws-cli/2' || die "needs AWS CLI v2"
+# Captured, then grepped: no `| grep -q` under pipefail.
+awsv=$(aws --version 2>&1) || die "aws --version failed"
+grep -q '^aws-cli/2' <<<"$awsv" || die "needs AWS CLI v2"
 command -v python3 >/dev/null || die "needs python3"
 FLY=$(command -v fly || command -v flyctl || echo "$HOME/.fly/bin/flyctl")
 [[ -x $FLY ]] || die "needs flyctl"
