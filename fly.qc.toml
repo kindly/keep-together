@@ -1,5 +1,9 @@
 # keep-qc: QC's own app, nothing else (plan gocardless-sandbox-qc.sv,
-# step A1). One machine, one volume, London. Created by scripts/fly/qc.sh
+# step A1). One machine, one volume, in iad (Ashburn): QC runs on
+# GitHub's runners in the US, 90-190 ms from London, so keep-qc sits next
+# to them and its page timings measure the app, not the Atlantic (moved
+# 2026-11-01 by scripts/fly/qc-move-region.sh; staging and prod stay in
+# lhr, near their users). Created by scripts/fly/qc.sh
 # (the human runs it); deployed by .github/workflows/deploy.yml's
 # deploy-qc job on every push to main, once the GitHub environment `qc`
 # has the variable QC_URL. Nobody uses it by hand: it is wiped and
@@ -22,7 +26,7 @@
 # account's OAuth token: scripts/fly/gocardless-qc-token.sh).
 
 app = "keep-qc"
-primary_region = "lhr"
+primary_region = "iad"
 # No Litestream here, so the api is PID 1 and handles SIGTERM itself.
 kill_signal = "SIGTERM"
 kill_timeout = 30

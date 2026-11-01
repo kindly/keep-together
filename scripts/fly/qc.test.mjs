@@ -49,7 +49,7 @@ test('qc_sh_creates_keep_qc_its_volume_and_secrets_once', () => {
       '-a',
       'keep-qc',
       '--region',
-      'lhr',
+      'iad',
       '--size',
       '3',
     ),

@@ -5,7 +5,9 @@
 #   fly auth login && gh auth login
 #   scripts/fly/qc.sh
 #
-# Makes the app in lhr and its 3 GB volume keep_data; generates auth's
+# Makes the app in iad (Ashburn, next to GitHub's runners: QC times the
+# app, not the Atlantic; staging and prod stay in lhr) and its 3 GB
+# volume keep_data; generates auth's
 # keys, the riverside sign-ins and KEEP_QC_TOKEN (never shown: nobody
 # signs in to keep-qc, and the token goes to Fly and to the GitHub
 # environment `qc` on stdin); no SENTRY_DSN (QC's deliberate failures
@@ -21,12 +23,12 @@
 # switches on deploy.yml's deploy-qc job): it prints those steps, so the
 # first deploy is built by Actions from main, never from a working tree.
 # Re-run it any time: it also checks the app still has one machine and
-# one volume.
+# one volume. A keep-qc made in lhr before: scripts/fly/qc-move-region.sh.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 APP=keep-qc
-REGION=lhr
+REGION=iad
 ORIGIN=https://$APP.fly.dev
 ORG=${FLY_ORG:-personal}
 ENVIRONMENT=qc
