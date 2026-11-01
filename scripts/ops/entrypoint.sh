@@ -19,9 +19,11 @@
 # 2. KEEP_RESET_SEED set: wipe the data, so the api seeds it fresh, when
 #    - KEEP_RESET_ON=deploy (the default): this is a new deploy
 #      (FLY_IMAGE_REF differs from the one recorded in /data/.image);
-#    - KEEP_RESET_ON=demand: KEEP_RESET_GENERATION differs from the one
-#      recorded in /data/.generation (scripts/fly/staging-reset.sh sets
-#      it). Deploys keep the data.
+#    - KEEP_RESET_ON=demand: KEEP_RESET_GENERATION (a Fly secret that
+#      scripts/fly/staging-reset.sh sets) differs from the one recorded
+#      in /data/.generation, or an earlier wipe didn't finish. Deploys
+#      keep the data. This is decided before step 1: a reset never
+#      restores.
 #    Restarts and restored volumes keep their data.
 # 3. Create platform.db (WAL) if missing, so Litestream has it from the
 #    first second, then run the api under `litestream replicate -exec`.
@@ -39,20 +41,32 @@ case $RESET_ON in
 deploy | demand) ;;
 *) log "KEEP_RESET_ON must be deploy or demand, not '$RESET_ON'"; exit 1 ;;
 esac
-if [ -n "${KEEP_RESET_SEED:-}" ] && [ "${KEEP_ENV:-}" = prod ]; then
-  log "KEEP_RESET_SEED is refused when KEEP_ENV=prod"
-  exit 1
+# Only named environments reset: a misspelled prod (Prod, production) is
+# refused here, before the api would refuse it, and never wiped.
+if [ -n "${KEEP_RESET_SEED:-}" ]; then
+  case ${KEEP_ENV:-} in
+  staging | dev) ;;
+  *)
+    log "KEEP_RESET_SEED is refused when KEEP_ENV=${KEEP_ENV:-} (only staging or dev reset)"
+    exit 1
+    ;;
+  esac
 fi
 GENERATION=""
 if [ "$RESET_ON" = demand ]; then
   [ -n "${KEEP_RESET_SEED:-}" ] || { log "KEEP_RESET_ON=demand needs KEEP_RESET_SEED (what a reset seeds)"; exit 1; }
+  # A Fly secret, set only by scripts/fly/staging-reset.sh, never in the
+  # toml's [env] (docs/ops.md "Staging reset"). The same rule as
+  # /healthz's resetGeneration (api::reset::generation).
   GENERATION=${KEEP_RESET_GENERATION:-}
   case $GENERATION in
-  '' | *[!A-Za-z0-9_-]*)
-    log "KEEP_RESET_ON=demand needs KEEP_RESET_GENERATION: letters, digits, _ and - only"
-    exit 1
-    ;;
+  '' | *[!A-Za-z0-9_-]*) bad=1 ;;
+  *) bad="" ;;
   esac
+  if [ -n "$bad" ] || [ "${#GENERATION}" -gt 64 ]; then
+    log "KEEP_RESET_ON=demand needs KEEP_RESET_GENERATION: 1 to 64 letters, digits, _ and -"
+    exit 1
+  fi
 elif [ -n "${KEEP_RESET_GENERATION:-}" ]; then
   log "KEEP_RESET_GENERATION is ignored: KEEP_RESET_ON is deploy"
 fi
@@ -74,6 +88,53 @@ else
   KEEP_REPLICA_PREFIX=${KEEP_ENV:?KEEP_ENV is required}
 fi
 export KEEP_REPLICA_PREFIX
+
+WIPING=$DATA/.wiping
+
+wipe() {
+  # Litestream's own state for platform.db goes too: kept beside a new
+  # file, it points at LTX files the old one wrote and replication stops
+  # ("open ltx file … no such file"). The orgs', files' and drill's are
+  # inside their directories. The generation marker goes too: the data it
+  # named is gone.
+  rm -rf "$PLATFORM" "$PLATFORM-wal" "$PLATFORM-shm" "$DATA/.platform.db-litestream" \
+    "$DATA/orgs" "$DATA/files" "$DATA/drill" "$DATA/snapshots-tmp" "$DATA/.restored" \
+    "$DATA/.generation"
+  mkdir -p "$DATA/orgs" "$DATA/files" "$DATA/drill"
+}
+
+# KEEP_RESET_ON=demand: decided before the restore below, because a
+# changed generation has nothing to restore (its prefix is new) and a
+# half-wiped volume must never be "restored" from the snapshots of the
+# data it was asked to drop. The wipe is crash-safe: $WIPING is written
+# first and removed last, so a boot that finds it finishes the wipe.
+RESET_NOW=""
+if [ "$RESET_ON" = demand ]; then
+  if [ -e "$WIPING" ]; then
+    log "an earlier wipe didn't finish: wiping $DATA again for generation $GENERATION"
+    RESET_NOW=1
+  elif [ -e "$DATA/.generation" ]; then
+    current=$(cat "$DATA/.generation") || {
+      log "can't read $DATA/.generation; not starting (nothing was wiped)"
+      exit 1
+    }
+    if [ "$current" != "$GENERATION" ]; then
+      log "new reset generation ($GENERATION): wiping $DATA for the $KEEP_RESET_SEED seed"
+      RESET_NOW=1
+    fi
+  elif [ -e "$PLATFORM" ]; then
+    log "no reset generation recorded (the switch from KEEP_RESET_ON=deploy):" \
+      "wiping $DATA for generation $GENERATION"
+    RESET_NOW=1
+  fi
+  # Otherwise an empty volume: restored below from this generation.
+  if [ -n "$RESET_NOW" ]; then
+    echo "$GENERATION" >"$WIPING"
+    wipe
+    echo "$GENERATION" >"$DATA/.generation"
+    rm -f "$WIPING"
+  fi
+fi
 
 # Move a finished restore from $DATA/restoring into place, and record how
 # it went in $DATA/.restored (read by the api: Sentry and /healthz).
@@ -99,7 +160,7 @@ put_in_place() { # source fallback missing
   [ -z "$GENERATION" ] || echo "$GENERATION" >"$DATA/.generation"
 }
 
-if [ ! -e "$PLATFORM" ] && [ -n "${LITESTREAM_BUCKET:-}${KEEP_SNAPSHOT_BUCKET:-}" ]; then
+if [ -z "$RESET_NOW" ] && [ ! -e "$PLATFORM" ] && [ -n "${LITESTREAM_BUCKET:-}${KEEP_SNAPSHOT_BUCKET:-}" ]; then
   if [ -n "${KEEP_RESTORE_SOURCE:-}" ]; then
     sources=$KEEP_RESTORE_SOURCE
   else
@@ -155,23 +216,19 @@ if [ ! -e "$PLATFORM" ] && [ -n "${LITESTREAM_BUCKET:-}${KEEP_SNAPSHOT_BUCKET:-}
   [ -n "$restored" ] || log "nothing to restore; starting empty"
 fi
 
-wipe() {
-  # Litestream's own state for platform.db goes too: kept beside a new
-  # file, it points at LTX files the old one wrote and replication stops
-  # ("open ltx file … no such file"). The orgs', files' and drill's are
-  # inside their directories.
-  rm -rf "$PLATFORM" "$PLATFORM-wal" "$PLATFORM-shm" "$DATA/.platform.db-litestream" \
-    "$DATA/orgs" "$DATA/files" "$DATA/drill" "$DATA/snapshots-tmp" "$DATA/.restored"
-  mkdir -p "$DATA/orgs" "$DATA/files" "$DATA/drill"
-}
+# demand: a volume that started empty (nothing to restore, or no backups)
+# belongs to this generation; a restore marked it in put_in_place.
+if [ "$RESET_ON" = demand ] && [ ! -e "$DATA/.generation" ]; then
+  echo "$GENERATION" >"$DATA/.generation"
+fi
 
-if [ "$RESET_ON" = demand ]; then
-  if [ "$(cat "$DATA/.generation" 2>/dev/null || true)" != "$GENERATION" ]; then
-    log "new reset generation ($GENERATION): wiping $DATA for the $KEEP_RESET_SEED seed"
-    wipe
-    echo "$GENERATION" >"$DATA/.generation"
-  fi
-elif [ -n "${KEEP_RESET_SEED:-}" ]; then
+if [ "$RESET_ON" = deploy ]; then
+  # A marker left from KEEP_RESET_ON=demand would point data made under
+  # deploy at an old generation's replica if demand came back.
+  rm -rf "$DATA/.generation" "$WIPING"
+fi
+
+if [ -n "${KEEP_RESET_SEED:-}" ] && [ "$RESET_ON" = deploy ]; then
   if [ "$(cat "$DATA/.image" 2>/dev/null || true)" != "$IMAGE" ]; then
     log "new deploy ($IMAGE): wiping $DATA for the $KEEP_RESET_SEED seed"
     wipe

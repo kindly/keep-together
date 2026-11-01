@@ -42,6 +42,7 @@ Data on the volume (`/data`):
 | `drill/` | the restore drill's write-loss probe, only during a drill |
 | `.image` | the image the data belongs to (staging's reset compares it) |
 | `.generation` | under `KEEP_RESET_ON=demand`, the reset generation the data belongs to |
+| `.wiping` | a demand reset's wipe in progress; the next boot finishes it |
 | `.restored` | how the volume was last restored; reported until a human deletes it and restarts the machine |
 | `restore.log` | the last empty-volume restore's output |
 
@@ -572,14 +573,26 @@ default.
 `KEEP_RESET_ON=demand` (not used by any app yet: staging moves to it in
 plan gocardless-sandbox-qc.sv, step S1b) keeps the data across deploys
 and wipes only when `KEEP_RESET_GENERATION` differs from
-`/data/.generation`. `scripts/fly/staging-reset.sh` asks you to type
+`/data/.generation`. **`KEEP_RESET_GENERATION` is a Fly secret only,
+never in the toml's `[env]`**: two sources for one name is a trap (one
+silently wins), so S1b seeds the first one with `fly secrets set
+--stage`, and from then on only `staging-reset.sh` changes it. Each
+generation is new (a UTC timestamp): never set one an earlier reset used,
+since its Litestream prefix may still hold that reset's replica. `scripts/fly/staging-reset.sh` asks you to type
 `reset keep-staging`, sets a new generation (a UTC timestamp) with `fly
 secrets set`, which restarts the machine, and waits until `/healthz`
 reports it as `resetGeneration`. Litestream's prefix is
 `<env>/<generation>`, so an empty volume restores from the generation the
 env names; with no replica there the snapshots are the fallback (loud, as
-on prod). The entrypoint refuses `demand` without `KEEP_RESET_SEED` or
-with a generation that isn't `A-Za-z0-9_-`. The seed is `seed::riverside`
+on prod). The wipe is crash-safe: the entrypoint writes `/data/.wiping`
+first and removes it last, so a boot that finds it finishes the wipe, and
+a reset never restores (a half-wiped volume can't come back from the
+snapshots as the new generation). An unreadable `.generation` stops the
+boot instead of wiping. `KEEP_RESET_ON=deploy` removes any `.generation`,
+so switching back to demand wipes once. The entrypoint refuses
+`KEEP_RESET_SEED` unless `KEEP_ENV` is `staging` or `dev`, and `demand`
+without `KEEP_RESET_SEED` or with a generation that isn't 1 to 64 of
+`A-Za-z0-9_-`. The seed is `seed::riverside`
 (Convex's `testSeed`): 100 donors with notes, relationships,
 identifiers, field values, acquisition codes, gifts and Gift Aid
 declarations, and one user per role

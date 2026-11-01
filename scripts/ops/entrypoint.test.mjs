@@ -71,6 +71,8 @@ function writeOrg() {
 }
 const kept = () => fs.existsSync(path.join(data, 'orgs', 'a.db'))
 const marker = (name) => fs.readFileSync(path.join(data, name), 'utf8').trim()
+const has = (name) => fs.existsSync(path.join(data, name))
+const restores = (calls) => calls.filter((c) => c.startsWith('restore'))
 
 const SEED = { KEEP_RESET_SEED: 'riverside' }
 const DEMAND = { ...SEED, KEEP_RESET_ON: 'demand' }
@@ -152,6 +154,12 @@ describe('KEEP_RESET_ON=demand: reset only when the generation changes', () => {
     expect(kept()).toBe(false)
   })
 
+  test('a 64-character generation is accepted', () => {
+    const g = 'a'.repeat(64)
+    expect(boot({ ...DEMAND, KEEP_RESET_GENERATION: g }).status).toBe(0)
+    expect(marker('.generation')).toBe(g)
+  })
+
   test('replicates to a prefix per generation, not per image', () => {
     const res = boot({ ...DEMAND, ...BUCKETS, KEEP_RESET_GENERATION: 'g7', FLY_IMAGE_REF: 'x:1' })
     expect(res.calls).toContain('litestream staging/g7')
@@ -180,6 +188,111 @@ describe('KEEP_RESET_ON=demand: reset only when the generation changes', () => {
   })
 })
 
+describe('demand: a reset is crash-safe and never restores (review M1, M2)', () => {
+  /** A volume of generation g1 with data, then `state` applied. */
+  function volume(state = () => {}) {
+    boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1' })
+    writeOrg()
+    state()
+  }
+  /** Boot generation `g` with both backups holding something. */
+  const bootWithBackups = (g = 'g2') =>
+    boot({
+      ...DEMAND,
+      ...BUCKETS,
+      KEEP_RESET_GENERATION: g,
+      STUB_RESTORE_litestream: '0',
+      STUB_RESTORE_snapshot: '0',
+    })
+  const reset = (res, g = 'g2') => {
+    expect(res.status, res.stderr).toBe(0)
+    expect(restores(res.calls)).toEqual([])
+    expect(kept()).toBe(false)
+    expect(has('platform.db') && marker('platform.db')).not.toMatch(/restored/)
+    expect(marker('.generation')).toBe(g)
+    expect(has('.wiping')).toBe(false)
+  }
+
+  test('a changed generation over a volume with no platform.db wipes, never restores', () => {
+    volume(() => fs.rmSync(path.join(data, 'platform.db')))
+    reset(bootWithBackups())
+  })
+
+  test('a crash before anything was removed: the next boot wipes', () => {
+    volume(() => fs.writeFileSync(path.join(data, '.wiping'), 'g2\n'))
+    reset(bootWithBackups())
+  })
+
+  test('a crash mid-wipe (platform.db and the marker gone, orgs left): finished, not restored', () => {
+    volume(() => {
+      fs.writeFileSync(path.join(data, '.wiping'), 'g2\n')
+      fs.rmSync(path.join(data, 'platform.db'))
+      fs.rmSync(path.join(data, '.generation'))
+    })
+    const res = bootWithBackups()
+    expect(res.stderr).toContain("an earlier wipe didn't finish")
+    reset(res)
+  })
+
+  test('a crash after the new marker, before .wiping went: wiped again', () => {
+    volume(() => {
+      fs.writeFileSync(path.join(data, '.wiping'), 'g2\n')
+      fs.writeFileSync(path.join(data, '.generation'), 'g2\n')
+    })
+    reset(bootWithBackups())
+  })
+
+  test('a crash while wiping for g2, then a newer generation g3: wiped for g3', () => {
+    volume(() => fs.writeFileSync(path.join(data, '.wiping'), 'g2\n'))
+    reset(bootWithBackups('g3'), 'g3')
+  })
+
+  test('an unreadable .generation refuses to boot and wipes nothing', () => {
+    volume(() => {
+      fs.rmSync(path.join(data, '.generation'))
+      fs.mkdirSync(path.join(data, '.generation'))
+    })
+    const res = bootWithBackups()
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain("can't read")
+    expect(res.calls).toEqual([])
+    expect(kept()).toBe(true)
+  })
+
+  test.skipIf(process.getuid?.() === 0)('a .generation without read permission refuses too', () => {
+    volume(() => fs.chmodSync(path.join(data, '.generation'), 0o000))
+    const res = bootWithBackups()
+    fs.chmodSync(path.join(data, '.generation'), 0o644)
+    expect(res.status).toBe(1)
+    expect(res.calls).toEqual([])
+    expect(kept()).toBe(true)
+  })
+})
+
+describe('switching modes (review L1)', () => {
+  test('deploy clears a marker left by demand, so demand again starts a fresh wipe', () => {
+    boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1', FLY_IMAGE_REF: 'x:1' })
+    fs.writeFileSync(path.join(data, '.wiping'), 'g1\n')
+    // Deploy, same image: nothing wiped, but the markers go.
+    fs.rmSync(path.join(data, '.wiping'))
+    boot({ ...SEED, FLY_IMAGE_REF: 'x:1', KEEP_RESET_GENERATION: 'g1' })
+    expect(has('.generation')).toBe(false)
+    writeOrg()
+    // Back to demand with the same generation: the data made under deploy
+    // isn't taken for g1's.
+    const res = boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1', FLY_IMAGE_REF: 'x:1' })
+    expect(res.stderr).toContain('no reset generation recorded')
+    expect(kept()).toBe(false)
+    expect(marker('.generation')).toBe('g1')
+  })
+
+  test('a deploy-mode wipe removes the marker too', () => {
+    boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1', FLY_IMAGE_REF: 'x:1' })
+    boot({ ...SEED, FLY_IMAGE_REF: 'x:2' })
+    expect(has('.generation')).toBe(false)
+  })
+})
+
 describe('refusals: nothing is touched', () => {
   const refused = (env, message) => {
     fs.mkdirSync(path.join(data, 'orgs'), { recursive: true })
@@ -202,6 +315,14 @@ describe('refusals: nothing is touched', () => {
       const env = { ...DEMAND, ...(g === undefined ? {} : { KEEP_RESET_GENERATION: g }) }
       refused(env, 'needs KEEP_RESET_GENERATION')
     }
+  })
+  test('KEEP_RESET_SEED on any env but staging or dev (review L2)', () => {
+    for (const env of ['Prod', 'production', 'stagign', '']) {
+      refused({ ...SEED, ...BUCKETS, KEEP_ENV: env }, `refused when KEEP_ENV=${env} `)
+    }
+  })
+  test('a generation over 64 characters (review L3)', () => {
+    refused({ ...DEMAND, KEEP_RESET_GENERATION: 'a'.repeat(65) }, '1 to 64')
   })
   test('KEEP_RESET_SEED on prod, before any restore', () => {
     refused({ ...SEED, ...BUCKETS, KEEP_ENV: 'prod' }, 'KEEP_RESET_SEED is refused when KEEP_ENV=prod')
