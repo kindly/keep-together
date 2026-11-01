@@ -7,7 +7,8 @@ How keep runs, is backed up and is restored. The decision behind it is
 ## Shape
 
 One Fly app per environment, each with one machine and one volume, in
-London (`lhr`):
+London (`lhr`), except keep-qc, in Ashburn (`iad`) beside GitHub's
+runners ("keep-qc" below):
 
 | app | host | data | deploys |
 |---|---|---|---|
@@ -632,6 +633,15 @@ against a **dedicated QC sandbox account**. Nobody uses it by hand.
   `/healthz` reports both `off`; `health.yml` doesn't watch it. Always
   on, `shared-cpu-1x`/512 MB like staging so timings compare, a 3 GB
   volume. No DNS or certificate: the origin is `https://keep-qc.fly.dev`.
+- **Region `iad`** (Ashburn), not `lhr`: QC runs on GitHub's runners in
+  the US, 90–190 ms from London, so in lhr its page timings were mostly
+  the Atlantic. Nobody else uses keep-qc, so it lives next to them. A
+  keep-qc made in lhr moves with `scripts/fly/qc-move-region.sh` (once
+  main's `fly.qc.toml` says `iad`): a 3 GB `keep_data` in iad, the lhr
+  machine and volume destroyed, then a Deploy with `env=qc` from main,
+  which makes the new machine in `primary_region` on that volume (Fly
+  never moves a machine; a deploy only updates it where it is). Nothing
+  is lost: keep-qc is reseeded on every deploy and secrets stay on the app.
 - **Secrets**, all made or asked for by `scripts/fly/qc.sh`, none ever
   printed: `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER`, the riverside
   sign-ins (nobody signs in; `fly ssh console -a keep-qc -C 'printenv
@@ -899,14 +909,14 @@ it is off, and the run's header says `link: not watched (Actions
 runner)`. The RTT to keep-qc is still measured and recorded on every
 history line.
 
-**Budgets of its own** (human, g2q6). The house's budgets would time the
-Atlantic, not the app. `qc/budgets.ts` has a set per target
-(`targetBudgets`). The `qc` set was recorded by plan step A3 and
-approved by the human (2026-11-01): three `mode=record` runs from a US
-Actions runner to keep-qc in London, each flow's line 1.5× its worst
-sample, the RTT ceiling (290 ms) from the same runs. Bulk flows keep the
-fixed 500 ms, except the phone's page upload at 1,500 ms on keep-qc
-only. If keep-qc or the runners move, the set is re-recorded
+**Budgets of its own** (human, g2q6). The house's budgets are timed
+from the house, not from a runner in the US. `qc/budgets.ts` has a set
+per target (`targetBudgets`). The `qc` set was recorded by plan step A3
+and approved by the human (2026-11-01): three `mode=record` runs from a
+US Actions runner to keep-qc, then in London, each flow's line 1.5× its
+worst sample, the RTT ceiling (290 ms) from the same runs. Bulk flows
+keep the fixed 500 ms, except the phone's page upload at 1,500 ms on
+keep-qc only. keep-qc has since moved to iad, so the set is re-recorded
 (qc/README.md "Budgets"). A flow missing from it (only the GoCardless
 fake's) is timed and recorded but not judged (a `NO BUDGETS` banner says
 so).

@@ -34,8 +34,27 @@ fly)
   "apps list --json") fail_if fly-apps; answer fly-apps.json ;;
   "apps create keep-qc --org "*) echo '[{"Name":"keep-qc"}]' >"$S/fly-apps.json" ;;
   "volumes list -a keep-qc --json") answer fly-volumes.json ;;
-  "volumes create keep_data -a keep-qc --region lhr --size 3 --yes") echo '[{"name":"keep_data"}]' >"$S/fly-volumes.json" ;;
+  "volumes create keep_data -a keep-qc --region "*" --size 3 --yes")
+    fail_if fly-volume-create
+    jq -c --arg r "$7" '. + [{id: "vol_new_\($r)", name: "keep_data", region: $r, attached_machine_id: null}]' \
+      <<<"$(answer fly-volumes.json)" >"$S/fly-volumes.json.new"
+    mv "$S/fly-volumes.json.new" "$S/fly-volumes.json"
+    ;;
+  "volumes destroy "*" -a keep-qc --yes")
+    fail_if fly-volume-destroy
+    jq -e --arg id "$3" 'any(.[]; .id == $id and .attached_machine_id == null)' <<<"$(answer fly-volumes.json)" >/dev/null ||
+      { echo "Error: volume $3 is attached or missing" >&2; exit 1; }
+    jq -c --arg id "$3" 'map(select(.id != $id))' <<<"$(answer fly-volumes.json)" >"$S/fly-volumes.json.new"
+    mv "$S/fly-volumes.json.new" "$S/fly-volumes.json"
+    ;;
   "machines list -a keep-qc --json") answer fly-machines.json ;;
+  "machine destroy "*" -a keep-qc --force")
+    jq -c --arg id "$3" 'map(select(.id != $id))' <<<"$(answer fly-machines.json)" >"$S/fly-machines.json.new"
+    mv "$S/fly-machines.json.new" "$S/fly-machines.json"
+    jq -c --arg id "$3" 'map(if .attached_machine_id == $id then .attached_machine_id = null else . end)' \
+      <<<"$(answer fly-volumes.json)" >"$S/fly-volumes.json.new"
+    mv "$S/fly-volumes.json.new" "$S/fly-volumes.json"
+    ;;
   "secrets list -a "*" --json") answer fly-secrets.json ;;
   "secrets import -a "*" --stage")
     fail_if fly-import
@@ -60,6 +79,29 @@ gh)
     echo '{}'
     ;;
   "secret list --env qc --json name") answer gh-secrets.json ;;
+  "api -H Accept: application/vnd.github.raw repos/{owner}/{repo}/contents/fly.qc.toml?ref=main")
+    fail_if gh-contents
+    answer gh-main-fly-qc-toml ""
+    ;;
+  "run list --workflow "*" -L 20 --json databaseId,status") answer "gh-runs-$4.json" ;;
+  "run list --workflow deploy.yml --event workflow_dispatch -L 1 --json databaseId --jq "*)
+    answer gh-latest-dispatch 0
+    ;;
+  "workflow run deploy.yml --ref main -f env=qc")
+    # What the deploy does on Fly when there's no machine: one in
+    # primary_region (iad), on an unattached keep_data there if any.
+    vol=$(jq -r 'map(select(.region == "iad" and .attached_machine_id == null)) | .[0].id // "vol_made_by_deploy"' \
+      <<<"$(answer fly-volumes.json)")
+    jq -c --arg v "$vol" 'if length == 0 then [{id: "m_iad", region: "iad"}] else . end' \
+      <<<"$(answer fly-machines.json)" >"$S/fly-machines.json.new"
+    mv "$S/fly-machines.json.new" "$S/fly-machines.json"
+    jq -c --arg v "$vol" 'map(if .id == $v then .attached_machine_id = "m_iad" else . end)' \
+      <<<"$(answer fly-volumes.json)" >"$S/fly-volumes.json.new"
+    mv "$S/fly-volumes.json.new" "$S/fly-volumes.json"
+    if [[ -f $S/gh-dispatch-no-url ]]; then echo 4242 >"$S/gh-latest-dispatch"; else
+      echo "https://github.com/o/r/actions/runs/4242"; fi
+    ;;
+  "run watch "*" --exit-status") fail_if gh-run-watch; echo "run $3 completed" ;;
   "secret set "*" --env qc")
     take_stdin "$@"
     printf '%s\n' "$3" | add_names gh-secrets.json

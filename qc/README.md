@@ -127,8 +127,9 @@ KEEP_QC_TOKEN=… QC_TARGET_URL=https://keep-qc.fly.dev pnpm qc --target qc
 **On Actions** (docs/ops.md "Nightly QC"): `.github/workflows/qc.yml`
 runs `--target qc` after every successful Deploy of a push to `main`,
 nightly at 03:00 UTC and by hand, on `main` only, never on a pull
-request, and only for a commit on `main`. Its runner is far
-from London, so on `qc`:
+request, and only for a commit on `main`. keep-qc sits in
+`iad`, beside GitHub's runners (docs/ops.md "keep-qc"), but the runner
+isn't the house's machine, so on `qc`:
 
 - **budgets are the target's own** (see Budgets), recorded by plan
   step A3; a flow missing from the set is timed and recorded but not
@@ -312,8 +313,8 @@ Budgets have two tiers (human, 2026-10-23; ADR 0018 amendment):
 **Per target** (human, g2q6, 2026-11-01). The budgets above are the
 house's: the local pool and keep-staging. A target in `targetBudgets`
 (`qc/budgets.ts`) has its own set and its own RTT ceiling instead,
-recorded where it runs: `qc`, keep-qc from GitHub's runners, whose round
-trip to London would make the house's lines time the Atlantic. A flow
+recorded where it runs: `qc`, keep-qc (in `iad`, next to them) from
+GitHub's runners, whose machine and network aren't the house's. A flow
 missing from a target's set is timed and recorded but not judged
 (`unbudgeted` in history, `not judged (no budget)` in the table); the
 harness's self-tests keep their budgets everywhere.
