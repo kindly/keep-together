@@ -197,6 +197,18 @@ test.describe('harness', () => {
 
   test('a held result fails the guard', async ({ page, users }) => {
     await page.goto(`/t/${users.a.slug}`)
+    // The app must have rendered: the guard drops cached queries through
+    // the QueryClientProvider in React's committed tree, and a cold load's
+    // first render suspends on its lazy route chunks, so nothing is
+    // committed until they arrive. Locally that's at once; on a hosted
+    // target (keep-qc from Actions, run 41328512105) it wasn't, and the
+    // walk found no provider. `load` and `settle` (no /api in flight) don't
+    // wait for script chunks; the header does.
+    await expect(
+      page
+        .getByRole('navigation', { name: 'Main' })
+        .locator(`a[href="/t/${users.a.slug}/contacts"]`),
+    ).toBeVisible()
     await expect(
       runFlow(
         {
