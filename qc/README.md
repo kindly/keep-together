@@ -21,7 +21,8 @@ pnpm qc qc/flows/contacts.spec.ts        # one spec file (a filtered run)
 QC_REPEATS=1 QC_NO_NETEM=1 pnpm qc       # fast functional pass at loopback speed
 QC_MODE=record pnpm qc                   # measure and write history, assert nothing
 QC_NO_WAIT=1 pnpm qc                     # fail at once if another run holds the lock
-pnpm qc --target staging                 # the nightly: against keep-staging, no pool, no netem
+pnpm qc --target staging                 # the house nightly: against keep-staging, no pool, no netem
+pnpm qc --target qc                      # Actions: against keep-qc (QC_TARGET_URL), no pool, no netem
 pnpm qc:pool                             # build and start the pool, and hold it (Ctrl-C stops it)
 pnpm qc:rtt --write                      # re-measure the hosted RTT into qc/rtt.json
 ```
@@ -74,15 +75,23 @@ faster than 80% of the target (netem off); `QC_NO_NETEM=1` runs anyway,
 and `rttMs` in history says what the samples saw. Record mode doesn't
 check.
 
-### Staging
+### Hosted targets: staging and keep-qc
 
-`pnpm qc --target staging` is the nightly: one instance, the hosted app
-at `QC_STAGING_URL` (default `https://staging.keep-together.org.uk`), no
-build, no netem, no lock. Its history lines carry `env: staging`.
-Staging has no dev auth, so set-up goes through its token surface,
-`/api/qc/*` (`server/crates/api/src/routes/qc_seed.rs`): `KEEP_QC_TOKEN` must
-be in the env (the Fly secret; `scripts/fly/staging.sh` makes it and
-sets it as the GitHub secret too, without ever showing it). With it the workers seed `qc-` groups
+A hosted target runs one instance, the hosted app, with no build, no
+netem and no lock (`qc/target.ts`):
+
+| target | the app | origin | who runs it |
+|---|---|---|---|
+| `staging` | keep-staging | `QC_STAGING_URL` (default `https://staging.keep-together.org.uk`) | the house nightly, until R1 |
+| `qc` | keep-qc, QC's own app | `QC_TARGET_URL` (default `https://keep-qc.fly.dev`) | GitHub Actions (`.github/workflows/qc.yml`) |
+
+Their history lines carry `env: staging` or `env: qc`. A hosted app has
+no dev auth, so set-up goes through its token surface, `/api/qc/*`
+(`server/crates/api/src/routes/qc_seed.rs`): `KEEP_QC_TOKEN` must be in
+the env (the Fly secret; `scripts/fly/staging.sh` or `scripts/fly/qc.sh`
+makes it, and `qc.sh` sets it on the GitHub environment `qc` too, never
+showing it). It goes from Node only, never into a browser context, so no
+trace or report holds it. With it the workers seed `qc-` groups
 whose users have `@qc.keep-together.invalid` addresses, sign in for real
 (password, then TOTP) for the timed `auth.signIn`, and take further
 sessions from `/api/qc/session` (a TOTP code is good once per 30 s, and
@@ -98,7 +107,8 @@ run's history lines count them (`setupRetries`; the nightly's
 `retries=`).
 
 Staging mails only the addresses in `KEEP_MAIL_ONLY_TO`, never QC's
-(`@qc.keep-together.invalid`), so for QC's users mail is off and the api
+(`@qc.keep-together.invalid`), and keep-qc runs with `KEEP_MAIL=off`, so
+for QC's users mail is off and the api
 refuses what needs email (`mail_off`), as with `KEEP_MAIL=off`. The seed says so (`mailOff` in the
 world), and the flows that send email (the reset request, an invite)
 then check that refusal instead: the same answer for any address, no
@@ -108,12 +118,32 @@ a green night never means the email paths worked.
 
 ```bash
 KEEP_QC_TOKEN=… pnpm qc --target staging
+KEEP_QC_TOKEN=… QC_TARGET_URL=https://keep-qc.fly.dev pnpm qc --target qc
 ```
 
-The house server runs it every night at 03:00 against the commit staging
-runs (`scripts/qc-nightly/`; docs/ops.md "Nightly QC"), with its own
+**On Actions** (docs/ops.md "Nightly QC"): `.github/workflows/qc.yml`
+runs `--target qc` after every keep-qc deploy, nightly at 03:00 UTC and
+by hand, on `main` only and never on a pull request. Its runner is far
+from London, so on `qc`:
+
+- **budgets are the target's own** (see Budgets): none until plan step
+  A3 records them, so every flow is timed and recorded but not judged,
+  and a `NO BUDGETS` banner lists them;
+- **the first-hop watch is off**: the header says `link: not watched
+  (Actions runner)`, and there's no LINK banner. The RTT is still
+  recorded on every line;
+- **every file is checked for the token before upload**
+  (`scripts/qc-actions/check-artifacts.mjs`), and nothing goes up unless
+  the check passed: the repo, and so its artifacts, are public;
+- **history is an artifact chain**: each run starts from the last run's
+  `history.jsonl` (drift and the retry banner see the runs before), and
+  `scripts/qc-actions/status.sh` shows the runs and the streak.
+
+**The house nightly** runs `--target staging` every night at 03:00
+against the commit staging runs (`scripts/qc-nightly/`), with its own
 clone, history and trend report; `~/.local/share/keep-qc-nightly/bin/status.sh`
-shows the runs and the streak of passing nights the cutover gate counts.
+shows its runs and streak. It retires once Actions has 7 passing nights
+in a row (plan step R1).
 
 ### Pending ports
 
@@ -169,7 +199,11 @@ Banners to look for:
   page). The banner lists them, the flows (`fakeGoCardless` in
   `qc/budgets.ts`) and routes they alone cover; those don't fail the
   "not timed" and coverage gates. The GoCardless screens were not tested.
-- **`RTT over 150 ms`**: the link is too slow to judge latency. Behaviour
+- **`NO BUDGETS on target qc`**: flows the target has no budget for yet
+  (`targetBudgets` in `qc/budgets.ts`): timed and recorded, latency not
+  judged. Every flow on keep-qc until A3 records its set.
+- **`RTT over 150 ms`** (the target's ceiling): the link is too slow to
+  judge latency. Behaviour
   is still checked, but latency asserts were skipped. Rerun on a better
   link.
 - **`SPIKES`**: flows that were over budget once and judged on their
@@ -180,6 +214,8 @@ Banners to look for:
   at 50 ms or more instead of its usual 2–5 ms. Judged as usual: the
   banner says where the time went, it doesn't excuse it. It matters for
   the staging run; the local pool's traffic never leaves the machine.
+  Off on `--target qc` (GitHub's runner: its first hop is Azure's), where
+  the header says `link: not watched (Actions runner)` instead.
   A second `LINK` banner names failed tests that overlapped a stall.
   A failed test also carries a `requests` attachment: its context's
   requests that got no answer, failed, or took a second or more. A hang
@@ -267,6 +303,18 @@ Budgets have two tiers (human, 2026-10-23; ADR 0018 amendment):
   is flagged in the `TARGET` banner every run and in the trend report
   (`qc/target.ts`). The trend report draws the target dotted under the
   dashed line.
+
+**Per target** (human, g2q6, 2026-11-01). The budgets above are the
+house's: the local pool and keep-staging. A target in `targetBudgets`
+(`qc/budgets.ts`) has its own set and its own RTT ceiling instead,
+recorded where it runs: `qc`, keep-qc from GitHub's runners, whose round
+trip to London would make the house's lines time the Atlantic. A flow
+missing from a target's set is timed and recorded but not judged
+(`unbudgeted` in history, `not judged (no budget)` in the table); the
+harness's self-tests keep their budgets everywhere. The `qc` set is
+empty, with no RTT ceiling, until plan step A3 records it: three
+`mode=record` runs of `qc.yml`, 1.5× each flow's worst sample, shown to
+the human as a diff. The same OK rule applies to it.
 
 Each
 flow call takes one untimed warm-up, then `QC_REPEATS` (default 5) timed

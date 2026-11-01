@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { median, runDir } from './timing'
+import { qcTarget } from './target'
 import type { QcHook } from './global-setup'
 
 // The first hop, watched for the whole run (a qc/global-setup.ts hook).
@@ -20,6 +21,12 @@ import type { QcHook } from './global-setup'
 // never reads as a clean link.
 
 export const LINK_FILE = 'link.json'
+/**
+ * `why` when the watch is off by design: on GitHub's runner the first hop
+ * is Azure's network, not the house's (human, g2q10). The run's header
+ * says so instead of a LINK banner; the RTT is still recorded.
+ */
+export const LINK_OFF_ACTIONS = 'Actions runner'
 /**
  * Written as pings come back, for the workers' live blame (qc/live.ts):
  * `[seq, sent at, round trip ms]` per reply, `[seq, sent at, null]` per
@@ -64,6 +71,17 @@ function writeLink(file: LinkFile) {
 export const linkHook: QcHook = {
   name: 'link monitor',
   async setup() {
+    if (qcTarget() === 'qc') {
+      return async () => {
+        writeLink({
+          gateway: null,
+          watched: false,
+          why: LINK_OFF_ACTIONS,
+          pings: [],
+          lost: [],
+        })
+      }
+    }
     const gateway = defaultGateway()
     if (!gateway) {
       const why = 'no default gateway'

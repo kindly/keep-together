@@ -1,0 +1,252 @@
+name: QC
+
+# The QC suite (qc/README.md) against keep-qc, QC's own app, from GitHub's
+# runners (plan factory/plans/gocardless-sandbox-qc.sv, A2; docs/ops.md
+# "keep-qc" and "Nightly QC"). After every keep-qc deploy (deploy.yml
+# calls it), nightly at 03:00 UTC, and by hand (Run workflow; mode=record
+# measures and judges nothing, for recording budgets: plan step A3).
+#
+# This repo is public, so everything here is written for that:
+# - **No pull-request trigger of either kind**, ever: nothing from a fork
+#   or a branch reaches the job (workflow.test.mjs refuses the word). It runs only on `main`: the `qc`
+#   job refuses any other ref (the `refuse` job fails loudly instead), and
+#   the GitHub environment `qc` lets only `main` use it either.
+# - **KEEP_QC_TOKEN** lives only on the environment `qc`, and only the QC
+#   step has it, in its `env`: never in `run:` text, never echoed, never
+#   in a browser context (qc/fixtures.ts sends it from Node). GitHub
+#   masks it in the log.
+# - **Artifacts are public.** Before anything is uploaded, the QC step
+#   checks every file of qc-results/ and qc-report/ for the token's value
+#   (scripts/qc-actions/check-artifacts.mjs, which opens traces, zips and
+#   the HTML report's data). It fails closed: the uploads run only when
+#   the check said `clean`.
+# - The token has the least it needs: contents read, issues write (the
+#   qc-nightly issue), actions read (the last run's history artifact).
+#   Checkouts don't keep it (persist-credentials: false).
+#
+# The commit: keep-qc's /healthz says which commit it runs, and the job
+# checks that one out, so the specs always match the app. If /healthz
+# says another commit at the end, the run is void, not failed. Deploys
+# and QC share the concurrency group `keep-qc` (deploy.yml's deploy-qc),
+# so a deploy waits for a run in progress, and a newer pending run
+# replaces an older pending one (GitHub keeps one of each).
+#
+# Skips, green, while the environment `qc` has no QC_URL (before keep-qc
+# is set up), as deploy-qc does.
+#
+# The verdict (pass, fail, error, void, record) and the issue:
+# scripts/qc-actions/report.sh. History: an artifact chain
+# (scripts/qc-actions/history.sh). The streak: scripts/qc-actions/
+# status.sh. Tested by scripts/qc-actions/workflow.test.mjs.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: assert, or record (measure only)
+        type: string
+        default: assert
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: assert, or record (measure only, for recording budgets)
+        type: choice
+        options: [assert, record]
+        default: assert
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+jobs:
+  # A run on any ref but main (a dispatch from a branch): fail, loudly,
+  # without ever entering the environment.
+  refuse:
+    if: ${{ github.ref != 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: main only
+        run: |
+          echo "::error::QC runs only on main (this run is on $GITHUB_REF)."
+          exit 1
+
+  qc:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: qc
+    concurrency:
+      group: keep-qc
+      cancel-in-progress: false
+    steps:
+      # QC_URL lives on the environment, so a job-level `if` can't see it:
+      # this step decides, and every later step follows.
+      - name: keep-qc set up?
+        id: gate
+        run: |
+          if [ -z "$QC_URL" ]; then
+            echo "::notice::keep-qc isn't set up yet (no QC_URL on the qc environment): skipping. docs/ops.md \"keep-qc\"."
+            echo "go=false" >>"$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::QC runs only on main (this run is on $GITHUB_REF)."
+            exit 1
+          else
+            echo "go=true" >>"$GITHUB_OUTPUT"
+          fi
+        env:
+          QC_URL: ${{ vars.QC_URL }}
+      - name: Which commit keep-qc runs
+        id: commit
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        run: |
+          body=$(curl -fsS --max-time 10 --retry 3 --retry-all-errors "$QC_URL/healthz") || {
+            echo "::error::$QC_URL/healthz didn't answer"
+            exit 1
+          }
+          sha=$(jq -r '.commit // empty' <<<"$body")
+          if ! [[ $sha =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::$QC_URL/healthz reports no commit (${sha:-none}): was keep-qc deployed by deploy.yml?"
+            exit 1
+          fi
+          echo "keep-qc runs $sha"
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+        env:
+          QC_URL: ${{ vars.QC_URL }}
+      # The specs and the harness: the commit keep-qc serves.
+      - name: Check out keep-qc's commit
+        id: checkout
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.commit.outputs.sha }}
+          persist-credentials: false
+      # This workflow's own scripts, from the workflow's commit, so the
+      # steps and the scripts they call always match.
+      - name: Check out the workflow's scripts
+        id: scripts
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .qc-actions
+          sparse-checkout: scripts/qc-actions
+          persist-credentials: false
+      - name: Set up pnpm
+        id: pnpm
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        uses: pnpm/action-setup@v4
+      - name: Set up node
+        id: node
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: pnpm install
+        id: install
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        run: pnpm install --frozen-lockfile
+      - name: Cache Playwright's browsers
+        id: browser-cache
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      # Playwright's own chromium, not whatever the runner has at
+      # /usr/bin/chromium (playwright.config.ts prefers that one).
+      - name: Playwright chromium
+        id: browsers
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          echo "QC_CHROMIUM=$(node -p "require('@playwright/test').chromium.executablePath()")" >>"$GITHUB_ENV"
+      - name: The last run's history
+        id: history
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        run: .qc-actions/scripts/qc-actions/history.sh fetch "$RUNNER_TEMP/qc-prev"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+      # QC, the trend report, then the artifact token check. The only step
+      # with the token: in its env, inherited by `pnpm qc` and the check.
+      - name: QC
+        id: qc
+        if: ${{ steps.gate.outputs.go == 'true' }}
+        run: .qc-actions/scripts/qc-actions/run.sh "$RUNNER_TEMP/qc-prev"
+        env:
+          KEEP_QC_TOKEN: ${{ secrets.KEEP_QC_TOKEN }}
+          QC_TARGET_URL: ${{ vars.QC_URL }}
+          QC_MODE: ${{ inputs.mode == 'record' && 'record' || 'assert' }}
+      - name: Verdict
+        id: report
+        if: ${{ always() && steps.gate.outputs.go == 'true' }}
+        run: .qc-actions/scripts/qc-actions/report.sh
+        env:
+          QC_URL: ${{ vars.QC_URL }}
+          COMMIT: ${{ steps.commit.outputs.sha }}
+          MODE: ${{ inputs.mode == 'record' && 'record' || 'assert' }}
+          STEPS: >-
+            commit=${{ steps.commit.outcome }}
+            checkout=${{ steps.checkout.outcome }}
+            scripts=${{ steps.scripts.outcome }}
+            pnpm=${{ steps.pnpm.outcome }}
+            node=${{ steps.node.outcome }}
+            install=${{ steps.install.outcome }}
+            browser-cache=${{ steps.browser-cache.outcome }}
+            browsers=${{ steps.browsers.outcome }}
+            history=${{ steps.history.outcome }}
+          QC_OUTCOME: ${{ steps.qc.outcome }}
+          QC_EXIT: ${{ steps.qc.outputs.exit }}
+          QC_FLOWS: ${{ steps.qc.outputs.flows }}
+          QC_OVER: ${{ steps.qc.outputs.over }}
+          QC_RTT: ${{ steps.qc.outputs.rtt }}
+          QC_RTTOVER: ${{ steps.qc.outputs.rttover }}
+          QC_RETRIES: ${{ steps.qc.outputs.retries }}
+          QC_UNBUDGETED: ${{ steps.qc.outputs.unbudgeted }}
+          QC_FAILED: ${{ steps.qc.outputs.failed }}
+          QC_CHECK: ${{ steps.qc.outputs.check }}
+          HISTORY_FETCHED: ${{ steps.history.outcome == 'success' }}
+          PREV: ${{ runner.temp }}/qc-prev
+          OUT: ${{ runner.temp }}/qc-history
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+      # Uploads: only what the check cleared. A check that refused, or
+      # never ran, leaves `check` unset or not `clean`: nothing goes up.
+      - name: Upload qc-results
+        if: ${{ always() && steps.qc.outputs.check == 'clean' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qc-results
+          path: qc-results/
+          retention-days: 30
+          if-no-files-found: ignore
+          overwrite: true
+      - name: Upload qc-report
+        if: ${{ always() && steps.qc.outputs.check == 'clean' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qc-report
+          path: qc-report/
+          retention-days: 30
+          if-no-files-found: ignore
+          overwrite: true
+      # The next link of the history chain (report.sh built it): this
+      # run's history only if the check cleared it, else the last run's,
+      # plus this run's runs.log line. Not when the last one couldn't be
+      # read: an empty one uploaded as the newest would cut the chain.
+      - name: Upload qc-history
+        if: ${{ always() && steps.history.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qc-history
+          path: ${{ runner.temp }}/qc-history/
+          retention-days: 90
+          if-no-files-found: error
+          overwrite: true

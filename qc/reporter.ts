@@ -16,19 +16,25 @@ import type {
 } from '@playwright/test/reporter'
 import {
   RECORD,
-  RTT_CEILING_MS,
   median,
   percentile,
   runDir,
   runId,
+  rttCeilingMs,
 } from './timing'
 import type { FlowRecord, SampleDetail } from './timing'
 import { budgets } from './budgets'
-import { DRIFT_MS, DRIFT_RUNS, checkTarget, targetReason } from './target'
-import type { TargetCheck } from './target'
+import {
+  DRIFT_MS,
+  DRIFT_RUNS,
+  checkTarget,
+  qcTarget,
+  targetReason,
+} from './target'
+import type { QcTarget, TargetCheck } from './target'
 import { parseHistory } from './trend'
 import { coverageGaps, readRoutes } from './coverage'
-import { LINK_FILE, STALL_MS, linkDuring } from './link.setup'
+import { LINK_FILE, LINK_OFF_ACTIONS, STALL_MS, linkDuring } from './link.setup'
 import type { LinkFile } from './link.setup'
 import { formatServer, serverSummary } from './server'
 import type { ServerSummary as RouteSummary } from './server'
@@ -89,8 +95,11 @@ export interface HistoryLine {
   sha: string
   dirty: boolean
   mode: 'assert' | 'record'
-  /** Where it ran: the local pool, or staging (the nightly). Absent before it. */
-  env?: 'local' | 'staging'
+  /**
+   * Where it ran: the local pool, staging (the house nightly) or qc
+   * (keep-qc from Actions). Absent before the nightly.
+   */
+  env?: QcTarget
   /**
    * The target had mail off: these tests checked the `mail_off` refusal,
    * and the email they'd send was never tested. The same on every line of
@@ -124,8 +133,16 @@ export interface HistoryLine {
   rttMs: number
   /** Some samples came from a worker over the RTT ceiling: drop them. */
   rttOver: boolean
-  /** The failing line: every sample must be under this. */
+  /**
+   * The failing line: every sample must be under this. On an `unbudgeted`
+   * line, the house's line, for reference only: nothing was judged.
+   */
   budgetMs: number
+  /**
+   * The target has budgets of its own and none for this flow
+   * (qc/budgets.ts, `targetBudgets`): timed and recorded, not judged.
+   */
+  unbudgeted?: true
   /** Tracked, never failed; absent for kinds without one, and before them. */
   targetMs?: number
   /** This run against the target and the flow's history (qc/target.ts). */
@@ -266,6 +283,7 @@ export function summarise(
       const targetMs = rs[0].targetMs
       const p50Ms = median(samplesMs)
       const rttOver = rs.some((r) => r.rttOver)
+      const unbudgeted = rs.some((r) => r.skipped === 'unbudgeted')
       const target = checkTarget(
         { flow, kind: rs[0].kind, p50Ms, rttOver, runId: base.runId, targetMs },
         past,
@@ -285,10 +303,14 @@ export function summarise(
         p50Ms,
         p95Ms: percentile(samplesMs, 95),
         maxMs: Math.max(...samplesMs),
-        overBudget: samplesMs.filter((x) => x >= budgetMs).length,
+        // Unbudgeted: no line of its own, so nothing is over one.
+        overBudget: unbudgeted
+          ? 0
+          : samplesMs.filter((x) => x >= budgetMs).length,
         rttMs: median(rs.map((r) => r.rttMs)),
         rttOver,
         budgetMs,
+        ...(unbudgeted && { unbudgeted: true as const }),
         ...(targetMs !== undefined && { targetMs }),
         ...(target && { target }),
         pass: judged.length ? judged.every((r) => r.pass) : null,
@@ -326,14 +348,16 @@ function table(lines: Array<HistoryLine>, selfTest: Set<FlowName>): string {
     `${Math.round(l.p95Ms)}`,
     `${Math.round(l.maxMs)}`,
     l.targetMs === undefined ? '' : `<${l.targetMs}`,
-    `<${l.budgetMs}`,
-    `${Math.round(l.budgetMs - l.maxMs)}`,
+    l.unbudgeted ? 'none' : `<${l.budgetMs}`,
+    l.unbudgeted ? '' : `${Math.round(l.budgetMs - l.maxMs)}`,
     `${l.overBudget}`,
     `${Math.round(l.rttMs)}`,
     (selfTest.has(l.flow)
       ? 'self-test'
       : l.pass === null
-        ? 'not judged'
+        ? l.unbudgeted
+          ? 'not judged (no budget)'
+          : 'not judged'
         : l.pass
           ? l.knownOver
             ? 'ok (known over)'
@@ -399,6 +423,23 @@ function knownOverBanner(lines: Array<HistoryLine>): Array<string> {
 }
 
 /**
+ * Flows the target has no budget for (qc/budgets.ts, `targetBudgets`):
+ * timed and recorded, not judged, listed on every run so a green run
+ * never reads as a judged one. Exported for qc/reporter.test.ts.
+ */
+export function unbudgetedBanner(
+  lines: Array<HistoryLine>,
+  target: QcTarget,
+): Array<string> {
+  const none = lines.filter((l) => l.unbudgeted).map((l) => l.flow)
+  if (!none.length) return []
+  return banner([
+    `NO BUDGETS on target ${target} for ${none.length} flow${none.length === 1 ? '' : 's'}: timed and recorded, latency NOT judged (qc/budgets.ts, targetBudgets; plan gocardless-sandbox-qc.sv A3 records them).`,
+    none.join(', '),
+  ])
+}
+
+/**
  * Every flow over its target or drifting up (qc/target.ts), on every run.
  * Tracked: never a failure. Exported for qc/reporter.test.ts.
  */
@@ -446,6 +487,8 @@ function linkBanner(
   selfTest: Set<FlowName>,
   link: LinkFile | null,
 ): Array<string> {
+  // Off by design (the run's header says so).
+  if (!link?.watched && link?.why === LINK_OFF_ACTIONS) return []
   // No banner must never read as a clean link: say when it wasn't watched.
   if (!link?.watched) {
     return [
@@ -623,7 +666,8 @@ export default class QcReporter implements Reporter {
     const out = ['']
     const failures: Array<string> = []
     let summary: Array<HistoryLine> = []
-    const env = process.env.QC_TARGET === 'staging' ? 'staging' : 'local'
+    const env = qcTarget()
+    const ceiling = rttCeilingMs()
     const past = existsSync(HISTORY)
       ? parseHistory(readFileSync(HISTORY, 'utf8')).lines
       : []
@@ -653,12 +697,12 @@ export default class QcReporter implements Reporter {
       )
       const rtts = [...new Set(records.map((r) => `w${r.worker} ${r.rttMs}`))]
       out.push(
-        `qc ${id} · ${RECORD ? 'RECORD MODE (nothing asserted)' : 'asserting'} · raw ms, input to screen; every sample must be under budget (the failing line); target is tracked, never failing; headroom = budget − max · RTT by worker: ${rtts.sort().join(', ')}`,
+        `qc ${id} · target ${env} · ${RECORD ? 'RECORD MODE (nothing asserted)' : 'asserting'} · raw ms, input to screen; every sample must be under budget (the failing line); target is tracked, never failing; headroom = budget − max · RTT by worker: ${rtts.sort().join(', ')}${ceiling === null ? ' (no RTT ceiling on this target yet: recorded only)' : ''}${link?.why === LINK_OFF_ACTIONS ? ` · link: not watched (${LINK_OFF_ACTIONS})` : ''}`,
       )
       if (records.some((r) => r.rttOver)) {
         out.push(
           ...banner([
-            `RTT over ${RTT_CEILING_MS} ms on some workers: their samples measure the link, not the app.`,
+            `RTT over ${ceiling} ms on some workers: their samples measure the link, not the app.`,
             RECORD
               ? 'Their history lines carry rttOver: true; leave them out of any budget.'
               : 'Their latency asserts were SKIPPED; behaviour was still checked.',
@@ -668,6 +712,7 @@ export default class QcReporter implements Reporter {
       }
       summary = lines
       out.push(table(lines, selfTest))
+      out.push(...unbudgetedBanner(lines, env))
       out.push(...targetBanner(lines))
       out.push(...spikeBanner(lines, selfTest, lines[0]?.server ?? null))
       out.push(...linkBanner(lines, selfTest, link))

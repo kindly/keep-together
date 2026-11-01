@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Prepare the QC pool and run the suite (ADR 0018; migration-rust F3).
 //
-//   node scripts/qc.mjs [--instances N] [--target staging] [--no-wait] [--no-build] [-- <command…>]
+//   node scripts/qc.mjs [--instances N] [--target staging|qc] [--no-wait] [--no-build] [-- <command…>]
 //
 // `pnpm qc [playwright args]` runs it with `-- playwright test`; options
 // may also come after the command (`pnpm qc --target staging`).
@@ -23,11 +23,13 @@
 //    build once per instance through qc/serve.mjs), runs <command…>, and
 //    stops the apis when it exits.
 //
-// --target staging (the nightly): no build, no pool, no netem; one
-// instance, the hosted `keep-staging` (QC_STAGING_URL), history lines
-// marked `env: staging`. Set-up goes through staging's token surface
-// (`/api/qc/*`): KEEP_QC_TOKEN must be in the env (scripts/fly/staging.sh
-// makes it); it stays in the env, never in qc/.instances.json.
+// --target staging (the house nightly) or --target qc (keep-qc, from
+// GitHub Actions: .github/workflows/qc.yml): no build, no pool, no netem,
+// no lock; one instance, the hosted app (QC_STAGING_URL or QC_TARGET_URL;
+// qc/target.ts), history lines marked `env: staging` or `env: qc`. Set-up
+// goes through the app's token surface (`/api/qc/*`): KEEP_QC_TOKEN must
+// be in the env (scripts/fly/staging.sh or scripts/fly/qc.sh makes it);
+// it stays in the env, never in qc/.instances.json.
 //
 // Runs outside the Claude sandbox: it binds ports and writes to the main
 // checkout (the lock).
@@ -36,11 +38,10 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { newToken, releaseLock, tryLock as tryLockFile } from './lockfile.mjs'
+import { QC_TARGETS, hostedUrl } from '../qc/target.ts'
 
 const API_PORT = 8801
 const SERVE_PORT = 4301
-const STAGING =
-  process.env.QC_STAGING_URL ?? 'https://staging.keep-together.org.uk'
 
 const root = path.resolve(import.meta.dirname, '..')
 const mainCheckout = path.dirname(
@@ -99,8 +100,8 @@ export function parseArgs(argv, env = process.env) {
   opts.command = rest
   if (!Number.isInteger(opts.instances) || opts.instances < 1)
     throw new Error('--instances must be a positive integer')
-  if (!['local', 'staging'].includes(opts.target))
-    throw new Error(`--target is local or staging, not ${opts.target}`)
+  if (!QC_TARGETS.includes(opts.target))
+    throw new Error(`--target is ${QC_TARGETS.join(', ')}, not ${opts.target}`)
   return opts
 }
 
@@ -280,17 +281,28 @@ async function localPool(opts) {
   return pool
 }
 
+/**
+ * A hosted target's one-instance pool. Exported for scripts/qc.test.mjs.
+ * The token is only checked for, never put in the pool.
+ */
+export function hostedPool(target, env = process.env) {
+  if (!env.KEEP_QC_TOKEN)
+    throw new Error(
+      `--target ${target} needs KEEP_QC_TOKEN (the Fly secret; scripts/fly/${target}.sh)`,
+    )
+  const url = hostedUrl(target, env)
+  return [{ name: target, api: url, baseURL: url, surface: 'qc' }]
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2))
   const total = performance.now()
   let pool
-  if (opts.target === 'staging') {
-    if (!process.env.KEEP_QC_TOKEN)
-      throw new Error(
-        '--target staging needs KEEP_QC_TOKEN (the Fly secret; scripts/fly/staging.sh)',
-      )
-    pool = [{ name: 'staging', api: STAGING, baseURL: STAGING, surface: 'qc' }]
-    console.log(`▸ target: staging, ${STAGING} (no netem, no local pool)`)
+  if (opts.target !== 'local') {
+    pool = hostedPool(opts.target)
+    console.log(
+      `▸ target: ${opts.target}, ${pool[0].api} (no netem, no local pool)`,
+    )
   } else {
     await acquireLock(opts.wait)
     pool = await localPool(opts)

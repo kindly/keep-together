@@ -19,6 +19,10 @@ name: Deploy
 # optionally SENTRY_DSN_SPA (the SPA's Sentry DSN, public by design).
 # The scripts print the commands. The images carry
 # KEEP_RELEASE=$GITHUB_SHA, which /healthz reports as `commit`.
+#
+# After a keep-qc deploy that actually deployed, the QC suite runs against
+# it (`qc`: .github/workflows/qc.yml, called with no secrets; its job
+# takes KEEP_QC_TOKEN from the environment `qc` itself).
 
 on:
   push:
@@ -97,6 +101,10 @@ jobs:
     concurrency:
       group: keep-qc
       cancel-in-progress: false
+    # true only when this job deployed: the gate let it through, and
+    # (needs: success) every step after it passed.
+    outputs:
+      deployed: ${{ steps.gate.outputs.go }}
     steps:
       # QC_URL lives on the environment, so a job-level `if` can't see it:
       # this step decides, and every later step follows. Unset (before
@@ -148,3 +156,19 @@ jobs:
           exit 1
         env:
           QC_URL: ${{ vars.QC_URL }}
+
+  # QC against what deploy-qc just deployed, only when it did (not while
+  # it skips before keep-qc is set up). The called workflow's job asks for
+  # the qc environment and the concurrency group keep-qc itself; it can
+  # have no more than these permissions, which a called workflow can only
+  # narrow.
+  qc:
+    needs: deploy-qc
+    if: ${{ needs.deploy-qc.outputs.deployed == 'true' }}
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    uses: ./.github/workflows/qc.yml
+    with:
+      mode: assert
