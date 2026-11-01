@@ -378,7 +378,7 @@ test('an Instant Bank Pay link: the same cap, then the link to send', async () =
 
 test('cancel asks first, then cancels against the mandate version shown', async () => {
   gifts = [gift()]
-  writes.cancel.mockResolvedValue(gift({ status: 'cancelled' }))
+  writes.cancel.mockResolvedValue([])
   render()
   await click(button('Cancel Direct Debit'))
   const ask = document.querySelector('[role="alertdialog"]')!
@@ -386,6 +386,34 @@ test('cancel asks first, then cancels against the mandate version shown', async 
   expect(writes.cancel).not.toHaveBeenCalled()
   await click(button('Cancel Direct Debit', ask))
   expect(writes.cancel).toHaveBeenCalledWith('r1', 3)
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+})
+
+test('a cancel says which payments GoCardless could no longer stop', async () => {
+  gifts = [gift()]
+  writes.cancel.mockResolvedValue([
+    {
+      paymentId: 'PM9',
+      amount: 1500n,
+      chargeDate: '2026-11-05',
+      status: 'submitted',
+    },
+  ])
+  render()
+  await click(button('Cancel Direct Debit'))
+  await click(
+    button(
+      'Cancel Direct Debit',
+      document.querySelector('[role="alertdialog"]')!,
+    ),
+  )
+  const told = document.querySelector('[role="alertdialog"]')!
+  expect(told.textContent).toContain('Direct Debit cancelled')
+  expect(told.textContent).toContain('still collected')
+  expect(told.querySelector('[role="status"]')?.textContent).toContain('£15.00')
+  await click(button('Done', told))
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+  expect(writes.cancel).toHaveBeenCalledTimes(1)
 })
 
 test('a one-off retried after a failure: the same key only if nothing changed; the amount shown is the server’s', async () => {

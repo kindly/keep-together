@@ -20,7 +20,11 @@
 //!   billing request's `fulfilled` event names its donor.
 //!
 //! API beyond the client's D2 calls: `POST payments` (a one-off on a
-//! mandate), `GET events` (`created_at[gte]`, `limit`, `after`: newest
+//! mandate), `GET payments` (`subscription`, `mandate`, `status`; one
+//! page), `POST payments/{id}/actions/cancel` (only before submission,
+//! else `cancellation_failed`), `POST subscriptions/{id}/actions/cancel`
+//! (as GoCardless's: its payments already made stay pending and are
+//! still collected unless cancelled too), `GET events` (`created_at[gte]`, `limit`, `after`: newest
 //! first, as GoCardless lists), `PUT subscriptions/{id}` (the amount
 //! only, at most 10 times: then `number_of_subscription_amendments_exceeded`;
 //! a `subscriptions.amended` event), and `GET subscriptions/{id}` with
@@ -413,8 +417,9 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
         )
         .route("/mandates/{id}", get(get_resource))
         .route("/mandates/{id}/actions/cancel", post(cancel_mandate))
-        .route("/payments", post(create_payment))
+        .route("/payments", post(create_payment).get(list_payments))
         .route("/payments/{id}", get(get_resource))
+        .route("/payments/{id}/actions/cancel", post(cancel_payment))
         .route("/events", get(list_events))
         .layer(axum::middleware::from_fn_with_state(fake.clone(), gate));
     Router::new()
@@ -582,6 +587,97 @@ async fn cancel_subscription(
     let body = fake.resource(&id).unwrap_or_default();
     fake.deliver(vec![event]).await;
     Json(json!({ "subscriptions": body })).into_response()
+}
+
+#[derive(Deserialize)]
+struct PaymentsQuery {
+    subscription: Option<String>,
+    mandate: Option<String>,
+    status: Option<String>,
+}
+
+/// `GET payments?subscription=&mandate=&status=`: the caller's payments
+/// that match, oldest first, on one page (no cursor).
+async fn list_payments(
+    State(fake): State<Arc<Fake>>,
+    headers: HeaderMap,
+    Query(q): Query<PaymentsQuery>,
+) -> Response {
+    let org = match caller(&fake, &headers) {
+        Ok(org) => org,
+        Err(r) => return r,
+    };
+    let w = fake.world();
+    let matches =
+        |field: &Value, want: &Option<String>| want.as_deref().is_none_or(|want| field == want);
+    let mut mine: Vec<&Value> = w
+        .resources
+        .values()
+        .filter(|r| r.org == org && r.kind == "payments")
+        .map(|r| &r.body)
+        .filter(|p| {
+            matches(&p["links"]["subscription"], &q.subscription)
+                && matches(&p["links"]["mandate"], &q.mandate)
+                && matches(&p["status"], &q.status)
+        })
+        .collect();
+    mine.sort_by_key(|p| (p["created_at"].to_string(), p["id"].to_string()));
+    Json(json!({
+        "payments": mine,
+        "meta": { "cursors": { "before": null, "after": null }, "limit": 500 }
+    }))
+    .into_response()
+}
+
+/// `POST payments/{id}/actions/cancel`: only before it is submitted
+/// (`pending_submission`, or waiting for the customer's approval); any
+/// other status is GoCardless's `422 cancellation_failed`.
+async fn cancel_payment(
+    State(fake): State<Arc<Fake>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let org = match caller(&fake, &headers) {
+        Ok(org) => org,
+        Err(r) => return r,
+    };
+    let event = {
+        let mut w = fake.world();
+        let Some(r) = w
+            .resources
+            .get_mut(&id)
+            .filter(|r| r.org == org && r.kind == "payments")
+        else {
+            return not_found();
+        };
+        if !matches!(
+            r.body["status"].as_str(),
+            Some("pending_submission" | "pending_customer_approval")
+        ) {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_state",
+                "cancellation_failed",
+                "The payment could not be cancelled",
+                json!({}),
+            );
+        }
+        r.body["status"] = json!("cancelled");
+        let mut e = Fake::event(
+            &mut w,
+            &org,
+            "payments",
+            "cancelled",
+            json!({ "payment": id }),
+            "payment_cancelled",
+            "The payment was cancelled.",
+        );
+        e["details"]["origin"] = json!("api");
+        e
+    };
+    let body = fake.resource(&id).unwrap_or_default();
+    fake.deliver(vec![event]).await;
+    Json(json!({ "payments": body })).into_response()
 }
 
 fn page(title: &str, body: &str) -> Html<String> {

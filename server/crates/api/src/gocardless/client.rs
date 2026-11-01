@@ -192,6 +192,15 @@ pub struct Payment {
     pub one_off: Option<OneOffTag>,
 }
 
+/// What cancelling a payment came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaymentCancel {
+    /// Cancelled now, or already.
+    Cancelled,
+    /// GoCardless refused: it will still be collected (as it now is).
+    Refused(Box<Payment>),
+}
+
 /// A one-off payment to take on a mandate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewPayment<'a> {
@@ -702,6 +711,81 @@ impl Api {
             .await
         {
             Ok(_) | Err(CallError::Refused { status: 422, .. }) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// A subscription's payments in `status` (e.g. `pending_submission`),
+    /// every page: `GET payments?subscription=&status=`.
+    pub async fn list_subscription_payments(
+        &self,
+        token: &str,
+        subscription: &str,
+        status: &str,
+    ) -> Result<Vec<Payment>, CallError> {
+        let mut out = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let mut url = Self::url(&self.base, &["payments"]);
+            {
+                let mut q = url.query_pairs_mut();
+                q.append_pair("subscription", subscription);
+                q.append_pair("status", status);
+                q.append_pair("limit", "500");
+                if let Some(after) = &after {
+                    q.append_pair("after", after);
+                }
+            }
+            let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|_| CallError::Malformed("a token that isn't a header value".into()))?;
+            auth.set_sensitive(true);
+            let response = self
+                .http
+                .get(url)
+                .header(AUTHORIZATION, auth)
+                .header("GoCardless-Version", VERSION)
+                .send()
+                .await
+                .map_err(Self::unreachable)?;
+            let v = Self::read(response).await?;
+            let page = v
+                .get("payments")
+                .and_then(Value::as_array)
+                .ok_or_else(|| CallError::Malformed("no payments in the answer".into()))?;
+            for p in page {
+                out.push(payment(p)?);
+            }
+            match v.pointer("/meta/cursors/after").and_then(Value::as_str) {
+                Some(next) if !page.is_empty() => after = Some(next.to_owned()),
+                _ => return Ok(out),
+            }
+        }
+    }
+
+    /// Cancel a payment not yet submitted to the banks. GoCardless
+    /// refusing (`422`: already submitted, or already cancelled) is
+    /// answered by the payment as it now is: cancelled, or still to be
+    /// collected, with its status.
+    pub async fn cancel_payment(&self, token: &str, id: &str) -> Result<PaymentCancel, CallError> {
+        match self
+            .call(
+                Method::POST,
+                token,
+                &["payments", id, "actions", "cancel"],
+                Some(json!({ "data": {} })),
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(PaymentCancel::Cancelled),
+            Err(CallError::Refused { status: 422, .. }) => {
+                let now = self.get_payment(token, id).await?;
+                Ok(if now.status == "cancelled" {
+                    PaymentCancel::Cancelled
+                } else {
+                    PaymentCancel::Refused(Box::new(now))
+                })
+            }
             Err(e) => Err(e),
         }
     }

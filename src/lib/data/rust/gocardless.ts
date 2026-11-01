@@ -23,6 +23,7 @@ import type { InstantPaymentLink } from '../rust-types/InstantPaymentLink'
 import type { MatchedPayment } from '../rust-types/MatchedPayment'
 import type { OneOffStarted } from '../rust-types/OneOffStarted'
 import type { RegularGiftFrequency } from '../rust-types/RegularGiftFrequency'
+import type { RegularGiftCancelled } from '../rust-types/RegularGiftCancelled'
 import type { RegularGiftSaved } from '../rust-types/RegularGiftSaved'
 import type { RegularGiftView } from '../rust-types/RegularGiftView'
 import type { SetUpRegularGift } from '../rust-types/SetUpRegularGift'
@@ -93,6 +94,14 @@ export type InstantPaymentArgs = Omit<InstantPayment, 'amount'> & {
   amount: bigint
 }
 export type { InstantPaymentLink, OneOffStarted }
+
+/** A payment a cancel couldn't stop (already submitted to the banks). */
+export type StillToCollect = Array<{
+  paymentId: string
+  amount: bigint
+  chargeDate: string
+  status: string
+}>
 
 // ── wire → page ────────────────────────────────────────────────────────────
 
@@ -322,15 +331,25 @@ export function useDirectDebitWrites() {
           ),
         ),
       ),
-    cancel: async (id: string, expected: number) =>
-      saved(
-        await fresh(
-          post<RegularGiftSaved>(
-            tenantPath(slug, 'regular-gifts', id, 'cancel'),
-            { expected },
-          ),
+    /**
+     * Payments GoCardless had already submitted, which it would no longer
+     * cancel: they are still collected.
+     */
+    cancel: async (id: string, expected: number): Promise<StillToCollect> => {
+      const done = await fresh(
+        post<RegularGiftCancelled>(
+          tenantPath(slug, 'regular-gifts', id, 'cancel'),
+          { expected },
         ),
-      ),
+      )
+      landRegularGift(qc, slug, done.view)
+      return done.stillToCollect.map((p) => ({
+        paymentId: p.paymentId,
+        amount: pence(Number(p.amount)),
+        chargeDate: p.chargeDate,
+        status: p.status,
+      }))
+    },
     /** The gift follows from GoCardless's events (pending at first). */
     oneOff: (id: string, args: OneOffArgs) =>
       post<OneOffStarted>(tenantPath(slug, 'regular-gifts', id, 'one-off'), {
