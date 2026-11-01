@@ -563,7 +563,10 @@ export function notFakeBanner(
  */
 export function goCardlessQcBanner(notes: {
   late: Map<string, Array<string>>
-  /** First payments shown before a mandate that GoCardless moved. */
+  /**
+   * First payments the app showed that GoCardless put elsewhere: the
+   * estimate before a mandate, or a bank holiday the app doesn't roll.
+   */
   estimate?: Map<string, Array<string>>
   unreachable: Map<string, string>
   noQc: Map<string, string>
@@ -588,7 +591,7 @@ export function goCardlessQcBanner(notes: {
       : []),
     ...(estimate.length
       ? banner([
-          `GOCARDLESS FIRST-PAYMENT ESTIMATE: the first payment the app shows before a mandate (5 working days out, an estimate) differed from GoCardless's ${estimate.length} time${s(estimate.length)}; not failing until the estimate is tuned (plan gocardless-sandbox-qc G5):`,
+          `GOCARDLESS FIRST-PAYMENT ESTIMATE: the first payment the app showed differed from GoCardless's ${estimate.length} time${s(estimate.length)} (the 5-working-day estimate before a mandate, or a bank holiday only GoCardless rolls over); not failing until the estimate is tuned (plan gocardless-sandbox-qc G5):`,
           ...estimate,
         ])
       : []),

@@ -1977,7 +1977,9 @@ pub fn estimated_first_charge(today: &str) -> String {
 }
 
 /// The next payments of a regular gift as its chain projects them (when
-/// GoCardless can't be asked): on or after `earliest` and after `today`,
+/// GoCardless can't be asked), each on the working day GoCardless would
+/// take it ([`crate::terms_rules::roll_to_working_day`]): due on or after
+/// `earliest` and after `today`,
 /// at most `n`, each changeable if it is more than a week off and no
 /// payment for it exists yet. Before a subscription exists `earliest` is
 /// when GoCardless could first collect (the mandate's
@@ -2000,9 +2002,12 @@ pub fn projected_upcoming(
         .filter(|d| d.as_str() > today)
         .unwrap_or_else(|| today.to_owned());
     let mut out = Vec::new();
-    for date in crate::terms_rules::next_due(&now.rules(), &after, n) {
+    for due in crate::terms_rules::next_due(&now.rules(), &after, n) {
+        // The terms in force by the due day; shown on the day GoCardless
+        // would take it (a weekend rolls to the Monday, as its own dates).
         let amount =
-            crate::terms_rules::term_in_force(&rules, &date).map_or(now.amount, |t| t.amount);
+            crate::terms_rules::term_in_force(&rules, &due).map_or(now.amount, |t| t.amount);
+        let date = crate::terms_rules::roll_to_working_day(&due).unwrap_or(due);
         out.push(UpcomingPayment {
             changeable: changeable(conn, id, today, &date)?,
             charge_date: date,

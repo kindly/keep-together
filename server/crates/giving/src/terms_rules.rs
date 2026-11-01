@@ -244,6 +244,21 @@ pub fn add_days(date: &str, days: i64) -> Option<String> {
     Some(date_of_day(day_number(date)? + days))
 }
 
+/// The day a charge due on `date` is actually taken: GoCardless rolls a
+/// `charge_date` on a Saturday or Sunday forward to the Monday (bank
+/// holidays too, which aren't known here; docs: subscriptions,
+/// "non-business days roll forward"). The one place this rule lives:
+/// the app's projected dates and the fake both use it.
+pub fn roll_to_working_day(date: &str) -> Option<String> {
+    let day = day_number(date)?;
+    let shift = match (day + 3).rem_euclid(7) {
+        5 => 2,
+        6 => 1,
+        _ => 0,
+    };
+    Some(date_of_day(day + shift))
+}
+
 /// `date` moved on by `n` working days (Monday to Friday; bank holidays
 /// aren't known here).
 pub fn add_working_days(date: &str, n: i64) -> Option<String> {
@@ -359,6 +374,33 @@ pub fn expected_periods(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A charge due on a weekend is taken on the Monday (2026-11-07 is a
+    /// Saturday); a weekday stays.
+    #[test]
+    fn a_charge_date_on_a_weekend_rolls_to_monday() {
+        assert_eq!(
+            roll_to_working_day("2026-11-07").as_deref(),
+            Some("2026-11-09")
+        );
+        assert_eq!(
+            roll_to_working_day("2026-11-08").as_deref(),
+            Some("2026-11-09")
+        );
+        assert_eq!(
+            roll_to_working_day("2026-11-06").as_deref(),
+            Some("2026-11-06")
+        );
+        assert_eq!(
+            roll_to_working_day("2026-11-09").as_deref(),
+            Some("2026-11-09")
+        );
+        assert_eq!(
+            roll_to_working_day("2027-01-31").as_deref(),
+            Some("2027-02-01")
+        );
+        assert_eq!(roll_to_working_day("x"), None);
+    }
 
     /// Working days skip Saturday and Sunday (2026-11-06 is a Friday).
     #[test]

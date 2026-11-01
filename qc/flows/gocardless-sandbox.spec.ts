@@ -147,6 +147,30 @@ function firstDue(day: number, from: string): string {
   return at(y, m)
 }
 
+/**
+ * The day GoCardless takes a charge due on `date`: a Saturday or Sunday
+ * rolls to the Monday (giving::terms_rules::roll_to_working_day; bank
+ * holidays roll too, which neither side knows).
+ */
+function rolled(date: string): string {
+  const d = new Date(`${date}T12:00:00Z`)
+  const dow = d.getUTCDay()
+  d.setUTCDate(d.getUTCDate() + (dow === 6 ? 2 : dow === 0 ? 1 : 0))
+  return d.toISOString().slice(0, 10)
+}
+
+/** Whole days from `a` to `b` (YYYY-MM-DD). */
+const daysBetween = (a: string, b: string) =>
+  Math.round(
+    (Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000,
+  )
+
+/**
+ * A few days later than the app's date: a bank holiday GoCardless rolled
+ * over (the app only rolls weekends). A note, not a failure.
+ */
+const HOLIDAY_GAP_DAYS = 4
+
 /** Payments GoCardless may still collect. */
 const COLLECTABLE = [
   'pending_customer_approval',
@@ -602,7 +626,7 @@ test.describe('GoCardless sandbox', () => {
         earliest,
         `day ${day}: the mandate's next possible charge date`,
       ).toBeTruthy()
-      const want = firstDue(day, earliest!)
+      const want = rolled(firstDue(day, earliest!))
       // A window with the mandate and no subscription yet: the app's own.
       if (withMandate.subscriptionId === null) {
         const shown = withMandate.upcoming.at(0)?.chargeDate
@@ -618,9 +642,14 @@ test.describe('GoCardless sandbox', () => {
       )
       const sub = await peek('subscription', signed.subscriptionId!)
       const first = sub.upcomingPayments.at(0)?.chargeDate
-      if (first !== want)
+      const gap = first === undefined ? null : daysBetween(want, first)
+      if (gap !== null && gap > 0 && gap <= HOLIDAY_GAP_DAYS)
+        noteFirstChargeEstimate(
+          `day ${day}: GoCardless ${first}, ${gap} day(s) after the app's ${want}: a bank holiday the app doesn't know?`,
+        )
+      else if (first !== want)
         differ.push(
-          `day ${day}: GoCardless ${first ?? 'none'}, the app ${want} (the first on or after the mandate's ${earliest})`,
+          `day ${day}: GoCardless ${first ?? 'none'}, the app ${want} (the first on or after the mandate's ${earliest}, a weekend rolled to the Monday)`,
         )
       if (first !== estimated)
         noteFirstChargeEstimate(

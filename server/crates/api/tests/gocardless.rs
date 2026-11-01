@@ -4647,11 +4647,15 @@ async fn before_a_mandate_the_first_payment_is_expected_after_the_lead_time() {
     let today = giving::terms_rules::date_of_ms(contracts::now_ms());
     let earliest = giving::regular::estimated_first_charge(&today);
     let first = v["upcoming"][0]["chargeDate"].as_str().unwrap();
-    assert!(first >= earliest.as_str(), "{first} before {earliest}");
-    // The first 5th on or after it, not sooner.
-    assert!(first.ends_with("-05"), "{first}");
-    let before = giving::terms_rules::add_days(first, -28).unwrap();
-    assert!(before.as_str() < earliest.as_str() || !before.ends_with("-05"));
+    // The first 5th on or after it, not sooner, on the day GoCardless
+    // would take it (a weekend rolls to the Monday).
+    let mut due = format!("{}-05", &earliest[..7]);
+    if due < earliest {
+        let next = giving::terms_rules::add_days(&format!("{}-28", &earliest[..7]), 8).unwrap();
+        due = format!("{}-05", &next[..7]);
+    }
+    let want = giving::terms_rules::roll_to_working_day(&due).unwrap();
+    assert_eq!(first, want, "due {due}, earliest {earliest}");
 }
 
 /// G3: with a mandate and no subscription yet, the first payment follows

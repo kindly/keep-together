@@ -2074,7 +2074,8 @@ fn next_possible_charge_date(w: &World, mandate: &str) -> Option<String> {
 
 /// A subscription's next `n` charge dates from its `start_date` (its
 /// mandate's `next_possible_charge_date` when made; today if none), on
-/// its day of the month (and month, yearly), never in the past.
+/// its day of the month (and month, yearly), never in the past, a
+/// weekend rolled forward to the Monday as GoCardless does.
 fn upcoming(sub: &Value, n: usize) -> Vec<String> {
     let today = today_plus(0);
     let start = sub["start_date"]
@@ -2095,7 +2096,8 @@ fn upcoming(sub: &Value, n: usize) -> Vec<String> {
     while out.len() < n && y < 9999 {
         let date = format!("{y:04}-{m:02}-{day:02}");
         if date >= start && (!yearly || Some(m) == month) {
-            out.push(date);
+            // As GoCardless: a weekend charge date rolls forward.
+            out.push(giving::terms_rules::roll_to_working_day(&date).unwrap_or(date));
         }
         m += 1;
         if m > 12 {
