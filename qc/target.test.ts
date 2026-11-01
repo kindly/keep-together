@@ -1,8 +1,16 @@
 // @vitest-environment node
+import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 import { budgets } from './budgets'
 import type { Budget, FlowName } from './budgets'
-import { DRIFT_MS, DRIFT_RUNS, checkTarget, targetReason } from './target'
+import {
+  DRIFT_MS,
+  DRIFT_RUNS,
+  TEST_TIMEOUT_MS,
+  checkTarget,
+  targetReason,
+  testTimeoutMs,
+} from './target'
 import type { HistoryLine } from './reporter'
 
 // Two-tier budgets (human, 2026-10-23): the line fails, the target is
@@ -147,5 +155,25 @@ describe('checkTarget', () => {
     expect(targetReason({ ...l, target: checkTarget(now(120), [])! })).toBe(
       'median 120 ≥ target 100',
     )
+  })
+})
+
+describe('the test timeout by target', () => {
+  test('30 s locally, 120 s on every hosted target', () => {
+    expect(TEST_TIMEOUT_MS).toEqual({ local: 30_000, hosted: 120_000 })
+    expect(testTimeoutMs({})).toBe(30_000)
+    expect(testTimeoutMs({ QC_TARGET: 'local' })).toBe(30_000)
+    expect(testTimeoutMs({ QC_TARGET: 'qc' })).toBe(120_000)
+    expect(testTimeoutMs({ QC_TARGET: 'staging' })).toBe(120_000)
+    expect(() => testTimeoutMs({ QC_TARGET: 'prod' })).toThrow()
+  })
+
+  test('playwright.config.ts takes its timeout from it', () => {
+    // The config can't be imported here (it needs qc/.instances.json).
+    const config = readFileSync(
+      new URL('../playwright.config.ts', import.meta.url),
+      'utf8',
+    )
+    expect(config).toMatch(/^ {2}timeout: testTimeoutMs\(\),$/m)
   })
 })

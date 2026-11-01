@@ -137,3 +137,23 @@ export function hostedUrl(
     throw new Error(`${urlEnv} must be an origin (https://host), not ${url}`)
   return url
 }
+
+/**
+ * Playwright's per-test limit on this process's target (playwright.config.ts).
+ * Locally (house netem RTT, ~13 ms) Playwright's 30 s stays, so a hang shows
+ * up fast. A hosted target is reached over a real link (keep-qc from
+ * Actions: 90-190 ms), and a test whose samples each set up over sequential
+ * round trips (a warm-up, 5 samples, 5 more on a re-measure) scales with it:
+ * at over ~110 ms the claim steps and accept ticked ran out of 30 s with
+ * every call answered (builder-stl, 2026-11-01). A test's own setTimeout
+ * still wins.
+ */
+export const TEST_TIMEOUT_MS = { local: 30_000, hosted: 120_000 } as const
+
+export function testTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  return qcTarget(env) === 'local'
+    ? TEST_TIMEOUT_MS.local
+    : TEST_TIMEOUT_MS.hosted
+}
