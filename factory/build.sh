@@ -18,4 +18,9 @@ last=$(( $(nproc --all) - 1 ))
 cores="2-${last}"
 [ "$last" -ge 4 ] || cores="0-${last}" # a small machine keeps every core
 
+# Line tables only: backtraces keep file and line, but the linker's
+# memory and each target dir shrink several times over (59 test binaries
+# each linked with full debug info filled the disk on 2026-11-01).
+export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-line-tables-only}"
+
 exec flock "$lock" nice -n 19 taskset -c "$cores" "$@"
