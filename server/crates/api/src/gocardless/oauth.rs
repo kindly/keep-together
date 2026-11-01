@@ -14,11 +14,20 @@
 //! group's settings with `?gocardless=<outcome>`: `connected`, `denied`
 //! (the admin said no), `taken`, `failed`, `forbidden`, or, with no group
 //! to name, on `/?gocardless=expired`.
+//!
+//! One exception, never on live (so never in prod: the boot refuses
+//! `sandbox` and `fake` there): a `state` of `cli-` and 32 hex is
+//! `scripts/fly/gocardless-qc-token.sh`'s, which mints the QC sandbox
+//! account's token from a terminal (plan gocardless-sandbox-qc.sv, G1).
+//! This server never issued it, so nothing is exchanged or connected:
+//! the callback answers a plain page showing `code=…&state=…` for the
+//! human to paste back, uncached and never logged. The script checks the
+//! state and exchanges the code itself.
 
 use axum::Extension;
 use axum::extract::{Query, State};
-use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::http::{HeaderMap, HeaderValue, header};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use contracts::Source;
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
@@ -38,6 +47,61 @@ pub struct Callback {
     error: Option<String>,
 }
 
+/// `scripts/fly/gocardless-qc-token.sh`'s state: `cli-` and 32 lower-case
+/// hex. Only on the sandbox (and the fake), never live.
+fn is_cli_state(mode: super::Mode, state: Option<&str>) -> bool {
+    matches!(mode, super::Mode::Sandbox | super::Mode::Fake)
+        && state.and_then(|s| s.strip_prefix("cli-")).is_some_and(|h| {
+            h.len() == 32 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
+}
+
+/// GoCardless's codes and error words: a narrow alphabet, so the page
+/// never carries markup and the pasted line parses as a query.
+fn plain(v: &Option<String>) -> Option<&str> {
+    v.as_deref().filter(|v| {
+        !v.is_empty()
+            && v.len() <= 512
+            && v.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'))
+    })
+}
+
+/// The token script's page: what to paste back, or `None` when `q` isn't
+/// the script's (the usual callback runs).
+fn cli_page(mode: super::Mode, q: &Callback) -> Option<Response> {
+    if !is_cli_state(mode, q.state.as_deref()) {
+        return None;
+    }
+    let state = q.state.as_deref().unwrap_or_default();
+    let line = match (plain(&q.error), plain(&q.code)) {
+        (Some(error), _) => format!("error={error}&state={state}"),
+        (None, Some(code)) => format!("code={code}&state={state}"),
+        (None, None) => format!("state={state}"),
+    };
+    let body = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <title>Paste this into the terminal</title></head><body>\
+         <h1>Paste this into the terminal</h1>\
+         <p>gocardless-qc-token.sh is waiting for this line. Nothing has been \
+         connected here.</p>\
+         <pre style=\"font-size:1.2em;user-select:all\">{line}</pre></body></html>"
+    );
+    let mut res = Html(body).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'"),
+    );
+    h.insert("x-robots-tag", HeaderValue::from_static("noindex"));
+    Some(res)
+}
+
 fn land(slug: Option<&str>, outcome: &str) -> Response {
     match slug {
         Some(slug) => Redirect::to(&format!("/t/{slug}/settings?gocardless={outcome}")),
@@ -55,6 +119,9 @@ pub async fn callback(
     let Some(gc) = state.gocardless.clone() else {
         return crate::ApiError::NotFound.into_response();
     };
+    if let Some(page) = cli_page(gc.mode, &q) {
+        return page;
+    }
     let Ok(session) = auth::session(&state, &headers, &timing).await else {
         return land(None, "expired");
     };

@@ -109,6 +109,34 @@ async fn healthz_answers_without_a_session() {
     assert!(!body.to_string().contains(&dir), "{body}");
 }
 
+/// `/healthz` says which commit is serving (`KEEP_RELEASE`, the deploy's
+/// `$GITHUB_SHA`), so a deploy and QC on keep-qc can tell the new image
+/// is up; a local build without it reports `null`.
+#[tokio::test]
+async fn healthz_reports_the_commit() {
+    let w = world();
+    let get = |app: axum::Router| async move {
+        let res = app
+            .oneshot(request("GET", "/healthz", None, None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        serde_json::from_slice::<serde_json::Value>(
+            &res.into_body().collect().await.unwrap().to_bytes(),
+        )
+        .unwrap()
+    };
+    let body = get(w.app.clone()).await;
+    assert!(body["commit"].is_null(), "{body}");
+
+    let sha = "7b18cb5a0c3f1e2d4b6a8c9e0f1a2b3c4d5e6f70";
+    let state =
+        api::AppState::new(w.store.clone(), false).with_commit(api::health::commit(Some(sha)));
+    let body = get(api::app(state, api::routes::router())).await;
+    assert_eq!(body["commit"], sha, "{body}");
+    assert_eq!(body["ok"], true, "{body}");
+}
+
 /// The data volume's numbers are statvfs's for the data dir.
 #[tokio::test]
 async fn healthz_reports_the_data_volume() {

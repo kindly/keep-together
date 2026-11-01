@@ -1,0 +1,76 @@
+# keep-qc: QC's own app, nothing else (plan gocardless-sandbox-qc.sv,
+# step A1). One machine, one volume, London. Created by scripts/fly/qc.sh
+# (the human runs it); deployed by .github/workflows/deploy.yml's
+# deploy-qc job on every push to main, once the GitHub environment `qc`
+# has the variable QC_URL. Nobody uses it by hand: it is wiped and
+# reseeded with riverside on every deploy (KEEP_RESET_SEED,
+# scripts/ops/entrypoint.sh), and QC seeds its own qc- groups in it.
+#
+# Staging's config without backups: no Litestream, no snapshots (the
+# data is thrown away on the next deploy; the entrypoint runs the api
+# alone without LITESTREAM_BUCKET), and the same machine size as staging
+# so timings are comparable.
+#
+# Secrets (fly secrets list -a keep-qc), all from scripts/fly/qc.sh unless
+# said otherwise: KEEP_SETTINGS_KEY and KEEP_AUTH_PEPPER (auth's keys),
+# KEEP_RIVERSIDE_<ADMIN|STAFF|VIEWER>_<PASSWORD|TOTP> (the reset seed's
+# sign-ins; nobody signs in here), KEEP_QC_TOKEN (/api/qc/*; also the
+# GitHub environment `qc`'s secret), optionally SENTRY_DSN;
+# KEEP_GOCARDLESS_CLIENT_ID, _CLIENT_SECRET and _WEBHOOK_SECRET (the QC
+# sandbox account's partner app: scripts/fly/gocardless-secrets.sh qc);
+# KEEP_QC_GOCARDLESS_TOKEN and KEEP_QC_GOCARDLESS_ORGANISATION (that
+# account's OAuth token: scripts/fly/gocardless-qc-token.sh).
+
+app = "keep-qc"
+primary_region = "lhr"
+# No Litestream here, so the api is PID 1 and handles SIGTERM itself.
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "server/Dockerfile"
+
+[env]
+  # staging: the QC surface (/api/qc/*) needs it, and the boot rules
+  # (origin, client-IP header, auth keys) are staging's.
+  KEEP_ENV = "staging"
+  KEEP_RESET_SEED = "riverside"
+  # No DNS or certificate: fly.dev is the origin (links, trusted Origin).
+  KEEP_APP_ORIGIN = "https://keep-qc.fly.dev"
+  KEEP_CLIENT_IP_HEADER = "Fly-Client-IP"
+  # No mail: QC already treats mail as off, and what needs it is refused.
+  KEEP_MAIL = "off"
+  KEEP_ADDRESS_LOOKUP = "fake"
+  # The QC sandbox account's partner app, whose redirect and webhook are
+  # https://keep-qc.fly.dev/api/gocardless/{callback,webhook}. The api
+  # won't boot with sandbox until its three secrets are set
+  # (scripts/fly/gocardless-secrets.sh qc).
+  KEEP_GOCARDLESS = "sandbox"
+
+[mounts]
+  source = "keep_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Always on: GoCardless's webhooks and QC's timings mustn't meet a cold
+  # start.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "60s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[metrics]
+  port = 9090
+  path = "/metrics"

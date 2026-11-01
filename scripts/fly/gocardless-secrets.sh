@@ -2,13 +2,15 @@
 # Set the GoCardless partner app's secrets on keep-<env> (plan
 # gocardless.sv, step D0). The human runs it, with the partner app's
 # OAuth client id and secret and its webhook endpoint secret to hand (the
-# sandbox app's for staging, the live app's for prod). The api reads them
-# as KEEP_GOCARDLESS_CLIENT_ID, KEEP_GOCARDLESS_CLIENT_SECRET and
+# sandbox app's for staging; for qc, the partner app made in the QC
+# sandbox account, plan gocardless-sandbox-qc.sv; the live app's for
+# prod). The api reads them as KEEP_GOCARDLESS_CLIENT_ID,
+# KEEP_GOCARDLESS_CLIENT_SECRET and
 # KEEP_GOCARDLESS_WEBHOOK_SECRET when KEEP_GOCARDLESS=sandbox|live
 # (server/crates/api/src/gocardless/).
 #
 #   fly auth login
-#   scripts/fly/gocardless-secrets.sh staging     # or prod
+#   scripts/fly/gocardless-secrets.sh staging     # or qc, or prod
 #
 # Each value is read from the terminal without echo and reaches flyctl on
 # stdin: never argv (the process list), never printed, never in a file.
@@ -20,8 +22,9 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 case ${1:-} in
 staging) APP=keep-staging MODE=sandbox ;;
+qc) APP=keep-qc MODE=sandbox ;;
 prod) APP=keep-prod MODE=live ;;
-*) die "usage: $0 staging|prod" ;;
+*) die "usage: $0 staging|qc|prod" ;;
 esac
 
 command -v fly >/dev/null || die "needs flyctl: https://fly.io/docs/flyctl/install/"

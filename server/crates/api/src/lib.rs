@@ -46,6 +46,9 @@ pub struct AppState {
     pub gocardless: Option<Arc<gocardless::GoCardless>>,
     /// Scan uploads' cap, disk reserve and slots ([`scans::limits`]).
     pub scans: Arc<scans::limits::ScanLimits>,
+    /// The commit this build is (`KEEP_RELEASE`, [`health::commit`]),
+    /// reported by `/healthz`; `None` for a local build.
+    pub commit: Option<Arc<str>>,
 }
 
 impl AppState {
@@ -60,7 +63,13 @@ impl AppState {
             address: None,
             gocardless: None,
             scans: Arc::default(),
+            commit: None,
         }
+    }
+
+    pub fn with_commit(mut self, commit: Option<String>) -> Self {
+        self.commit = commit.map(Into::into);
+        self
     }
 
     pub fn with_scan_limits(mut self, limits: Arc<scans::limits::ScanLimits>) -> Self {

@@ -4404,3 +4404,126 @@ async fn a_standing_order_is_404_on_every_gocardless_regular_gift_route() {
     assert_eq!(after["chain"].as_array().unwrap().len(), 1);
     assert_eq!(after["status"], "active");
 }
+
+/// A GET of the callback with no cookie: status, headers and body.
+async fn callback_page(
+    app: &axum::Router,
+    query: &str,
+) -> (StatusCode, axum::http::HeaderMap, String) {
+    let res = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/api/gocardless/callback?{query}"),
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    let (status, headers) = (res.status(), res.headers().clone());
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+const CLI_STATE: &str = "cli-0123456789abcdef0123456789abcdef";
+
+/// G1 (plan gocardless-sandbox-qc.sv): `gocardless-qc-token.sh`'s
+/// `cli-` state gets a plain page with the line to paste back, uncached;
+/// nothing is exchanged or connected, and no session is needed.
+#[tokio::test]
+async fn the_token_scripts_state_gets_a_page_to_paste_back_and_nothing_is_connected() {
+    let t = setup().await;
+    let (s, h, body) = callback_page(&t.w.app, &format!("code=AbC-123_x&state={CLI_STATE}")).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert!(
+        body.contains(&format!("code=AbC-123_x&state={CLI_STATE}")),
+        "{body}"
+    );
+    assert_eq!(h[header::CACHE_CONTROL], "no-store");
+    assert_eq!(h[header::REFERRER_POLICY], "no-referrer");
+    assert!(
+        h[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .starts_with("default-src 'none'")
+    );
+    // A refusal comes back as GoCardless sent it.
+    let (_, _, body) =
+        callback_page(&t.w.app, &format!("error=access_denied&state={CLI_STATE}")).await;
+    assert!(
+        body.contains(&format!("error=access_denied&state={CLI_STATE}")),
+        "{body}"
+    );
+    // Anything outside a code's alphabet is left out, never echoed.
+    let (_, _, body) =
+        callback_page(&t.w.app, &format!("code=%3Cscript%3E&state={CLI_STATE}")).await;
+    assert!(
+        !body.contains("<script>") && !body.contains("code="),
+        "{body}"
+    );
+    for slug in ["alpha", "beta"] {
+        let status = ok(
+            &t.w,
+            "GET",
+            &format!("/api/t/{slug}/gocardless"),
+            if slug == "alpha" { &t.ann } else { &t.bob },
+            None,
+        )
+        .await;
+        assert_eq!(status["connected"], false, "{slug}");
+    }
+}
+
+/// Only the exact `cli-` + 32 hex shape is the script's: anything else is
+/// an ordinary callback (no session here, so it lands on `expired`).
+#[tokio::test]
+async fn a_state_that_only_looks_like_the_scripts_is_an_ordinary_callback() {
+    let t = setup().await;
+    for state in [
+        "cli-xyz",
+        "cli-0123456789ABCDEF0123456789ABCDEF",
+        "0123456789abcdef0123456789abcdef",
+        "cli-0123456789abcdef0123456789abcdef0",
+    ] {
+        let (s, h, _) = callback_page(&t.w.app, &format!("code=x&state={state}")).await;
+        assert!(s.is_redirection(), "{state}: {s}");
+        assert_eq!(h[header::LOCATION], "/?gocardless=expired", "{state}");
+    }
+}
+
+/// Live GoCardless (prod's only mode) never serves the script's page.
+#[tokio::test]
+async fn the_token_scripts_page_is_never_served_live() {
+    let w = world();
+    let vars = |name: &str| {
+        match name {
+            "KEEP_ENV" => Some("prod"),
+            "KEEP_GOCARDLESS" => Some("live"),
+            "KEEP_GOCARDLESS_CLIENT_ID" => Some("id"),
+            "KEEP_GOCARDLESS_CLIENT_SECRET" => Some("secret"),
+            "KEEP_GOCARDLESS_WEBHOOK_SECRET" => Some("webhook"),
+            _ => None,
+        }
+        .map(str::to_owned)
+    };
+    let origin = "https://app.keep-together.org.uk";
+    let gc = from_vars(
+        vars,
+        Origins {
+            app_origin: origin,
+            self_base: origin,
+        },
+        settings_key(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(gc.mode, api::gocardless::Mode::Live);
+    let app = app(
+        AppState::new(w.store.clone(), false).with_gocardless(Some(Arc::new(gc))),
+        routes::router(),
+    );
+    let (s, h, body) = callback_page(&app, &format!("code=AbC123&state={CLI_STATE}")).await;
+    assert!(s.is_redirection(), "{s}");
+    assert_eq!(h[header::LOCATION], "/?gocardless=expired");
+    assert!(!body.contains("AbC123"));
+}
