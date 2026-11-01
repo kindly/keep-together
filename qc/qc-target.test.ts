@@ -73,17 +73,26 @@ describe('per-target budgets (human, g2q6)', () => {
     expect(rttCeilingMs('staging')).toBe(RTT_CEILING_MS)
   })
 
-  test('qc: empty until A3 records it, so every flow is unbudgeted, with no ceiling', () => {
-    expect(targetBudgets.qc).toEqual({ rttCeilingMs: null, flows: {} })
-    expect(rttCeilingMs('qc')).toBeNull()
+  test('qc (A3, recorded): its own lines and ceiling; same kinds; bulk at the fixed 500 ms; no targets', () => {
+    expect(rttCeilingMs('qc')).toBe(290)
+    const own = targetBudgets.qc!.flows
+    expect(Object.keys(own).length).toBeGreaterThan(0)
     for (const [name, b] of real) {
       const q = budgetFor(name, 'qc')
-      expect(q.unbudgeted).toBe(true)
-      // The kind and the house line stay, for the timeout and reference;
-      // no target is tracked against a line it doesn't have.
       expect(q.kind).toBe(b.kind)
-      expect(q.maxMs).toBe(b.maxMs)
       expect(q.targetMs).toBeUndefined()
+      if (own[name]) {
+        expect(q.unbudgeted).toBeUndefined()
+        expect(q.maxMs % 10).toBe(0)
+        // The human's fixed line: bulk is 500 everywhere, never raised.
+        if (b.kind === 'bulk') expect(q.maxMs).toBe(500)
+      } else {
+        // Not timed on keep-qc (the GoCardless fake's flows): unbudgeted,
+        // the house line kept for the timeout only.
+        expect(b.fakeGoCardless).toBe(true)
+        expect(q.unbudgeted).toBe(true)
+        expect(q.maxMs).toBe(b.maxMs)
+      }
     }
   })
 
@@ -94,8 +103,11 @@ describe('per-target budgets (human, g2q6)', () => {
 
   test('the process target comes from QC_TARGET', () => {
     vi.stubEnv('QC_TARGET', 'qc')
-    expect(budgetFor('contact.save').unbudgeted).toBe(true)
-    expect(rttCeilingMs()).toBeNull()
+    expect(budgetFor('contact.save')).toBe(
+      targetBudgets.qc!.flows['contact.save'],
+    )
+    expect(budgetFor('gocardless.setUp').unbudgeted).toBe(true)
+    expect(rttCeilingMs()).toBe(290)
     vi.stubEnv('QC_TARGET', 'staging')
     expect(budgetFor('contact.save')).toBe(budgets['contact.save'])
   })
@@ -241,7 +253,8 @@ describe('the run on Actions', () => {
     const out = logged.join('\n')
     expect(res?.status).toBeUndefined()
     expect(out).toMatch(/^qc q1 · target qc · asserting/m)
-    expect(out).toContain('(no RTT ceiling on this target yet: recorded only)')
+    // A3 set a ceiling: the header no longer says there is none.
+    expect(out).not.toContain('no RTT ceiling on this target yet')
     expect(out).toContain(`· link: not watched (${LINK_OFF_ACTIONS})`)
     // Not the "absence of a LINK banner says nothing" line: it's off by design.
     expect(out).not.toContain('first hop not watched')

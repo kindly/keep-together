@@ -291,10 +291,10 @@ export type FlowName = keyof typeof budgets
 //   RTT_CEILING_MS at the house); null until recorded, when the RTT is
 //   only recorded.
 //
-// `qc` (keep-qc from Actions) is empty until plan step A3 records it: 3
+// `qc` (keep-qc from Actions) was recorded by plan step A3: 3
 // `mode=record` runs of .github/workflows/qc.yml, each flow's line 1.5×
 // its worst sample, the ceiling from the same runs, shown to the human as
-// a diff of this file. Raising one later needs the human's OK, as above.
+// a diff of this file (PROVISIONAL until the human's OK, below). Raising one later needs the human's OK, as above.
 // Bulk flows and routes that call an external service are 500 ms there
 // too (human, 2026-11-01); a route measured over it goes back to the
 // human with its numbers.
@@ -305,7 +305,111 @@ export interface TargetBudgets {
 }
 
 export const targetBudgets: Partial<Record<QcTarget, TargetBudgets>> = {
-  qc: { rttCeilingMs: null, flows: {} },
+  // PROVISIONAL, for the human's OK (plan step A3, 2026-11-01): recorded
+  // in the 3 `mode=record` runs of qc.yml on main 273cb83, GitHub runs
+  // 41331339991, 41331993587, 41333026786 (history runIds tnu32ri0,
+  // tnu3fcxg, tnu3zm09). Each line is 1.5× the flow's worst sample over
+  // the 3 runs, rounded up to 10 ms; the comment gives each run's worst.
+  // Bulk flows keep the human's fixed 500 ms (2026-11-01), never raised:
+  // two were over it in these runs (scan.sendPage, scans.uploadToLaptop).
+  // No targets (targetMs): only the failing line was recorded.
+  //
+  // The runner's link dominates: the runs' median RTT to keep-qc was 90,
+  // 185 and 117 ms, and most flows took 1–4 round trips, so run 2 sets
+  // most worsts. RTT ceiling: 1.5× the worst worker RTT (191.2 ms).
+  //
+  // Not here: flows timed only against the GoCardless fake (untimed on
+  // keep-qc, which runs the sandbox), so they stay unbudgeted there.
+  qc: {
+    rttCeilingMs: 290,
+    flows: {
+      'auth.signIn': { kind: 'oncePerSession', maxMs: 1220 }, // worst 452/807/491
+      'home.toContacts': { kind: 'repeatable', maxMs: 60 }, // worst 37/31/32
+      'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 630 }, // worst 224/414/267
+      'contacts.nav': { kind: 'repeatable', maxMs: 320 }, // worst 138/213/138
+      'contacts.search': { kind: 'repeatable', maxMs: 300 }, // worst 109/193/196
+      'contacts.searchIdentifier': { kind: 'repeatable', maxMs: 320 }, // worst 109/209/128
+      'contacts.search.phone': { kind: 'repeatable', maxMs: 320 }, // worst 112/210/144
+      'contacts.search.postcode': { kind: 'repeatable', maxMs: 310 }, // worst 110/203/128
+      'contacts.search.emailPart': { kind: 'repeatable', maxMs: 320 }, // worst 116/210/144
+      'contacts.search.org': { kind: 'repeatable', maxMs: 320 }, // worst 110/209/128
+      'contacts.search.number': { kind: 'repeatable', maxMs: 30 }, // worst 4/18/3
+      'contacts.showArchived': { kind: 'repeatable', maxMs: 300 }, // worst 99/199/132
+      'contacts.create': { kind: 'infrequent', maxMs: 340 }, // worst 118/223/150
+      'contact.save': { kind: 'repeatable', maxMs: 310 }, // worst 115/201/146
+      'contact.addEmail': { kind: 'repeatable', maxMs: 300 }, // worst 98/199/132
+      'contact.livePropagation': { kind: 'repeatable', maxMs: 580 }, // worst 197/381/249
+      'contact.staleMerge': { kind: 'repeatable', maxMs: 300 }, // worst 117/198/132
+      'contact.revisit': { kind: 'repeatable', maxMs: 40 }, // worst 25/26/15
+      'contact.archive': { kind: 'repeatable', maxMs: 330 }, // worst 98/215/132
+      'contact.restore': { kind: 'rare', maxMs: 300 }, // worst 113/198/149
+      'contact.note.add': { kind: 'repeatable', maxMs: 850 }, // worst 282/565/366
+      'contact.note.save': { kind: 'repeatable', maxMs: 850 }, // worst 281/564/366
+      'contact.note.pin': { kind: 'repeatable', maxMs: 850 }, // worst 268/565/366
+      'contact.note.archive': { kind: 'repeatable', maxMs: 850 }, // worst 296/565/515
+      'contact.identifier.add': { kind: 'repeatable', maxMs: 330 }, // worst 120/214/144
+      'contact.identifier.remove': { kind: 'repeatable', maxMs: 300 }, // worst 116/199/132
+      'contact.hold.release': { kind: 'repeatable', maxMs: 870 }, // worst 282/580/382
+      'contact.acquisition.set': { kind: 'repeatable', maxMs: 400 }, // worst 265/198/148
+      'contacts.createWithCode': { kind: 'infrequent', maxMs: 340 }, // worst 165/222/206
+      'contacts.filter.sourceCategory': { kind: 'repeatable', maxMs: 300 }, // worst 100/197/127
+      'contacts.filter.sourceVersion': { kind: 'repeatable', maxMs: 320 }, // worst 107/210/128
+      'contacts.loadMore': { kind: 'repeatable', maxMs: 300 }, // worst 120/198/132
+      'fields.create': { kind: 'repeatable', maxMs: 850 }, // worst 281/566/365
+      'fields.option.add': { kind: 'repeatable', maxMs: 880 }, // worst 282/582/384
+      'fields.archive': { kind: 'repeatable', maxMs: 850 }, // worst 265/565/397
+      'fields.filter': { kind: 'repeatable', maxMs: 310 }, // worst 109/206/143
+      'contact.field.set': { kind: 'repeatable', maxMs: 300 }, // worst 110/199/128
+      'contact.field.clear': { kind: 'repeatable', maxMs: 320 }, // worst 110/207/128
+      'settings.staffFields.toggle': { kind: 'repeatable', maxMs: 880 }, // worst 281/581/382
+      'settings.nav': { kind: 'repeatable', maxMs: 40 }, // worst 18/17/23
+      'settings.tab': { kind: 'repeatable', maxMs: 300 }, // worst 114/198/140
+      'settings.staffIdentifierTypes.toggle': {
+        kind: 'repeatable',
+        maxMs: 850,
+      }, // worst 285/566/392
+      'settings.identifierTypes.create': { kind: 'repeatable', maxMs: 850 }, // worst 282/565/382
+      'settings.identifierTypes.rename': { kind: 'repeatable', maxMs: 850 }, // worst 295/565/365
+      'settings.identifierTypes.archive': { kind: 'repeatable', maxMs: 850 }, // worst 291/565/365
+      'settings.staffSourceCodes.toggle': { kind: 'repeatable', maxMs: 880 }, // worst 282/582/366
+      'settings.sourceCodes.open': { kind: 'repeatable', maxMs: 300 }, // worst 114/198/148
+      'settings.sourceCodes.addDetail': { kind: 'repeatable', maxMs: 870 }, // worst 266/576/376
+      'settings.sourceCodes.rename': { kind: 'repeatable', maxMs: 850 }, // worst 289/565/370
+      'settings.sourceCodes.archive': { kind: 'repeatable', maxMs: 880 }, // worst 283/584/366
+      'gift.record': { kind: 'infrequent', maxMs: 330 }, // worst 102/215/132
+      'gift.recordNewContact': { kind: 'infrequent', maxMs: 330 }, // worst 113/215/132
+      'gift.open': { kind: 'repeatable', maxMs: 330 }, // worst 122/214/148
+      'gift.save': { kind: 'repeatable', maxMs: 310 }, // worst 115/202/186
+      'gift.void': { kind: 'repeatable', maxMs: 300 }, // worst 115/199/133
+      'gift.saveClaimed': { kind: 'repeatable', maxMs: 300 }, // worst 99/199/132
+      'gift.unvoid': { kind: 'repeatable', maxMs: 300 }, // worst 115/198/132
+      'contact.gifts.loadMore': { kind: 'repeatable', maxMs: 300 }, // worst 114/197/136
+      'contact.giftaid.cancel': { kind: 'repeatable', maxMs: 860 }, // worst 282/568/366
+      'contact.giftaid.void': { kind: 'repeatable', maxMs: 850 }, // worst 283/566/366
+      'contact.giftaid.details': { kind: 'repeatable', maxMs: 850 }, // worst 282/565/382
+      'giftaid.open': { kind: 'repeatable', maxMs: 330 }, // worst 130/214/148
+      'giftaid.preview': { kind: 'repeatable', maxMs: 300 }, // worst 98/198/132
+      'giftaid.refresh': { kind: 'repeatable', maxMs: 300 }, // worst 98/198/166
+      'giftaid.create': { kind: 'infrequent', maxMs: 310 }, // worst 114/201/132
+      'giftaid.markReady': { kind: 'repeatable', maxMs: 300 }, // worst 98/198/132
+      'giftaid.markSubmitted': { kind: 'repeatable', maxMs: 300 }, // worst 100/198/132
+      'giftaid.markPaid': { kind: 'repeatable', maxMs: 200 }, // worst 102/—/132; 2 runs only
+      'giftaid.reject': { kind: 'repeatable', maxMs: 150 }, // worst 99/—/—; 1 run only
+      'giftaid.hmrcSave': { kind: 'repeatable', maxMs: 850 }, // worst 265/565/399
+      'scans.open': { kind: 'repeatable', maxMs: 350 }, // worst 131/233/162
+      'scans.pair': { kind: 'infrequent', maxMs: 320 }, // worst 147/213/151
+      'scans.accept': { kind: 'infrequent', maxMs: 880 }, // worst 315/586/475
+      'scan.open': { kind: 'oncePerSession', maxMs: 990 }, // worst 309/658/427
+      'scan.sendPage': { kind: 'bulk', maxMs: 500 }, // worst 448/731/515 ms: fixed 500 (human); OVER IT
+      'scans.uploadToLaptop': { kind: 'bulk', maxMs: 500 }, // worst 627/1179/799 ms: fixed 500 (human); OVER IT
+      'gift.recordCheque': { kind: 'infrequent', maxMs: 380 }, // worst 115/248/165
+      'batch.close': { kind: 'infrequent', maxMs: 1020 }, // worst 675/565/382
+      'bank.acceptTicked': { kind: 'bulk', maxMs: 500 }, // worst 181/—/— ms: fixed 500 (human)
+      'bank.matchLine': { kind: 'infrequent', maxMs: 850 }, // worst 282/564/382
+      'standingOrder.record': { kind: 'infrequent', maxMs: 380 }, // worst 114/248/132
+      'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 }, // worst 115/198/132 ms: fixed 500 (human)
+    },
+  },
 }
 
 /**
