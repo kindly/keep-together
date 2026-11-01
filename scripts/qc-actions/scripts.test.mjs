@@ -654,6 +654,23 @@ describe('history.sh: the artifact chain', () => {
     expect(existsSync(path.join(dir, 'escape'))).toBe(false)
   })
 
+  // CI flake, 2026-11-01: `! unzip -Z | grep -q '^l'` under pipefail. When
+  // grep quit at its match while unzip was still writing, unzip died of
+  // SIGPIPE and `!` read that as "no link". A link followed by thousands
+  // of entries leaves unzip mid-listing every time: deterministic. (The
+  // padding repeats an allowed name, so only the link check can refuse.)
+  test('fetch: a link is refused however long the listing after it', () => {
+    set('qc-runs.json', { workflow_runs: [ghRun(1)] })
+    artifactOf(1, 10, [
+      ['history.jsonl', '/proc/self/environ', 0o120777],
+      ...Array.from({ length: 3000 }, () => ['runs.log', 'x']),
+    ])
+    const r = sh('history.sh', ['fetch', into()])
+    expect(r.code, r.stderr).toBe(1)
+    expect(r.stderr).toContain('holds a link')
+    expect(read(path.join(into(), 'history.jsonl'))).toBe('')
+  })
+
   test('fetch: forged and oversized lines are dropped, every line validated', () => {
     set('qc-runs.json', { workflow_runs: [ghRun(1)] })
     artifactOf(1, 10, [
