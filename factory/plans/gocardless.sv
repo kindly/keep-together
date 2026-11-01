@@ -80,6 +80,11 @@ One builder for D1 and D2, a second for D3, and a reviewer after each. Stripe co
 </sv-ask>
 
 <sv-ask id="d2q3" round="2">
+**Confirmed against GoCardless's real sandbox (G5, 2026-11-01, Actions run 41328512105 on keep-qc).** The two questions the human had been checking by hand are now assertions that run every night:
+1. **First charge date:** GoCardless's first `charge_date` for a new subscription is the app's first expected payment. That is the first due day on or after the mandate's `next_possible_charge_date`, rolled forward off weekends (fixed in G3: the app had shown the next due day from today, with no Bacs notice).
+2. **Cancel:** cancelling a regular gift leaves nothing at GoCardless to collect. Mandate, subscription and every payment are cancelled (peek). The subscription-only path (adopted or shared mandate) also cancels its pending payments (G4). It is tested on the fake, because the sandbox can't share a mandate.
+Also confirmed: cancelling a mandate cancels its pending payments; signed webhooks reach the app through the CSRF guard (bad or missing signature → 498); the nightly catch-up finds nothing missed. **Not tested on the sandbox:** a regular gift's instalment payments (the sandbox has no subscription-payment simulator; the spec uses one-offs).
+
 **Upgrades and splits on regular gifts** (ADR 0022 decision 9, source-codes g1q11, not yet designed). A regular gift keeps a dated history of its terms: amount plus a split by source code from an effective date. An upgrade adds a row (e.g. £10 Street + £2 Telephone from 1 Dec) and changes the GoCardless subscription amount; each payment's gift copies the split in force on its charge date. The same rows later generate expected payments (expected vs actual, from CARE).
 - * Design it now, as part of this round (a design page with you first, then built after the unified table)
 - Later: keep one code and a fixed amount for now
