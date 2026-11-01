@@ -88,6 +88,35 @@ async function photograph(page: Page) {
   await expect(screen(page)).toHaveAttribute('data-screen', 'crop')
 }
 
+/**
+ * How many pages the phone keeps in IndexedDB (src/scan/persist.ts) for
+ * when the tab is thrown away. Kept fire-and-forget: a page can show
+ * `waiting` before it is on disk, so a spec that throws the tab away
+ * waits for this first.
+ */
+function keptPages(page: Page) {
+  return page.evaluate(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const open = indexedDB.open('keep-together-scan')
+        open.onerror = () => reject(open.error)
+        open.onsuccess = () => {
+          const db = open.result
+          if (!db.objectStoreNames.contains('pages')) {
+            db.close()
+            return resolve(0)
+          }
+          const count = db.transaction('pages').objectStore('pages').count()
+          count.onsuccess = () => {
+            db.close()
+            resolve(count.result)
+          }
+          count.onerror = () => reject(count.error)
+        }
+      }),
+  )
+}
+
 /** The newest page of this scan reads `state`. */
 function lastPageIs(state: string) {
   const pages = [...document.querySelectorAll('.pages li')]
@@ -345,15 +374,28 @@ for (const [phone, device] of Object.entries(PHONES)) {
       await photograph(page)
       await page.getByRole('button', { name: 'Use page' }).click()
       await page.waitForFunction(lastPageIs, 'sent')
+      // The first page, landed, is no longer kept.
+      await expect.poll(() => keptPages(page)).toBe(0)
       await photograph(page)
-      await context.setOffline(true)
+      // Page 2 never reaches the server: its uploads fail on this tab
+      // alone. (context.setOffline raced: going back online woke the
+      // closing tab's outbox, page 2 landed, and the reload rightly had
+      // nothing to pick up; the next test covers that path.)
+      await page.route('**/api/scan/*/scans/*/pages*', (route) =>
+        route.request().method() === 'POST'
+          ? route.abort('internetdisconnected')
+          : route.continue(),
+      )
       await page.getByRole('button', { name: 'Use page' }).click()
-      // A new page is `waiting` before its first try: wait for that try to
-      // fail, or closing races the upload (and it may land).
       await expect(page.locator('[data-retrying="offline"]')).toBeVisible()
       await page.waitForFunction(lastPageIs, 'waiting')
+      // And on disk: it is kept after its first try starts, so closing at
+      // once could lose it.
+      await expect.poll(() => keptPages(page)).toBe(1)
       await page.close()
-      await context.setOffline(false)
+      expect(
+        (await sitting(instance, users.a, id)).scans[0].pages,
+      ).toHaveLength(1)
 
       const again = await context.newPage()
       await again.goto(path)
@@ -369,6 +411,55 @@ for (const [phone, device] of Object.entries(PHONES)) {
       await again.reload()
       await expect(screen(again)).toHaveAttribute('data-screen', 'scan')
       await expect(again.getByText('Picked up')).toHaveCount(0)
+    })
+
+    test('a page that landed but whose answer was lost is not sent again', async ({
+      page,
+      context,
+      instance,
+      users,
+    }) => {
+      // The other side of the race above: the upload reached the laptop,
+      // the tab was thrown away before it heard so. The reload counts it
+      // as landed (recover.ts), with nothing to pick up.
+      const { id, path } = await startPairing(instance, users.a)
+      await page.goto(path)
+      await photograph(page)
+      await page.getByRole('button', { name: 'Use page' }).click()
+      await page.waitForFunction(lastPageIs, 'sent')
+      await expect.poll(() => keptPages(page)).toBe(0)
+      await photograph(page)
+      // Page 2's upload reaches the server; its answer is lost, and the
+      // phone stays offline, so its retries can't hear either.
+      let lost = false
+      await page.route('**/api/scan/*/scans/*/pages*', async (route) => {
+        if (lost || route.request().method() !== 'POST') return route.continue()
+        lost = true
+        await route.fetch()
+        await context.setOffline(true)
+        await route.abort('internetdisconnected')
+      })
+      await page.getByRole('button', { name: 'Use page' }).click()
+      await expect(page.locator('[data-retrying="offline"]')).toBeVisible()
+      await page.waitForFunction(lastPageIs, 'waiting')
+      await expect.poll(() => keptPages(page)).toBe(1)
+      expect(
+        (await sitting(instance, users.a, id)).scans[0].pages,
+      ).toHaveLength(2)
+      await page.close()
+      await context.setOffline(false)
+
+      const again = await context.newPage()
+      await again.goto(path)
+      await expect(
+        again.getByRole('heading', { name: 'This scan: 2 pages' }),
+      ).toBeVisible()
+      await expect(again.getByText('Picked up')).toHaveCount(0)
+      // No longer kept, and never sent a third time.
+      await expect.poll(() => keptPages(again)).toBe(0)
+      const view = await sitting(instance, users.a, id)
+      expect(view.scans).toHaveLength(1)
+      expect(view.scans[0].pages).toHaveLength(2)
     })
 
     test('the link ending on the laptop ends it on the phone', async ({
