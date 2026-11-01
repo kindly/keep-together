@@ -39,6 +39,8 @@
 //!   `payments.created` and `subscriptions.payment_created` events;
 //! - `simulate/subscriptions/{id}/amend?amount=`: an amount changed in
 //!   GoCardless's dashboard (its `subscriptions.amended` event);
+//! - `simulate/subscriptions/{id}/finish`: its last payment made
+//!   (`finished`, with its event);
 //! - `simulate/mandates/{id}/payment?amount=&subscription=`: a one-off on
 //!   the mandate with no metadata (as if taken in GoCardless's
 //!   dashboard), or naming a subscription;
@@ -120,6 +122,10 @@ struct Outage {
     /// Wait this long before answering.
     #[serde(default)]
     delay_ms: u64,
+    /// Then wait for `simulate/outage/release` (a test does something
+    /// while the call is held at GoCardless, without guessing a time).
+    #[serde(default)]
+    hold: bool,
 }
 
 impl World {
@@ -137,6 +143,9 @@ pub struct Fake {
     webhook_url: String,
     http: reqwest::Client,
     world: Mutex<World>,
+    /// Releases one call an outage with `hold` keeps waiting
+    /// (`simulate/outage/release`); a release before it arrives is kept.
+    release: tokio::sync::Notify,
 }
 
 impl Fake {
@@ -149,6 +158,7 @@ impl Fake {
                 .build()
                 .expect("a reqwest client"),
             world: Mutex::new(World::default()),
+            release: tokio::sync::Notify::new(),
         }
     }
 
@@ -453,6 +463,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
             post(simulate_payment),
         )
         .route("/simulate/subscriptions/{id}/amend", post(simulate_amend))
+        .route("/simulate/subscriptions/{id}/finish", post(simulate_finish))
         .route(
             "/simulate/payments/{id}/{action}",
             post(simulate_payment_action),
@@ -461,6 +472,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
         .route("/simulate/webhooks/hold", post(hold_webhooks))
         .route("/simulate/webhooks/release", post(release_webhooks))
         .route("/simulate/outage", post(outage))
+        .route("/simulate/outage/release", post(release_outage))
         .with_state(fake)
 }
 
@@ -481,17 +493,20 @@ async fn gate(
         match w.outage.as_mut() {
             Some(o) if o.calls > 0 && path.contains(&o.path) => {
                 o.calls -= 1;
-                Some((o.status, o.delay_ms))
+                Some((o.status, o.delay_ms, o.hold))
             }
             _ => None,
         }
     };
-    if let Some((_, delay)) = failing
+    if let Some((_, delay, _)) = failing
         && delay > 0
     {
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
-    match failing.map(|(status, _)| status).filter(|s| *s != 0) {
+    if let Some((_, _, true)) = failing {
+        fake.release.notified().await;
+    }
+    match failing.map(|(status, _, _)| status).filter(|s| *s != 0) {
         Some(status) => error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
             "gocardless",
@@ -503,12 +518,47 @@ async fn gate(
     }
 }
 
-/// `POST simulate/outage {calls, status?, path?, delay_ms?}`: the next
-/// `calls` API requests (whose path holds `path`) wait `delay_ms`, then
-/// answer `status` (0 or none: as usual); `calls: 0` ends it.
+/// `POST simulate/outage {calls, status?, path?, delay_ms?, hold?}`: the
+/// next `calls` API requests (whose path holds `path`) wait `delay_ms`
+/// (and, with `hold`, until released), then answer `status` (0 or none:
+/// as usual); `calls: 0` ends it.
 async fn outage(State(fake): State<Arc<Fake>>, Json(o): Json<Outage>) -> Response {
     fake.world().outage = Some(o);
     Json(json!({ "ok": true })).into_response()
+}
+
+/// `POST simulate/outage/release`: let one held call go on.
+async fn release_outage(State(fake): State<Arc<Fake>>) -> Response {
+    fake.release.notify_one();
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// `POST simulate/subscriptions/{id}/finish`: it made its last payment
+/// (`count` reached): `finished`, with its event.
+async fn simulate_finish(State(fake): State<Arc<Fake>>, Path(id): Path<String>) -> Response {
+    let event = {
+        let mut w = fake.world();
+        let Some(r) = w
+            .resources
+            .get_mut(&id)
+            .filter(|r| r.kind == "subscriptions")
+        else {
+            return not_found();
+        };
+        r.body["status"] = json!("finished");
+        let org = r.org.clone();
+        Fake::event(
+            &mut w,
+            &org,
+            "subscriptions",
+            "finished",
+            json!({ "subscription": id }),
+            "subscription_finished",
+            "The subscription has finished.",
+        )
+    };
+    let delivered = fake.deliver(vec![event]).await;
+    simulated(delivered, json!({ "subscription": id }))
 }
 
 /// `POST simulate/webhooks/hold`: keep events back from now on.

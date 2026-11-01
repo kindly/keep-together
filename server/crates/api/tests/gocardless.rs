@@ -4405,15 +4405,24 @@ async fn a_payment_submitted_meanwhile_is_reported_and_the_gift_still_ends() {
     let t = setup().await;
     let (id, first_sub, _, _, _) = shared_mandate(&t).await;
     let pm = t.pending(&first_sub).await;
-    // The cancel waits at GoCardless while its submission run takes it.
+    // The cancel is held at GoCardless while its submission run takes it.
     t.fake_post(
         "outage",
-        json!({ "calls": 1, "delay_ms": 1500, "path": format!("payments/{pm}/actions/cancel") }),
+        json!({ "calls": 1, "hold": true, "path": format!("payments/{pm}/actions/cancel") }),
     )
     .await;
+    let before = t.fake.calls("POST payments");
     let ((s, out), ()) = tokio::join!(t.cancel(&id), async {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // Wait for the cancel to arrive (and be held), then submit.
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while t.fake.calls("POST payments") == before {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the payment's cancel reached GoCardless");
         t.simulate(&format!("payments/{pm}/submit")).await;
+        t.fake_post("outage/release", json!({})).await;
     });
     assert_eq!(s, StatusCode::OK, "{out}");
     assert_eq!(out["view"]["status"], "cancelled");
@@ -4487,6 +4496,30 @@ async fn cancelling_an_ended_subscription_only_gift_again_sweeps_its_pending_pay
     assert_eq!(
         payment(&t.regular("alpha", &t.val, &id).await, &mine)["status"],
         "cancelled"
+    );
+}
+
+/// G4 review: a subscription that finished (its last payment made, and
+/// owed) ends the gift; cancelling that gift again sweeps nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_finished_subscription_only_gift_again_leaves_its_last_payment() {
+    let t = setup().await;
+    let (id, first_sub, mandate, _, _) = shared_mandate(&t).await;
+    let last = t.pending(&first_sub).await;
+    t.simulate(&format!("subscriptions/{first_sub}/finish"))
+        .await;
+    t.settle().await;
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "cancelled");
+    let (s, out) = t.cancel(&id).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["stillToCollect"], json!([]));
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&first_sub), "finished");
+    assert_eq!(t.status_at_gocardless(&last), "pending_submission");
+    assert_ne!(t.status_at_gocardless(&mandate), "cancelled");
+    assert_eq!(
+        payment(&t.regular("alpha", &t.val, &id).await, &last)["status"],
+        "pending"
     );
 }
 
