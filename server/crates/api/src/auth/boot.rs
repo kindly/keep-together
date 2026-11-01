@@ -269,6 +269,8 @@ mod tests {
         let vars = fly_env("fly.prod.toml");
         for k in [
             "KEEP_RESET_SEED",
+            "KEEP_RESET_ON",
+            "KEEP_RESET_GENERATION",
             "KEEP_MAIL_ONLY_TO",
             "KEEP_AUTH_POLICY",
             "KEEP_QC_TOKEN",

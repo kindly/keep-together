@@ -1,6 +1,8 @@
-//! `KEEP_RESET_SEED=riverside`: staging is reset on every deploy. The
-//! image's entrypoint (`scripts/ops/entrypoint.sh`) wipes the data dir
-//! *before* Litestream starts, so Litestream never watches files vanish
+//! `KEEP_RESET_SEED=riverside`: a reset environment's seed. The image's
+//! entrypoint (`scripts/ops/entrypoint.sh`) wipes the data dir on every
+//! deploy (`KEEP_RESET_ON=deploy`, the default) or when
+//! `KEEP_RESET_GENERATION` changes (`KEEP_RESET_ON=demand`, set by
+//! `scripts/fly/staging-reset.sh`), *before* Litestream starts, so Litestream never watches files vanish
 //! under it; then the api seeds the empty store here with `seed::riverside`
 //! (100 donors, a password + TOTP user per role), through the same
 //! contract functions as the API.
@@ -13,11 +15,31 @@
 //! writes the donors once and applies a changed password or secret from
 //! the env. TOTP secrets are sealed with auth's keys, the api's own.
 
+use std::path::Path;
+
 use auth::{Keys, Policy};
 use seed::riverside::{self, Credential, Origin, SeedError, Seeded};
 use store::Store;
 
 pub const SLUG: &str = riverside::SLUG;
+
+/// In the data dir: the reset generation the data belongs to, written by
+/// the entrypoint under `KEEP_RESET_ON=demand` (a wipe, or a restore from
+/// that generation's Litestream prefix).
+pub const GENERATION_MARKER: &str = ".generation";
+
+/// The data dir's reset generation, for `/healthz` (`staging-reset.sh`
+/// waits for the new one). `None` without the marker, or when it holds
+/// anything but the entrypoint's characters (`A-Za-z0-9_-`, at most 64).
+pub fn generation(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join(GENERATION_MARKER)).ok()?;
+    let g = text.trim();
+    let valid = !g.is_empty()
+        && g.len() <= 64
+        && g.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    valid.then(|| g.to_owned())
+}
 
 /// Seed when `KEEP_RESET_SEED` asks for it. `true` when it made the org.
 /// Under `KEEP_AUTH_POLICY=relaxed` a generated sign-in is
@@ -156,6 +178,19 @@ mod tests {
             .unwrap()
             .read(|r| r.query_row("SELECT count(*) FROM contacts", [], |row| row.get(0)))
             .unwrap()
+    }
+
+    #[test]
+    fn generation_reads_the_entrypoints_marker_and_nothing_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(generation(tmp.path()), None, "no marker");
+        let marker = tmp.path().join(GENERATION_MARKER);
+        std::fs::write(&marker, "20261101T120000Z\n").unwrap();
+        assert_eq!(generation(tmp.path()).as_deref(), Some("20261101T120000Z"));
+        for bad in ["", "\n", "a b", "../x", "<script>", &"a".repeat(65)] {
+            std::fs::write(&marker, bad).unwrap();
+            assert_eq!(generation(tmp.path()), None, "{bad:?}");
+        }
     }
 
     #[test]

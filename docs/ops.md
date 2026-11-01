@@ -41,6 +41,7 @@ Data on the volume (`/data`):
 | `snapshots-tmp/` | the snapshot job's scratch copies, removed after each file |
 | `drill/` | the restore drill's write-loss probe, only during a drill |
 | `.image` | the image the data belongs to (staging's reset compares it) |
+| `.generation` | under `KEEP_RESET_ON=demand`, the reset generation the data belongs to |
 | `.restored` | how the volume was last restored; reported until a human deletes it and restarts the machine |
 | `restore.log` | the last empty-volume restore's output |
 
@@ -507,6 +508,8 @@ needs the aws CLI, litestream 0.5.x and sqlite3, and builds
   `commit` is the git commit the image was built from (`KEEP_RELEASE`,
   `$GITHUB_SHA` in `deploy.yml`; `null` for a local build): keep-qc's
   deploy waits for it, and QC checks out the specs that match it.
+  Under `KEEP_RESET_ON=demand` only, `resetGeneration`: the reset
+  generation the data belongs to (`/data/.generation`; "Staging reset").
 
   It is public, so it has counts and status words only. Error text
   (bucket names, account ids, tenant ids) goes to the log and Sentry, and
@@ -563,7 +566,20 @@ what grew, read the daily `data usage:` lines in `fly logs`.
 `KEEP_RESET_SEED=riverside`: on the first boot of a new image (the
 image ref differs from `/data/.image`) the entrypoint wipes `/data`
 before Litestream starts, and the api seeds the `riverside` org. Restarts
-and restored volumes keep their data. The seed is `seed::riverside`
+and restored volumes keep their data. That is `KEEP_RESET_ON=deploy`, the
+default.
+
+`KEEP_RESET_ON=demand` (not used by any app yet: staging moves to it in
+plan gocardless-sandbox-qc.sv, step S1b) keeps the data across deploys
+and wipes only when `KEEP_RESET_GENERATION` differs from
+`/data/.generation`. `scripts/fly/staging-reset.sh` asks you to type
+`reset keep-staging`, sets a new generation (a UTC timestamp) with `fly
+secrets set`, which restarts the machine, and waits until `/healthz`
+reports it as `resetGeneration`. Litestream's prefix is
+`<env>/<generation>`, so an empty volume restores from the generation the
+env names; with no replica there the snapshots are the fallback (loud, as
+on prod). The entrypoint refuses `demand` without `KEEP_RESET_SEED` or
+with a generation that isn't `A-Za-z0-9_-`. The seed is `seed::riverside`
 (Convex's `testSeed`): 100 donors with notes, relationships,
 identifiers, field values, acquisition codes, gifts and Gift Aid
 declarations, and one user per role
