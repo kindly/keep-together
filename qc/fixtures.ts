@@ -396,6 +396,17 @@ export function skipNoQcGoCardless(why: string): never {
  * (or a catch-up that found missed events). Passing, annotated
  * `gocardlessLateWebhook` for the GOCARDLESS LATE WEBHOOK banner.
  */
+/**
+ * Before a mandate the app shows an estimated first payment
+ * (`FIRST_CHARGE_LEAD_WORKING_DAYS`); one GoCardless then put elsewhere is
+ * a note for the banner, not a failure, until G5 tunes the estimate.
+ */
+export function noteFirstChargeEstimate(what: string) {
+  base
+    .info()
+    .annotations.push({ type: 'gocardlessEstimate', description: what })
+}
+
 export function noteLateWebhook(what: string) {
   base
     .info()

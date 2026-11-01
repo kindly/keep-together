@@ -6,6 +6,7 @@ import type { Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type {
   DirectDebitPayment,
+  Forecast,
   GoCardlessStatus,
   RegularGift,
 } from '../lib/data'
@@ -23,6 +24,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let status: GoCardlessStatus | undefined
 let gifts: Array<RegularGift> | undefined
 let canWrite = true
+let forecast: Forecast | undefined
 const writes = {
   setUp: vi.fn(),
   newLink: vi.fn(),
@@ -33,8 +35,8 @@ const writes = {
 vi.mock('../lib/data', () => ({
   useGoCardlessStatus: () => status,
   useRegularGifts: () => gifts,
-  // GoCardless's forecast: none (the list's upcoming stands).
-  useRegularGiftForecast: () => undefined,
+  // A card's own read (none by default: the list's upcoming stands).
+  useRegularGiftForecast: () => forecast,
   useDirectDebitWrites: () => writes,
 }))
 vi.mock('../lib/tenant', () => ({
@@ -125,7 +127,8 @@ function gift(over: Partial<RegularGift> = {}): RegularGift {
     scheduled: null,
     changeNotCoded: false,
     upcoming: [{ chargeDate: '2026-11-02', amount: 1250n, changeable: true }],
-    upcomingConfirmed: true,
+    // As the list sends it: only a card's own read confirms dates.
+    upcomingConfirmed: false,
     lastFailure: null,
     payments: [],
     connected: true,
@@ -139,6 +142,7 @@ beforeEach(() => {
   for (const f of Object.values(writes)) f.mockReset()
   status = CONNECTED
   gifts = []
+  forecast = undefined
   canWrite = true
   el = document.createElement('div')
   document.body.append(el)
@@ -223,25 +227,10 @@ test('the card: amount, schedule, status, mandate and next payments', () => {
   ).toBe('2 Nov 2026 · £12.50')
 })
 
-test('next payments: GoCardless’s are confirmed; before it has a schedule they are expected', () => {
-  gifts = [gift()]
+test('the card’s dates: expected from the list, and until GoCardless confirms them', () => {
+  gifts = [gift({ status: 'pending', mandateId: null, subscriptionId: null })]
   render()
   const card = () => el.querySelector('[data-testid="regular-gift"]')!
-  expect(card().textContent).toContain('Next payments')
-  expect(
-    card().querySelector('[data-testid="regular-gift-upcoming-expected"]'),
-  ).toBeNull()
-  act(() => root.unmount())
-  root = createRoot(el)
-  gifts = [
-    gift({
-      status: 'pending',
-      mandateId: null,
-      subscriptionId: null,
-      upcomingConfirmed: false,
-    }),
-  ]
-  render()
   expect(card().textContent).toContain('Expected payments')
   expect(
     card().querySelector('[data-testid="regular-gift-upcoming-expected"]')
@@ -250,6 +239,35 @@ test('next payments: GoCardless’s are confirmed; before it has a schedule they
   expect(
     card().querySelector('[data-testid="regular-gift-upcoming"]')?.textContent,
   ).toBe('2 Nov 2026 · £12.50')
+  // The card's own read, still the app's projection: still expected.
+  forecast = {
+    upcoming: [{ chargeDate: '2026-12-07', amount: 1250n, changeable: true }],
+    upcomingConfirmed: false,
+  }
+  render()
+  expect(card().textContent).toContain('Expected payments')
+  expect(
+    card().querySelector('[data-testid="regular-gift-upcoming"]')?.textContent,
+  ).toBe('7 Dec 2026 · £12.50')
+})
+
+test('the card’s dates: GoCardless’s schedule from its own read reads as next payments', () => {
+  // The list never confirms (as the server sends it); the forecast does.
+  gifts = [gift()]
+  forecast = {
+    upcoming: [{ chargeDate: '2026-11-05', amount: 1250n, changeable: false }],
+    upcomingConfirmed: true,
+  }
+  render()
+  const card = el.querySelector('[data-testid="regular-gift"]')!
+  expect(card.textContent).toContain('Next payments')
+  expect(card.textContent).not.toContain('Expected payments')
+  expect(
+    card.querySelector('[data-testid="regular-gift-upcoming-expected"]'),
+  ).toBeNull()
+  expect(
+    card.querySelector('[data-testid="regular-gift-upcoming"]')?.textContent,
+  ).toBe('5 Nov 2026 · £12.50')
 })
 
 test('payment history: every attempt with its status; only a collected one reads as money', () => {

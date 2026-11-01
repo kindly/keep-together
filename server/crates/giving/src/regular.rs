@@ -1960,6 +1960,13 @@ pub fn regular_by_contact(
 /// enforces the lead time through `next_possible_charge_date`, and the
 /// docs give no figure for it). The first sandbox run checks it (plan
 /// gocardless-sandbox-qc.sv, G5).
+///
+/// Only an estimate, and only used before a mandate exists: once there is
+/// one, GoCardless's own `next_possible_charge_date` replaces it, and the
+/// card says the dates are expected until GoCardless confirms them.
+/// Working days are Monday to Friday: UK bank holidays (Christmas, New
+/// Year, Easter, the May and August Mondays) aren't counted, so near one
+/// the estimate can be a day or more early.
 pub const FIRST_CHARGE_LEAD_WORKING_DAYS: i64 = 5;
 
 /// The earliest GoCardless is expected to collect a new mandate's first

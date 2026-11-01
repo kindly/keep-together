@@ -175,7 +175,9 @@ export function RegularGiftCard({
     listed.status,
     !isEnded(listed),
   )
-  const gift = forecast ? { ...listed, upcoming: forecast } : listed
+  // Its dates and whether GoCardless confirmed them come together: the
+  // list never confirms them (it doesn't ask GoCardless).
+  const gift = forecast ? { ...listed, ...forecast } : listed
   const canWrite = useCanWrite()
   const [dialog, setDialog] = useState<'oneOff' | 'cancel' | null>(null)
   const ended = isEnded(gift)

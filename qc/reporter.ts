@@ -563,6 +563,8 @@ export function notFakeBanner(
  */
 export function goCardlessQcBanner(notes: {
   late: Map<string, Array<string>>
+  /** First payments shown before a mandate that GoCardless moved. */
+  estimate?: Map<string, Array<string>>
   unreachable: Map<string, string>
   noQc: Map<string, string>
 }): Array<string> {
@@ -570,15 +572,24 @@ export function goCardlessQcBanner(notes: {
     [...m]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([t, why]) => `${t}: ${why}`)
-  const late = [...notes.late]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .flatMap(([t, whats]) => whats.map((w) => `${t}: ${w}`))
+  const each = (m: Map<string, Array<string>>) =>
+    [...m]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .flatMap(([t, whats]) => whats.map((w) => `${t}: ${w}`))
+  const late = each(notes.late)
+  const estimate = each(notes.estimate ?? new Map())
   const s = (n: number) => (n === 1 ? '' : 's')
   return [
     ...(late.length
       ? banner([
           `GOCARDLESS LATE WEBHOOK: ${late.length} wait${s(late.length)} passed only after the catch-up (or the catch-up found missed events); webhooks are slow or not arriving:`,
           ...late,
+        ])
+      : []),
+    ...(estimate.length
+      ? banner([
+          `GOCARDLESS FIRST-PAYMENT ESTIMATE: the first payment the app shows before a mandate (5 working days out, an estimate) differed from GoCardless's ${estimate.length} time${s(estimate.length)}; not failing until the estimate is tuned (plan gocardless-sandbox-qc G5):`,
+          ...estimate,
         ])
       : []),
     ...(notes.unreachable.size
@@ -615,6 +626,7 @@ export default class QcReporter implements Reporter {
   /** The GoCardless sandbox spec's notices (`goCardlessQcBanner`). */
   private gcQc = {
     late: new Map<string, Array<string>>(),
+    estimate: new Map<string, Array<string>>(),
     unreachable: new Map<string, string>(),
     noQc: new Map<string, string>(),
   }
@@ -644,6 +656,8 @@ export default class QcReporter implements Reporter {
           .map((a) => a.description ?? '')
       const late = of('gocardlessLateWebhook')
       if (late.length) this.gcQc.late.set(title, late)
+      const estimate = of('gocardlessEstimate')
+      if (estimate.length) this.gcQc.estimate.set(title, estimate)
       for (const [type, into] of [
         ['gocardlessUnreachable', this.gcQc.unreachable],
         ['gocardlessNoQc', this.gcQc.noQc],

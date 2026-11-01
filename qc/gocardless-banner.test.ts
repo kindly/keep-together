@@ -60,6 +60,19 @@ describe('goCardlessQcBanner', () => {
   })
 })
 
+test('a first-payment estimate GoCardless moved: its own banner, not failing', () => {
+  const notes = { ...none(), estimate: new Map<string, Array<string>>() }
+  notes.estimate.set('GoCardless sandbox › the first charge date', [
+    'day 3: the app said 2026-11-03 before the mandate, GoCardless 2026-12-03',
+  ])
+  const text = goCardlessQcBanner(notes).join('\n')
+  expect(text).toContain('GOCARDLESS FIRST-PAYMENT ESTIMATE')
+  expect(text).toContain('not failing until the estimate is tuned')
+  expect(text).toContain(
+    'the first charge date: day 3: the app said 2026-11-03 before the mandate, GoCardless 2026-12-03',
+  )
+})
+
 describe('the reporter collects the spec’s annotations', () => {
   const testCase = (title: string) =>
     ({
@@ -86,6 +99,10 @@ describe('the reporter collects the spec’s annotations', () => {
       ]),
     )
     r.onTestEnd(
+      testCase('first charge'),
+      result('passed', [{ type: 'gocardlessEstimate', description: 'day 3' }]),
+    )
+    r.onTestEnd(
       testCase('failed'),
       result('skipped', [
         { type: 'gocardlessUnreachable', description: '503' },
@@ -106,5 +123,8 @@ describe('the reporter collects the spec’s annotations', () => {
       ['gocardless-sandbox.spec.ts › failed', '503'],
     ])
     expect(notes.noQc.size).toBe(0)
+    expect([...(notes.estimate ?? new Map())]).toEqual([
+      ['gocardless-sandbox.spec.ts › first charge', ['day 3']],
+    ])
   })
 })

@@ -4705,6 +4705,28 @@ async fn with_a_subscription_its_own_schedule_is_confirmed() {
     );
 }
 
+/// G3 review L1: a slow GoCardless holds a gift's read for at most
+/// FORECAST_TIMEOUT; then the app's projection stands, unconfirmed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_gocardless_forecast_gives_way_to_the_projection() {
+    let t = setup().await;
+    let (_, id, _) = t.active().await;
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "path": "subscriptions", "delay_ms": 5000 }),
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let v = t.regular("alpha", &t.val, &id).await;
+    let took = started.elapsed();
+    assert!(
+        took < api::routes::gocardless::FORECAST_TIMEOUT + std::time::Duration::from_millis(1500),
+        "{took:?}"
+    );
+    assert_eq!(v["upcomingConfirmed"], false);
+    assert!(!v["upcoming"].as_array().unwrap().is_empty());
+}
+
 /// UI review H1: a one-off or Instant Bank Pay answer says what
 /// GoCardless was asked for, which under a reused key is the first
 /// request's: a form that changed its amount and kept its key would

@@ -170,6 +170,7 @@ export type {
   ExpectedGrouping,
   ExpectedPeriodRow,
   ExpectedReport,
+  Forecast,
   GoCardlessStatus,
   InstantPaymentLink,
   OneOffStarted,

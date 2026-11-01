@@ -3,6 +3,7 @@ import type { Browser, Page } from '@playwright/test'
 import {
   GoCardlessUnreachable,
   expect,
+  noteFirstChargeEstimate,
   noteLateWebhook,
   qcGoCardless,
   seedWorld,
@@ -129,6 +130,22 @@ const simulate = (scenario: string, resource: string) =>
 
 const peek = (kind: 'mandate' | 'subscription' | 'payment', id: string) =>
   qc<QcPeek>('GET', `peek/${slug}/${kind}/${id}`)
+
+/** The first `day` of a month on or after `from` (YYYY-MM-DD). */
+function firstDue(day: number, from: string): string {
+  let y = Number(from.slice(0, 4))
+  let m = Number(from.slice(5, 7))
+  const at = (yy: number, mm: number) =>
+    `${yy}-${String(mm).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  if (at(y, m) < from) {
+    m += 1
+    if (m > 12) {
+      m = 1
+      y += 1
+    }
+  }
+  return at(y, m)
+}
 
 /** Payments GoCardless may still collect. */
 const COLLECTABLE = [
@@ -549,8 +566,13 @@ test.describe('GoCardless sandbox', () => {
       )
   })
 
-  // Last: in serial mode a failure skips what follows, and this one
-  // asks an open question (q1) rather than checking a known path.
+  // Last: in serial mode a failure skips what follows.
+  //
+  // With a mandate, the app's first payment is the first due day on or
+  // after the mandate's next_possible_charge_date: GoCardless's own first
+  // charge must be that day (checked). Before a mandate the app shows an
+  // estimate (5 working days, review G3 L4): one GoCardless moves is a
+  // note and a banner line until G5 tunes it, not a failure.
   test('the first charge date: GoCardless’s is the app’s', async ({
     browser,
   }) => {
@@ -562,11 +584,33 @@ test.describe('GoCardless sandbox', () => {
     const differ: Array<string> = []
     for (const day of days) {
       const { view } = await setUp(page, '5', day)
-      // What the app says before GoCardless has a subscription: its own.
-      // (`upcoming` is on the one gift's read, not the contact's list.)
-      const said = (await regular(view.id)).upcoming.at(0)?.chargeDate
-      expect(said, `day ${day}: the app shows a first payment`).toBeTruthy()
-      await sign(view.id)
+      // Before a mandate: the estimate. (`upcoming` is on the one gift's
+      // read, not the contact's list.)
+      const estimated = (await regular(view.id)).upcoming.at(0)?.chargeDate
+      expect(
+        estimated,
+        `day ${day}: the app shows a first payment`,
+      ).toBeTruthy()
+      const mandate = await sign(view.id)
+      const withMandate = await until(
+        `day ${day}: the mandate`,
+        () => regular(view.id),
+        (v) => v.mandateId === mandate,
+      )
+      const earliest = (await peek('mandate', mandate)).nextPossibleChargeDate
+      expect(
+        earliest,
+        `day ${day}: the mandate's next possible charge date`,
+      ).toBeTruthy()
+      const want = firstDue(day, earliest!)
+      // A window with the mandate and no subscription yet: the app's own.
+      if (withMandate.subscriptionId === null) {
+        const shown = withMandate.upcoming.at(0)?.chargeDate
+        if (shown !== want)
+          differ.push(
+            `day ${day}: with the mandate the app shows ${shown ?? 'none'}, not ${want} (the first on or after ${earliest})`,
+          )
+      }
       const signed = await until(
         `day ${day}: the subscription`,
         () => regular(view.id),
@@ -574,9 +618,13 @@ test.describe('GoCardless sandbox', () => {
       )
       const sub = await peek('subscription', signed.subscriptionId!)
       const first = sub.upcomingPayments.at(0)?.chargeDate
-      if (first !== said)
+      if (first !== want)
         differ.push(
-          `day ${day}: GoCardless ${first ?? 'none'}, the app ${said}`,
+          `day ${day}: GoCardless ${first ?? 'none'}, the app ${want} (the first on or after the mandate's ${earliest})`,
+        )
+      if (first !== estimated)
+        noteFirstChargeEstimate(
+          `day ${day}: the app said ${estimated} before the mandate, GoCardless ${first ?? 'none'}`,
         )
     }
     expect(differ, differ.join('; ')).toEqual([])

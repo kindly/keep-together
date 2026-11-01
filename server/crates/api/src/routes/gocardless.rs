@@ -155,6 +155,11 @@ async fn by_contact(
     .map(Json)
 }
 
+/// How long a regular gift's read waits for GoCardless's forecast (its
+/// subscription's schedule, or its mandate's first possible charge date)
+/// before showing the app's own projection instead.
+pub const FORECAST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// `GET regular-gifts/{id}`: with its chain, and `upcoming`: the next
 /// payments to pick a change's date from, GoCardless's own forecast
 /// while connected with a subscription (else the chain's projection),
@@ -174,8 +179,15 @@ async fn one(
             Ok((v, token))
         })
         .await?;
+    // A read: GoCardless gets FORECAST_TIMEOUT, then the app's projection
+    // (or estimate) stands, marked unconfirmed (review G3 L1).
     let forecast = match (&token, &v.subscription_id, v.status.is_ended()) {
-        (Some(token), Some(sb), false) => gc.api.get_subscription(token, sb).await.ok(),
+        (Some(token), Some(sb), false) => {
+            tokio::time::timeout(FORECAST_TIMEOUT, gc.api.get_subscription(token, sb))
+                .await
+                .ok()
+                .and_then(Result::ok)
+        }
         _ => None,
     };
     // Before a subscription exists, its first payment can't come before
@@ -185,13 +197,14 @@ async fn one(
     let day = today();
     let earliest = match (&v.subscription_id, &v.mandate_id, &token) {
         (Some(_), _, _) => day.clone(),
-        (None, Some(md), Some(token)) if !v.status.is_ended() => gc
-            .api
-            .get_mandate(token, md)
-            .await
-            .ok()
-            .and_then(|m| m.next_possible_charge_date)
-            .unwrap_or_else(|| regular::estimated_first_charge(&day)),
+        (None, Some(md), Some(token)) if !v.status.is_ended() => {
+            tokio::time::timeout(FORECAST_TIMEOUT, gc.api.get_mandate(token, md))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|m| m.next_possible_charge_date)
+                .unwrap_or_else(|| regular::estimated_first_charge(&day))
+        }
         _ => regular::estimated_first_charge(&day),
     };
     let confirmed = forecast.is_some();
