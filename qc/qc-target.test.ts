@@ -16,7 +16,7 @@ import type {
   TestCase,
   TestResult,
 } from '@playwright/test/reporter'
-import { budgetFor, budgets, targetBudgets } from './budgets'
+import { BULK_ROUTES, budgetFor, budgets, targetBudgets } from './budgets'
 import type { Budget, FlowName } from './budgets'
 import { HOSTED, hostedUrl, qcTarget } from './target'
 import { RTT_CEILING_MS, rttCeilingMs } from './timing'
@@ -28,9 +28,8 @@ import { readRoutes } from './coverage'
 import type { FlowRecord } from './timing'
 
 // QC on GitHub Actions against keep-qc (plan gocardless-sandbox-qc.sv,
-// A2): the `qc` target, its own budgets (g2q6: empty until A3 records
-// them, so nothing is judged on latency there yet), and the first-hop
-// watch off on the runner (g2q10).
+// A2): the `qc` target, its own budgets (g2q6, recorded by A3), and the
+// first-hop watch off on the runner (g2q10).
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -63,6 +62,7 @@ describe('per-target budgets (human, g2q6)', () => {
   const real = (Object.entries(budgets) as Array<[FlowName, Budget]>).filter(
     ([, b]) => !b.selfTest,
   )
+  const pageUpload: Array<FlowName> = ['scan.sendPage', 'scans.uploadToLaptop']
 
   test('the house set is unchanged for local and staging', () => {
     for (const t of ['local', 'staging'] as const) {
@@ -73,18 +73,36 @@ describe('per-target budgets (human, g2q6)', () => {
     expect(rttCeilingMs('staging')).toBe(RTT_CEILING_MS)
   })
 
-  test('qc: empty until A3 records it, so every flow is unbudgeted, with no ceiling', () => {
-    expect(targetBudgets.qc).toEqual({ rttCeilingMs: null, flows: {} })
-    expect(rttCeilingMs('qc')).toBeNull()
+  test('qc (A3, recorded): its own lines and ceiling; same kinds; bulk at the fixed 500 ms but the page upload; no targets', () => {
+    expect(rttCeilingMs('qc')).toBe(290)
+    const own = targetBudgets.qc!.flows
+    expect(Object.keys(own).length).toBeGreaterThan(0)
     for (const [name, b] of real) {
       const q = budgetFor(name, 'qc')
-      expect(q.unbudgeted).toBe(true)
-      // The kind and the house line stay, for the timeout and reference;
-      // no target is tracked against a line it doesn't have.
       expect(q.kind).toBe(b.kind)
-      expect(q.maxMs).toBe(b.maxMs)
       expect(q.targetMs).toBeUndefined()
+      if (own[name]) {
+        expect(q.unbudgeted).toBeUndefined()
+        expect(q.maxMs % 10).toBe(0)
+        // The human's fixed lines: bulk is 500, never raised, but the
+        // phone's page upload gets 1,500 on keep-qc only (2026-11-01).
+        if (b.kind === 'bulk') {
+          expect(b.maxMs).toBe(500)
+          expect(q.maxMs).toBe(pageUpload.includes(name) ? 1500 : 500)
+        }
+      } else {
+        // Not timed on keep-qc (the GoCardless fake's flows): unbudgeted,
+        // the house line kept for the timeout only.
+        expect(b.fakeGoCardless).toBe(true)
+        expect(q.unbudgeted).toBe(true)
+        expect(q.maxMs).toBe(b.maxMs)
+      }
     }
+  })
+
+  test("the phone's page upload is a bulk route at 500 ms, like Accept ticked", () => {
+    expect(BULK_ROUTES['POST /scan/:token/scans']).toBe(500)
+    expect(BULK_ROUTES['POST /t/:slug/bank/accept']).toBe(500)
   })
 
   test('the harness self-tests keep their budgets on every target', () => {
@@ -94,8 +112,11 @@ describe('per-target budgets (human, g2q6)', () => {
 
   test('the process target comes from QC_TARGET', () => {
     vi.stubEnv('QC_TARGET', 'qc')
-    expect(budgetFor('contact.save').unbudgeted).toBe(true)
-    expect(rttCeilingMs()).toBeNull()
+    expect(budgetFor('contact.save')).toBe(
+      targetBudgets.qc!.flows['contact.save'],
+    )
+    expect(budgetFor('gocardless.setUp').unbudgeted).toBe(true)
+    expect(rttCeilingMs()).toBe(290)
     vi.stubEnv('QC_TARGET', 'staging')
     expect(budgetFor('contact.save')).toBe(budgets['contact.save'])
   })
@@ -241,7 +262,8 @@ describe('the run on Actions', () => {
     const out = logged.join('\n')
     expect(res?.status).toBeUndefined()
     expect(out).toMatch(/^qc q1 · target qc · asserting/m)
-    expect(out).toContain('(no RTT ceiling on this target yet: recorded only)')
+    // A3 set a ceiling: the header no longer says there is none.
+    expect(out).not.toContain('no RTT ceiling on this target yet')
     expect(out).toContain(`· link: not watched (${LINK_OFF_ACTIONS})`)
     // Not the "absence of a LINK banner says nothing" line: it's off by design.
     expect(out).not.toContain('first hop not watched')

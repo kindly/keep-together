@@ -901,12 +901,15 @@ history line.
 
 **Budgets of its own** (human, g2q6). The house's budgets would time the
 Atlantic, not the app. `qc/budgets.ts` has a set per target
-(`targetBudgets`), and the `qc` set is **empty until A3 records it**:
-three `mode=record` runs, each flow's line 1.5× its worst sample, the
-RTT ceiling from the same runs, shown to the human as a diff. Until
-then every flow on keep-qc is timed and recorded but not judged (a `NO
-BUDGETS` banner says so), while behaviour, the server rule, coverage and
-isolation are judged as usual.
+(`targetBudgets`). The `qc` set was recorded by plan step A3 and
+approved by the human (2026-11-01): three `mode=record` runs from a US
+Actions runner to keep-qc in London, each flow's line 1.5× its worst
+sample, the RTT ceiling (290 ms) from the same runs. Bulk flows keep the
+fixed 500 ms, except the phone's page upload at 1,500 ms on keep-qc
+only. If keep-qc or the runners move, the set is re-recorded
+(qc/README.md "Budgets"). A flow missing from it (only the GoCardless
+fake's) is timed and recorded but not judged (a `NO BUDGETS` banner says
+so).
 
 **History** is an artifact chain (g2q8): `scripts/qc-actions/history.sh
 fetch` takes the `qc-history` artifact (`history.jsonl` and `runs.log`)
@@ -945,8 +948,8 @@ empty one uploaded as the newest would cut the chain. With none at all
 | `record` | a `mode=record` run: measured, nothing judged | none |
 
 Lasting voids are the house's rule: the last 2 runs both void, or 36 h
-with no pass, fail or error. A `no-budgets` void, what every run says
-until A3, never alerts, never counts among the 2, and restarts the 36 h
+with no pass, fail or error. A `no-budgets` void (a target with no budgets
+at all, as keep-qc before A3) never alerts, never counts among the 2, and restarts the 36 h
 clock (everything but latency was judged). A fail, an error or a lasting
 void also fails the job (red in Actions).
 

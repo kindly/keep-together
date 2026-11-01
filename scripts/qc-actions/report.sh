@@ -137,7 +137,7 @@ field() { sed -nE "s/.* $1=([^ ]*).*/\1/p" <<<"$2"; }
 # The last 2 runs void (this one and the one before), or no pass, fail or
 # error for 36 h (since the first run, if none yet). Prints why.
 # Record runs judge nothing and don't count. A no-budgets void judged
-# everything but latency (expected until A3): it isn't one of the voids
+# everything but latency (keep-qc before A3 recorded its set): it isn't one of the voids
 # in a row, and it restarts the 36 h clock like a pass.
 voids_persist() {
   local all judged since
