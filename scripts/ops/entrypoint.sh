@@ -103,10 +103,16 @@ put_marker() { # file value
 }
 
 # Append .generation's value to $USED unless it is the generation being
-# (re)started now. Unreadable or empty: nothing to record.
+# (re)started now. An unreadable one stops the boot before anything is
+# removed: it may name a generation that must never come back, and only a
+# human can say which (a resumed wipe reaches here without M1's check).
 retire_generation() {
-  [ -f "$DATA/.generation" ] || return 0
-  old=$(cat "$DATA/.generation" 2>/dev/null) || return 0
+  [ -e "$DATA/.generation" ] || return 0
+  old=$(cat "$DATA/.generation") || {
+    log "can't read $DATA/.generation to retire it; not starting (nothing more was wiped)." \
+      "Look at it, record its generation in $USED, then remove it"
+    exit 1
+  }
   if [ -n "$old" ] && [ "$old" != "$GENERATION" ]; then
     printf '%s\n' "$old" >>"$USED"
   fi
@@ -185,10 +191,12 @@ put_in_place() { # source fallback missing
   if [ -e "$DATA/restoring/drill/marks.db" ]; then
     mv "$DATA/restoring/drill/marks.db" "$DATA/drill/"
   fi
+  # Before platform.db: once it is in place the next boot won't restore,
+  # so a fallback's flag must already be on disk.
+  put_marker "$DATA/.restored" "$(printf '{"source":"%s","fallback":%s,"missingOrgs":%s,"at":"%s"}' \
+    "$1" "$2" "$3" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
   mv "$DATA/restoring/platform.db" "$PLATFORM"
   rm -rf "$DATA/restoring"
-  printf '{"source":"%s","fallback":%s,"missingOrgs":%s,"at":"%s"}\n' \
-    "$1" "$2" "$3" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$DATA/.restored"
   put_marker "$DATA/.image" "$IMAGE"
 }
 

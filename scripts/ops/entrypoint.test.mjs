@@ -12,7 +12,17 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
 const ENTRYPOINT = path.join(import.meta.dirname, 'entrypoint.sh')
 
+const REAL_MV = fs.existsSync('/usr/bin/mv') ? '/usr/bin/mv' : '/bin/mv'
+
 const STUBS = {
+  // mv, except that STUB_CRASH_AT_PLATFORM_MV makes the restore's move of
+  // platform.db fail: under `set -e` the boot stops there, as a crash would.
+  mv: `#!/bin/sh
+case "$1" in
+*/restoring/platform.db) [ -z "\${STUB_CRASH_AT_PLATFORM_MV:-}" ] || exit 1 ;;
+esac
+exec ${REAL_MV} "$@"
+`,
   // The entrypoint creates platform.db with `sqlite3 <file> 'PRAGMA …'`.
   sqlite3: `#!/bin/sh\n: >"$1"\n`,
   // Both record the prefix they were given and stop: the "server".
@@ -174,6 +184,18 @@ describe('KEEP_RESET_ON=demand: reset only when the generation changes', () => {
     expect(marker('platform.db')).toBe('restored from litestream')
   })
 
+  test('a crash just before platform.db is in place keeps the fallback flag', () => {
+    const env = { ...DEMAND, ...BUCKETS, KEEP_RESET_GENERATION: 'g1', STUB_RESTORE_snapshot: '0' }
+    const crashed = boot({ ...env, STUB_CRASH_AT_PLATFORM_MV: '1' })
+    expect(crashed.status).not.toBe(0)
+    expect(JSON.parse(marker('.restored'))).toMatchObject({ source: 'snapshot', fallback: true })
+    // The next boot restores again (no platform.db) and stays flagged.
+    const res = boot(env)
+    expect(res.status, res.stderr).toBe(0)
+    expect(marker('platform.db')).toBe('restored from snapshot')
+    expect(JSON.parse(marker('.restored')).fallback).toBe(true)
+  })
+
   test('with no replica the snapshots are the fallback', () => {
     const env = { ...DEMAND, ...BUCKETS, KEEP_RESET_GENERATION: 'g1', STUB_RESTORE_snapshot: '0' }
     const res = boot(env)
@@ -267,6 +289,20 @@ describe('demand: a reset is crash-safe and never restores (review M1, M2)', () 
   test('a crash while wiping for g2, then a newer generation g3: wiped for g3', () => {
     volume(() => fs.writeFileSync(path.join(data, '.wiping'), 'g2\n'))
     reset(bootWithBackups('g3'), 'g3')
+  })
+
+  test('a resumed wipe with an unreadable .generation refuses: it can’t retire what it can’t read', () => {
+    volume(() => {
+      fs.writeFileSync(path.join(data, '.wiping'), 'g2\n')
+      fs.rmSync(path.join(data, '.generation'))
+      fs.mkdirSync(path.join(data, '.generation'))
+    })
+    const res = bootWithBackups()
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain("can't read")
+    expect(res.stderr).toContain('to retire it')
+    expect(res.calls).toEqual([])
+    expect(kept()).toBe(true)
   })
 
   test('an unreadable .generation refuses to boot and wipes nothing', () => {
