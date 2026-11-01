@@ -8,7 +8,8 @@
 # Makes the app in lhr and its 3 GB volume keep_data; generates auth's
 # keys, the riverside sign-ins and KEEP_QC_TOKEN (never shown: nobody
 # signs in to keep-qc, and the token goes to Fly and to the GitHub
-# environment `qc` on stdin); asks for SENTRY_DSN (optional); creates the
+# environment `qc` on stdin); no SENTRY_DSN (QC's deliberate failures
+# would land in staging's Sentry environment); creates the
 # GitHub environment `qc`, which only main may deploy to, with its
 # FLY_API_TOKEN (a keep-qc deploy token, piped, never shown); then runs
 # scripts/fly/gocardless-secrets.sh qc if the QC sandbox account's partner
@@ -16,10 +17,11 @@
 # them). No Litestream or snapshot buckets: keep-qc is wiped on every
 # deploy. No DNS or certificate: https://keep-qc.fly.dev is the origin.
 #
-# It does not set the environment's QC_URL: that switches on deploy.yml's
-# deploy-qc job, so it comes last, after the first deploy (it prints the
-# command). Re-run it any time: it also checks the app still has one
-# machine and one volume.
+# It doesn't deploy, and doesn't set the environment's QC_URL (which
+# switches on deploy.yml's deploy-qc job): it prints those steps, so the
+# first deploy is built by Actions from main, never from a working tree.
+# Re-run it any time: it also checks the app still has one machine and
+# one volume.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -74,12 +76,15 @@ say "GitHub environment $ENVIRONMENT (deployments from main only)"
 printf '+ gh api -X PUT repos/{owner}/{repo}/environments/%s <branch policy on stdin>\n' "$ENVIRONMENT" >&2
 printf '%s' '{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' |
   gh api -X PUT "repos/{owner}/{repo}/environments/$ENVIRONMENT" --input - >/dev/null
+# Each policy as type:name. Only branch:main may stay: a tag policy, or
+# any other branch, could deploy a modified workflow with this
+# environment's secrets.
 policies=$(gh api "repos/{owner}/{repo}/environments/$ENVIRONMENT/deployment-branch-policies" \
-  --jq '.branch_policies[]? | select((.type // "branch") == "branch") | .name')
-others=$(grep -vx main <<<"$policies" | grep . || true)
+  --jq '.branch_policies[]? | "\(.type // "branch"):\(.name)"')
+others=$(grep -vx branch:main <<<"$policies" | grep . || true)
 [[ -z $others ]] ||
   die "the $ENVIRONMENT environment also lets these deploy: $(tr '\n' ' ' <<<"$others")(only main may: remove them in the repo's Settings › Environments › $ENVIRONMENT)"
-if grep -qx main <<<"$policies"; then
+if grep -qx branch:main <<<"$policies"; then
   echo "main only: set"
 else
   printf '+ gh api -X POST repos/{owner}/{repo}/environments/%s/deployment-branch-policies <{"name":"main"} on stdin>\n' "$ENVIRONMENT" >&2
@@ -128,24 +133,27 @@ if [[ -n $qc_token ]]; then
   echo "KEEP_QC_TOKEN set on $APP and in the GitHub environment $ENVIRONMENT"
 fi
 qc_token=
-if ! grep -qx SENTRY_DSN <<<"$have"; then
-  echo "SENTRY_DSN is optional (the Sentry project's Client Keys page, EU region); empty skips it."
-  IFS= read -r -s -p "SENTRY_DSN (not shown): " dsn || dsn=
-  echo
-  if [[ -n $dsn ]]; then
-    [[ $dsn =~ ^[[:graph:]]+$ ]] || die "SENTRY_DSN has spaces or control characters (nothing was set)"
-    import_secrets "SENTRY_DSN=$dsn"
-  fi
-  dsn=
+# No Sentry: keep-qc's KEEP_ENV is staging, so its errors (many of them
+# QC's on purpose) would be filed as staging's.
+if grep -qx SENTRY_DSN <<<"$have"; then
+  echo "warning: $APP has SENTRY_DSN: its errors are reported as staging's. Unset it:"
+  echo "  fly secrets unset SENTRY_DSN -a $APP --stage"
 fi
 
 say "Deploy token for the $ENVIRONMENT environment (FLY_API_TOKEN)"
 if grep -qx FLY_API_TOKEN <<<"$gh_secrets"; then
   echo "set (to replace it: fly tokens create deploy -a $APP --expiry 8760h | gh secret set FLY_API_TOKEN --env $ENVIRONMENT)"
 else
-  # Piped from flyctl to gh: never on screen, never in argv.
-  printf '+ fly tokens create deploy -a %s --expiry 8760h | gh secret set FLY_API_TOKEN --env %s\n' "$APP" "$ENVIRONMENT" >&2
-  fly tokens create deploy -a "$APP" --expiry 8760h | gh secret set FLY_API_TOKEN --env "$ENVIRONMENT"
+  # Held in a variable, checked, then to gh on stdin: never on screen,
+  # never in argv. An empty token is refused, not stored: a re-run would
+  # take the name for a working token.
+  printf '+ fly tokens create deploy -a %s --expiry 8760h\n' "$APP" >&2
+  deploy_token=$(fly tokens create deploy -a "$APP" --expiry 8760h) ||
+    die "fly tokens create failed: FLY_API_TOKEN not set (re-run once fly works)"
+  [[ $deploy_token =~ [[:graph:]] ]] || die "fly tokens create gave nothing: FLY_API_TOKEN not set"
+  printf '+ gh secret set FLY_API_TOKEN --env %s <stdin>\n' "$ENVIRONMENT" >&2
+  printf '%s' "$deploy_token" | gh secret set FLY_API_TOKEN --env "$ENVIRONMENT"
+  deploy_token=
 fi
 
 say "GoCardless partner app secrets (the QC sandbox account's)"
@@ -170,9 +178,12 @@ cat <<NEXT
    address), make a partner app with redirect $ORIGIN/api/gocardless/callback
    and webhook $ORIGIN/api/gocardless/webhook, then
    scripts/fly/gocardless-secrets.sh qc
-2. First deploy: fly deploy -c fly.qc.toml --ha=false
-   (--ha=false always: without it flyctl's first deploy makes two machines)
-3. Switch on deploy.yml's deploy-qc job:
+   (the api won't boot on keep-qc without them).
+2. Switch on deploy.yml's deploy-qc job:
    gh variable set QC_URL --env $ENVIRONMENT --body $ORIGIN
-4. Then scripts/fly/gocardless-qc-token.sh (log in as the QC account).
+3. First deploy, built by Actions from main (never from a working tree):
+   gh workflow run deploy.yml --ref main -f env=qc
+   (it deploys with --ha=false: one machine, one volume)
+4. Then scripts/fly/gocardless-qc-token.sh (log in as the QC account), and
+   deploy again the same way to apply it.
 NEXT

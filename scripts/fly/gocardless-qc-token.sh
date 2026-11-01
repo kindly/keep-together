@@ -9,10 +9,11 @@
 #
 # 1. Type keep-qc's partner app client id and secret (the app made in the
 #    QC sandbox account; not shown).
-# 2. Open the printed link, log in AS THE QC ACCOUNT and approve. keep-qc
-#    doesn't know this link's `state`, so its callback says the link has
-#    expired, without using the code.
-# 3. Paste the address it landed on (or just the code) within 5 minutes.
+# 2. Open the printed link, log in AS THE QC ACCOUNT and approve.
+#    GoCardless sends the browser to keep-qc's callback, which knows this
+#    script's `cli-` state: it exchanges nothing and shows one line,
+#    `code=…&state=…` (gocardless/oauth.rs, never in prod or live).
+# 3. Paste that line within 5 minutes. The state is always checked.
 #
 # The token is never printed, never in argv, never in a file: the
 # exchange's form goes to curl on stdin, its answer stays in a variable,
@@ -46,7 +47,9 @@ echo
 [[ $client_id =~ ^[[:graph:]]+$ ]] || die "the client id is empty or has spaces"
 [[ $client_secret =~ ^[[:graph:]]+$ ]] || die "the client secret is empty or has spaces"
 
-state=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+# cli-: keep-qc's callback shows the code for this state instead of
+# using it (server/crates/api/src/gocardless/oauth.rs).
+state=cli-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
 started=$(date +%s)
 url="$CONNECT/oauth/authorize?response_type=code"
 url+="&client_id=$(printf '%s' "$client_id" | uri)"
@@ -60,10 +63,10 @@ Open this, log in AS THE QC SANDBOX ACCOUNT, and approve:
 
   $url
 
-keep-qc will say the link has expired: that's expected (it never sees
-the code). Paste the address it landed on, or just the code.
+keep-qc then shows one line, code=…&state=… (it connects nothing).
+Paste that line here within 5 minutes.
 MSG
-IFS= read -rs -p "address or code (not shown): " pasted
+IFS= read -rs -p "the line keep-qc shows (not shown): " pasted
 echo
 pasted=${pasted//[[:space:]]/}
 [[ -n $pasted ]] || die "nothing pasted"
@@ -78,16 +81,16 @@ param() {
     [[ $q == *'&'* ]] && q=${q#*&} || q=
   done
 }
-if [[ $pasted == *[?]* ]]; then
-  err=$(param error)
-  [[ -z $err ]] || die "GoCardless answered $err (nothing was set)"
-  got_state=$(param state)
-  [[ $got_state == "$state" ]] ||
-    die "that address is for a different link (its state isn't this run's): open the link printed above"
-  code=$(param code)
-else
-  code=$pasted
-fi
+# The line, or the whole callback address: both carry state= and either
+# code= or error=. The state is always checked: a bare code is refused.
+got_state=$(param state)
+[[ -n $got_state ]] ||
+  die "no state= in what was pasted: paste the whole line keep-qc shows (code=…&state=…)"
+[[ $got_state == "$state" ]] ||
+  die "that line is for a different link (its state isn't this run's): open the link printed above"
+err=$(param error)
+[[ -z $err ]] || die "GoCardless answered $err (nothing was set)"
+code=$(param code)
 [[ $code =~ ^[A-Za-z0-9_-]+$ ]] || die "no code in what was pasted"
 (($(date +%s) - started <= WINDOW)) || die "more than 5 minutes passed and the code has expired: run it again"
 
@@ -125,4 +128,4 @@ printf 'KEEP_QC_GOCARDLESS_TOKEN=%s\nKEEP_QC_GOCARDLESS_ORGANISATION=%s\n' "$tok
 unset token
 
 echo "QC sandbox account: $org"
-echo "staged on $APP: the next deploy applies them (fly deploy -c fly.qc.toml --ha=false, or a push to main)."
+echo "staged on $APP: the next deploy applies them (gh workflow run deploy.yml --ref main -f env=qc, or a push to main)."

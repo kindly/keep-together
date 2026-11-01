@@ -4,8 +4,9 @@ name: Deploy
 # lhr), which resets itself to the riverside seed, and to keep-qc (QC's
 # own app, plan gocardless-sandbox-qc.sv, wiped on every deploy too).
 # deploy-qc skips, green, until the GitHub environment `qc` has the
-# variable QC_URL, which the human sets after keep-qc's first deploy
-# (scripts/fly/qc.sh prints the command). Prod (keep-prod) is deployed
+# variable QC_URL, which the human sets once keep-qc's secrets are in;
+# its first deploy is then a Run workflow with env=qc (scripts/fly/qc.sh
+# prints both commands). Prod (keep-prod) is deployed
 # only by hand: Run workflow with env=prod, from main. It refuses any
 # other branch, and refuses until the variable PROD_URL is set, which
 # scripts/fly/prod.sh tells the human to do once keep-prod exists.

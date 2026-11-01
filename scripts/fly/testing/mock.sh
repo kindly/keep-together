@@ -42,7 +42,10 @@ fly)
     take_stdin "$@"
     while IFS= read -r l; do [[ -z $l ]] || printf '%s\n' "${l%%=*}"; done <<<"$body" | add_names fly-secrets.json
     ;;
-  "tokens create deploy -a keep-qc --expiry 8760h") answer fly-deploy-token "FlyV1 fm2_mockdeploytoken_0123456789abcdef" ;;
+  "tokens create deploy -a keep-qc --expiry 8760h")
+    fail_if fly-token
+    answer fly-deploy-token "FlyV1 fm2_mockdeploytoken_0123456789abcdef"
+    ;;
   *) echo "fly mock: unexpected: $*" >&2; exit 2 ;;
   esac
   ;;
@@ -53,7 +56,7 @@ gh)
   "api repos/{owner}/{repo}/environments/qc/deployment-branch-policies --jq "*) answer gh-policies "" ;;
   "api -X POST repos/{owner}/{repo}/environments/qc/deployment-branch-policies --input -")
     take_stdin "$@"
-    printf '%s\n' "$(jq -r .name <<<"$body")" >>"$S/gh-policies"
+    printf '%s\n' "$(jq -r '"\(.type):\(.name)"' <<<"$body")" >>"$S/gh-policies"
     echo '{}'
     ;;
   "secret list --env qc --json name") answer gh-secrets.json ;;

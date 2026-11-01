@@ -29,9 +29,9 @@ beforeEach(() => {
 afterEach(() => sb.cleanup())
 
 // The printed authorize link's state, once it is on screen.
-const stateFrom = (out) => out.match(/[?&]state=([0-9a-f]{32})\b/)?.[1] ?? null
-const landed = (state, extra = '') =>
-  `https://keep-qc.fly.dev/api/gocardless/callback?code=${CODE}&state=${state}${extra}`
+const stateFrom = (out) => out.match(/[?&]state=(cli-[0-9a-f]{32})\b/)?.[1] ?? null
+// The line keep-qc's callback shows for the script's state.
+const landed = (state) => `code=${CODE}&state=${state}`
 const pasteLanded = (out) => {
   const s = stateFrom(out)
   return s && landed(s)
@@ -93,17 +93,29 @@ test('gocardless_qc_token_never_puts_a_secret_in_argv_on_screen_or_in_a_file', a
   expect(sb.tmpFiles()).toEqual([])
 })
 
-test('gocardless_qc_token_takes_a_bare_code', async () => {
-  const r = await sb.runTty(SCRIPT, [CLIENT_ID, CLIENT_SECRET, CODE])
+test('gocardless_qc_token_takes_the_whole_callback_address_too', async () => {
+  const r = await sb.runTty(SCRIPT, [
+    CLIENT_ID,
+    CLIENT_SECRET,
+    (out) => stateFrom(out) && `https://keep-qc.fly.dev/api/gocardless/callback?${landed(stateFrom(out))}`,
+  ])
   expect(r.code, r.stderr).toBe(0)
   expect(flyImports()).toHaveLength(1)
+})
+
+test('gocardless_qc_token_refuses_a_bare_code_the_state_is_always_checked', async () => {
+  const r = await sb.runTty(SCRIPT, [CLIENT_ID, CLIENT_SECRET, (out) => stateFrom(out) && CODE])
+  expect(r.code).not.toBe(0)
+  expect(r.stderr).toContain('no state=')
+  expect(curlCalls()).toEqual([])
+  expect(flyImports()).toEqual([])
 })
 
 test('gocardless_qc_token_refuses_an_address_from_another_link', async () => {
   const r = await sb.runTty(SCRIPT, [
     CLIENT_ID,
     CLIENT_SECRET,
-    (out) => stateFrom(out) && landed('f'.repeat(32)),
+    (out) => stateFrom(out) && landed(`cli-${'f'.repeat(32)}`),
   ])
   expect(r.code).not.toBe(0)
   expect(r.stderr).toContain('different link')
@@ -115,7 +127,7 @@ test('gocardless_qc_token_stops_on_a_refusal_in_the_address', async () => {
   const r = await sb.runTty(SCRIPT, [
     CLIENT_ID,
     CLIENT_SECRET,
-    (out) => stateFrom(out) && `https://keep-qc.fly.dev/api/gocardless/callback?error=access_denied&state=${stateFrom(out)}`,
+    (out) => stateFrom(out) && `error=access_denied&state=${stateFrom(out)}`,
   ])
   expect(r.code).not.toBe(0)
   expect(r.stderr).toContain('access_denied')

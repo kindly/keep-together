@@ -598,7 +598,9 @@ against a **dedicated QC sandbox account**. Nobody uses it by hand.
 - **Secrets**, all made or asked for by `scripts/fly/qc.sh`, none ever
   printed: `KEEP_SETTINGS_KEY`, `KEEP_AUTH_PEPPER`, the riverside
   sign-ins (nobody signs in; `fly ssh console -a keep-qc -C 'printenv
-  …'` if ever needed), `KEEP_QC_TOKEN`, optionally `SENTRY_DSN`. The
+  …'` if ever needed), `KEEP_QC_TOKEN`. **No `SENTRY_DSN`**: keep-qc's
+  `KEEP_ENV` is `staging`, so its errors, many of them QC's on purpose,
+  would be filed as staging's (`qc.sh` warns if it is set). The
   QC sandbox account's partner app: `KEEP_GOCARDLESS_CLIENT_ID`,
   `_CLIENT_SECRET`, `_WEBHOOK_SECRET` (`scripts/fly/gocardless-secrets.sh
   qc`; the api won't boot with `sandbox` without them). That account's
@@ -616,7 +618,8 @@ against a **dedicated QC sandbox account**. Nobody uses it by hand.
   workflow, and its smoke test waits until `/healthz` reports the commit
   it built.
 
-**Setting it up** (the human, in this order, after this lands on main):
+**Setting it up** (the human, in this order, after this lands on main;
+every deploy is built by Actions from `main`, never from a working tree):
 
 1. In GoCardless's **sandbox**, a second account for QC (its own login,
    e.g. a `+qc` address), and in it a **partner app** with redirect
@@ -626,23 +629,34 @@ against a **dedicated QC sandbox account**. Nobody uses it by hand.
 2. `fly auth login`, `gh auth login`, then `scripts/fly/qc.sh`: the app
    and volume, the generated secrets, the GitHub environment and its
    deploy token. In a terminal it ends by running
-   `scripts/fly/gocardless-secrets.sh qc` for step 1's partner app.
-   Re-runs are safe and change nothing that's set.
-3. `fly deploy -c fly.qc.toml --ha=false` (`--ha=false` always).
-4. `gh variable set QC_URL --env qc --body https://keep-qc.fly.dev`:
+   `scripts/fly/gocardless-secrets.sh qc` for step 1's partner app (the
+   api won't boot on keep-qc without them). Re-runs are safe and change
+   nothing that's set.
+3. `gh variable set QC_URL --env qc --body https://keep-qc.fly.dev`:
    from now on every push to `main` deploys keep-qc.
-5. `scripts/fly/gocardless-qc-token.sh`, then deploy again (or push).
+4. The first deploy: `gh workflow run deploy.yml --ref main -f env=qc`
+   (Actions › Deploy › Run workflow, `env=qc`). It deploys with
+   `--ha=false` and waits for `/healthz` to report the commit.
+5. `scripts/fly/gocardless-qc-token.sh`, then deploy again the same way
+   (or push).
 
 **The QC account's token** (`scripts/fly/gocardless-qc-token.sh`).
 OAuth needs a person to log in and approve, so that happens once: the
 script takes keep-qc's partner client id and secret (typed, not shown),
-prints the sandbox authorize link with a random `state`, and you log in
-**as the QC account** and approve. keep-qc's callback doesn't know that
-`state`, so it says the link has expired and leaves the code unused;
-paste the address it landed on (or only the code) within 5 minutes. The
-script checks the `state`, exchanges the code (the form goes to curl on
-stdin), prints only the organisation id (`OR…`) and stages the token and
-organisation id on keep-qc on stdin. The token is never printed, never
+prints the sandbox authorize link with a random `state` of the form
+`cli-<32 hex>`, and you log in **as the QC account** and approve.
+GoCardless sends the browser to keep-qc's registered callback, which
+recognises the `cli-` state and, instead of connecting anything, shows a
+plain page with one line, `code=…&state=…` (`gocardless/oauth.rs`: only
+with `KEEP_GOCARDLESS=sandbox` or `fake`, which the boot refuses in
+prod; `no-store`, never logged). Paste that line within 5 minutes. The
+script always checks the `state` (a bare code is refused), exchanges the
+code (the form goes to curl on stdin), prints only the organisation id
+(`OR…`) and stages the token and organisation id on keep-qc on stdin.
+(A localhost redirect would avoid the page, but GoCardless's docs only
+say a redirect must "exactly match one of the `redirect_uris` registered
+on your app", not whether `http://localhost` may be one:
+https://docs.gocardless.com/docs/api-reference/oauth-reference.) The token is never printed, never
 in a process's arguments, never in a file; a failed exchange prints only
 GoCardless's error code. Reconnecting disables the account's previous
 token, so running it again replaces the one on keep-qc, and the QC

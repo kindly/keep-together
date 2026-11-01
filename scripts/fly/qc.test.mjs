@@ -5,6 +5,8 @@
 // may deploy to it, and that no secret it handles reaches argv or the
 // screen.
 import { afterEach, beforeEach, expect, test } from 'vitest'
+import { rmSync } from 'node:fs'
+import path from 'node:path'
 import { assertNowhere, sandbox } from './testing/stubs.mjs'
 
 const SCRIPT = 'scripts/fly/qc.sh'
@@ -13,6 +15,7 @@ beforeEach(() => {
   sb = sandbox()
 })
 afterEach(() => sb.cleanup())
+const rmFile = (name) => rmSync(path.join(sb.dir, 'state', name), { force: true })
 
 const cmds = () => sb.argv().filter(([n]) => n === 'fly' || n === 'gh')
 const ran = (...prefix) =>
@@ -93,24 +96,58 @@ test('qc_sh_makes_the_qc_environment_deployable_from_main_only', () => {
   const post = sb.stdin().filter((x) => x.cmd.startsWith('gh api -X POST'))
   expect(post.map((x) => JSON.parse(x.body))).toEqual([{ name: 'main', type: 'branch' }])
   // The environment's deploy token: piped from flyctl to gh.
-  expect(ghSet('FLY_API_TOKEN')).toEqual(['FlyV1 fm2_mockdeploytoken_0123456789abcdef\n'])
+  expect(ghSet('FLY_API_TOKEN')).toEqual(['FlyV1 fm2_mockdeploytoken_0123456789abcdef'])
 })
 
-test('qc_sh_refuses_an_environment_another_branch_may_deploy_from', () => {
-  sb.set('gh-policies', 'main\nfeat/*\n')
+test('qc_sh_refuses_an_empty_or_failed_deploy_token_and_stores_nothing', () => {
+  sb.set('fly-deploy-token', '')
   const r = sb.run(SCRIPT, [], { input: '\n' })
   expect(r.code).not.toBe(0)
-  expect(r.stderr).toContain('feat/*')
-  expect(ran('fly', 'secrets', 'import')).toBe(false)
-  expect(ran('gh', 'secret', 'set')).toBe(false)
+  expect(r.stderr).toContain('fly tokens create gave nothing')
+  expect(ghSet('FLY_API_TOKEN')).toEqual([])
+
+  rmFile('fly-deploy-token')
+  sb.set('fail-fly-token', 'Error: not authorized')
+  const failed = sb.run(SCRIPT, [], { input: '\n' })
+  expect(failed.code).not.toBe(0)
+  expect(failed.stderr).toContain('fly tokens create failed')
+  expect(ghSet('FLY_API_TOKEN')).toEqual([])
 })
 
-test('qc_sh_leaves_qc_url_unset_so_deploy_qc_stays_off_until_the_first_deploy', () => {
+test('qc_sh_refuses_an_environment_another_branch_or_any_tag_may_deploy_from', () => {
+  for (const other of ['branch:feat/*', 'tag:v*', 'tag:main']) {
+    sb.set('gh-policies', `branch:main\n${other}\n`)
+    sb.clearLogs()
+    const r = sb.run(SCRIPT, [], { input: '\n' })
+    expect(r.code, other).not.toBe(0)
+    expect(r.stderr).toContain(other)
+    expect(ran('fly', 'secrets', 'import')).toBe(false)
+    expect(ran('gh', 'secret', 'set')).toBe(false)
+  }
+})
+
+test('qc_sh_leaves_the_first_deploy_to_actions_from_main', () => {
   const r = sb.run(SCRIPT, [], { input: '\n' })
   expect(r.code, r.stderr).toBe(0)
+  // Nothing deployed or switched on from here: the human sets QC_URL,
+  // then dispatches Deploy on main, so no working tree is ever deployed.
   expect(ran('gh', 'variable')).toBe(false)
-  expect(r.stdout).toContain('gh variable set QC_URL --env qc --body https://keep-qc.fly.dev')
-  expect(r.stdout).toContain('fly deploy -c fly.qc.toml --ha=false')
+  expect(ran('gh', 'workflow')).toBe(false)
+  const setUrl = r.stdout.indexOf('gh variable set QC_URL --env qc --body https://keep-qc.fly.dev')
+  const dispatch = r.stdout.indexOf('gh workflow run deploy.yml --ref main -f env=qc')
+  expect(setUrl).toBeGreaterThan(-1)
+  expect(dispatch).toBeGreaterThan(setUrl)
+  expect(r.stdout).not.toContain('fly deploy')
+})
+
+test('qc_sh_never_sets_sentry_and_warns_if_keep_qc_has_it', () => {
+  const r = sb.run(SCRIPT, [], { input: 'https://0123abcd@o1.ingest.de.sentry.io/42\n' })
+  expect(r.code, r.stderr).toBe(0)
+  expect(flyImported().SENTRY_DSN).toBeUndefined()
+  expect(r.stderr).not.toContain('SENTRY_DSN (not shown)')
+  sb.set('fly-secrets.json', [{ name: 'SENTRY_DSN' }])
+  const again = sb.run(SCRIPT, [], { input: '\n' })
+  expect(again.stdout).toContain('fly secrets unset SENTRY_DSN -a keep-qc --stage')
 })
 
 test('qc_sh_refuses_a_second_machine', () => {
@@ -137,16 +174,11 @@ test('qc_sh_without_a_terminal_names_gocardless_secrets_sh_instead_of_running_it
 })
 
 test('qc_sh_never_puts_a_secret_in_argv_or_on_screen', () => {
-  const dsn = 'https://0123abcd@o1.ingest.de.sentry.io/42'
-  const r = sb.run(SCRIPT, [], { input: `${dsn}\n` })
+  const r = sb.run(SCRIPT, [], { input: '\n' })
   expect(r.code, r.stderr).toBe(0)
   const secrets = flyImported()
-  expect(secrets.SENTRY_DSN).toBe(dsn)
-  const values = [
-    ...Object.values(secrets),
-    'fm2_mockdeploytoken_0123456789abcdef',
-  ]
-  expect(values.length).toBe(11)
+  const values = [...Object.values(secrets), 'fm2_mockdeploytoken_0123456789abcdef']
+  expect(values.length).toBe(10)
   assertNowhere(values, {
     argv: sb.argv(),
     texts: { stdout: r.stdout, stderr: r.stderr },
