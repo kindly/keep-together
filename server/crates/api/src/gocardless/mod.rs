@@ -49,6 +49,7 @@ pub mod client;
 pub mod fake;
 pub mod oauth;
 pub mod process;
+pub mod qc;
 pub mod terms_sync;
 pub mod webhook;
 
@@ -115,6 +116,10 @@ pub struct GoCardless {
     pub(crate) sweep_waits: std::sync::Mutex<std::collections::HashMap<String, (i64, i64)>>,
     /// The mock, in `fake` mode: mounted at [`FAKE_PREFIX`].
     pub fake: Option<Arc<fake::Fake>>,
+    /// The QC GoCardless account ([`qc`]): on the sandbox from
+    /// `KEEP_QC_GOCARDLESS_TOKEN` and `_ORGANISATION`, on the fake an
+    /// account it makes at boot; never on live.
+    pub qc: Option<qc::QcAccount>,
 }
 
 /// What [`from_vars`] needs beyond the environment.
@@ -135,6 +140,12 @@ pub fn from_vars(
 ) -> Result<Option<GoCardless>, String> {
     let keep_env = var("KEEP_ENV");
     let prod = keep_env.as_deref() == Some("prod");
+    let qc_set = qc::VARS
+        .iter()
+        .any(|n| var(n).is_some_and(|v| !v.trim().is_empty()));
+    if qc_set && prod {
+        return Err("KEEP_QC_GOCARDLESS_TOKEN/_ORGANISATION are refused with KEEP_ENV=prod".into());
+    }
     let mode = match var("KEEP_GOCARDLESS").as_deref() {
         None | Some("off") => return Ok(None),
         Some("fake") => Mode::Fake,
@@ -162,6 +173,11 @@ pub fn from_vars(
             return Err("KEEP_GOCARDLESS=live needs KEEP_ENV=prod".into());
         }
         _ => {}
+    }
+    if qc_set && mode == Mode::Live {
+        return Err(
+            "KEEP_QC_GOCARDLESS_TOKEN/_ORGANISATION are refused with KEEP_GOCARDLESS=live".into(),
+        );
     }
     let app_origin = origins.app_origin.trim_end_matches('/');
     let redirect_uri = format!("{app_origin}/api/gocardless/callback");
@@ -213,6 +229,14 @@ pub fn from_vars(
         }
     };
     let api = Api::new(&api_base, &connect_base)?;
+    let qc = match (&fake, mode) {
+        (Some(fake), _) => {
+            let (organisation_id, token) = fake.connect_account();
+            Some(qc::QcAccount::new(&token, &organisation_id))
+        }
+        (None, Mode::Sandbox) => qc::QcAccount::from_vars(&var)?,
+        _ => None,
+    };
     Ok(Some(GoCardless {
         mode,
         api,
@@ -226,6 +250,7 @@ pub fn from_vars(
         connecting: tokio::sync::Mutex::new(()),
         sweep_waits: std::sync::Mutex::new(std::collections::HashMap::new()),
         fake,
+        qc,
     }))
 }
 

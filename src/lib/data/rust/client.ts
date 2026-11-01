@@ -36,6 +36,8 @@ export function describe(error: ApiError): string {
       return 'Changed by someone else'
     case 'duplicate':
       return 'Already exists'
+    case 'taken':
+      return 'Already someone else’s'
     case 'invalid':
       return error.problems.map((p) => p.message).join('; ') || 'Invalid'
     case 'rejected':

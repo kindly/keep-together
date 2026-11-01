@@ -42,6 +42,9 @@ pub enum ApiError {
     },
     /// 409: a create with a pre-generated id that already exists.
     Duplicate { id: String },
+    /// 409: what was asked for is someone else's (the QC surface's
+    /// connect: a real organisation here holds the QC GoCardless account).
+    Taken,
     /// 422: unstorable or invariant-breaking input (ADR 0015 tier 1).
     Invalid { problems: Vec<Problem> },
     /// 422: the handler refused the command (e.g. identity_immutable).
@@ -83,7 +86,9 @@ impl ApiError {
             ApiError::Forbidden | ApiError::StepUpRequired => StatusCode::FORBIDDEN,
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::Gone => StatusCode::GONE,
-            ApiError::Stale { .. } | ApiError::Duplicate { .. } => StatusCode::CONFLICT,
+            ApiError::Stale { .. } | ApiError::Duplicate { .. } | ApiError::Taken => {
+                StatusCode::CONFLICT
+            }
             ApiError::Invalid { .. } | ApiError::Rejected { .. } | ApiError::FileRows { .. } => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }

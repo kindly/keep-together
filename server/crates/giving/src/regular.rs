@@ -2016,6 +2016,54 @@ pub fn unknown_subscription(
     Ok(unknown(conn, Some(sb))?.pop())
 }
 
+/// A GoCardless resource kind this organisation's rows can name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderKind {
+    BillingRequest,
+    Mandate,
+    Subscription,
+    Payment,
+}
+
+/// Whether this organisation's own rows name GoCardless's `id` as a
+/// `kind`: its regular gifts (billing request, mandate, subscription),
+/// their terms (subscriptions replaced or to come) and the payments
+/// recorded here. What the QC surface may act on (plan
+/// gocardless-sandbox-qc.sv, G2).
+pub fn names_provider_resource(
+    conn: &Connection,
+    kind: ProviderKind,
+    id: &str,
+) -> rusqlite::Result<bool> {
+    let sql = match kind {
+        ProviderKind::BillingRequest => "SELECT 1 FROM regular_gifts WHERE billing_request_id = ?1",
+        ProviderKind::Mandate => {
+            "SELECT 1 FROM regular_gifts WHERE mandate_id = ?1
+             UNION ALL SELECT 1 FROM direct_debit_payments WHERE mandate_id = ?1"
+        }
+        ProviderKind::Subscription => {
+            "SELECT 1 FROM regular_gifts WHERE subscription_id = ?1
+             UNION ALL SELECT 1 FROM regular_gift_terms WHERE subscription_id = ?1
+             UNION ALL SELECT 1 FROM direct_debit_payments WHERE subscription_id = ?1"
+        }
+        ProviderKind::Payment => "SELECT 1 FROM direct_debit_payments WHERE payment_id = ?1",
+    };
+    conn.prepare_cached(sql)?.exists([id])
+}
+
+/// Every GoCardless mandate this organisation's rows name, oldest first.
+pub fn provider_mandates(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    conn.prepare_cached(
+        "SELECT mandate_id FROM (
+             SELECT mandate_id, seq FROM regular_gifts WHERE mandate_id IS NOT NULL
+             UNION ALL
+             SELECT mandate_id, seq FROM direct_debit_payments WHERE mandate_id IS NOT NULL)
+         GROUP BY mandate_id ORDER BY min(seq)",
+    )?
+    .query_map([], |r| r.get(0))?
+    .collect()
+}
+
 /// Whether a regular gift other than `id`, not ended, collects on mandate
 /// `md`: its own mandate, or (adopted) a subscription any row of its
 /// chain ran under whose payments were taken on it (its first one had
