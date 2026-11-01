@@ -244,6 +244,21 @@ pub fn add_days(date: &str, days: i64) -> Option<String> {
     Some(date_of_day(day_number(date)? + days))
 }
 
+/// `date` moved on by `n` working days (Monday to Friday; bank holidays
+/// aren't known here).
+pub fn add_working_days(date: &str, n: i64) -> Option<String> {
+    let mut day = day_number(date)?;
+    let mut left = n;
+    while left > 0 {
+        day += 1;
+        // Day 0 (1970-01-01) was a Thursday: 0 is Monday, 5 and 6 the weekend.
+        if (day + 3).rem_euclid(7) < 5 {
+            left -= 1;
+        }
+    }
+    Some(date_of_day(day))
+}
+
 /// A month count as `YYYY-MM`.
 pub fn month_label(index: i32) -> String {
     format!(
@@ -344,6 +359,28 @@ pub fn expected_periods(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Working days skip Saturday and Sunday (2026-11-06 is a Friday).
+    #[test]
+    fn working_days_skip_the_weekend() {
+        assert_eq!(
+            add_working_days("2026-11-06", 1).as_deref(),
+            Some("2026-11-09")
+        );
+        assert_eq!(
+            add_working_days("2026-11-07", 1).as_deref(),
+            Some("2026-11-09")
+        );
+        assert_eq!(
+            add_working_days("2026-11-02", 5).as_deref(),
+            Some("2026-11-09")
+        );
+        assert_eq!(
+            add_working_days("2026-11-01", 0).as_deref(),
+            Some("2026-11-01")
+        );
+        assert_eq!(add_working_days("nope", 1), None);
+    }
 
     const STREET: &str = "street";
     const TEL: &str = "telephone";

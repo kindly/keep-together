@@ -338,6 +338,14 @@ impl Fake {
         landed
     }
 
+    /// Set one field of a resource (tests: a mandate's
+    /// `next_possible_charge_date`, say).
+    pub fn set_field(&self, id: &str, field: &str, value: Value) {
+        if let Some(r) = self.world().resources.get_mut(id) {
+            r.body[field] = value;
+        }
+    }
+
     fn set_status(&self, id: &str, status: &str) -> Option<Resource> {
         let mut w = self.world();
         let r = w.resources.get_mut(id)?;
@@ -791,7 +799,7 @@ fn fulfil_mandate(w: &mut World, org: &str, br: &str, customer: Value) -> (Vec<V
             kind: "mandates",
             body: json!({
                 "id": mandate, "status": "pending_submission", "scheme": "bacs",
-                "next_possible_charge_date": today_plus(5),
+                "next_possible_charge_date": first_charge_date(),
                 // GoCardless copies the mandate request's metadata.
                 "metadata": metadata,
                 "links": { "customer": id }
@@ -1743,7 +1751,11 @@ async fn create_subscription(
         "interval": 1,
         "day_of_month": day,
         "month": s.get("month").cloned().unwrap_or(Value::Null),
-        "start_date": s.get("start_date").cloned().unwrap_or(Value::Null),
+        "start_date": s
+            .get("start_date")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| next_possible_charge_date(&w, mandate)),
         "name": s.get("name").cloned().unwrap_or(Value::Null),
         "metadata": s.get("metadata").cloned().unwrap_or(json!({})),
         "links": { "mandate": mandate }
@@ -2044,14 +2056,31 @@ async fn simulate_payment(
     simulated(delivered, json!({ "payment": payment }))
 }
 
-/// A subscription's next `n` charge dates from three days out (or its
-/// `start_date`, if later), on its day of the month (and month, yearly).
+/// When GoCardless could first charge a new mandate signed today: the
+/// app's own estimate (`giving::regular::estimated_first_charge`), so the
+/// fake keeps one lead time, not one of its own.
+fn first_charge_date() -> String {
+    giving::regular::estimated_first_charge(&today_plus(0))
+}
+
+/// The mandate's `next_possible_charge_date`: where a subscription made
+/// without a `start_date` starts, as GoCardless's do.
+fn next_possible_charge_date(w: &World, mandate: &str) -> Option<String> {
+    w.resources
+        .get(mandate)
+        .and_then(|m| m.body["next_possible_charge_date"].as_str())
+        .map(str::to_owned)
+}
+
+/// A subscription's next `n` charge dates from its `start_date` (its
+/// mandate's `next_possible_charge_date` when made; today if none), on
+/// its day of the month (and month, yearly), never in the past.
 fn upcoming(sub: &Value, n: usize) -> Vec<String> {
-    let earliest = today_plus(3);
+    let today = today_plus(0);
     let start = sub["start_date"]
         .as_str()
-        .filter(|d| *d > earliest.as_str())
-        .unwrap_or(&earliest)
+        .filter(|d| *d > today.as_str())
+        .unwrap_or(&today)
         .to_owned();
     let day = sub["day_of_month"].as_i64().unwrap_or(1);
     let yearly = sub["interval_unit"] == "yearly";

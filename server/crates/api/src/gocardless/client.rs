@@ -176,6 +176,8 @@ pub struct Mandate {
     pub status: String,
     /// `metadata.keep_regular_gift`: ours, if we made it.
     pub regular_gift: Option<String>,
+    /// The first date GoCardless could collect on it (YYYY-MM-DD).
+    pub next_possible_charge_date: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -729,7 +731,8 @@ impl Api {
         }
     }
 
-    /// A mandate's status and the regular gift its metadata names.
+    /// A mandate's status, the regular gift its metadata names and when it
+    /// could first be charged.
     pub async fn get_mandate(&self, token: &str, id: &str) -> Result<Mandate, CallError> {
         let v = self
             .call(Method::GET, token, &["mandates", id], None, None)
@@ -749,6 +752,11 @@ impl Api {
             regular_gift: m
                 .pointer("/metadata/keep_regular_gift")
                 .and_then(Value::as_str)
+                .map(str::to_owned),
+            next_possible_charge_date: m
+                .get("next_possible_charge_date")
+                .and_then(Value::as_str)
+                .filter(|d| giving::rules::is_iso_date(d))
                 .map(str::to_owned),
         })
     }

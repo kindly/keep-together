@@ -1816,6 +1816,9 @@ pub struct RegularGiftView {
     /// A change GoCardless told us of is waiting for its code.
     pub change_not_coded: bool,
     pub upcoming: Vec<UpcomingPayment>,
+    /// `upcoming` is GoCardless's own schedule (its subscription), not
+    /// this server's projection: only then are its dates confirmed.
+    pub upcoming_confirmed: bool,
     /// The latest failed payment, if the latest payment failed.
     pub last_failure: Option<DirectDebitPaymentRow>,
     pub payments: Vec<DirectDebitPaymentRow>,
@@ -1853,6 +1856,7 @@ fn view_row(r: &Row) -> rusqlite::Result<RegularGiftView> {
         scheduled: None,
         change_not_coded: false,
         upcoming: vec![],
+        upcoming_confirmed: false,
         last_failure: None,
         payments: vec![],
         connected: false,
@@ -1946,13 +1950,37 @@ pub fn regular_by_contact(
     rows.into_iter().map(|v| fill(conn, v, today)).collect()
 }
 
-/// The next payments of a regular gift as its chain projects them after
-/// `today` (when GoCardless can't be asked): at most `n`, each changeable
-/// if it is more than a week off and no payment for it exists yet.
+/// How many working days after sign-up GoCardless can first collect on a
+/// new Bacs mandate: an estimate, for the first payment shown before
+/// GoCardless says (it then gives the mandate's
+/// `next_possible_charge_date`). Bacs needs the payer told at least 3
+/// working days before a charge (GoCardless's "United Kingdom Bacs custom
+/// notifications"), and the new mandate is first submitted to Bacs, which
+/// takes about 2 more (factory/out/planner-gsq-gc-docs.md §5: the API
+/// enforces the lead time through `next_possible_charge_date`, and the
+/// docs give no figure for it). The first sandbox run checks it (plan
+/// gocardless-sandbox-qc.sv, G5).
+pub const FIRST_CHARGE_LEAD_WORKING_DAYS: i64 = 5;
+
+/// The earliest GoCardless is expected to collect a new mandate's first
+/// payment, signed `today` ([`FIRST_CHARGE_LEAD_WORKING_DAYS`]).
+pub fn estimated_first_charge(today: &str) -> String {
+    crate::terms_rules::add_working_days(today, FIRST_CHARGE_LEAD_WORKING_DAYS)
+        .unwrap_or_else(|| today.to_owned())
+}
+
+/// The next payments of a regular gift as its chain projects them (when
+/// GoCardless can't be asked): on or after `earliest` and after `today`,
+/// at most `n`, each changeable if it is more than a week off and no
+/// payment for it exists yet. Before a subscription exists `earliest` is
+/// when GoCardless could first collect (the mandate's
+/// `next_possible_charge_date`, or [`estimated_first_charge`] before
+/// there is a mandate); with one, `today`.
 pub fn projected_upcoming(
     conn: &Connection,
     id: &str,
     today: &str,
+    earliest: &str,
     n: usize,
 ) -> rusqlite::Result<Vec<UpcomingPayment>> {
     let chain = crate::terms::chain(conn, id)?;
@@ -1960,8 +1988,12 @@ pub fn projected_upcoming(
         return Ok(vec![]);
     };
     let rules = crate::terms::live_rules(&chain);
+    // `next_due` is strictly after its date: the day before `earliest`.
+    let after = crate::terms_rules::add_days(earliest, -1)
+        .filter(|d| d.as_str() > today)
+        .unwrap_or_else(|| today.to_owned());
     let mut out = Vec::new();
-    for date in crate::terms_rules::next_due(&now.rules(), today, n) {
+    for date in crate::terms_rules::next_due(&now.rules(), &after, n) {
         let amount =
             crate::terms_rules::term_in_force(&rules, &date).map_or(now.amount, |t| t.amount);
         out.push(UpcomingPayment {

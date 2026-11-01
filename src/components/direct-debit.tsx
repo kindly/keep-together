@@ -244,8 +244,16 @@ export function RegularGiftCard({
       {!ended && gift.upcoming.length > 0 && (
         <div>
           <h3 className="mb-1 text-xs font-medium text-neutral-500">
-            Next payments
+            {gift.upcomingConfirmed ? 'Next payments' : 'Expected payments'}
           </h3>
+          {!gift.upcomingConfirmed && (
+            <p
+              data-testid="regular-gift-upcoming-expected"
+              className="mb-1 text-xs text-neutral-500"
+            >
+              Expected dates: GoCardless hasn’t confirmed them yet.
+            </p>
+          )}
           <ul
             data-testid="regular-gift-upcoming"
             className="flex flex-wrap gap-x-4 gap-y-1"

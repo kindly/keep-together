@@ -4631,6 +4631,80 @@ async fn cancelling_a_gifts_own_mandate_leaves_no_payment_to_collect() {
     assert_eq!(payment(&v, &pm)["status"], "cancelled");
 }
 
+/// G3 (open q1): before the donor signs, the first payment shown is the
+/// first due day GoCardless could collect on (the lead-time estimate),
+/// marked expected, not today's next due day.
+#[tokio::test(flavor = "multi_thread")]
+async fn before_a_mandate_the_first_payment_is_expected_after_the_lead_time() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let made = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let v = t
+        .regular("alpha", &t.val, made["id"].as_str().unwrap())
+        .await;
+    assert_eq!(v["upcomingConfirmed"], false);
+    let today = giving::terms_rules::date_of_ms(contracts::now_ms());
+    let earliest = giving::regular::estimated_first_charge(&today);
+    let first = v["upcoming"][0]["chargeDate"].as_str().unwrap();
+    assert!(first >= earliest.as_str(), "{first} before {earliest}");
+    // The first 5th on or after it, not sooner.
+    assert!(first.ends_with("-05"), "{first}");
+    let before = giving::terms_rules::add_days(first, -28).unwrap();
+    assert!(before.as_str() < earliest.as_str() || !before.ends_with("-05"));
+}
+
+/// G3: with a mandate and no subscription yet, the first payment follows
+/// the mandate's own `next_possible_charge_date`.
+#[tokio::test(flavor = "multi_thread")]
+async fn with_a_mandate_and_no_subscription_the_first_payment_follows_the_mandates_date() {
+    let t = setup().await;
+    t.connect("alpha", &t.ann).await;
+    let jo = t.contact("alpha", &t.sam).await;
+    let made = t.set_up("alpha", &t.sam, &jo, &t.code).await;
+    let id = made["id"].as_str().unwrap().to_owned();
+    // GoCardless refuses subscriptions for now: the gift has its mandate
+    // and nothing else.
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1000, "status": 422, "path": "subscriptions" }),
+    )
+    .await;
+    t.sign(made["flowUrl"].as_str().unwrap()).await;
+    t.settle().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    let mandate = v["mandateId"].as_str().unwrap().to_owned();
+    assert!(v["subscriptionId"].is_null(), "{v}");
+    t.fake
+        .set_field(&mandate, "next_possible_charge_date", json!("2027-03-10"));
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["upcomingConfirmed"], false);
+    assert_eq!(v["upcoming"][0]["chargeDate"], "2027-04-05");
+    t.fake_post("outage", json!({ "calls": 0 })).await;
+}
+
+/// G3: once GoCardless has the subscription, its own schedule is shown,
+/// confirmed, and its first date is where the fake's subscription starts
+/// (the mandate's date, as GoCardless's).
+#[tokio::test(flavor = "multi_thread")]
+async fn with_a_subscription_its_own_schedule_is_confirmed() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["upcomingConfirmed"], true);
+    let db = t.w.store.org(&t.w.alpha.id).unwrap();
+    let token = db.read(|r| t.gc.token(r)).unwrap().unwrap();
+    let theirs = t.gc.api.get_subscription(&token, &sub).await.unwrap();
+    assert_eq!(
+        v["upcoming"][0]["chargeDate"],
+        theirs.upcoming[0].0.as_str()
+    );
+    let mandate = t.fake.resource(v["mandateId"].as_str().unwrap()).unwrap();
+    assert!(
+        theirs.upcoming[0].0.as_str() >= mandate["next_possible_charge_date"].as_str().unwrap()
+    );
+}
+
 /// UI review H1: a one-off or Instant Bank Pay answer says what
 /// GoCardless was asked for, which under a reused key is the first
 /// request's: a form that changed its amount and kept its key would

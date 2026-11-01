@@ -125,6 +125,7 @@ function gift(over: Partial<RegularGift> = {}): RegularGift {
     scheduled: null,
     changeNotCoded: false,
     upcoming: [{ chargeDate: '2026-11-02', amount: 1250n, changeable: true }],
+    upcomingConfirmed: true,
     lastFailure: null,
     payments: [],
     connected: true,
@@ -219,6 +220,35 @@ test('the card: amount, schedule, status, mandate and next payments', () => {
   expect(card.textContent).toContain('MD1')
   expect(
     card.querySelector('[data-testid="regular-gift-upcoming"]')?.textContent,
+  ).toBe('2 Nov 2026 · £12.50')
+})
+
+test('next payments: GoCardless’s are confirmed; before it has a schedule they are expected', () => {
+  gifts = [gift()]
+  render()
+  const card = () => el.querySelector('[data-testid="regular-gift"]')!
+  expect(card().textContent).toContain('Next payments')
+  expect(
+    card().querySelector('[data-testid="regular-gift-upcoming-expected"]'),
+  ).toBeNull()
+  act(() => root.unmount())
+  root = createRoot(el)
+  gifts = [
+    gift({
+      status: 'pending',
+      mandateId: null,
+      subscriptionId: null,
+      upcomingConfirmed: false,
+    }),
+  ]
+  render()
+  expect(card().textContent).toContain('Expected payments')
+  expect(
+    card().querySelector('[data-testid="regular-gift-upcoming-expected"]')
+      ?.textContent,
+  ).toBe('Expected dates: GoCardless hasn’t confirmed them yet.')
+  expect(
+    card().querySelector('[data-testid="regular-gift-upcoming"]')?.textContent,
   ).toBe('2 Nov 2026 · £12.50')
 })
 
