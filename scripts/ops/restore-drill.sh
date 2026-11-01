@@ -56,7 +56,8 @@ if [[ ${1:-} == local ]]; then
   KEEP_DATA=${3:-}
   die() { printf 'error: %s\n' "$*" >&2; exit 1; }
   for tool in aws litestream sqlite3 cargo awk; do command -v $tool >/dev/null || die "needs $tool"; done
-  litestream version | grep -q '0\.5\.' || die "needs litestream 0.5.x (the image pins 0.5.17)"
+  lsv=$(litestream version) || die "litestream version failed"
+  grep -q '0\.5\.' <<<"$lsv" || die "needs litestream 0.5.x (the image pins 0.5.17)"
   creds() { aws configure export-credentials --profile "$1" --format env-no-export; }
   value() { sed -n "s/^$1=//p"; }
   prod_creds=$(creds keep-prod) || die "no keep-prod credentials: aws sso login --profile mgmt"

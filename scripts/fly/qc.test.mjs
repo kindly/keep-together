@@ -15,7 +15,8 @@ beforeEach(() => {
   sb = sandbox()
 })
 afterEach(() => sb.cleanup())
-const rmFile = (name) => rmSync(path.join(sb.dir, 'state', name), { force: true })
+const rmFile = (name) =>
+  rmSync(path.join(sb.dir, 'state', name), { force: true })
 
 const cmds = () => sb.argv().filter(([n]) => n === 'fly' || n === 'gh')
 const ran = (...prefix) =>
@@ -30,13 +31,29 @@ const flyImported = () =>
       .map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),
   )
 const ghSet = (name) =>
-  sb.stdin().filter((r) => r.cmd === `gh secret set ${name} --env qc`).map((r) => r.body)
+  sb
+    .stdin()
+    .filter((r) => r.cmd === `gh secret set ${name} --env qc`)
+    .map((r) => r.body)
 
 test('qc_sh_creates_keep_qc_its_volume_and_secrets_once', () => {
   const r = sb.run(SCRIPT, [], { input: '\n' })
   expect(r.code, r.stderr).toBe(0)
   expect(ran('fly', 'apps', 'create', 'keep-qc')).toBe(true)
-  expect(ran('fly', 'volumes', 'create', 'keep_data', '-a', 'keep-qc', '--region', 'lhr', '--size', '3')).toBe(true)
+  expect(
+    ran(
+      'fly',
+      'volumes',
+      'create',
+      'keep_data',
+      '-a',
+      'keep-qc',
+      '--region',
+      'lhr',
+      '--size',
+      '3',
+    ),
+  ).toBe(true)
   const secrets = flyImported()
   expect(Object.keys(secrets).sort()).toEqual(
     [
@@ -53,7 +70,9 @@ test('qc_sh_creates_keep_qc_its_volume_and_secrets_once', () => {
   )
   expect(secrets.KEEP_QC_TOKEN).toMatch(/^[0-9a-f]{64}$/)
   // No backups on keep-qc: it is thrown away on every deploy.
-  expect(Object.keys(secrets).some((k) => /LITESTREAM|SNAPSHOT/.test(k))).toBe(false)
+  expect(Object.keys(secrets).some((k) => /LITESTREAM|SNAPSHOT/.test(k))).toBe(
+    false,
+  )
   // A blank SENTRY_DSN is skipped, not set empty.
   expect(secrets.SENTRY_DSN).toBeUndefined()
 
@@ -91,12 +110,19 @@ test('qc_sh_makes_the_qc_environment_deployable_from_main_only', () => {
   expect(r.code, r.stderr).toBe(0)
   const put = sb.stdin().find((x) => x.cmd.startsWith('gh api -X PUT'))
   expect(JSON.parse(put.body)).toEqual({
-    deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
+    deployment_branch_policy: {
+      protected_branches: false,
+      custom_branch_policies: true,
+    },
   })
   const post = sb.stdin().filter((x) => x.cmd.startsWith('gh api -X POST'))
-  expect(post.map((x) => JSON.parse(x.body))).toEqual([{ name: 'main', type: 'branch' }])
+  expect(post.map((x) => JSON.parse(x.body))).toEqual([
+    { name: 'main', type: 'branch' },
+  ])
   // The environment's deploy token: piped from flyctl to gh.
-  expect(ghSet('FLY_API_TOKEN')).toEqual(['FlyV1 fm2_mockdeploytoken_0123456789abcdef'])
+  expect(ghSet('FLY_API_TOKEN')).toEqual([
+    'FlyV1 fm2_mockdeploytoken_0123456789abcdef',
+  ])
 })
 
 test('qc_sh_refuses_an_empty_or_failed_deploy_token_and_stores_nothing', () => {
@@ -133,21 +159,29 @@ test('qc_sh_leaves_the_first_deploy_to_actions_from_main', () => {
   // then dispatches Deploy on main, so no working tree is ever deployed.
   expect(ran('gh', 'variable')).toBe(false)
   expect(ran('gh', 'workflow')).toBe(false)
-  const setUrl = r.stdout.indexOf('gh variable set QC_URL --env qc --body https://keep-qc.fly.dev')
-  const dispatch = r.stdout.indexOf('gh workflow run deploy.yml --ref main -f env=qc')
+  const setUrl = r.stdout.indexOf(
+    'gh variable set QC_URL --env qc --body https://keep-qc.fly.dev',
+  )
+  const dispatch = r.stdout.indexOf(
+    'gh workflow run deploy.yml --ref main -f env=qc',
+  )
   expect(setUrl).toBeGreaterThan(-1)
   expect(dispatch).toBeGreaterThan(setUrl)
   expect(r.stdout).not.toContain('fly deploy')
 })
 
 test('qc_sh_never_sets_sentry_and_warns_if_keep_qc_has_it', () => {
-  const r = sb.run(SCRIPT, [], { input: 'https://0123abcd@o1.ingest.de.sentry.io/42\n' })
+  const r = sb.run(SCRIPT, [], {
+    input: 'https://0123abcd@o1.ingest.de.sentry.io/42\n',
+  })
   expect(r.code, r.stderr).toBe(0)
   expect(flyImported().SENTRY_DSN).toBeUndefined()
   expect(r.stderr).not.toContain('SENTRY_DSN (not shown)')
   sb.set('fly-secrets.json', [{ name: 'SENTRY_DSN' }])
   const again = sb.run(SCRIPT, [], { input: '\n' })
-  expect(again.stdout).toContain('fly secrets unset SENTRY_DSN -a keep-qc --stage')
+  expect(again.stdout).toContain(
+    'fly secrets unset SENTRY_DSN -a keep-qc --stage',
+  )
 })
 
 test('qc_sh_refuses_a_second_machine', () => {
@@ -163,21 +197,28 @@ test('qc_sh_without_a_terminal_names_gocardless_secrets_sh_instead_of_running_it
   const r = sb.run(SCRIPT, [], { input: '\n' })
   expect(r.code, r.stderr).toBe(0)
   expect(r.stdout).toContain('missing: KEEP_GOCARDLESS_CLIENT_ID')
-  expect(r.stdout).toContain('run scripts/fly/gocardless-secrets.sh qc in a terminal')
+  expect(r.stdout).toContain(
+    'run scripts/fly/gocardless-secrets.sh qc in a terminal',
+  )
   sb.set('fly-secrets.json', [
     { name: 'KEEP_GOCARDLESS_CLIENT_ID' },
     { name: 'KEEP_GOCARDLESS_CLIENT_SECRET' },
     { name: 'KEEP_GOCARDLESS_WEBHOOK_SECRET' },
   ])
   const again = sb.run(SCRIPT, [], { input: '\n' })
-  expect(again.stdout).toMatch(/GoCardless partner app secrets[^\n]*\n(?:[^\n]*\n)?all set/)
+  expect(again.stdout).toMatch(
+    /GoCardless partner app secrets[^\n]*\n(?:[^\n]*\n)?all set/,
+  )
 })
 
 test('qc_sh_never_puts_a_secret_in_argv_or_on_screen', () => {
   const r = sb.run(SCRIPT, [], { input: '\n' })
   expect(r.code, r.stderr).toBe(0)
   const secrets = flyImported()
-  const values = [...Object.values(secrets), 'fm2_mockdeploytoken_0123456789abcdef']
+  const values = [
+    ...Object.values(secrets),
+    'fm2_mockdeploytoken_0123456789abcdef',
+  ]
   expect(values.length).toBe(10)
   assertNowhere(values, {
     argv: sb.argv(),
@@ -185,4 +226,28 @@ test('qc_sh_never_puts_a_secret_in_argv_or_on_screen', () => {
   })
   // And no secret was written to a temporary file on the way.
   expect(sb.tmpFiles()).toEqual([])
+})
+
+// fly/{qc,staging,prod}.sh, 2026-11-01: `fly apps list | names | grep -qx`
+// under pipefail. grep -q quits at its match; with names still to write,
+// jq died of SIGPIPE and pipefail read the match as a miss, so a re-run
+// tried `apps create` on an app that exists. keep-qc first in a long list
+// leaves jq mid-output every time: deterministic.
+test('qc_sh_finds_keep_qc_at_the_top_of_a_long_app_list', () => {
+  sb.set('fly-apps.json', [
+    { Name: 'keep-qc' },
+    ...Array.from({ length: 20000 }, (_, i) => ({ Name: `other-app-${i}` })),
+  ])
+  const r = sb.run(SCRIPT, [], { input: '\n' })
+  expect(r.code, r.stderr).toBe(0)
+  expect(r.stdout).toMatch(/== App keep-qc\nexists/)
+  expect(ran('fly', 'apps', 'create')).toBe(false)
+})
+
+test('qc_sh_stops_when_fly_cannot_list_apps_never_creates_one', () => {
+  sb.set('fail-fly-apps', 'Error: not authorized')
+  const r = sb.run(SCRIPT, [], { input: '\n' })
+  expect(r.code).not.toBe(0)
+  expect(r.stderr).toContain('fly apps list failed')
+  expect(ran('fly', 'apps', 'create')).toBe(false)
 })

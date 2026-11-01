@@ -30,9 +30,12 @@ case $cmd in
   on)
     # Replacing a root qdisc on lo that isn't the default (ours from
     # before, or someone else's): say so rather than drop it silently.
-    if tc qdisc show dev lo | grep -q 'qdisc .* root' &&
-      ! tc qdisc show dev lo | grep -q 'qdisc noqueue 0: root'; then
-      echo "warning: replacing lo's root qdisc: $(tc qdisc show dev lo | head -1)" >&2
+    # Captured, then grepped: `tc … | grep -q` under pipefail can read a
+    # match as a miss when grep's early exit kills tc with SIGPIPE.
+    qdiscs=$(tc qdisc show dev lo || true)
+    if grep -q 'qdisc .* root' <<<"$qdiscs" &&
+      ! grep -q 'qdisc noqueue 0: root' <<<"$qdiscs"; then
+      echo "warning: replacing lo's root qdisc: $(head -1 <<<"$qdiscs")" >&2
     fi
     run tc qdisc del dev lo root 2>/dev/null || true
     run tc qdisc add dev lo root handle 1: prio

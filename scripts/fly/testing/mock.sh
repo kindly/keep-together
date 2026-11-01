@@ -31,7 +31,7 @@ case $name in
 fly)
   case "$*" in
   "auth whoami") echo "qc-test@example.com" ;;
-  "apps list --json") answer fly-apps.json ;;
+  "apps list --json") fail_if fly-apps; answer fly-apps.json ;;
   "apps create keep-qc --org "*) echo '[{"Name":"keep-qc"}]' >"$S/fly-apps.json" ;;
   "volumes list -a keep-qc --json") answer fly-volumes.json ;;
   "volumes create keep_data -a keep-qc --region lhr --size 3 --yes") echo '[{"name":"keep_data"}]' >"$S/fly-volumes.json" ;;
