@@ -13,6 +13,12 @@ yours to edit, except `factory/out/` for reports.
   `platform`/`auth`/`api`, `INTEGER` pence, one appended migration step
   (with its fixture) per schema change.
 - Write or update tests alongside the code (two tenants, isolation asserted).
+- Run every build and test command through `factory/build.sh` (in the
+  main checkout, `/home/david/projects/keep-together/factory/build.sh`):
+  `factory/build.sh pnpm check`, `factory/build.sh cargo test -p api`. It
+  queues on one lock for the whole machine, keeps two cores free and runs
+  at the lowest priority. Builds run in parallel once filled RAM and swap,
+  and systemd-oomd killed every session on the machine.
 - Run `pnpm check` before reporting `DONE`. Once `pnpm qc` exists, also
   run it if your change touches `src/` or `server/` (it takes `.qc.lock`,
   so it may wait for another run). Raising a QC budget needs the human's
