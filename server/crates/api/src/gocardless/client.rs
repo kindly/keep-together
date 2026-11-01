@@ -197,7 +197,8 @@ pub struct Payment {
 pub enum PaymentCancel {
     /// Cancelled now, or already.
     Cancelled,
-    /// GoCardless refused: it will still be collected (as it now is).
+    /// GoCardless refused and it is past cancelling (submitted or
+    /// later): it will still be collected (as it now is).
     Refused(Box<Payment>),
 }
 
@@ -763,9 +764,10 @@ impl Api {
     }
 
     /// Cancel a payment not yet submitted to the banks. GoCardless
-    /// refusing (`422`: already submitted, or already cancelled) is
-    /// answered by the payment as it now is: cancelled, or still to be
-    /// collected, with its status.
+    /// refusing (`422`) is answered by the payment as it now is:
+    /// `cancelled` already is fine; past cancelling (submitted or later)
+    /// is `Refused`, still to be collected; still cancellable is the
+    /// refusal itself, an error.
     pub async fn cancel_payment(&self, token: &str, id: &str) -> Result<PaymentCancel, CallError> {
         match self
             .call(
@@ -778,13 +780,16 @@ impl Api {
             .await
         {
             Ok(_) => Ok(PaymentCancel::Cancelled),
-            Err(CallError::Refused { status: 422, .. }) => {
+            Err(refused @ CallError::Refused { status: 422, .. }) => {
                 let now = self.get_payment(token, id).await?;
-                Ok(if now.status == "cancelled" {
-                    PaymentCancel::Cancelled
-                } else {
-                    PaymentCancel::Refused(Box::new(now))
-                })
+                match now.status.as_str() {
+                    "cancelled" => Ok(PaymentCancel::Cancelled),
+                    // Still cancellable: GoCardless refused for some other
+                    // reason, so it's an error (a retry tries again), never
+                    // "too late".
+                    "pending_submission" | "pending_customer_approval" => Err(refused),
+                    _ => Ok(PaymentCancel::Refused(Box::new(now))),
+                }
             }
             Err(e) => Err(e),
         }
