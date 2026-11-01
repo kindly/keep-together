@@ -79,6 +79,8 @@ test('deploy_qc_runs_in_the_qc_environment_and_shares_qcs_concurrency_group', ()
   expect(deploy).toContain('-c fly.qc.toml')
   expect(deploy).toContain('--ha=false')
   expect(deploy).toContain('--build-arg KEEP_RELEASE="$GITHUB_SHA"')
+  // QC's browser errors never reach the SPA's Sentry project.
+  expect(deploy).not.toMatch(/--build-arg VITE_SENTRY_DSN|SENTRY_DSN_SPA/)
   // Never on a pull request: the workflow has no such trigger.
   expect(yml).not.toMatch(/pull_request/)
 })

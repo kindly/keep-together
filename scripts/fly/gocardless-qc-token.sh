@@ -91,7 +91,8 @@ got_state=$(param state)
 err=$(param error)
 [[ -z $err ]] || die "GoCardless answered $err (nothing was set)"
 code=$(param code)
-[[ $code =~ ^[A-Za-z0-9_-]+$ ]] || die "no code in what was pasted"
+# The alphabet keep-qc's page shows (gocardless/oauth.rs `plain`).
+[[ $code =~ ^[A-Za-z0-9._~-]{1,512}$ ]] || die "no code in what was pasted"
 (($(date +%s) - started <= WINDOW)) || die "more than 5 minutes passed and the code has expired: run it again"
 
 # The form, encoded here and sent on stdin (curl reads @- itself).

@@ -121,15 +121,15 @@ jobs:
         uses: superfly/flyctl-actions/setup-flyctl@1.5
       - name: Deploy keep-qc
         if: ${{ steps.gate.outputs.go == 'true' }}
+        # No VITE_SENTRY_DSN: QC's browser errors (many on purpose) stay
+        # out of the SPA's Sentry project, as the api's stay out of its.
         run: >
           flyctl deploy -c fly.qc.toml --remote-only --yes --ha=false
-          --build-arg VITE_SENTRY_DSN="$SENTRY_DSN_SPA"
           --build-arg VITE_RELEASE="$GITHUB_SHA"
           --build-arg KEEP_RELEASE="$GITHUB_SHA"
         env:
           # The qc environment's own token (a keep-qc deploy token).
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          SENTRY_DSN_SPA: ${{ vars.SENTRY_DSN_SPA }}
       # Up, and serving this commit: QC reads /healthz's commit to check
       # out the specs that match the app.
       - name: Smoke test

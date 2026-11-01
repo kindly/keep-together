@@ -103,6 +103,19 @@ test('gocardless_qc_token_takes_the_whole_callback_address_too', async () => {
   expect(flyImports()).toHaveLength(1)
 })
 
+test('gocardless_qc_token_takes_a_code_with_every_character_keep_qcs_page_shows', async () => {
+  const code = 'Ab.c~D-e_F0.9~z'
+  const r = await sb.runTty(SCRIPT, [
+    CLIENT_ID,
+    CLIENT_SECRET,
+    (out) => stateFrom(out) && `code=${code}&state=${stateFrom(out)}`,
+  ])
+  expect(r.code, r.stderr).toBe(0)
+  const sent = sb.stdin().find((x) => x.cmd.startsWith('curl'))
+  expect(new URLSearchParams(sent.body).get('code')).toBe(code)
+  expect(flyImports()).toHaveLength(1)
+})
+
 test('gocardless_qc_token_refuses_a_bare_code_the_state_is_always_checked', async () => {
   const r = await sb.runTty(SCRIPT, [CLIENT_ID, CLIENT_SECRET, (out) => stateFrom(out) && CODE])
   expect(r.code).not.toBe(0)
