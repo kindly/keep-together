@@ -77,6 +77,9 @@ export interface Budget {
 const repeatable = { kind: 'repeatable', maxMs: 150, targetMs: 100 } as const
 const infrequent = { kind: 'infrequent', maxMs: 200, targetMs: 150 } as const
 const rare = { kind: 'rare', maxMs: 250, targetMs: 200 } as const
+// An action over many records at once, or a page's photo work: 500 ms
+// (human, 2026-11-01, for every bulk flow and every BULK_ROUTES route).
+const bulk = { kind: 'bulk', maxMs: 500 } as const
 const fake = { fakeGoCardless: true } as const
 
 export const budgets = {
@@ -200,7 +203,7 @@ export const budgets = {
   // re-encode, "Preparing the page…" shown meanwhile: bulk's class (its own
   // recorded budget, a progress state), though it is one page.
   'scan.open': { kind: 'oncePerSession', maxMs: 100 },
-  'scan.sendPage': { kind: 'bulk', maxMs: 330 },
+  'scan.sendPage': bulk,
   // GoCardless D3 (qc/flows/gocardless-ui.spec.ts). Classes
   // approved (human, 2026-10-30), not recorded. Opening Settings ›
   // GoCardless and the unmatched list are reads: repeatable. Setting up a
@@ -224,7 +227,7 @@ export const budgets = {
   // then the SSE event, the laptop's refetch and the thumbnail's image.
   // Bulk's class, as scan.sendPage (its own recorded budget; the phone
   // shows "Preparing the page…").
-  'scans.uploadToLaptop': { kind: 'bulk', maxMs: 280 },
+  'scans.uploadToLaptop': bulk,
   // Regular-gift terms step 6 (qc/flows/regular-terms.spec.ts).
   // Classes approved (human, 2026-10-30), not recorded.
   // Scheduling a change (the plan's "repeatable (100 ms)"), changing its
@@ -243,14 +246,12 @@ export const budgets = {
   // infrequent.
   'gift.recordCheque': infrequent,
   'batch.close': infrequent,
-  // Bank transfers 6b part 2 (qc/flows/reconcile.spec.ts). PROVISIONAL:
-  // proposed by builder-bkp for the human's OK. "Accept ticked" applies
-  // several lines at once (30 a sample): bulk, its budget recorded
-  // 2026-10-31 in runs tnr2xmr6, tnr33uj5, tnr39er1 (QC_NO_NETEM=1, the
-  // normal 6 workers, started at load under 4; worst 177 ms), 1.5×
-  // rounded up to 10 ms. Matching a line by hand makes or ends a record:
+  // Bank transfers 6b part 2 (qc/flows/reconcile.spec.ts). "Accept
+  // ticked" applies several lines at once (30 a sample): bulk (human,
+  // 2026-11-01; recorded worst 177 ms on 2026-10-31 in runs tnr2xmr6,
+  // tnr33uj5, tnr39er1). Matching a line by hand makes or ends a record:
   // infrequent.
-  'bank.acceptTicked': { kind: 'bulk', maxMs: 270 },
+  'bank.acceptTicked': bulk,
   'bank.matchLine': infrequent,
   // Bank transfers 6b part 3 (qc/flows/standing-orders.spec.ts).
   // PROVISIONAL: proposed by builder-rgt for the human's OK, not
@@ -259,7 +260,7 @@ export const budgets = {
   'standingOrder.record': infrequent,
   // bulkTag's budget (recorded with auth.signIn above), for the flow that
   // replaced it (human, g1q14).
-  'contacts.bulkSetField': { kind: 'bulk', maxMs: 500 },
+  'contacts.bulkSetField': bulk,
 
   // qc/harness.spec.ts: proves the timing path can fail and pass.
   'harness.impossible': { kind: 'repeatable', maxMs: 1, selfTest: true },
@@ -279,15 +280,14 @@ export function budgetFor(name: FlowName): Budget {
  * Routes behind `bulk` flows (`METHOD /path`, as qc/server.ts names them):
  * an action over many records at once. Exempt from the 100 ms server rule
  * like their flows (human, 2026-10-18), each with its own limit in ms,
- * recorded like the `bulk` flow budgets. Reconcile's "Accept ticked"
- * (`POST /t/:slug/bank/accept`, 30 lines a call) is PROVISIONAL for the
- * human's OK: worst 155.1 ms over runs tnr2xmr6, tnr33uj5, tnr39er1
- * (QC_NO_NETEM=1), × 1.5, rounded up to 240 ms. B1's bulk set (`POST /t/:slug/contacts/bulk-set-field`) is held to the
+ * held to the bulk line, 500 ms (human, 2026-11-01). Reconcile's "Accept
+ * ticked" (`POST /t/:slug/bank/accept`, 30 lines a call): worst 155.1 ms
+ * over runs tnr2xmr6, tnr33uj5, tnr39er1 (QC_NO_NETEM=1). B1's bulk set (`POST /t/:slug/contacts/bulk-set-field`) is held to the
  * ordinary 100 ms; its Convex limit was 370 ms (bulkTag's worst, 242.6 ms
  * over runs tn357fbu, tn35ew84, tn35t6tx, × 1.5, rounded up).
  * Convex's server exception (a list re-run reading a grown pinned page)
  * went with Convex's paged list.
  */
 export const BULK_ROUTES: Record<string, number> = {
-  'POST /t/:slug/bank/accept': 240,
+  'POST /t/:slug/bank/accept': bulk.maxMs,
 }
