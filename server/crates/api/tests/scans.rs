@@ -173,9 +173,19 @@ async fn a_phone_claims_the_link_uploads_and_the_laptop_sees_the_stack() {
 
     // The phone reads back its own sitting, nothing more.
     let again = phone.open(&w).await;
+    let (_, held) = w
+        .call("GET", &format!("/api/t/alpha/scans/{scan}"), &sam, None)
+        .await;
+    let page_ids: Vec<Value> = held["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].clone())
+        .collect();
+    assert_eq!(page_ids.len(), 2);
     assert_eq!(
         again.json["scans"],
-        json!([{ "id": scan, "pages": 2, "open": true }])
+        json!([{ "id": scan, "pageIds": page_ids, "open": true }])
     );
 
     // The laptop: the pairing's stack, and "Scans to match".
@@ -755,6 +765,48 @@ async fn isolation_between_two_organisations() {
     let opened = b_phone.open(&w).await;
     assert_eq!(opened.json["orgName"], "Beta");
     assert_eq!(opened.json["scans"], json!([]));
+    // The sitting's page ids too: a pageId A's phone used, used again by
+    // B's phone on B's own scan, names only B's page in B's sitting, and
+    // A's sitting still names only A's.
+    let shared = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0e1";
+    let up = phone
+        .upload(
+            &w,
+            &format!("/scans/{scan}/pages?pageId={shared}"),
+            photo(4),
+        )
+        .await;
+    assert_eq!(up.status, StatusCode::OK, "{}", up.json);
+    let b_own = b_phone.new_scan(&w, photo(5)).await.json["scanId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let up = b_phone
+        .upload(
+            &w,
+            &format!("/scans/{b_own}/pages?pageId={shared}"),
+            photo(6),
+        )
+        .await;
+    assert_eq!(up.status, StatusCode::OK, "{}", up.json);
+    let b_sitting = b_phone.open(&w).await.json["scans"].clone();
+    assert_eq!(b_sitting.as_array().unwrap().len(), 1);
+    assert_eq!(b_sitting[0]["id"], b_own);
+    assert_eq!(b_sitting[0]["pageIds"].as_array().unwrap().len(), 2);
+    assert_eq!(b_sitting[0]["pageIds"][1], shared);
+    let a_sitting = phone.open(&w).await.json["scans"].clone();
+    assert_eq!(a_sitting.as_array().unwrap().len(), 1);
+    assert_eq!(a_sitting[0]["id"], scan);
+    assert_eq!(a_sitting[0]["pageIds"].as_array().unwrap().len(), 2);
+    assert_eq!(a_sitting[0]["pageIds"][1], shared);
+    let a_first = &a_sitting[0]["pageIds"][0];
+    assert!(
+        !b_sitting[0]["pageIds"]
+            .as_array()
+            .unwrap()
+            .contains(a_first),
+        "B's sitting names none of A's pages"
+    );
 
     // A's scan accepted onto an old declaration: in A's "can be deleted"
     // report, never in B's; its declaration's scans are 404 under B.
@@ -963,6 +1015,40 @@ fn alpha_holds(w: &World, seed: u8) -> bool {
         .get(&store::files::sha256_hex(&processed.bytes))
         .unwrap()
         .is_some()
+}
+
+/// A page whose answer was lost (the tab thrown away mid-upload): the
+/// reloaded sitting names it by the phone's own `pageId`, so the phone
+/// counts it landed instead of sending it again and counting it twice
+/// (recover.ts; scan-phone.spec.ts "a page kept on the phone…"). A first
+/// page's id is the server's; the laptop sees the same ids in order.
+#[tokio::test]
+async fn the_sitting_names_each_scans_page_ids_so_a_lost_answer_is_known_landed() {
+    let w = world();
+    let (sam, _, token) = staff_sitting(&w).await;
+    let mut phone = Phone::new(&token);
+    phone.open(&w).await;
+    let page = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0d1";
+    let scan = phone.new_scan(&w, photo(1)).await.json["scanId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let lost = phone
+        .upload(&w, &format!("/scans/{scan}/pages?pageId={page}"), photo(2))
+        .await;
+    assert_eq!(lost.status, StatusCode::OK, "{}", lost.json);
+
+    let reloaded = phone.open(&w).await;
+    assert_eq!(reloaded.status, StatusCode::OK);
+    let (_, held) = w
+        .call("GET", &format!("/api/t/alpha/scans/{scan}"), &sam, None)
+        .await;
+    let first = held["pages"][0]["id"].as_str().unwrap();
+    assert_ne!(first, page);
+    assert_eq!(
+        reloaded.json["scans"],
+        json!([{ "id": scan, "pageIds": [first, page], "open": true }])
+    );
 }
 
 /// L2: the phone sends a page again because the answer was lost, and the

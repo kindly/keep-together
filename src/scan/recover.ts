@@ -13,10 +13,12 @@ export interface Recovered {
   /** Pages to send again, in the order they were taken. */
   resend: Array<SavedPage>
   /**
-   * Kept pages already on the server: a scan exists only once its first
-   * page landed, so a kept first page of a scan the server holds is there
-   * (only its removal from the phone was lost). Sending it again as the
-   * first page would answer the scan; as a next page it would be a copy.
+   * Kept pages already on the server, whose answer (or removal from the
+   * phone) was lost. A next page is there when its scan holds its id. A
+   * first page's id is the server's, but a scan exists only once its
+   * first page landed, so a kept first page of a scan the server holds is
+   * there. Sending it again as the first page would answer the scan; as a
+   * next page it would be a copy.
    */
   landed: Array<string>
   /** The scan still open on the phone, with its pages already sent. */
@@ -28,14 +30,16 @@ export function recover(saved: Saved, scans: Array<SittingScan>): Recovered {
   const resend: Array<SavedPage> = []
   const landed: Array<string> = []
   for (const page of [...saved.pages].sort((a, b) => a.seq - b.seq)) {
-    if (page.opens && held.has(page.scanId)) landed.push(page.pageId)
-    else resend.push(page)
+    const scan = held.get(page.scanId)
+    if (scan && (page.opens || scan.pageIds.includes(page.pageId))) {
+      landed.push(page.pageId)
+    } else resend.push(page)
   }
   let current: Recovered['current'] = null
   const id = saved.current
   if (id) {
     const scan = held.get(id)
-    if (scan?.open) current = { id, earlier: scan.pages }
+    if (scan?.open) current = { id, earlier: scan.pageIds.length }
     // Not on the server yet: its first page is among those to send.
     else if (!scan && resend.some((p) => p.scanId === id)) {
       current = { id, earlier: 0 }

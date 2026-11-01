@@ -43,7 +43,7 @@ describe('recover', () => {
     // page, it would be a copy.
     const r = recover(
       { pages: [page('p1', A, 1, true), page('p2', A, 2)], current: A },
-      [{ id: A, pages: 1, open: true }],
+      [{ id: A, pageIds: ['s1'], open: true }],
     )
     expect(r.landed).toEqual(['p1'])
     expect(r.resend.map((p) => p.pageId)).toEqual(['p2'])
@@ -52,9 +52,30 @@ describe('recover', () => {
 
   it('reopens the open scan, counting the pages already on the server', () => {
     const r = recover({ pages: [page('p3', A, 3)], current: A }, [
-      { id: A, pages: 2, open: true },
+      { id: A, pageIds: ['s1', 'p2'], open: true },
     ])
     expect(r.current).toEqual({ id: A, earlier: 2 })
+  })
+
+  it('a kept next page the server holds landed: the answer was lost, not the page', () => {
+    // scan-phone.spec.ts: the tab was thrown away while page 2's upload
+    // landed. Sent again and counted as earlier too, it showed
+    // "This scan: 3 pages" for 2.
+    const r = recover({ pages: [page('p2', A, 2)], current: A }, [
+      { id: A, pageIds: ['s1', 'p2'], open: true },
+    ])
+    expect(r.landed).toEqual(['p2'])
+    expect(r.resend).toEqual([])
+    expect(r.current).toEqual({ id: A, earlier: 2 })
+  })
+
+  it('a kept next page of a taken scan that holds it is not sent again', () => {
+    const r = recover({ pages: [page('p2', A, 2)], current: A }, [
+      { id: A, pageIds: ['s1', 'p2'], open: false },
+    ])
+    expect(r.landed).toEqual(['p2'])
+    expect(r.resend).toEqual([])
+    expect(r.current).toBeNull()
   })
 
   it('reopens a scan none of whose pages landed yet', () => {
@@ -64,7 +85,7 @@ describe('recover', () => {
 
   it('does not reopen a scan the laptop has taken', () => {
     const r = recover({ pages: [page('p3', A, 3)], current: A }, [
-      { id: A, pages: 2, open: false },
+      { id: A, pageIds: ['s1', 's2'], open: false },
     ])
     expect(r.current).toBeNull()
     // Its page is still sent: the outbox moves it to a scan of its own.
