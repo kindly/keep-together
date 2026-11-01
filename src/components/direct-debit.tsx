@@ -11,6 +11,7 @@ import type {
   DirectDebitPayment,
   RegularGift,
   RegularGiftFrequency,
+  StillToCollect,
 } from '../lib/data'
 import { useRequestKey } from '../lib/request-key'
 import {
@@ -489,12 +490,15 @@ function CancelDialog({
   const writes = useDirectDebitWrites()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [still, setStill] = useState<StillToCollect | null>(null)
   async function confirm() {
+    if (still) return onClose()
     setBusy(true)
     setError(null)
     try {
-      await writes.cancel(gift.id, gift.mandateVersion)
-      onClose()
+      const left = await writes.cancel(gift.id, gift.mandateVersion)
+      if (left.length === 0) onClose()
+      else setStill(left)
     } catch (err) {
       setError(
         refusal(
@@ -510,14 +514,27 @@ function CancelDialog({
   return (
     <ConfirmDialog
       open
-      title="Cancel this Direct Debit?"
-      description={`${amountText(gift)}. GoCardless stops collecting and tells the donor. This can’t be undone: a new Direct Debit means signing up again.`}
-      confirm={busy ? 'Cancelling…' : 'Cancel Direct Debit'}
-      cancel="Keep it"
+      title={still ? 'Direct Debit cancelled' : 'Cancel this Direct Debit?'}
+      description={
+        still
+          ? `${amountText(gift)}. Cancelled, but GoCardless had already sent ${still.length === 1 ? 'a payment' : 'some payments'} to the bank, too late to stop: ${still.length === 1 ? 'it is' : 'they are'} still collected.`
+          : `${amountText(gift)}. GoCardless stops collecting and tells the donor. This can’t be undone: a new Direct Debit means signing up again.`
+      }
+      confirm={still ? 'Done' : busy ? 'Cancelling…' : 'Cancel Direct Debit'}
+      cancel={still ? 'Close' : 'Keep it'}
       confirmDisabled={busy}
       onConfirm={() => void confirm()}
       onCancel={onClose}
     >
+      {still && (
+        <ul role="status" className="text-sm">
+          {still.map((p) => (
+            <li key={p.paymentId}>
+              {formatPence(p.amount)} on {formatDay(p.chargeDate)}
+            </li>
+          ))}
+        </ul>
+      )}
       {error && (
         <p role="alert" className="text-sm text-red-700">
           {error}

@@ -4269,6 +4269,345 @@ async fn cancelling_the_original_gift_never_kills_an_adopted_one_on_the_mandate(
     );
 }
 
+/// Jo's active gift and, on its mandate, a second subscription made in
+/// GoCardless's dashboard and adopted, so the mandate is shared:
+/// (gift, its subscription, the mandate, the other subscription, the
+/// adopted gift).
+async fn shared_mandate(t: &T) -> (String, String, String, String, String) {
+    let (_, id, first_sub) = t.active().await;
+    let mandate = t.regular("alpha", &t.val, &id).await["mandateId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other = t
+        .fake_post(
+            &format!("mandates/{mandate}/subscription?amount=500"),
+            json!({}),
+        )
+        .await["subscription"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    t.simulate(&format!("subscriptions/{other}/payment")).await;
+    t.settle().await;
+    let adopted = ok(
+        &t.w,
+        "POST",
+        &format!("/api/t/alpha/gocardless/unknown-subscriptions/{other}/adopt"),
+        &t.sam,
+        Some(json!({ "sourceCodeId": t.code, "clientKey": contracts::new_id() })),
+    )
+    .await["view"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (id, first_sub, mandate, other, adopted)
+}
+
+impl T {
+    /// The subscription's next payment, left `pending_submission`.
+    async fn pending(&self, sub: &str) -> String {
+        let pm = self.simulate(&format!("subscriptions/{sub}/payment")).await["payment"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        self.settle().await;
+        pm
+    }
+
+    /// Staff cancel a regular gift: (status, answer).
+    async fn cancel(&self, id: &str) -> (StatusCode, Value) {
+        let v = self.regular("alpha", &self.val, id).await;
+        self.w
+            .call(
+                "POST",
+                &format!("/api/t/alpha/regular-gifts/{id}/cancel"),
+                &self.sam,
+                Some(json!({ "expected": v["mandateVersion"] })),
+            )
+            .await
+    }
+
+    fn status_at_gocardless(&self, id: &str) -> Value {
+        self.fake.resource(id).unwrap()["status"].clone()
+    }
+}
+
+/// G4 (g1q10): GoCardless doesn't cancel the payments a cancelled
+/// subscription already made. Cancelling only the subscription (the
+/// mandate is shared) must cancel its pending payments too, recorded from
+/// GoCardless's events.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_shared_mandates_gift_cancels_its_subscriptions_pending_payments() {
+    let t = setup().await;
+    let (id, first_sub, _, _, _) = shared_mandate(&t).await;
+    let pm = t.pending(&first_sub).await;
+    assert_eq!(
+        payment(&t.regular("alpha", &t.val, &id).await, &pm)["status"],
+        "pending"
+    );
+    let (s, out) = t.cancel(&id).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["view"]["status"], "cancelled");
+    assert_eq!(out["stillToCollect"], json!([]));
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&first_sub), "cancelled");
+    assert_eq!(t.status_at_gocardless(&pm), "cancelled");
+    assert_eq!(
+        payment(&t.regular("alpha", &t.val, &id).await, &pm)["status"],
+        "cancelled"
+    );
+}
+
+/// G4: the shared mandate, the other gift's subscription and its pending
+/// payments are untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_shared_mandates_gift_spares_the_mandate_and_the_other_gifts_payments() {
+    let t = setup().await;
+    let (id, first_sub, mandate, other, adopted) = shared_mandate(&t).await;
+    let mine = t.pending(&first_sub).await;
+    let theirs = t.pending(&other).await;
+    let (s, out) = t.cancel(&id).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&mine), "cancelled");
+    assert_eq!(t.status_at_gocardless(&theirs), "pending_submission");
+    assert_eq!(t.status_at_gocardless(&other), "active");
+    assert_ne!(t.status_at_gocardless(&mandate), "cancelled");
+    let v = t.regular("alpha", &t.val, &adopted).await;
+    assert_eq!(v["status"], "active");
+    assert_eq!(payment(&v, &theirs)["status"], "pending");
+}
+
+/// G4: an adopted gift (no mandate of its own) is the same path.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_an_adopted_gift_cancels_its_subscriptions_pending_payments() {
+    let t = setup().await;
+    let (id, first_sub, mandate, other, adopted) = shared_mandate(&t).await;
+    let theirs = t.pending(&other).await;
+    let mine = t.pending(&first_sub).await;
+    let (s, out) = t.cancel(&adopted).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["view"]["status"], "cancelled");
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&other), "cancelled");
+    assert_eq!(t.status_at_gocardless(&theirs), "cancelled");
+    assert_eq!(t.status_at_gocardless(&mine), "pending_submission");
+    assert_ne!(t.status_at_gocardless(&mandate), "cancelled");
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "active");
+}
+
+/// G4: a payment submitted to the banks between the listing and its
+/// cancel is past cancelling: answered in `stillToCollect`, not a 500;
+/// the gift still ends, and the payment's status stays GoCardless's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_payment_submitted_meanwhile_is_reported_and_the_gift_still_ends() {
+    let t = setup().await;
+    let (id, first_sub, _, _, _) = shared_mandate(&t).await;
+    let pm = t.pending(&first_sub).await;
+    // The cancel is held at GoCardless while its submission run takes it.
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "hold": true, "path": format!("payments/{pm}/actions/cancel") }),
+    )
+    .await;
+    let before = t.fake.calls("POST payments");
+    let ((s, out), ()) = tokio::join!(t.cancel(&id), async {
+        // Wait for the cancel to arrive (and be held), then submit.
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while t.fake.calls("POST payments") == before {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the payment's cancel reached GoCardless");
+        t.simulate(&format!("payments/{pm}/submit")).await;
+        t.fake_post("outage/release", json!({})).await;
+    });
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["view"]["status"], "cancelled");
+    let still = out["stillToCollect"].as_array().unwrap();
+    assert_eq!(still.len(), 1, "{out}");
+    assert_eq!(still[0]["paymentId"], pm.as_str());
+    assert_eq!(still[0]["status"], "submitted");
+    assert!(still[0]["amount"].as_i64().unwrap() > 0);
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&first_sub), "cancelled");
+    assert_eq!(t.status_at_gocardless(&pm), "submitted");
+    assert_eq!(
+        payment(&t.regular("alpha", &t.val, &id).await, &pm)["status"],
+        "pending"
+    );
+}
+
+/// G4 review M1: GoCardless refusing a payment it could still cancel
+/// (a 422 for some other reason) is an error, never "too late": the gift
+/// stays live and the retry cancels it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_on_a_still_cancellable_payment_is_an_error_and_the_retry_cancels_it() {
+    let t = setup().await;
+    let (id, first_sub, _, _, _) = shared_mandate(&t).await;
+    let pm = t.pending(&first_sub).await;
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "status": 422, "path": format!("payments/{pm}/actions/cancel") }),
+    )
+    .await;
+    let (s, out) = t.cancel(&id).await;
+    assert_ne!(s, StatusCode::OK, "{out}");
+    assert_ne!(s, StatusCode::INTERNAL_SERVER_ERROR, "{out}");
+    t.settle().await;
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "active");
+    assert_eq!(t.status_at_gocardless(&first_sub), "active");
+    assert_eq!(t.status_at_gocardless(&pm), "pending_submission");
+    let (s, out) = t.cancel(&id).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["stillToCollect"], json!([]));
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&first_sub), "cancelled");
+    assert_eq!(t.status_at_gocardless(&pm), "cancelled");
+}
+
+/// G4 review L1: the subscription cancelled, then a failure before its
+/// payments were swept (its event has ended the gift): cancelling the
+/// ended gift again sweeps them.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_an_ended_subscription_only_gift_again_sweeps_its_pending_payments() {
+    let t = setup().await;
+    let (id, first_sub, mandate, other, _) = shared_mandate(&t).await;
+    let mine = t.pending(&first_sub).await;
+    let theirs = t.pending(&other).await;
+    let db = t.w.store.org(&t.w.alpha.id).unwrap();
+    let token = db.read(|r| t.gc.token(r)).unwrap().unwrap();
+    t.gc.api
+        .cancel_subscription(&token, &first_sub)
+        .await
+        .unwrap();
+    t.settle().await;
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "cancelled");
+    assert_eq!(t.status_at_gocardless(&mine), "pending_submission");
+    let (s, out) = t.cancel(&id).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["stillToCollect"], json!([]));
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&mine), "cancelled");
+    assert_eq!(t.status_at_gocardless(&theirs), "pending_submission");
+    assert_ne!(t.status_at_gocardless(&mandate), "cancelled");
+    assert_eq!(
+        payment(&t.regular("alpha", &t.val, &id).await, &mine)["status"],
+        "cancelled"
+    );
+}
+
+/// G4 review: a subscription that finished (its last payment made, and
+/// owed) ends the gift; cancelling that gift again sweeps nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_finished_subscription_only_gift_again_leaves_its_last_payment() {
+    let t = setup().await;
+    let (id, first_sub, mandate, _, _) = shared_mandate(&t).await;
+    let last = t.pending(&first_sub).await;
+    t.simulate(&format!("subscriptions/{first_sub}/finish"))
+        .await;
+    t.settle().await;
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "cancelled");
+    let (s, out) = t.cancel(&id).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["stillToCollect"], json!([]));
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&first_sub), "finished");
+    assert_eq!(t.status_at_gocardless(&last), "pending_submission");
+    assert_ne!(t.status_at_gocardless(&mandate), "cancelled");
+    assert_eq!(
+        payment(&t.regular("alpha", &t.val, &id).await, &last)["status"],
+        "pending"
+    );
+}
+
+/// G4: GoCardless failing part way leaves the gift live (payments go
+/// before the subscription, whose event would end it), so the retry
+/// staff make finishes the job.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancel_that_fails_at_a_payment_is_finished_by_the_retry() {
+    let t = setup().await;
+    let (id, first_sub, _, _, _) = shared_mandate(&t).await;
+    let pm = t.pending(&first_sub).await;
+    t.fake_post(
+        "outage",
+        json!({ "calls": 100, "status": 503, "path": format!("payments/{pm}/actions/cancel") }),
+    )
+    .await;
+    let (s, out) = t.cancel(&id).await;
+    assert_ne!(s, StatusCode::OK, "{out}");
+    assert_ne!(s, StatusCode::INTERNAL_SERVER_ERROR, "{out}");
+    t.settle().await;
+    assert_eq!(t.regular("alpha", &t.val, &id).await["status"], "active");
+    assert_eq!(t.status_at_gocardless(&first_sub), "active");
+    assert_eq!(t.status_at_gocardless(&pm), "pending_submission");
+    t.fake_post("outage", json!({ "calls": 0 })).await;
+    let (s, out) = t.cancel(&id).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["view"]["status"], "cancelled");
+    assert_eq!(out["stillToCollect"], json!([]));
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&first_sub), "cancelled");
+    assert_eq!(t.status_at_gocardless(&pm), "cancelled");
+}
+
+/// G4: the fake behaves as GoCardless documents. Cancelling a
+/// subscription leaves the payments it made pending (still collected);
+/// a payment cancels only before it is submitted; one cancelled already
+/// is fine to cancel again.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_fake_cancels_subscriptions_and_payments_as_gocardless_does() {
+    let t = setup().await;
+    let (_, _, sub) = t.active().await;
+    let first = t.pending(&sub).await;
+    let second = t.pending(&sub).await;
+    let db = t.w.store.org(&t.w.alpha.id).unwrap();
+    let token = db.read(|r| t.gc.token(r)).unwrap().unwrap();
+    t.gc.api.cancel_subscription(&token, &sub).await.unwrap();
+    assert_eq!(t.status_at_gocardless(&sub), "cancelled");
+    assert_eq!(t.status_at_gocardless(&first), "pending_submission");
+    let listed =
+        t.gc.api
+            .list_subscription_payments(&token, &sub, "pending_submission")
+            .await
+            .unwrap();
+    let mut ids: Vec<&str> = listed.iter().map(|p| p.id.as_str()).collect();
+    ids.sort_unstable();
+    let mut want = vec![first.as_str(), second.as_str()];
+    want.sort_unstable();
+    assert_eq!(ids, want);
+    use api::gocardless::client::PaymentCancel;
+    assert_eq!(
+        t.gc.api.cancel_payment(&token, &first).await.unwrap(),
+        PaymentCancel::Cancelled
+    );
+    assert_eq!(t.status_at_gocardless(&first), "cancelled");
+    assert_eq!(
+        t.gc.api.cancel_payment(&token, &first).await.unwrap(),
+        PaymentCancel::Cancelled
+    );
+    t.fake_post(
+        "outage",
+        json!({ "calls": 1, "status": 422, "path": format!("payments/{second}/actions/cancel") }),
+    )
+    .await;
+    assert!(t.gc.api.cancel_payment(&token, &second).await.is_err());
+    t.simulate(&format!("payments/{second}/submit")).await;
+    match t.gc.api.cancel_payment(&token, &second).await.unwrap() {
+        PaymentCancel::Refused(p) => assert_eq!(p.status, "submitted"),
+        other => panic!("submitted, yet {other:?}"),
+    }
+    assert!(
+        t.gc.api
+            .list_subscription_payments(&token, &sub, "pending_submission")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// UI review H1: a one-off or Instant Bank Pay answer says what
 /// GoCardless was asked for, which under a reused key is the first
 /// request's: a form that changed its amount and kept its key would

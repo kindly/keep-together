@@ -177,6 +177,7 @@ export type {
   RegularGiftFrequency,
   ReportLine,
   ShareArgs,
+  StillToCollect,
   Term,
   TermShareView,
   UnknownSubscription,

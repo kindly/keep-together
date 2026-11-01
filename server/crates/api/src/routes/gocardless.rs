@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::Params;
-use crate::gocardless::client::{CallError, NewPayment, Prefill};
+use crate::gocardless::client::{CallError, NewPayment, PaymentCancel, Prefill};
 use crate::gocardless::{ConnectStart, GoCardless, GoCardlessStatus};
 use crate::{ApiError, Body, IdParam, Tenant};
 
@@ -420,15 +420,43 @@ async fn new_link(
     Ok(Json(out))
 }
 
+/// A payment GoCardless wouldn't cancel (already submitted to the
+/// banks): it will still be collected, and its gift follows from
+/// GoCardless's events as any other.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PaymentToCollect {
+    pub payment_id: String,
+    /// In pence.
+    pub amount: i64,
+    pub charge_date: String,
+    /// GoCardless's status when it refused (e.g. `submitted`).
+    pub status: String,
+}
+
+/// `cancel`'s answer: the regular gift as it now is, and any payment
+/// already made that GoCardless would no longer cancel.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RegularGiftCancelled {
+    pub id: String,
+    pub view: RegularGiftView,
+    pub still_to_collect: Vec<PaymentToCollect>,
+}
+
 /// `POST regular-gifts/{id}/cancel {expected}`: stop it at GoCardless
 /// (its mandate, which takes the subscription and pending payments with
-/// it; or, before the donor signed, its billing request), then mark it
-/// cancelled. One already ended is answered as it is.
+/// it; or, before the donor signed, its billing request; or, when the
+/// mandate isn't its own, its subscription and that subscription's
+/// pending payments), then mark it cancelled. One already ended is
+/// answered as it is.
 async fn cancel(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(req): Body<Expected>,
-) -> Result<Json<RegularGiftSaved>, ApiError> {
+) -> Result<Json<RegularGiftCancelled>, ApiError> {
     let gc = t.gocardless()?;
     direct_debit(&t, &id).await?;
     // Connected = this organisation owns the account's mapping, not
@@ -442,9 +470,38 @@ async fn cancel(
             Ok((g.token(r)?.filter(|_| owned), found, view.mandate_version))
         })
         .await?;
+    let (rid, md) = (id.clone(), found.mandate.mandate_id.clone());
+    let shared = match md {
+        Some(md) => {
+            t.read(move |r| Ok(regular::others_on_mandate(r, &rid, &md)?))
+                .await?
+        }
+        None => false,
+    };
+    // Only its subscription collects: the mandate is shared, or it was
+    // adopted (no mandate of its own).
+    let subscription_only = match (&found.mandate.mandate_id, &found.mandate.subscription_id) {
+        (_, None) => None,
+        (Some(_), Some(sb)) if shared => Some(sb.clone()),
+        (Some(_), Some(_)) => None,
+        (None, Some(sb)) => Some(sb.clone()),
+    };
     if found.mandate.status().is_ended() {
+        // A retry after a failure past the subscription's cancel (whose
+        // event ended the gift): sweep its pending payments again, if we
+        // cancelled it (a finished one's last payment is owed).
+        let mut still_to_collect = Vec::new();
+        if let (Some(sb), Some(token)) = (&subscription_only, &token) {
+            sweep_cancelled_subscription(&gc, token, sb, &mut still_to_collect)
+                .await
+                .map_err(|e| provider(&t.slug, e))?;
+        }
         let out = t.write(move |ctx| saved(ctx, &id)).await?;
-        return Ok(Json(out));
+        return Ok(Json(RegularGiftCancelled {
+            id: out.id,
+            view: out.view,
+            still_to_collect,
+        }));
     }
     if counter != req.expected {
         // The refusal a save gives, before GoCardless is touched.
@@ -455,28 +512,25 @@ async fn cancel(
         });
     }
     let token = token.ok_or_else(not_connected)?;
-    let (rid, md) = (id.clone(), found.mandate.mandate_id.clone());
-    let shared = match md {
-        Some(md) => {
-            t.read(move |r| Ok(regular::others_on_mandate(r, &rid, &md)?))
-                .await?
-        }
-        None => false,
-    };
+    let mut still_to_collect = Vec::new();
     match (
         &found.mandate.mandate_id,
         &found.mandate.billing_request_id,
         &found.mandate.subscription_id,
     ) {
         // Another regular gift (one adopted) collects on the same mandate:
-        // stop only this one's subscription.
-        (Some(_), _, Some(sb)) if shared => gc.api.cancel_subscription(&token, sb).await,
+        // stop only this one's subscription, and the payments it made.
+        (Some(_), _, Some(sb)) if shared => {
+            cancel_subscription_only(&gc, &token, sb, &mut still_to_collect).await
+        }
         // Nothing of its own collects yet: leave the shared mandate be.
         (Some(_), _, None) if shared => Ok(()),
         (Some(md), _, _) => gc.api.cancel_mandate(&token, md).await,
         // Adopted from GoCardless: no mandate of its own, its
         // subscription is what collects (review H2).
-        (None, _, Some(sb)) => gc.api.cancel_subscription(&token, sb).await,
+        (None, _, Some(sb)) => {
+            cancel_subscription_only(&gc, &token, sb, &mut still_to_collect).await
+        }
         (None, Some(br), None) => match gc.api.cancel_billing_request(&token, br).await {
             // The donor signed meanwhile (we haven't heard yet): cancel the
             // mandate the request made, which takes any subscription with
@@ -508,7 +562,75 @@ async fn cancel(
             saved(ctx, &id)
         })
         .await?;
-    Ok(Json(out))
+    Ok(Json(RegularGiftCancelled {
+        id: out.id,
+        view: out.view,
+        still_to_collect,
+    }))
+}
+
+/// Stop a subscription without its mandate. GoCardless doesn't cancel
+/// the payments a cancelled subscription already made: they are still
+/// collected unless cancelled too. So its `pending_submission` payments
+/// are cancelled one by one (their `cancelled` events record them), then
+/// the subscription, then any payment it made meanwhile. A payment
+/// GoCardless refuses (submitted meanwhile) goes in `still`.
+///
+/// Payments first: the subscription's `cancelled` event ends the gift,
+/// so as much as can fail as possible is done while the gift is live. A
+/// failure after the subscription's cancel is finished by the retry's
+/// sweep of the ended gift ([`sweep_cancelled_subscription`]). Each step
+/// is safe to repeat (a cancelled payment or subscription is fine).
+async fn cancel_subscription_only(
+    gc: &GoCardless,
+    token: &str,
+    subscription: &str,
+    still: &mut Vec<PaymentToCollect>,
+) -> Result<(), CallError> {
+    cancel_pending_payments(gc, token, subscription, still).await?;
+    gc.api.cancel_subscription(token, subscription).await?;
+    cancel_pending_payments(gc, token, subscription, still).await
+}
+
+/// An ended subscription-only gift cancelled again: if GoCardless has
+/// its subscription `cancelled` (not `finished`), cancel what it left
+/// pending. Idempotent: one list call when there's nothing to do.
+async fn sweep_cancelled_subscription(
+    gc: &GoCardless,
+    token: &str,
+    subscription: &str,
+    still: &mut Vec<PaymentToCollect>,
+) -> Result<(), CallError> {
+    if gc.api.get_subscription(token, subscription).await?.status != "cancelled" {
+        return Ok(());
+    }
+    cancel_pending_payments(gc, token, subscription, still).await
+}
+
+/// Cancel the subscription's `pending_submission` payments. One that
+/// GoCardless says is past cancelling (submitted meanwhile) goes in
+/// `still`; any other failure is an error, so a retry comes back.
+async fn cancel_pending_payments(
+    gc: &GoCardless,
+    token: &str,
+    subscription: &str,
+    still: &mut Vec<PaymentToCollect>,
+) -> Result<(), CallError> {
+    let pending = gc
+        .api
+        .list_subscription_payments(token, subscription, "pending_submission")
+        .await?;
+    for p in pending {
+        if let PaymentCancel::Refused(now) = gc.api.cancel_payment(token, &p.id).await? {
+            still.push(PaymentToCollect {
+                payment_id: now.id,
+                amount: now.amount,
+                charge_date: now.charge_date,
+                status: now.status,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// `GET gocardless/unmatched`: payments GoCardless reported that nobody
