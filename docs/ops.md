@@ -41,6 +41,9 @@ Data on the volume (`/data`):
 | `snapshots-tmp/` | the snapshot job's scratch copies, removed after each file |
 | `drill/` | the restore drill's write-loss probe, only during a drill |
 | `.image` | the image the data belongs to (staging's reset compares it) |
+| `.generation` | under `KEEP_RESET_ON=demand`, the reset generation the data belongs to |
+| `.wiping` | a demand reset's wipe in progress; the next boot finishes it |
+| `.generations-used` | every generation this volume left behind; demand refuses them |
 | `.restored` | how the volume was last restored; reported until a human deletes it and restarts the machine |
 | `restore.log` | the last empty-volume restore's output |
 
@@ -507,6 +510,8 @@ needs the aws CLI, litestream 0.5.x and sqlite3, and builds
   `commit` is the git commit the image was built from (`KEEP_RELEASE`,
   `$GITHUB_SHA` in `deploy.yml`; `null` for a local build): keep-qc's
   deploy waits for it, and QC checks out the specs that match it.
+  Under `KEEP_RESET_ON=demand` only, `resetGeneration`: the reset
+  generation the data belongs to (`/data/.generation`; "Staging reset").
 
   It is public, so it has counts and status words only. Error text
   (bucket names, account ids, tenant ids) goes to the log and Sentry, and
@@ -563,7 +568,39 @@ what grew, read the daily `data usage:` lines in `fly logs`.
 `KEEP_RESET_SEED=riverside`: on the first boot of a new image (the
 image ref differs from `/data/.image`) the entrypoint wipes `/data`
 before Litestream starts, and the api seeds the `riverside` org. Restarts
-and restored volumes keep their data. The seed is `seed::riverside`
+and restored volumes keep their data. That is `KEEP_RESET_ON=deploy`, the
+default.
+
+`KEEP_RESET_ON=demand` (not used by any app yet: staging moves to it in
+plan gocardless-sandbox-qc.sv, step S1b) keeps the data across deploys
+and wipes only when `KEEP_RESET_GENERATION` differs from
+`/data/.generation`. **`KEEP_RESET_GENERATION` is a Fly secret only,
+never in the toml's `[env]`**: two sources for one name is a trap (one
+silently wins), so S1b seeds the first one with `fly secrets set
+--stage`, and from then on only `staging-reset.sh` changes it. Each
+generation is new (a UTC timestamp). The volume lists every generation it
+has left behind in `/data/.generations-used` (never deleted), and demand
+refuses to boot with a listed one, wiping nothing: its Litestream prefix
+still holds that period's replica. **Going back to deploy** (reverting
+S1b): also run `fly secrets unset KEEP_RESET_GENERATION -a keep-staging
+--stage`, so the next switch to demand starts from
+`staging-reset.sh` and a new generation. `scripts/fly/staging-reset.sh` asks you to type
+`reset keep-staging`, sets a new generation (a UTC timestamp) with `fly
+secrets set`, which restarts the machine, and waits until `/healthz`
+reports it as `resetGeneration`. Litestream's prefix is
+`<env>/<generation>`, so an empty volume restores from the generation the
+env names; with no replica there the snapshots are the fallback (loud, as
+on prod). The wipe is crash-safe: the entrypoint writes `/data/.wiping`
+first and removes it last, so a boot that finds it finishes the wipe, and
+a reset never restores (a half-wiped volume can't come back from the
+snapshots as the new generation). An unreadable `.generation` stops the
+boot instead of wiping. `KEEP_RESET_ON=deploy` retires any `.generation`
+to `.generations-used`, so switching back to demand needs a new
+generation, and wipes once. Markers are written to a temp file and moved
+into place, so a crash never leaves one empty. The entrypoint refuses
+`KEEP_RESET_SEED` unless `KEEP_ENV` is `staging` or `dev`, and `demand`
+without `KEEP_RESET_SEED` or with a generation that isn't 1 to 64 of
+`A-Za-z0-9_-`. The seed is `seed::riverside`
 (Convex's `testSeed`): 100 donors with notes, relationships,
 identifiers, field values, acquisition codes, gifts and Gift Aid
 declarations, and one user per role

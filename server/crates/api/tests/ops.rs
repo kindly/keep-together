@@ -159,6 +159,32 @@ async fn healthz_reports_the_data_volume() {
     assert_eq!(body["diskTotalBytes"].as_u64().unwrap(), total);
 }
 
+/// `KEEP_RESET_ON=demand`: the entrypoint's `.generation` marker is
+/// reported, so `scripts/fly/staging-reset.sh` can wait for the new one;
+/// without the marker the field is absent.
+#[tokio::test]
+async fn healthz_reports_the_reset_generation() {
+    let w = world();
+    let get = || async {
+        let res = w
+            .app
+            .clone()
+            .oneshot(request("GET", "/healthz", None, None))
+            .await
+            .unwrap();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+    };
+    let body = get().await;
+    assert!(body.get("resetGeneration").is_none(), "{body}");
+    std::fs::write(
+        w.store.dir().join(api::reset::GENERATION_MARKER),
+        "20261101T120000Z\n",
+    )
+    .unwrap();
+    assert_eq!(get().await["resetGeneration"], "20261101T120000Z");
+}
+
 #[test]
 fn the_daily_usage_line_counts_org_files_and_files_dbs() {
     let tmp = tempfile::tempdir().unwrap();

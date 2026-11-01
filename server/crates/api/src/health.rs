@@ -1,7 +1,8 @@
 //! `GET /healthz`: 200 when the server can serve, 503 when it can't. Fly's
 //! health check and the 15-minute monitor call it. Besides the db, it
 //! reports what the monitor judges: WAL backlog, backups, and the data
-//! volume's free and total bytes, and which commit is running.
+//! volume's free and total bytes, which commit is running, and on an
+//! environment reset on demand its reset generation.
 
 use axum::Json;
 use axum::extract::State;
@@ -34,6 +35,12 @@ pub async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>)
     // Which commit this is, so a deploy (and QC on keep-qc) can tell the
     // new image is serving. `null` for a build without `KEEP_RELEASE`.
     body["commit"] = json!(state.commit.as_deref());
+    // Only on an environment reset on demand (`KEEP_RESET_ON=demand`):
+    // the generation its data belongs to, which `staging-reset.sh` waits
+    // for. Absent everywhere else.
+    if let Some(g) = crate::reset::generation(state.store.dir()) {
+        body["resetGeneration"] = json!(g);
+    }
     let ok = db_ok;
     body["ok"] = json!(ok);
     let status = if ok {
