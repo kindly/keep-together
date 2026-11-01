@@ -67,6 +67,10 @@ COPY --from=server /out/ /usr/local/bin/
 COPY --from=web /src/dist /app/dist
 COPY server/litestream.yml /etc/litestream.yml
 COPY scripts/ops/entrypoint.sh scripts/ops/restore.sh scripts/ops/drill.sh /usr/local/bin/
+# The commit this image is (deploy.yml passes $GITHUB_SHA), reported by
+# /healthz as `commit`. Last, so a new commit rebuilds no earlier layer.
+ARG KEEP_RELEASE=""
+ENV KEEP_RELEASE=$KEEP_RELEASE
 ENV KEEP_DATA_DIR=/data \
     KEEP_STATIC_DIR=/app/dist \
     KEEP_BIND=0.0.0.0 \

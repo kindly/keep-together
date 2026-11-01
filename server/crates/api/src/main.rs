@@ -13,6 +13,8 @@
 //! - `KEEP_LITESTREAM_SOCKET`: Litestream's control socket, for `/healthz`;
 //!   when set, Litestream also owns org files' WAL checkpoints (no
 //!   checkpointer threads: `store::Store::without_checkpointer`)
+//! - `KEEP_RELEASE`: the commit the image was built from (the Dockerfile's
+//!   build arg, `$GITHUB_SHA` in `deploy.yml`), reported by `/healthz`
 //! - `SENTRY_DSN`: error reporting (`observe`)
 //! - `KEEP_GOCARDLESS` (`off`/`fake`/`sandbox`/`live`),
 //!   `KEEP_GOCARDLESS_CLIENT_ID`, `KEEP_GOCARDLESS_CLIENT_SECRET`,
@@ -214,7 +216,10 @@ async fn main() {
         .with_auth(auth)
         .with_qc(qc)
         .with_address(address)
-        .with_gocardless(gocardless);
+        .with_gocardless(gocardless)
+        .with_commit(api::health::commit(
+            std::env::var("KEEP_RELEASE").ok().as_deref(),
+        ));
     jobs.register(api::auth::LimitSweep(state.auth.clone()));
     jobs.spawn();
 

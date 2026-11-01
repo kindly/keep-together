@@ -207,7 +207,7 @@ mod tests {
         assert!(boot_owned(&bad_key, ANY).is_err());
     }
 
-    /// A fly toml's `[env]` (`fly.staging.toml` or `fly.prod.toml`, at the
+    /// A fly toml's `[env]` (`fly.staging.toml`, `fly.prod.toml` or `fly.qc.toml`, at the
     /// repo root), as boot reads the environment.
     fn fly_env(file: &str) -> Vec<(&'static str, String)> {
         let toml = std::fs::read_to_string(
@@ -248,6 +248,7 @@ mod tests {
                 "https://staging.keep-together.org.uk",
             ),
             ("fly.prod.toml", "prod", "https://app.keep-together.org.uk"),
+            ("fly.qc.toml", "staging", "https://keep-qc.fly.dev"),
         ] {
             let mut vars = fly_env(file);
             assert!(
@@ -280,6 +281,23 @@ mod tests {
                 .any(|(k, v)| *k == "KEEP_ADDRESS_LOOKUP" && v != "fake"),
             "fly.prod.toml: KEEP_ADDRESS_LOOKUP must be off or ideal"
         );
+    }
+
+    /// keep-qc is thrown away on every deploy and only ever talks to
+    /// GoCardless's sandbox: reset seed on, no backups, no mail, never
+    /// live (plan gocardless-sandbox-qc.sv, A1).
+    #[test]
+    fn fly_qc_toml_is_reset_sandboxed_and_unbacked() {
+        let vars = fly_env("fly.qc.toml");
+        let get = |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("KEEP_ENV"), Some("staging"));
+        assert_eq!(get("KEEP_RESET_SEED"), Some("riverside"));
+        assert_eq!(get("KEEP_MAIL"), Some("off"));
+        assert_eq!(get("KEEP_GOCARDLESS"), Some("sandbox"));
+        assert_eq!(get("KEEP_ADDRESS_LOOKUP"), Some("fake"));
+        for k in ["KEEP_SNAPSHOT_REGION", "KEEP_MAIL_ONLY_TO", "KEEP_DEV_AUTH"] {
+            assert_eq!(get(k), None, "fly.qc.toml sets {k}");
+        }
     }
 
     /// L3: the log mailer only for dev.
