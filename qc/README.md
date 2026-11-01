@@ -85,7 +85,10 @@ netem and no lock (`qc/target.ts`):
 | `staging` | keep-staging | `QC_STAGING_URL` (default `https://staging.keep-together.org.uk`) | the house nightly, until R1 |
 | `qc` | keep-qc, QC's own app | `QC_TARGET_URL` (default `https://keep-qc.fly.dev`) | GitHub Actions (`.github/workflows/qc.yml`) |
 
-Their history lines carry `env: staging` or `env: qc`. A hosted app has
+Their history lines carry `env: staging` or `env: qc`. A test gets
+120 s there instead of Playwright's 30 s (`testTimeoutMs`): a test that
+sets up each sample over sequential round trips scales with the real
+RTT. Locally it stays 30 s, so a hang shows up fast. A hosted app has
 no dev auth, so set-up goes through its token surface, `/api/qc/*`
 (`server/crates/api/src/routes/qc_seed.rs`): `KEEP_QC_TOKEN` must be in
 the env (the Fly secret; `scripts/fly/staging.sh` or `scripts/fly/qc.sh`

@@ -346,12 +346,6 @@ test.describe(
       world,
       instance,
     }) => {
-      // The test's own wall-clock limit, not a budget: four flows, each a
-      // warm-up plus 5 samples (11 more on a re-measure), and each sample
-      // drafts a claim and loads its page first: ~24 samples of ~10 round
-      // trips, past Playwright's default 30 s once the target's RTT is
-      // over ~110 ms (keep-qc from Actions: 90-190 ms).
-      test.setTimeout(120_000)
       const r = await recorder(instance, users.a, world.tenants[0].tenantId)
       const slug = users.a.slug
 

@@ -153,12 +153,6 @@ test.describe('reconcile', { annotation: [RECONCILE] }, () => {
     flow,
     users,
   }) => {
-    // The test's own wall-clock limit, not a budget: each sample sets up
-    // 30 donors one POST at a time, so its time is ~35 round trips, and a
-    // warm-up plus 5 samples (11 more on a re-measure) passes Playwright's
-    // default 30 s once the target's RTT is over ~110 ms (keep-qc from
-    // Actions: 90-190 ms).
-    test.setTimeout(120_000)
     const slug = users.a.slug
     const accountId = await account(page, slug)
     await flow(page, 'bank.acceptTicked', {

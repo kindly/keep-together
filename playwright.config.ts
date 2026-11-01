@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { availableParallelism } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, devices } from '@playwright/test'
+import { testTimeoutMs } from './qc/target'
 
 // QC suite (ADR 0018, factory/plans/qc-suite.sv; migration-rust F3): the
 // production build, served by qc/serve.mjs, driven by headless Chromium
@@ -79,6 +80,8 @@ export default defineConfig({
   testMatch: '**/*.spec.ts',
   // A flaky test is a failure to investigate, not to retry.
   retries: 0,
+  // 30 s locally, 120 s on a hosted target (qc/target.ts, testTimeoutMs).
+  timeout: testTimeoutMs(),
   forbidOnly: true,
   workers,
   reporter: [
