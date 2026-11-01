@@ -130,9 +130,9 @@ nightly at 03:00 UTC and by hand, on `main` only, never on a pull
 request, and only for a commit on `main`. Its runner is far
 from London, so on `qc`:
 
-- **budgets are the target's own** (see Budgets): none until plan step
-  A3 records them, so every flow is timed and recorded but not judged,
-  and a `NO BUDGETS` banner lists them;
+- **budgets are the target's own** (see Budgets), recorded by plan
+  step A3; a flow missing from the set is timed and recorded but not
+  judged, and a `NO BUDGETS` banner lists it;
 - **the first-hop watch is off**: the header says `link: not watched
   (Actions runner)`, and there's no LINK banner. The RTT is still
   recorded on every line;
@@ -206,7 +206,7 @@ Banners to look for:
   "not timed" and coverage gates. The GoCardless screens were not tested.
 - **`NO BUDGETS on target qc`**: flows the target has no budget for yet
   (`targetBudgets` in `qc/budgets.ts`): timed and recorded, latency not
-  judged. Every flow on keep-qc until A3 records its set.
+  judged. On keep-qc, the flows only the GoCardless fake times.
 - **`RTT over 150 ms`** (the target's ceiling): the link is too slow to
   judge latency. Behaviour
   is still checked, but latency asserts were skipped. Rerun on a better
@@ -316,10 +316,20 @@ recorded where it runs: `qc`, keep-qc from GitHub's runners, whose round
 trip to London would make the house's lines time the Atlantic. A flow
 missing from a target's set is timed and recorded but not judged
 (`unbudgeted` in history, `not judged (no budget)` in the table); the
-harness's self-tests keep their budgets everywhere. The `qc` set is
-empty, with no RTT ceiling, until plan step A3 records it: three
-`mode=record` runs of `qc.yml`, 1.5× each flow's worst sample, shown to
-the human as a diff. The same OK rule applies to it.
+harness's self-tests keep their budgets everywhere.
+
+The `qc` set was recorded by plan step A3 and approved by the human
+(2026-11-01): three `mode=record` runs of `qc.yml` **from a US Actions
+runner to keep-qc in London (lhr)**, 1.5× each flow's worst sample
+rounded up to 10 ms, and an RTT ceiling of 290 ms from the same runs.
+The link dominates those lines (the runs' median RTT was 90 to 185 ms;
+most flows take one to four round trips), so they say more about the
+Atlantic than the app; if keep-qc or the runners move, re-record:
+replace `QC_RECORDED` and `QC_RTT_CEILING_MS` in `qc/budgets.ts`
+wholesale. The human's fixed lines (`QC_FIXED`) aren't recorded and stay:
+bulk at 500 ms, but `scan.sendPage` and `scans.uploadToLaptop`, the
+phone's page upload, at 1,500 ms on keep-qc only. The same OK rule
+applies to the set.
 
 Each
 flow call takes one untimed warm-up, then `QC_REPEATS` (default 5) timed
@@ -348,7 +358,8 @@ has other calls and all of them are under. A second slow call fails, and
 so does a route whose only call was slow. `/api/dev/*` and `/api/qc/*` (the sign-in stub,
 the QC seed) is reported, not asserted. An answered call without the
 header fails: the api sets it on every response. Bulk routes
-(`BULK_ROUTES` in qc/budgets.ts) have their own limit.
+(`BULK_ROUTES` in qc/budgets.ts: Accept ticked, the phone's page upload)
+have their own limit, 500 ms.
 
 | Kind | Applies to | Failing line | Target (tracked) |
 |---|---|---|---|
