@@ -17,6 +17,7 @@ pub mod groups;
 mod identifiers;
 mod notes;
 mod preferences;
+pub mod qc_gocardless;
 pub mod qc_seed;
 mod relationships;
 mod scans;

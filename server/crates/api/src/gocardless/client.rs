@@ -334,6 +334,43 @@ impl Api {
         body: Option<Value>,
         idempotency_key: Option<&str>,
     ) -> Result<Value, CallError> {
+        self.call_query(method, token, path, &[], body, idempotency_key)
+            .await
+    }
+
+    /// A call for the QC surface (plan gocardless-sandbox-qc.sv, G2): it
+    /// carries an `Idempotency-Key` of its own and is sent once more,
+    /// under the same key, on a 5xx, a 429 or no answer (a timeout).
+    pub async fn qc_call(
+        &self,
+        method: Method,
+        token: &str,
+        path: &[&str],
+        query: &[(&str, &str)],
+        body: Option<Value>,
+    ) -> Result<Value, CallError> {
+        let key = format!("keep-qc-{}", uuid::Uuid::new_v4().simple());
+        match self
+            .call_query(method.clone(), token, path, query, body.clone(), Some(&key))
+            .await
+        {
+            Err(e) if e.retryable() => {
+                self.call_query(method, token, path, query, body, Some(&key))
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    async fn call_query(
+        &self,
+        method: Method,
+        token: &str,
+        path: &[&str],
+        query: &[(&str, &str)],
+        body: Option<Value>,
+        idempotency_key: Option<&str>,
+    ) -> Result<Value, CallError> {
         let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))
             .map_err(|_| CallError::Malformed("a token that isn't a header value".into()))?;
         auth.set_sensitive(true);
@@ -346,10 +383,11 @@ impl Api {
                 HeaderValue::from_str(key).map_err(|_| CallError::Malformed("key".into()))?,
             );
         }
-        let mut req = self
-            .http
-            .request(method, Self::url(&self.base, path))
-            .headers(headers);
+        let mut url = Self::url(&self.base, path);
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+        let mut req = self.http.request(method, url).headers(headers);
         if let Some(body) = body {
             req = req.json(&body);
         }

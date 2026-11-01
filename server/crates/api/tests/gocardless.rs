@@ -4608,6 +4608,29 @@ async fn the_fake_cancels_subscriptions_and_payments_as_gocardless_does() {
     );
 }
 
+/// G4 review L3 (in G2): cancelling a gift's own mandate cancels its
+/// pending payments too, as GoCardless does (the fake now does the same),
+/// recorded from GoCardless's events: nothing is left to collect.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_gifts_own_mandate_leaves_no_payment_to_collect() {
+    let t = setup().await;
+    let (_, id, sub) = t.active().await;
+    let mandate = t.regular("alpha", &t.val, &id).await["mandateId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let pm = t.pending(&sub).await;
+    let (s, out) = t.cancel(&id).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    t.settle().await;
+    assert_eq!(t.status_at_gocardless(&mandate), "cancelled");
+    assert_eq!(t.status_at_gocardless(&sub), "cancelled");
+    assert_eq!(t.status_at_gocardless(&pm), "cancelled");
+    let v = t.regular("alpha", &t.val, &id).await;
+    assert_eq!(v["status"], "cancelled");
+    assert_eq!(payment(&v, &pm)["status"], "cancelled");
+}
+
 /// UI review H1: a one-off or Instant Bank Pay answer says what
 /// GoCardless was asked for, which under a reused key is the first
 /// request's: a form that changed its amount and kept its key would

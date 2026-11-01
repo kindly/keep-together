@@ -21,6 +21,9 @@
 //!   `KEEP_GOCARDLESS_WEBHOOK_SECRET`: Direct Debit (`gocardless`); `fake`
 //!   and `sandbox` are refused with `KEEP_ENV=prod`, `live` without it, and
 //!   `sandbox`/`live` without the three secrets
+//! - `KEEP_QC_GOCARDLESS_TOKEN`, `KEEP_QC_GOCARDLESS_ORGANISATION`: the QC
+//!   sandbox account (`routes::qc_gocardless`); both or neither, refused
+//!   with `KEEP_ENV=prod` or `KEEP_GOCARDLESS=live`
 //! - `KEEP_ADDRESS_LOOKUP` (`off`/`fake`/`ideal`), `KEEP_IDEAL_POSTCODES_KEY`,
 //!   `KEEP_ADDRESS_LOOKUP_CAP`, `KEEP_ADDRESS_LOOKUP_DAILY_CEILING`: the
 //!   contact form's postcode lookup (`address`); `ideal` without a key or
@@ -112,6 +115,12 @@ async fn main() {
             "gocardless {:?}: OAuth redirect {}",
             gc.mode, gc.redirect_uri
         );
+        if let Some(qc) = &gc.qc {
+            eprintln!(
+                "gocardless QC account {} (/api/qc/gocardless/* with KEEP_QC_TOKEN)",
+                qc.organisation_id
+            );
+        }
     }
     if let Some(lookup) = &address {
         eprintln!(

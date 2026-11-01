@@ -127,6 +127,35 @@ pub async fn catch_up(store: Arc<Store>, gc: Arc<GoCardless>) -> Result<Vec<Caug
     }
 }
 
+/// Catch up one organisation now (the QC surface's `catchup`): `None`
+/// when it isn't connected. Events found go to a processing run, as the
+/// nightly's do.
+pub async fn catch_up_tenant(
+    store: Arc<Store>,
+    gc: Arc<GoCardless>,
+    tenant: &TenantId,
+) -> Result<Option<Caught>, String> {
+    let (s, t) = (store.clone(), tenant.clone());
+    let connected = crate::blocking(move || super::connection(&s, &t))
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let Some(c) = connected else {
+        return Ok(None);
+    };
+    let caught = one(
+        &store,
+        &gc,
+        tenant.as_str(),
+        &c.organisation_id,
+        c.connected_at,
+    )
+    .await?;
+    if caught.as_ref().is_some_and(|c| c.missed > 0) {
+        super::webhook::spawn_processing(store.clone(), gc.clone());
+    }
+    Ok(caught)
+}
+
 async fn one(
     store: &Arc<Store>,
     gc: &Arc<GoCardless>,

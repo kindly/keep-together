@@ -43,6 +43,7 @@ Env (`api`):
 | `KEEP_ADDRESS_LOOKUP_DAILY_CEILING` | `2000` | lookups across the platform per UTC day: then `503 lookup_unavailable` |
 | `KEEP_GOCARDLESS` | `off` | Direct Debit (`api::gocardless`; "GoCardless" below): `fake` (a GoCardless mock mounted on this server at `/api/fake-gocardless`, no network; `KEEP_ENV=prod` refuses it), `sandbox` (`prod` refuses it), `live` (only with `KEEP_ENV=prod`). Any other value stops the boot |
 | `KEEP_GOCARDLESS_CLIENT_ID`, `KEEP_GOCARDLESS_CLIENT_SECRET`, `KEEP_GOCARDLESS_WEBHOOK_SECRET` | unset | the partner app's OAuth client and webhook secret; `sandbox`/`live` stop the boot without them (`scripts/fly/gocardless-secrets.sh`). Never logged, never in a URL or an error |
+| `KEEP_QC_GOCARDLESS_TOKEN`, `KEEP_QC_GOCARDLESS_ORGANISATION` | unset | the QC sandbox account's permanent token and `OR…` id (`scripts/fly/gocardless-qc-token.sh`): with `sandbox`, the QC GoCardless surface (below). Both or neither; `KEEP_ENV=prod` or `KEEP_GOCARDLESS=live` stops the boot. Never logged |
 | `KEEP_FILES_CAP_BYTES` | unset: no cap | bytes of scanned pages an organisation's files db may hold (`422 rejected files_full` past it). Unset, none: the volume's reserve (`507`) is the only stop (human, 2026-10-29) |
 | `KEEP_FILES_DISK_RESERVE_BYTES` | see `api::scans::limits` | free bytes the data volume keeps after a scan upload (`507 storage_full` otherwise). Default: twice the largest database on the volume (the snapshot's copy and its `.zst`), and deployed (`prod`/`staging`) at least a quarter of the volume. `0` turns the guard off |
 | `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`; on dev under `KEEP_AUTH_POLICY=relaxed` a missing password is `riverside` and a missing TOTP is none) |
@@ -1046,4 +1047,34 @@ simulators `subscriptions/{id}/amend?amount=` and
 dashboard) and Instant Bank Pay requests, whose page is "Pay by bank" (the payment it
 makes carries no metadata: only the request's `fulfilled` event names
 it). `api/tests/gocardless.rs` and `qc/flows/gocardless.spec.ts` run on
-it.
+it. Payments: `paid_out` and `late_failure` too; `GET payments`
+(`subscription`, `mandate`, `status`) and `payments/{id}/actions/cancel`
+(only before submission); a subscription's cancel leaves its payments
+pending (GoCardless's rule) and a mandate's end cancels its payments not
+yet submitted. `outage` also takes `hold` (the call waits for
+`simulate/outage/release`); `subscriptions/{id}/finish` ends one. For the
+QC surface, as the sandbox: the billing request's API actions
+(`collect_customer_details`, `collect_bank_account`,
+`confirm_payer_details`, `fulfil`), `scenario_simulators/{id}/actions/run`
+(QC's list, with the sandbox's preconditions), `GET customers`
+(`created_at[lt]`) and `DELETE customers/{id}`.
+
+**The QC GoCardless surface** (`routes::qc_gocardless`, plan
+gocardless-sandbox-qc.sv G2): `/api/qc/gocardless/*` behind the
+`/api/qc/*` token rules, and `/api/dev/qc-gocardless/*` with dev auth and
+`KEEP_QC_SEED=1`. 404 unless `KEEP_GOCARDLESS` is `fake` (the fake makes
+the QC account at boot) or `sandbox` with `KEEP_QC_GOCARDLESS_TOKEN` and
+`KEEP_QC_GOCARDLESS_ORGANISATION` (G1's script; both or neither, and the
+boot refuses them with `KEEP_ENV=prod` or `live`). `qc-` orgs only, and
+only GoCardless resources the org's own rows name (else 404). GoCardless
+calls carry an `Idempotency-Key` and are retried once on a 5xx or a
+timeout; it can't be reached: `503 gocardless_unavailable`.
+
+| Route | Does |
+|---|---|
+| `POST …/connect {slug}` | connects the org with the QC account's token through the OAuth callback's own steps (`oauth::land_token`); an older `qc-` org holding the account gives it up (token emptied, mapping forgotten); a real org holding it: `409 taken`. → `{organisationId}`, never the token |
+| `POST …/sign {slug, regularGiftId, givenName?, familyName?}` | the gift's own billing request (pending, no mandate, else `422 not_pending`): customer details (the donor's names by default, `qc+<run>@example.com`, a fixed London address, metadata `keep_qc: <slug>`), bank account 200000 / 55779911, confirm, fulfil. → `{mandateId}`; the app learns it from the webhook |
+| `POST …/simulate {slug, scenario, resource}` | `mandate_activated`, `mandate_failed`, `payment_confirmed`, `payment_failed`, `payment_charged_back`, `payment_late_failure`, `payment_paid_out` on the org's mandate or payment; any other scenario 404. → `{ok}` |
+| `GET …/peek/{slug}/{mandate\|subscription\|payment}/{id}` | `QcPeek {id, status, amount, chargeDate, nextPossibleChargeDate, upcomingPayments, payments}` (pence) |
+| `POST …/catchup {slug}` | the catch-up for this org now → `{read, missed}` |
+| `POST …/cleanup {slug}` | deletes the customers behind the org's mandates, then sweeps `keep_qc`-tagged customers older than 2 days → `{own, swept, refused}` |

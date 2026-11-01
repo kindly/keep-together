@@ -31,7 +31,9 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use contracts::Source;
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
-use store::Role;
+use std::sync::Arc;
+
+use store::{Role, Store, TenantId};
 
 use super::{
     ConnectRefused, STATE_TTL_MS, record_connection, requeue_set_aside, restore_connection,
@@ -226,36 +228,75 @@ pub async fn callback(
             return land(Some(&slug), "failed");
         }
     };
-    // Then the token into this organisation's file, as the admin; if that
-    // fails the reservation is undone. The token it replaces, if it was
-    // another account's, is kept to revoke.
-    let (store, tenant, g) = (state.store.clone(), row.tenant.clone(), gc.clone());
-    let access = token.access_token.clone();
-    let account = token.organisation_id.clone();
+    if land_token(
+        &state.store,
+        &gc,
+        &row.tenant,
+        &slug,
+        previous,
+        &token.access_token,
+        &token.organisation_id,
+        Some(user),
+        Source::Ui,
+    )
+    .await
+    .is_err()
+    {
+        return land(Some(&slug), "failed");
+    }
+    drop(_processing);
+    super::webhook::spawn_processing(state.store.clone(), gc.clone());
+    land(Some(&slug), "connected")
+}
+
+/// After a connection is reserved (`record_connection`, answering what
+/// it replaced): the token into the organisation's file (as `user`); if
+/// that fails the reservation is undone. A switch from another account
+/// revokes that account's token. Then the events kept while it wasn't
+/// connected go back in the queue. Callers hold `connecting` and
+/// `processing`, and start a processing run once they let go. Shared by
+/// the OAuth callback and the QC surface's connect.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn land_token(
+    store: &Arc<Store>,
+    gc: &Arc<super::GoCardless>,
+    tenant: &TenantId,
+    slug: &str,
+    previous: Option<super::Connected>,
+    access: &str,
+    account: &str,
+    user: Option<i64>,
+    source: Source,
+) -> Result<(), ()> {
+    let (s, t, g) = (store.clone(), tenant.clone(), gc.clone());
+    let (a, acc) = (access.to_owned(), account.to_owned());
     let sealed = blocking(move || {
-        let db = store.org(&tenant)?;
+        let db = s.org(&t)?;
         let old = db.read(|r| g.token(r))?;
-        contracts::transact(&db, Some(user), |ctx| {
-            g.put_token(ctx, &access, &account, Source::Ui)
+        contracts::transact(&db, user, |ctx| {
+            g.put_token(ctx, &a, &acc, source)
                 .map_err(crate::ApiError::from)
         })?;
         Ok::<_, crate::ApiError>(old)
     })
     .await;
-    if let Err(e) = &sealed {
-        eprintln!("gocardless connect ({slug}): storing the token: {e:?}");
-        let (store, tenant) = (state.store.clone(), row.tenant.clone());
-        if let Err(e) = blocking(move || restore_connection(&store, &tenant, previous)).await {
-            crate::observe::error(&format!(
-                "gocardless connect ({slug}): undoing the reservation: {e:?}"
-            ));
+    let old = match sealed {
+        Ok(old) => old,
+        Err(e) => {
+            eprintln!("gocardless connect ({slug}): storing the token: {e:?}");
+            let (s, t) = (store.clone(), tenant.clone());
+            if let Err(e) = blocking(move || restore_connection(&s, &t, previous)).await {
+                crate::observe::error(&format!(
+                    "gocardless connect ({slug}): undoing the reservation: {e:?}"
+                ));
+            }
+            return Err(());
         }
-        return land(Some(&slug), "failed");
-    }
+    };
     // A switch to another account: the old account's token is revoked,
     // not left live at GoCardless.
-    if let (Ok(Some(old)), Some(previous)) = (&sealed, &previous)
-        && previous.organisation_id != token.organisation_id
+    if let (Some(old), Some(previous)) = (&old, &previous)
+        && previous.organisation_id != account
         && let Err(e) = gc.api.revoke(gc.credentials(), old).await
     {
         crate::observe::warning(&format!(
@@ -263,13 +304,11 @@ pub async fn callback(
         ));
     }
     // Only now, with the token in place, do the events kept while it
-    // wasn't connected go back in the queue; then a run handles them.
-    let (store, tenant) = (state.store.clone(), row.tenant.clone());
-    let organisation = token.organisation_id.clone();
+    // wasn't connected go back in the queue.
+    let (s, t, org) = (store.clone(), tenant.clone(), account.to_owned());
     let requeued = blocking(move || {
-        store.platform().with_write(|tx| {
-            Ok::<_, store::StoreError>(requeue_set_aside(tx, &tenant, &organisation)?)
-        })
+        s.platform()
+            .with_write(|tx| Ok::<_, store::StoreError>(requeue_set_aside(tx, &t, &org)?))
     })
     .await;
     if let Err(e) = requeued {
@@ -277,7 +316,5 @@ pub async fn callback(
             "gocardless connect ({slug}): requeueing the events kept while disconnected: {e:?}"
         ));
     }
-    drop(_processing);
-    super::webhook::spawn_processing(state.store.clone(), gc.clone());
-    land(Some(&slug), "connected")
+    Ok(())
 }
