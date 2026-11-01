@@ -76,7 +76,9 @@ function setupHeaders(inst: Instance): Record<string, string> {
   if (inst.surface !== 'qc') return {}
   const token = process.env.KEEP_QC_TOKEN
   if (!token)
-    throw new Error('KEEP_QC_TOKEN is unset: the staging run needs it')
+    throw new Error(
+      'KEEP_QC_TOKEN is unset: a hosted run (staging, qc) needs it',
+    )
   return { 'x-keep-qc-token': token }
 }
 

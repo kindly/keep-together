@@ -80,3 +80,60 @@ export function targetReason(
       : []),
   ].join('; ')
 }
+
+// ── Where QC runs ───────────────────────────────────────────────────────
+//
+// The other kind of target: the app a run is pointed at (scripts/qc.mjs
+// `--target`, which passes it on to Playwright and its workers as
+// QC_TARGET):
+//
+// - `local`: the gate, a pool of local release apis (the default).
+// - `staging`: keep-staging, the house nightly (scripts/qc-nightly/).
+// - `qc`: keep-qc, QC's own app, from GitHub Actions (.github/workflows/
+//   qc.yml; plan gocardless-sandbox-qc.sv, A2). Its origin is
+//   QC_TARGET_URL. The runner isn't the house: its budgets are its own
+//   (qc/budgets.ts, `targetBudgets`), and the first-hop watch is off.
+//
+// A hosted target has no dev auth: set-up goes through its token surface
+// (`/api/qc/*`) with KEEP_QC_TOKEN, which stays in the env.
+
+export type QcTarget = 'local' | 'staging' | 'qc'
+export const QC_TARGETS: ReadonlyArray<QcTarget> = ['local', 'staging', 'qc']
+
+/** The hosted targets: the env variable naming each one's origin, and its default. */
+export const HOSTED = {
+  staging: {
+    urlEnv: 'QC_STAGING_URL',
+    defaultUrl: 'https://staging.keep-together.org.uk',
+  },
+  qc: { urlEnv: 'QC_TARGET_URL', defaultUrl: 'https://keep-qc.fly.dev' },
+} as const satisfies Record<
+  Exclude<QcTarget, 'local'>,
+  { urlEnv: string; defaultUrl: string }
+>
+
+export function isQcTarget(x: unknown): x is QcTarget {
+  return QC_TARGETS.includes(x as QcTarget)
+}
+
+/** The target this process runs against (QC_TARGET; unset is `local`). */
+export function qcTarget(
+  env: Record<string, string | undefined> = process.env,
+): QcTarget {
+  const t = env.QC_TARGET ?? 'local'
+  if (!isQcTarget(t))
+    throw new Error(`QC_TARGET is ${QC_TARGETS.join(', ')}, not ${t}`)
+  return t
+}
+
+/** A hosted target's origin: its env variable, else its default; no trailing slash. */
+export function hostedUrl(
+  target: Exclude<QcTarget, 'local'>,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const { urlEnv, defaultUrl } = HOSTED[target]
+  const url = (env[urlEnv] || defaultUrl).replace(/\/+$/, '')
+  if (!/^https?:\/\/[^/\s]+$/.test(url))
+    throw new Error(`${urlEnv} must be an origin (https://host), not ${url}`)
+  return url
+}

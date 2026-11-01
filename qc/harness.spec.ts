@@ -6,14 +6,20 @@ import {
   OverBudgetError,
   RECORD,
   REPEATS,
-  RTT_CEILING_MS,
   assertFlow,
   runDir,
   runFlow,
   runId,
+  rttCeilingMs,
 } from './timing'
 import type { Page } from '@playwright/test'
 import type { FlowStep } from './timing'
+
+/** Over this target's RTT ceiling (none recorded yet: never). */
+const overCeiling = (rttMs: number) => {
+  const c = rttCeilingMs()
+  return c !== null && rttMs > c
+}
 
 // The harness's self-test (factory/plans/qc-suite.sv): the same real flow
 // under an impossible 1 ms budget must fail, and under a generous one must
@@ -156,7 +162,7 @@ function spiked(
 test.describe('harness', () => {
   test('an impossible budget fails', async ({ page, flow, users, rttMs }) => {
     test.skip(RECORD, 'record mode never asserts')
-    test.skip(rttMs > RTT_CEILING_MS, 'RTT over the ceiling: not judged')
+    test.skip(overCeiling(rttMs), 'RTT over the ceiling: not judged')
     await expect(
       flow(page, 'harness.impossible', openContacts(page, users.a.slug)),
     ).rejects.toThrow(OverBudgetError)
@@ -174,7 +180,7 @@ test.describe('harness', () => {
       'harness.generous',
       openContacts(page, users.a.slug),
     )
-    const judged = !RECORD && rttMs <= RTT_CEILING_MS
+    const judged = !RECORD && !overCeiling(rttMs)
     expect(record.pass).toBe(judged ? true : null)
     expect(record.trace).toBeUndefined()
     // Every sample got its answer from the server (the guard passed), and
@@ -233,7 +239,7 @@ test.describe('harness', () => {
     rttMs,
   }) => {
     test.skip(RECORD, 'record mode never asserts')
-    test.skip(rttMs > RTT_CEILING_MS, 'RTT over the ceiling: not judged')
+    test.skip(overCeiling(rttMs), 'RTT over the ceiling: not judged')
     // The extra traced sample is call 2K + 1 (no warm-up, and every
     // sample fails 1 ms, so the set is re-measured): its action throws.
     const base = openContacts(page, users.a.slug)
@@ -270,7 +276,7 @@ test.describe('harness', () => {
   test.describe('spikes', () => {
     test.beforeEach(({ rttMs }) => {
       test.skip(RECORD, 'record mode never re-measures')
-      test.skip(rttMs > RTT_CEILING_MS, 'RTT over the ceiling: not judged')
+      test.skip(overCeiling(rttMs), 'RTT over the ceiling: not judged')
     })
 
     // runFlow directly, without a warm-up, so the timed calls are numbered

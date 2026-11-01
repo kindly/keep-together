@@ -49,6 +49,9 @@
 // Untimed, it is listed in the run's banner instead of failing it. The
 // step that ports the module drops the mark.
 
+import { qcTarget } from './target.ts'
+import type { QcTarget } from './target.ts'
+
 export type FlowKind =
   'repeatable' | 'infrequent' | 'rare' | 'oncePerSession' | 'bulk'
 
@@ -272,8 +275,58 @@ export const budgets = {
 
 export type FlowName = keyof typeof budgets
 
-export function budgetFor(name: FlowName): Budget {
-  return budgets[name]
+// ── Per-target budgets (human, g2q6, 2026-11-01) ────────────────────────
+//
+// The set above is the house's: the local pool (at the hosted RTT, under
+// netem) and keep-staging from the house nightly. A target listed here
+// has its own set instead, recorded where it runs: GitHub's runners sit
+// far from London (plan gocardless-sandbox-qc.sv, g2q7), so the house's
+// lines would time the Atlantic, not the app.
+//
+// - `flows`: each flow's budget on that target. A flow missing from it is
+//   timed and recorded in full, but **not judged** (`unbudgeted`): the run
+//   lists them in a NO BUDGETS banner and neither passes nor fails them.
+//   The harness's self-tests keep their house budgets everywhere.
+// - `rttCeilingMs`: the RTT ceiling on that target (qc/timing.ts's
+//   RTT_CEILING_MS at the house); null until recorded, when the RTT is
+//   only recorded.
+//
+// `qc` (keep-qc from Actions) is empty until plan step A3 records it: 3
+// `mode=record` runs of .github/workflows/qc.yml, each flow's line 1.5×
+// its worst sample, the ceiling from the same runs, shown to the human as
+// a diff of this file. Raising one later needs the human's OK, as above.
+// Bulk flows and routes that call an external service are 500 ms there
+// too (human, 2026-11-01); a route measured over it goes back to the
+// human with its numbers.
+
+export interface TargetBudgets {
+  rttCeilingMs: number | null
+  flows: Partial<Record<FlowName, Budget>>
+}
+
+export const targetBudgets: Partial<Record<QcTarget, TargetBudgets>> = {
+  qc: { rttCeilingMs: null, flows: {} },
+}
+
+/**
+ * A flow's budget on `target` (default: this process's, QC_TARGET).
+ * `unbudgeted`: the target has its own set and this flow isn't in it, so
+ * the house budget comes back for its kind and timeout only, and the
+ * flow must not be judged.
+ */
+export function budgetFor(
+  name: FlowName,
+  target: QcTarget = qcTarget(),
+): Budget & { unbudgeted?: true } {
+  const house: Budget = budgets[name]
+  const own = targetBudgets[target]
+  if (!own || house.selfTest) return house
+  const b = own.flows[name]
+  if (b) return b
+  // No target of its own on the house's line either: nothing is judged.
+  const rest: Budget = { ...house }
+  delete rest.targetMs
+  return { ...rest, unbudgeted: true }
 }
 
 /**

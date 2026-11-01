@@ -2,7 +2,9 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { loadavg } from 'node:os'
 import path from 'node:path'
 import type { BrowserContext, Page } from '@playwright/test'
-import { budgetFor } from './budgets'
+import { budgetFor, targetBudgets } from './budgets'
+import { qcTarget } from './target'
+import type { QcTarget } from './target'
 import type { FlowKind, FlowName } from './budgets'
 
 // Client-perceived latency (factory/plans/qc-suite.sv, "What latency
@@ -70,6 +72,16 @@ export const RECORD = process.env.QC_MODE === 'record'
  * banner, and `rttOver` in history).
  */
 export const RTT_CEILING_MS = 150
+
+/**
+ * The RTT ceiling on this process's target: RTT_CEILING_MS at the house,
+ * or the target's own (qc/budgets.ts, `targetBudgets`), where null means
+ * none recorded yet: the RTT is recorded, never over.
+ */
+export function rttCeilingMs(target: QcTarget = qcTarget()): number | null {
+  const own = targetBudgets[target]
+  return own ? own.rttCeilingMs : RTT_CEILING_MS
+}
 
 if (!Number.isInteger(REPEATS) || REPEATS < 1) {
   throw new Error(`QC_REPEATS must be a positive integer, not ${REPEATS}`)
@@ -142,7 +154,7 @@ export interface FlowRecord {
   firstDetail?: Array<SampleDetail>
   /** Context only: the worker's median HTTP round trip to the API. */
   rttMs: number
-  /** rttMs over RTT_CEILING_MS: these samples measure a bad link. */
+  /** rttMs over the target's ceiling (rttCeilingMs): these samples measure a bad link. */
   rttOver: boolean
   /** The failing line: every sample must be under this. */
   budgetMs: number
@@ -150,9 +162,13 @@ export interface FlowRecord {
   targetMs?: number
   medianMs: number
   maxMs: number
-  /** null: not judged (record mode, or RTT over the ceiling). */
+  /**
+   * null: not judged (record mode, RTT over the ceiling, or no budget on
+   * this target).
+   */
   pass: boolean | null
-  skipped?: 'record' | 'rtt'
+  /** unbudgeted: the target has its own budgets, none for this flow (qc/budgets.ts). */
+  skipped?: 'record' | 'rtt' | 'unbudgeted'
   selfTest?: true
   /** Approved exception (qc/budgets.ts): judged, but never fails. */
   knownOver?: string
@@ -644,12 +660,15 @@ export async function runFlow<TArg>(
     }
     return { set, detail }
   }
-  const rttOver = ctx.rttMs > RTT_CEILING_MS
+  const ceiling = rttCeilingMs()
+  const rttOver = ceiling !== null && ctx.rttMs > ceiling
   const skipped = RECORD
     ? ('record' as const)
-    : rttOver
-      ? ('rtt' as const)
-      : undefined
+    : budget.unbudgeted
+      ? ('unbudgeted' as const)
+      : rttOver
+        ? ('rtt' as const)
+        : undefined
   let { set: samplesMs, detail } = await measureSet()
   let firstSamplesMs: Array<number> | undefined
   let firstDetail: Array<SampleDetail> | undefined

@@ -19,6 +19,10 @@ name: Deploy
 # optionally SENTRY_DSN_SPA (the SPA's Sentry DSN, public by design).
 # The scripts print the commands. The images carry
 # KEEP_RELEASE=$GITHUB_SHA, which /healthz reports as `commit`.
+#
+# When a push's run succeeds, .github/workflows/qc.yml runs QC against
+# keep-qc (its `workflow_run` trigger): this workflow neither calls it nor
+# waits for it, so staging's deploys never queue behind QC.
 
 on:
   push:
