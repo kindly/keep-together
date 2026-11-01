@@ -83,7 +83,7 @@ sanitize() {
 chain() { [ -z "${GITHUB_OUTPUT:-}" ] || echo "chain=$1" >>"$GITHUB_OUTPUT"; }
 
 fetch() {
-  local dir=$1 runs id aid tmp entries f max=${QC_HISTORY_MAX_BYTES:-67108864}
+  local dir=$1 runs id aid tmp entries listing f max=${QC_HISTORY_MAX_BYTES:-67108864}
   mkdir -p "$dir"
   : >"$dir/history.jsonl"
   : >"$dir/runs.log"
@@ -125,7 +125,12 @@ fetch() {
   while IFS= read -r f; do
     case $f in history.jsonl | runs.log) ;; *) die "qc-history artifact $aid holds $f" ;; esac
   done <<<"$entries"
-  ! unzip -Z "$tmp/a.zip" | grep -qE '^l' || die "qc-history artifact $aid holds a link"
+  # Listed into a variable first, never piped into `grep -q`: under
+  # pipefail, grep quitting at its match can kill unzip with SIGPIPE, and
+  # `! pipeline` then reads that failure as "no link" (a race, seen on
+  # CI 2026-11-01).
+  listing=$(unzip -Z "$tmp/a.zip") || die "qc-history artifact $aid is not a zip"
+  if grep -qE '^l' <<<"$listing"; then die "qc-history artifact $aid holds a link"; fi
   for f in history.jsonl runs.log; do
     grep -qx "$f" <<<"$entries" || continue
     unzip -p "$tmp/a.zip" "$f" | head -c "$((max + 1))" >"$dir/$f" ||
