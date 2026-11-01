@@ -90,8 +90,30 @@ fi
 export KEEP_REPLICA_PREFIX
 
 WIPING=$DATA/.wiping
+# Every generation this volume has left behind, one per line, never
+# deleted: demand refuses to start one again, since its Litestream prefix
+# still holds that period's replica (the secret survives a switch back to
+# deploy, so reuse is the default, not an accident).
+USED=$DATA/.generations-used
+
+# Markers are written whole or not at all: a crash can't leave one empty.
+put_marker() { # file value
+  printf '%s\n' "$2" >"$1.tmp"
+  mv "$1.tmp" "$1"
+}
+
+# Append .generation's value to $USED unless it is the generation being
+# (re)started now. Unreadable or empty: nothing to record.
+retire_generation() {
+  [ -f "$DATA/.generation" ] || return 0
+  old=$(cat "$DATA/.generation" 2>/dev/null) || return 0
+  if [ -n "$old" ] && [ "$old" != "$GENERATION" ]; then
+    printf '%s\n' "$old" >>"$USED"
+  fi
+}
 
 wipe() {
+  retire_generation
   # Litestream's own state for platform.db goes too: kept beside a new
   # file, it points at LTX files the old one wrote and replication stops
   # ("open ltx file … no such file"). The orgs', files' and drill's are
@@ -99,7 +121,7 @@ wipe() {
   # named is gone.
   rm -rf "$PLATFORM" "$PLATFORM-wal" "$PLATFORM-shm" "$DATA/.platform.db-litestream" \
     "$DATA/orgs" "$DATA/files" "$DATA/drill" "$DATA/snapshots-tmp" "$DATA/.restored" \
-    "$DATA/.generation"
+    "$DATA/.generation" "$DATA/.generation.tmp"
   mkdir -p "$DATA/orgs" "$DATA/files" "$DATA/drill"
 }
 
@@ -110,6 +132,14 @@ wipe() {
 # first and removed last, so a boot that finds it finishes the wipe.
 RESET_NOW=""
 if [ "$RESET_ON" = demand ]; then
+  if [ -e "$USED" ]; then
+    used=$(cat "$USED") || { log "can't read $USED; not starting (nothing was wiped)"; exit 1; }
+    if printf '%s\n' "$used" | grep -qxF -- "$GENERATION"; then
+      log "generation $GENERATION was used before on this volume; not starting (nothing was wiped)." \
+        "Run scripts/fly/staging-reset.sh for a new one"
+      exit 1
+    fi
+  fi
   if [ -e "$WIPING" ]; then
     log "an earlier wipe didn't finish: wiping $DATA again for generation $GENERATION"
     RESET_NOW=1
@@ -131,7 +161,7 @@ if [ "$RESET_ON" = demand ]; then
   if [ -n "$RESET_NOW" ]; then
     echo "$GENERATION" >"$WIPING"
     wipe
-    echo "$GENERATION" >"$DATA/.generation"
+    put_marker "$DATA/.generation" "$GENERATION"
     rm -f "$WIPING"
   fi
 fi
@@ -140,6 +170,10 @@ fi
 # it went in $DATA/.restored (read by the api: Sentry and /healthz).
 put_in_place() { # source fallback missing
   set -- "$1" "$2" "$3"
+  # Restored from this generation's prefix: the data belongs to it. First,
+  # so a crash before the data is in place leaves the marker and no
+  # platform.db, and the next boot restores again (never a wipe).
+  [ -z "$GENERATION" ] || put_marker "$DATA/.generation" "$GENERATION"
   for f in "$DATA"/restoring/orgs/*.db; do
     [ -e "$f" ] || continue # no orgs: the glob stayed literal
     mv "$f" "$DATA/orgs/"
@@ -155,9 +189,7 @@ put_in_place() { # source fallback missing
   rm -rf "$DATA/restoring"
   printf '{"source":"%s","fallback":%s,"missingOrgs":%s,"at":"%s"}\n' \
     "$1" "$2" "$3" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$DATA/.restored"
-  echo "$IMAGE" >"$DATA/.image"
-  # Restored from this generation's prefix: the data belongs to it.
-  [ -z "$GENERATION" ] || echo "$GENERATION" >"$DATA/.generation"
+  put_marker "$DATA/.image" "$IMAGE"
 }
 
 if [ -z "$RESET_NOW" ] && [ ! -e "$PLATFORM" ] && [ -n "${LITESTREAM_BUCKET:-}${KEEP_SNAPSHOT_BUCKET:-}" ]; then
@@ -219,20 +251,22 @@ fi
 # demand: a volume that started empty (nothing to restore, or no backups)
 # belongs to this generation; a restore marked it in put_in_place.
 if [ "$RESET_ON" = demand ] && [ ! -e "$DATA/.generation" ]; then
-  echo "$GENERATION" >"$DATA/.generation"
+  put_marker "$DATA/.generation" "$GENERATION"
 fi
 
 if [ "$RESET_ON" = deploy ]; then
   # A marker left from KEEP_RESET_ON=demand would point data made under
-  # deploy at an old generation's replica if demand came back.
-  rm -rf "$DATA/.generation" "$WIPING"
+  # deploy at an old generation's replica if demand came back: it is
+  # retired to $USED, so demand refuses it.
+  retire_generation
+  rm -rf "$DATA/.generation" "$DATA/.generation.tmp" "$WIPING"
 fi
 
 if [ -n "${KEEP_RESET_SEED:-}" ] && [ "$RESET_ON" = deploy ]; then
   if [ "$(cat "$DATA/.image" 2>/dev/null || true)" != "$IMAGE" ]; then
     log "new deploy ($IMAGE): wiping $DATA for the $KEEP_RESET_SEED seed"
     wipe
-    echo "$IMAGE" >"$DATA/.image"
+    put_marker "$DATA/.image" "$IMAGE"
   fi
 fi
 

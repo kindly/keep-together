@@ -218,6 +218,11 @@ describe('demand: a reset is crash-safe and never restores (review M1, M2)', () 
     reset(bootWithBackups())
   })
 
+  test('an empty .wiping (a crash while creating it) counts: the next boot wipes', () => {
+    volume(() => fs.writeFileSync(path.join(data, '.wiping'), ''))
+    reset(bootWithBackups())
+  })
+
   test('a crash before anything was removed: the next boot wipes', () => {
     volume(() => fs.writeFileSync(path.join(data, '.wiping'), 'g2\n'))
     reset(bootWithBackups())
@@ -234,12 +239,29 @@ describe('demand: a reset is crash-safe and never restores (review M1, M2)', () 
     reset(res)
   })
 
-  test('a crash after the new marker, before .wiping went: wiped again', () => {
+  test('a crash after the new marker, before .wiping went: wiped again, and g2 stays usable', () => {
     volume(() => {
       fs.writeFileSync(path.join(data, '.wiping'), 'g2\n')
       fs.writeFileSync(path.join(data, '.generation'), 'g2\n')
     })
     reset(bootWithBackups())
+    expect(has('.generations-used')).toBe(false)
+    writeOrg()
+    expect(boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g2' }).status).toBe(0)
+    expect(kept()).toBe(true)
+  })
+
+  test('a crash mid-restore, after the marker and before the data: restored again, never wiped', () => {
+    // put_in_place writes .generation first: the state a crash leaves is
+    // the marker, a half-moved restore, and no platform.db.
+    fs.mkdirSync(path.join(data, 'restoring', 'orgs'), { recursive: true })
+    fs.writeFileSync(path.join(data, '.generation'), 'g1\n')
+    const res = boot({ ...DEMAND, ...BUCKETS, KEEP_RESET_GENERATION: 'g1', STUB_RESTORE_litestream: '0' })
+    expect(res.status, res.stderr).toBe(0)
+    expect(restores(res.calls)).toEqual(['restore litestream'])
+    expect(marker('platform.db')).toBe('restored from litestream')
+    expect(marker('.generation')).toBe('g1')
+    expect(has('.generation.tmp')).toBe(false)
   })
 
   test('a crash while wiping for g2, then a newer generation g3: wiped for g3', () => {
@@ -269,27 +291,65 @@ describe('demand: a reset is crash-safe and never restores (review M1, M2)', () 
   })
 })
 
-describe('switching modes (review L1)', () => {
-  test('deploy clears a marker left by demand, so demand again starts a fresh wipe', () => {
+describe('switching modes, and generations used before (review L1, round 2 M)', () => {
+  test('demand g1 → deploy → demand g1 again refuses: g1’s prefix holds the old replica', () => {
     boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1', FLY_IMAGE_REF: 'x:1' })
-    fs.writeFileSync(path.join(data, '.wiping'), 'g1\n')
-    // Deploy, same image: nothing wiped, but the markers go.
-    fs.rmSync(path.join(data, '.wiping'))
-    boot({ ...SEED, FLY_IMAGE_REF: 'x:1', KEEP_RESET_GENERATION: 'g1' })
+    // Deploy, same image: nothing wiped, but g1 is retired. The secret
+    // stays set, as it does on Fly.
+    const deploy = boot({ ...SEED, FLY_IMAGE_REF: 'x:1', KEEP_RESET_GENERATION: 'g1' })
+    expect(deploy.status).toBe(0)
     expect(has('.generation')).toBe(false)
+    expect(marker('.generations-used')).toBe('g1')
     writeOrg()
-    // Back to demand with the same generation: the data made under deploy
-    // isn't taken for g1's.
-    const res = boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1', FLY_IMAGE_REF: 'x:1' })
+    const res = boot({ ...DEMAND, ...BUCKETS, KEEP_RESET_GENERATION: 'g1', FLY_IMAGE_REF: 'x:1' })
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('generation g1 was used before on this volume')
+    expect(res.calls).toEqual([])
+    expect(kept()).toBe(true)
+  })
+
+  test('demand g1 → deploy → demand g2 wipes once, then keeps', () => {
+    boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1', FLY_IMAGE_REF: 'x:1' })
+    boot({ ...SEED, FLY_IMAGE_REF: 'x:1' })
+    writeOrg()
+    const res = boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g2', FLY_IMAGE_REF: 'x:1' })
+    expect(res.status, res.stderr).toBe(0)
     expect(res.stderr).toContain('no reset generation recorded')
     expect(kept()).toBe(false)
-    expect(marker('.generation')).toBe('g1')
+    expect(marker('.generation')).toBe('g2')
+    writeOrg()
+    expect(boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g2', FLY_IMAGE_REF: 'x:2' }).status).toBe(0)
+    expect(kept()).toBe(true)
+  })
+
+  test('a reset retires the generation it wipes: going back to g1 refuses', () => {
+    boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1' })
+    boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g2' })
+    expect(marker('.generations-used')).toBe('g1')
+    writeOrg()
+    const res = boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1' })
+    expect(res.status).toBe(1)
+    expect(kept()).toBe(true)
+    // The used list survives every wipe.
+    boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g3' })
+    expect(marker('.generations-used').split('\n')).toEqual(['g1', 'g2'])
+  })
+
+  test('an unreadable .generations-used refuses to boot', () => {
+    boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1' })
+    writeOrg()
+    fs.mkdirSync(path.join(data, '.generations-used'))
+    const res = boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g2' })
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain("can't read")
+    expect(kept()).toBe(true)
   })
 
   test('a deploy-mode wipe removes the marker too', () => {
     boot({ ...DEMAND, KEEP_RESET_GENERATION: 'g1', FLY_IMAGE_REF: 'x:1' })
     boot({ ...SEED, FLY_IMAGE_REF: 'x:2' })
     expect(has('.generation')).toBe(false)
+    expect(marker('.generations-used')).toBe('g1')
   })
 })
 

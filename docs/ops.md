@@ -43,6 +43,7 @@ Data on the volume (`/data`):
 | `.image` | the image the data belongs to (staging's reset compares it) |
 | `.generation` | under `KEEP_RESET_ON=demand`, the reset generation the data belongs to |
 | `.wiping` | a demand reset's wipe in progress; the next boot finishes it |
+| `.generations-used` | every generation this volume left behind; demand refuses them |
 | `.restored` | how the volume was last restored; reported until a human deletes it and restarts the machine |
 | `restore.log` | the last empty-volume restore's output |
 
@@ -577,8 +578,13 @@ and wipes only when `KEEP_RESET_GENERATION` differs from
 never in the toml's `[env]`**: two sources for one name is a trap (one
 silently wins), so S1b seeds the first one with `fly secrets set
 --stage`, and from then on only `staging-reset.sh` changes it. Each
-generation is new (a UTC timestamp): never set one an earlier reset used,
-since its Litestream prefix may still hold that reset's replica. `scripts/fly/staging-reset.sh` asks you to type
+generation is new (a UTC timestamp). The volume lists every generation it
+has left behind in `/data/.generations-used` (never deleted), and demand
+refuses to boot with a listed one, wiping nothing: its Litestream prefix
+still holds that period's replica. **Going back to deploy** (reverting
+S1b): also run `fly secrets unset KEEP_RESET_GENERATION -a keep-staging
+--stage`, so the next switch to demand starts from
+`staging-reset.sh` and a new generation. `scripts/fly/staging-reset.sh` asks you to type
 `reset keep-staging`, sets a new generation (a UTC timestamp) with `fly
 secrets set`, which restarts the machine, and waits until `/healthz`
 reports it as `resetGeneration`. Litestream's prefix is
@@ -588,8 +594,10 @@ on prod). The wipe is crash-safe: the entrypoint writes `/data/.wiping`
 first and removes it last, so a boot that finds it finishes the wipe, and
 a reset never restores (a half-wiped volume can't come back from the
 snapshots as the new generation). An unreadable `.generation` stops the
-boot instead of wiping. `KEEP_RESET_ON=deploy` removes any `.generation`,
-so switching back to demand wipes once. The entrypoint refuses
+boot instead of wiping. `KEEP_RESET_ON=deploy` retires any `.generation`
+to `.generations-used`, so switching back to demand needs a new
+generation, and wipes once. Markers are written to a temp file and moved
+into place, so a crash never leaves one empty. The entrypoint refuses
 `KEEP_RESET_SEED` unless `KEEP_ENV` is `staging` or `dev`, and `demand`
 without `KEEP_RESET_SEED` or with a generation that isn't 1 to 64 of
 `A-Za-z0-9_-`. The seed is `seed::riverside`
