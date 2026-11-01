@@ -134,6 +134,10 @@ struct Outage {
     /// while the call is held at GoCardless, without guessing a time).
     #[serde(default)]
     hold: bool,
+    /// Answer `status` only after doing the call (its answer lost on
+    /// the way back, as a timeout after GoCardless acted).
+    #[serde(default)]
+    after: bool,
 }
 
 impl World {
@@ -508,20 +512,33 @@ async fn gate(
         match w.outage.as_mut() {
             Some(o) if o.calls > 0 && path.contains(&o.path) => {
                 o.calls -= 1;
-                Some((o.status, o.delay_ms, o.hold))
+                Some((o.status, o.delay_ms, o.hold, o.after))
             }
             _ => None,
         }
     };
-    if let Some((_, delay, _)) = failing
+    if let Some((_, delay, _, _)) = failing
         && delay > 0
     {
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
-    if let Some((_, _, true)) = failing {
+    if let Some((_, _, true, _)) = failing {
         fake.release.notified().await;
     }
-    match failing.map(|(status, _, _)| status).filter(|s| *s != 0) {
+    if let Some((status, _, _, true)) = failing
+        && status != 0
+    {
+        // Done, but the caller never hears so.
+        let _ = next.run(req).await;
+        return error(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+            "gocardless",
+            "simulated_outage",
+            "A simulated outage",
+            json!({}),
+        );
+    }
+    match failing.map(|(status, _, _, _)| status).filter(|s| *s != 0) {
         Some(status) => error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
             "gocardless",
@@ -533,10 +550,11 @@ async fn gate(
     }
 }
 
-/// `POST simulate/outage {calls, status?, path?, delay_ms?, hold?}`: the
-/// next `calls` API requests (whose path holds `path`) wait `delay_ms`
-/// (and, with `hold`, until released), then answer `status` (0 or none:
-/// as usual); `calls: 0` ends it.
+/// `POST simulate/outage {calls, status?, path?, delay_ms?, hold?,
+/// after?}`: the next `calls` API requests (whose path holds `path`) wait
+/// `delay_ms` (and, with `hold`, until released), then answer `status`
+/// (0 or none: as usual), with `after` only once the call is done;
+/// `calls: 0` ends it.
 async fn outage(State(fake): State<Arc<Fake>>, Json(o): Json<Outage>) -> Response {
     fake.world().outage = Some(o);
     Json(json!({ "ok": true })).into_response()
@@ -942,6 +960,15 @@ async fn billing_request_action(
             }
             _ => return not_found(),
         }
+        if let Some(list) = w
+            .resources
+            .get_mut(&id)
+            .and_then(|r| r.body["actions"].as_array_mut())
+        {
+            for a in list.iter_mut().filter(|a| a["type"] == action.as_str()) {
+                a["status"] = json!("completed");
+            }
+        }
         events
     };
     let out = fake.resource(&id).unwrap_or_default();
@@ -1346,6 +1373,11 @@ async fn create_billing_request(
             "metadata": req.pointer("/payment_request/metadata").cloned().unwrap_or(json!({}))
         });
     } else {
+        br["actions"] = json!([
+            { "type": "collect_customer_details", "status": "pending" },
+            { "type": "collect_bank_account", "status": "pending" },
+            { "type": "confirm_payer_details", "status": "pending" }
+        ]);
         br["mandate_request"] = json!({
             "scheme": req.pointer("/mandate_request/scheme").cloned().unwrap_or(json!("bacs")),
             "currency": "GBP",

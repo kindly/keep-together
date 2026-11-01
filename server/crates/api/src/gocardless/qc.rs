@@ -114,9 +114,19 @@ pub struct Payer<'a> {
     pub tag: &'a str,
 }
 
+/// A refusal (4xx) of a call that was sent twice: the first may have
+/// done it before its answer was lost.
+fn refused_on_retry(r: &(Result<Value, CallError>, bool)) -> bool {
+    matches!(r, (Err(CallError::Refused { status, .. }), true) if (400..500).contains(status))
+}
+
 /// The billing request's actions (customer details with a fixed UK
 /// address, the sandbox's test bank account, confirm) and fulfil, as a
 /// donor's browser would on GoCardless's page. Answers the mandate made.
+///
+/// An action refused on its retry is read back: if the billing request
+/// shows it done (the action `completed`, or the request past it), the
+/// first call did it and the sign goes on (review L2).
 pub async fn sign(
     api: &Api,
     token: &str,
@@ -126,14 +136,34 @@ pub async fn sign(
     let action = |name: &'static str, data: Value| {
         let path = ["billing_requests", billing_request, "actions", name];
         async move {
-            api.qc_call(
-                Method::POST,
-                token,
-                &path,
-                &[],
-                Some(json!({ "data": data })),
-            )
-            .await
+            let r = api
+                .qc_call_retried(
+                    Method::POST,
+                    token,
+                    &path,
+                    &[],
+                    Some(json!({ "data": data })),
+                )
+                .await;
+            if !refused_on_retry(&r) {
+                return r.0;
+            }
+            let now = get_one(api, token, "billing_requests", billing_request).await?;
+            let status = now["status"].as_str().unwrap_or("");
+            let completed = now["actions"].as_array().is_some_and(|list| {
+                list.iter()
+                    .any(|a| a["type"] == name && a["status"] == "completed")
+            });
+            let past = match name {
+                "fulfil" => status == "fulfilled",
+                "confirm_payer_details" => matches!(status, "ready_to_fulfil" | "fulfilled"),
+                _ => completed || status == "fulfilled",
+            };
+            if past {
+                Ok(json!({ "billing_requests": now }))
+            } else {
+                r.0
+            }
         }
     };
     action(
@@ -172,22 +202,51 @@ pub async fn sign(
         .ok_or_else(|| CallError::Malformed("no mandate in the fulfilled request".into()))
 }
 
-/// Run a scenario simulator on `resource`.
+/// The status a scenario leaves its resource in.
+fn end_state(scenario: &str) -> &'static [&'static str] {
+    match scenario {
+        "mandate_activated" => &["active"],
+        "mandate_failed" => &["failed"],
+        "payment_confirmed" => &["confirmed", "paid_out"],
+        "payment_failed" | "payment_late_failure" => &["failed"],
+        "payment_charged_back" => &["charged_back"],
+        "payment_paid_out" => &["paid_out"],
+        _ => &[],
+    }
+}
+
+/// Run a scenario simulator on `resource`. Refused on its retry, the
+/// resource is read back: already in the scenario's end state, the first
+/// run did it (review L2).
 pub async fn run_scenario(
     api: &Api,
     token: &str,
     scenario: &str,
     resource: &str,
 ) -> Result<(), CallError> {
-    api.qc_call(
-        Method::POST,
-        token,
-        &["scenario_simulators", scenario, "actions", "run"],
-        &[],
-        Some(json!({ "data": { "links": { "resource": resource } } })),
-    )
-    .await
-    .map(|_| ())
+    let r = api
+        .qc_call_retried(
+            Method::POST,
+            token,
+            &["scenario_simulators", scenario, "actions", "run"],
+            &[],
+            Some(json!({ "data": { "links": { "resource": resource } } })),
+        )
+        .await;
+    if !refused_on_retry(&r) {
+        return r.0.map(|_| ());
+    }
+    let kind = match self::scenario(scenario) {
+        Some(giving::regular::ProviderKind::Mandate) => "mandates",
+        _ => "payments",
+    };
+    let now = get_one(api, token, kind, resource).await?;
+    let status = now["status"].as_str().unwrap_or("");
+    if end_state(scenario).contains(&status) {
+        Ok(())
+    } else {
+        r.0.map(|_| ())
+    }
 }
 
 /// Every page of `GET <resources>?<filter>`.

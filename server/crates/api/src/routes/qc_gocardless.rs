@@ -110,16 +110,26 @@ fn gc_err(slug: &str, e: CallError) -> ApiError {
     }
 }
 
-/// The org's file, its token, and whether its rows name `id` as `kind`.
+/// The org's file and its token, which must be the QC account's: the
+/// org's connection is to that account, and the token sealed for it
+/// (review L1: never an account someone connected by hand). And, if
+/// asked, its rows must name `id` as `kind`.
 async fn owned(
     state: &AppState,
     gc: &Arc<GoCardless>,
     slug: &str,
     named: Option<(ProviderKind, String)>,
 ) -> Result<(TenantId, String), ApiError> {
+    let account = gc
+        .qc
+        .as_ref()
+        .ok_or(ApiError::NotFound)?
+        .organisation_id
+        .clone();
     let (store, g, slug) = (state.store.clone(), gc.clone(), slug.to_owned());
     blocking(move || {
         let tenant = qc_tenant(&store, &slug)?;
+        let connected = crate::gocardless::connection(&store, &tenant)?;
         let db = store.org(&tenant)?;
         db.read(|r| {
             if let Some((kind, id)) = &named
@@ -127,7 +137,10 @@ async fn owned(
             {
                 return Err(ApiError::NotFound);
             }
-            let token = g.token(r)?.ok_or_else(not_connected)?;
+            if connected.as_ref().map(|c| c.organisation_id.as_str()) != Some(account.as_str()) {
+                return Err(not_connected());
+            }
+            let token = g.token_for(r, &account)?.ok_or_else(not_connected)?;
             Ok((tenant.clone(), token))
         })
     })

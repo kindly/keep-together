@@ -2016,12 +2016,6 @@ pub fn unknown_subscription(
     Ok(unknown(conn, Some(sb))?.pop())
 }
 
-/// Whether a regular gift other than `id`, not ended, collects on mandate
-/// `md`: its own mandate, or (adopted) a subscription any row of its
-/// chain ran under whose payments were taken on it (its first one had
-/// payments to be adopted at all, so a subscription made since by a
-/// change, with none yet, still counts). Cancelling the mandate would
-/// end that one too.
 /// A GoCardless resource kind this organisation's rows can name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -2070,6 +2064,12 @@ pub fn provider_mandates(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     .collect()
 }
 
+/// Whether a regular gift other than `id`, not ended, collects on mandate
+/// `md`: its own mandate, or (adopted) a subscription any row of its
+/// chain ran under whose payments were taken on it (its first one had
+/// payments to be adopted at all, so a subscription made since by a
+/// change, with none yet, still counts). Cancelling the mandate would
+/// end that one too.
 pub fn others_on_mandate(conn: &Connection, id: &str, md: &str) -> rusqlite::Result<bool> {
     conn.prepare_cached(
         "SELECT 1 FROM regular_gifts r

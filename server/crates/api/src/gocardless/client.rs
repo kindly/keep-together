@@ -349,16 +349,32 @@ impl Api {
         query: &[(&str, &str)],
         body: Option<Value>,
     ) -> Result<Value, CallError> {
+        self.qc_call_retried(method, token, path, query, body)
+            .await
+            .0
+    }
+
+    /// [`Self::qc_call`], and whether it was sent twice: a refusal of
+    /// the second may only mean the first had already done it.
+    pub async fn qc_call_retried(
+        &self,
+        method: Method,
+        token: &str,
+        path: &[&str],
+        query: &[(&str, &str)],
+        body: Option<Value>,
+    ) -> (Result<Value, CallError>, bool) {
         let key = format!("keep-qc-{}", uuid::Uuid::new_v4().simple());
         match self
             .call_query(method.clone(), token, path, query, body.clone(), Some(&key))
             .await
         {
-            Err(e) if e.retryable() => {
+            Err(e) if e.retryable() => (
                 self.call_query(method, token, path, query, body, Some(&key))
-                    .await
-            }
-            other => other,
+                    .await,
+                true,
+            ),
+            other => (other, false),
         }
     }
 

@@ -271,6 +271,10 @@ async fn seeded(run: &str) -> W {
 impl W {
     /// A new live source code in `slug`.
     async fn code(&self, slug: &str, cookie: &str) -> String {
+        self.code_named(slug, cookie, "Direct").await
+    }
+
+    async fn code_named(&self, slug: &str, cookie: &str, name: &str) -> String {
         let tree = self
             .h
             .user(
@@ -294,7 +298,7 @@ impl W {
                 reqwest::Method::POST,
                 &format!("/api/t/{slug}/sources"),
                 cookie,
-                Some(json!({ "parentId": category, "name": "Direct", "isActive": true })),
+                Some(json!({ "parentId": category, "name": name, "isActive": true })),
             )
             .await["versionId"]
             .as_str()
@@ -892,4 +896,110 @@ async fn the_dev_twins_work_on_the_fake_with_dev_auth_and_qc_seed() {
         )
         .await;
     assert_eq!(s, 404);
+}
+
+/// Review L1: the surface acts only through the QC account. A qc- org
+/// connected by hand to another account is `not_connected` for every
+/// route but connect, and nothing reaches that account.
+#[tokio::test(flavor = "multi_thread")]
+async fn qc_routes_act_only_through_the_qc_account() {
+    let w = seeded("t11").await;
+    let id = w.gift(&w.a).await;
+    let mandate = w.signed(&w.a, &id).await;
+    let fake = w.h.fake();
+    let customer = fake.resource(&mandate).unwrap()["links"]["customer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Someone connects A to another sandbox account.
+    let (other, other_token) = fake.connect_account();
+    let a = w.h.store.platform().tenant_by_slug(&w.a).unwrap().unwrap();
+    api::gocardless::record_connection(&w.h.store, &a.id, &other, 1, contracts::now_ms())
+        .unwrap()
+        .unwrap();
+    let gc = w.h.gc.clone().unwrap();
+    contracts::transact(&w.h.store.org(&a.id).unwrap(), None, |ctx| {
+        gc.put_token(ctx, &other_token, &other, contracts::Source::Test)
+    })
+    .unwrap();
+    let simulators = fake.calls("POST scenario_simulators");
+    for (what, body) in [
+        ("sign", json!({ "slug": w.a, "regularGiftId": id })),
+        (
+            "simulate",
+            json!({ "slug": w.a, "scenario": "mandate_activated", "resource": mandate }),
+        ),
+        ("catchup", json!({ "slug": w.a })),
+        ("cleanup", json!({ "slug": w.a })),
+    ] {
+        let (s, v) = w.h.qc(what, body).await;
+        assert_eq!(s, 422, "{what}: {v}");
+        assert_eq!(v["reason"], "not_connected", "{what}");
+    }
+    let (s, v) = w.h.peek(&w.a, "mandate", &mandate).await;
+    assert_eq!((s, v["reason"].clone()), (422, json!("not_connected")));
+    assert_eq!(fake.calls("POST scenario_simulators"), simulators);
+    assert!(fake.resource(&customer).is_some());
+    // Connecting through the surface puts the QC account back.
+    w.h.qc_ok("connect", json!({ "slug": w.a })).await;
+    let (s, _) = w.h.peek(&w.a, "mandate", &mandate).await;
+    assert_eq!(s, 200);
+}
+
+/// Review L2: an action whose answer was lost after GoCardless did it is
+/// retried, refused (it's done), read back and taken as done: no false
+/// failure and no second mandate. A real refusal still fails.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retried_action_that_already_succeeded_is_not_a_failure() {
+    let w = seeded("t12").await;
+    let fake = w.h.fake();
+    let id = w.gift(&w.a).await;
+    let outage = |path: &str| {
+        w.h.http
+            .post(format!("{}/api/fake-gocardless/simulate/outage", w.h.base))
+            .json(&json!({ "calls": 1, "status": 503, "path": path, "after": true }))
+            .send()
+    };
+    outage("actions/fulfil").await.unwrap();
+    let mandates = fake.ids("mandates").len();
+    let mandate = w.signed(&w.a, &id).await;
+    assert_eq!(fake.ids("mandates").len(), mandates + 1, "one mandate");
+    assert_eq!(w.regular(&w.a, &id).await["mandateId"], mandate.as_str());
+    // The same for a confirm whose answer was lost.
+    let id2 = {
+        let code = w.code_named(&w.a, &w.admin_a, "Second").await;
+        w.h.user(
+            reqwest::Method::POST,
+            &format!("/api/t/{}/contacts/{}/regular-gifts", w.a, w.ada_a),
+            &w.admin_a,
+            Some(json!({
+                "amount": 500, "frequency": "monthly", "dayOfMonth": 9,
+                "sourceCodeId": code, "clientKey": contracts::new_id()
+            })),
+        )
+        .await["view"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    outage("actions/confirm_payer_details").await.unwrap();
+    w.signed(&w.a, &id2).await;
+    // A simulator whose answer was lost.
+    outage("scenario_simulators").await.unwrap();
+    let before = fake.calls("POST scenario_simulators");
+    w.h.qc_ok(
+        "simulate",
+        json!({ "slug": w.a, "scenario": "mandate_activated", "resource": mandate }),
+    )
+    .await;
+    assert_eq!(fake.calls("POST scenario_simulators"), before + 2);
+    assert_eq!(fake.resource(&mandate).unwrap()["status"], "active");
+    // Sent once and refused: a real refusal.
+    let (s, v) =
+        w.h.qc(
+            "simulate",
+            json!({ "slug": w.a, "scenario": "mandate_activated", "resource": mandate }),
+        )
+        .await;
+    assert_eq!(s, 422, "{v}");
 }
