@@ -300,6 +300,108 @@ export function skipUnlessFakeGoCardless(mode: string) {
   base.skip(true, `needs KEEP_GOCARDLESS=fake; the target runs ${mode}`)
 }
 
+/**
+ * A world of its own for `worker` (not the worker's shared one): for a
+ * spec that connects its group to GoCardless's QC account and must not
+ * move another spec's connection (gocardless-sandbox.spec.ts).
+ */
+export async function seedWorld(
+  inst: Instance,
+  worker: number,
+): Promise<World> {
+  const { data } = await post<QcWorld>(
+    inst,
+    setupRoute(inst, 'qc-seed', 'seed'),
+    { runId: runId(), worker },
+  )
+  return {
+    ...data,
+    tenants: data.tenants.map((t) => ({ ...t, tenantId: t.slug })),
+  }
+}
+
+/**
+ * GoCardless's QC account through the QC GoCardless surface
+ * (`/api/dev/qc-gocardless/*` locally, `/api/qc/gocardless/*` with the
+ * token; server/README.md). Untimed. A network error is thrown as
+ * `GoCardlessUnreachable`, as is the api's 503 (GoCardless didn't answer
+ * after its one retry); any other answer comes back with its status.
+ */
+export class GoCardlessUnreachable extends Error {}
+
+/** How long a QC GoCardless call may take (sign makes several calls). */
+const QC_GOCARDLESS_TIMEOUT_MS = 60_000
+
+export async function qcGoCardless<T>(
+  inst: Instance,
+  method: 'GET' | 'POST',
+  what: string,
+  body?: unknown,
+): Promise<{ status: number; data: T }> {
+  const route = setupRoute(inst, `qc-gocardless/${what}`, `gocardless/${what}`)
+  let res: Response
+  let text: string
+  try {
+    res = await fetch(`${inst.api}${route}`, {
+      method,
+      headers:
+        method === 'POST'
+          ? { 'content-type': 'application/json', ...setupHeaders(inst) }
+          : setupHeaders(inst),
+      body: method === 'POST' ? JSON.stringify(body ?? {}) : undefined,
+      signal: AbortSignal.timeout(QC_GOCARDLESS_TIMEOUT_MS),
+    })
+    text = await res.text()
+  } catch (err) {
+    const why = err instanceof Error ? err.name : String(err)
+    throw new GoCardlessUnreachable(`${route}: no answer (${why})`)
+  }
+  if (res.status === 503)
+    throw new GoCardlessUnreachable(`${route}: 503 ${text}`)
+  let data: unknown = null
+  try {
+    data = JSON.parse(text)
+  } catch {
+    // not JSON: the status says enough
+  }
+  return { status: res.status, data: data as T }
+}
+
+/**
+ * GoCardless's sandbox (or the fake) wasn't reachable: annotated
+ * `gocardlessUnreachable` (the GOCARDLESS SANDBOX UNREACHABLE banner) and
+ * skipped. Throws, as `test.skip` does.
+ */
+export function skipGoCardlessUnreachable(why: string): never {
+  base
+    .info()
+    .annotations.push({ type: 'gocardlessUnreachable', description: why })
+  base.skip(true, `GoCardless unreachable: ${why}`)
+  throw new Error('unreachable')
+}
+
+/**
+ * The target has no QC GoCardless surface (GoCardless off or live, or
+ * the sandbox without the QC account): annotated `gocardlessNoQc` (the
+ * same banner) and skipped.
+ */
+export function skipNoQcGoCardless(why: string): never {
+  base.info().annotations.push({ type: 'gocardlessNoQc', description: why })
+  base.skip(true, `no QC GoCardless surface: ${why}`)
+  throw new Error('unreachable')
+}
+
+/**
+ * A webhook that never came in time: what waited, found by the catch-up
+ * (or a catch-up that found missed events). Passing, annotated
+ * `gocardlessLateWebhook` for the GOCARDLESS LATE WEBHOOK banner.
+ */
+export function noteLateWebhook(what: string) {
+  base
+    .info()
+    .annotations.push({ type: 'gocardlessLateWebhook', description: what })
+}
+
 type Flow = <TArg = undefined>(
   page: Page,
   name: FlowName,

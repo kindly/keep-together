@@ -555,6 +555,47 @@ export function notFakeBanner(
   ])
 }
 
+/**
+ * The GoCardless sandbox spec's own notices (qc/fixtures.ts): webhooks
+ * that came late (passing: the catch-up found them), and tests skipped
+ * because GoCardless didn't answer or the target has no QC GoCardless
+ * surface. Each is title path → why. Exported for qc/reporter.test.ts.
+ */
+export function goCardlessQcBanner(notes: {
+  late: Map<string, Array<string>>
+  unreachable: Map<string, string>
+  noQc: Map<string, string>
+}): Array<string> {
+  const lines = (m: Map<string, string>) =>
+    [...m]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([t, why]) => `${t}: ${why}`)
+  const late = [...notes.late]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([t, whats]) => whats.map((w) => `${t}: ${w}`))
+  const s = (n: number) => (n === 1 ? '' : 's')
+  return [
+    ...(late.length
+      ? banner([
+          `GOCARDLESS LATE WEBHOOK: ${late.length} wait${s(late.length)} passed only after the catch-up (or the catch-up found missed events); webhooks are slow or not arriving:`,
+          ...late,
+        ])
+      : []),
+    ...(notes.unreachable.size
+      ? banner([
+          `GOCARDLESS SANDBOX UNREACHABLE: ${notes.unreachable.size} test${s(notes.unreachable.size)} skipped; Direct Debit against GoCardless was NOT tested:`,
+          ...lines(notes.unreachable),
+        ])
+      : []),
+    ...(notes.noQc.size
+      ? banner([
+          `GOCARDLESS QC SURFACE OFF on the target: ${notes.noQc.size} test${s(notes.noQc.size)} skipped; Direct Debit against GoCardless was NOT tested:`,
+          ...lines(notes.noQc),
+        ])
+      : []),
+  ]
+}
+
 const banner = (lines: Array<string>) => {
   const bar = '!'.repeat(72)
   return [bar, ...lines.map((l) => `!! ${l}`), bar]
@@ -571,6 +612,12 @@ export default class QcReporter implements Reporter {
   private notFake = new Map<string, string>()
   /** The routes those tests are annotated with. */
   private notFakeRoutes = new Set<string>()
+  /** The GoCardless sandbox spec's notices (`goCardlessQcBanner`). */
+  private gcQc = {
+    late: new Map<string, Array<string>>(),
+    unreachable: new Map<string, string>(),
+    noQc: new Map<string, string>(),
+  }
   /** Failed tests and when they ran (epoch ms), for the LINK banner. */
   private failed: Array<{ title: string; from: number; to: number }> = []
 
@@ -584,6 +631,27 @@ export default class QcReporter implements Reporter {
     )?.description
     if (step && result.status === 'skipped')
       this.pending.set(step, (this.pending.get(step) ?? 0) + 1)
+    if (
+      result.annotations.some(
+        (a) =>
+          a.type.startsWith('gocardless') && a.type !== 'gocardlessNotFake',
+      )
+    ) {
+      const title = test.titlePath().filter(Boolean).slice(1).join(' › ')
+      const of = (type: string) =>
+        result.annotations
+          .filter((a) => a.type === type)
+          .map((a) => a.description ?? '')
+      const late = of('gocardlessLateWebhook')
+      if (late.length) this.gcQc.late.set(title, late)
+      for (const [type, into] of [
+        ['gocardlessUnreachable', this.gcQc.unreachable],
+        ['gocardlessNoQc', this.gcQc.noQc],
+      ] as const) {
+        const why = of(type)
+        if (why.length && result.status === 'skipped') into.set(title, why[0])
+      }
+    }
     // Retries add the annotation again: one entry per test.
     if (result.annotations.some((a) => a.type === 'mailOff'))
       this.mailOff.add(test.titlePath().filter(Boolean).slice(1).join(' › '))
@@ -701,6 +769,7 @@ export default class QcReporter implements Reporter {
     const routes = readRoutes()
     out.push(...pendingBanner(this.pending, routes))
     out.push(...mailOffBanner([...this.mailOff]))
+    out.push(...goCardlessQcBanner(this.gcQc))
     out.push(...retryBanner(retries, past, env))
 
     const timed = new Set(records.map((r) => r.flow))
