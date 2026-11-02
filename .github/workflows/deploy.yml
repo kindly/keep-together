@@ -65,6 +65,10 @@ jobs:
       # --ha=false: one machine, one volume. Two would each replicate
       # their own platform.db to the same Litestream prefix.
       - name: Deploy keep-${{ inputs.env || 'staging' }}
+        # A deploy takes a few minutes; a hung remote build (2026-11-01:
+        # over an hour, no release) would otherwise hold the queue for
+        # GitHub's 6 hours.
+        timeout-minutes: 25
         run: >
           flyctl deploy -c "fly.$DEPLOY_ENV.toml" --remote-only --yes --ha=false
           --build-arg VITE_SENTRY_DSN="$SENTRY_DSN_SPA"
@@ -124,6 +128,8 @@ jobs:
       - if: ${{ steps.gate.outputs.go == 'true' }}
         uses: superfly/flyctl-actions/setup-flyctl@1.5
       - name: Deploy keep-qc
+        # As keep-staging's: a hung build fails here, not after 6 hours.
+        timeout-minutes: 25
         if: ${{ steps.gate.outputs.go == 'true' }}
         # No VITE_SENTRY_DSN: QC's browser errors (many on purpose) stay
         # out of the SPA's Sentry project, as the api's stay out of its.
