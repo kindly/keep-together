@@ -4,6 +4,7 @@ import type { Loaders } from '../lib/data'
 import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 
+import { NewVersionBanner } from '../components/new-version-banner'
 import { RelaxedBanner } from '../components/relaxed-banner'
 import { MyTenantsProvider } from '../lib/data'
 import '../styles.css'
@@ -19,6 +20,7 @@ function RootComponent() {
   return (
     <>
       <RelaxedBanner />
+      <NewVersionBanner />
       <MyTenantsProvider>
         <Outlet />
       </MyTenantsProvider>

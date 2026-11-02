@@ -5,6 +5,8 @@ import { routeTree } from './routeTree.gen'
 import { queryClient } from './lib/data'
 import type { Loaders } from './lib/data'
 import { boot } from './lib/data/rust/hooks'
+import { installStaleBuildRecovery } from './lib/stale-build'
+import { anyUnsavedWork } from './lib/unsaved'
 
 // A cold load of a tenant page: one request for its first reads.
 const tenantPage = new RegExp(
@@ -21,6 +23,13 @@ const router = createRouter({
   // Route loaders start the reads their page makes (lib/data).
   context: { queryClient } satisfies Loaders,
   scrollRestoration: true,
+})
+
+// A tab left open across a deploy: a chunk that's gone on the way to a
+// page reloads it (lib/stale-build).
+installStaleBuildRecovery({
+  navigating: () => router.state.status === 'pending',
+  unsaved: anyUnsavedWork,
 })
 
 declare module '@tanstack/react-router' {
