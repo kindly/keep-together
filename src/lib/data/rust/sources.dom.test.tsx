@@ -12,9 +12,9 @@ import { applyEvent } from '../events'
 import { keys } from './keys'
 import { useSetAcquisition, useSourceWrites } from './sources'
 
-// A part saved from this tab: its own event is swallowed (`ownWrite`),
-// so the save itself must refresh what that event would have, contact
-// views included (a rename shows on every contact carrying the code).
+// A part saved from this tab: the tree shows the save's answer, and its
+// own event refreshes the rest, contact views included (a rename shows on
+// every contact carrying the code), but not the tree again.
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -29,12 +29,16 @@ beforeEach(() => {
     'fetch',
     vi.fn((url: string) =>
       Promise.resolve(
-        new Response(
-          JSON.stringify(
-            url.endsWith('/save') ? { id: PART, counter: 1 } : { parts: [] },
-          ),
-          { status: 200 },
-        ),
+        url.endsWith('/save')
+          ? new Response(
+              JSON.stringify({
+                id: PART,
+                counter: 1,
+                tree: { parts: [], canManage: true },
+              }),
+              { status: 200, headers: { 'keep-seq': '7' } },
+            )
+          : new Response(JSON.stringify({ parts: [] }), { status: 200 }),
       ),
     ),
   )
@@ -48,7 +52,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-test("a part saved here refreshes this tab's contact views, though its own event is skipped", async () => {
+test("a part saved here: its own event refreshes this tab's contact views, not the tree", async () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const contact = keys.contact(SLUG, CONTACT)
   qc.setQueryData(contact, { id: CONTACT })
@@ -78,6 +82,7 @@ test("a part saved here refreshes this tab's contact views, though its own event
     counter: 1,
   })
   expect(qc.getQueryState(contact)?.isInvalidated).toBe(true)
+  expect(qc.getQueryState(keys.sourceTree(SLUG))?.isInvalidated).toBe(false)
 })
 
 // codex C1 (delta b): the acquisition answer's contact view, delayed past

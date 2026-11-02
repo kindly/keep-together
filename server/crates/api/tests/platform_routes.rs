@@ -239,6 +239,12 @@ async fn preferences_only_admins_switch_staff_follow_viewers_never() {
         ),
         (&json!(true), &json!(false), &json!(0))
     );
+    // The save answered the switches as `mine` shows them to its caller.
+    let (_, g) = w.call("GET", "/api/groups", &ann, None).await;
+    for (k, v) in out["switches"].as_object().unwrap() {
+        assert_eq!(&g[0][k], v, "{k}");
+    }
+    assert_eq!(out["switches"].as_object().unwrap().len(), 9);
     let (_, g) = w.call("GET", "/api/groups", &val, None).await;
     assert_eq!(g[0]["canManageFields"], false);
     assert_eq!(g[0]["staffCanManageFields"], true);

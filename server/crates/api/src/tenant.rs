@@ -95,8 +95,12 @@ impl Tenant {
             check()?;
             timing.add_platform(start.elapsed());
             let start = Instant::now();
+            store::take_published_seq();
             let out = contracts::transact(&db, Some(user), f);
             timing.add_db(start.elapsed());
+            if let Some(seq) = store::take_published_seq() {
+                timing.wrote(seq);
+            }
             out
         })
         .await

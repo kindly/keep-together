@@ -12,6 +12,7 @@
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTenant } from '../../tenant'
+import { showAnswer } from '../events'
 import type { DeclarationScans } from '../rust-types/DeclarationScans'
 import type { DeletableScan } from '../rust-types/DeletableScan'
 import type { FilesUsage } from '../rust-types/FilesUsage'
@@ -21,7 +22,15 @@ import type { ScanPairingStarted } from '../rust-types/ScanPairingStarted'
 import type { ScanPairingView } from '../rust-types/ScanPairingView'
 import type { ScanPurpose } from '../rust-types/ScanPurpose'
 import type { ScanView } from '../rust-types/ScanView'
-import { RustApiError, apiUrl, del, get, post, tenantPath } from './client'
+import {
+  RustApiError,
+  apiUrl,
+  del,
+  get,
+  post,
+  postWrite,
+  tenantPath,
+} from './client'
 import { keys } from './keys'
 
 export type {
@@ -182,23 +191,19 @@ export function useFilesUsage(enabled = true) {
 
 /**
  * A scan's writes. Each resolves once committed, with the scan as the
- * server has it, after the scan reads (and, for an accept, the
- * declarations) have been refetched: never optimistic. `stale` means
+ * server has it, after the scan reads have been refetched (an accept
+ * shows its answer instead): never optimistic. `stale` means
  * someone else changed the scan first; its reads are refetched, so the
  * caller says so and the user tries again on what is shown.
  */
 export function useScanWrites() {
   const { slug } = useTenant()
   const qc = useQueryClient()
-  const after = async <T>(write: Promise<T>, declarations = false) => {
+  const after = async <T>(write: Promise<T>) => {
     try {
       return await write
     } finally {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: keys.scans(slug) }),
-        declarations &&
-          qc.invalidateQueries({ queryKey: keys.declarations(slug) }),
-      ])
+      await qc.invalidateQueries({ queryKey: keys.scans(slug) })
     }
   }
   const path = (id: string, action: string) =>
@@ -221,15 +226,33 @@ export function useScanWrites() {
           fromExpected: from.reviewVersion,
         }),
       ),
-    accept: (scan: ScanView, contactId: string, match: ScanMatch) =>
-      after(
-        post<ScanAccepted>(path(scan.id, 'accept'), {
-          expected: scan.reviewVersion,
-          contactId,
-          match,
-        }),
-        true,
-      ),
+    /**
+     * The answer carries the scan and "Scans to match", where the page
+     * goes next: both show from it. Its events refetch the rest (the
+     * declaration's panel and scans).
+     */
+    accept: async (scan: ScanView, contactId: string, match: ScanMatch) => {
+      try {
+        return await showAnswer(
+          qc,
+          slug,
+          () =>
+            postWrite<ScanAccepted>(path(scan.id, 'accept'), {
+              expected: scan.reviewVersion,
+              contactId,
+              match,
+            }),
+          (done) => [
+            [keys.scan(slug, scan.id), done.scan],
+            [keys.scanInbox(slug), done.inbox],
+          ],
+        )
+      } catch (e) {
+        // Refused (stale): show the scan as it is now.
+        void qc.invalidateQueries({ queryKey: keys.scans(slug) })
+        throw e
+      }
+    },
     discard: (scan: ScanView, reason?: string) =>
       after(
         post<ScanView>(path(scan.id, 'discard'), {

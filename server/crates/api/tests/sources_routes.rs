@@ -39,6 +39,9 @@ async fn street(w: &World, ann: &str) -> Codes {
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{made}");
+    // A create answers the tree after it, as `GET sources` does.
+    let (_, tree) = w.call("GET", "/api/t/alpha/sources", ann, None).await;
+    assert_eq!(made["tree"], tree);
     Codes {
         category,
         detail: made["id"].as_str().unwrap().to_owned(),
@@ -77,6 +80,18 @@ async fn the_tree_picker_describe_and_filter_options_answer_their_shapes() {
     let (s, tree) = w.call("GET", "/api/t/alpha/sources", &ann, None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(tree["canManage"], true);
+    // A save answers the tree after it, as that read does.
+    let (s, saved) = w
+        .call(
+            "POST",
+            &format!("/api/t/alpha/sources/{}/save", c.category),
+            &ann,
+            Some(json!({ "expected": 0, "name": "Street", "isActive": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    let (_, tree) = w.call("GET", "/api/t/alpha/sources", &ann, None).await;
+    assert_eq!((&saved["id"], &saved["tree"]), (&json!(c.category), &tree));
     let codes: Vec<_> = tree["parts"]
         .as_array()
         .unwrap()
@@ -163,9 +178,10 @@ async fn save_and_delete_answer_counters_stale_and_used() {
     let path = format!("/api/t/alpha/sources/{}/save", c.detail);
     let (s, done) = w.call("POST", &path, &ann, Some(save(0, "Wessex"))).await;
     assert_eq!(
-        (s, &done),
-        (StatusCode::OK, &json!({ "id": c.detail, "counter": 1 }))
+        (s, &done["id"], &done["counter"]),
+        (StatusCode::OK, &json!(c.detail), &json!(1))
     );
+    assert_eq!(part(&done["tree"], &c.detail)["name"], "Wessex");
     let (s, stale) = w.call("POST", &path, &ann, Some(save(0, "Other"))).await;
     assert_eq!(s, StatusCode::CONFLICT);
     assert_eq!(

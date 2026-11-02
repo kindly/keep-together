@@ -1,5 +1,6 @@
 //! `/api/t/{slug}/…notes…`: a contact's notes. Each write answers the note
-//! as it is now, read in the same transaction.
+//! as it is now and its contact's two lists, read in the same transaction:
+//! the panel shows them from the answer, with no read after it.
 
 use axum::extract::Path;
 use axum::routing::{get, post};
@@ -9,7 +10,7 @@ use contacts::notes::{
     notes_for_contact, restore_note, save_note, set_flag,
 };
 use rusqlite::Connection;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{ApiError, Body, IdParam, Tenant};
@@ -40,6 +41,26 @@ fn contact_exists(conn: &Connection, id: &str) -> Result<(), ApiError> {
 
 fn view(conn: &Connection, id: &str) -> Result<NoteView, ApiError> {
     note(conn, id)?.ok_or(ApiError::NotFound)
+}
+
+/// A note write's answer: the note, and its contact's live and archived
+/// lists as `GET contacts/{id}/notes` and `…/archived` answer them.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct NoteSaved {
+    pub note: NoteView,
+    pub live: NotesPage,
+    pub archived: NotesPage,
+}
+
+fn saved(conn: &Connection, id: &str) -> Result<NoteSaved, ApiError> {
+    let note = view(conn, id)?;
+    Ok(NoteSaved {
+        live: notes_for_contact(conn, &note.contact_id)?,
+        archived: archived_notes(conn, &note.contact_id)?,
+        note,
+    })
 }
 
 /// `GET contacts/{id}/notes`: pinned first, then the rest, each newest
@@ -73,10 +94,10 @@ async fn archived(
 async fn create(
     Extension(t): Extension<Tenant>,
     Body(req): Body<CreateNote>,
-) -> Result<Json<NoteView>, ApiError> {
+) -> Result<Json<NoteSaved>, ApiError> {
     t.write(move |ctx| {
         let done = create_note(ctx, req)?;
-        view(ctx.tx.read(), &done.id)
+        saved(ctx.tx.read(), &done.id)
     })
     .await
     .map(Json)
@@ -88,19 +109,19 @@ async fn save(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(req): Body<SaveNote>,
-) -> Result<Json<NoteView>, ApiError> {
+) -> Result<Json<NoteSaved>, ApiError> {
     t.write(move |ctx| {
         save_note(ctx, &id, req)?;
-        view(ctx.tx.read(), &id)
+        saved(ctx.tx.read(), &id)
     })
     .await
     .map(Json)
 }
 
-async fn flag(t: Tenant, id: String, flag: Flag, value: bool) -> Result<Json<NoteView>, ApiError> {
+async fn flag(t: Tenant, id: String, flag: Flag, value: bool) -> Result<Json<NoteSaved>, ApiError> {
     t.write(move |ctx| {
         set_flag(ctx, &id, flag, value, None)?;
-        view(ctx.tx.read(), &id)
+        saved(ctx.tx.read(), &id)
     })
     .await
     .map(Json)
@@ -111,7 +132,7 @@ async fn pin(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(req): Body<SetFlag>,
-) -> Result<Json<NoteView>, ApiError> {
+) -> Result<Json<NoteSaved>, ApiError> {
     flag(t, id, Flag::Pinned, req.value).await
 }
 
@@ -120,7 +141,7 @@ async fn archive(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(req): Body<SetFlag>,
-) -> Result<Json<NoteView>, ApiError> {
+) -> Result<Json<NoteSaved>, ApiError> {
     flag(t, id, Flag::Archived, req.value).await
 }
 

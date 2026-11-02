@@ -9,7 +9,8 @@ import { keys } from './keys'
 import { useOpened, useSetStaffCanManage } from './platform'
 
 // The control plane's two writes (A3): what they send, and that the
-// caller's groups are refetched only when something changed.
+// caller's groups show a switch's answer, and are refetched only when
+// "last used" changed or a switch was refused.
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -76,7 +77,22 @@ test('opened posts the slug, and refetches the groups only when recorded', async
 
 test('a switch sends its own counter, null before any save', async () => {
   const set = hook(() => useSetStaffCanManage(tenant))
-  answer = () => json(200, { id: 'p', counter: 5 })
+  const switches = {
+    staffCanManageIdentifierTypes: false,
+    identifierTypesVersion: null,
+    staffCanManageSourceCodes: true,
+    sourceCodesVersion: 0,
+    staffCanManageFields: false,
+    fieldsVersion: 5,
+    canManageIdentifierTypes: true,
+    canManageSourceCodes: true,
+    canManageFields: true,
+  }
+  queryClient.setQueryData(keys.groups, [
+    { slug: 'beta', name: 'Beta' },
+    { slug: 'alpha', name: 'Alpha', lastUsedAt: 9 },
+  ])
+  answer = () => json(200, { id: 'p', counter: 5, switches })
   expect(await set('fields', false)).toBe('saved')
   expect(await set('sourceCodes', true)).toBe('saved')
   expect(calls).toEqual([
@@ -91,7 +107,13 @@ test('a switch sends its own counter, null before any save', async () => {
       body: { expected: null, staffCanManage: true },
     },
   ])
-  expect(invalidate).toHaveBeenCalledWith({ queryKey: keys.groups })
+  // The groups show the answer: no refetch.
+  expect(invalidate).not.toHaveBeenCalled()
+  expect(queryClient.getQueryData(keys.groups)).toEqual([
+    { slug: 'beta', name: 'Beta' },
+    { slug: 'alpha', name: 'Alpha', lastUsedAt: 9, ...switches },
+  ])
+  queryClient.clear()
 })
 
 test('stale and refused saves are told apart, and refetch the groups', async () => {

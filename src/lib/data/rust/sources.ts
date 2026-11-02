@@ -18,20 +18,21 @@ import type { QueryClient } from '@tanstack/react-query'
 import type { Id } from '../../domain/ids'
 import { useTenant } from '../../tenant'
 import type { Loaders } from '../types'
-import { ownWrite } from '../events'
+import { ownWrite, showAnswer } from '../events'
 import type { AcquisitionSet } from '../rust-types/AcquisitionSet'
 import type { ContactView as WireContact } from '../rust-types/ContactView'
-import type { CreatedSourceCode } from '../rust-types/CreatedSourceCode'
 import type { DeletedSourceCode } from '../rust-types/DeletedSourceCode'
 import type { Executed } from '../rust-types/Executed'
 import type { SourceCodeDescription as WireDescription } from '../rust-types/SourceCodeDescription'
 import type { SourceCodePart } from '../rust-types/SourceCodePart'
+import type { SourceCodeCreated } from '../rust-types/SourceCodeCreated'
 import type { SourceCodePayload } from '../rust-types/SourceCodePayload'
+import type { SourceCodeSaved } from '../rust-types/SourceCodeSaved'
 import type { SourceCodeTree } from '../rust-types/SourceCodeTree'
 import type { SourceFilterOption } from '../rust-types/SourceFilterOption'
 import type { SourcePicker } from '../rust-types/SourcePicker'
 import type { SourcePickerEntry } from '../rust-types/SourcePickerEntry'
-import { get, post, tenantPath } from './client'
+import { get, post, postWrite, tenantPath } from './client'
 import { keys } from './keys'
 
 type CodeId = Id<'sourceCodes'>
@@ -75,13 +76,17 @@ export function describedFromWire(d: WireDescription): SourceCodeDescription {
 
 // ── reads ──────────────────────────────────────────────────────────────────
 
+/** The Settings tree as `useSourceTree` holds it. */
+const treeFromWire = (t: SourceCodeTree) => ({
+  parts: t.parts.map(partFromWire),
+  canManage: t.canManage,
+})
+
 function treeQuery(slug: string) {
   return {
     queryKey: keys.sourceTree(slug),
-    queryFn: async () => {
-      const t = await get<SourceCodeTree>(tenantPath(slug, 'sources'))
-      return { parts: t.parts.map(partFromWire), canManage: t.canManage }
-    },
+    queryFn: async () =>
+      treeFromWire(await get<SourceCodeTree>(tenantPath(slug, 'sources'))),
   }
 }
 
@@ -148,8 +153,11 @@ export function sourcesChanged(qc: QueryClient, slug: string) {
 
 /**
  * Create, save and delete parts. Each resolves once the server has
- * answered and the tree has been refetched, and throws `RustApiError`
- * when refused (`stale` carries the part as it is now).
+ * answered and the tree shows it (from the answer for a create or a save,
+ * refetched after a delete), and throws `RustApiError` when refused
+ * (`stale` carries the part as it is now). A save's or a create's event
+ * refetches the filter, the picker and the contacts (a name or an archive
+ * shows on every contact carrying a code under it), not the tree.
  */
 export function useSourceWrites() {
   const { slug } = useTenant()
@@ -161,29 +169,45 @@ export function useSourceWrites() {
       await sourcesChanged(qc, slug)
     }
   }
+  const shown = async <T extends { tree: SourceCodeTree }>(
+    path: string,
+    body: unknown,
+  ): Promise<T> => {
+    try {
+      return await showAnswer(
+        qc,
+        slug,
+        () => postWrite<T>(path, body),
+        (done) => [[keys.sourceTree(slug), treeFromWire(done.tree)]],
+      )
+    } catch (e) {
+      // Refused: show the tree as it is now.
+      void sourcesChanged(qc, slug)
+      throw e
+    }
+  }
   return {
-    create: (payload: SourceCodePayload) =>
-      after(
-        post<CreatedSourceCode>(tenantPath(slug, 'sources'), payload).then(
-          (c) => ({
-            id: c.id as CodeId,
-            versionId: c.versionId as CodeId | undefined,
-          }),
-        ),
-      ),
-    save: (id: CodeId, expected: number, payload: SourceCodePayload) =>
-      after(
-        post<Executed>(tenantPath(slug, 'sources', id, 'save'), {
-          ...payload,
-          expected,
-        }).then((done) => {
-          ownWrite(slug, id, 'sources.code', done.counter)
-          // The event this skips would refetch the contacts too: a name or
-          // an archive shows on every contact carrying a code under it.
-          void qc.invalidateQueries({ queryKey: keys.contacts(slug) })
-          return done
-        }),
-      ),
+    create: async (payload: SourceCodePayload) => {
+      const c = await shown<SourceCodeCreated>(
+        tenantPath(slug, 'sources'),
+        payload,
+      )
+      return {
+        id: c.id as CodeId,
+        versionId: c.versionId as CodeId | undefined,
+      }
+    },
+    save: async (
+      id: CodeId,
+      expected: number,
+      payload: SourceCodePayload,
+    ): Promise<Executed> => {
+      const done = await shown<SourceCodeSaved>(
+        tenantPath(slug, 'sources', id, 'save'),
+        { ...payload, expected },
+      )
+      return { id: done.id, counter: done.counter }
+    },
     remove: (id: CodeId, expected: number) =>
       after(
         post<DeletedSourceCode>(tenantPath(slug, 'sources', id, 'delete'), {

@@ -508,3 +508,86 @@ async fn an_old_bundle_tab_resets_once_then_resumes() {
     let msg = s.unwrap().next(Duration::from_secs(2)).await.unwrap();
     assert_eq!(msg.event.as_deref(), Some("reset"));
 }
+
+/// The response's `keep-seq` header, if any.
+async fn seq_header(
+    w: &World,
+    method: &str,
+    path: &str,
+    cookie: &str,
+    body: Value,
+) -> (StatusCode, Option<i64>) {
+    let res = w
+        .app
+        .clone()
+        .oneshot(request(method, path, Some(cookie), Some(body)))
+        .await
+        .unwrap();
+    let seq = res
+        .headers()
+        .get("keep-seq")
+        .map(|v| v.to_str().unwrap().parse().unwrap());
+    (res.status(), seq)
+}
+
+#[tokio::test]
+async fn a_write_answers_the_seq_of_the_last_event_it_published() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    let (_, stream) = Stream::open(&w, "alpha", &ann, None).await;
+    let mut stream = stream.unwrap();
+
+    let (s, seq) = seq_header(
+        &w,
+        "POST",
+        "/api/t/alpha/contacts",
+        &ann,
+        person("Ann", "Seq"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let e = stream.change().await;
+    assert_eq!(seq, Some(e.seq));
+
+    // Every event a write published came before its answer: the header
+    // names the last.
+    let (s, seq) = seq_header(
+        &w,
+        "POST",
+        "/api/t/alpha/notes",
+        &ann,
+        json!({ "contactId": e.id, "body": "hello", "pinned": true }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let mut last = stream.change().await;
+    while let Some(m) = stream.next(Duration::from_millis(100)).await {
+        last = serde_json::from_str(&m.data).unwrap();
+    }
+    assert_eq!(seq, Some(last.seq));
+
+    // Refused: nothing published, no header.
+    let (s, seq) = seq_header(
+        &w,
+        "POST",
+        &format!("/api/t/alpha/contacts/{}/archive", e.id),
+        &ann,
+        json!({ "expected": 7, "archived": true }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(seq, None);
+    // A read: none either.
+    let res = w
+        .app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/api/t/alpha/contacts/{}", e.id),
+            Some(&ann),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert!(res.headers().get("keep-seq").is_none());
+}

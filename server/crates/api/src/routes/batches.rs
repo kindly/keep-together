@@ -164,18 +164,39 @@ fn current(ctx: &Ctx, id: &str) -> Result<PayingInBatchPayload, ApiError> {
         .batch)
 }
 
+/// A save's, close's or reopen's answer: what it executed, and the batch
+/// as `GET bank/batches/{id}` answers it after (its page shows it).
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BatchSaved {
+    pub id: String,
+    #[ts(type = "number")]
+    pub counter: i64,
+    pub detail: PayingInBatchDetail,
+}
+
 fn run(
     ctx: &Ctx,
     id: &str,
     expected: i64,
     payload: PayingInBatchPayload,
-) -> Result<Executed, ApiError> {
-    Ok(execute(
+) -> Result<BatchSaved, ApiError> {
+    let Executed { id, counter } = execute(
         ctx,
         &giving::PAYING_IN_BATCH,
         payload,
         Exec::update(id, Some(expected), Source::Ui),
-    )?)
+    )?;
+    let r = ctx.tx.read();
+    Ok(BatchSaved {
+        detail: PayingInBatchDetail {
+            batch: view(r, &id)?,
+            gifts: giving::batches::gifts_in_batch(r, &id)?,
+        },
+        id,
+        counter,
+    })
 }
 
 /// `POST bank/batches/{id}/save {expected, slipNumber, bankedOn?, total?}`:
@@ -201,7 +222,7 @@ async fn save(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(s): Body<SaveBatch>,
-) -> Result<Json<Executed>, ApiError> {
+) -> Result<Json<BatchSaved>, ApiError> {
     t.write(move |ctx| {
         let now = current(ctx, &id)?;
         let payload = PayingInBatchPayload {
@@ -234,7 +255,7 @@ async fn close(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(c): Body<CloseBatch>,
-) -> Result<Json<Executed>, ApiError> {
+) -> Result<Json<BatchSaved>, ApiError> {
     t.write(move |ctx| {
         let now = current(ctx, &id)?;
         let payload = PayingInBatchPayload {
@@ -263,7 +284,7 @@ async fn reopen(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(r): Body<ReopenBatch>,
-) -> Result<Json<Executed>, ApiError> {
+) -> Result<Json<BatchSaved>, ApiError> {
     t.write(move |ctx| {
         let now = current(ctx, &id)?;
         let payload = PayingInBatchPayload {

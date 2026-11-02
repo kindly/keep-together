@@ -4,6 +4,10 @@
 //! The record-gift save (`gifts.rs`) makes the tick's declaration in its
 //! own transaction; `POST contacts/{id}/giftaid` is Convex's `declare`, a
 //! declaration on its own (imports, QC set-up).
+//!
+//! The panel's writes take the panel's `?today` and answer its read for
+//! that date with what they did, read in the same transaction: the panel
+//! shows the answer, with no read after it.
 
 use axum::extract::Path;
 use axum::routing::{get, post};
@@ -13,7 +17,9 @@ use giftaid::types::{
     Cancelled, DeclarationPayload, Declarations, DetailsHistory, RecordCancellation,
     SaveDeclarationDetails, VoidPayload,
 };
-use serde::Deserialize;
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::Params;
 use crate::{ApiError, Body, IdParam, Tenant};
@@ -30,6 +36,45 @@ pub fn router() -> Router {
 #[derive(Deserialize)]
 struct TodayQuery {
     today: String,
+}
+
+/// A panel write's `?today`: optional, for callers that show no panel.
+#[derive(Deserialize)]
+struct PanelQuery {
+    today: Option<String>,
+}
+
+/// A panel write's answer: what it did, and the contact's declarations as
+/// `GET contacts/{id}/giftaid?today` answers them after it (null when no
+/// `today` was sent).
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PanelSaved<T> {
+    pub done: T,
+    pub declarations: Option<Declarations>,
+}
+
+fn panel<T>(
+    conn: &Connection,
+    contact_id: &str,
+    today: Option<&str>,
+    done: T,
+) -> Result<PanelSaved<T>, ApiError> {
+    Ok(PanelSaved {
+        done,
+        declarations: match today {
+            Some(today) => Some(giftaid::by_contact(conn, contact_id, today)?),
+            None => None,
+        },
+    })
+}
+
+/// The contact a declaration belongs to; 404 if there's none.
+fn contact_of(conn: &Connection, declaration: &str) -> Result<String, ApiError> {
+    giftaid::declarations::load(conn, declaration)?
+        .map(|d| d.payload.contact_id)
+        .ok_or(ApiError::NotFound)
 }
 
 /// `GET contacts/{id}/giftaid?today`: the contact's declarations, newest
@@ -88,58 +133,66 @@ async fn declare(
     .map(Json)
 }
 
-/// `POST contacts/{id}/giftaid/cancel {cancelledFrom, note?}`: cancels
+/// `POST contacts/{id}/giftaid/cancel?today {cancelledFrom, note?}`: cancels
 /// every declaration open at that date, in one group; `422` when none is.
 async fn cancel(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
+    Params(q): Params<PanelQuery>,
     Body(req): Body<RecordCancellation>,
-) -> Result<Json<Cancelled>, ApiError> {
+) -> Result<Json<PanelSaved<Cancelled>>, ApiError> {
+    if let Some(today) = &q.today {
+        iso_date("today", today)?;
+    }
     t.write(move |ctx| {
         if contacts::donors::kind_of(ctx.tx.read(), &id)?.is_none() {
             return Err(ApiError::NotFound);
         }
-        Ok(giftaid::cancel_declarations(
-            ctx,
-            &id,
-            &req.cancelled_from,
-            req.note,
-            Source::Ui,
-        )?)
+        let done =
+            giftaid::cancel_declarations(ctx, &id, &req.cancelled_from, req.note, Source::Ui)?;
+        panel(ctx.tx.read(), &id, q.today.as_deref(), done)
     })
     .await
     .map(Json)
 }
 
-/// `POST giftaid/{id}/void {reason}`: made in error; `422 rejected
+/// `POST giftaid/{id}/void?today {reason}`: made in error; `422 rejected
 /// {reason: immutable}` when already voided.
 async fn void(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
+    Params(q): Params<PanelQuery>,
     Body(req): Body<VoidPayload>,
-) -> Result<Json<Executed>, ApiError> {
-    t.write(move |ctx| Ok(giftaid::void_declaration(ctx, &id, req.reason, Source::Ui)?))
-        .await
-        .map(Json)
+) -> Result<Json<PanelSaved<Executed>>, ApiError> {
+    if let Some(today) = &q.today {
+        iso_date("today", today)?;
+    }
+    t.write(move |ctx| {
+        let done = giftaid::void_declaration(ctx, &id, req.reason, Source::Ui)?;
+        let contact = contact_of(ctx.tx.read(), &id)?;
+        panel(ctx.tx.read(), &contact, q.today.as_deref(), done)
+    })
+    .await
+    .map(Json)
 }
 
-/// `POST giftaid/{id}/details {expected, firstName, lastName,
+/// `POST giftaid/{id}/details?today {expected, firstName, lastName,
 /// addressLine1, postcode}`: the snapshot completed or corrected; `409
 /// stale` with the snapshot now, `422 rejected {reason: voided}` on a
 /// voided declaration.
 async fn details(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
+    Params(q): Params<PanelQuery>,
     Body(req): Body<SaveDeclarationDetails>,
-) -> Result<Json<Executed>, ApiError> {
+) -> Result<Json<PanelSaved<Executed>>, ApiError> {
+    if let Some(today) = &q.today {
+        iso_date("today", today)?;
+    }
     t.write(move |ctx| {
-        Ok(giftaid::save_details(
-            ctx,
-            &id,
-            req.expected,
-            req.details,
-            Source::Ui,
-        )?)
+        let done = giftaid::save_details(ctx, &id, req.expected, req.details, Source::Ui)?;
+        let contact = contact_of(ctx.tx.read(), &id)?;
+        panel(ctx.tx.read(), &contact, q.today.as_deref(), done)
     })
     .await
     .map(Json)

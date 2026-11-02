@@ -9,7 +9,8 @@ use contacts::identifiers::{
     IDENTIFIER_TYPE, IdentifierType, SaveIdentifierType, identifier_types,
 };
 use contracts::{ContractError, Exec, Executed, Source, execute};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::Params;
 use crate::{ApiError, Body, Tenant};
@@ -38,6 +39,19 @@ async fn list(
         .map(Json)
 }
 
+/// A save's answer: what it executed, and every type as
+/// `GET identifier-types?includeInactive` answers them after it (the
+/// settings page shows them from it).
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct IdentifierTypeSaved {
+    pub id: String,
+    #[ts(type = "number")]
+    pub counter: i64,
+    pub types: Vec<IdentifierType>,
+}
+
 /// `POST identifier-types {id?, expected?, name, isActive}`: create, or
 /// rename / archive / reactivate. Never deleted.
 ///
@@ -50,7 +64,7 @@ async fn list(
 async fn save(
     Extension(t): Extension<Tenant>,
     Body(req): Body<SaveIdentifierType>,
-) -> Result<Json<Executed>, ApiError> {
+) -> Result<Json<IdentifierTypeSaved>, ApiError> {
     let role = t.role;
     t.write(move |ctx| {
         if !may_manage_list(ctx.tx.read(), role, ListKind::IdentifierTypes)? {
@@ -69,7 +83,12 @@ async fn save(
             }
             None => Exec::create(Source::Ui),
         };
-        Ok(execute(ctx, &IDENTIFIER_TYPE, req.payload, opts)?)
+        let Executed { id, counter } = execute(ctx, &IDENTIFIER_TYPE, req.payload, opts)?;
+        Ok(IdentifierTypeSaved {
+            id,
+            counter,
+            types: identifier_types(ctx.tx.read(), true)?,
+        })
     })
     .await
     .map(Json)

@@ -1,17 +1,19 @@
 /**
  * The control plane's writes on the Rust API: "last used" group and the
  * Settings switches. Neither is optimistic: what shows is what the server
- * answered, through a refetch of the caller's groups. They use the app's
+ * answered, from the switch's answer or a refetch of the caller's groups. They use the app's
  * one query client directly, not the provider's: the switch also renders
  * inside list tabs whose pages (and tests) aren't on TanStack Query yet.
  */
 import { useCallback } from 'react'
-import type { Executed } from '../rust-types/Executed'
+import { showAnswer } from '../events'
+import type { Group } from '../rust-types/Group'
 import type { ListKind } from '../rust-types/ListKind'
 import type { OpenedResult } from '../rust-types/OpenedResult'
 import type { SetPreference } from '../rust-types/SetPreference'
+import type { SwitchSaved } from '../rust-types/SwitchSaved'
 import type { Tenant } from '../../tenant'
-import { RustApiError, post, tenantPath } from './client'
+import { RustApiError, post, postWrite, tenantPath } from './client'
 import { queryClient as qc } from './hooks'
 import { keys } from './keys'
 
@@ -41,8 +43,9 @@ export type SwitchOutcome = 'saved' | 'stale' | 'failed'
 /**
  * Turn "staff can manage `kind`" on or off, against the counter the
  * caller's groups carry. Admin only (the server refuses anyone else).
- * The groups refetch either way: after a save to show it, after a stale
- * refusal to show what the other admin chose.
+ * The answer carries the group's switches, which land in the caller's
+ * groups (`showAnswer`: no refetch); a refusal refetches them, to show
+ * what the other admin chose.
  */
 export function useSetStaffCanManage(tenant: Tenant) {
   return useCallback(
@@ -52,14 +55,34 @@ export function useSetStaffCanManage(tenant: Tenant) {
         staffCanManage: on,
       }
       try {
-        await post<Executed>(tenantPath(tenant.slug, 'preferences', kind), body)
+        await showAnswer(
+          qc,
+          tenant.slug,
+          () =>
+            postWrite<SwitchSaved>(
+              tenantPath(tenant.slug, 'preferences', kind),
+              body,
+            ),
+          ({ switches }) => {
+            const groups = qc.getQueryData<Array<Group> | null>(keys.groups)
+            return groups
+              ? [
+                  [
+                    keys.groups,
+                    groups.map((g) =>
+                      g.slug === tenant.slug ? { ...g, ...switches } : g,
+                    ),
+                  ],
+                ]
+              : []
+          },
+        )
         return 'saved'
       } catch (e) {
+        await qc.invalidateQueries({ queryKey: keys.groups })
         return e instanceof RustApiError && e.error.kind === 'stale'
           ? 'stale'
           : 'failed'
-      } finally {
-        await qc.invalidateQueries({ queryKey: keys.groups })
       }
     },
     [tenant],

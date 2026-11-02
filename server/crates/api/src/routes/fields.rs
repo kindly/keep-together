@@ -1,6 +1,7 @@
 //! `/api/t/{slug}/fields…`: dropdown field definitions. Managing them is
 //! for admins, and staff while "staff can manage fields" is on; setting a
-//! contact's values is ordinary staff editing.
+//! contact's values is ordinary staff editing. A save answers every
+//! definition after it, read in its transaction.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -22,7 +23,9 @@ use contacts::types::{
 use contracts::{ContractError, Ctx, Exec, Executed, Source, execute};
 use platform::{ListKind, Role, may_manage_list};
 use rusqlite::Connection;
+use serde::Serialize;
 use store::{OrgDb, Store, TenantId};
+use ts_rs::TS;
 
 use crate::jobs::{Job, PENDING_GRACE_MS, PendingKey, clear_pending, each_pending_org};
 use crate::{ApiError, Body, IdParam, Tenant};
@@ -51,6 +54,27 @@ async fn list(Extension(t): Extension<Tenant>) -> Result<Json<Vec<FieldDefinitio
     t.read(|r| Ok(definitions(r)?)).await.map(Json)
 }
 
+/// A field's or an option's save: what it executed, and every definition
+/// as `GET fields` answers them after it (the settings page and the
+/// form's dropdowns show them from it).
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FieldSaved {
+    pub id: String,
+    #[ts(type = "number")]
+    pub counter: i64,
+    pub fields: Vec<FieldDefinition>,
+}
+
+fn saved(ctx: &Ctx, done: Executed) -> Result<FieldSaved, ApiError> {
+    Ok(FieldSaved {
+        id: done.id,
+        counter: done.counter,
+        fields: definitions(ctx.tx.read())?,
+    })
+}
+
 fn exec(id: &Option<String>, expected: Option<i64>) -> Exec<'_> {
     match id {
         Some(id) => Exec::update(id, Some(expected.unwrap_or(-1)), Source::Ui),
@@ -62,16 +86,12 @@ fn exec(id: &Option<String>, expected: Option<i64>) -> Exec<'_> {
 async fn save_field(
     Extension(t): Extension<Tenant>,
     Body(req): Body<SaveField>,
-) -> Result<Json<Executed>, ApiError> {
+) -> Result<Json<FieldSaved>, ApiError> {
     let role = t.role;
     t.write(move |ctx| {
         require_manager(ctx.tx.read(), role)?;
-        Ok(execute(
-            ctx,
-            &FIELD,
-            req.payload,
-            exec(&req.id, req.expected),
-        )?)
+        let done = execute(ctx, &FIELD, req.payload, exec(&req.id, req.expected))?;
+        saved(ctx, done)
     })
     .await
     .map(Json)
@@ -83,15 +103,16 @@ async fn save_field(
 async fn save_option(
     Extension(t): Extension<Tenant>,
     Body(req): Body<SaveFieldOption>,
-) -> Result<Json<Executed>, ApiError> {
+) -> Result<Json<FieldSaved>, ApiError> {
     let role = t.role;
     t.write(move |ctx| {
         require_manager(ctx.tx.read(), role)?;
         let p = req.payload;
-        Ok(match &req.id {
+        let done = match &req.id {
             None => add_option(ctx, &p.field_id, p.label, p.is_active, Source::Ui)?,
             Some(_) => execute(ctx, &FIELD_OPTION, p, exec(&req.id, req.expected))?,
-        })
+        };
+        saved(ctx, done)
     })
     .await
     .map(Json)

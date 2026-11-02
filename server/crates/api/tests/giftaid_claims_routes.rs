@@ -984,6 +984,8 @@ async fn hmrc_details_save_with_warnings_and_are_stale_checked() {
     .await;
     assert_eq!(v["version"], 0);
     assert_eq!(v["officialPostcode"], "NOWHERE", "storable as typed");
+    // The save answered the details as that read does.
+    assert_eq!(out["details"], v);
     let anchors: Vec<&str> = v["warnings"]
         .as_array()
         .unwrap()

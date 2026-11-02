@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub use conn::read_only_authorizer;
-pub use events::OrgEvent;
+pub use events::{OrgEvent, take_published_seq};
 pub use migrate::MigrationFailed;
 pub use org::{OrgDb, OrgRead, RawTx};
 pub use platform::{Member, Platform, PlatformSchema, Role, Tenant, UserId};

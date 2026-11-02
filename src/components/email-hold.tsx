@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import type { Id } from '../lib/domain/ids'
 import { SUPPRESSION_NOTE_MAX } from '../lib/domain/contacts'
 import type { Hold } from '../lib/email-hold'
 import {
@@ -31,14 +32,17 @@ import {
  * the row's address or hold changes, or the admin tries again or cancels.
  */
 export function EmailHold({
+  contactId,
   address,
   hold,
 }: {
+  /** The contact whose page this is: a release answers its holds. */
+  contactId: Id<'contacts'>
   address: string
   hold: Hold | undefined
 }) {
   const isAdmin = useIsAdmin()
-  const release = useRelease()
+  const release = useRelease(contactId)
   const [open, setOpen] = useState(false)
   const [note, setNote] = useState('')
   const [error, setError] = useState<{ text: string; key: string } | null>(null)

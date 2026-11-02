@@ -24,7 +24,8 @@ use giftaid::claim_types::{
 };
 use giftaid::schedule::Template;
 use giftaid::xml::Envelope;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::Params;
 use super::giftaid::iso_date;
@@ -217,20 +218,33 @@ async fn details(Extension(t): Extension<Tenant>) -> Result<Json<HmrcDetailsView
     t.read(|r| Ok(giftaid::hmrc::view(r)?)).await.map(Json)
 }
 
+/// An HMRC details save's answer: what it executed, and the details as
+/// `GET giftaid/hmrc-details` answers them after it (Settings shows it).
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct HmrcDetailsSaved {
+    pub id: String,
+    #[ts(type = "number")]
+    pub counter: i64,
+    pub details: HmrcDetailsView,
+}
+
 /// `POST giftaid/hmrc-details {expected?, …details}`: `expected` absent
 /// before the first save; `409 stale`.
 async fn save_details(
     Extension(t): Extension<Tenant>,
     Body(req): Body<SaveHmrcDetails>,
-) -> Result<Json<Executed>, ApiError> {
+) -> Result<Json<HmrcDetailsSaved>, ApiError> {
     t.require_admin()?;
     t.write(move |ctx| {
-        Ok(giftaid::hmrc::save(
-            ctx,
-            req.details,
-            req.expected,
-            Source::Ui,
-        )?)
+        let Executed { id, counter } =
+            giftaid::hmrc::save(ctx, req.details, req.expected, Source::Ui)?;
+        Ok(HmrcDetailsSaved {
+            id,
+            counter,
+            details: giftaid::hmrc::view(ctx.tx.read())?,
+        })
     })
     .await
     .map(Json)

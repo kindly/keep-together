@@ -77,11 +77,22 @@ export function tenantPath(slug: string, ...parts: Array<string>): string {
   return ['t', slug, ...parts].map(encodeURIComponent).join('/')
 }
 
+/** An answer, and the last event its write published (`keep-seq`). */
+export type Written<T> = { answer: T; seq: number | null }
+
 async function call<T>(
   method: 'GET' | 'POST' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<T> {
+  return (await send<T>(method, path, body)).answer
+}
+
+async function send<T>(
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  body?: unknown,
+): Promise<Written<T>> {
   // A file goes as itself (a statement upload); anything else as JSON.
   const raw = body instanceof Blob
   let response: Response
@@ -118,7 +129,8 @@ async function call<T>(
         : ({ kind: 'internal' } as const)
     throw new RustApiError(response.status, error)
   }
-  return json as T
+  const seq = Number(response.headers.get('keep-seq') ?? NaN)
+  return { answer: json as T, seq: Number.isSafeInteger(seq) ? seq : null }
 }
 
 export const get = <T>(path: string, query?: URLSearchParams) =>
@@ -126,6 +138,13 @@ export const get = <T>(path: string, query?: URLSearchParams) =>
 
 export const post = <T>(path: string, body: unknown = {}) =>
   call<T>('POST', path, body)
+
+/**
+ * POST a write, keeping the last event it published: `showAnswer`
+ * (../events.ts) installs the answer and skips that event's refetch.
+ */
+export const postWrite = <T>(path: string, body: unknown = {}) =>
+  send<T>('POST', path, body)
 
 export const del = <T>(path: string) => call<T>('DELETE', path)
 

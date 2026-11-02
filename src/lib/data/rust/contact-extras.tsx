@@ -1,8 +1,8 @@
 /**
  * A1's reads and writes on the Rust API: identifier types, a contact's
  * notes, its email context ("also used by" and holds) and a hold's
- * release. Each write refetches what it changed; other people's changes
- * arrive through the event stream (`../events.ts`). Nothing here is
+ * release. Each write shows its answer or refetches what it changed;
+ * other people's changes arrive through the event stream (`../events.ts`). Nothing here is
  * optimistic: what shows is what the server answered.
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -13,12 +13,23 @@ import type { ContactView, EmailContext, IdentifierType } from '../types'
 import type { EmailContext as WireEmailContext } from '../rust-types/EmailContext'
 import type { Executed } from '../rust-types/Executed'
 import type { IdentifierType as WireIdentifierType } from '../rust-types/IdentifierType'
+import type { IdentifierTypeSaved } from '../rust-types/IdentifierTypeSaved'
+import type { NoteSaved } from '../rust-types/NoteSaved'
+import type { Released } from '../rust-types/Released'
 import type { NoteView } from '../rust-types/NoteView'
 import type { NotesPage } from '../rust-types/NotesPage'
-import { get, post, tenantPath } from './client'
+import { showAnswer } from '../events'
+import { get, postWrite, tenantPath } from './client'
 import { keys } from './keys'
 
 // ── identifier types ───────────────────────────────────────────────────────
+
+const identifierType = (t: WireIdentifierType): IdentifierType => ({
+  _id: t.id as Id<'identifierTypes'>,
+  name: t.name,
+  isActive: t.isActive,
+  saveVersion: t.saveVersion,
+})
 
 /** Every identifier type, archived ones included, alphabetical. */
 export function useIdentifierTypes(): Array<IdentifierType> | undefined {
@@ -31,18 +42,15 @@ export function useIdentifierTypes(): Array<IdentifierType> | undefined {
           tenantPath(slug, 'identifier-types'),
           new URLSearchParams({ includeInactive: 'true' }),
         )
-      ).map((t) => ({
-        _id: t.id as Id<'identifierTypes'>,
-        name: t.name,
-        isActive: t.isActive,
-        saveVersion: t.saveVersion,
-      })),
+      ).map(identifierType),
   }).data
 }
 
 /**
  * Create a type (no `id`), or rename / archive / reactivate one against
- * the `expected` version it was read at. Throws the `RustApiError`.
+ * the `expected` version it was read at. The answer carries every type,
+ * which the page shows from it; the type's event refetches the contacts
+ * (a rename shows on each holding it). Throws the `RustApiError`.
  */
 export function useSaveIdentifierType() {
   const { slug } = useTenant()
@@ -52,13 +60,25 @@ export function useSaveIdentifierType() {
     expected?: number
     name: string
     isActive: boolean
-  }) => {
+  }): Promise<Executed> => {
     try {
-      return await post<Executed>(tenantPath(slug, 'identifier-types'), args)
-    } finally {
-      // A rename shows on every contact holding the type.
+      const { id, counter } = await showAnswer(
+        qc,
+        slug,
+        () =>
+          postWrite<IdentifierTypeSaved>(
+            tenantPath(slug, 'identifier-types'),
+            args,
+          ),
+        (saved) => [
+          [keys.identifierTypes(slug), saved.types.map(identifierType)],
+        ],
+      )
+      return { id, counter }
+    } catch (e) {
+      // Refused (another admin's change won): show the types as they are.
       void qc.invalidateQueries({ queryKey: keys.identifierTypes(slug) })
-      void qc.invalidateQueries({ queryKey: keys.contacts(slug) })
+      throw e
     }
   }
 }
@@ -90,16 +110,42 @@ export function useEmailContext(
   }
 }
 
-/** Release a held address (admins only). Throws the `RustApiError`. */
-export function useRelease() {
+/**
+ * Release a held address (admins only), from `contactId`'s page: the
+ * answer carries that contact's email context, which shows from it. The
+ * hold belongs to the address, so its event refetches every other
+ * contact's. Throws the `RustApiError`.
+ */
+export function useRelease(contactId: Id<'contacts'>) {
   const { slug } = useTenant()
   const qc = useQueryClient()
-  return async (args: { address: string; expected: number; note: string }) => {
+  return async (args: {
+    address: string
+    expected: number
+    note: string
+  }): Promise<Executed> => {
     try {
-      return await post<Executed>(tenantPath(slug, 'comms', 'release'), args)
-    } finally {
-      // The hold belongs to the address: every contact using it.
+      const { id, counter } = await showAnswer(
+        qc,
+        slug,
+        () =>
+          postWrite<Released>(
+            `${tenantPath(slug, 'comms', 'release')}?${new URLSearchParams({ contact: contactId })}`,
+            args,
+          ),
+        ({ context }) =>
+          context
+            ? qc
+                .getQueryCache()
+                .findAll({ queryKey: keys.emailContext(slug, contactId) })
+                .map((q) => [q.queryKey, context] as const)
+            : [],
+      )
+      return { id, counter }
+    } catch (e) {
+      // Refused (released elsewhere): show the holds as they are now.
       void qc.invalidateQueries({ queryKey: keys.emailContext(slug) })
+      throw e
     }
   }
 }
@@ -118,11 +164,9 @@ function noteFromWire(n: NoteView): Note {
     archived: n.archived,
     // Platform user ids; `useMembers` names them.
     createdBy: (n.createdBy === null ? undefined : String(n.createdBy)) as
-      | Id<'users'>
-      | undefined,
+      Id<'users'> | undefined,
     editedBy: (n.editedBy === null ? undefined : String(n.editedBy)) as
-      | Id<'users'>
-      | undefined,
+      Id<'users'> | undefined,
     editedAt: n.editedAt,
     bodyVersion: n.bodyVersion,
     flagsVersion: n.flagsVersion,
@@ -153,40 +197,57 @@ export function useNotes(
   }).data
 }
 
+/** A contact's notes list as `useNotes` holds it. */
+const notesPage = (page: NotesPage) => ({
+  notes: page.notes.map(noteFromWire),
+  truncated: page.truncated,
+})
+
 /**
- * The notes panel's writes. Each answers the note as it is now and
- * refetches the lists; failures throw the `RustApiError`.
+ * The notes panel's writes. Each answers the note and its contact's two
+ * lists, which the panel shows from the answer (`showAnswer`: one round
+ * trip, no refetch); failures throw the `RustApiError`.
  */
 export function useNoteActions() {
   const { slug } = useTenant()
   const qc = useQueryClient()
   const run = async (path: Array<string>, body: unknown) => {
     try {
-      return await post<NoteView>(tenantPath(slug, ...path), body)
-    } finally {
+      return await showAnswer(
+        qc,
+        slug,
+        () => postWrite<NoteSaved>(tenantPath(slug, ...path), body),
+        ({ note, live, archived }) => [
+          [keys.notes(slug, note.contactId, false), notesPage(live)],
+          [keys.notes(slug, note.contactId, true), notesPage(archived)],
+        ],
+      )
+    } catch (e) {
+      // Refused (a stale save): show the notes as they are now.
       void qc.invalidateQueries({ queryKey: keys.notes(slug) })
+      throw e
     }
   }
   return {
-    create: (args: {
+    create: async (args: {
       contactId: Id<'contacts'>
       body: string
       pinned: boolean
-    }) => run(['notes'], args),
+    }) => (await run(['notes'], args)).note,
     save: async (args: {
       id: Id<'contactNotes'>
       expected: number
       body: string
     }) => {
-      const n = await run(['notes', args.id, 'save'], {
+      const { note: n } = await run(['notes', args.id, 'save'], {
         expected: args.expected,
         body: args.body,
       })
       return { id: n.id, counter: n.bodyVersion }
     },
-    setPinned: (args: { id: Id<'contactNotes'>; pinned: boolean }) =>
-      run(['notes', args.id, 'pin'], { value: args.pinned }),
-    setArchived: (args: { id: Id<'contactNotes'>; archived: boolean }) =>
-      run(['notes', args.id, 'archive'], { value: args.archived }),
+    setPinned: async (args: { id: Id<'contactNotes'>; pinned: boolean }) =>
+      (await run(['notes', args.id, 'pin'], { value: args.pinned })).note,
+    setArchived: async (args: { id: Id<'contactNotes'>; archived: boolean }) =>
+      (await run(['notes', args.id, 'archive'], { value: args.archived })).note,
   }
 }
