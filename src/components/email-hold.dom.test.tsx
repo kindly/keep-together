@@ -30,7 +30,11 @@ afterEach(() => {
 })
 
 const render = (hold: Hold | undefined) =>
-  act(() => root.render(<EmailHold address={ADDRESS} hold={hold} />))
+  act(() =>
+    root.render(
+      <EmailHold contactId={'c1' as never} address={ADDRESS} hold={hold} />,
+    ),
+  )
 
 /** Buttons named `name`, the row's and the dialog's (in a portal). */
 const buttons = (name: string) =>

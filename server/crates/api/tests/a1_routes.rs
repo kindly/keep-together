@@ -513,13 +513,16 @@ async fn viewers_never_write_and_lists_and_releases_are_for_admins() {
             .await;
         assert_eq!(s, StatusCode::FORBIDDEN, "staff {path}");
     }
-    w.ok(
-        "POST",
-        "/api/t/alpha/comms/release",
-        &ann,
-        Some(json!({ "address": "ANN@x.org", "expected": 0, "note": "Confirmed" })),
-    )
-    .await;
+    // No such contact: the release stands, with no context.
+    let released = w
+        .ok(
+            "POST",
+            "/api/t/alpha/comms/release?contact=0190f1d23c4b7a00800000000000dead",
+            &ann,
+            Some(json!({ "address": "ANN@x.org", "expected": 0, "note": "Confirmed" })),
+        )
+        .await;
+    assert_eq!(released["context"], Value::Null);
 }
 
 #[tokio::test]
@@ -783,14 +786,16 @@ async fn the_email_context_says_who_else_uses_an_address_and_what_is_held() {
     assert_eq!(sharers["contacts"][0]["displayName"], "Bob Jones");
     assert_eq!(ctx["held"]["ann@x.org"]["reason"], "bounce");
     assert_eq!(ctx["held"]["ann@x.org"]["saveVersion"], 0);
-    // Released: no longer held, for either contact.
-    w.ok(
-        "POST",
-        "/api/t/alpha/comms/release",
-        &ann,
-        Some(json!({ "address": "ann@x.org", "expected": 0, "note": "Fixed" })),
-    )
-    .await;
+    // Released: no longer held, for either contact. Made from Bob's page,
+    // it answers Bob's context as that read does.
+    let released = w
+        .ok(
+            "POST",
+            &format!("/api/t/alpha/comms/release?contact={bob_id}"),
+            &ann,
+            Some(json!({ "address": "ann@x.org", "expected": 0, "note": "Fixed" })),
+        )
+        .await;
     let ctx = w
         .ok(
             "GET",
@@ -800,6 +805,8 @@ async fn the_email_context_says_who_else_uses_an_address_and_what_is_held() {
         )
         .await;
     assert_eq!(ctx["held"], json!({}));
+    assert_eq!(released["context"], ctx);
+    assert_eq!(released["counter"], 1);
     // byClientKey finds the form's contact with its view.
     let v = w
         .ok(

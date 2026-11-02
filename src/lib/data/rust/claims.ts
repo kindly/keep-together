@@ -15,6 +15,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
 import { useTenant } from '../../tenant'
+import { showAnswer } from '../events'
 import type { Executed } from '../rust-types/Executed'
 import type { GiftAidClaimAdjustment } from '../rust-types/GiftAidClaimAdjustment'
 import type { GiftAidClaimLine } from '../rust-types/GiftAidClaimLine'
@@ -27,9 +28,17 @@ import type { GiftAidClaims } from '../rust-types/GiftAidClaims'
 import type { GiftAidClaimsCreated } from '../rust-types/GiftAidClaimsCreated'
 import type { GiftAidExcludedGift } from '../rust-types/GiftAidExcludedGift'
 import type { HmrcDetails } from '../rust-types/HmrcDetails'
+import type { HmrcDetailsSaved } from '../rust-types/HmrcDetailsSaved'
 import type { HmrcDetailsView } from '../rust-types/HmrcDetailsView'
 import type { SetGiftAidClaimStatus } from '../rust-types/SetGiftAidClaimStatus'
-import { RustApiError, apiUrl, get, post, tenantPath } from './client'
+import {
+  RustApiError,
+  apiUrl,
+  get,
+  post,
+  postWrite,
+  tenantPath,
+} from './client'
 import { keys } from './keys'
 
 // ── shapes ─────────────────────────────────────────────────────────────────
@@ -329,18 +338,33 @@ export function useClaimStep(id: string) {
   }
 }
 
-/** Save the HMRC details against `expected` (null before the first save). */
+/**
+ * Save the HMRC details against `expected` (null before the first save).
+ * The answer carries the details as they now read, which Settings shows
+ * from it; a refusal refetches them.
+ */
 export function useSaveHmrcDetails() {
   const { slug } = useTenant()
   const qc = useQueryClient()
-  return async (expected: number | null, details: HmrcDetails) => {
+  return async (
+    expected: number | null,
+    details: HmrcDetails,
+  ): Promise<Executed> => {
     try {
-      return await post<Executed>(tenantPath(slug, 'giftaid', 'hmrc-details'), {
-        ...details,
-        ...(expected !== null && { expected }),
-      })
-    } finally {
+      const { id, counter } = await showAnswer(
+        qc,
+        slug,
+        () =>
+          postWrite<HmrcDetailsSaved>(
+            tenantPath(slug, 'giftaid', 'hmrc-details'),
+            { ...details, ...(expected !== null && { expected }) },
+          ),
+        (saved) => [[keys.hmrcDetails(slug), saved.details]],
+      )
+      return { id, counter }
+    } catch (e) {
       await qc.invalidateQueries({ queryKey: keys.hmrcDetails(slug) })
+      throw e
     }
   }
 }

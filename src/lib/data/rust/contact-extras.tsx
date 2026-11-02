@@ -15,10 +15,11 @@ import type { Executed } from '../rust-types/Executed'
 import type { IdentifierType as WireIdentifierType } from '../rust-types/IdentifierType'
 import type { IdentifierTypeSaved } from '../rust-types/IdentifierTypeSaved'
 import type { NoteSaved } from '../rust-types/NoteSaved'
+import type { Released } from '../rust-types/Released'
 import type { NoteView } from '../rust-types/NoteView'
 import type { NotesPage } from '../rust-types/NotesPage'
 import { showAnswer } from '../events'
-import { get, post, postWrite, tenantPath } from './client'
+import { get, postWrite, tenantPath } from './client'
 import { keys } from './keys'
 
 // ── identifier types ───────────────────────────────────────────────────────
@@ -109,16 +110,42 @@ export function useEmailContext(
   }
 }
 
-/** Release a held address (admins only). Throws the `RustApiError`. */
-export function useRelease() {
+/**
+ * Release a held address (admins only), from `contactId`'s page: the
+ * answer carries that contact's email context, which shows from it. The
+ * hold belongs to the address, so its event refetches every other
+ * contact's. Throws the `RustApiError`.
+ */
+export function useRelease(contactId: Id<'contacts'>) {
   const { slug } = useTenant()
   const qc = useQueryClient()
-  return async (args: { address: string; expected: number; note: string }) => {
+  return async (args: {
+    address: string
+    expected: number
+    note: string
+  }): Promise<Executed> => {
     try {
-      return await post<Executed>(tenantPath(slug, 'comms', 'release'), args)
-    } finally {
-      // The hold belongs to the address: every contact using it.
+      const { id, counter } = await showAnswer(
+        qc,
+        slug,
+        () =>
+          postWrite<Released>(
+            `${tenantPath(slug, 'comms', 'release')}?${new URLSearchParams({ contact: contactId })}`,
+            args,
+          ),
+        ({ context }) =>
+          context
+            ? qc
+                .getQueryCache()
+                .findAll({ queryKey: keys.emailContext(slug, contactId) })
+                .map((q) => [q.queryKey, context] as const)
+            : [],
+      )
+      return { id, counter }
+    } catch (e) {
+      // Refused (released elsewhere): show the holds as they are now.
       void qc.invalidateQueries({ queryKey: keys.emailContext(slug) })
+      throw e
     }
   }
 }

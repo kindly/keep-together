@@ -822,6 +822,9 @@ async fn isolation_between_two_organisations() {
         .await;
     assert_eq!(s, StatusCode::OK, "{out}");
     let decl = out["declarationId"].as_str().unwrap().to_owned();
+    // The accept answered "Scans to match" as it reads after it.
+    let (_, inbox) = w.call("GET", "/api/t/alpha/scans", &sam, None).await;
+    assert_eq!(out["inbox"], inbox);
     let ann = w.login("ann@alpha.org").await;
     let report = "/api/t/{slug}/giftaid/scans/deletable?today=2026-10-29";
     let (_, a_report) = w

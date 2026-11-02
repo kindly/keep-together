@@ -13,6 +13,7 @@
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTenant } from '../../tenant'
+import { showAnswer } from '../events'
 import type { ApiError } from '../rust-types/ApiError'
 import type { BankAccepted } from '../rust-types/BankAccepted'
 import type { BankConfidence } from '../rust-types/BankConfidence'
@@ -29,7 +30,7 @@ import type { BankRuleField } from '../rust-types/BankRuleField'
 import type { BankSuggestion } from '../rust-types/BankSuggestion'
 import type { DonorRef } from '../rust-types/DonorRef'
 import type { Executed } from '../rust-types/Executed'
-import { get, post, tenantPath } from './client'
+import { get, post, postWrite, tenantPath } from './client'
 import { keys } from './keys'
 
 export type {
@@ -192,10 +193,11 @@ export function usePayers(contactId: string, enabled = true) {
 
 /**
  * Every way to match a line, each resolving with the line as the server
- * read it back once committed (never what was sent). A line matched
- * meanwhile is `409 stale`, nothing kept. Each refetches every bank read,
+ * read it back once committed (never what was sent), which its page shows
+ * from the answer (`showAnswer`). A line matched meanwhile is `409
+ * stale`, nothing kept. The match's events refetch the other bank reads,
  * the gifts and the batches (a match makes or links gifts, clears
- * cheques).
+ * cheques); "accept ticked" refetches them itself.
  */
 export function useMatchWrites() {
   const { slug } = useTenant()
@@ -209,15 +211,26 @@ export function useMatchWrites() {
       void qc.invalidateQueries({ queryKey: keys.batches(slug) })
     }
   }
-  const line = (id: string, what: string, body: unknown) =>
-    after(async () =>
-      detailFromWire(
-        await post<BankLineDetail>(
-          tenantPath(slug, 'bank', 'lines', id, what),
-          body,
+  const line = async (id: string, what: string, body: unknown) => {
+    try {
+      return detailFromWire(
+        await showAnswer(
+          qc,
+          slug,
+          () =>
+            postWrite<BankLineDetail>(
+              tenantPath(slug, 'bank', 'lines', id, what),
+              body,
+            ),
+          (done) => [[keys.bankLine(slug, id), detailFromWire(done)]],
         ),
-      ),
-    )
+      )
+    } catch (e) {
+      // Refused (matched meanwhile): show the line as it is now.
+      void qc.invalidateQueries({ queryKey: keys.bank(slug) })
+      throw e
+    }
+  }
   return {
     gifts: (
       id: string,

@@ -319,6 +319,9 @@ pub struct AcceptScan {
 pub struct ScanAccepted {
     pub declaration_id: String,
     pub scan: ScanView,
+    /// "Scans to match" as `GET scans` answers it after the accept: where
+    /// the page goes next, shown from this.
+    pub inbox: Vec<ScanView>,
 }
 
 /// `POST scans/{id}/accept {expected, contactId, match}`: the scan as a
@@ -342,6 +345,7 @@ async fn accept(
         Ok(ScanAccepted {
             declaration_id,
             scan,
+            inbox: domain::inbox(ctx.tx.read())?,
         })
     })
     .await

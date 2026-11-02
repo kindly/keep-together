@@ -24,7 +24,8 @@ import type { QueryClient } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import type { Id } from '../../domain/ids'
 import { useTenant } from '../../tenant'
-import { ownWrite } from '../events'
+import { localToday } from '../../../components/source-code-picker'
+import { ownWrite, showAnswer } from '../events'
 import type { AllocationView } from '../rust-types/AllocationView'
 import type { Cancelled } from '../rust-types/Cancelled'
 import type { DeclarationDetails } from '../rust-types/DeclarationDetails'
@@ -38,11 +39,12 @@ import type { GiftPage } from '../rust-types/GiftPage'
 import type { GiftRow } from '../rust-types/GiftRow'
 import type { GiftSaved } from '../rust-types/GiftSaved'
 import type { GiftView as WireGiftView } from '../rust-types/GiftView'
+import type { PanelSaved } from '../rust-types/PanelSaved'
 import type { RecentGift as WireRecent } from '../rust-types/RecentGift'
 import type { RecordGift } from '../rust-types/RecordGift'
 import type { RecordedGift } from '../rust-types/RecordedGift'
 import type { SourceCodeDescription } from './sources'
-import { RustApiError, get, post, tenantPath } from './client'
+import { RustApiError, get, post, postWrite, tenantPath } from './client'
 import { keys } from './keys'
 
 type GiftId = Id<'contributions'>
@@ -568,40 +570,53 @@ export function useGiftWrites(id: string) {
  * The Gift Aid panel's writes: cancel every declaration open at a date,
  * mark one made in error, or change one's name and address snapshot
  * (`expected`: its `detailsVersion`; `stale` carries the snapshot now).
- * Each resolves once committed and the panel has been refetched: never
- * optimistic.
+ * Each answers the contact's declarations as of today, which the panel
+ * shows from the answer once committed (never optimistic); their events
+ * refetch the gifts, whose coverage marks follow the declarations.
  */
 export function useGiftAidWrites(contactId: string) {
   const { slug } = useTenant()
   const qc = useQueryClient()
-  const after = async <T>(write: Promise<T>): Promise<T> => {
+  const write = async <T>(path: Array<string>, body: unknown): Promise<T> => {
+    const today = localToday()
     try {
-      return await write
-    } finally {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: keys.declarations(slug) }),
-        giftsChanged(qc, slug),
-      ])
+      const { done } = await showAnswer(
+        qc,
+        slug,
+        () =>
+          postWrite<PanelSaved<T>>(
+            `${tenantPath(slug, ...path)}?${new URLSearchParams({ today })}`,
+            body,
+          ),
+        ({ declarations }) =>
+          declarations
+            ? [
+                [
+                  keys.declarations(slug, contactId, today),
+                  declarationsFromWire(declarations),
+                ],
+              ]
+            : [],
+      )
+      return done
+    } catch (e) {
+      // Refused (a stale snapshot): show the panel as it is now.
+      void qc.invalidateQueries({ queryKey: keys.declarations(slug) })
+      throw e
     }
   }
   return {
     cancel: (cancelledFrom: string, note?: string) =>
-      after(
-        post<Cancelled>(
-          tenantPath(slug, 'contacts', contactId, 'giftaid', 'cancel'),
-          { cancelledFrom, ...(note !== undefined && { note }) },
-        ),
-      ),
+      write<Cancelled>(['contacts', contactId, 'giftaid', 'cancel'], {
+        cancelledFrom,
+        ...(note !== undefined && { note }),
+      }),
     voidDeclaration: (id: string, reason: string) =>
-      after(
-        post<Executed>(tenantPath(slug, 'giftaid', id, 'void'), { reason }),
-      ),
+      write<Executed>(['giftaid', id, 'void'], { reason }),
     saveDetails: (id: string, expected: number, details: DeclarationDetails) =>
-      after(
-        post<Executed>(tenantPath(slug, 'giftaid', id, 'details'), {
-          ...details,
-          expected,
-        }),
-      ),
+      write<Executed>(['giftaid', id, 'details'], {
+        ...details,
+        expected,
+      }),
   }
 }

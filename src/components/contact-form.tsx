@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useReducer, useRef } from 'react'
 import type { Id } from '../lib/domain/ids'
-import type { Payloads, FieldDefinition  } from '../lib/domain/contacts'
+import type { Payloads, FieldDefinition } from '../lib/domain/contacts'
 import { sortValues } from '../lib/domain/contacts'
 import { contactWarnings } from '../lib/domain/warnings'
 import type { Warning } from '../lib/domain/warnings'
@@ -310,6 +310,7 @@ export function ContactForm({
         )}
 
         <MethodsFields
+          contactId={id}
           value={state.local.methods}
           onChange={(v) => edit('methods', v)}
           problems={state.problems.methods ?? []}
@@ -454,12 +455,14 @@ export function DetailsFields({
 }
 
 function MethodsFields({
+  contactId,
   value,
   onChange,
   problems,
   warnings,
   held,
 }: {
+  contactId: Id<'contacts'>
   value: Payloads['methods']
   onChange: (v: Payloads['methods']) => void
   problems: Array<Problem>
@@ -501,6 +504,7 @@ function MethodsFields({
               footer={
                 FEATURES.emailHolds ? (
                   <EmailHold
+                    contactId={contactId}
                     address={row.address}
                     hold={holdOn(row.address, held)}
                   />

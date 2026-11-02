@@ -17,15 +17,22 @@ import type { OrgEvent } from '../rust-types/OrgEvent'
 import type { Group } from '../rust-types/Group'
 import { get } from './client'
 import {
+  useEmailContext,
   useIdentifierTypes,
   useNoteActions,
   useNotes,
+  useRelease,
   useSaveIdentifierType,
 } from './contact-extras'
+import { useBatch, useBatchWrites } from './batches'
+import { useHmrcDetails, useSaveHmrcDetails } from './claims'
 import { useFieldWrites } from './fields'
+import { useDeclarations, useGiftAidWrites } from './gifts'
 import { queryClient, useFields } from './hooks'
 import { keys } from './keys'
+import { useLine, useMatchWrites } from './matching'
 import { useSetStaffCanManage } from './platform'
+import { useScanInbox, useScanWrites } from './scans'
 import { useSourceTree, useSourceWrites } from './sources'
 
 // One round trip per save (brief one-trip-saves, 2026-11-02): a write's
@@ -687,5 +694,307 @@ describe('settings lists', () => {
       after: true,
     })
     queryClient.clear()
+  })
+})
+
+// ── Gift Aid ───────────────────────────────────────────────────────────────
+
+describe('Gift Aid', () => {
+  test('the panel: cancel, void, details', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 10, 2, 12))
+    const TODAY = '2026-11-02'
+    const C = 'c0000000000000000000000000000002'
+    const row = (id: string, over: Record<string, unknown> = {}) => ({
+      id,
+      contactId: C,
+      contributionId: null,
+      cancelledFrom: null as string | null,
+      cancellationNote: null,
+      voidReason: null,
+      voidedAt: null,
+      voidedBy: null,
+      enteredBy: 1,
+      addressLine1: '',
+      warnings: [],
+      ...over,
+    })
+    const panel = (...rows: Array<ReturnType<typeof row>>) => ({
+      declarations: rows,
+      currentId: rows.find((r) => r.cancelledFrom === null)?.id ?? null,
+    })
+    const LIST = `contacts/${C}/giftaid`
+    reads[LIST] = panel(row('d2'), row('d1'))
+    const h = mount(() => ({
+      panel: useDeclarations(C, TODAY),
+      w: useGiftAidWrites(C),
+    }))
+    const shown = () =>
+      h().panel?.declarations.map(
+        (d) =>
+          `${d._id}${d.cancelledFrom ? ' cancelled' : ''}${d.voidReason ? ' void' : ''}${(d as { addressLine1?: string }).addressLine1 ? ` ${(d as { addressLine1?: string }).addressLine1}` : ''}`,
+      )
+    const echo = (seq: number, id: string) =>
+      event(seq, { entity: 'gift_aid_declarations', id })
+    const other = (seq: number) =>
+      event(seq, { entity: 'gift_aid_declarations', id: 'd9' })
+    let now = panel(
+      row('d2', { cancelledFrom: '2026-11-01' }),
+      row('d1', { cancelledFrom: '2026-11-01' }),
+    )
+    await oneTrip({
+      list: LIST,
+      now,
+      echoFirst: true,
+      start: () => h().w.cancel('2026-11-01'),
+      answer: {
+        status: 200,
+        body: { done: { cancelled: ['d2', 'd1'] }, declarations: now },
+        seq: 4,
+      },
+      // One event per declaration it cancelled.
+      echo: [echo(3, 'd2'), echo(4, 'd1')],
+      other: other(5),
+      shown,
+      before: ['d2', 'd1'],
+      after: ['d2 cancelled', 'd1 cancelled'],
+    })
+    expect(sent.at(-2)?.url).toBe(
+      `/api/t/${slug}/contacts/${C}/giftaid/cancel?today=${TODAY}`,
+    )
+    now = panel(
+      row('d2', { cancelledFrom: '2026-11-01', voidReason: 'oops' }),
+      row('d1', { cancelledFrom: '2026-11-01' }),
+    )
+    await oneTrip({
+      list: LIST,
+      now,
+      echoFirst: false,
+      start: () => h().w.voidDeclaration('d2', 'oops'),
+      answer: {
+        status: 200,
+        body: { done: { id: 'd2', counter: 1 }, declarations: now },
+        seq: 6,
+      },
+      echo: [echo(6, 'd2')],
+      other: other(7),
+      shown,
+      before: ['d2 cancelled', 'd1 cancelled'],
+      after: ['d2 cancelled void', 'd1 cancelled'],
+    })
+    now = panel(
+      row('d2', { cancelledFrom: '2026-11-01', voidReason: 'oops' }),
+      row('d1', { cancelledFrom: '2026-11-01', addressLine1: '3 Mill Lane' }),
+    )
+    await oneTrip({
+      list: LIST,
+      now,
+      echoFirst: true,
+      start: () =>
+        h().w.saveDetails('d1', 0, {
+          firstName: 'Jo',
+          lastName: 'B',
+          addressLine1: '3 Mill Lane',
+          postcode: 'LS1 1AA',
+        }),
+      answer: {
+        status: 200,
+        body: { done: { id: 'd1', counter: 1 }, declarations: now },
+        seq: 8,
+      },
+      echo: [echo(8, 'd1')],
+      other: other(9),
+      shown,
+      before: ['d2 cancelled void', 'd1 cancelled'],
+      after: ['d2 cancelled void', 'd1 cancelled 3 Mill Lane'],
+    })
+    await refused({
+      start: () => h().w.saveDetails('d1', 0, {} as never),
+      shown,
+      before: ['d2 cancelled void', 'd1 cancelled 3 Mill Lane'],
+    })
+    vi.useRealTimers()
+  })
+
+  test('HMRC details', async () => {
+    const view = (ref: string, version: number | null) => ({
+      hmrcReference: ref,
+      version,
+      warnings: [],
+    })
+    reads['giftaid/hmrc-details'] = view('', null)
+    const h = mount(() => ({
+      details: useHmrcDetails(),
+      save: useSaveHmrcDetails(),
+    }))
+    const now = view('AB12345', 0)
+    await oneTrip({
+      list: 'giftaid/hmrc-details',
+      now,
+      echoFirst: true,
+      start: () => h().save(null, { hmrcReference: 'AB12345' } as never),
+      answer: {
+        status: 200,
+        body: { id: 'h', counter: 0, details: now },
+        seq: 3,
+      },
+      echo: [event(3, { entity: 'gift_aid_hmrc_details', id: 'h' })],
+      other: event(4, { entity: 'gift_aid_hmrc_details', id: 'h' }),
+      shown: () => h().details.data?.hmrcReference,
+      before: '',
+      after: 'AB12345',
+    })
+    await refused({
+      start: () => h().save(5, {} as never),
+      shown: () => h().details.data?.hmrcReference,
+      before: 'AB12345',
+    })
+  })
+})
+
+// ── the rest ───────────────────────────────────────────────────────────────
+
+describe('holds, batches, lines and scans', () => {
+  test('a hold released from a contact page', async () => {
+    const C = 'c0000000000000000000000000000003'
+    const LIST = `contacts/${C}/email-context`
+    const hold = { reason: 'bounce', since: 1, saveVersion: 0 }
+    reads[LIST] = { alsoUsedBy: {}, held: { 'ann@x.org': hold } }
+    const emails = [{ address: 'ann@x.org' }] as never
+    const h = mount(() => ({
+      ctx: useEmailContext(C as never, emails),
+      release: useRelease(C as never),
+    }))
+    const shown = () => Object.keys(h().ctx.held ?? {})
+    const now = { alsoUsedBy: {}, held: {} }
+    await oneTrip({
+      list: LIST,
+      now,
+      echoFirst: true,
+      start: () =>
+        h().release({ address: 'ann@x.org', expected: 0, note: 'ok' }),
+      answer: {
+        status: 200,
+        body: { id: 's1', counter: 1, context: now },
+        seq: 3,
+      },
+      echo: [event(3, { entity: 'email_suppressions', id: 's1' })],
+      other: event(4, { entity: 'email_suppressions', id: 's2' }),
+      shown,
+      before: ['ann@x.org'],
+      after: [],
+    })
+    expect(sent.find((c) => c.method === 'POST')?.url).toBe(
+      `/api/t/${slug}/comms/release?contact=${C}`,
+    )
+  })
+
+  test('a batch closed', async () => {
+    const B = 'b1'
+    const batch = (status: string, v: number) => ({
+      id: B,
+      accountId: 'a1',
+      accountName: 'Current',
+      slipNumber: '7',
+      status,
+      bankedOn: status === 'closed' ? '2026-11-03' : null,
+      total: status === 'closed' ? 1000 : null,
+      giftsTotal: 0,
+      figures: {
+        receivedTotal: 0,
+        pendingCount: 0,
+        pendingTotal: 0,
+        bouncedCount: 0,
+        bouncedTotal: 0,
+      },
+      line: null,
+      saveVersion: v,
+    })
+    const LIST = `bank/batches/${B}`
+    reads[LIST] = { batch: batch('open', 0), gifts: [] }
+    const h = mount(() => ({ page: useBatch(B).data, w: useBatchWrites() }))
+    const shown = () => h().page?.batch.status
+    const now = { batch: batch('closed', 1), gifts: [] }
+    await oneTrip({
+      list: LIST,
+      now,
+      echoFirst: true,
+      start: () => h().w.close(B, 0, '2026-11-03', 1000n),
+      answer: { status: 200, body: { id: B, counter: 1, detail: now }, seq: 3 },
+      echo: [event(3, { entity: 'paying_in_batches', id: B })],
+      other: event(4, { entity: 'paying_in_batches', id: B }),
+      shown,
+      before: 'open',
+      after: 'closed',
+    })
+    await refused({
+      start: () => h().w.reopen(B, 0),
+      shown,
+      before: 'closed',
+    })
+  })
+
+  test('a line marked not a donation', async () => {
+    const L = 'l1'
+    const detail = (state: string) => ({
+      line: { id: L, amount: 500, state },
+      gifts: [],
+      batchId: null,
+      suggestions: [],
+    })
+    const LIST = `bank/lines/${L}`
+    reads[LIST] = detail('unmatched')
+    const h = mount(() => ({ line: useLine(L).data, w: useMatchWrites() }))
+    const shown = () =>
+      (h().line?.line as { state?: string } | undefined)?.state
+    const now = detail('notDonation')
+    await oneTrip({
+      list: LIST,
+      now,
+      echoFirst: false,
+      start: () => h().w.notDonation(L, 0, 'A grant'),
+      answer: { status: 200, body: now, seq: 3 },
+      echo: [event(3, { entity: 'bank_lines', id: L })],
+      other: event(4, { entity: 'bank_lines', id: L }),
+      shown,
+      before: 'unmatched',
+      after: 'notDonation',
+    })
+  })
+
+  test('a scan accepted: the inbox it goes back to', async () => {
+    const scan = (id: string, status: string) =>
+      ({ id, status, reviewVersion: 0 }) as never
+    reads.scans = [scan('s1', 'draft'), scan('s2', 'draft')]
+    const h = mount(() => ({ inbox: useScanInbox().data, w: useScanWrites() }))
+    const shown = () => h().inbox?.map((x) => x.id)
+    const now = [scan('s2', 'draft')]
+    await oneTrip({
+      list: 'scans',
+      now,
+      echoFirst: true,
+      start: () =>
+        h().w.accept(scan('s1', 'draft'), 'c1', {
+          kind: 'existing',
+          declarationId: 'd1',
+        }),
+      answer: {
+        status: 200,
+        body: {
+          declarationId: 'd1',
+          scan: scan('s1', 'accepted'),
+          inbox: now,
+        },
+        seq: 4,
+      },
+      echo: [
+        event(3, { entity: 'declaration_scans', id: 's1' }),
+        event(4, { entity: 'gift_aid_declarations', id: 'd1' }),
+      ],
+      other: event(5, { entity: 'declaration_scans', id: 's9' }),
+      shown,
+      before: ['s1', 's2'],
+      after: ['s2'],
+    })
   })
 })

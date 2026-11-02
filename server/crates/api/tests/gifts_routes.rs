@@ -1240,12 +1240,20 @@ async fn the_donor_is_judged_on_the_gifts_date() {
     let cancelled = ok(
         &g.w,
         "POST",
-        &format!("/api/t/alpha/contacts/{contact}/giftaid/cancel"),
+        &format!(
+            "/api/t/alpha/contacts/{contact}/giftaid/cancel?today={}",
+            today()
+        ),
         &g.ann,
         Some(json!({ "cancelledFrom": "2026-10-20" })),
     )
     .await;
-    assert_eq!(cancelled["cancelled"], json!([out["declarationId"]]));
+    assert_eq!(
+        cancelled["done"]["cancelled"],
+        json!([out["declarationId"]])
+    );
+    // The panel as its read answers it after the cancellation.
+    assert_eq!(cancelled["declarations"], g.declarations(&contact).await);
     assert_eq!(
         g.donor(&contact, "2026-10-10").await.1["covering"]["id"],
         out["declarationId"]
@@ -1436,15 +1444,30 @@ async fn the_gift_aid_panel_cancels_and_voids() {
         (s, &e["kind"]),
         (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid"))
     );
+    // A panel's `today` must be a date too; without one, no panel.
+    let (s, e) =
+        g.w.call(
+            "POST",
+            &format!("/api/t/alpha/giftaid/{declaration}/void?today=soon"),
+            &g.ann,
+            Some(json!({ "reason": "wrong Jo" })),
+        )
+        .await;
+    assert_eq!(
+        (s, &e["problems"][0]["field"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("today"))
+    );
     let voided = ok(
         &g.w,
         "POST",
-        &format!("/api/t/alpha/giftaid/{declaration}/void"),
+        &format!("/api/t/alpha/giftaid/{declaration}/void?today={}", today()),
         &g.ann,
         Some(json!({ "reason": "wrong Jo" })),
     )
     .await;
-    assert_eq!(voided, json!({ "id": declaration, "counter": 1 }));
+    assert_eq!(voided["done"], json!({ "id": declaration, "counter": 1 }));
+    // The panel as its read answers it after the void.
+    assert_eq!(voided["declarations"], g.declarations(&contact).await);
     let (s, e) =
         g.w.call(
             "POST",
@@ -1494,12 +1517,13 @@ async fn the_gift_aid_panel_completes_a_declarations_details() {
     let saved = ok(
         &g.w,
         "POST",
-        &path,
+        &format!("{path}?today={}", today()),
         &g.ann,
         Some(details(0, " 3  Mill Lane ")),
     )
     .await;
-    assert_eq!(saved, json!({ "id": declaration, "counter": 1 }));
+    assert_eq!(saved["done"], json!({ "id": declaration, "counter": 1 }));
+    assert_eq!(saved["declarations"], g.declarations(&contact).await);
     let row = g.declarations(&contact).await["declarations"][0].clone();
     assert_eq!(
         (

@@ -294,6 +294,8 @@ async fn a_batch_opens_takes_cash_and_cheques_closes_and_reopens() {
     .await;
     assert_eq!(closed["counter"], 1);
     let detail = g.batch(id).await;
+    // The close answered the batch as its page reads it.
+    assert_eq!(closed["detail"], detail);
     assert_eq!(
         (
             detail["batch"]["status"].as_str(),
