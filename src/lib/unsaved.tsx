@@ -7,6 +7,7 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useId,
   useLayoutEffect,
   useRef,
@@ -88,9 +89,27 @@ export function UnsavedWorkProvider({
   return <Context.Provider value={work}>{children}</Context.Provider>
 }
 
+/** Every page registry now mounted, for readers outside the page. */
+const mounted = new Set<UnsavedWork>()
+
+/**
+ * Whether any mounted page holds work not on the server (`busy` counts:
+ * a reload would cut the save off). What a stale-build reload checks.
+ */
+export function anyUnsavedWork(): boolean {
+  for (const w of mounted) if (w.state() !== 'clean') return true
+  return false
+}
+
 /** A page-lifetime registry for the page's guard to read. */
 export function useUnsavedWork(): UnsavedWork {
   const [work] = useState(() => new UnsavedWork())
+  useEffect(() => {
+    mounted.add(work)
+    return () => {
+      mounted.delete(work)
+    }
+  }, [work])
   return work
 }
 
