@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { test as base, expect } from '@playwright/test'
-import type { BrowserContext, Page, Request } from '@playwright/test'
+import type { BrowserContext, Frame, Page, Request } from '@playwright/test'
 import { assertFlow, probeRtt, runFlow, runId, tapContext } from './timing'
 import type { FlowName } from './budgets'
 import type { FlowRecord, FlowStep } from './timing'
 import { pendingStep } from './pending'
 import { recordRetry } from './retries'
+import { requestLines } from './requests'
 import { nextTotp } from './totp'
 import type { QcWorld } from '../src/lib/data/rust-types/QcWorld'
 
@@ -597,11 +598,35 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     // Its requests, so a failure says whether one hung (the network or the
     // server) or was never sent (the page): three hangs on staging in the
     // nightly of 2026-10-30 left nothing to tell them apart.
-    const sent = new Map<Request, number>()
+    // When it was sent, and from which of its frame's documents
+    // (qc/requests.ts: a page a navigation replaced drops its pending ones).
+    const sent = new Map<Request, { at: number; frame?: Frame; doc: number }>()
     // A request's outcome: its time in ms, or why it failed.
     const ended = new Map<Request, number | string>()
-    const since = (r: Request) => Date.now() - (sent.get(r) ?? Date.now())
-    context.on('request', (r) => sent.set(r, Date.now()))
+    // Each frame's document number: up one when a navigation request of
+    // the frame is answered (not redirected), which is before the new
+    // document commits and sends its own requests.
+    const docs = new Map<Frame, number>()
+    const frameOf = (r: Request) => {
+      try {
+        return r.frame()
+      } catch {
+        return undefined // a service worker's request has no frame
+      }
+    }
+    const since = (r: Request) =>
+      Date.now() - (sent.get(r)?.at ?? Date.now())
+    context.on('request', (r) => {
+      const frame = frameOf(r)
+      sent.set(r, { at: Date.now(), frame, doc: docs.get(frame!) ?? 0 })
+    })
+    context.on('response', (res) => {
+      const r = res.request()
+      const frame = frameOf(r)
+      const redirect = res.status() >= 300 && res.status() < 400
+      if (frame && r.isNavigationRequest() && !redirect)
+        docs.set(frame, (docs.get(frame) ?? 0) + 1)
+    })
     context.on('requestfinished', (r) => ended.set(r, since(r)))
     context.on('requestfailed', (r) =>
       ended.set(r, `failed after ${since(r)} ms: ${r.failure()?.errorText}`),
@@ -614,25 +639,20 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         contentType: 'text/plain',
       })
     }
-    const odd = [...sent]
-      .filter(([r]) => {
-        // The event stream stays open by design.
-        if (new URL(r.url()).pathname.endsWith('/events')) return false
-        const end = ended.get(r)
-        return typeof end !== 'number' || end >= 1000
-      })
-      .map(([r, t]) => {
-        const end = ended.get(r) ?? `NO ANSWER after ${since(r)} ms`
-        const took = typeof end === 'number' ? `${end} ms` : end
-        // The outcome before the url: the terminal reporter cuts long lines.
-        return `${new Date(t).toISOString().slice(11, 23)} ${took} · ${r.method()} ${r.url()}`
-      })
+    const odd = requestLines(
+      [...sent].map(([r, s]) => ({
+        method: r.method(),
+        url: r.url(),
+        sentAt: s.at,
+        doc: s.doc,
+        docNow: docs.get(s.frame!) ?? 0,
+        end: ended.get(r),
+      })),
+      Date.now(),
+    )
     if (odd.length) {
       await testInfo.attach('requests', {
-        body: [
-          'Requests unanswered at the end of the test, failed, or slower than 1 s (a page dropped by a navigation leaves its pending ones unanswered):',
-          ...odd,
-        ].join('\n'),
+        body: odd.join('\n'),
         contentType: 'text/plain',
       })
     }
