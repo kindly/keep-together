@@ -26,11 +26,12 @@
  *   within the cache's lifetime replays the changes made meanwhile.
  */
 import { useQueryClient } from '@tanstack/react-query'
-import type { QueryClient, QueryKey } from '@tanstack/react-query'
+import type { Query, QueryClient, QueryKey } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import type { ContactView as WireContact } from './rust-types/ContactView'
 import type { OrgEvent } from './rust-types/OrgEvent'
 import { apiUrl, tenantPath } from './rust/client'
+import type { Written } from './rust/client'
 import { keys } from './rust/keys'
 
 /**
@@ -184,27 +185,148 @@ export function ownWrite(
  * fetched as the hold committed, never showed the hold).
  */
 const running = new Set<string>()
-const dirty = new Set<string>()
+/** A burst's events waiting for the running refetch: their latest seq. */
+const dirty = new Map<string, number | undefined>()
 function invalidate(
   qc: QueryClient,
   queryKey: QueryKey,
   refetchType: 'active' | 'all' = 'active',
+  seq?: number,
 ) {
   const k = JSON.stringify(queryKey)
   if (running.has(k)) {
-    dirty.add(k)
+    // No seq (a reset, a stream opened live) outranks any.
+    const was = dirty.has(k) ? dirty.get(k) : seq
+    dirty.set(
+      k,
+      was === undefined || seq === undefined ? undefined : Math.max(was, seq),
+    )
     return
   }
   running.add(k)
-  const refetch = () => qc.invalidateQueries({ queryKey, refetchType })
+  // A read a write's answer showed (`showAnswer`) is current through its
+  // seq: only a later event refetches it.
+  const predicate = (q: Query) => !isFresh(q.queryHash, seq)
+  const refetch = () =>
+    qc.invalidateQueries({ queryKey, refetchType, predicate })
   const done =
-    qc.isFetching({ queryKey }) > 0
-      ? qc.cancelQueries({ queryKey }).then(refetch)
+    qc.isFetching({ queryKey, predicate }) > 0
+      ? qc.cancelQueries({ queryKey, predicate }).then(refetch)
       : refetch()
   void done.finally(() => {
     running.delete(k)
-    if (dirty.delete(k)) invalidate(qc, queryKey, refetchType)
+    if (dirty.has(k)) {
+      const next = dirty.get(k)
+      dirty.delete(k)
+      invalidate(qc, queryKey, refetchType, next)
+    }
   })
+}
+
+// ── a write's own answer ───────────────────────────────────────────────────
+
+/**
+ * Query hash → the seq its cached data is known current through: set by
+ * `showAnswer` from the write's `keep-seq`. Every event up to that seq
+ * committed before the answer was read, so the answer shows it already.
+ */
+const fresh = new Map<string, number>()
+function isFresh(hash: string, seq: number | undefined) {
+  const through = fresh.get(hash)
+  return seq !== undefined && through !== undefined && seq <= through
+}
+function markFresh(hash: string, seq: number) {
+  fresh.set(hash, Math.max(seq, fresh.get(hash) ?? seq))
+  // Its events come within moments; a mark must not outlive them.
+  setTimeout(() => {
+    if (fresh.get(hash) === seq) fresh.delete(hash)
+  }, 60_000)
+}
+
+/**
+ * Per tenant: `showAnswer` writes in flight, and the events that came
+ * meanwhile. The api publishes a commit's events before it answers, so
+ * the echo of a write usually arrives first; held until the answer is
+ * shown, it then refetches nothing the answer showed. Someone else's
+ * events wait at most one round trip, and HOLD_MAX_MS if an answer hangs.
+ */
+const writing = new Map<string, number>()
+const waiting = new Map<string, Array<() => void>>()
+const HOLD_MAX_MS = 10_000
+
+function hold(slug: string) {
+  writing.set(slug, (writing.get(slug) ?? 0) + 1)
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    clearTimeout(timer)
+    const left = (writing.get(slug) ?? 1) - 1
+    if (left > 0) {
+      writing.set(slug, left)
+      return
+    }
+    writing.delete(slug)
+    const queued = waiting.get(slug) ?? []
+    waiting.delete(slug)
+    for (const apply of queued) apply()
+  }
+  const timer = setTimeout(release, HOLD_MAX_MS)
+  return release
+}
+
+/** One event from the stream: applied now, or after this tab's writes. */
+export function deliver(qc: QueryClient, slug: string, e: OrgEvent) {
+  if (writing.has(slug)) {
+    const queued = waiting.get(slug) ?? []
+    queued.push(() => applyEvent(qc, slug, e))
+    waiting.set(slug, queued)
+    return
+  }
+  applyEvent(qc, slug, e)
+}
+
+/** What a write's answer shows: each query key and its new data. */
+export type Shown = ReadonlyArray<readonly [QueryKey, unknown]>
+
+/**
+ * Run one write and put what its answer shows straight into the cache:
+ * one round trip, no refetch after it. Never optimistic: nothing changes
+ * before the server answers, and a refused write changes nothing (it
+ * throws, as `write` did). The write's own events then skip what it
+ * showed; anyone else's still refetch it.
+ *
+ * A read that a fetch refreshed while the write was in flight may show a
+ * commit later than the answer: that one is fetched again instead of
+ * being overwritten (never an older state, not even for a moment). A
+ * fetch still in flight is cancelled: whatever it might show beyond the
+ * answer comes as an event, which refetches.
+ */
+export async function showAnswer<T>(
+  qc: QueryClient,
+  slug: string,
+  write: () => Promise<Written<T>>,
+  show: (answer: T) => Shown,
+): Promise<T> {
+  const release = hold(slug)
+  const sent = Date.now()
+  try {
+    const { answer, seq } = await write()
+    for (const [queryKey, data] of show(answer)) {
+      const state = qc.getQueryState(queryKey)
+      if (state && state.dataUpdatedAt > sent) {
+        void qc.invalidateQueries({ queryKey, exact: true })
+        continue
+      }
+      await qc.cancelQueries({ queryKey, exact: true })
+      qc.setQueryData(queryKey, data)
+      const q = qc.getQueryCache().find({ queryKey, exact: true })
+      if (q && seq !== null) markFresh(q.queryHash, seq)
+    }
+    return answer
+  } finally {
+    release()
+  }
 }
 
 /** Apply one event to the cache. Exported for the tests. */
@@ -213,19 +335,21 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
   // too: a save hook refreshes its own entity's reads, not these (a
   // donor renamed here still shows its old name on gifts otherwise).
   // A code's first use marks it used: the tree offers archive, not delete.
-  if (e.contract === 'contacts.acquisition') invalidate(qc, keys.sources(slug))
+  if (e.contract === 'contacts.acquisition')
+    invalidate(qc, keys.sources(slug), 'active', e.seq)
   // B2: gifts show their donor's name and address and their codes' names.
   if (e.entity === 'contacts' || e.entity === 'source_codes')
-    invalidate(qc, keys.gifts(slug))
+    invalidate(qc, keys.gifts(slug), 'active', e.seq)
   const key = ownKey(slug, e.id, e.contract, e.counter)
   // Our own write's echo: its hook has refetched the entity's reads.
   if (own.delete(key)) return
   const invalidates = INVALIDATES[e.entity]
   if (!invalidates) {
-    invalidate(qc, ['t', slug])
+    invalidate(qc, ['t', slug], 'active', e.seq)
     return
   }
-  for (const queryKey of invalidates(slug, e)) invalidate(qc, queryKey)
+  for (const queryKey of invalidates(slug, e))
+    invalidate(qc, queryKey, 'active', e.seq)
   if (e.entity === 'contacts') {
     // The view only if this is newer than the counter it holds (an echo
     // of a refetch already made changes nothing); its history always. A
@@ -234,10 +358,10 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
     // frame, as Convex's keep-alive cache did.
     const view = qc.getQueryData<WireContact | null>(keys.contact(slug, e.id))
     const slice = e.contract.split('.')[1] as keyof WireContact['counters']
-    const held = view?.counters[slice]
-    if (held === undefined || held < e.counter)
-      invalidate(qc, keys.contact(slug, e.id), view ? 'all' : 'active')
-    else invalidate(qc, keys.history(slug, e.id))
+    const shown = view?.counters[slice]
+    if (shown === undefined || shown < e.counter)
+      invalidate(qc, keys.contact(slug, e.id), view ? 'all' : 'active', e.seq)
+    else invalidate(qc, keys.history(slug, e.id), 'active', e.seq)
   }
 }
 
@@ -295,7 +419,7 @@ export function useOrgEvents(slug: string) {
         } catch {
           return
         }
-        applyEvent(qc, slug, e)
+        deliver(qc, slug, e)
       }
       s.addEventListener('reset', (m) => {
         seen(m)

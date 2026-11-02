@@ -3,7 +3,7 @@
  * tab's writes and the contacts list's bulk set. The definitions are read
  * through `useFields` (hooks.tsx), shared with the form and the filters;
  * every write here answers the server's state, and the caller waits for
- * it and for the definitions' refetch. A field's events (another tab's
+ * it and for the definitions to show it. A field's events (another tab's
  * edit, a retire's progress) refetch them too (`../events.ts`).
  */
 import { useQueryClient } from '@tanstack/react-query'
@@ -18,7 +18,10 @@ import type { DeletedFieldPart } from '../rust-types/DeletedFieldPart'
 import type { Executed } from '../rust-types/Executed'
 import type { ReorderedOptions } from '../rust-types/ReorderedOptions'
 import type { FieldRetirePayload } from '../rust-types/FieldRetirePayload'
-import { RustApiError, post, tenantPath } from './client'
+import { showAnswer } from '../events'
+import type { FieldSaved } from '../rust-types/FieldSaved'
+import { RustApiError, post, postWrite, tenantPath } from './client'
+import { fieldsFromWire } from './wire'
 import { keys } from './keys'
 
 type FieldId = Id<'contactFields'>
@@ -49,39 +52,57 @@ function fieldsChanged(qc: QueryClient, slug: string) {
 
 /**
  * Create, save, delete, reorder and retire. Each resolves once the server
- * has answered and the definitions have been refetched, and throws
- * `RustApiError` when refused (`stale` on a counter that moved).
+ * has answered and the definitions show it (from the answer for a save,
+ * refetched for the rest), and throws `RustApiError` when refused
+ * (`stale` on a counter that moved).
  */
 export function useFieldWrites() {
   const { slug } = useTenant()
   const qc = useQueryClient()
   const path = (...parts: Array<string>) => tenantPath(slug, 'fields', ...parts)
-  const after = async <T,>(write: Promise<T>): Promise<T> => {
+  const after = async <T>(write: Promise<T>): Promise<T> => {
     try {
       return await write
     } finally {
       await fieldsChanged(qc, slug)
     }
   }
+  /**
+   * A field's or an option's save: the definitions come with the answer
+   * and show from it; its event refetches the contacts (a label shows
+   * on each holder).
+   */
+  const save = async (to: string, body: unknown): Promise<Executed> => {
+    try {
+      const { id, counter } = await showAnswer(
+        qc,
+        slug,
+        () => postWrite<FieldSaved>(to, body),
+        (saved) => [[keys.fields(slug), fieldsFromWire(saved.fields)]],
+      )
+      return { id, counter }
+    } catch (e) {
+      // Refused (another manager's change won): show them as they are.
+      void qc.invalidateQueries({ queryKey: keys.fields(slug) })
+      throw e
+    }
+  }
   return {
-    createField: (payload: FieldPayload) =>
-      after(post<Executed>(path(), payload)),
+    createField: (payload: FieldPayload) => save(path(), payload),
     saveField: (id: FieldId, expected: number, payload: FieldPayload) =>
-      after(post<Executed>(path(), { id, expected, ...payload })),
+      save(path(), { id, expected, ...payload }),
     deleteField: (id: FieldId, expected: number) =>
       after(post<DeletedFieldPart>(path(id, 'delete'), { expected })),
     /** A new option at the end of the field's list. */
     addOption: (fieldId: FieldId, label: string) =>
-      after(
-        post<Executed>(path('options'), {
-          fieldId,
-          label,
-          position: 0,
-          isActive: true,
-        }),
-      ),
+      save(path('options'), {
+        fieldId,
+        label,
+        position: 0,
+        isActive: true,
+      }),
     saveOption: (id: OptionId, expected: number, payload: OptionPayload) =>
-      after(post<Executed>(path('options'), { id, expected, ...payload })),
+      save(path('options'), { id, expected, ...payload }),
     deleteOption: (id: OptionId, expected: number) =>
       after(
         post<DeletedFieldPart>(path('options', id, 'delete'), { expected }),

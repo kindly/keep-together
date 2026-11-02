@@ -1,7 +1,7 @@
 //! `/api/t/{slug}/sources…`: source codes, and a contact's acquisition
 //! code. Managing the list is for admins, and staff while the
 //! organisation's switch is on; assigning a code to a contact is ordinary
-//! staff editing.
+//! staff editing. A create or a save answers the tree after it.
 
 use axum::extract::Path;
 use axum::routing::{get, post};
@@ -47,18 +47,41 @@ fn require_manager(conn: &Connection, role: Role) -> Result<(), ApiError> {
     }
 }
 
+fn tree_of(conn: &Connection, role: Role) -> Result<Tree, ApiError> {
+    Ok(Tree {
+        parts: sources::tree(conn)?,
+        can_manage: may_manage_list(conn, role, ListKind::SourceCodes)?,
+    })
+}
+
 /// `GET sources`: every part in tree order, archived included, and
 /// whether the caller may change them.
 async fn tree(Extension(t): Extension<Tenant>) -> Result<Json<Tree>, ApiError> {
     let role = t.role;
-    t.read(move |r| {
-        Ok(Tree {
-            parts: sources::tree(r)?,
-            can_manage: may_manage_list(r, role, ListKind::SourceCodes)?,
-        })
-    })
-    .await
-    .map(Json)
+    t.read(move |r| tree_of(r, role)).await.map(Json)
+}
+
+/// A create's answer: the new part (and its first version), and the tree
+/// as `GET sources` answers it after the create (Settings shows it).
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SourceCodeCreated {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub created: Created,
+    pub tree: Tree,
+}
+
+/// A save's answer: what it executed, and the tree after it.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SourceCodeSaved {
+    pub id: String,
+    #[ts(type = "number")]
+    pub counter: i64,
+    pub tree: Tree,
 }
 
 /// `GET sources/filter-options`: what the contacts list's filter shows.
@@ -99,11 +122,15 @@ async fn describe(
 async fn create(
     Extension(t): Extension<Tenant>,
     Body(payload): Body<SourceCodePayload>,
-) -> Result<Json<Created>, ApiError> {
+) -> Result<Json<SourceCodeCreated>, ApiError> {
     let role = t.role;
     t.write(move |ctx| {
         require_manager(ctx.tx.read(), role)?;
-        Ok(sources::create_part(ctx, payload, Source::Ui, None)?)
+        let created = sources::create_part(ctx, payload, Source::Ui, None)?;
+        Ok(SourceCodeCreated {
+            created,
+            tree: tree_of(ctx.tx.read(), role)?,
+        })
     })
     .await
     .map(Json)
@@ -115,16 +142,21 @@ async fn save(
     Extension(t): Extension<Tenant>,
     Path(IdParam { id }): Path<IdParam>,
     Body(req): Body<SaveSourceCode>,
-) -> Result<Json<Executed>, ApiError> {
+) -> Result<Json<SourceCodeSaved>, ApiError> {
     let role = t.role;
     t.write(move |ctx| {
         require_manager(ctx.tx.read(), role)?;
-        Ok(execute(
+        let Executed { id, counter } = execute(
             ctx,
             &CODE,
             req.payload,
             Exec::update(&id, Some(req.expected), Source::Ui),
-        )?)
+        )?;
+        Ok(SourceCodeSaved {
+            id,
+            counter,
+            tree: tree_of(ctx.tx.read(), role)?,
+        })
     })
     .await
     .map(Json)

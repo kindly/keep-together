@@ -9,9 +9,9 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::{Extension, Json};
 use platform::groups::{self, Opened};
-use platform::preferences::{self, ListKind};
+use platform::preferences::{self, ListKind, Preferences};
 use serde::{Deserialize, Serialize};
-use store::UserId;
+use store::{Role, UserId};
 use ts_rs::TS;
 
 use crate::timing::Timing;
@@ -30,6 +30,17 @@ pub struct Group {
     /// recorded (or they belong to only one).
     #[ts(type = "number | null")]
     pub last_used_at: Option<i64>,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub switches: Switches,
+}
+
+/// A group's Settings switches, their counters, and what they mean for
+/// the caller: in `GET /api/groups`, and in a switch's save answer.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Switches {
     pub staff_can_manage_identifier_types: bool,
     #[ts(type = "number | null")]
     pub identifier_types_version: Option<i64>,
@@ -42,6 +53,23 @@ pub struct Group {
     pub can_manage_identifier_types: bool,
     pub can_manage_source_codes: bool,
     pub can_manage_fields: bool,
+}
+
+impl Switches {
+    pub fn of(prefs: &Preferences, role: Role) -> Self {
+        let switch = |k| prefs.get(k);
+        Self {
+            staff_can_manage_identifier_types: switch(ListKind::IdentifierTypes).staff_can_manage,
+            identifier_types_version: switch(ListKind::IdentifierTypes).version,
+            staff_can_manage_source_codes: switch(ListKind::SourceCodes).staff_can_manage,
+            source_codes_version: switch(ListKind::SourceCodes).version,
+            staff_can_manage_fields: switch(ListKind::Fields).staff_can_manage,
+            fields_version: switch(ListKind::Fields).version,
+            can_manage_identifier_types: prefs.may_manage(role, ListKind::IdentifierTypes),
+            can_manage_source_codes: prefs.may_manage(role, ListKind::SourceCodes),
+            can_manage_fields: prefs.may_manage(role, ListKind::Fields),
+        }
+    }
 }
 
 /// `GET /api/groups`: every group the caller belongs to, by name.
@@ -76,19 +104,9 @@ pub async fn mine(
                     continue;
                 }
             };
-            let switch = |k| prefs.get(k);
             out.push(Group {
                 last_used_at: last.get(&m.tenant.slug).copied().flatten(),
-                staff_can_manage_identifier_types: switch(ListKind::IdentifierTypes)
-                    .staff_can_manage,
-                identifier_types_version: switch(ListKind::IdentifierTypes).version,
-                staff_can_manage_source_codes: switch(ListKind::SourceCodes).staff_can_manage,
-                source_codes_version: switch(ListKind::SourceCodes).version,
-                staff_can_manage_fields: switch(ListKind::Fields).staff_can_manage,
-                fields_version: switch(ListKind::Fields).version,
-                can_manage_identifier_types: prefs.may_manage(m.role, ListKind::IdentifierTypes),
-                can_manage_source_codes: prefs.may_manage(m.role, ListKind::SourceCodes),
-                can_manage_fields: prefs.may_manage(m.role, ListKind::Fields),
+                switches: Switches::of(&prefs, m.role),
                 slug: m.tenant.slug,
                 name: m.tenant.name,
                 role: m.role.into(),

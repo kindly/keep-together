@@ -171,7 +171,7 @@ async fn alpha(w: &World, ann: &str) -> Alpha {
             Some(json!({ "contactId": contact, "body": "Met at the fair" })),
         )
         .await;
-    let note = n["id"].as_str().unwrap().to_owned();
+    let note = n["note"]["id"].as_str().unwrap().to_owned();
     let trust = w
         .ok(
             "POST",
@@ -540,13 +540,14 @@ async fn identifier_types_and_the_identifiers_slice_round_trip() {
         (s, b["problems"][0]["field"].as_str()),
         (StatusCode::UNPROCESSABLE_ENTITY, Some("expected"))
     );
-    w.ok(
-        "POST",
-        "/api/t/alpha/identifier-types",
-        &ann,
-        Some(json!({ "id": a.id_type, "expected": 0, "name": "Member number", "isActive": false })),
-    )
-    .await;
+    let archived = w
+        .ok(
+            "POST",
+            "/api/t/alpha/identifier-types",
+            &ann,
+            Some(json!({ "id": a.id_type, "expected": 0, "name": "Member number", "isActive": false })),
+        )
+        .await;
     let (s, b) = w
         .call(
             "POST",
@@ -573,6 +574,15 @@ async fn identifier_types_and_the_identifiers_slice_round_trip() {
         )
         .await;
     assert_eq!(all[0]["name"], "Member number");
+    // The save answered every type, archived ones included, as that read.
+    assert_eq!(
+        (
+            &archived["id"],
+            archived["counter"].as_i64(),
+            &archived["types"]
+        ),
+        (&json!(a.id_type), Some(1), &all)
+    );
     // The view names the row by its (now archived) type; counters carry it.
     let v = w
         .ok(
@@ -638,8 +648,17 @@ async fn notes_round_trip_and_answer_the_note() {
         )
         .await;
     assert_eq!(
-        (pinned["pinned"].as_bool(), pinned["flagsVersion"].as_i64()),
+        (
+            pinned["note"]["pinned"].as_bool(),
+            pinned["note"]["flagsVersion"].as_i64()
+        ),
         (Some(true), Some(1))
+    );
+    // The contact's lists come with it, as their reads answer them.
+    assert_eq!(pinned["live"]["notes"][0]["id"], json!(n));
+    assert_eq!(
+        pinned["archived"],
+        json!({ "notes": [], "truncated": false })
     );
     let edited = w
         .ok(
@@ -650,7 +669,10 @@ async fn notes_round_trip_and_answer_the_note() {
         )
         .await;
     assert_eq!(
-        (edited["bodyVersion"].as_i64(), edited["pinned"].as_bool()),
+        (
+            edited["note"]["bodyVersion"].as_i64(),
+            edited["note"]["pinned"].as_bool()
+        ),
         (Some(1), Some(true))
     );
     let (s, b) = w
@@ -665,13 +687,14 @@ async fn notes_round_trip_and_answer_the_note() {
         (s, b["current"]["body"].as_str()),
         (StatusCode::CONFLICT, Some("Met at the summer fair"))
     );
-    w.ok(
-        "POST",
-        &format!("/api/t/alpha/notes/{n}/archive"),
-        &ann,
-        Some(json!({ "value": true })),
-    )
-    .await;
+    let archived = w
+        .ok(
+            "POST",
+            &format!("/api/t/alpha/notes/{n}/archive"),
+            &ann,
+            Some(json!({ "value": true })),
+        )
+        .await;
     let live = w
         .ok(
             "GET",
@@ -690,6 +713,7 @@ async fn notes_round_trip_and_answer_the_note() {
         )
         .await;
     assert_eq!(gone["notes"][0]["body"], "Met at the summer fair");
+    assert_eq!((&archived["live"], &archived["archived"]), (&live, &gone));
     let (s, b) = w
         .call(
             "POST",
@@ -711,7 +735,7 @@ async fn notes_round_trip_and_answer_the_note() {
             Some(json!({ "contactId": a.contact, "body": "Pinned", "pinned": true })),
         )
         .await;
-    assert_eq!(made["pinned"], true);
+    assert_eq!(made["note"]["pinned"], true);
 }
 
 #[tokio::test]

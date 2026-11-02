@@ -198,6 +198,7 @@ impl OrgDb {
             self.checkpointer.committed(pages);
         }
         for event in events.into_inner() {
+            crate::events::published(event.seq);
             // No subscribers is fine.
             let _ = self.events.send(event);
         }

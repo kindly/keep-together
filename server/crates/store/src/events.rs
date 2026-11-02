@@ -8,6 +8,8 @@
 //! `Last-Event-ID` is too far behind to replay gets one `event: reset`
 //! (empty data) instead, and refetches everything.
 
+use std::cell::Cell;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -27,4 +29,23 @@ pub struct OrgEvent {
     /// That contract's counter after the command.
     #[ts(type = "number")]
     pub counter: i64,
+}
+
+thread_local! {
+    /// The `seq` of the last event the last commit on this thread
+    /// published, until taken: [`take_published_seq`].
+    static PUBLISHED_SEQ: Cell<Option<i64>> = const { Cell::new(None) };
+}
+
+/// Called by `OrgDb::write_raw` after it publishes a commit's events.
+pub(crate) fn published(seq: i64) {
+    PUBLISHED_SEQ.with(|c| c.set(Some(seq)));
+}
+
+/// The `seq` of the last event published by a commit on this thread
+/// since the last call, if any: the api answers it (`keep-seq`), so a
+/// client that shows a write's answer knows which events it already
+/// reflects. Every event up to it committed before the answer was read.
+pub fn take_published_seq() -> Option<i64> {
+    PUBLISHED_SEQ.with(|c| c.take())
 }

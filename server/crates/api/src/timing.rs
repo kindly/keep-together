@@ -2,9 +2,14 @@
 //! membership lookups), `db` (time inside org-file closures, lock wait
 //! included) and `total`, in ms. Measure scripts and QC read server time
 //! from it without logs.
+//!
+//! A tenant write also answers `keep-seq`: the last event its commits
+//! published (`store::take_published_seq`). The SPA installs a write's
+//! answer and skips refetching it for the events up to that one
+//! (src/lib/data/events.ts): the answer already shows them.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::extract::Request;
@@ -19,6 +24,8 @@ pub struct Timing(Arc<Counters>);
 struct Counters {
     platform_ns: AtomicU64,
     db_ns: AtomicU64,
+    /// The last event this request's writes published; 0: none.
+    seq: AtomicI64,
 }
 
 impl Timing {
@@ -32,6 +39,11 @@ impl Timing {
         self.0
             .db_ns
             .fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    /// A commit of this request published events up to `seq`.
+    pub fn wrote(&self, seq: i64) {
+        self.0.seq.fetch_max(seq, Ordering::Relaxed);
     }
 
     fn header(&self, total: Duration) -> String {
@@ -58,6 +70,10 @@ pub async fn middleware(mut req: Request, next: Next) -> Response {
     }
     if let Ok(value) = HeaderValue::from_str(&timing.header(start.elapsed())) {
         res.headers_mut().insert("server-timing", value);
+    }
+    let seq = timing.0.seq.load(Ordering::Relaxed);
+    if seq > 0 {
+        res.headers_mut().insert("keep-seq", HeaderValue::from(seq));
     }
     res
 }

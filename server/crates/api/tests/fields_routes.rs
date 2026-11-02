@@ -39,7 +39,10 @@ async fn volunteer(w: &World, cookie: &str) -> Field {
             .await;
         assert_eq!(s, StatusCode::OK, "{o}");
         options.push(o["id"].as_str().unwrap().to_owned());
+        // Each save answers every definition, as `GET fields` does.
+        assert_eq!(o["fields"], fields(w, "alpha", cookie).await);
     }
+    assert_eq!(f["fields"][0]["id"], json!(id));
     Field { id, options }
 }
 
