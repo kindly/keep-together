@@ -279,7 +279,7 @@ export type FlowName = keyof typeof budgets
 // ── Per-target budgets (human, g2q6, 2026-11-01) ────────────────────────
 //
 // The set above is the house's: the local pool (at the hosted RTT, under
-// netem) and keep-staging from the house nightly. A target listed here
+// netem) and keep-staging from the house nightly, now retired. A target listed here
 // has its own set instead, recorded where it runs: GitHub's runners sit
 // far from London (plan gocardless-sandbox-qc.sv, g2q7), so the house's
 // lines would time the Atlantic, not the app.

@@ -23,7 +23,7 @@
 //    build once per instance through qc/serve.mjs), runs <command…>, and
 //    stops the apis when it exits.
 //
-// --target staging (the house nightly) or --target qc (keep-qc, from
+// --target staging (the retired house nightly) or --target qc (keep-qc, from
 // GitHub Actions: .github/workflows/qc.yml): no build, no pool, no netem,
 // no lock; one instance, the hosted app (QC_STAGING_URL or QC_TARGET_URL;
 // qc/target.ts), history lines marked `env: staging` or `env: qc`. Set-up

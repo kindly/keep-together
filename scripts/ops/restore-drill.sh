@@ -55,7 +55,7 @@ if [[ ${1:-} == local ]]; then
   [[ $ENV_NAME == prod || $ENV_NAME == staging ]] || { echo "usage: $0 local prod|staging [--keep]" >&2; exit 2; }
   KEEP_DATA=${3:-}
   die() { printf 'error: %s\n' "$*" >&2; exit 1; }
-  for tool in aws litestream sqlite3 cargo awk; do command -v $tool >/dev/null || die "needs $tool"; done
+  for tool in aws litestream sqlite3 cargo awk curl jq; do command -v $tool >/dev/null || die "needs $tool"; done
   lsv=$(litestream version) || die "litestream version failed"
   grep -q '0\.5\.' <<<"$lsv" || die "needs litestream 0.5.x (the image pins 0.5.17)"
   creds() { aws configure export-credentials --profile "$1" --format env-no-export; }
@@ -68,7 +68,17 @@ if [[ ${1:-} == local ]]; then
   PATH=$PWD/server/target/release:$PWD/scripts/ops:$PATH
 
   prefix=$ENV_NAME
+  # Kept staging: the generation its /healthz reports (a timestamp sorts
+  # before the old deployment-<ULID> prefixes); resetting on deploy: the
+  # newest deployment's.
+  generation=
   if [[ $ENV_NAME == staging ]]; then
+    generation=$(curl -fsS --max-time 10 https://staging.keep-together.org.uk/healthz | jq -r '.resetGeneration // empty') ||
+      die "staging's /healthz didn't answer: it names the live replica prefix"
+  fi
+  if [[ -n $generation ]]; then
+    prefix=staging/$generation
+  elif [[ $ENV_NAME == staging ]]; then
     prefix=$(aws s3api list-objects-v2 --profile keep-prod --bucket "keep-litestream-$prod_account" \
       --prefix staging/ --delimiter / --query 'CommonPrefixes[].Prefix' --output text |
       tr '\t' '\n' | sort | tail -1)

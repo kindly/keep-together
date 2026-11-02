@@ -12,7 +12,7 @@ runners ("keep-qc" below):
 
 | app | host | data | deploys |
 |---|---|---|---|
-| `keep-staging` | `staging.keep-together.org.uk` | reset to the riverside seed on every deploy | every push to `main` (`deploy.yml`) |
+| `keep-staging` | `staging.keep-together.org.uk` | kept between deploys; reset to the riverside seed when you ask ("Staging" below) | every push to `main` (`deploy.yml`) |
 | `keep-prod` | `app.keep-together.org.uk` | real | by hand only (`deploy.yml`, `env=prod`); created by `scripts/fly/prod.sh` |
 | `keep-qc` | `keep-qc.fly.dev` | QC's alone: reset to the riverside seed on every deploy, no backups | every push to `main` (`deploy.yml`'s `deploy-qc`, once set up: "keep-qc" below) |
 
@@ -41,7 +41,7 @@ Data on the volume (`/data`):
 | `premigrate/` | the `VACUUM INTO` copies taken before a boot migration (F1); `scripts/ops/rollback-migration.sh <data> [--apply]` puts them back |
 | `snapshots-tmp/` | the snapshot job's scratch copies, removed after each file |
 | `drill/` | the restore drill's write-loss probe, only during a drill |
-| `.image` | the image the data belongs to (staging's reset compares it) |
+| `.image` | the image the data belongs to (`KEEP_RESET_ON=deploy` compares it) |
 | `.generation` | under `KEEP_RESET_ON=demand`, the reset generation the data belongs to |
 | `.wiping` | a demand reset's wipe in progress; the next boot finishes it |
 | `.generations-used` | every generation this volume left behind; demand refuses them |
@@ -125,9 +125,8 @@ exact, case-insensitive). For any other address it is exactly
 reset links, admins' invites, emailed codes, admin 2FA resets), and a
 reset request answers `mail_off` for an unlisted address whether or not it
 has an account, so the list leaks nothing about who does. QC's users
-(`@qc.keep-together.invalid`) are never listed, so nightly QC runs as it
-did with mail off and nothing bounces off the new SES account; keep it
-that way. `KEEP_ENV=prod` refuses `KEEP_MAIL_ONLY_TO`: production mails
+(`@qc.keep-together.invalid`) are never listed, so nothing bounces off
+the SES account; keep it that way. `KEEP_ENV=prod` refuses `KEEP_MAIL_ONLY_TO`: production mails
 everyone.
 
 For an unlisted person, invite links come from the operator: `fly ssh
@@ -180,7 +179,7 @@ Turning it on for an app (the human):
 2. Set `KEEP_ADDRESS_LOOKUP = "ideal"` in the app's `[env]`
    (`fly.staging.toml` has `fake` until then) and deploy.
 
-The nightly QC looks up only `QC_POSTCODE` (`ID1 1QD`,
+QC looks up only `QC_POSTCODE` (`ID1 1QD`,
 `qc/flows/contact.helpers.ts`), Ideal Postcodes' free test postcode, and
 one postcode that isn't found; neither costs a credit (to confirm with
 them, plan step L0).
@@ -193,23 +192,28 @@ Two copies, independent of each other.
 account>` in `keep-prod`, eu-west-2, versioned, SSE-S3, public access
 blocked. Layout: `<prefix>/platform.db/…`,
 `<prefix>/orgs/<tenant-id>.db/…` and `<prefix>/files/<tenant-id>.db/…`. The prefix is `prod` for prod. Staging
-gets `staging/<deployment>` because its reset recreates every file on
-each deploy, and a fresh file must not meet the previous one's replica.
+gets `staging/<generation>` (its `KEEP_RESET_GENERATION`, "Staging")
+because a reset recreates every file, and a fresh file must not meet the
+previous one's replica.
 It syncs every second, takes a full snapshot daily and keeps 7 days, so
 any point in the last week can be restored. Old object versions expire
 after 30 days. The IAM user `keep-litestream-<env>` can read, write and
 delete under its env's prefix only. Litestream needs delete for its own
 retention.
 
-Staging's old per-deploy prefixes stay until pruned. No lifecycle rule
-expires them, because one would also delete the live generation's files
-whenever staging goes 14 days without a deploy. They are small. To prune
-all but the newest few (as an admin of keep-prod):
+Staging's old prefixes stay until pruned: the per-deploy ones from
+before it was kept (`staging/deployment-<id>`) and those of generations a
+reset left behind. No lifecycle rule expires them, because one would also
+delete the live generation's files once it had been quiet long enough.
+They are small. To delete all but the live one (as an admin of
+keep-prod; never by sorting names: a timestamp sorts before
+`deployment-…`):
 
 ```
 b=keep-litestream-<keep-prod account>
+live=$(curl -fsS https://staging.keep-together.org.uk/healthz | jq -er .resetGeneration) &&
 aws s3api list-objects-v2 --profile keep-prod --bucket $b --prefix staging/ --delimiter / \
-  --query 'CommonPrefixes[].Prefix' --output text | tr '\t' '\n' | sort | head -n -3 |
+  --query 'CommonPrefixes[].Prefix' --output text | tr '\t' '\n' | grep -vx "staging/$live/" |
   while read -r p; do aws s3 rm --profile keep-prod --recursive "s3://$b/$p"; done
 ```
 
@@ -387,9 +391,10 @@ What the entrypoint does, by case:
   `backup.restore` in `/healthz`, which `health.yml` turns into an
   issue. All of these last until you check the data, delete
   `/data/.restored`, and restart the machine (the api reads the file at
-  boot). Staging never falls back: its fresh per-deploy
-  prefix is always empty, and its snapshots belong to the previous
-  deploy.
+  boot). keep-qc never falls back (it has no backups), nor would any
+  app under `KEEP_RESET_ON=deploy`: its fresh per-deploy prefix is
+  always empty, and its snapshots belong to the previous deploy.
+  Staging, kept, falls back like prod.
 - **Orgs that `platform.db` lists have no backup** (exit 4, e.g. an org
   created in the last second, or an upload that failed): the machine
   doesn't start. The log names the orgs (`MISSING org <id>`). To boot
@@ -413,7 +418,7 @@ next to the live data, look, then swap by hand. Inside the machine:
 
 ```
 export AWS_ACCESS_KEY_ID=$LITESTREAM_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$LITESTREAM_SECRET_ACCESS_KEY
-prefix=prod   # staging: staging/<deployment>, the tag part of FLY_IMAGE_REF
+prefix=prod   # staging: staging/$KEEP_RESET_GENERATION (/healthz resetGeneration)
 litestream restore -timestamp 2026-10-24T09:00:00Z -o /data/pit/<id>.db \
   s3://$LITESTREAM_BUCKET/$prefix/orgs/<id>.db
 sqlite3 -readonly /data/pit/<id>.db 'PRAGMA integrity_check'
@@ -512,7 +517,7 @@ needs the aws CLI, litestream 0.5.x and sqlite3, and builds
   `$GITHUB_SHA` in `deploy.yml`; `null` for a local build): keep-qc's
   deploy waits for it, and QC checks out the specs that match it.
   Under `KEEP_RESET_ON=demand` only, `resetGeneration`: the reset
-  generation the data belongs to (`/data/.generation`; "Staging reset").
+  generation the data belongs to (`/data/.generation`; "Staging").
 
   It is public, so it has counts and status words only. Error text
   (bucket names, account ids, tenant ids) goes to the log and Sentry, and
@@ -564,60 +569,83 @@ machine needs a restart, restart it (`fly apps restart keep-prod`).
 Then check `/healthz`'s `diskTotalBytes` and the next health run. To see
 what grew, read the daily `data usage:` lines in `fly logs`.
 
-## Staging reset
+## Staging
 
-`KEEP_RESET_SEED=riverside`: on the first boot of a new image (the
-image ref differs from `/data/.image`) the entrypoint wipes `/data`
-before Litestream starts, and the api seeds the `riverside` org. Restarts
-and restored volumes keep their data. That is `KEEP_RESET_ON=deploy`, the
-default.
+**Kept between deploys.** `keep-staging` runs `KEEP_RESET_SEED=riverside`
+with `KEEP_RESET_ON=demand` (`fly.staging.toml`): a deploy keeps every
+org, user and gift, and the GoCardless sandbox connection with them. The
+data is wiped and reseeded only when you ask. It is yours to work in; QC
+doesn't touch it (QC runs against keep-qc, below).
 
-`KEEP_RESET_ON=demand` (not used by any app yet: staging moves to it in
-plan gocardless-sandbox-qc.sv, step S1b) keeps the data across deploys
-and wipes only when `KEEP_RESET_GENERATION` differs from
-`/data/.generation`. **`KEEP_RESET_GENERATION` is a Fly secret only,
-never in the toml's `[env]`**: two sources for one name is a trap (one
-silently wins), so S1b seeds the first one with `fly secrets set
---stage`, and from then on only `staging-reset.sh` changes it. Each
-generation is new (a UTC timestamp). The volume lists every generation it
-has left behind in `/data/.generations-used` (never deleted), and demand
-refuses to boot with a listed one, wiping nothing: its Litestream prefix
-still holds that period's replica. **Going back to deploy** (reverting
-S1b): also run `fly secrets unset KEEP_RESET_GENERATION -a keep-staging
---stage`, so the next switch to demand starts from
-`staging-reset.sh` and a new generation. `scripts/fly/staging-reset.sh` asks you to type
-`reset keep-staging`, sets a new generation (a UTC timestamp) with `fly
-secrets set`, which restarts the machine, and waits until `/healthz`
-reports it as `resetGeneration`. Litestream's prefix is
-`<env>/<generation>`, so an empty volume restores from the generation the
-env names; with no replica there the snapshots are the fallback (loud, as
-on prod). The wipe is crash-safe: the entrypoint writes `/data/.wiping`
+**Resetting it.** `scripts/fly/staging-reset.sh` asks you to type `reset
+keep-staging`, sets a new `KEEP_RESET_GENERATION` (a UTC timestamp) with
+`fly secrets set`, which restarts the machine, and waits until
+`/healthz` reports it as `resetGeneration`. The entrypoint
+(`scripts/ops/entrypoint.sh`) sees a generation that differs from
+`/data/.generation`, wipes `/data` before Litestream starts, and the api
+seeds riverside with the same sign-ins.
+
+**`KEEP_RESET_GENERATION` is a Fly secret only, never in the toml's
+`[env]`**: two sources for one name is a trap (one silently wins). It
+isn't secret; a secret is how to change the env without a deploy.
+`scripts/fly/staging.sh` stages the first one for a new app,
+`scripts/fly/staging-kept.sh` did for the switch (below), and from then
+on only `staging-reset.sh` changes it. Without one the entrypoint
+refuses to boot under demand, wiping nothing.
+
+**Backups.** Litestream's prefix is `staging/<generation>`, so a wiped
+database never meets its predecessor's replica, and a lost volume
+restores from the generation the secret names. The hourly snapshots are
+on, as on prod: with no replica under that prefix, an empty volume falls
+back to them (loud: "Restoring"). The drills find the live prefix from
+`/healthz`'s `resetGeneration`. The old per-deploy prefixes
+(`staging/deployment-<id>`, from before the switch) and those of
+generations a reset left behind can be deleted ("Backups").
+
+**Safety.** The wipe is crash-safe: the entrypoint writes `/data/.wiping`
 first and removes it last, so a boot that finds it finishes the wipe, and
 a reset never restores (a half-wiped volume can't come back from the
 snapshots as the new generation). An unreadable `.generation` stops the
-boot instead of wiping. `KEEP_RESET_ON=deploy` retires any `.generation`
-to `.generations-used`, so switching back to demand needs a new
-generation, and wipes once. Markers are written to a temp file and moved
+boot instead of wiping. The volume lists every generation it has left
+behind in `/data/.generations-used` (never deleted), and demand refuses
+to boot with a listed one, wiping nothing: its Litestream prefix still
+holds that period's replica. Markers are written to a temp file and moved
 into place, so a crash never leaves one empty. The entrypoint refuses
 `KEEP_RESET_SEED` unless `KEEP_ENV` is `staging` or `dev`, and `demand`
 without `KEEP_RESET_SEED` or with a generation that isn't 1 to 64 of
-`A-Za-z0-9_-`. The seed is `seed::riverside`
-(Convex's `testSeed`): 100 donors with notes, relationships,
-identifiers, field values, acquisition codes, gifts and Gift Aid
-declarations, and one user per role
-(`admin@`, `staff@`, `viewer@keep-together.example`), each signing in
-with a password and TOTP. Their credentials are the six Fly secrets
+`A-Za-z0-9_-`.
+
+**`KEEP_RESET_ON=deploy`** (the default; keep-qc): the first boot of a
+new image (the image ref differs from `/data/.image`) wipes `/data`, and
+the replica prefix is per image. Restarts and restored volumes keep their
+data. It retires any `.generation` to `.generations-used`, so switching
+back to demand needs a new generation, and wipes once. **Going back to
+deploy** on staging: also run `fly secrets unset KEEP_RESET_GENERATION -a
+keep-staging --stage`, so the next switch to demand starts from a new
+generation.
+
+**The switch** (once, 2026-11; plan gocardless-sandbox-qc.sv, S1b):
+`scripts/fly/staging-kept.sh`, run before the change to
+`fly.staging.toml` reached `main`. It stages the first generation and the
+removal of `KEEP_QC_TOKEN` (so `/api/qc/*` is 404 on staging), deletes the
+repo-wide GitHub secret `KEEP_QC_TOKEN` (keep-qc's is the environment
+`qc`'s), then waits for the push's deploy (or dispatches one from `main`)
+and for `/healthz` to report the generation. Staged first because a
+demand deploy without a generation refuses to boot; that deploy wiped
+staging once more ("no reset generation recorded"), as every deploy did
+before, and started the fresh prefix. Re-running it is safe.
+
+**The seed** is `seed::riverside` (Convex's `testSeed`): 100 donors with
+notes, relationships, identifiers, field values, acquisition codes, gifts
+and Gift Aid declarations, and one user per role (`admin@`, `staff@`,
+`viewer@keep-together.example`), each signing in with a password and
+TOTP. Their credentials are the six Fly secrets
 `KEEP_RIVERSIDE_<ADMIN|STAFF|VIEWER>_<PASSWORD|TOTP>`
 (`scripts/fly/staging.sh` makes missing ones and prints them once); the
 boot stops naming any that is missing, and they never reach the log. The
-TOTP secrets survive the reset, so an authenticator app keeps working
-across deploys. Locally, `KEEP_ENV=dev keep dev seed-riverside` makes the
-same world and prints generated sign-ins.
-
-`KEEP_QC_TOKEN` (a Fly secret, also made by `scripts/fly/staging.sh`)
-opens `/api/qc/*` on staging for the nightly `pnpm qc --target staging`:
-it seeds and signs into `qc-` groups only, never riverside. The api
-refuses to boot with it under `KEEP_ENV=prod`.
+TOTP secrets survive a reset, so an authenticator app keeps working.
+Locally, `KEEP_ENV=dev keep dev seed-riverside` makes the same world and
+prints generated sign-ins.
 
 ## keep-qc
 
@@ -828,18 +856,12 @@ keep-preview-update.timer`, `tailscale serve --https=443 off`, then delete
 
 ## Nightly QC
 
-QC runs against a hosted app in two places while the cutover lasts:
-
-- **GitHub Actions against keep-qc** (`.github/workflows/qc.yml`; plan
-  `factory/plans/gocardless-sandbox-qc.sv`, A2). This is the one that
-  stays. It runs after every keep-qc deploy, nightly at 03:00 UTC, and
-  by hand.
-- **The house nightly against staging** (`scripts/qc-nightly/`, below),
-  until Actions has had 7 passing nights in a row (`scripts/qc-actions/
-  status.sh`). Then the human uninstalls its timer and
-  `scripts/qc-nightly/` is removed (plan step R1).
-
-Both open or comment on the same `qc-nightly` issue.
+QC runs against a hosted app from **GitHub Actions against keep-qc**
+(`.github/workflows/qc.yml`; plan `factory/plans/gocardless-sandbox-qc.sv`,
+A2): after every keep-qc deploy, nightly at 03:00 UTC, and by hand.
+Failures open or comment on the `qc-nightly` issue (the label kept the
+name of the house nightly it replaced, below). Staging has no QC token:
+`/api/qc/*` is 404 there.
 
 ### On GitHub Actions (keep-qc)
 
@@ -948,8 +970,13 @@ the run is `error step=history` and no new link is uploaded, since an
 empty one uploaded as the newest would cut the chain. With none at all
 (the first run, or 90 days without one) the chain starts again.
 
-**Results** (`report.sh`; `runs.log` fields as the house nightly's, plus
-`run=`, `event=` and `unbudgeted=`):
+**Results** (`report.sh`): one `runs.log` line per run: time, `commit`,
+`result`, and for a run that got to QC `flows` timed, flows `over`
+budget, median `rtt`, `rttover` (flows with a worker over the RTT
+ceiling, whose latency the reporter didn't judge), `retries` (set-up
+calls sent again after no answer: passing, but flagged), `exit` (QC's,
+when not 0); `step=` on an error, `reason=` on a void; plus `run=`,
+`event=` and `unbudgeted=`.
 
 | result | means | alert |
 |---|---|---|
@@ -959,7 +986,7 @@ empty one uploaded as the newest would cut the chain. With none at all
 | `void` | can't be trusted either way (`reason=`: `commit-changed`, `qc-check-unknown` after a pass, `rtt-over-ceiling`, `no-budgets`, `commit-not-on-main`) | issue only when lasting; `commit-not-on-main` at once |
 | `record` | a `mode=record` run: measured, nothing judged | none |
 
-Lasting voids are the house's rule: the last 2 runs both void, or 36 h
+Voids alert when they last: the last 2 runs both void, or 36 h
 with no pass, fail or error. A `no-budgets` void (a target with no budgets
 at all, as keep-qc before A3) never alerts, never counts among the 2, and restarts the 36 h
 clock (everything but latency was judged). A fail, an error or a lasting
@@ -972,115 +999,21 @@ shown as `no-record`. Then the passing nights in a row (noon to noon
 UTC; any run that isn't a pass ends it, and so does a night with no
 run), the run in progress and the open issue.
 
-### The house nightly (staging, until R1)
+### The house nightly (retired)
 
-The first cutover gate (C1) needed three nightly QC runs in a row
-against staging (`factory/plans/migration-rust.sv`), and the house
-server has run them since. It keeps running until Actions has its 7
-nights. Scripts in `scripts/qc-nightly/`:
-
-| script | |
-|---|---|
-| `install.sh [--token-stdin]` | once, re-runnable: makes `~/.local/share/keep-qc-nightly/` (`KEEP_QC_NIGHTLY_HOME`) with its own https clone in `src/` (never a working checkout or a factory worktree), its `node_modules` and Playwright's chromium, `nightly.env`, `qc-token` (0600), the `systemd --user` units `keep-qc-nightly.{service,timer}`; enables the timer and checks gh works from a unit. Re-run it to install changed scripts |
-| `run.sh` | one run: what the timer starts daily at 03:00 local (`Persistent=true`: a night the machine was off runs at the next boot) |
-| `status.sh [N]` | the last N runs, the current streak of passing nights in a row (what the gate counts) with the commit each ran, the next run, the open issue |
-
-**The token.** `pnpm qc --target staging` needs `KEEP_QC_TOKEN` (see
-Staging reset). `install.sh` fetches a missing one with `fly ssh console
--a keep-staging -C 'printenv KEEP_QC_TOKEN'` straight into `qc-token`, or
-takes it with `--token-stdin`; it is never printed. `run.sh` reads it into
-the env of the `pnpm qc` process only: not argv, not the log, not any
-other command. When the Fly secret changes, delete `qc-token` and rerun
-`install.sh` (or pass the new one with `--token-stdin`).
-
-**A run** (`run.sh`; one at a time, under `run.lock`: a second one
-records `void reason=another-run`):
-
-1. Waits up to 5 min for the network (DNS for staging, `gh api`). A
-   night missed while the machine was off runs at the next boot, maybe
-   before the network is up, and a `--user` unit can't order against
-   `network-online.target`. Still no DNS: `void reason=no-network`. DNS
-   but `gh` failing (an expired token, a lost keyring): `error step=gh`.
-2. Waits up to 45 min for a Deploy workflow still queued or running
-   (still busy: `void reason=deploy-busy`), then takes the commit staging
-   runs: of the completed Deploy runs, the one that finished last
-   (`updatedAt`, so a re-run of an old run counts when it ran) and got as
-   far as its "Deploy keep-staging" step (`gh run list` / `gh run view`).
-   That step succeeded: its commit. It failed or was cancelled part-way:
-   staging could be on either image, `void reason=commit-uncertain`. Not
-   `origin/main`: a push may still be deploying, or have failed CI and
-   never reached staging. A deploy whose smoke test failed after `flyctl
-   deploy` still counts, since staging serves that image. A `fly deploy`
-   by hand bypasses all this, and the run would test the wrong commit.
-3. Checks that commit out in `src/`, `pnpm install --frozen-lockfile`,
-   `playwright install chromium` (a no-op unless Playwright moved).
-4. Takes the preview's `update.lock` (waiting out a build already under
-   way, up to 1 h), then the main checkout's `.qc.lock` (the
-   `scripts/lockfile.mjs` format, so a local `pnpm qc` waits for it and it
-   waits for a local run; the preview's updater skips while it's held).
-5. Looks again: a deploy started, or another Deploy run finished (of
-   any commit, the same one included: every deploy reseeds), during the
-   waits: back to 2 (twice at most, else `void reason=staging-kept-changing`). Then
-   re-dates `.qc.lock`, so the waits never make it look stale (2 h).
-6. `pnpm qc --target staging`, then `pnpm qc:report`
-   (`src/qc-report/trend.html`; history in `src/qc-results/history.jsonl`,
-   staging lines only).
-7. Looks again, comparing the Deploy run and its `updatedAt`, not just
-   the commit: a deploy job started, or another Deploy run finished,
-   during the run: `void reason=staging-changed-during-run` (every deploy
-   reseeds, so neither a pass nor a fail means much). gh gets 3 tries;
-   still unanswered, a pass becomes `void reason=staging-check-unknown`
-   and a fail stays `fail` with `staging-check=unknown` (a loud false fail
-   beats a quiet one).
-8. Appends one line to `runs.log`: time, `commit`, `result`, and for a
-   run that got to QC `flows` timed, flows `over` budget, median `rtt`,
-   `rttover` (flows with a worker over the 150 ms RTT ceiling, whose
-   latency the reporter didn't judge), `retries` (set-up calls sent again
-   after no answer: passing, but `status.sh` flags them and the run's
-   SETUP RETRIES banner says which, and whether the run before retried
-   the same route), `exit` (QC's, when not 0); `step=` on an error,
-   `reason=` on a void.
-
-Results:
-
-| result | means | alert |
-|---|---|---|
-| `pass` | QC passed against one deploy, latency judged | none |
-| `fail` | QC failed: a test, a budget, a gate (also with `staging-check=unknown`) | issue |
-| `error` | the run broke before QC could judge (`step=`: install, token, gh …) | issue |
-| `void` | can't be trusted either way (`reason=` above; also `rtt-over-ceiling` on an otherwise passing run) | issue only when lasting |
-
-A fail or error opens a GitHub issue labelled `qc-nightly` (GitHub emails
-it), or comments on the open one, and the unit fails (exit 1); closing the
-issue is by hand. A single void doesn't: a deploy at 03:00 is no fault.
-Voids that last do, the same way: the last 2 runs both void, or 36 h
-with no pass, fail or error. Some reasons persist (a failed `flyctl
-deploy` with no push after it, a stuck Deploy run, staging's `/api/me`
-over the RTT ceiling because the app is slow, not the link) and would
-stall the gate unnoticed.
-
-**The streak** (`status.sh`, what the gate counts):
-passing nights in a row. Nights run noon to noon, so a hand run at 23:30
-and the 03:00 run after it are one night. Any run that isn't a pass ends
-the streak, a void too: that night wasn't tested, though it's no
-failure. So does a night with no run. The gate wants three. Full output:
-`~/.local/share/keep-qc-nightly/logs/` (last 30) and `journalctl --user
--u keep-qc-nightly`.
-
-**First run** (after `install.sh`; linger is already on):
+Until 2026-11 the house server also ran QC nightly against staging
+(`scripts/qc-nightly/`, a `systemd --user` timer), the first cutover
+gate's runner. It went with plan step R1, when staging stopped resetting
+on deploy and lost its QC token (S1b): QC runs only against keep-qc now,
+from Actions. To uninstall it from the machine that had it:
 
 ```bash
-systemctl --user start --no-block keep-qc-nightly.service
-journalctl --user -fu keep-qc-nightly.service
-~/.local/share/keep-qc-nightly/bin/status.sh
+systemctl --user disable --now keep-qc-nightly.timer
+systemctl --user stop keep-qc-nightly.service
+rm -f ~/.config/systemd/user/keep-qc-nightly.{service,timer}
+systemctl --user daemon-reload
+rm -rf ~/.local/share/keep-qc-nightly   # its clone, token copy, logs and QC history
 ```
-
-`run.sh` uses gh from a unit with no login session: if `install.sh` says
-`gh auth status` fails there, gh's token is in a desktop keyring; store
-it in a file (`gh auth login --insecure-storage`). To remove it:
-`systemctl --user disable --now keep-qc-nightly.timer`, then delete
-`~/.local/share/keep-qc-nightly` and the two units in
-`~/.config/systemd/user/`.
 
 ## To verify on the first real run
 

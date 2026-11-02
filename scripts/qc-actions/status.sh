@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # QC on Actions at a glance (docs/ops.md "Nightly QC"): the last runs and
-# their results, the streak of passing nights in a row that retires the
-# house nightly (7, plan gocardless-sandbox-qc.sv R1), the run under way,
-# the open qc-nightly issue.
+# their results, the streak of passing nights in a row, the run under
+# way, the open qc-nightly issue.
 #
 #   scripts/qc-actions/status.sh [N]      (N: runs shown, default 10)
 #
@@ -86,7 +85,7 @@ else
   nights=0
   ((${#streak[@]} == 0)) || nights=$(for line in "${streak[@]}"; do night "$line"; done | sort -u | wc -l)
   echo
-  echo "streak: $nights passing night(s) in a row (${#streak[@]} run(s))${latest:+, the latest the night of $latest}; the house nightly retires at 7"
+  echo "streak: $nights passing night(s) in a row (${#streak[@]} run(s))${latest:+, the latest the night of $latest}"
   for line in "${streak[@]}"; do
     printf '  night of %s  %s  run %s  %s\n' "$(night "$line")" "${line%% *}" "$(field run "$line")" "$(field commit "$line" | cut -c1-12)"
   done

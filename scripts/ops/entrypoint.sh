@@ -56,7 +56,7 @@ GENERATION=""
 if [ "$RESET_ON" = demand ]; then
   [ -n "${KEEP_RESET_SEED:-}" ] || { log "KEEP_RESET_ON=demand needs KEEP_RESET_SEED (what a reset seeds)"; exit 1; }
   # A Fly secret, set only by scripts/fly/staging-reset.sh, never in the
-  # toml's [env] (docs/ops.md "Staging reset"). The same rule as
+  # toml's [env] (docs/ops.md "Staging"). The same rule as
   # /healthz's resetGeneration (api::reset::generation).
   GENERATION=${KEEP_RESET_GENERATION:-}
   case $GENERATION in

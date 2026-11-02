@@ -8,9 +8,11 @@
 #
 # Makes the app in lhr, its 10 GB volume keep_data, asks for any secret
 # still missing, generates the riverside sign-ins (printed once: note
-# them) and the QC token (to Fly and the GitHub secret, never shown) if
-# missing, adds the certificate for staging.keep-together.org.uk and
-# prints the Route 53 record to add, and a deploy token for GitHub.
+# them) and a first KEEP_RESET_GENERATION if missing (fly.staging.toml's
+# KEEP_RESET_ON=demand won't boot without one), adds the certificate for
+# staging.keep-together.org.uk and prints the Route 53 record to add, and
+# a deploy token for GitHub. No QC token: QC runs against keep-qc
+# (scripts/fly/qc.sh), and /api/qc/* stays 404 on staging.
 # The first deploy is `fly deploy -c fly.staging.toml --ha=false` (or a
 # push to main). Re-run it any time: it also checks the app still has one
 # machine and one volume.
@@ -98,13 +100,11 @@ else
   echo "all set"
 fi
 
-say "Generated secrets (riverside sign-ins, QC token)"
+say "Generated secrets (riverside sign-ins, reset generation)"
 # Made here, never typed: the riverside users' passwords and TOTP secrets
-# (the reset seed reads them on every deploy, so an authenticator keeps
-# working) and KEEP_QC_TOKEN, which lets the nightly QC run seed qc-
-# groups (/api/qc/*). The riverside sign-ins are printed once (Fly can't
-# show them again); the token never is: it goes to Fly and GitHub on stdin.
-# Secrets reach fly and gh on stdin, never argv (the import_secrets
+# (the reset seed reads them at every reset, so an authenticator keeps
+# working). The riverside sign-ins are printed once (Fly can't show them
+# again). Secrets reach fly on stdin, never argv (the import_secrets
 # function and printf are bash builtins: no process carries them).
 hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 b32() { head -c 20 /dev/urandom | base32 | tr -d '=\n'; }
@@ -122,26 +122,19 @@ for role in ADMIN STAFF VIEWER; do
     echo "  otpauth://totp/keep-together:${role,,}%40keep-together.example?secret=$totp&issuer=keep-together"
   fi
 done
-qc_token=
-if ! grep -qx KEEP_QC_TOKEN <<<"$have"; then
-  # Straight into GitHub too (the nightly runner's copy): never printed.
-  command -v gh >/dev/null && gh auth status >/dev/null 2>&1 ||
-    die "KEEP_QC_TOKEN is missing and gh isn't signed in (gh auth login): it goes to Fly and GitHub at once, never on screen"
-  qc_token=$(hex 32)
-  gen+=("KEEP_QC_TOKEN=$qc_token")
-fi
+# The first reset generation (not secret; a Fly secret only, never in the
+# toml: docs/ops.md "Staging"). Only when missing: a new one on a live
+# app would wipe it at the next deploy. scripts/fly/staging-reset.sh
+# changes it after this.
+grep -qx KEEP_RESET_GENERATION <<<"$have" ||
+  gen+=("KEEP_RESET_GENERATION=$(date -u +%Y%m%dT%H%M%SZ)")
 if ((${#gen[@]})); then
   import_secrets "${gen[@]}"
 else
   echo "all set"
 fi
-if [[ -n $qc_token ]]; then
-  printf '+ gh secret set KEEP_QC_TOKEN <stdin>\n' >&2
-  printf %s "$qc_token" | gh secret set KEEP_QC_TOKEN
-  qc_token=
-  echo "KEEP_QC_TOKEN set on Fly and as the GitHub secret (for a local nightly run: copy it from"
-  echo "  a Fly machine's env, fly ssh console -a $APP -C 'printenv KEEP_QC_TOKEN')"
-fi
+grep -qx KEEP_QC_TOKEN <<<"$have" &&
+  echo "warning: $APP still has KEEP_QC_TOKEN: scripts/fly/staging-kept.sh removes it" >&2
 
 say "Certificate for $HOST"
 fly certs show "$HOST" -a "$APP" >/dev/null 2>&1 || run fly certs add "$HOST" -a "$APP"

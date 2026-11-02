@@ -425,3 +425,82 @@ describe('refusals: nothing is touched', () => {
     refused({ ...DEMAND, KEEP_RESET_GENERATION: 'g1', KEEP_ENV: 'prod' }, 'refused when KEEP_ENV=prod')
   })
 })
+
+// fly.staging.toml's [env], as Fly passes it to the machine.
+function stagingToml() {
+  const toml = fs.readFileSync(path.join(import.meta.dirname, '../../fly.staging.toml'), 'utf8')
+  const env = {}
+  let inEnv = false
+  for (const line of toml.split('\n').map((l) => l.trim())) {
+    if (line.startsWith('[')) inEnv = line === '[env]'
+    else if (inEnv && line.includes(' = ') && !line.startsWith('#')) {
+      const [k, v] = line.split(' = ')
+      env[k.trim()] = v.trim().replace(/^"|"$/g, '')
+    }
+  }
+  return env
+}
+
+describe('staging’s switch to demand (S1b: scripts/fly/staging-kept.sh)', () => {
+  const STAGING = stagingToml()
+  /** keep-staging today: reset on deploy, image x:1, with data. */
+  function today() {
+    expect(boot({ ...SEED, ...BUCKETS, FLY_IMAGE_REF: 'x:1' }).status).toBe(0)
+    writeOrg()
+  }
+
+  test('fly.staging.toml says demand, and never names the generation (review S1a M3)', () => {
+    expect(STAGING).toMatchObject({ KEEP_ENV: 'staging', KEEP_RESET_SEED: 'riverside', KEEP_RESET_ON: 'demand' })
+    expect(STAGING).not.toHaveProperty('KEEP_RESET_GENERATION')
+  })
+
+  test('deployed before the generation is set: refuses to boot, touches nothing', () => {
+    today()
+    const res = boot({ ...STAGING, ...BUCKETS, FLY_IMAGE_REF: 'x:2' })
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('needs KEEP_RESET_GENERATION')
+    expect(res.calls).toEqual([])
+    expect(kept()).toBe(true)
+    // Setting it then restarts that machine: the one wipe happens there.
+    const set = boot({ ...STAGING, ...BUCKETS, FLY_IMAGE_REF: 'x:2', KEEP_RESET_GENERATION: 'g1' })
+    expect(set.status, set.stderr).toBe(0)
+    expect(kept()).toBe(false)
+  })
+
+  test('generation staged, then the deploy: exactly one wipe, a fresh prefix, no restore', () => {
+    today()
+    const env = { ...STAGING, ...BUCKETS, KEEP_RESET_GENERATION: '20261102T120000Z' }
+    const res = boot({ ...env, FLY_IMAGE_REF: 'x:2', STUB_RESTORE_litestream: '0', STUB_RESTORE_snapshot: '0' })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stderr).toContain('no reset generation recorded')
+    expect(kept()).toBe(false)
+    // Wiped, so never restored: the new prefix starts empty.
+    expect(restores(res.calls)).toEqual([])
+    expect(res.calls).toEqual(['litestream staging/20261102T120000Z'])
+    expect(marker('.generation')).toBe('20261102T120000Z')
+    expect(has('.generations-used')).toBe(false)
+    // From then on deploys and restarts keep the data.
+    writeOrg()
+    for (const image of ['x:3', 'x:3', 'x:4']) {
+      const next = boot({ ...env, FLY_IMAGE_REF: image })
+      expect(next.status, next.stderr).toBe(0)
+      expect(next.calls).toEqual(['litestream staging/20261102T120000Z'])
+      expect(kept()).toBe(true)
+    }
+  })
+
+  test('generation set unstaged first (a restart under deploy): ignored, kept, then one wipe', () => {
+    today()
+    // `fly secrets set` without --stage restarts the machine on the same
+    // image, still under deploy: nothing wiped, the old prefix.
+    const restart = boot({ ...SEED, ...BUCKETS, FLY_IMAGE_REF: 'x:1', KEEP_RESET_GENERATION: 'g1' })
+    expect(restart.status).toBe(0)
+    expect(restart.stderr).toContain('KEEP_RESET_GENERATION is ignored')
+    expect(restart.calls).toEqual(['litestream staging/1'])
+    expect(kept()).toBe(true)
+    const deploy = boot({ ...STAGING, ...BUCKETS, FLY_IMAGE_REF: 'x:2', KEEP_RESET_GENERATION: 'g1' })
+    expect(deploy.status, deploy.stderr).toBe(0)
+    expect(kept()).toBe(false)
+    expect(deploy.calls).toEqual(['litestream staging/g1'])
+  })
+})
