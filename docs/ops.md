@@ -912,14 +912,16 @@ history line.
 **Budgets of its own** (human, g2q6). The house's budgets are timed
 from the house, not from a runner in the US. `qc/budgets.ts` has a set
 per target (`targetBudgets`). The `qc` set was recorded by plan step A3
-and approved by the human (2026-11-01): three `mode=record` runs from a
-US Actions runner to keep-qc, then in London, each flow's line 1.5× its
-worst sample, the RTT ceiling (290 ms) from the same runs. Bulk flows
-keep the fixed 500 ms, except the phone's page upload at 1,500 ms on
-keep-qc only. keep-qc has since moved to iad, so the set is re-recorded
-(qc/README.md "Budgets"). A flow missing from it (only the GoCardless
-fake's) is timed and recorded but not judged (a `NO BUDGETS` banner says
-so).
+and approved by the human (2026-11-01), then re-recorded after keep-qc
+moved to iad: three `mode=record` runs on main 8a843bd from a US Actions
+runner to keep-qc in iad (GitHub runs 41373392160, 41374042465,
+41374568076), each flow's line 1.5× its worst sample, the RTT ceiling
+(140 ms) from the same runs. Bulk flows keep the fixed 500 ms, except
+the phone's page upload at 1,500 ms on keep-qc only. The runner's region
+still varies (westus to eastus2: 82 to 13 ms median RTT), so the lines
+allow for a west-coast runner (qc/README.md "Budgets"). A flow missing
+from it (only the GoCardless fake's) is timed and recorded but not
+judged (a `NO BUDGETS` banner says so).
 
 **History** is an artifact chain (g2q8): `scripts/qc-actions/history.sh
 fetch` takes the `qc-history` artifact (`history.jsonl` and `runs.log`)

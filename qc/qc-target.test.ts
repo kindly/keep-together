@@ -74,7 +74,7 @@ describe('per-target budgets (human, g2q6)', () => {
   })
 
   test('qc (A3, recorded): its own lines and ceiling; same kinds; bulk at the fixed 500 ms but the page upload; no targets', () => {
-    expect(rttCeilingMs('qc')).toBe(290)
+    expect(rttCeilingMs('qc')).toBe(140)
     const own = targetBudgets.qc!.flows
     expect(Object.keys(own).length).toBeGreaterThan(0)
     for (const [name, b] of real) {
@@ -116,7 +116,7 @@ describe('per-target budgets (human, g2q6)', () => {
       targetBudgets.qc!.flows['contact.save'],
     )
     expect(budgetFor('gocardless.setUp').unbudgeted).toBe(true)
-    expect(rttCeilingMs()).toBe(290)
+    expect(rttCeilingMs()).toBe(140)
     vi.stubEnv('QC_TARGET', 'staging')
     expect(budgetFor('contact.save')).toBe(budgets['contact.save'])
   })

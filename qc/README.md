@@ -320,17 +320,19 @@ missing from a target's set is timed and recorded but not judged
 harness's self-tests keep their budgets everywhere.
 
 The `qc` set was recorded by plan step A3 and approved by the human
-(2026-11-01): three `mode=record` runs of `qc.yml` **from a US Actions
-runner to keep-qc in London (lhr)**, 1.5× each flow's worst sample
-rounded up to 10 ms, and an RTT ceiling of 290 ms from the same runs.
-The link dominates those lines (the runs' median RTT was 90 to 185 ms;
-most flows take one to four round trips), so they say more about the
-Atlantic than the app; if keep-qc or the runners move, re-record:
-replace `QC_RECORDED` and `QC_RTT_CEILING_MS` in `qc/budgets.ts`
-wholesale. The human's fixed lines (`QC_FIXED`) aren't recorded and stay:
-bulk at 500 ms, but `scan.sendPage` and `scans.uploadToLaptop`, the
-phone's page upload, at 1,500 ms on keep-qc only. The same OK rule
-applies to the set.
+(2026-11-01), then re-recorded the same way after keep-qc moved to iad:
+three `mode=record` runs of `qc.yml` on main 8a843bd **from a US Actions
+runner to keep-qc in Ashburn (iad)** (GitHub runs 41373392160,
+41374042465, 41374568076), 1.5× each flow's worst sample rounded up to
+10 ms, and an RTT ceiling of 140 ms from the same runs. The runner's
+region still sets the link: GitHub put those runs in westus,
+southcentralus and eastus2, at a median RTT of 82, 57 and 13 ms, and most
+flows take one to four round trips, so the westus run sets most lines.
+If keep-qc or the runners move, re-record: replace `QC_RECORDED` and
+`QC_RTT_CEILING_MS` in `qc/budgets.ts` wholesale. The human's fixed
+lines (`QC_FIXED`) aren't recorded and stay: bulk at 500 ms, but
+`scan.sendPage` and `scans.uploadToLaptop`, the phone's page upload, at
+1,500 ms on keep-qc only. The same OK rule applies to the set.
 
 Each
 flow call takes one untimed warm-up, then `QC_REPEATS` (default 5) timed
