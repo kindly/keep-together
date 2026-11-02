@@ -321,7 +321,9 @@ export interface TargetBudgets {
 // 57 and 13 ms, and most flows take 1–4 round trips, so run 1 (westus)
 // sets most worsts. RTT ceiling: 1.5× the worst worker RTT (87.5 ms).
 // contact.note.archive has 2 runs only: its test failed in run 1 before
-// the flow (a behaviour failure, not timing).
+// the flow (a behaviour failure, not timing), so its line is set by
+// analogy with contact.note.add/save/pin, its 3-round-trip siblings,
+// whose westus worsts set them (human, 2026-11-02).
 //
 // RE-RECORD: replace QC_RECORDED (and QC_RTT_CEILING_MS) wholesale; the
 // human's fixed lines (QC_FIXED) stay. Bulk flows are not recorded.
@@ -353,7 +355,7 @@ const QC_RECORDED: Partial<Record<FlowName, Budget>> = {
   'contact.note.add': { kind: 'repeatable', maxMs: 420 }, // worst 275/198/63
   'contact.note.save': { kind: 'repeatable', maxMs: 390 }, // worst 260/199/68
   'contact.note.pin': { kind: 'repeatable', maxMs: 400 }, // worst 265/193/52
-  'contact.note.archive': { kind: 'repeatable', maxMs: 300 }, // worst —/199/62; 2 runs only
+  'contact.note.archive': { kind: 'repeatable', maxMs: 420 }, // worst —/199/62; 2 runs only: by analogy with note.add/save/pin, no run-1 (westus) sample (human, 2026-11-02)
   'contact.identifier.add': { kind: 'repeatable', maxMs: 250 }, // worst 161/82/26
   'contact.identifier.remove': { kind: 'repeatable', maxMs: 150 }, // worst 99/82/51
   'contact.hold.release': { kind: 'repeatable', maxMs: 430 }, // worst 281/200/52
