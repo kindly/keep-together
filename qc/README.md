@@ -21,7 +21,7 @@ pnpm qc qc/flows/contacts.spec.ts        # one spec file (a filtered run)
 QC_REPEATS=1 QC_NO_NETEM=1 pnpm qc       # fast functional pass at loopback speed
 QC_MODE=record pnpm qc                   # measure and write history, assert nothing
 QC_NO_WAIT=1 pnpm qc                     # fail at once if another run holds the lock
-pnpm qc --target staging                 # the house nightly: against keep-staging, no pool, no netem
+pnpm qc --target staging                 # keep-staging: retired (no QC token there since S1b)
 pnpm qc --target qc                      # Actions: against keep-qc (QC_TARGET_URL), no pool, no netem
 pnpm qc:pool                             # build and start the pool, and hold it (Ctrl-C stops it)
 pnpm qc:rtt --write                      # re-measure the hosted RTT into qc/rtt.json
@@ -82,7 +82,7 @@ netem and no lock (`qc/target.ts`):
 
 | target | the app | origin | who runs it |
 |---|---|---|---|
-| `staging` | keep-staging | `QC_STAGING_URL` (default `https://staging.keep-together.org.uk`) | the house nightly, until R1 |
+| `staging` | keep-staging | `QC_STAGING_URL` (default `https://staging.keep-together.org.uk`) | nobody: the house nightly ran it until R1; staging has no QC token since S1b, so `/api/qc/*` is 404 there |
 | `qc` | keep-qc, QC's own app | `QC_TARGET_URL` (default `https://keep-qc.fly.dev`) | GitHub Actions (`.github/workflows/qc.yml`) |
 
 Their history lines carry `env: staging` or `env: qc`. A test gets
@@ -120,7 +120,6 @@ on every such run and the run's history lines carry them (`mailOff`), so
 a green night never means the email paths worked.
 
 ```bash
-KEEP_QC_TOKEN=… pnpm qc --target staging
 KEEP_QC_TOKEN=… QC_TARGET_URL=https://keep-qc.fly.dev pnpm qc --target qc
 ```
 
@@ -145,11 +144,10 @@ isn't the house's machine, so on `qc`:
   the retry banner see the runs before), and
   `scripts/qc-actions/status.sh` shows the runs and the streak.
 
-**The house nightly** runs `--target staging` every night at 03:00
-against the commit staging runs (`scripts/qc-nightly/`), with its own
-clone, history and trend report; `~/.local/share/keep-qc-nightly/bin/status.sh`
-shows its runs and streak. It retires once Actions has 7 passing nights
-in a row (plan step R1).
+**The house nightly** (`--target staging` every night from the house
+server) is retired (plan step R1, docs/ops.md "Nightly QC"): staging is
+kept between deploys and has no QC token. Actions against keep-qc is
+the nightly now.
 
 ### Pending ports
 

@@ -25,6 +25,20 @@ add_names() { # file, names on stdin (one per line)
   jq -c --argjson cur "$cur" -R -s '$cur + (split("\n") | map(select(. != "") | {name: .})) | unique_by(.name)' >"$S/$1.new"
   mv "$S/$1.new" "$S/$1"
 }
+# keep-staging's deploy (deploy.yml, env=staging): what the staged
+# secrets and main's fly.staging.toml make of /healthz (main-at-push: what
+# main holds by the time the human's push lands, if it differs).
+deploy_staging() {
+  local g toml
+  rm -f "$S/fail-curl" # the machine is up again
+  toml=$(answer main-at-push "$(answer gh-main-fly-staging-toml "")")
+  if [[ $toml != *'KEEP_RESET_ON = "demand"'* ]]; then
+    echo '{"ok":true,"resetGeneration":null}' >"$S/curl-answer"
+  elif [[ -f $S/staged-KEEP_RESET_GENERATION ]]; then
+    g=$(<"$S/staged-KEEP_RESET_GENERATION")
+    printf '{"ok":true,"resetGeneration":"%s"}\n' "$g" >"$S/curl-answer"
+  fi # demand, nothing staged: the generation it already had
+}
 fail_if() { [[ ! -f $S/fail-$1 ]] || { printf '%s\n' "$(<"$S/fail-$1")" >&2; exit 1; }; }
 
 case $name in
@@ -60,6 +74,13 @@ fly)
     fail_if fly-import
     take_stdin "$@"
     while IFS= read -r l; do [[ -z $l ]] || printf '%s\n' "${l%%=*}"; done <<<"$body" | add_names fly-secrets.json
+    while IFS= read -r l; do
+      [[ $l != KEEP_RESET_GENERATION=* ]] || printf '%s\n' "${l#*=}" >"$S/staged-KEEP_RESET_GENERATION"
+    done <<<"$body"
+    ;;
+  "secrets unset --stage "*" -a keep-staging")
+    jq -c --arg n "$4" 'map(select((.name // .Name) != $n))' <<<"$(answer fly-secrets.json)" >"$S/fly-secrets.json.new"
+    mv "$S/fly-secrets.json.new" "$S/fly-secrets.json"
     ;;
   "tokens create deploy -a keep-qc --expiry 8760h")
     fail_if fly-token
@@ -82,6 +103,19 @@ gh)
   "api -H Accept: application/vnd.github.raw repos/{owner}/{repo}/contents/fly.qc.toml?ref=main")
     fail_if gh-contents
     answer gh-main-fly-qc-toml ""
+    ;;
+  "api -H Accept: application/vnd.github.raw repos/{owner}/{repo}/contents/fly.staging.toml?ref=main")
+    fail_if gh-contents
+    answer gh-main-fly-staging-toml ""
+    ;;
+  "secret list --json name") answer gh-repo-secrets.json ;;
+  "secret delete KEEP_QC_TOKEN")
+    jq -c 'map(select(.name != "KEEP_QC_TOKEN"))' <<<"$(answer gh-repo-secrets.json)" >"$S/gh-repo-secrets.json.new"
+    mv "$S/gh-repo-secrets.json.new" "$S/gh-repo-secrets.json"
+    ;;
+  "workflow run deploy.yml --ref main -f env=staging")
+    deploy_staging
+    echo "https://github.com/o/r/actions/runs/4343"
     ;;
   "run list --workflow "*" -L 20 --json databaseId,status") answer "gh-runs-$4.json" ;;
   "run list --workflow deploy.yml --event workflow_dispatch -L 1 --json databaseId --jq "*)
@@ -111,6 +145,11 @@ gh)
   ;;
 curl)
   fail_if curl
+  # push-after: the human's push to main deploys after that many polls.
+  if [[ -f $S/push-after ]]; then
+    n=$(<"$S/push-after")
+    if ((n <= 1)); then rm -f "$S/push-after"; deploy_staging; else echo $((n - 1)) >"$S/push-after"; fi
+  fi
   for a in "$@"; do [[ $a != @- ]] || take_stdin "$@"; done
   answer curl-answer '{}'
   ;;

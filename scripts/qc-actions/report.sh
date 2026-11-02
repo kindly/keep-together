@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The verdict of a QC run on Actions (.github/workflows/qc.yml; plan
-# gocardless-sandbox-qc.sv, A2), as the house nightly's run.sh gives it
+# gocardless-sandbox-qc.sv, A2), as the retired house nightly gave it
 # (docs/ops.md "Nightly QC"):
 #
 #   pass    QC passed against one deploy of keep-qc, latency judged

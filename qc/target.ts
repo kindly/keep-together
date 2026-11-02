@@ -88,7 +88,8 @@ export function targetReason(
 // QC_TARGET):
 //
 // - `local`: the gate, a pool of local release apis (the default).
-// - `staging`: keep-staging, the house nightly (scripts/qc-nightly/).
+// - `staging`: keep-staging. Unused since the house nightly retired (plan
+//   gocardless-sandbox-qc.sv, R1): staging has no QC token (S1b).
 // - `qc`: keep-qc, QC's own app, from GitHub Actions (.github/workflows/
 //   qc.yml; plan gocardless-sandbox-qc.sv, A2). Its origin is
 //   QC_TARGET_URL. The runner isn't the house: its budgets are its own

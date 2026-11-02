@@ -5,13 +5,14 @@
 #   fly auth login
 #   scripts/fly/staging-reset.sh
 #
-# Only once fly.staging.toml has KEEP_RESET_ON = "demand" (S1b); before
-# that staging resets on every deploy, and this script times out.
+# Only on a kept staging (KEEP_RESET_ON = "demand", switched once by
+# scripts/fly/staging-kept.sh); under deploy the generation is ignored,
+# and this script times out.
 #
 # It sets KEEP_RESET_GENERATION to a new UTC timestamp with `fly secrets
 # set`. That isn't a secret; it's how to change the machine's env
 # without a deploy. It lives only as a Fly secret, never in
-# fly.staging.toml's [env] (docs/ops.md "Staging reset"). Fly restarts the machine, and the entrypoint
+# fly.staging.toml's [env] (docs/ops.md "Staging"). Fly restarts the machine, and the entrypoint
 # (scripts/ops/entrypoint.sh) sees a generation that differs from
 # /data/.generation: it wipes /data, the api seeds riverside with the
 # same sign-ins, and Litestream starts a fresh prefix staging/<generation>.

@@ -46,16 +46,26 @@ jobs:
           echo "$PWD/server/target/release" >>"$GITHUB_PATH"
           echo "$PWD/scripts/ops" >>"$GITHUB_PATH"
       - name: Replica prefix
-        # Staging replicates under staging/<deployment>: the newest one is
-        # the live one (Fly deployment ids are ULIDs, so they sort by time).
+        # Kept staging replicates under staging/<generation>, the one its
+        # /healthz reports (resetGeneration; docs/ops.md "Staging"). A
+        # timestamp sorts before the old staging/deployment-<ULID>
+        # prefixes, so the newest name isn't the live one. Without a
+        # generation (resetting on deploy) the newest deployment is.
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.DRILL_LITESTREAM_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DRILL_LITESTREAM_SECRET }}
           AWS_REGION: eu-west-2
           BUCKET: ${{ vars.LITESTREAM_BUCKET }}
+          STAGING_URL: ${{ vars.STAGING_URL }}
         run: |
-          prefix=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix staging/ --delimiter / \
-            --query 'CommonPrefixes[].Prefix' --output text | tr '\t' '\n' | sort | tail -1)
+          body=$(curl -fsS --max-time 10 "$STAGING_URL/healthz") || { echo "::error::$STAGING_URL/healthz didn't answer"; exit 1; }
+          generation=$(printf '%s' "$body" | jq -r '.resetGeneration // empty')
+          if [ -n "$generation" ]; then
+            prefix=staging/$generation
+          else
+            prefix=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix staging/ --delimiter / \
+              --query 'CommonPrefixes[].Prefix' --output text | tr '\t' '\n' | sort | tail -1)
+          fi
           prefix=${prefix%/}
           [ -n "$prefix" ] && [ "$prefix" != None ] || { echo "::error::no replica under $KEEP_ENV/"; exit 1; }
           echo "KEEP_REPLICA_PREFIX=$prefix" >>"$GITHUB_ENV"
