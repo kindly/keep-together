@@ -185,10 +185,15 @@ export function ownWrite(
  * fetched as the hold committed, never showed the hold).
  */
 const running = new Set<string>()
-/** A burst's events waiting for the running refetch: their latest seq. */
-const dirty = new Map<string, number | undefined>()
+/**
+ * A burst's events waiting for the running refetch: their tenant and
+ * latest seq. Seqs are per organisation file, so events from two tenants
+ * on one key (the caller's groups) merge to no seq: refetch regardless.
+ */
+const dirty = new Map<string, { slug: string; seq: number | undefined }>()
 function invalidate(
   qc: QueryClient,
+  slug: string,
   queryKey: QueryKey,
   refetchType: 'active' | 'all' = 'active',
   seq?: number,
@@ -196,17 +201,20 @@ function invalidate(
   const k = JSON.stringify(queryKey)
   if (running.has(k)) {
     // No seq (a reset, a stream opened live) outranks any.
-    const was = dirty.has(k) ? dirty.get(k) : seq
-    dirty.set(
-      k,
-      was === undefined || seq === undefined ? undefined : Math.max(was, seq),
-    )
+    const was = dirty.get(k) ?? { slug, seq }
+    dirty.set(k, {
+      slug,
+      seq:
+        was.slug !== slug || was.seq === undefined || seq === undefined
+          ? undefined
+          : Math.max(was.seq, seq),
+    })
     return
   }
   running.add(k)
   // A read a write's answer showed (`showAnswer`) is current through its
   // seq: only a later event refetches it.
-  const predicate = (q: Query) => !isFresh(q.queryHash, seq)
+  const predicate = (q: Query) => !isFresh(slug, q.queryHash, seq)
   const refetch = () =>
     qc.invalidateQueries({ queryKey, refetchType, predicate })
   const done =
@@ -215,31 +223,48 @@ function invalidate(
       : refetch()
   void done.finally(() => {
     running.delete(k)
-    if (dirty.has(k)) {
-      const next = dirty.get(k)
+    const next = dirty.get(k)
+    if (next) {
       dirty.delete(k)
-      invalidate(qc, queryKey, refetchType, next)
+      invalidate(qc, next.slug, queryKey, refetchType, next.seq)
     }
   })
+}
+
+/**
+ * Everything the tenant shows may be behind (a `reset`, a stream opened
+ * live): refetch it all. The marks of answers shown so far no longer
+ * hold: a file put back from a backup numbers its events from lower down
+ * (L1), and a write in flight must not install over what this refetches.
+ */
+function invalidateTenant(qc: QueryClient, slug: string) {
+  for (const k of [...fresh.keys()])
+    if (k.startsWith(`${slug}\n`)) fresh.delete(k)
+  for (const w of inflight.get(slug) ?? []) w.overtaken = true
+  invalidate(qc, slug, ['t', slug])
 }
 
 // ── a write's own answer ───────────────────────────────────────────────────
 
 /**
- * Query hash → the seq its cached data is known current through: set by
- * `showAnswer` from the write's `keep-seq`. Every event up to that seq
- * committed before the answer was read, so the answer shows it already.
+ * `${slug}\n${query hash}` → the seq the cached data is known current
+ * through: set by `showAnswer` from the write's `keep-seq`. Every event up
+ * to that seq committed before the answer was read, so the answer shows
+ * it already. Keyed by tenant too: seqs are per organisation file, and a
+ * key outside `['t', slug]` (the caller's groups) hears from every
+ * tenant's stream (M2).
  */
 const fresh = new Map<string, number>()
-function isFresh(hash: string, seq: number | undefined) {
-  const through = fresh.get(hash)
+function isFresh(slug: string, hash: string, seq: number | undefined) {
+  const through = fresh.get(`${slug}\n${hash}`)
   return seq !== undefined && through !== undefined && seq <= through
 }
-function markFresh(hash: string, seq: number) {
-  fresh.set(hash, Math.max(seq, fresh.get(hash) ?? seq))
+function markFresh(slug: string, hash: string, seq: number) {
+  const k = `${slug}\n${hash}`
+  fresh.set(k, Math.max(seq, fresh.get(k) ?? seq))
   // Its events come within moments; a mark must not outlive them.
   setTimeout(() => {
-    if (fresh.get(hash) === seq) fresh.delete(hash)
+    if (fresh.get(k) === seq) fresh.delete(k)
   }, 60_000)
 }
 
@@ -253,6 +278,16 @@ function markFresh(hash: string, seq: number) {
 const writing = new Map<string, number>()
 const waiting = new Map<string, Array<() => void>>()
 const HOLD_MAX_MS = 10_000
+
+/**
+ * Each write in flight, per tenant: whether something it can't vouch for
+ * reached the cache meanwhile. An event applied while it waits (its hold
+ * lapsed, or another write's released it) may be newer than its answer,
+ * and so may a tenant-wide refetch; either way its answer is not
+ * installed over what they refetch (M1).
+ */
+type InFlight = { appliedSeq: number; overtaken: boolean }
+const inflight = new Map<string, Set<InFlight>>()
 
 function hold(slug: string) {
   writing.set(slug, (writing.get(slug) ?? 0) + 1)
@@ -286,6 +321,11 @@ export function deliver(qc: QueryClient, slug: string, e: OrgEvent) {
   applyEvent(qc, slug, e)
 }
 
+/** A reset, or a stream opened with no cursor: see `invalidateTenant`. */
+export function resetTenant(qc: QueryClient, slug: string) {
+  invalidateTenant(qc, slug)
+}
+
 /** What a write's answer shows: each query key and its new data. */
 export type Shown = ReadonlyArray<readonly [QueryKey, unknown]>
 
@@ -296,11 +336,21 @@ export type Shown = ReadonlyArray<readonly [QueryKey, unknown]>
  * throws, as `write` did). The write's own events then skip what it
  * showed; anyone else's still refetch it.
  *
- * A read that a fetch refreshed while the write was in flight may show a
- * commit later than the answer: that one is fetched again instead of
- * being overwritten (never an older state, not even for a moment). A
- * fetch still in flight is cancelled: whatever it might show beyond the
- * answer comes as an event, which refetches.
+ * The answer never replaces anything newer than itself:
+ * - while it is in flight, this tenant's events wait for it (`hold`);
+ * - if one was applied anyway with a later seq (the hold lapsed), or the
+ *   whole tenant was refetched (a reset, a live open), or the answer
+ *   names no seq while events were applied, it is not installed: its
+ *   reads are fetched again instead;
+ * - a read a fetch refreshed while it was in flight may show a later
+ *   commit: that one is fetched again too.
+ * Otherwise a fetch still in flight is cancelled (it began before the
+ * events now held, which refetch whatever is newer) and the answer
+ * installed.
+ *
+ * The answer must be read in the transaction whose last event `keep-seq`
+ * names: the api sends no `keep-seq` for a request that wrote twice
+ * (`api::timing`), and then nothing is marked fresh.
  */
 export async function showAnswer<T>(
   qc: QueryClient,
@@ -308,48 +358,59 @@ export async function showAnswer<T>(
   write: () => Promise<Written<T>>,
   show: (answer: T) => Shown,
 ): Promise<T> {
+  const me: InFlight = { appliedSeq: -Infinity, overtaken: false }
+  const mine = inflight.get(slug) ?? new Set()
+  mine.add(me)
+  inflight.set(slug, mine)
   const release = hold(slug)
   const sent = Date.now()
   try {
     const { answer, seq } = await write()
+    const overtaken = me.overtaken || me.appliedSeq > (seq ?? -Infinity)
     for (const [queryKey, data] of show(answer)) {
       const state = qc.getQueryState(queryKey)
-      if (state && state.dataUpdatedAt > sent) {
+      if (overtaken || (state && state.dataUpdatedAt > sent)) {
         void qc.invalidateQueries({ queryKey, exact: true })
         continue
       }
       await qc.cancelQueries({ queryKey, exact: true })
       qc.setQueryData(queryKey, data)
       const q = qc.getQueryCache().find({ queryKey, exact: true })
-      if (q && seq !== null) markFresh(q.queryHash, seq)
+      if (q && seq !== null) markFresh(slug, q.queryHash, seq)
     }
     return answer
   } finally {
+    // Before the held events apply: they come after the answer.
+    mine.delete(me)
+    if (mine.size === 0) inflight.delete(slug)
     release()
   }
 }
 
 /** Apply one event to the cache. Exported for the tests. */
 export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
+  // A write still in flight sees this applied before its answer.
+  for (const w of inflight.get(slug) ?? [])
+    w.appliedSeq = Math.max(w.appliedSeq, e.seq)
   // Other entities' reads that show this one. Run for our own writes
   // too: a save hook refreshes its own entity's reads, not these (a
   // donor renamed here still shows its old name on gifts otherwise).
   // A code's first use marks it used: the tree offers archive, not delete.
   if (e.contract === 'contacts.acquisition')
-    invalidate(qc, keys.sources(slug), 'active', e.seq)
+    invalidate(qc, slug, keys.sources(slug), 'active', e.seq)
   // B2: gifts show their donor's name and address and their codes' names.
   if (e.entity === 'contacts' || e.entity === 'source_codes')
-    invalidate(qc, keys.gifts(slug), 'active', e.seq)
+    invalidate(qc, slug, keys.gifts(slug), 'active', e.seq)
   const key = ownKey(slug, e.id, e.contract, e.counter)
   // Our own write's echo: its hook has refetched the entity's reads.
   if (own.delete(key)) return
   const invalidates = INVALIDATES[e.entity]
   if (!invalidates) {
-    invalidate(qc, ['t', slug], 'active', e.seq)
+    invalidate(qc, slug, ['t', slug], 'active', e.seq)
     return
   }
   for (const queryKey of invalidates(slug, e))
-    invalidate(qc, queryKey, 'active', e.seq)
+    invalidate(qc, slug, queryKey, 'active', e.seq)
   if (e.entity === 'contacts') {
     // The view only if this is newer than the counter it holds (an echo
     // of a refetch already made changes nothing); its history always. A
@@ -360,8 +421,14 @@ export function applyEvent(qc: QueryClient, slug: string, e: OrgEvent) {
     const slice = e.contract.split('.')[1] as keyof WireContact['counters']
     const shown = view?.counters[slice]
     if (shown === undefined || shown < e.counter)
-      invalidate(qc, keys.contact(slug, e.id), view ? 'all' : 'active', e.seq)
-    else invalidate(qc, keys.history(slug, e.id), 'active', e.seq)
+      invalidate(
+        qc,
+        slug,
+        keys.contact(slug, e.id),
+        view ? 'all' : 'active',
+        e.seq,
+      )
+    else invalidate(qc, slug, keys.history(slug, e.id), 'active', e.seq)
   }
 }
 
@@ -409,7 +476,7 @@ export function useOrgEvents(slug: string) {
         // Live from now: whatever was read before may be behind. Not on
         // the browser's own reconnect once an event has come: that sends
         // its id as Last-Event-ID, and the server replays from it.
-        if (!cursors.has(slug)) invalidate(qc, ['t', slug])
+        if (!cursors.has(slug)) invalidateTenant(qc, slug)
       }
       s.onmessage = (m: MessageEvent<string>) => {
         seen(m)
@@ -423,7 +490,7 @@ export function useOrgEvents(slug: string) {
       }
       s.addEventListener('reset', (m) => {
         seen(m)
-        invalidate(qc, ['t', slug])
+        invalidateTenant(qc, slug)
       })
       s.onerror = () => {
         // CONNECTING: the browser is retrying with Last-Event-ID itself.

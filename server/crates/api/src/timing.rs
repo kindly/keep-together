@@ -3,13 +3,16 @@
 //! included) and `total`, in ms. Measure scripts and QC read server time
 //! from it without logs.
 //!
-//! A tenant write also answers `keep-seq`: the last event its commits
+//! A tenant write also answers `keep-seq`: the last event its commit
 //! published (`store::take_published_seq`). The SPA installs a write's
 //! answer and skips refetching it for the events up to that one
-//! (src/lib/data/events.ts): the answer already shows them.
+//! (src/lib/data/events.ts): the answer already shows them. That holds
+//! only when the answer is read in that commit, so a request that
+//! committed twice answers no `keep-seq` (another user's commit between
+//! its two would be claimed too), and the SPA marks nothing fresh.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::extract::Request;
@@ -26,6 +29,8 @@ struct Counters {
     db_ns: AtomicU64,
     /// The last event this request's writes published; 0: none.
     seq: AtomicI64,
+    /// How many of this request's commits published events.
+    writes: AtomicU32,
 }
 
 impl Timing {
@@ -44,6 +49,13 @@ impl Timing {
     /// A commit of this request published events up to `seq`.
     pub fn wrote(&self, seq: i64) {
         self.0.seq.fetch_max(seq, Ordering::Relaxed);
+        self.0.writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `keep-seq`: the one commit's last event; none after two commits.
+    fn keep_seq(&self) -> Option<i64> {
+        let seq = self.0.seq.load(Ordering::Relaxed);
+        (self.0.writes.load(Ordering::Relaxed) == 1 && seq > 0).then_some(seq)
     }
 
     fn header(&self, total: Duration) -> String {
@@ -71,9 +83,24 @@ pub async fn middleware(mut req: Request, next: Next) -> Response {
     if let Ok(value) = HeaderValue::from_str(&timing.header(start.elapsed())) {
         res.headers_mut().insert("server-timing", value);
     }
-    let seq = timing.0.seq.load(Ordering::Relaxed);
-    if seq > 0 {
+    if let Some(seq) = timing.keep_seq() {
         res.headers_mut().insert("keep-seq", HeaderValue::from(seq));
     }
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Timing;
+
+    #[test]
+    fn keep_seq_names_one_commit_and_none_after_two() {
+        let t = Timing::default();
+        assert_eq!(t.keep_seq(), None, "nothing written");
+        t.wrote(7);
+        assert_eq!(t.keep_seq(), Some(7));
+        // A second commit: its answer can't vouch for what came between.
+        t.wrote(9);
+        assert_eq!(t.keep_seq(), None);
+    }
 }
