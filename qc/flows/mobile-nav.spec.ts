@@ -19,6 +19,63 @@ const parts = (page: Page) => ({
     .getByRole('dialog')
     .getByRole('button', { name: 'Donations' }),
 })
+/**
+ * In the page: pointer presses (and what they hit), the history calls and
+ * pops (with the drawer's marker), and the drawer opening and closing,
+ * each to the console with its time.
+ */
+function traceDrawer() {
+  const t = () => performance.now().toFixed(0)
+  const mark = (s: unknown) =>
+    (s as { mobileNav?: string } | null)?.mobileNav ?? '-'
+  const what = (e: Event) => {
+    const el = e.target
+    if (!(el instanceof Element)) return '?'
+    return el.getAttribute('data-slot') ?? el.tagName
+  }
+  for (const type of ['pointerdown', 'click'])
+    document.addEventListener(
+      type,
+      (e) => console.log(`drawer-trace ${t()} ${type} ${what(e)}`),
+      true,
+    )
+  const push = history.pushState
+  history.pushState = function (...args) {
+    console.log(`drawer-trace ${t()} pushState ${mark(args[0])}`)
+    return push.apply(this, args)
+  }
+  const back = history.back
+  history.back = function () {
+    console.log(`drawer-trace ${t()} back from ${mark(history.state)}`)
+    return back.apply(this)
+  }
+  addEventListener('popstate', (e) =>
+    console.log(`drawer-trace ${t()} popstate to ${mark(e.state)}`),
+  )
+  new MutationObserver((records) => {
+    const sel = '[data-slot=sheet-content]'
+    const drawer = (n: Node) =>
+      n instanceof Element && (n.matches(sel) || n.querySelector(sel))
+    for (const r of records) {
+      const el = r.target as Element
+      if (r.type === 'attributes') {
+        if (el.getAttribute('data-slot') === 'sheet-content')
+          console.log(`drawer-trace ${t()} drawer ${el.getAttribute('data-state')}`)
+        continue
+      }
+      for (const n of r.addedNodes)
+        if (drawer(n)) console.log(`drawer-trace ${t()} drawer mounted`)
+      for (const n of r.removedNodes)
+        if (drawer(n)) console.log(`drawer-trace ${t()} drawer unmounted`)
+    }
+  }).observe(document, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ['data-state'],
+  })
+}
+
 /** The page behind can scroll again (the drawer's scroll lock is gone). */
 const unlocked = (page: Page) =>
   expect(page.locator('body')).not.toHaveAttribute('data-scroll-locked')
@@ -102,6 +159,15 @@ test(
   'phone: back, Esc, the overlay and Close each close the drawer and stay on the page',
   { annotation: [HOME, CONTACTS] },
   async ({ page, users }) => {
+    // On keep-qc the overlay step failed 4 times in 9 runs (2026-11-01/02):
+    // the drawer stayed open after the overlay press, with nothing pending
+    // and no console output; locally it never fails (CI's Chromium, 60 to
+    // 300 ms on every request, CPU slowed 6x, the whole suite, the press
+    // 0 to 120 ms after opening). So the page logs what the drawer and
+    // its history entry do, and a failure's `console` attachment
+    // (qc/fixtures.ts) shows whether the press reached the overlay, and
+    // which pushes, backs and pops came when.
+    await page.addInitScript(traceDrawer)
     await page.setViewportSize(PHONE)
     const slug = users.a.slug
     const { menu, drawer } = parts(page)
