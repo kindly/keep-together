@@ -8,4 +8,19 @@ read: number,
 /**
  * Of those, new here: webhooks that never came.
  */
-missed: number, };
+missed: number, 
+/**
+ * Where the read started (RFC 3339): an hour before the org was
+ * connected, or before its last catch-up.
+ */
+since: string, 
+/**
+ * When GoCardless made the newest event it lists for the account, at
+ * any age; `null` if it lists none. Older than `since` with nothing
+ * read: GoCardless has made no events for the account since.
+ */
+newestEventAt: string | null, 
+/**
+ * This server's clock when it asked (RFC 3339).
+ */
+checkedAt: string, };

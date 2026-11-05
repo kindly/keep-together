@@ -15,8 +15,11 @@
 //!   scenario simulator ([`qc::SCENARIOS`]) on a mandate or payment the
 //!   org's rows name.
 //! - `GET …/peek/{slug}/{kind}/{id}`: a trimmed GoCardless view of the
-//!   org's own `mandate`, `subscription` or `payment`.
-//! - `POST …/catchup {slug}`: the catch-up, for this org, now.
+//!   org's own `mandate`, `subscription`, `payment` or `billing_request`
+//!   (with the mandate it made, if fulfilled).
+//! - `POST …/catchup {slug}`: the catch-up, for this org, now; with where
+//!   its read started and when GoCardless made the account's newest
+//!   event, so a read of nothing says whose side it is on.
 //! - `POST …/cleanup {slug}`: delete at GoCardless the customers behind
 //!   the org's mandates, and sweep QC-tagged customers older than two
 //!   days.
@@ -394,10 +397,14 @@ pub struct QcPeek {
     pub upcoming_payments: Vec<QcUpcoming>,
     /// A mandate's or a subscription's payments, any status.
     pub payments: Vec<QcPeek>,
+    /// A billing request's mandate, once fulfilled, and its status.
+    pub mandate_id: Option<String>,
+    pub mandate_status: Option<String>,
 }
 
 impl From<Seen> for QcPeek {
     fn from(s: Seen) -> Self {
+        let (mandate_id, mandate_status) = s.mandate.unzip();
         QcPeek {
             id: s.id,
             status: s.status,
@@ -413,12 +420,14 @@ impl From<Seen> for QcPeek {
                 })
                 .collect(),
             payments: s.payments.into_iter().map(QcPeek::from).collect(),
+            mandate_id,
+            mandate_status,
         }
     }
 }
 
 /// `GET …/peek/{slug}/{kind}/{id}` (module docs): `kind` is `mandate`,
-/// `subscription` or `payment`.
+/// `subscription`, `payment` or `billing_request`.
 pub async fn peek(
     QcGoCardless(gc): QcGoCardless,
     State(state): State<AppState>,
@@ -428,6 +437,7 @@ pub async fn peek(
         "mandate" => ProviderKind::Mandate,
         "subscription" => ProviderKind::Subscription,
         "payment" => ProviderKind::Payment,
+        "billing_request" => ProviderKind::BillingRequest,
         _ => return Err(ApiError::NotFound),
     };
     let (_, token) = owned(&state, &gc, &slug, Some((kind, id.clone()))).await?;
@@ -445,6 +455,15 @@ pub struct QcCaughtUp {
     pub read: u32,
     /// Of those, new here: webhooks that never came.
     pub missed: u32,
+    /// Where the read started (RFC 3339): an hour before the org was
+    /// connected, or before its last catch-up.
+    pub since: String,
+    /// When GoCardless made the newest event it lists for the account, at
+    /// any age; `null` if it lists none. Older than `since` with nothing
+    /// read: GoCardless has made no events for the account since.
+    pub newest_event_at: Option<String>,
+    /// This server's clock when it asked (RFC 3339).
+    pub checked_at: String,
 }
 
 /// `POST …/catchup {slug}` (module docs).
@@ -453,18 +472,26 @@ pub async fn catchup(
     State(state): State<AppState>,
     Body(req): Body<QcGoCardlessSlug>,
 ) -> Result<Json<QcCaughtUp>, ApiError> {
-    let (tenant, _) = owned(&state, &gc, &req.slug, None).await?;
-    let caught = crate::gocardless::catchup::catch_up_tenant(state.store.clone(), gc, &tenant)
+    let (tenant, token) = owned(&state, &gc, &req.slug, None).await?;
+    let checked_at = rfc3339(contracts::now_ms())?;
+    let caught =
+        crate::gocardless::catchup::catch_up_tenant(state.store.clone(), gc.clone(), &tenant)
+            .await
+            .map_err(|e| {
+                eprintln!("qc gocardless ({}): catch-up: {e}", req.slug);
+                ApiError::GocardlessUnavailable
+            })?
+            .ok_or_else(not_connected)?;
+    let newest_event_at = qc::newest_event(&gc.api, &token)
         .await
-        .map_err(|e| {
-            eprintln!("qc gocardless ({}): catch-up: {e}", req.slug);
-            ApiError::GocardlessUnavailable
-        })?
-        .ok_or_else(not_connected)?;
+        .map_err(|e| gc_err(&req.slug, e))?;
     let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
     Ok(Json(QcCaughtUp {
         read: n(caught.read),
         missed: n(caught.missed),
+        since: caught.since,
+        newest_event_at,
+        checked_at,
     }))
 }
 
@@ -493,15 +520,7 @@ pub async fn cleanup(
         Ok::<Vec<String>, ApiError>(db.read(|r| regular::provider_mandates(r))?)
     })
     .await?;
-    let older_than = time::OffsetDateTime::from_unix_timestamp_nanos(
-        i128::from(contracts::now_ms() - qc::SWEEP_AFTER_MS) * 1_000_000,
-    )
-    .ok()
-    .and_then(|t| {
-        t.format(&time::format_description::well_known::Rfc3339)
-            .ok()
-    })
-    .ok_or(ApiError::Internal)?;
+    let older_than = rfc3339(contracts::now_ms() - qc::SWEEP_AFTER_MS)?;
     let done = qc::cleanup(&gc.api, &token, &mandates, &older_than)
         .await
         .map_err(|e| gc_err(&req.slug, e))?;
@@ -511,4 +530,14 @@ pub async fn cleanup(
         swept: n(done.swept),
         refused: n(done.refused),
     }))
+}
+
+fn rfc3339(ms: i64) -> Result<String, ApiError> {
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000)
+        .ok()
+        .and_then(|t| {
+            t.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .ok_or(ApiError::Internal)
 }

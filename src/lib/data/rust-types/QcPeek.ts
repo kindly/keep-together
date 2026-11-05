@@ -12,4 +12,8 @@ upcomingPayments: Array<QcUpcoming>,
 /**
  * A mandate's or a subscription's payments, any status.
  */
-payments: Array<QcPeek>, };
+payments: Array<QcPeek>, 
+/**
+ * A billing request's mandate, once fulfilled, and its status.
+ */
+mandateId: string | null, mandateStatus: string | null, };
