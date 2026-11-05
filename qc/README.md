@@ -318,14 +318,17 @@ missing from a target's set is timed and recorded but not judged
 harness's self-tests keep their budgets everywhere.
 
 The `qc` set was recorded by plan step A3 and approved by the human
-(2026-11-01), then re-recorded the same way after keep-qc moved to iad:
-three `mode=record` runs of `qc.yml` on main 8a843bd **from a US Actions
-runner to keep-qc in Ashburn (iad)** (GitHub runs 41373392160,
-41374042465, 41374568076), 1.5× each flow's worst sample rounded up to
-10 ms, and an RTT ceiling of 140 ms from the same runs. The runner's
-region still sets the link: GitHub put those runs in westus,
-southcentralus and eastus2, at a median RTT of 82, 57 and 13 ms, and most
-flows take one to four round trips, so the westus run sets most lines.
+(2026-11-01), then re-recorded the same way after keep-qc moved to iad
+and again after the one-trip saves (bfa61c9): three `mode=record` runs
+of `qc.yml` on main 5f1f7bc **from a US Actions runner to keep-qc in
+Ashburn (iad)** (GitHub runs 41949348978, 41949953907, 41950533339),
+1.5× each flow's worst sample rounded up to 10 ms, and an RTT ceiling of
+90 ms (1.5× the worst worker RTT) from the same runs. The runner's
+region still sets the link: GitHub put those runs in eastus, eastus and
+westcentralus, at a median RTT of 11, 9 and 57.5 ms, and most writes
+now take one round trip, so the westcentralus run sets most lines. A
+westus runner (82–88 ms last time) is under the ceiling; one over it
+judges nothing.
 If keep-qc or the runners move, re-record: replace `QC_RECORDED` and
 `QC_RTT_CEILING_MS` in `qc/budgets.ts` wholesale. The human's fixed
 lines (`QC_FIXED`) aren't recorded and stay: bulk at 500 ms, but

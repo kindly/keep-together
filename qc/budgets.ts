@@ -296,8 +296,8 @@ export type FlowName = keyof typeof budgets
 // `mode=record` runs of .github/workflows/qc.yml, each flow's line 1.5×
 // its worst sample, the ceiling from the same runs, shown to the human as
 // a diff of this file, and approved (human, 2026-11-01); re-recorded the
-// same way after keep-qc moved to iad (below). Raising one later
-// needs the human's OK, as above. Bulk flows and routes that call an
+// same way after keep-qc moved to iad and after the one-trip saves
+// (below). Raising one later needs the human's OK, as above. Bulk flows and routes that call an
 // external service are 500 ms there too (human, 2026-11-01), except the
 // phone's page upload on keep-qc (QC_FIXED, below); a route measured over
 // it goes back to the human with its numbers.
@@ -308,120 +308,119 @@ export interface TargetBudgets {
 }
 
 // keep-qc's recorded set (plan step A3, the human's OK 2026-11-01;
-// re-recorded after keep-qc moved to iad, 8a843bd). Recorded from a US
-// Actions runner to keep-qc in Ashburn (iad): the 3 `mode=record` runs of
-// qc.yml on main 8a843bd, GitHub runs 41373392160, 41374042465,
-// 41374568076 (history runIds tnupv1n2, tnuq748k, tnuqhdqe). Each line is
-// 1.5× the flow's worst sample over the 3 runs, rounded up to 10 ms; the
-// comment gives each run's worst (— where a run didn't time it). No
-// targets (targetMs): only the failing line was recorded.
+// re-recorded after keep-qc moved to iad, 8a843bd, and again after the
+// one-trip saves, bfa61c9). Recorded from a US Actions runner to keep-qc
+// in Ashburn (iad): the 3 `mode=record` runs of qc.yml on main 5f1f7bc,
+// GitHub runs 41949348978, 41949953907, 41950533339 (history runIds
+// to09pa8v, to09yc0q, to0a78r9). Each line is 1.5× the flow's worst
+// sample over the 3 runs, rounded up to 10 ms; the comment gives each
+// run's worst. No targets (targetMs): only the failing line was recorded.
 //
 // The runner's region still sets the link: GitHub put the 3 runs in
-// westus, southcentralus and eastus2, at a median RTT to keep-qc of 82,
-// 57 and 13 ms, and most flows take 1–4 round trips, so run 1 (westus)
-// sets most worsts. RTT ceiling: 1.5× the worst worker RTT (87.5 ms).
-// contact.note.archive has 2 runs only: its test failed in run 1 before
-// the flow (a behaviour failure, not timing), so its line is set by
-// analogy with contact.note.add/save/pin, its 3-round-trip siblings,
-// whose westus worsts set them (human, 2026-11-02).
+// eastus, eastus and westcentralus, at a median RTT to keep-qc of 11, 9
+// and 57.5 ms. Since the one-trip saves most writes take one round trip,
+// and run 3 sets most worsts. RTT ceiling: 1.5× the worst worker RTT
+// (57.5 ms), rounded up to 10 ms. A westus runner (82–88 ms in the last
+// recording) is under it and projects inside these lines; one over 90 ms
+// judges nothing.
 //
 // RE-RECORD: replace QC_RECORDED (and QC_RTT_CEILING_MS) wholesale; the
 // human's fixed lines (QC_FIXED) stay. Bulk flows are not recorded.
 //
 // Not here: flows timed only against the GoCardless fake (untimed on
 // keep-qc, which runs the sandbox), so they stay unbudgeted there.
-const QC_RTT_CEILING_MS = 140
+const QC_RTT_CEILING_MS = 90
 const QC_RECORDED: Partial<Record<FlowName, Budget>> = {
-  'auth.signIn': { kind: 'oncePerSession', maxMs: 550 }, // worst 364/254/227
-  'home.toContacts': { kind: 'repeatable', maxMs: 50 }, // worst 32/32/32
-  'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 360 }, // worst 235/153/147
-  'contacts.nav': { kind: 'repeatable', maxMs: 240 }, // worst 157/75/100
-  'contacts.search': { kind: 'repeatable', maxMs: 150 }, // worst 94/78/24
-  'contacts.searchIdentifier': { kind: 'repeatable', maxMs: 170 }, // worst 112/77/26
-  'contacts.search.phone': { kind: 'repeatable', maxMs: 160 }, // worst 105/74/26
-  'contacts.search.postcode': { kind: 'repeatable', maxMs: 170 }, // worst 108/76/26
-  'contacts.search.emailPart': { kind: 'repeatable', maxMs: 170 }, // worst 108/78/26
-  'contacts.search.org': { kind: 'repeatable', maxMs: 170 }, // worst 111/76/27
-  'contacts.search.number': { kind: 'repeatable', maxMs: 20 }, // worst 10/4/4
-  'contacts.showArchived': { kind: 'repeatable', maxMs: 150 }, // worst 99/70/35
-  'contacts.create': { kind: 'infrequent', maxMs: 190 }, // worst 123/91/45
-  'contact.save': { kind: 'repeatable', maxMs: 180 }, // worst 115/88/34
-  'contact.addEmail': { kind: 'repeatable', maxMs: 150 }, // worst 98/76/32
-  'contact.livePropagation': { kind: 'repeatable', maxMs: 310 }, // worst 201/149/80
-  'contact.staleMerge': { kind: 'repeatable', maxMs: 170 }, // worst 112/66/47
-  'contact.revisit': { kind: 'repeatable', maxMs: 80 }, // worst 19/13/48
-  'contact.archive': { kind: 'repeatable', maxMs: 150 }, // worst 98/76/32
-  'contact.restore': { kind: 'rare', maxMs: 180 }, // worst 117/79/32
-  'contact.note.add': { kind: 'repeatable', maxMs: 420 }, // worst 275/198/63
-  'contact.note.save': { kind: 'repeatable', maxMs: 390 }, // worst 260/199/68
-  'contact.note.pin': { kind: 'repeatable', maxMs: 400 }, // worst 265/193/52
-  'contact.note.archive': { kind: 'repeatable', maxMs: 420 }, // worst —/199/62; 2 runs only: by analogy with note.add/save/pin, no run-1 (westus) sample (human, 2026-11-02)
-  'contact.identifier.add': { kind: 'repeatable', maxMs: 250 }, // worst 161/82/26
-  'contact.identifier.remove': { kind: 'repeatable', maxMs: 150 }, // worst 99/82/51
-  'contact.hold.release': { kind: 'repeatable', maxMs: 430 }, // worst 281/200/52
-  'contact.acquisition.set': { kind: 'repeatable', maxMs: 230 }, // worst 101/149/53
-  'contacts.createWithCode': { kind: 'infrequent', maxMs: 200 }, // worst 129/89/95
-  'contacts.filter.sourceCategory': { kind: 'repeatable', maxMs: 170 }, // worst 110/78/36
-  'contacts.filter.sourceVersion': { kind: 'repeatable', maxMs: 150 }, // worst 94/78/39
-  'contacts.loadMore': { kind: 'repeatable', maxMs: 180 }, // worst 119/77/59
-  'fields.create': { kind: 'repeatable', maxMs: 380 }, // worst 250/198/61
-  'fields.option.add': { kind: 'repeatable', maxMs: 410 }, // worst 267/197/213
-  'fields.archive': { kind: 'repeatable', maxMs: 400 }, // worst 265/200/50
-  'fields.filter': { kind: 'repeatable', maxMs: 150 }, // worst 94/79/39
-  'contact.field.set': { kind: 'repeatable', maxMs: 150 }, // worst 98/76/28
-  'contact.field.clear': { kind: 'repeatable', maxMs: 220 }, // worst 145/75/36
-  'settings.staffFields.toggle': { kind: 'repeatable', maxMs: 380 }, // worst 250/195/60
-  'settings.nav': { kind: 'repeatable', maxMs: 40 }, // worst 21/13/26
-  'settings.tab': { kind: 'repeatable', maxMs: 150 }, // worst 96/80/32
-  'settings.staffIdentifierTypes.toggle': { kind: 'repeatable', maxMs: 450 }, // worst 298/296/49
-  'settings.identifierTypes.create': { kind: 'repeatable', maxMs: 400 }, // worst 265/183/48
-  'settings.identifierTypes.rename': { kind: 'repeatable', maxMs: 400 }, // worst 265/182/48
-  'settings.identifierTypes.archive': { kind: 'repeatable', maxMs: 400 }, // worst 265/182/48
-  'settings.staffSourceCodes.toggle': { kind: 'repeatable', maxMs: 400 }, // worst 265/213/49
-  'settings.sourceCodes.open': { kind: 'repeatable', maxMs: 180 }, // worst 114/66/31
-  'settings.sourceCodes.addDetail': { kind: 'repeatable', maxMs: 450 }, // worst 298/183/48
-  'settings.sourceCodes.rename': { kind: 'repeatable', maxMs: 400 }, // worst 265/192/49
-  'settings.sourceCodes.archive': { kind: 'repeatable', maxMs: 430 }, // worst 283/199/49
-  'gift.record': { kind: 'infrequent', maxMs: 180 }, // worst 117/82/31
-  'gift.recordNewContact': { kind: 'infrequent', maxMs: 180 }, // worst 115/81/32
-  'gift.open': { kind: 'repeatable', maxMs: 440 }, // worst 290/82/47
-  'gift.save': { kind: 'repeatable', maxMs: 150 }, // worst 98/66/31
-  'gift.void': { kind: 'repeatable', maxMs: 150 }, // worst 100/66/34
-  'gift.saveClaimed': { kind: 'repeatable', maxMs: 150 }, // worst 99/66/33
-  'gift.unvoid': { kind: 'repeatable', maxMs: 180 }, // worst 115/66/38
-  'contact.gifts.loadMore': { kind: 'repeatable', maxMs: 150 }, // worst 98/77/32
-  'contact.giftaid.cancel': { kind: 'repeatable', maxMs: 400 }, // worst 266/200/76
-  'contact.giftaid.void': { kind: 'repeatable', maxMs: 430 }, // worst 283/200/50
-  'contact.giftaid.details': { kind: 'repeatable', maxMs: 400 }, // worst 266/199/48
-  'giftaid.open': { kind: 'repeatable', maxMs: 180 }, // worst 115/96/48
-  'giftaid.preview': { kind: 'repeatable', maxMs: 230 }, // worst 153/66/32
-  'giftaid.refresh': { kind: 'repeatable', maxMs: 150 }, // worst 99/65/31
-  'giftaid.create': { kind: 'infrequent', maxMs: 160 }, // worst 101/82/32
-  'giftaid.markReady': { kind: 'repeatable', maxMs: 180 }, // worst 114/66/31
-  'giftaid.markSubmitted': { kind: 'repeatable', maxMs: 180 }, // worst 115/74/31
-  'giftaid.markPaid': { kind: 'repeatable', maxMs: 170 }, // worst 111/67/30
-  'giftaid.reject': { kind: 'repeatable', maxMs: 180 }, // worst 115/66/32
-  'giftaid.hmrcSave': { kind: 'repeatable', maxMs: 400 }, // worst 266/185/49
-  'scans.open': { kind: 'repeatable', maxMs: 240 }, // worst 159/83/66
-  'scans.pair': { kind: 'infrequent', maxMs: 190 }, // worst 124/87/32
-  'scans.accept': { kind: 'infrequent', maxMs: 420 }, // worst 276/199/66
-  'scan.open': { kind: 'oncePerSession', maxMs: 450 }, // worst 294/279/115
-  'gift.recordCheque': { kind: 'infrequent', maxMs: 170 }, // worst 110/80/51
-  'batch.close': { kind: 'infrequent', maxMs: 450 }, // worst 298/232/66
-  'bank.matchLine': { kind: 'infrequent', maxMs: 420 }, // worst 279/182/48
-  'standingOrder.record': { kind: 'infrequent', maxMs: 240 }, // worst 157/67/32
+  'auth.signIn': { kind: 'oncePerSession', maxMs: 440 }, // worst 234/242/289
+  'home.toContacts': { kind: 'repeatable', maxMs: 50 }, // worst 32/32/31
+  'contacts.coldLoad': { kind: 'oncePerSession', maxMs: 230 }, // worst 90/81/148
+  'contacts.nav': { kind: 'repeatable', maxMs: 160 }, // worst 69/105/95
+  'contacts.search': { kind: 'repeatable', maxMs: 110 }, // worst 27/25/73
+  'contacts.searchIdentifier': { kind: 'repeatable', maxMs: 120 }, // worst 39/41/76
+  'contacts.search.phone': { kind: 'repeatable', maxMs: 120 }, // worst 25/26/75
+  'contacts.search.postcode': { kind: 'repeatable', maxMs: 150 }, // worst 25/26/95
+  'contacts.search.emailPart': { kind: 'repeatable', maxMs: 120 }, // worst 31/26/75
+  'contacts.search.org': { kind: 'repeatable', maxMs: 120 }, // worst 26/27/75
+  'contacts.search.number': { kind: 'repeatable', maxMs: 20 }, // worst 5/4/7
+  'contacts.showArchived': { kind: 'repeatable', maxMs: 100 }, // worst 32/32/66
+  'contacts.create': { kind: 'infrequent', maxMs: 180 }, // worst 46/46/116
+  'contact.save': { kind: 'repeatable', maxMs: 130 }, // worst 50/46/85
+  'contact.addEmail': { kind: 'repeatable', maxMs: 140 }, // worst 31/48/91
+  'contact.livePropagation': { kind: 'repeatable', maxMs: 230 }, // worst 68/31/150
+  'contact.staleMerge': { kind: 'repeatable', maxMs: 130 }, // worst 31/49/82
+  'contact.revisit': { kind: 'repeatable', maxMs: 80 }, // worst 42/48/24
+  'contact.archive': { kind: 'repeatable', maxMs: 120 }, // worst 32/32/79
+  'contact.restore': { kind: 'rare', maxMs: 130 }, // worst 44/42/82
+  'contact.note.add': { kind: 'repeatable', maxMs: 120 }, // worst 39/38/76
+  'contact.note.save': { kind: 'repeatable', maxMs: 120 }, // worst 45/33/80
+  'contact.note.pin': { kind: 'repeatable', maxMs: 100 }, // worst 42/32/66
+  'contact.note.archive': { kind: 'repeatable', maxMs: 120 }, // worst 31/31/76
+  'contact.identifier.add': { kind: 'repeatable', maxMs: 140 }, // worst 37/28/93
+  'contact.identifier.remove': { kind: 'repeatable', maxMs: 140 }, // worst 46/52/92
+  'contact.hold.release': { kind: 'repeatable', maxMs: 130 }, // worst 27/32/82
+  'contact.acquisition.set': { kind: 'repeatable', maxMs: 140 }, // worst 68/33/92
+  'contacts.createWithCode': { kind: 'infrequent', maxMs: 170 }, // worst 56/71/112
+  'contacts.filter.sourceCategory': { kind: 'repeatable', maxMs: 120 }, // worst 27/28/76
+  'contacts.filter.sourceVersion': { kind: 'repeatable', maxMs: 120 }, // worst 37/36/75
+  'contacts.loadMore': { kind: 'repeatable', maxMs: 110 }, // worst 58/51/68
+  'fields.create': { kind: 'repeatable', maxMs: 120 }, // worst 34/33/74
+  'fields.option.add': { kind: 'repeatable', maxMs: 110 }, // worst 32/32/67
+  'fields.archive': { kind: 'repeatable', maxMs: 130 }, // worst 33/50/81
+  'fields.filter': { kind: 'repeatable', maxMs: 130 }, // worst 33/34/80
+  'contact.field.set': { kind: 'repeatable', maxMs: 130 }, // worst 36/43/84
+  'contact.field.clear': { kind: 'repeatable', maxMs: 120 }, // worst 28/28/74
+  'settings.staffFields.toggle': { kind: 'repeatable', maxMs: 100 }, // worst 31/42/65
+  'settings.nav': { kind: 'repeatable', maxMs: 100 }, // worst 31/14/61
+  'settings.tab': { kind: 'repeatable', maxMs: 100 }, // worst 31/32/64
+  'settings.staffIdentifierTypes.toggle': { kind: 'repeatable', maxMs: 100 }, // worst 31/34/65
+  'settings.identifierTypes.create': { kind: 'repeatable', maxMs: 100 }, // worst 31/32/65
+  'settings.identifierTypes.rename': { kind: 'repeatable', maxMs: 110 }, // worst 31/31/69
+  'settings.identifierTypes.archive': { kind: 'repeatable', maxMs: 200 }, // worst 131/32/66
+  'settings.staffSourceCodes.toggle': { kind: 'repeatable', maxMs: 130 }, // worst 38/32/82
+  'settings.sourceCodes.open': { kind: 'repeatable', maxMs: 120 }, // worst 30/31/80
+  'settings.sourceCodes.addDetail': { kind: 'repeatable', maxMs: 120 }, // worst 31/32/75
+  'settings.sourceCodes.rename': { kind: 'repeatable', maxMs: 120 }, // worst 31/31/79
+  'settings.sourceCodes.archive': { kind: 'repeatable', maxMs: 130 }, // worst 32/32/80
+  'gift.record': { kind: 'infrequent', maxMs: 130 }, // worst 47/38/81
+  'gift.recordNewContact': { kind: 'infrequent', maxMs: 130 }, // worst 42/39/81
+  'gift.open': { kind: 'repeatable', maxMs: 150 }, // worst 46/47/95
+  'gift.save': { kind: 'repeatable', maxMs: 120 }, // worst 31/31/80
+  'gift.void': { kind: 'repeatable', maxMs: 130 }, // worst 74/34/81
+  'gift.saveClaimed': { kind: 'repeatable', maxMs: 100 }, // worst 31/32/66
+  'gift.unvoid': { kind: 'repeatable', maxMs: 120 }, // worst 32/31/79
+  'contact.gifts.loadMore': { kind: 'repeatable', maxMs: 100 }, // worst 31/31/65
+  'contact.giftaid.cancel': { kind: 'repeatable', maxMs: 100 }, // worst 26/32/66
+  'contact.giftaid.void': { kind: 'repeatable', maxMs: 100 }, // worst 32/32/66
+  'contact.giftaid.details': { kind: 'repeatable', maxMs: 120 }, // worst 31/32/79
+  'giftaid.open': { kind: 'repeatable', maxMs: 150 }, // worst 60/83/97
+  'giftaid.preview': { kind: 'repeatable', maxMs: 130 }, // worst 32/40/81
+  'giftaid.refresh': { kind: 'repeatable', maxMs: 120 }, // worst 31/32/78
+  'giftaid.create': { kind: 'infrequent', maxMs: 130 }, // worst 35/32/81
+  'giftaid.markReady': { kind: 'repeatable', maxMs: 130 }, // worst 29/32/81
+  'giftaid.markSubmitted': { kind: 'repeatable', maxMs: 130 }, // worst 35/36/81
+  'giftaid.markPaid': { kind: 'repeatable', maxMs: 120 }, // worst 51/31/79
+  'giftaid.reject': { kind: 'repeatable', maxMs: 130 }, // worst 51/33/81
+  'giftaid.hmrcSave': { kind: 'repeatable', maxMs: 120 }, // worst 31/32/79
+  'scans.open': { kind: 'repeatable', maxMs: 170 }, // worst 55/48/110
+  'scans.pair': { kind: 'infrequent', maxMs: 130 }, // worst 32/32/83
+  'scans.accept': { kind: 'infrequent', maxMs: 130 }, // worst 44/42/83
+  'scan.open': { kind: 'oncePerSession', maxMs: 440 }, // worst 104/124/292
+  'gift.recordCheque': { kind: 'infrequent', maxMs: 130 }, // worst 45/40/85
+  'batch.close': { kind: 'infrequent', maxMs: 210 }, // worst 136/33/82
+  'bank.matchLine': { kind: 'infrequent', maxMs: 100 }, // worst 31/32/65
+  'standingOrder.record': { kind: 'infrequent', maxMs: 130 }, // worst 32/44/81
 }
 
 // The human's fixed lines on keep-qc (2026-11-01), never recorded and
 // never raised to get green: bulk at the house's 500 ms, except the
 // phone's page upload, whose two flows get a keep-qc-only 1,500 ms (worst
 // 448/731/515 and 627/1179/799 ms in A3's runs from lhr; the house's
-// line stays 500 ms). Comments: the iad re-record's worst per run.
+// line stays 500 ms). Comments: the latest re-record's worst per run.
 const QC_FIXED: Partial<Record<FlowName, Budget>> = {
-  'scan.sendPage': { kind: 'bulk', maxMs: 1500 }, // worst 298/282/363
-  'scans.uploadToLaptop': { kind: 'bulk', maxMs: 1500 }, // worst 515/415/265
-  'bank.acceptTicked': bulk, // worst 178/149/115
-  'contacts.bulkSetField': bulk, // worst 98/82/30
+  'scan.sendPage': { kind: 'bulk', maxMs: 1500 }, // worst 247/280/365
+  'scans.uploadToLaptop': { kind: 'bulk', maxMs: 1500 }, // worst 264/264/614
+  'bank.acceptTicked': bulk, // worst 214/231/181
+  'contacts.bulkSetField': bulk, // worst 46/51/82
 }
 
 export const targetBudgets: Partial<Record<QcTarget, TargetBudgets>> = {
