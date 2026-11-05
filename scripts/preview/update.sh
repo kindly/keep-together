@@ -128,7 +128,11 @@ jobs=${KEEP_PREVIEW_JOBS:-1}
 release=$PREVIEW/releases/$new
 if [ ! -x "$release/api" ] || [ ! -f "$release/dist/index.html" ]; then
   run git -C "$src" checkout --quiet --force --detach "$new" || fail "checkout"
-  (cd "$src/server" && run "${quiet[@]}" cargo build --release --locked -j "$jobs" -p api) ||
+  # Queues on the machine-wide cargo lock (factory/build.sh's): two
+  # builds at once ran the machine out of memory (2026-11-01).
+  cargo_lock=${KEEP_CARGO_LOCK:-/tmp/claude-1000/keep-cargo.lock}
+  mkdir -p "$(dirname "$cargo_lock")"
+  (cd "$src/server" && run flock "$cargo_lock" "${quiet[@]}" cargo build --release --locked -j "$jobs" -p api) ||
     fail "cargo build"
   (cd "$src" && run "${quiet[@]}" pnpm install --frozen-lockfile --reporter=silent) ||
     fail "pnpm install"
