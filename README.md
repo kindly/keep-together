@@ -65,7 +65,8 @@ keep sql anytown-hall "SELECT count(*) FROM contacts"     # read-only by constru
 |---|---|---|
 | dev | `pnpm dev`, per checkout | riverside seed, kept |
 | preview | `https://<this machine>.ts.net` (tailnet), main rebuilt every 5 min (`scripts/preview/`) | riverside seed |
-| staging | `staging.keep-together.org.uk` (`keep-staging`, Fly lhr), every push to main | reset to riverside on each deploy |
+| staging | `staging.keep-together.org.uk` (`keep-staging`, Fly lhr), every push to main | kept across deploys; reset to riverside by `scripts/fly/staging-reset.sh` |
+| qc | `keep-qc.fly.dev` (`keep-qc`, Fly iad), every push to main, then QC from Actions | reset to riverside on each deploy |
 | prod | `app.keep-together.org.uk` (`keep-prod`), by hand only | real |
 
 `docs/ops.md` has the operations: settings, first-time setup
