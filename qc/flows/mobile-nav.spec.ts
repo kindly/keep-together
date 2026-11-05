@@ -1,5 +1,5 @@
 import { expect, test } from '../fixtures'
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 
 // The phone header (below md): the Menu button opens a drawer from the
 // left with every destination; a link in it navigates and closes it, and
@@ -75,6 +75,12 @@ function traceDrawer() {
     attributeFilter: ['data-state'],
   })
 }
+
+/** The drawer's opening animation (if motion is allowed) has finished. */
+const slidIn = (drawer: Locator) =>
+  drawer.evaluate((el) =>
+    Promise.all(el.getAnimations().map((a) => a.finished)),
+  )
 
 /** The page behind can scroll again (the drawer's scroll lock is gone). */
 const unlocked = (page: Page) =>
@@ -166,7 +172,8 @@ test(
     // 0 to 120 ms after opening). So the page logs what the drawer and
     // its history entry do, and a failure's `console` attachment
     // (qc/fixtures.ts) shows whether the press reached the overlay, and
-    // which pushes, backs and pops came when.
+    // which pushes, backs and pops came when. It showed the press reached
+    // the overlay before Radix listened for it (the 'overlay' closer).
     await page.addInitScript(traceDrawer)
     await page.setViewportSize(PHONE)
     const slug = users.a.slug
@@ -176,8 +183,20 @@ test(
     const closers: Array<[string, () => Promise<void>]> = [
       ['back', () => page.goBack().then(() => {})],
       ['Esc', () => page.keyboard.press('Escape')],
-      // The overlay, to the right of the drawer.
-      ['overlay', () => page.mouse.click(PHONE.width - 20, PHONE.height / 2)],
+      // The overlay, to the right of the drawer, once the drawer has slid
+      // in, as a person sees it. Radix starts listening for presses
+      // outside the drawer in a 0 ms timer after it mounts, and a busy
+      // main thread runs input ahead of timers, so a press a few ms after
+      // mounting is ignored: on keep-qc it came 7 ms after (runs
+      // 41380822567, 41812124166) and the drawer stayed open. No person
+      // taps that fast. Back and Esc keep racing the opening on purpose.
+      [
+        'overlay',
+        async () => {
+          await slidIn(drawer)
+          await page.mouse.click(PHONE.width - 20, PHONE.height / 2)
+        },
+      ],
       [
         'Close',
         () => drawer.getByRole('button', { name: 'Close menu' }).click(),
