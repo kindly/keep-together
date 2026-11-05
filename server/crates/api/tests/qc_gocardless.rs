@@ -651,6 +651,14 @@ async fn qc_sign_on_the_fake_activates_like_the_hosted_page() {
     assert_eq!(customer["given_name"], "Ada");
     assert_eq!(customer["metadata"]["keep_qc"], w.a.as_str());
     assert!(customer["email"].as_str().unwrap().starts_with("qc+"));
+    // The billing request, peeked: fulfilled, with the mandate it made
+    // (what a failed wait for the mandate reports).
+    let br = v["billingRequestId"].as_str().unwrap().to_owned();
+    let (s, seen) = w.h.peek(&w.a, "billing_request", &br).await;
+    assert_eq!(s, 200, "{seen}");
+    assert_eq!(seen["status"], "fulfilled");
+    assert_eq!(seen["mandateId"], mandate.as_str());
+    assert_eq!(seen["mandateStatus"], "pending_submission");
     // Signing again is refused: it isn't waiting for the donor.
     let (s, _) =
         w.h.qc("sign", json!({ "slug": w.a, "regularGiftId": id }))
@@ -705,6 +713,28 @@ async fn qc_sign_on_the_fake_activates_like_the_hosted_page() {
     let caught = w.h.qc_ok("catchup", json!({ "slug": w.a })).await;
     assert!(caught["read"].as_u64().unwrap() > 0, "{caught}");
     assert_eq!(caught["missed"], 0);
+    // With the read's window and GoCardless's newest event inside it, by
+    // this server's clock: a read of nothing can say whose side it is on.
+    let at = |k: &str| {
+        let text = caught[k]
+            .as_str()
+            .unwrap_or_else(|| panic!("{k}: {caught}"));
+        time::OffsetDateTime::parse(text, &time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|e| panic!("{k}: {text}: {e}"))
+    };
+    let (since, newest, checked) = (at("since"), at("newestEventAt"), at("checkedAt"));
+    assert!(since <= newest && newest <= checked, "{caught}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn qc_catchup_says_when_gocardless_lists_no_events() {
+    let w = seeded("t6n").await;
+    w.h.qc_ok("connect", json!({ "slug": w.a })).await;
+    // Connected, nothing done: GoCardless lists nothing for the account.
+    let caught = w.h.qc_ok("catchup", json!({ "slug": w.a })).await;
+    assert_eq!(caught["read"], 0, "{caught}");
+    assert!(caught["newestEventAt"].is_null(), "{caught}");
+    assert!(caught["since"].is_string() && caught["checkedAt"].is_string());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -755,6 +785,12 @@ async fn qc_simulate_and_peek_refuse_another_orgs_resource() {
         .await;
     assert_eq!(s, 404);
     let (s, _) = w.h.peek(&w.b, "mandate", &mandate).await;
+    assert_eq!(s, 404);
+    let br = w.regular(&w.a, &id).await["billingRequestId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (s, _) = w.h.peek(&w.b, "billing_request", &br).await;
     assert_eq!(s, 404);
     assert_eq!(w.h.fake().calls("POST scenario_simulators"), 0);
     assert_eq!(

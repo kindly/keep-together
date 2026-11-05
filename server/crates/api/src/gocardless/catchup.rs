@@ -75,6 +75,9 @@ pub struct Caught {
     pub read: usize,
     /// Of those, new here: webhooks we missed.
     pub missed: usize,
+    /// Where the read started (RFC 3339): events created before it
+    /// weren't asked for.
+    pub since: String,
 }
 
 /// Catch up every connected organisation, one at a time; the events
@@ -272,6 +275,7 @@ async fn one(
         tenant: id,
         read,
         missed: stored.queued,
+        since,
     }))
 }
 

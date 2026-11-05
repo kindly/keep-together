@@ -301,6 +301,8 @@ pub struct Seen {
     /// A mandate's or subscription's payments: id, status, charge date,
     /// pence.
     pub payments: Vec<Seen>,
+    /// A billing request's mandate, once fulfilled: its id and status.
+    pub mandate: Option<(String, String)>,
 }
 
 fn text(v: &Value, k: &str) -> Option<String> {
@@ -365,13 +367,40 @@ pub async fn peek(
         }
         ProviderKind::BillingRequest => {
             let b = get_one(api, token, "billing_requests", id).await?;
+            let mandate = match b
+                .pointer("/links/mandate_request_mandate")
+                .and_then(Value::as_str)
+            {
+                Some(md) => {
+                    let m = get_one(api, token, "mandates", md).await?;
+                    Some((md.to_owned(), text(&m, "status").unwrap_or_default()))
+                }
+                None => None,
+            };
             Ok(Seen {
                 id: text(&b, "id").unwrap_or_default(),
                 status: text(&b, "status").unwrap_or_default(),
+                mandate,
                 ..Seen::default()
             })
         }
     }
+}
+
+/// When GoCardless made the newest event it lists for the account, at
+/// any age (RFC 3339), or `None` when it lists none. Set beside a
+/// catch-up that read nothing, it tells a sandbox that has stopped
+/// making events (the newest is older than the read's start) from a
+/// read that missed them (it is newer).
+pub async fn newest_event(api: &Api, token: &str) -> Result<Option<String>, CallError> {
+    let v = api
+        .qc_call(Method::GET, token, &["events"], &[("limit", "1")], None)
+        .await?;
+    let page = v
+        .get("events")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CallError::Malformed("no events in the answer".into()))?;
+    Ok(page.first().and_then(|e| text(e, "created_at")))
 }
 
 /// What `cleanup` did.

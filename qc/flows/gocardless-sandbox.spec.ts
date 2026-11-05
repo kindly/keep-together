@@ -24,6 +24,7 @@ import type { QcPeek } from '../../src/lib/data/rust-types/QcPeek'
 import type { QcSigned } from '../../src/lib/data/rust-types/QcSigned'
 import type { QcCaughtUp } from '../../src/lib/data/rust-types/QcCaughtUp'
 import type { RegularGiftView } from '../../src/lib/data/rust-types/RegularGiftView'
+import { billingRequestSays, caughtUpSays } from '../gocardless-diagnosis'
 import { createContact, section, uniqueName } from './contact.helpers'
 import { contactIdOf } from './gift.helpers'
 
@@ -128,7 +129,10 @@ const sign = (id: string) =>
 const simulate = (scenario: string, resource: string) =>
   qc('POST', 'simulate', { slug, scenario, resource })
 
-const peek = (kind: 'mandate' | 'subscription' | 'payment', id: string) =>
+const peek = (
+  kind: 'mandate' | 'subscription' | 'payment' | 'billing_request',
+  id: string,
+) =>
   qc<QcPeek>('GET', `peek/${slug}/${kind}/${id}`)
 
 /** The first `day` of a month on or after `from` (YYYY-MM-DD). */
@@ -182,12 +186,15 @@ const COLLECTABLE = [
 
 /**
  * `read` until `ready`: backing off up to 90 s, then the catch-up once and
- * 30 s more (noted for the LATE WEBHOOK banner). Never a fixed sleep.
+ * 30 s more (noted for the LATE WEBHOOK banner). Never a fixed sleep. Not
+ * ready even then, the failure says what the catch-up read and whose side
+ * that is on, and what `explain` finds at GoCardless.
  */
 async function until<T>(
   what: string,
   read: () => Promise<T>,
   ready: (t: T) => boolean,
+  explain?: () => Promise<string>,
 ): Promise<T> {
   let last: T | undefined
   const poll = (timeout: number) =>
@@ -211,8 +218,14 @@ async function until<T>(
   try {
     await poll(AFTER_CATCHUP_MS)
   } catch {
+    const seen = explain
+      ? await explain().then(
+          (s) => `; ${s}`,
+          (err: unknown) => `; asking GoCardless failed: ${String(err)}`,
+        )
+      : ''
     throw new Error(
-      `${what}: not after ${Math.round((Date.now() - started) / 1000)} s and a catch-up (it read ${caught.read} events, ${caught.missed} missed)`,
+      `${what}: not after ${Math.round((Date.now() - started) / 1000)} s and a catch-up (${caughtUpSays(caught)})${seen}`,
     )
   }
   noteLateWebhook(
@@ -282,17 +295,25 @@ async function setUp(
 async function active(
   id: string,
 ): Promise<{ mandate: string; subscription: string }> {
+  const br = (await regular(id)).billingRequestId
+  const atGoCardless = async () =>
+    br === null
+      ? 'the gift has no billing request'
+      : billingRequestSays(await peek('billing_request', br))
   const mandate = await sign(id)
   await until(
     'the mandate, from GoCardless’s webhook',
     () => regular(id),
     (v) => v.mandateId === mandate,
+    atGoCardless,
   )
   await simulate('mandate_activated', mandate)
   const now = await until(
     'the gift active, with its subscription',
     () => regular(id),
     (v) => v.status === 'active' && v.subscriptionId !== null,
+    async () =>
+      `${await atGoCardless()} (mandate_activated was run on ${mandate})`,
   )
   return { mandate, subscription: now.subscriptionId! }
 }
