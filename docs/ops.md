@@ -140,7 +140,7 @@ them to `KEEP_MAIL_ONLY_TO` and deploy. Setting SES up (done once):
    `auth.keep-together.org.uk`, with Easy DKIM CNAMEs, a custom MAIL FROM
    (`bounce.auth…` MX and SPF TXT) and DMARC TXT on `_dmarc.auth…`, all
    written to keep-prod's Route 53 zone. Re-run it to see the status.
-2. Request SES production access (out of the sandbox).
+2. Request SES production access (out of the sandbox): granted 2026-11-11, full quota.
 3. `scripts/aws/ses-sender.sh staging`: the configuration set
    `keep-transactional` (the identity's default), an IAM user limited to
    `ses:SendRawEmail` from `no-reply@auth.keep-together.org.uk`, and its
