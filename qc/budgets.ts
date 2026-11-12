@@ -353,7 +353,7 @@ const QC_RECORDED: Partial<Record<FlowName, Budget>> = {
   'contact.restore': { kind: 'rare', maxMs: 130 }, // worst 44/42/82
   'contact.note.add': { kind: 'repeatable', maxMs: 120 }, // worst 39/38/76
   'contact.note.save': { kind: 'repeatable', maxMs: 120 }, // worst 45/33/80
-  'contact.note.pin': { kind: 'repeatable', maxMs: 100 }, // worst 42/32/66
+  'contact.note.pin': { kind: 'repeatable', maxMs: 140 }, // worst 42/32/66; raised by the human 2026-11-12 (westus ~85 ms RTT failed it)
   'contact.note.archive': { kind: 'repeatable', maxMs: 120 }, // worst 31/31/76
   'contact.identifier.add': { kind: 'repeatable', maxMs: 140 }, // worst 37/28/93
   'contact.identifier.remove': { kind: 'repeatable', maxMs: 140 }, // worst 46/52/92
@@ -362,18 +362,18 @@ const QC_RECORDED: Partial<Record<FlowName, Budget>> = {
   'contacts.createWithCode': { kind: 'infrequent', maxMs: 170 }, // worst 56/71/112
   'contacts.filter.sourceCategory': { kind: 'repeatable', maxMs: 120 }, // worst 27/28/76
   'contacts.filter.sourceVersion': { kind: 'repeatable', maxMs: 120 }, // worst 37/36/75
-  'contacts.loadMore': { kind: 'repeatable', maxMs: 110 }, // worst 58/51/68
+  'contacts.loadMore': { kind: 'repeatable', maxMs: 120 }, // worst 58/51/68; raised by the human 2026-11-12 (westus ~85 ms RTT failed it)
   'fields.create': { kind: 'repeatable', maxMs: 120 }, // worst 34/33/74
   'fields.option.add': { kind: 'repeatable', maxMs: 110 }, // worst 32/32/67
   'fields.archive': { kind: 'repeatable', maxMs: 130 }, // worst 33/50/81
   'fields.filter': { kind: 'repeatable', maxMs: 130 }, // worst 33/34/80
   'contact.field.set': { kind: 'repeatable', maxMs: 130 }, // worst 36/43/84
   'contact.field.clear': { kind: 'repeatable', maxMs: 120 }, // worst 28/28/74
-  'settings.staffFields.toggle': { kind: 'repeatable', maxMs: 100 }, // worst 31/42/65
+  'settings.staffFields.toggle': { kind: 'repeatable', maxMs: 130 }, // worst 31/42/65; raised by the human 2026-11-12 (westus ~85 ms RTT failed it)
   'settings.nav': { kind: 'repeatable', maxMs: 100 }, // worst 31/14/61
   'settings.tab': { kind: 'repeatable', maxMs: 100 }, // worst 31/32/64
   'settings.staffIdentifierTypes.toggle': { kind: 'repeatable', maxMs: 100 }, // worst 31/34/65
-  'settings.identifierTypes.create': { kind: 'repeatable', maxMs: 100 }, // worst 31/32/65
+  'settings.identifierTypes.create': { kind: 'repeatable', maxMs: 140 }, // worst 31/32/65; raised by the human 2026-11-12 (westus ~85 ms RTT failed it)
   'settings.identifierTypes.rename': { kind: 'repeatable', maxMs: 110 }, // worst 31/31/69
   'settings.identifierTypes.archive': { kind: 'repeatable', maxMs: 200 }, // worst 131/32/66
   'settings.staffSourceCodes.toggle': { kind: 'repeatable', maxMs: 130 }, // worst 38/32/82
