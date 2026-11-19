@@ -16,7 +16,7 @@
 // The api runs as dev (KEEP_ENV=dev, loopback) with KEEP_AUTH_POLICY=
 // relaxed (a password alone), KEEP_MAIL=log (codes and links in this
 // terminal), KEEP_ADDRESS_LOOKUP=fake,
-// KEEP_GOCARDLESS=fake (GoCardless's mock on the api) and data in server/data/; any of
+// KEEP_GOCARDLESS=fake and KEEP_STRIPE=fake (their mocks on the api) and data in server/data/; any of
 // them set in the environment wins (dev:reset still only wipes
 // server/data/, and refuses while KEEP_DATA_DIR points elsewhere). It seeds the riverside group on the
 // first boot (KEEP_RESET_SEED=riverside: idempotent, so later boots keep
@@ -255,6 +255,7 @@ const apiEnv = {
   KEEP_MAIL: env.KEEP_MAIL ?? 'log',
   KEEP_ADDRESS_LOOKUP: env.KEEP_ADDRESS_LOOKUP ?? 'fake',
   KEEP_GOCARDLESS: env.KEEP_GOCARDLESS ?? 'fake',
+  KEEP_STRIPE: env.KEEP_STRIPE ?? 'fake',
   KEEP_RESET_SEED: env.KEEP_RESET_SEED ?? 'riverside',
   KEEP_APP_ORIGIN: env.KEEP_APP_ORIGIN ?? url,
 }

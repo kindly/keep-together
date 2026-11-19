@@ -23,6 +23,7 @@ mod relationships;
 mod scans;
 mod sources;
 pub mod standing_orders;
+mod stripe;
 
 use axum::Router;
 use axum::extract::rejection::QueryRejection;
@@ -54,6 +55,7 @@ pub fn router() -> Router {
         .merge(giftaid_claims::router())
         .merge(gocardless::router())
         .merge(scans::router())
+        .merge(stripe::router())
 }
 
 /// A query string whose rejection is an [`ApiError::Invalid`], like

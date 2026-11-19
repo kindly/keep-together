@@ -21,6 +21,10 @@
 //!   `KEEP_GOCARDLESS_WEBHOOK_SECRET`: Direct Debit (`gocardless`); `fake`
 //!   and `sandbox` are refused with `KEEP_ENV=prod`, `live` without it, and
 //!   `sandbox`/`live` without the three secrets
+//! - `KEEP_STRIPE` (`off`/`fake`/`test`/`live`), `KEEP_STRIPE_API_KEY`,
+//!   `KEEP_STRIPE_WEBHOOK_SECRET`: card donations (`stripe`); `fake` and
+//!   `test` are refused with `KEEP_ENV=prod`, `live` without it, and
+//!   `test`/`live` without the key (of that mode) and the secret
 //! - `KEEP_QC_GOCARDLESS_TOKEN`, `KEEP_QC_GOCARDLESS_ORGANISATION`: the QC
 //!   sandbox account (`routes::qc_gocardless`); both or neither, refused
 //!   with `KEEP_ENV=prod` or `KEEP_GOCARDLESS=live`
@@ -122,6 +126,21 @@ async fn main() {
             );
         }
     }
+    let stripe = api::stripe::from_vars(
+        |name| std::env::var(name).ok(),
+        api::stripe::Origins {
+            app_origin: &auth.config.app_origin,
+            self_base: &format!("http://{self_host}:{port}"),
+        },
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2)
+    })
+    .map(Arc::new);
+    if let Some(s) = &stripe {
+        eprintln!("stripe {:?}: webhook endpoint {}", s.mode, s.webhook_url());
+    }
     if let Some(lookup) = &address {
         eprintln!(
             "address lookup {:?}: {} a month per organisation, {} a day in all",
@@ -220,12 +239,19 @@ async fn main() {
             gc: gc.clone(),
         });
     }
+    if let Some(s) = &stripe {
+        jobs.register(api::stripe::process::EventsJob {
+            store: store.clone(),
+            stripe: s.clone(),
+        });
+    }
     let state = AppState::new(store, dev_auth)
         .with_scan_limits(Arc::new(scan_limits))
         .with_auth(auth)
         .with_qc(qc)
         .with_address(address)
         .with_gocardless(gocardless)
+        .with_stripe(stripe)
         .with_commit(api::health::commit(
             std::env::var("KEEP_RELEASE").ok().as_deref(),
         ));

@@ -54,6 +54,9 @@ pub fn same_origin(headers: &HeaderMap, app_origin: &str) -> bool {
 pub const SIGNED_ROUTES: &[&str] = &[
     // GoCardless webhooks: HMAC in `Webhook-Signature`, 498 when wrong.
     "/api/gocardless/webhook",
+    // Stripe webhooks: HMAC over the time and body in `Stripe-Signature`,
+    // 400 when wrong or stale.
+    "/api/stripe/webhook",
 ];
 
 pub async fn csrf(State(state): State<AppState>, req: Request, next: Next) -> Response {
@@ -131,7 +134,10 @@ mod tests {
     /// Adding a route here skips the origin check: it must read no
     /// session and verify a signature, so the list is pinned.
     #[test]
-    fn only_the_gocardless_webhook_skips_the_origin_check() {
-        assert_eq!(SIGNED_ROUTES, ["/api/gocardless/webhook"]);
+    fn only_the_provider_webhooks_skip_the_origin_check() {
+        assert_eq!(
+            SIGNED_ROUTES,
+            ["/api/gocardless/webhook", "/api/stripe/webhook"]
+        );
     }
 }
