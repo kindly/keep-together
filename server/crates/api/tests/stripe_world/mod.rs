@@ -153,10 +153,16 @@ impl T {
     }
 
     pub async fn outage(&self, calls: usize, status: u16, path: &str) {
+        self.outage_with(json!({ "calls": calls, "status": status, "path": path }))
+            .await
+    }
+
+    /// `simulate/outage` with any of its options (`after`).
+    pub async fn outage_with(&self, outage: Value) {
         let res = self
             .http
             .post(format!("{}/api/fake-stripe/simulate/outage", self.base))
-            .json(&json!({ "calls": calls, "status": status, "path": path }))
+            .json(&outage)
             .send()
             .await
             .unwrap();

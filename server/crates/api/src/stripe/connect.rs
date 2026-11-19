@@ -9,14 +9,20 @@
 //!
 //! 1. the organisation's row is reserved in `platform.db` with the
 //!    idempotency key its account will be made under, so a create whose
-//!    answer was lost makes the same account when the admin tries again
-//!    (Stripe keeps keys a day; v2's, 30);
-//! 2. the account it already has is read from Stripe, or a new one made
-//!    and then read. An account Stripe says isn't ours any more (`403
-//!    account_invalid`: a sandbox wiped, another mode's id, the owner
-//!    removed us) is forgotten and a new one made;
+//!    answer never reached us makes the same account when the admin
+//!    tries again (Stripe keeps keys a day; v2's, 30). Stripe also
+//!    answers a *failed* create again under its key (a 500 included),
+//!    so a create Stripe refused or failed gets a new key for the next
+//!    try; only no answer, a 429 or a 409 keeps it;
+//! 2. the account is made if it has none, and its id stored the moment
+//!    Stripe answers. Then it is read from Stripe. An account Stripe
+//!    says isn't ours any more (`403 account_invalid`: a sandbox wiped,
+//!    another mode's id, the owner removed us) is forgotten and a new
+//!    one made;
 //! 3. the organisation is recorded as connected to it, with what Stripe
-//!    says of it now, and the events kept while it wasn't are requeued;
+//!    says of it now, and the events kept while it wasn't are requeued
+//!    (read and recorded with event runs held off, so an older reading
+//!    never lands on a newer one);
 //! 4. unless Stripe already takes payments for it, a link to its form is
 //!    made and answered. A link works once and lasts minutes, so every
 //!    press of "Connect Stripe" (or "Continue") makes another. Stripe
@@ -46,7 +52,6 @@ use crate::{ApiError, blocking};
 pub struct Org {
     pub tenant: TenantId,
     pub slug: String,
-    pub name: String,
     /// The admin connecting.
     pub user: i64,
 }
@@ -85,17 +90,32 @@ pub async fn start(
     let (s, t, user) = (store.clone(), org.tenant.clone(), org.user);
     let mut row = blocking(move || accounts::reserve(&s, &t, user, now)).await?;
 
-    // The account it has, as Stripe has it now.
-    let mut account = None;
-    if let Some(id) = row.account_id.clone() {
+    // At most twice round: the account it had may turn out not to be
+    // ours any more, and then a new one is made.
+    let mut replaced = false;
+    let (row, account) = loop {
+        let id = match row.account_id.clone() {
+            Some(id) => id,
+            None => make_account(store, stripe, &org, &row.create_key, now).await?,
+        };
+        // Read and recorded with processing runs held off: no run
+        // between the organisation becoming connected and its kept
+        // events going back in the queue, and no `account.updated` run
+        // can store a newer reading that this older one then overwrites.
+        let _processing = stripe.processing.lock().await;
         match stripe.api.get_account(&id).await {
-            Ok(a) => account = Some(a),
-            Err(e) if e.account_gone() => {
+            Ok(account) => {
+                let (s, t, a) = (store.clone(), org.tenant.clone(), account.clone());
+                let row = blocking(move || accounts::connect(&s, &t, &a, user, now)).await?;
+                break (row, account);
+            }
+            Err(e) if e.account_gone() && !replaced => {
                 crate::observe::warning(&format!(
                     "stripe connect ({}): account {id} is no longer ours at Stripe: \
                      making a new one",
                     org.slug
                 ));
+                replaced = true;
                 let (s, t) = (store.clone(), org.tenant.clone());
                 row = blocking(move || {
                     accounts::forget_account(&s, &t, &id)?;
@@ -105,30 +125,6 @@ pub async fn start(
             }
             Err(e) => return Err(unavailable(&org.slug, "reading the account", e)),
         }
-    }
-    let account = match account {
-        Some(a) => a,
-        None => {
-            let id = stripe
-                .api
-                .create_account(&org.name, org.tenant.as_str(), &row.create_key)
-                .await
-                .map_err(|e| unavailable(&org.slug, "making the account", e))?;
-            stripe
-                .api
-                .get_account(&id)
-                .await
-                .map_err(|e| unavailable(&org.slug, "reading the new account", e))?
-        }
-    };
-
-    // No processing run between the organisation becoming connected and
-    // its kept events going back in the queue: one transaction does both,
-    // and runs are held off while it lands.
-    let row = {
-        let _processing = stripe.processing.lock().await;
-        let (s, t, a) = (store.clone(), org.tenant.clone(), account.clone());
-        blocking(move || accounts::connect(&s, &t, &a, user, now)).await?
     };
     if row.account_id.as_deref() != Some(&account.id) {
         // The row named another account by the time we wrote: a connect
@@ -161,6 +157,48 @@ pub async fn start(
         url,
         status: StripeStatus::new(stripe.mode, Some(&row), failed),
     })
+}
+
+/// Make the organisation's account at Stripe under `create_key`, and
+/// store its id at once: from here on the account is found by the id we
+/// hold, not by an idempotency key Stripe forgets in time. A create that
+/// failed for good gets a new key for the next try.
+async fn make_account(
+    store: &Arc<Store>,
+    stripe: &Arc<Stripe>,
+    org: &Org,
+    create_key: &str,
+    now: i64,
+) -> Result<String, ApiError> {
+    let id = match stripe
+        .api
+        .create_account(org.tenant.as_str(), create_key)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            if !e.same_key_again() {
+                let (s, t) = (store.clone(), org.tenant.clone());
+                blocking(move || accounts::renew_key(&s, &t)).await?;
+            }
+            return Err(unavailable(&org.slug, "making the account", e));
+        }
+    };
+    // As Stripe makes it: nothing sent in, nothing enabled. What Stripe
+    // says of it is read next; if that read fails the account is still
+    // ours and the next try reads it.
+    let blank = super::client::Account {
+        id: id.clone(),
+        details_submitted: false,
+        charges_enabled: false,
+        payouts_enabled: false,
+        requirements_due: 0,
+        disabled_reason: None,
+    };
+    let _processing = stripe.processing.lock().await;
+    let (s, t, user) = (store.clone(), org.tenant.clone(), org.user);
+    blocking(move || accounts::connect(&s, &t, &blank, user, now)).await?;
+    Ok(id)
 }
 
 /// `POST stripe/disconnect` (module docs). The caller has checked the

@@ -318,6 +318,53 @@ async fn stripe_failing_mid_run_keeps_the_event_and_it_runs_later() {
 }
 
 #[tokio::test]
+async fn stripe_refusing_our_key_never_parks_an_event() {
+    // A rolled key (401) or a restricted key missing a permission (403)
+    // is our fault, not the event's, and hits every group at once: the
+    // events wait, however long, and run when the key is put right.
+    for status in [401, 403] {
+        let t = setup().await;
+        let s = t.connect("alpha", &t.ann).await;
+        let account = s["accountId"].as_str().unwrap();
+        t.outage(1000, status, "/v1/accounts/").await;
+        let sim = t
+            .simulate(account, json!({ "charges_enabled": false }))
+            .await;
+        let id = sim["event"].as_str().unwrap();
+        t.settle().await;
+        assert_eq!(t.event(id).0, None, "{status}: still queued");
+
+        // Long past the tries that park any other failure.
+        let tries = api::stripe::process::MAX_ATTEMPTS + 10;
+        let again = |attempts: i64| {
+            t.w.store
+                .platform()
+                .with_write(|tx| {
+                    tx.execute(
+                        "UPDATE stripe_events SET next_attempt_at = 0, attempts = ?1
+                         WHERE processed_at IS NULL",
+                        [attempts],
+                    )?;
+                    Ok::<_, store::StoreError>(())
+                })
+                .unwrap()
+        };
+        again(tries);
+        t.settle().await;
+        assert_eq!(t.event(id).0, None, "{status}: never parked");
+        assert_eq!(t.status("alpha", &t.ann).await["failedEvents"], 0);
+        assert_eq!(t.status("alpha", &t.ann).await["chargesEnabled"], true);
+
+        // The key mended: it runs.
+        t.outage(0, 0, "").await;
+        again(tries);
+        t.settle().await;
+        assert_eq!(t.event(id).0.as_deref(), Some("done"), "{status}");
+        assert_eq!(t.status("alpha", &t.ann).await["chargesEnabled"], false);
+    }
+}
+
+#[tokio::test]
 async fn handled_events_are_purged_and_kept_ones_stay() {
     let t = setup().await;
     let s = t.connect("alpha", &t.ann).await;

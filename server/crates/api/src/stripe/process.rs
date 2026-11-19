@@ -16,8 +16,14 @@
 //! days), or at once for a failure retrying can't mend, the event is
 //! *parked*: outcome `failed`, reported to the log and Sentry, never
 //! purged, counted in `GET stripe` (`failedEvents`), and put back in the
-//! queue by [`requeue_failed`]. A parked event no longer holds up the
-//! ones behind it.
+//! queue by [`requeue_failed`] (`keep stripe requeue <slug>`). A parked
+//! event no longer holds up the ones behind it.
+//!
+//! One failure is neither: Stripe refusing the *platform's key* (a 401,
+//! or a 403 for a permission the restricted key lacks). That is our
+//! fault, not the event's, and it hits every organisation at once, so
+//! such an event is never parked: it stays queued, tried again after
+//! each backoff, until the key is put right ([`Failed::Platform`]).
 //!
 //! An event is run only for the organisation connected to its account
 //! *now*: one stored for an organisation that has since disconnected (or
@@ -66,11 +72,17 @@ pub enum Failed {
     Retry(String),
     /// Give up: reported.
     Permanent(String),
+    /// Stripe refuses the platform's key (rolled, or missing a
+    /// permission): our fault, not the event's. Tried again after the
+    /// backoff however many times it takes, never parked; reported.
+    Platform(String),
 }
 
 impl From<CallError> for Failed {
     fn from(e: CallError) -> Self {
-        if e.retryable() {
+        if e.platform_key() {
+            Failed::Platform(format!("stripe {e}"))
+        } else if e.retryable() {
             Failed::Retry(format!("stripe {e}"))
         } else {
             Failed::Permanent(format!("stripe {e}"))
@@ -278,6 +290,17 @@ pub async fn process_pending(store: Arc<Store>, stripe: Arc<Stripe>) -> Result<u
                     (Some("failed".to_owned()), Some(e), None, false)
                 }
                 Err(Failed::Retry(e)) => (None, Some(e), Some(now + backoff(tries)), true),
+                Err(Failed::Platform(e)) => {
+                    // Once per event (its first try), not once per retry.
+                    if p.attempts == 0 {
+                        crate::observe::error(&format!(
+                            "stripe event {} ({}) for {tenant} is waiting: Stripe refuses \
+                             the platform's key ({e}); it is retried, never parked",
+                            p.id, p.kind
+                        ));
+                    }
+                    (None, Some(e), Some(now + backoff(tries)), true)
+                }
             };
             if outcome.is_some() {
                 handled += 1;

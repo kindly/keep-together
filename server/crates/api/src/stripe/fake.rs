@@ -11,8 +11,11 @@
 //! API (every call needs the key and `Stripe-Version`):
 //! - `POST v2/core/accounts` (JSON) and `POST v1/accounts` (form): a new
 //!   connected account, nothing submitted, nothing enabled. Both end as
-//!   the same account, kept in v1's shape; a repeat under the same
-//!   `Idempotency-Key` answers the first one's;
+//!   the same account, kept in v1's shape. As Stripe, a repeat under the
+//!   same `Idempotency-Key` answers the first one's, the same key with
+//!   another body is `400 idempotency_error`, and a keyed request that
+//!   failed (a 500 included; not a 401 or 429) answers that failure
+//!   again;
 //! - `GET v1/accounts/{id}`: the account; one that doesn't exist, or
 //!   whose owner removed the platform: `403 account_invalid`, as Stripe;
 //! - `POST v2/core/account_links` (JSON) and `POST v1/account_links`
@@ -39,8 +42,10 @@
 //! - `simulate/webhooks/hold`: keep events back from now on;
 //!   `simulate/webhooks/release?reverse&count=`: deliver what was held,
 //!   in order or reversed (Stripe promises no order);
-//! - `simulate/outage {calls, status?, path?}`: the next `calls` API
-//!   requests (whose path holds `path`) answer `status` (default 503);
+//! - `simulate/outage {calls, status?, path?, after?}`: the next `calls`
+//!   API requests (whose path holds `path`) answer `status` (default
+//!   503); with `after`, only once the call is done (Stripe acted, and
+//!   we never heard so);
 //! - `GET simulate/webhooks`: what was delivered (ids, types, landed).
 //!
 //! S3 and S4 add Checkout Sessions, payments, refunds, disputes and `GET
@@ -84,6 +89,10 @@ struct Outage {
     status: u16,
     #[serde(default)]
     path: String,
+    /// Answer `status` only after doing the call: Stripe acted, and we
+    /// never heard so.
+    #[serde(default)]
+    after: bool,
 }
 
 #[derive(Default)]
@@ -93,8 +102,12 @@ struct World {
     accounts: HashMap<String, Value>,
     /// Accounts whose owner removed the platform.
     removed: Vec<String>,
-    /// Idempotency key → the account it made.
-    idempotency: HashMap<String, String>,
+    /// Idempotency key → the body it was first sent with and the
+    /// account it made.
+    idempotency: HashMap<String, (String, String)>,
+    /// Idempotency key → the failure Stripe stored against it, answered
+    /// again for as long as the key is kept.
+    failed_keys: HashMap<String, u16>,
     /// Onboarding link token → the link.
     links: HashMap<String, Link>,
     /// Every event made, delivered or not, oldest first.
@@ -274,6 +287,7 @@ impl Fake {
         let mut w = self.world();
         w.accounts.clear();
         w.idempotency.clear();
+        w.failed_keys.clear();
         w.links.clear();
     }
 
@@ -414,24 +428,48 @@ async fn gate(
             .collect::<Vec<_>>()
             .join("/")
     );
-    let failing = {
-        let mut w = fake.world();
-        *w.calls.entry(counted).or_default() += 1;
-        match w.outage.as_mut() {
-            Some(o) if o.calls > 0 && path.contains(&o.path) => {
-                o.calls -= 1;
-                Some(if o.status == 0 { 503 } else { o.status })
-            }
-            _ => None,
-        }
-    };
-    if let Some(status) = failing {
-        return error(
+    let key = idempotency_key(req.headers());
+    let outage = |status: u16| {
+        error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
             "api_error",
             "simulated_outage",
             "A simulated outage",
-        );
+        )
+    };
+    let failing = {
+        let mut w = fake.world();
+        *w.calls.entry(counted).or_default() += 1;
+        // A failure stored against this key is all the key answers now.
+        if let Some(status) = key.as_ref().and_then(|k| w.failed_keys.get(k)) {
+            return outage(*status);
+        }
+        match w.outage.as_mut() {
+            Some(o) if o.calls > 0 && path.contains(&o.path) => {
+                o.calls -= 1;
+                Some((if o.status == 0 { 503 } else { o.status }, o.after))
+            }
+            _ => None,
+        }
+    };
+    match failing {
+        // Done, but the caller never hears so.
+        Some((status, true)) => {
+            let _ = next.run(req).await;
+            return outage(status);
+        }
+        Some((status, false)) => {
+            // As Stripe: what a keyed request came to is stored against
+            // its key, a 500 included (not a 401 or a 429).
+            if let Some(key) = key
+                && status != 401
+                && status != 429
+            {
+                fake.world().failed_keys.insert(key, status);
+            }
+            return outage(status);
+        }
+        None => {}
     }
     let (keyed, versioned) = {
         let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
@@ -464,10 +502,21 @@ fn idempotency_key(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The account a create under `key` already made, if any.
-fn replay(w: &World, key: &Option<String>) -> Option<Value> {
-    let id = w.idempotency.get(key.as_ref()?)?;
-    w.accounts.get(id).cloned()
+/// What a create under `key` already came to: the account it made, or
+/// Stripe's refusal when the key comes back with another body.
+#[allow(clippy::result_large_err)]
+fn replay(w: &World, key: &Option<String>, body: &str) -> Result<Option<Value>, Response> {
+    let Some((first, id)) = key.as_ref().and_then(|k| w.idempotency.get(k)) else {
+        return Ok(None);
+    };
+    if first != body {
+        return Err(invalid(
+            "idempotency_error",
+            "Keys for idempotent requests can only be used with the same parameters \
+             they were first used with.",
+        ));
+    }
+    Ok(w.accounts.get(id).cloned())
 }
 
 /// `POST v2/core/accounts`: JSON. The properties we need must be asked
@@ -480,10 +529,12 @@ async fn create_account_v2(
 ) -> Response {
     let text = |p: &str| body.pointer(p).and_then(Value::as_str);
     let key = idempotency_key(&headers);
+    let sent = body.to_string();
     let mut w = fake.world();
-    let account = match replay(&w, &key) {
-        Some(a) => a,
-        None => {
+    let account = match replay(&w, &key, &sent) {
+        Err(refused) => return refused,
+        Ok(Some(a)) => a,
+        Ok(None) => {
             let (Some(dashboard), Some(fees), Some(losses)) = (
                 text("/dashboard"),
                 text("/defaults/responsibilities/fees_collector"),
@@ -511,7 +562,7 @@ async fn create_account_v2(
             );
             if let Some(key) = key {
                 w.idempotency
-                    .insert(key, a["id"].as_str().unwrap_or("").to_owned());
+                    .insert(key, (sent, a["id"].as_str().unwrap_or("").to_owned()));
             }
             a
         }
@@ -536,10 +587,14 @@ async fn create_account_v1(
     let field =
         |k: &str, default: &'static str| form.get(k).map_or(default.to_owned(), |v| v.to_owned());
     let key = idempotency_key(&headers);
+    let mut pairs: Vec<String> = form.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.sort();
+    let sent = pairs.join("&");
     let mut w = fake.world();
-    let account = match replay(&w, &key) {
-        Some(a) => a,
-        None => {
+    let account = match replay(&w, &key, &sent) {
+        Err(refused) => return refused,
+        Ok(Some(a)) => a,
+        Ok(None) => {
             let metadata: serde_json::Map<String, Value> = form
                 .iter()
                 .filter_map(|(k, v)| {
@@ -558,7 +613,7 @@ async fn create_account_v1(
             );
             if let Some(key) = key {
                 w.idempotency
-                    .insert(key, a["id"].as_str().unwrap_or("").to_owned());
+                    .insert(key, (sent, a["id"].as_str().unwrap_or("").to_owned()));
             }
             a
         }
@@ -802,7 +857,7 @@ async fn release_webhooks(State(fake): State<Arc<Fake>>, Query(r): Query<Release
     simulated(delivered, json!({ "events": n }))
 }
 
-/// `POST simulate/outage {calls, status?, path?}`; `calls: 0` ends it.
+/// `POST simulate/outage {calls, status?, path?, after?}`; `calls: 0` ends it.
 async fn outage(State(fake): State<Arc<Fake>>, Json(o): Json<Outage>) -> Response {
     fake.world().outage = Some(o);
     Json(json!({ "ok": true })).into_response()

@@ -89,7 +89,6 @@ async fn connecting_makes_the_account_we_mean_and_a_link_to_stripes_form() {
     assert_eq!(a["controller"]["losses"]["payments"], "stripe");
     assert_eq!(a["controller"]["requirement_collection"], "stripe");
     assert_eq!(a["country"], "GB");
-    assert_eq!(a["business_profile"]["name"], "Alpha");
     assert_eq!(a["metadata"]["keep_tenant"], t.w.alpha.id.as_str());
 
     // Connected, with Stripe's form still to do.
@@ -273,6 +272,9 @@ async fn disconnecting_forgets_the_routing_and_connecting_again_is_the_same_acco
 async fn stripe_failing_changes_nothing_and_the_next_try_carries_on() {
     let t = setup().await;
     // Stripe down for the create: 503, nothing made, not connected.
+    // Stripe stores that failure against the create's idempotency key
+    // and would answer it again (the fake does): the next try below
+    // only works because it goes under a new key.
     t.outage(1, 503, "accounts").await;
     let (code, body) =
         t.w.call("POST", "/api/t/alpha/stripe/connect", &t.ann, None)
@@ -299,15 +301,17 @@ async fn stripe_failing_changes_nothing_and_the_next_try_carries_on() {
 }
 
 #[tokio::test]
-async fn a_create_whose_answer_was_lost_is_the_same_account_when_tried_again() {
+async fn a_create_whose_answer_never_came_is_the_same_account_when_tried_again() {
     let t = setup().await;
-    // Stripe makes the account; reading it back fails, so we never learn
-    // its id. The next try sends the same idempotency key.
-    t.outage(1, 503, "/v1/accounts/").await;
-    let (code, _) =
+    // Stripe makes the account, and we never hear (here: its answer is a
+    // 409, "that request is still in flight"). Nothing is stored against
+    // the key, so the next try sends the same key and gets that account.
+    t.outage_with(json!({ "calls": 1, "status": 409, "path": "accounts", "after": true }))
+        .await;
+    let (code, body) =
         t.w.call("POST", "/api/t/alpha/stripe/connect", &t.ann, None)
             .await;
-    assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(t.fake.account_ids().len(), 1, "made at Stripe");
     let s = ok(&t.w, "GET", &status_path("alpha"), &t.ann, None).await;
     assert_eq!(s["connected"], false, "but not known here");
@@ -318,6 +322,74 @@ async fn a_create_whose_answer_was_lost_is_the_same_account_when_tried_again() {
         start["status"]["accountId"],
         t.fake.account_ids()[0].as_str()
     );
+}
+
+#[tokio::test]
+async fn a_new_accounts_id_is_kept_even_if_it_cant_be_read_back() {
+    let t = setup().await;
+    // The create answers; reading the new account fails. The id is ours
+    // already: the group is connected to it, nothing known of it yet.
+    t.outage(1, 503, "/v1/accounts/").await;
+    let (code, _) =
+        t.w.call("POST", "/api/t/alpha/stripe/connect", &t.ann, None)
+            .await;
+    assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+    let made = t.fake.account_ids();
+    assert_eq!(made.len(), 1);
+    let s = ok(&t.w, "GET", &status_path("alpha"), &t.ann, None).await;
+    assert_eq!(s["connected"], true);
+    assert_eq!(s["accountId"], made[0].as_str());
+    assert_eq!(s["onboarding"], "pending");
+
+    // The next try reads that account by its id: no create at all, so
+    // it doesn't lean on an idempotency key Stripe forgets in time.
+    let creates = t.fake.calls("POST /v2/core/accounts") + t.fake.calls("POST /v1/accounts");
+    let start = t.start("alpha", &t.ann).await;
+    assert_eq!(start["status"]["accountId"], made[0].as_str());
+    assert_eq!(
+        start["status"]["requirementsDue"], 3,
+        "now read from Stripe"
+    );
+    assert_eq!(
+        t.fake.calls("POST /v2/core/accounts") + t.fake.calls("POST /v1/accounts"),
+        creates
+    );
+    assert_eq!(t.fake.account_ids().len(), 1);
+}
+
+#[tokio::test]
+async fn a_create_stripe_failed_or_refused_is_tried_again_under_a_new_key() {
+    let t = setup().await;
+    let key = |t: &stripe_world::T| {
+        api::stripe::accounts::account(&t.w.store, &t.w.alpha.id)
+            .unwrap()
+            .unwrap()
+            .create_key
+    };
+    // A 500, then a refusal: each is what Stripe would answer for that
+    // key from then on, so each try after one goes under another key.
+    let mut keys = Vec::new();
+    for status in [500, 400] {
+        t.outage(1, status, "accounts").await;
+        let (code, _) =
+            t.w.call("POST", "/api/t/alpha/stripe/connect", &t.ann, None)
+                .await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE, "{status}");
+        keys.push(key(&t));
+    }
+    assert_ne!(keys[0], keys[1]);
+    assert!(t.fake.account_ids().is_empty());
+    // A rate limit stores nothing: the same key again.
+    t.outage(1, 429, "accounts").await;
+    let (code, _) =
+        t.w.call("POST", "/api/t/alpha/stripe/connect", &t.ann, None)
+            .await;
+    assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(key(&t), keys[1]);
+
+    let start = t.start("alpha", &t.ann).await;
+    assert_eq!(start["status"]["connected"], true);
+    assert_eq!(t.fake.account_ids().len(), 1);
 }
 
 #[tokio::test]

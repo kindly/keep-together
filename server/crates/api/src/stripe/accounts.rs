@@ -120,6 +120,20 @@ fn new_key() -> String {
     format!("keep-account-{}", uuid::Uuid::new_v4().simple())
 }
 
+/// A new create key for an organisation with no account yet: the create
+/// under the old one failed in a way Stripe answers again for as long as
+/// it keeps the key ([`super::client::CallError::same_key_again`]).
+pub fn renew_key(store: &Store, tenant: &TenantId) -> Result<(), StoreError> {
+    store.platform().with_write(|tx| {
+        tx.execute(
+            "UPDATE stripe_accounts SET create_key = ?2
+             WHERE tenant_id = ?1 AND account_id IS NULL",
+            params![tenant.as_str(), new_key()],
+        )?;
+        Ok(())
+    })
+}
+
 /// Forget an account Stripe no longer knows as ours (a sandbox wiped, a
 /// change of mode): the row is as new, with a new create key. Only if
 /// the row still names `account_id`.

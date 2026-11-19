@@ -103,6 +103,31 @@ impl CallError {
         }
     }
 
+    /// Stripe refuses the platform's key itself: not accepted (401), or
+    /// without the permission the call needs (a 403 that isn't
+    /// [`Self::account_gone`]). Nothing about the request is wrong.
+    pub fn platform_key(&self) -> bool {
+        match self {
+            CallError::Unauthorized => true,
+            CallError::Refused { status: 403, .. } => !self.account_gone(),
+            _ => false,
+        }
+    }
+
+    /// Whether a create that failed this way may be tried again under
+    /// the same idempotency key. Only when Stripe may have made the
+    /// resource without our hearing (no answer), or says to come back
+    /// (429, a 409 for a request still in flight). Anything else Stripe
+    /// stores against the key and answers again for as long as it keeps
+    /// it (a 500 included), so the next try needs a new key.
+    pub fn same_key_again(&self) -> bool {
+        match self {
+            CallError::Unreachable(_) => true,
+            CallError::Refused { status, .. } => *status == 429 || *status == 409,
+            _ => false,
+        }
+    }
+
     /// The account isn't the platform's (any more): it doesn't exist,
     /// was never connected, or its owner removed us. Stripe answers all
     /// three alike, `403 account_invalid`.
@@ -290,19 +315,20 @@ impl Api {
     /// Stripe carries the losses and collects the requirements; in the
     /// UK, asked for card payments. Everything else (who they are, their
     /// bank account) Stripe's own form asks the organisation.
-    /// `idempotency_key`: tried again under it, the same account.
-    /// `tenant` goes in the account's metadata (`keep_tenant`), so an
-    /// account can be traced back from Stripe's side.
+    /// `idempotency_key`: tried again under it, the same account. Stripe
+    /// refuses a key reused with another body, so the body holds nothing
+    /// that can change between tries: not the organisation's name (a
+    /// rename would do it), only `tenant`, its id here, as metadata
+    /// (`keep_tenant`), which also traces the account back from Stripe's
+    /// side.
     pub async fn create_account(
         &self,
-        name: &str,
         tenant: &str,
         idempotency_key: &str,
     ) -> Result<String, CallError> {
         let made = match ACCOUNTS_API {
             AccountsApi::V2 => {
                 let body = json!({
-                    "display_name": name,
                     "dashboard": "full",
                     "identity": { "country": "gb" },
                     "configuration": { "merchant": { "capabilities": {
@@ -331,7 +357,6 @@ impl Api {
                     ("controller[losses][payments]", "stripe"),
                     ("controller[requirement_collection]", "stripe"),
                     ("capabilities[card_payments][requested]", "true"),
-                    ("business_profile[name]", name),
                     ("metadata[keep_tenant]", tenant),
                 ];
                 self.call(
@@ -476,5 +501,19 @@ mod tests {
         // account is still there.
         assert!(!refused(403, "permission_denied").account_gone());
         assert!(!refused(404, "resource_missing").account_gone());
+        // The platform's key at fault, not the request.
+        assert!(CallError::Unauthorized.platform_key());
+        assert!(refused(403, "permission_denied").platform_key());
+        assert!(!refused(403, "account_invalid").platform_key());
+        assert!(!refused(400, "parameter_missing").platform_key());
+        assert!(!refused(500, "api_error").platform_key());
+        // A failed create under the same key again: only when Stripe
+        // hasn't stored an answer against it.
+        assert!(CallError::Unreachable("timeout".into()).same_key_again());
+        assert!(refused(409, "idempotency_key_in_use").same_key_again());
+        assert!(refused(429, "rate_limit").same_key_again());
+        assert!(!refused(500, "api_error").same_key_again());
+        assert!(!refused(400, "idempotency_error").same_key_again());
+        assert!(!CallError::Unauthorized.same_key_again());
     }
 }

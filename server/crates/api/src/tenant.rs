@@ -406,7 +406,6 @@ impl Tenant {
             crate::stripe::connect::Org {
                 tenant: self.tenant_id.clone(),
                 slug: self.slug.clone(),
-                name: self.name.clone(),
                 user: self.user,
             },
         )

@@ -379,6 +379,7 @@ keep [--data <dir>] giftaid-xml <slug> <claim-id>   # a claim's HMRC XML on stdo
 keep giftaid-xml --hmrc-sample                # HMRC's sample data: their GAValidSample.xml, byte for byte
 keep [--data <dir>] giving-consistency <slug>       # provider payments vs their gifts (ADR 0025); exit 1 on any
 keep [--data <dir>] expected <slug> <YYYY-MM>       # each regular gift's expected payment that month against what happened (ADR 0026)
+keep [--data <dir>] stripe requeue <slug>           # the organisation's parked Stripe webhook events back in the queue
 ```
 
 `keep sql` opens the org file `SQLITE_OPEN_READ_ONLY` with `query_only`,
@@ -1108,9 +1109,11 @@ account is read through `GET /v1/accounts/{id}` and followed by v1
 
 Connecting (`api::stripe::connect`), one at a time: the organisation's
 row is reserved with the idempotency key its account is made under (a
-create whose answer was lost is the same account on the next try); the
-account is made, or the one it has read (one Stripe says isn't ours any
-more, `403 account_invalid`, is forgotten and replaced); the
+create whose answer never came is the same account on the next try; one
+Stripe failed or refused gets a new key, since Stripe answers a key's
+first result again); the account is made and its id stored at once, or
+the one it has read (one Stripe says isn't ours any more, `403
+account_invalid`, is forgotten and replaced); the
 organisation is recorded as connected with Stripe's state of it; and a
 single-use link to Stripe's form is answered. "Connected" is the row
 with an account and no `disconnected_at`; whether donations can be taken
@@ -1130,7 +1133,10 @@ by its `account`, answered `200`, and handled in the background and by
 the `stripe-events` job (30 s), one organisation at a time in arrival
 order (`api::stripe::process`), with GoCardless's retry rules (30 s
 doubling to an hour, parked as `failed` after 50 tries or a refusal,
-`failedEvents`). Stored and not run: an account nobody here holds
+`failedEvents`; `keep stripe requeue <slug>` puts parked ones back).
+Stripe refusing the platform's own key (a 401, or a 403 for a
+permission it lacks) never parks an event: it waits and is retried
+until the key is put right. Stored and not run: an account nobody here holds
 (`unknown_account`), an organisation that disconnected (`not_connected`,
 requeued when it connects again), an event of the other mode
 (`wrong_mode`). A run re-checks that the organisation still holds the
