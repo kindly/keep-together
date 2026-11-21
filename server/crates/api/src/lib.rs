@@ -17,6 +17,7 @@ pub mod routes;
 pub mod scans;
 pub mod schema;
 pub mod static_files;
+pub mod stripe;
 pub mod tenant;
 pub mod timing;
 
@@ -44,6 +45,8 @@ pub struct AppState {
     pub address: Option<Arc<address::Lookup>>,
     /// `KEEP_GOCARDLESS` ([`gocardless`]); off when `None`.
     pub gocardless: Option<Arc<gocardless::GoCardless>>,
+    /// `KEEP_STRIPE` ([`stripe`]); off when `None`.
+    pub stripe: Option<Arc<stripe::Stripe>>,
     /// Scan uploads' cap, disk reserve and slots ([`scans::limits`]).
     pub scans: Arc<scans::limits::ScanLimits>,
     /// The commit this build is (`KEEP_RELEASE`, [`health::commit`]),
@@ -62,6 +65,7 @@ impl AppState {
             qc: None,
             address: None,
             gocardless: None,
+            stripe: None,
             scans: Arc::default(),
             commit: None,
         }
@@ -79,6 +83,11 @@ impl AppState {
 
     pub fn with_gocardless(mut self, gc: Option<Arc<gocardless::GoCardless>>) -> Self {
         self.gocardless = gc;
+        self
+    }
+
+    pub fn with_stripe(mut self, stripe: Option<Arc<stripe::Stripe>>) -> Self {
+        self.stripe = stripe;
         self
     }
 
@@ -242,11 +251,15 @@ pub fn app(state: AppState, domain: Router) -> Router {
             "/api/gocardless/webhook",
             post(gocardless::webhook::receive),
         )
+        .route("/api/stripe/webhook", post(stripe::webhook::receive))
         .merge(auth::routes())
         .merge(scans::phone::router())
         .nest("/api/t/{slug}", tenant_routes);
     if let Some(fake) = fake {
         router = router.nest(gocardless::FAKE_PREFIX, gocardless::fake::router(fake));
+    }
+    if let Some(fake) = state.stripe.as_ref().and_then(|s| s.fake.clone()) {
+        router = router.nest(stripe::FAKE_PREFIX, stripe::fake::router(fake));
     }
     router
         .layer(middleware::from_fn_with_state(state.clone(), body::buffer))

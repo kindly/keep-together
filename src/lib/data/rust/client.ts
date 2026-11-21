@@ -54,6 +54,8 @@ export function describe(error: ApiError): string {
       return 'Lookup unavailable: type the address'
     case 'gocardless_unavailable':
       return 'GoCardless isn’t answering: try again'
+    case 'stripe_unavailable':
+      return 'Stripe isn’t answering: try again'
     case 'busy':
       return 'Busy: try again in a moment'
     case 'storage_full':

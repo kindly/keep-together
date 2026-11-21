@@ -210,6 +210,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /sources/{id}",
             "GET /standing-orders/missed",
             "GET /standing-orders/{id}",
+            "GET /stripe",
             "POST /address-lookup",
             "POST /bank/accept",
             "POST /bank/accounts",
@@ -296,6 +297,8 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /sources/{id}/delete",
             "POST /sources/{id}/save",
             "POST /standing-orders/{id}/end",
+            "POST /stripe/connect",
+            "POST /stripe/disconnect",
         ],
         "the route table changed: check any new GET only reads, then update this list"
     );
@@ -333,8 +336,21 @@ async fn every_write_route_refuses_a_viewer_and_the_role_is_the_reason() {
     )
     .unwrap()
     .map(std::sync::Arc::new);
+    // Stripe too (its fake at an address nothing answers: an admin's
+    // connect is a 503, not a missing route).
+    let stripe = api::stripe::from_vars(
+        |name| (name == "KEEP_STRIPE").then(|| "fake".to_owned()),
+        api::stripe::Origins {
+            app_origin: "http://localhost:3000",
+            self_base: "http://127.0.0.1:9",
+        },
+    )
+    .unwrap()
+    .map(std::sync::Arc::new);
     w.app = api::app(
-        api::AppState::new(w.store.clone(), true).with_gocardless(gc),
+        api::AppState::new(w.store.clone(), true)
+            .with_gocardless(gc)
+            .with_stripe(stripe),
         api::routes::router(),
     );
     let val = w.login("val@alpha.org").await;

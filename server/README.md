@@ -44,6 +44,8 @@ Env (`api`):
 | `KEEP_GOCARDLESS` | `off` | Direct Debit (`api::gocardless`; "GoCardless" below): `fake` (a GoCardless mock mounted on this server at `/api/fake-gocardless`, no network; `KEEP_ENV=prod` refuses it), `sandbox` (`prod` refuses it), `live` (only with `KEEP_ENV=prod`). Any other value stops the boot |
 | `KEEP_GOCARDLESS_CLIENT_ID`, `KEEP_GOCARDLESS_CLIENT_SECRET`, `KEEP_GOCARDLESS_WEBHOOK_SECRET` | unset | the partner app's OAuth client and webhook secret; `sandbox`/`live` stop the boot without them (`scripts/fly/gocardless-secrets.sh`). Never logged, never in a URL or an error |
 | `KEEP_QC_GOCARDLESS_TOKEN`, `KEEP_QC_GOCARDLESS_ORGANISATION` | unset | the QC sandbox account's permanent token and `OR…` id (`scripts/fly/gocardless-qc-token.sh`): with `sandbox`, the QC GoCardless surface (below). Both or neither; `KEEP_ENV=prod` or `KEEP_GOCARDLESS=live` stops the boot. Never logged |
+| `KEEP_STRIPE` | `off` | card donations (`api::stripe`; "Stripe" below): `fake` (a Stripe mock mounted on this server at `/api/fake-stripe`, no network; `KEEP_ENV=prod` refuses it), `test` (a Stripe sandbox; `prod` refuses it), `live` (only with `KEEP_ENV=prod`). Any other value stops the boot |
+| `KEEP_STRIPE_API_KEY`, `KEEP_STRIPE_WEBHOOK_SECRET` | unset | the platform's restricted key and the connected-accounts webhook endpoint's signing secret; `test`/`live` stop the boot without them, or with a key of the other mode (`…_test_…`/`…_live_…`) (`scripts/fly/stripe-secrets.sh`). Never logged, never in a URL or an error |
 | `KEEP_FILES_CAP_BYTES` | unset: no cap | bytes of scanned pages an organisation's files db may hold (`422 rejected files_full` past it). Unset, none: the volume's reserve (`507`) is the only stop (human, 2026-10-29) |
 | `KEEP_FILES_DISK_RESERVE_BYTES` | see `api::scans::limits` | free bytes the data volume keeps after a scan upload (`507 storage_full` otherwise). Default: twice the largest database on the volume (the snapshot's copy and its `.zst`), and deployed (`prod`/`staging`) at least a quarter of the volume. `0` turns the guard off |
 | `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`; on dev under `KEEP_AUTH_POLICY=relaxed` a missing password is `riverside` and a missing TOTP is none) |
@@ -139,6 +141,7 @@ request, an SSE stream) is never closed.
   | 429 | `lookup_cap` | the organisation's address lookups for the month are used up |
   | 503 | `lookup_unavailable` | the address lookup provider is down, slow (5 s), out of credit, or the daily ceiling is reached |
   | 503 | `gocardless_unavailable` | GoCardless didn't answer or failed; nothing changed here |
+  | 503 | `stripe_unavailable` | Stripe didn't answer or failed; try again (a connect carries on from where it got to) |
   | 503 | `busy` | too many scan uploads in flight (8); nothing stored; send it again |
   | 507 | `storage_full` | the data volume is down to its reserve; no scan stored |
   | 500 | `internal` | details only in the server log |
@@ -356,7 +359,8 @@ on), and `scan-pairing-sweep`, `scan-orphan-sweep` and
 registers the same way. With GoCardless on: `gocardless-events` (30 s),
 `gocardless-catchup` (daily) and `regular-terms-sync` (hourly, first
 run 10 minutes after boot; also run for one organisation after a terms
-change is saved). Always: `standing-orders-missed` (6 h: standing
+change is saved). With Stripe on: `stripe-events` (30 s). Always:
+`standing-orders-missed` (6 h: standing
 orders' payments still unmatched 14 days after they were due; "Bank
 transfers"). A job's first run is `first_after()` after boot
 (default: one period), so the snapshot needn't wait an hour after every
@@ -375,6 +379,7 @@ keep [--data <dir>] giftaid-xml <slug> <claim-id>   # a claim's HMRC XML on stdo
 keep giftaid-xml --hmrc-sample                # HMRC's sample data: their GAValidSample.xml, byte for byte
 keep [--data <dir>] giving-consistency <slug>       # provider payments vs their gifts (ADR 0025); exit 1 on any
 keep [--data <dir>] expected <slug> <YYYY-MM>       # each regular gift's expected payment that month against what happened (ADR 0026)
+keep [--data <dir>] stripe requeue <slug>           # the organisation's parked Stripe webhook events back in the queue
 ```
 
 `keep sql` opens the org file `SQLITE_OPEN_READ_ONLY` with `query_only`,
@@ -1144,3 +1149,81 @@ timeout; it can't be reached: `503 gocardless_unavailable`.
 | `GET …/peek/{slug}/{mandate\|subscription\|payment}/{id}` | `QcPeek {id, status, amount, chargeDate, nextPossibleChargeDate, upcomingPayments, payments}` (pence) |
 | `POST …/catchup {slug}` | the catch-up for this org now → `{read, missed}` |
 | `POST …/cleanup {slug}` | deletes the customers behind the org's mandates, then sweeps `keep_qc`-tagged customers older than 2 days → `{own, swept, refused}` |
+
+## Stripe (card donations)
+
+`api::stripe`, plan `factory/plans/stripe.sv`. **Built so far: S1**
+(Connect and plumbing); schema and contracts (S2), processing (S3), the
+donor's page (S4) and the staff screens (S5) follow.
+
+Each organisation gets its own Stripe account, made by us and filled in
+on Stripe's hosted form: the full Stripe Dashboard, its own fees, Stripe
+carrying the losses (what "Standard" meant). Donors pay it directly; we
+never hold funds. There is no secret per organisation: every call is the
+platform's key plus the account id (`Stripe-Account`). So `platform.db`
+holds everything (`api::stripe::SCHEMA`): `stripe_accounts` (one row per
+organisation: the account, who connected it and when, `disconnected_at`,
+and Stripe's onboarding answers as last read) and `stripe_events` (every
+webhook event by Stripe's id).
+
+`api::stripe::client` pins `Stripe-Version` (`VERSION`) on every call
+and is the one place that knows which Accounts API makes an account:
+`ACCOUNTS_API`, v2 (`POST /v2/core/accounts`), with v1 (`POST
+/v1/accounts` and `controller` properties) beside it. Either way the
+account is read through `GET /v1/accounts/{id}` and followed by v1
+`account.updated` events.
+
+Connecting (`api::stripe::connect`), one at a time: the organisation's
+row is reserved with the idempotency key its account is made under (a
+create whose answer never came is the same account on the next try; one
+Stripe failed or refused gets a new key, since Stripe answers a key's
+first result again); the account is made and its id stored at once, or
+the one it has read (one Stripe says isn't ours any more, `403
+account_invalid`, is forgotten and replaced); the
+organisation is recorded as connected with Stripe's state of it; and a
+single-use link to Stripe's form is answered. "Connected" is the row
+with an account and no `disconnected_at`; whether donations can be taken
+is `chargesEnabled`. Stripe sends the browser back to
+`/t/{slug}/settings?stripe=return` (finished or left: proof of nothing)
+or `?stripe=refresh` (the link was spent or expired: ask for another).
+Disconnecting calls nothing at Stripe and keeps the row: the account's
+events from then on are kept, not run, and connecting again is the same
+account, replaying them.
+
+Webhooks: `POST /api/stripe/webhook`, one route for every organisation,
+registered at Stripe as a *connected accounts* endpoint.
+`Stripe-Signature` (`t=…,v1=…`: HMAC-SHA256 of `<t>.<raw body>` under
+the endpoint secret, any `v1`, constant time, `t` within 5 minutes) or
+`400`. A signed event is stored once by id (`INSERT OR IGNORE`), routed
+by its `account`, answered `200`, and handled in the background and by
+the `stripe-events` job (30 s), one organisation at a time in arrival
+order (`api::stripe::process`), with GoCardless's retry rules (30 s
+doubling to an hour, parked as `failed` after 50 tries or a refusal,
+`failedEvents`; `keep stripe requeue <slug>` puts parked ones back).
+Stripe refusing the platform's own key (a 401, or a 403 for a
+permission it lacks) never parks an event: it waits and is retried
+until the key is put right. Stored and not run: an account nobody here holds
+(`unknown_account`), an organisation that disconnected (`not_connected`,
+requeued when it connects again), an event of the other mode
+(`wrong_mode`). A run re-checks that the organisation still holds the
+event's account. Stripe promises no order, so a handler never trusts an
+event's snapshot: `account.updated` reads the account from Stripe and
+stores that; `account.application.deauthorized` (the owner removed us in
+their Dashboard) disconnects the organisation here.
+
+| route | |
+|---|---|
+| `POST /api/stripe/webhook` | above |
+| `GET /api/t/{slug}/stripe` | `StripeStatus {enabled, mode, connected, accountId, connectedAt, connectedBy, onboarding: none\|pending\|restricted\|complete, detailsSubmitted, chargesEnabled, payoutsEnabled, requirementsDue, disabledReason, statusAt, failedEvents}`, any member; the only route that answers when off |
+| `POST …/stripe/connect` | → `StripeConnectStart {url, status}`: send the browser to `url` (null once Stripe takes payments for the account); admin within the step-up hour; `503 stripe_unavailable` |
+| `POST …/stripe/disconnect` | → `StripeStatus`, `connected: false`; admin within the step-up hour |
+
+The fake (`KEEP_STRIPE=fake`, `api::stripe::fake`, what `pnpm dev` runs)
+answers the client's calls in Stripe's shapes (both Accounts APIs),
+hosts the onboarding page (`Complete`, `Submit, more needed`, `Leave`)
+and signs its webhooks like Stripe. Simulators under
+`/api/fake-stripe/simulate/`: `accounts/{id}/update` (a JSON patch of
+the account, with its `account.updated`), `accounts/{id}/deauthorize`,
+`webhooks/hold` and `webhooks/release?reverse&count=`, `outage {calls,
+status?, path?}`, `GET webhooks`. `api/tests/stripe_connect.rs` and
+`stripe_webhook.rs` run on it.

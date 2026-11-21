@@ -48,6 +48,8 @@ pub struct Tenant {
     address: Option<Arc<crate::address::Lookup>>,
     /// `KEEP_GOCARDLESS`, for [`Tenant::gocardless`] and the connection.
     gocardless: Option<Arc<crate::gocardless::GoCardless>>,
+    /// `KEEP_STRIPE`, for [`Tenant::stripe`] and the connection.
+    stripe: Option<Arc<crate::stripe::Stripe>>,
     /// Scan uploads' cap and disk reserve.
     scan_limits: Arc<crate::scans::limits::ScanLimits>,
 }
@@ -370,6 +372,55 @@ impl Tenant {
         Ok(GoCardlessStatus::new(gc.mode, None))
     }
 
+    // ── Stripe (`crate::stripe`) ───────────────────────────────────────────
+
+    /// Stripe, when it is on here (`KEEP_STRIPE`); off: `404`.
+    pub fn stripe(&self) -> Result<Arc<crate::stripe::Stripe>, ApiError> {
+        self.stripe.clone().ok_or(ApiError::NotFound)
+    }
+
+    /// The Stripe account (`acct_…`) this organisation is connected to,
+    /// for a call on its behalf (`Stripe-Account`); `None` when it isn't
+    /// connected.
+    pub async fn stripe_account(&self) -> Result<Option<String>, ApiError> {
+        let (store, id) = (self.store.clone(), self.tenant_id.clone());
+        blocking(move || crate::stripe::accounts::connected_account(&store, &id)).await
+    }
+
+    /// Whether Stripe is on, and this organisation's account
+    /// (`platform.db`). Any member.
+    pub async fn stripe_status(&self) -> Result<crate::stripe::StripeStatus, ApiError> {
+        crate::stripe::connect::status(&self.store, self.stripe.as_ref(), &self.tenant_id).await
+    }
+
+    /// "Connect Stripe" (admin within the step-up hour): the
+    /// organisation's Stripe account, made if it has none, and a link to
+    /// Stripe's form for it ([`crate::stripe::connect`]).
+    pub async fn stripe_connect(&self) -> Result<crate::stripe::StripeConnectStart, ApiError> {
+        self.require_admin()?;
+        let stripe = self.stripe()?;
+        blocking(self.recheck()).await?;
+        crate::stripe::connect::start(
+            &self.store,
+            &stripe,
+            crate::stripe::connect::Org {
+                tenant: self.tenant_id.clone(),
+                slug: self.slug.clone(),
+                user: self.user,
+            },
+        )
+        .await
+    }
+
+    /// Disconnect Stripe (admin within the step-up hour): the routing is
+    /// forgotten here; the account stays the organisation's.
+    pub async fn stripe_disconnect(&self) -> Result<crate::stripe::StripeStatus, ApiError> {
+        self.require_admin()?;
+        let stripe = self.stripe()?;
+        blocking(self.recheck()).await?;
+        crate::stripe::connect::disconnect(&self.store, &stripe, &self.tenant_id).await
+    }
+
     // ── declaration scans (`crate::scans`) ─────────────────────────────────
 
     /// Start a phone pairing for this session (staff or admin, a sign-in
@@ -576,6 +627,7 @@ pub(crate) async fn middleware(
             session_id: session.id.clone(),
             address: state.address.clone(),
             gocardless: state.gocardless.clone(),
+            stripe: state.stripe.clone(),
             scan_limits: state.scans.clone(),
         })
     }
@@ -652,6 +704,7 @@ mod tests {
             session_id: ::auth::secret::hash(&token),
             address: None,
             gocardless: None,
+            stripe: None,
             scan_limits: Arc::default(),
         };
         let write = || tenant.write(|_ctx| Ok(()));

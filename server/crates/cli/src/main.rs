@@ -12,6 +12,7 @@
 //! keep giftaid-xml --hmrc-sample
 //! keep giving-consistency <slug>
 //! keep expected <slug> <YYYY-MM>
+//! keep stripe requeue <slug>
 //! ```
 
 use std::path::PathBuf;
@@ -29,7 +30,8 @@ const USAGE: &str = "usage:
   keep [--data <dir>] giftaid-xml <slug> <claim-id>   (the claim's XML on stdout, IRmark on stderr)
   keep giftaid-xml --hmrc-sample                      (HMRC's sample data: their GAValidSample.xml)
   keep [--data <dir>] giving-consistency <slug>       (provider payments vs their gifts; exit 1 on any)
-  keep [--data <dir>] expected <slug> <YYYY-MM>       (each regular gift's expected payment that month against what happened)";
+  keep [--data <dir>] expected <slug> <YYYY-MM>       (each regular gift's expected payment that month against what happened)
+  keep [--data <dir>] stripe requeue <slug>           (parked Stripe webhook events back in the queue)";
 
 fn fail(msg: impl std::fmt::Display) -> ExitCode {
     eprintln!("{msg}");
@@ -181,6 +183,13 @@ fn main() -> ExitCode {
                 for l in lines {
                     println!("{l}");
                 }
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(e),
+        },
+        ["stripe", "requeue", slug] => match cli::stripe::requeue(&data, slug) {
+            Ok(n) => {
+                println!("{slug}: {n} parked Stripe event(s) back in the queue");
                 ExitCode::SUCCESS
             }
             Err(e) => fail(e),

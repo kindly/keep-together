@@ -6,4 +6,5 @@ pub mod dev;
 pub mod giftaid;
 pub mod giving;
 pub mod sql;
+pub mod stripe;
 pub mod tenant;

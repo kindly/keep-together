@@ -69,6 +69,9 @@ pub enum ApiError {
     /// 503: GoCardless can't be reached or failed; nothing was changed
     /// here. Try again.
     GocardlessUnavailable,
+    /// 503: Stripe can't be reached or failed. Try again: nothing is
+    /// lost, and what was begun is carried on from.
+    StripeUnavailable,
     /// 503: too many scan uploads at once; nothing was stored. Send it
     /// again in a moment (the same `id`/`pageId`).
     Busy,
@@ -94,9 +97,10 @@ impl ApiError {
             }
             ApiError::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::RateLimited | ApiError::LookupCap => StatusCode::TOO_MANY_REQUESTS,
-            ApiError::LookupUnavailable | ApiError::GocardlessUnavailable | ApiError::Busy => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            ApiError::LookupUnavailable
+            | ApiError::GocardlessUnavailable
+            | ApiError::StripeUnavailable
+            | ApiError::Busy => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::StorageFull => StatusCode::INSUFFICIENT_STORAGE,
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
