@@ -13,6 +13,7 @@ fn store(dir: &std::path::Path) -> Store {
         org_migrations: Migrations::new(vec![
             M::up(contracts::MIGRATION),
             M::up(preferences::MIGRATION),
+            M::up(preferences::MIGRATION_CLAIMS_GIFT_AID),
         ]),
         readers: 1,
         max_open: StoreConfig::DEFAULT_MAX_OPEN,
@@ -174,4 +175,97 @@ fn saves_write_revisions_and_preferences_stay_in_their_own_file() {
         b.read(|r| preferences::read(r)).unwrap().fields.version,
         None
     );
+}
+
+fn claims(db: &OrgDb) -> preferences::ClaimsGiftAid {
+    db.read(|r| preferences::read(r)).unwrap().claims_gift_aid
+}
+
+fn set_claims(db: &OrgDb, on: bool, expected: Option<i64>) -> Result<i64, ContractError> {
+    transact(db, Some(1), |ctx| {
+        preferences::set_claims_gift_aid(ctx, on, expected, Source::Ui).map(|e| e.counter)
+    })
+}
+
+#[test]
+fn a_group_claims_gift_aid_until_it_says_otherwise() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path());
+    let a = store
+        .org(&store.create_tenant("alpha", "Alpha").unwrap().id)
+        .unwrap();
+    // No row: on.
+    assert!(a.read(|r| preferences::claims_gift_aid(r)).unwrap());
+    assert_eq!((claims(&a).on, claims(&a).version), (true, None));
+
+    // A row made by another switch leaves it on.
+    set(&a, ListKind::Fields, true, None).unwrap();
+    assert!(a.read(|r| preferences::claims_gift_aid(r)).unwrap());
+    assert_eq!((claims(&a).on, claims(&a).version), (true, Some(0)));
+
+    assert_eq!(set_claims(&a, false, Some(0)).unwrap(), 1);
+    assert!(!a.read(|r| preferences::claims_gift_aid(r)).unwrap());
+    assert_eq!((claims(&a).on, claims(&a).version), (false, Some(1)));
+    assert_eq!(set_claims(&a, true, Some(1)).unwrap(), 2);
+    assert!(a.read(|r| preferences::claims_gift_aid(r)).unwrap());
+}
+
+#[test]
+fn claims_gift_aid_has_its_own_counter_and_never_conflicts_with_the_list_switches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path());
+    let a = store
+        .org(&store.create_tenant("alpha", "Alpha").unwrap().id)
+        .unwrap();
+    // The first save of all creates the row.
+    assert_eq!(set_claims(&a, false, None).unwrap(), 0);
+    let prefs = a.read(|r| preferences::read(r)).unwrap();
+    assert!(!prefs.claims_gift_aid.on);
+    for kind in ListKind::ALL {
+        assert!(!prefs.get(kind).staff_can_manage);
+        assert_eq!(prefs.get(kind).version, Some(0));
+    }
+    // Each list switch saves at its own counter, and leaves Gift Aid off.
+    assert_eq!(set(&a, ListKind::SourceCodes, true, Some(0)).unwrap(), 1);
+    assert_eq!((claims(&a).on, claims(&a).version), (false, Some(0)));
+    // A stale save is refused with the switch as it is.
+    set_claims(&a, true, Some(0)).unwrap();
+    match set_claims(&a, false, Some(0)) {
+        Err(ContractError::Stale {
+            contract,
+            counter,
+            current,
+        }) => {
+            assert_eq!(contract, "tenantPreferences.claimsGiftAid");
+            assert_eq!(counter, 1);
+            assert_eq!(current, serde_json::json!({ "claimsGiftAid": true }));
+        }
+        other => panic!("{other:?}"),
+    }
+    // Seeing no row when one exists is stale too.
+    assert!(matches!(
+        set_claims(&a, false, None),
+        Err(ContractError::Stale { .. })
+    ));
+    assert!(claims(&a).on);
+}
+
+#[test]
+fn one_groups_gift_aid_switch_is_not_anothers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(tmp.path());
+    let a = store
+        .org(&store.create_tenant("alpha", "Alpha").unwrap().id)
+        .unwrap();
+    let b = store
+        .org(&store.create_tenant("beta", "Beta").unwrap().id)
+        .unwrap();
+    set_claims(&a, false, None).unwrap();
+    assert!(!a.read(|r| preferences::claims_gift_aid(r)).unwrap());
+    assert!(b.read(|r| preferences::claims_gift_aid(r)).unwrap());
+    assert_eq!(claims(&b).version, None);
+    let rows: i64 = b
+        .read(|r| r.query_row("SELECT count(*) FROM tenant_preferences", [], |r| r.get(0)))
+        .unwrap();
+    assert_eq!(rows, 0);
 }

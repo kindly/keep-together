@@ -274,12 +274,31 @@ fn tidy_snapshot(p: DetailsPayload, problems: &mut Vec<Problem>) -> DetailsPaylo
 /// Snapshot fields tidied ([`tidy_snapshot`]); `madeOn` a real date; a
 /// wording version given; a gift named when the scope is `thisGift` (any
 /// scope may name the gift it was made with); never `onScreenByDonor`
-/// while no donor-facing screen exists (staff can't make that true). A
+/// (staff can't make that true: [`prepare_donor_declaration`]). A
 /// future `madeOn` is refused by the contract, which knows the time.
 /// Empty snapshot fields are storable: they warn ([`crate::warnings`]),
 /// because staff may tick before they have the address (g3q3), and fill
 /// them in later ([`prepare_details`]).
 pub fn prepare_declaration(p: DeclarationPayload) -> Result<DeclarationPayload, ContractError> {
+    prepare_made_by(p, false)
+}
+
+/// A declaration the donor made themselves on the donation page, which
+/// only [`crate::make_donor_declaration`] can record: always
+/// `onScreenByDonor`, always with the gift it was made with, and with
+/// the name, house name or number and postcode the donor typed (HMRC
+/// 3.6.2). Nobody is there to complete a blank later, so none is
+/// storable.
+pub fn prepare_donor_declaration(
+    p: DeclarationPayload,
+) -> Result<DeclarationPayload, ContractError> {
+    prepare_made_by(p, true)
+}
+
+fn prepare_made_by(
+    p: DeclarationPayload,
+    by_donor: bool,
+) -> Result<DeclarationPayload, ContractError> {
     let mut problems = Vec::new();
     let snapshot = tidy_snapshot(p.details(), &mut problems);
     let out = DeclarationPayload {
@@ -294,10 +313,33 @@ pub fn prepare_declaration(p: DeclarationPayload) -> Result<DeclarationPayload, 
     if !is_iso_date(&out.made_on) {
         problems.push(Problem::new("madeOn", "Enter a date (YYYY-MM-DD)"));
     }
-    if out.method == Method::OnScreenByDonor {
+    if by_donor {
+        if out.method != Method::OnScreenByDonor {
+            problems.push(Problem::new(
+                "method",
+                "A declaration from the donation page is made on screen by the donor",
+            ));
+        }
+        if out.gift_id.is_none() {
+            problems.push(Problem::new(
+                "contributionId",
+                "A declaration from the donation page names the gift it was made with",
+            ));
+        }
+        for (field, value) in [
+            ("firstName", &out.first_name),
+            ("lastName", &out.last_name),
+            ("addressLine1", &out.address_line1),
+            ("postcode", &out.postcode),
+        ] {
+            if value.is_empty() {
+                problems.push(Problem::new(field, "The donor’s declaration needs it"));
+            }
+        }
+    } else if out.method == Method::OnScreenByDonor {
         problems.push(Problem::new(
             "method",
-            "There is no screen for donors to declare on yet: record how staff took the declaration",
+            "Only a donor can declare on screen: record how staff took the declaration",
         ));
     }
     if out.wording_version.is_empty() {
@@ -714,7 +756,10 @@ mod tests {
             ..payload()
         })
         .unwrap_err();
-        assert!(err.to_string().contains("no screen for donors"), "{err}");
+        assert!(
+            err.to_string().contains("Only a donor can declare"),
+            "{err}"
+        );
         assert!(
             prepare_declaration(DeclarationPayload {
                 wording_version: " ".into(),
@@ -728,6 +773,58 @@ mod tests {
         })
         .unwrap();
         assert_eq!(ticked.method, Method::StaffTickedNoEvidence);
+    }
+
+    #[test]
+    fn a_donors_own_declaration_is_on_screen_with_its_gift_and_no_blanks() {
+        let donors = || DeclarationPayload {
+            method: Method::OnScreenByDonor,
+            gift_id: Some(GIFT.into()),
+            ..payload()
+        };
+        let made = prepare_donor_declaration(donors()).unwrap();
+        assert_eq!(made.method, Method::OnScreenByDonor);
+        assert_eq!(
+            (made.first_name.as_str(), made.postcode.as_str()),
+            ("Jo", "SW1A 1AA")
+        );
+        let fields = |p: DeclarationPayload| match prepare_donor_declaration(p) {
+            Err(ContractError::Invalid(problems)) => {
+                problems.into_iter().map(|p| p.field).collect::<Vec<_>>()
+            }
+            other => panic!("{other:?}"),
+        };
+        // Any other method isn't the donor's, and can't come this way.
+        for method in [
+            Method::StaffTickedNoEvidence,
+            Method::PaperForm,
+            Method::Oral,
+        ] {
+            assert_eq!(
+                fields(DeclarationPayload { method, ..donors() }),
+                ["method"]
+            );
+        }
+        assert_eq!(
+            fields(DeclarationPayload {
+                gift_id: None,
+                ..donors()
+            }),
+            ["contributionId"]
+        );
+        // Staff may save blanks and complete them later; a donor's can't be.
+        assert_eq!(
+            fields(DeclarationPayload {
+                first_name: " ".into(),
+                last_name: String::new(),
+                address_line1: "  ".into(),
+                postcode: String::new(),
+                ..donors()
+            }),
+            ["firstName", "lastName", "addressLine1", "postcode"]
+        );
+        // And the staff path still refuses the method, gift or no gift.
+        assert!(prepare_declaration(donors()).is_err());
     }
 
     #[test]

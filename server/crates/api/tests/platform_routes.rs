@@ -320,6 +320,133 @@ async fn preferences_isolation() {
     assert_eq!(prefs["fields"]["version"], Value::Null);
 }
 
+/// "We claim Gift Aid" (plan stripe.sv): on until an admin of a group
+/// that isn't a charity switches it off; everyone reads it.
+#[tokio::test]
+async fn claims_gift_aid_is_on_by_default_and_only_admins_switch_it() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    let sam = w.login("sam@alpha.org").await;
+    let val = w.login("val@alpha.org").await;
+
+    let (s, prefs) = w.call("GET", "/api/t/alpha/preferences", &val, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        prefs["claimsGiftAid"],
+        json!({ "on": true, "version": null })
+    );
+    for who in [&sam, &val] {
+        let (s, _) = w
+            .call(
+                "POST",
+                "/api/t/alpha/preferences/claimsGiftAid",
+                who,
+                Some(json!({ "on": false })),
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    let (s, out) = w
+        .call(
+            "POST",
+            "/api/t/alpha/preferences/claimsGiftAid",
+            &ann,
+            Some(json!({ "on": false })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["counter"], 0);
+    assert_eq!(out["claimsGiftAid"], json!({ "on": false, "version": 0 }));
+    let (_, prefs) = w.call("GET", "/api/t/alpha/preferences", &sam, None).await;
+    assert_eq!(prefs["claimsGiftAid"]["on"], false);
+    // It never touches a list switch, and their saves never conflict with it.
+    assert_eq!(
+        prefs["fields"],
+        json!({ "staffCanManage": false, "version": 0 })
+    );
+    let (s, _) = w
+        .call(
+            "POST",
+            "/api/t/alpha/preferences/fields",
+            &ann,
+            Some(json!({ "expected": 0, "staffCanManage": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Stale: an old counter, or none once the row exists.
+    for body in [json!({ "expected": 4, "on": true }), json!({ "on": true })] {
+        let (s, body) = w
+            .call(
+                "POST",
+                "/api/t/alpha/preferences/claimsGiftAid",
+                &ann,
+                Some(body),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CONFLICT);
+        assert_eq!(body["kind"], "stale");
+        assert_eq!(body["contract"], "tenantPreferences.claimsGiftAid");
+        assert_eq!(body["current"], json!({ "claimsGiftAid": false }));
+    }
+    let (s, out) = w
+        .call(
+            "POST",
+            "/api/t/alpha/preferences/claimsGiftAid",
+            &ann,
+            Some(json!({ "expected": 0, "on": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(out["claimsGiftAid"], json!({ "on": true, "version": 1 }));
+    // A body without the switch is unstorable.
+    let (s, _) = w
+        .call(
+            "POST",
+            "/api/t/alpha/preferences/claimsGiftAid",
+            &ann,
+            Some(json!({ "expected": 1 })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn claims_gift_aid_isolation() {
+    let w = world();
+    let ann = w.login("ann@alpha.org").await;
+    let bob = w.login("bob@beta.org").await;
+    // A's admin under B's slug, and B's under A's: refused, nothing written.
+    for (who, slug) in [(&ann, "beta"), (&bob, "alpha")] {
+        let (s, _) = w
+            .call(
+                "POST",
+                &format!("/api/t/{slug}/preferences/claimsGiftAid"),
+                who,
+                Some(json!({ "on": false })),
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+    }
+    // A switches its own off: B still claims.
+    let (s, _) = w
+        .call(
+            "POST",
+            "/api/t/alpha/preferences/claimsGiftAid",
+            &ann,
+            Some(json!({ "on": false })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, prefs) = w.call("GET", "/api/t/beta/preferences", &bob, None).await;
+    assert_eq!(
+        prefs["claimsGiftAid"],
+        json!({ "on": true, "version": null })
+    );
+    let (_, prefs) = w.call("GET", "/api/t/alpha/preferences", &ann, None).await;
+    assert_eq!(prefs["claimsGiftAid"]["on"], false);
+}
+
 /// A switch is a contract: its save is an event on the org's stream, so
 /// other tabs refetch `mine`.
 #[tokio::test]

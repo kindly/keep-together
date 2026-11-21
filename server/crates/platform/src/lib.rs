@@ -33,6 +33,7 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &preferences::IDENTIFIER_TYPES,
         &preferences::SOURCE_CODES,
         &preferences::FIELDS,
+        &preferences::CLAIMS_GIFT_AID,
         &settings::SETTING,
     ])
 });

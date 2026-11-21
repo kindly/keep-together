@@ -119,14 +119,15 @@ export function sandbox(mocks = ['fly', 'gh', 'curl']) {
      * The script on a terminal (script(1)'s pty), its own stdout and
      * stderr captured apart from the terminal's echo. Each step is a line
      * to type, or a function of the stdout so far that returns the line
-     * once it can (null: not yet).
+     * once it can (null: not yet). `args` are the script's arguments.
      */
-    runTty(script, steps, { extraEnv = {} } = {}) {
+    runTty(script, steps, { extraEnv = {}, args = [] } = {}) {
       const out = path.join(dir, 'out.txt')
       const err = path.join(dir, 'err.txt')
       rmSync(out, { force: true })
       rmSync(err, { force: true })
-      const cmd = `exec /usr/bin/bash ${JSON.stringify(path.join(repo, script))} >${JSON.stringify(out)} 2>${JSON.stringify(err)}`
+      const argv = [path.join(repo, script), ...args].map((a) => JSON.stringify(a)).join(' ')
+      const cmd = `exec /usr/bin/bash ${argv} >${JSON.stringify(out)} 2>${JSON.stringify(err)}`
       const child = spawn('/usr/bin/script', ['-qefc', cmd, '/dev/null'], {
         cwd: repo,
         env: env(extraEnv),

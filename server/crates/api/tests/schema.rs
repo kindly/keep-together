@@ -329,6 +329,50 @@ const FIXTURES: &[&str] = &[
          '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 3000);
      UPDATE regular_gifts SET bank_reference = 'SO 100016', missed_on = '2026-08-10',
          missed_version = 1 WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1ae';",
+    // v24: card gifts through Stripe. The page's settings; a paid
+    // submission with Gift Aid ticked, its payment (part refunded) and
+    // the card gift it became, the donor's first name flagged; an unpaid
+    // submission whose personal fields were cleared; a payment nobody
+    // could be matched to.
+    "INSERT INTO donation_page (id, first_amount, second_amount, third_amount,
+         minimum_amount, maximum_amount, source_code_id, version)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e1c0', 1000, 2500, 5000, 200, 100000,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 1);
+     INSERT INTO gifts (seq, id, contact_id, received_on, amount, method, reference, status,
+         entered_by, entered_at, gift_version, status_version, provider, provider_payment_id)
+     VALUES (30, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c1', '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '2026-11-18', 2000, 'card', NULL, 'completed', NULL, 7100, 1, 0, 'stripe',
+         'pi_3QcFixture0001');
+     INSERT INTO gift_allocations (id, gift_id, position, source_code_id, amount)
+     VALUES ('0190f0c0a0b0c0d0e0f0a0b0c0d0e1c2', '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c1', 0,
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 2000);
+     INSERT INTO donation_submissions (seq, id, amount, first_name, last_name, email,
+         gift_aid, declaration_scope, wording_version, address_line1, postcode,
+         source_code_id, submitted_at, version, checkout_session_id, state,
+         stripe_payment_id, personal_cleared_at, outcome_version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c3', 2500, 'Anne', 'Smith', 'ann@x.org', 1,
+         'futureAndPast4y', 'hmrc-2016-04', '12 High Street', 'AB1 2CD',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 7000, 0, 'cs_test_fixture0001', 'started',
+         NULL, NULL, 1),
+            (2, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c4', 1000, '', '', '', 0, NULL, NULL, '', '',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e0a3', 7001, 0, 'cs_test_fixture0002', 'expired',
+         NULL, 7900, 3);
+     INSERT INTO stripe_payments (seq, id, payment_id, submission_id, amount, currency,
+         status, paid_on, refunded_amount, dispute_state, reason, version, contact_id,
+         gift_id, unmatched_reason, first_name_typed, partial_refund_claimed, matched_by,
+         matched_at, match_version)
+     VALUES (1, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c5', 'pi_3QcFixture0001',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c3', 2500, 'gbp', 'succeeded', '2026-11-18', 500,
+         NULL, 'requested_by_customer', 2, '0190f0c0a0b0c0d0e0f0a0b0c0d0e0f0',
+         '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c1', NULL, 'Anne', 0, NULL, 7100, 1),
+            (2, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c6', 'pi_3QcFixture0002', NULL, 1500, 'gbp',
+         'succeeded', '2026-11-18', 0, NULL, NULL, 0, NULL, NULL, 'ambiguous', NULL, 0,
+         NULL, NULL, 1);
+     UPDATE donation_submissions SET state = 'paid',
+         stripe_payment_id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c5', outcome_version = 2
+     WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c3';",
+    // v25: a group that isn't a charity switched Gift Aid off.
+    "UPDATE tenant_preferences SET claims_gift_aid = 0, claims_gift_aid_version = 1;",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";

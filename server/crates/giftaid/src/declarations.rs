@@ -30,7 +30,8 @@ use serde_json::Value;
 
 use crate::rules::{
     DECLARATION_LIMIT, GiftRef, Window, covering_declaration, covers, current_of,
-    prepare_cancellation, prepare_declaration, prepare_details, prepare_void, uk_date,
+    prepare_cancellation, prepare_declaration, prepare_details, prepare_donor_declaration,
+    prepare_void, uk_date,
 };
 use crate::types::{
     CancellationPayload, Declaration, DeclarationPayload, DeclarationSummary, DetailsChange,
@@ -168,8 +169,17 @@ pub struct DeclarationState {
 /// voided, a donor withdrawing is a cancellation, so restore of a
 /// revision is refused too. Its snapshot fields are set here and changed
 /// only by [`DetailsContract`].
-pub struct DeclarationContract;
-pub static DECLARATION: DeclarationContract = DeclarationContract;
+///
+/// `onScreenByDonor` is the donor's own method: [`DECLARATION`], the
+/// contract every staff payload and restore goes through, refuses it.
+/// Only [`crate::make_donor_declaration`] holds the contract that takes
+/// it (the same slice, name and counter), and nothing outside this crate
+/// can build one.
+pub struct DeclarationContract {
+    by_donor: bool,
+}
+pub static DECLARATION: DeclarationContract = DeclarationContract { by_donor: false };
+pub(crate) static DONOR_DECLARATION: DeclarationContract = DeclarationContract { by_donor: true };
 
 impl Contract for DeclarationContract {
     const NAME: &'static str = "giftaid.declaration";
@@ -182,7 +192,11 @@ impl Contract for DeclarationContract {
     type State = DeclarationState;
 
     fn prepare(&self, p: DeclarationPayload) -> Result<DeclarationPayload, ContractError> {
-        prepare_declaration(p)
+        if self.by_donor {
+            prepare_donor_declaration(p)
+        } else {
+            prepare_declaration(p)
+        }
     }
 
     fn load(&self, tx: &OrgTx, id: &str) -> Result<DeclarationState, ContractError> {

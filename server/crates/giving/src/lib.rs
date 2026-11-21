@@ -21,6 +21,7 @@ pub mod regular;
 pub mod requests;
 pub mod rules;
 pub mod standing;
+pub mod stripe;
 pub mod terms;
 pub mod terms_rules;
 pub mod types;
@@ -144,6 +145,11 @@ pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
         &terms::REGULAR_GIFT_TERM_CODE,
         &DIRECT_DEBIT_PAYMENT,
         &requests::PROVIDER_REQUEST,
+        &stripe::DONATION_SUBMISSION,
+        &stripe::DONATION_SUBMISSION_OUTCOME,
+        &stripe::STRIPE_PAYMENT,
+        &stripe::STRIPE_PAYMENT_MATCH,
+        &stripe::DONATION_PAGE,
     ])
 });
 

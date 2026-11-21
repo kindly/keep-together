@@ -114,6 +114,87 @@ pub fn make_declaration(
     execute(ctx, &DECLARATION, payload, opts)
 }
 
+/// What a donor declared on the group's donation page, as they typed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DonorDeclaration {
+    pub contact_id: String,
+    /// The gift it was made with.
+    pub gift_id: String,
+    pub scope: Scope,
+    /// The UK date the donor ticked it (the day they sent the page), ISO.
+    pub made_on: String,
+    /// The wording the page showed.
+    pub wording_version: String,
+    /// The name and home address the donor typed, whichever contact the
+    /// gift landed on.
+    pub first_name: String,
+    pub last_name: String,
+    pub address_line1: String,
+    pub postcode: String,
+}
+
+/// What [`make_donor_declaration`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DonorDeclared {
+    /// A new declaration joined the contact's chain.
+    Made(Executed),
+    /// A declaration in the chain already covers the gift: nothing added.
+    AlreadyCovered(DeclarationSummary),
+}
+
+/// The declaration a donor made themselves on the donation page: the one
+/// way an `onScreenByDonor` declaration is recorded. The api calls it
+/// when the donor's payment completes, in the same transaction and
+/// command group as the gift, as the system; no payload staff send can
+/// reach it ([`rules::prepare_declaration`] still refuses the method).
+///
+/// It adds to the chain, never sets a flag (rule 1): a gift a declaration
+/// already covers (a second gift under an enduring one) adds nothing.
+/// Refused like any declaration for a contact that isn't a person, a
+/// gift that isn't the contact's or is void, or a date after today; and
+/// with any of the donor's name, house name or number, or postcode blank.
+pub fn make_donor_declaration(
+    ctx: &Ctx,
+    declared: DonorDeclaration,
+    group: &CommandGroup,
+) -> Result<DonorDeclared, ContractError> {
+    let conn = ctx.tx.read();
+    let gift = giving::describe_gift(conn, &declared.gift_id)?
+        .filter(|g| g.contact_id == declared.contact_id)
+        .ok_or_else(|| {
+            ContractError::rejected(
+                "unknown_gift",
+                "A declaration can only name one of this contact’s gifts",
+            )
+        })?;
+    if let Some(held) = coverage(
+        conn,
+        &declared.contact_id,
+        &gift.received_on,
+        Some(&declared.gift_id),
+    )? {
+        return Ok(DonorDeclared::AlreadyCovered(held));
+    }
+    execute(
+        ctx,
+        &declarations::DONOR_DECLARATION,
+        DeclarationPayload {
+            contact_id: declared.contact_id,
+            scope: declared.scope,
+            gift_id: Some(declared.gift_id),
+            made_on: declared.made_on,
+            method: Method::OnScreenByDonor,
+            wording_version: declared.wording_version,
+            first_name: declared.first_name,
+            last_name: declared.last_name,
+            address_line1: declared.address_line1,
+            postcode: declared.postcode,
+        },
+        Exec::create(Source::System).in_group(group),
+    )
+    .map(DonorDeclared::Made)
+}
+
 /// "Record cancellation" on the contact page: cancels from
 /// `cancelled_from` every declaration of the contact open at that date
 /// ([`open_at`]), in one command group. Built from each declaration's

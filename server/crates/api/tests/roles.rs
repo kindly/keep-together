@@ -273,6 +273,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /notes/{id}/pin",
             "POST /notes/{id}/restore",
             "POST /notes/{id}/save",
+            "POST /preferences/claimsGiftAid",
             "POST /preferences/{kind}",
             "POST /regular-gifts/{id}/cancel",
             "POST /regular-gifts/{id}/link",

@@ -1,12 +1,12 @@
 //! `/api/t/{slug}/preferences`: the three "staff can manage …" switches
-//! (`convex/platform/preferences.ts`). Everyone reads them; only admins
-//! switch them.
+//! (`convex/platform/preferences.ts`) and "We claim Gift Aid" (plan
+//! stripe.sv). Everyone reads them; only admins switch them.
 
 use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contracts::{Executed, Source};
-use platform::preferences::{self, ListKind, Preferences};
+use platform::preferences::{self, ClaimsGiftAid, ListKind, Preferences};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -16,6 +16,7 @@ use crate::{ApiError, Body, Tenant};
 pub fn router() -> Router {
     Router::new()
         .route("/preferences", get(read))
+        .route("/preferences/claimsGiftAid", post(set_claims_gift_aid))
         .route("/preferences/{kind}", post(set))
 }
 
@@ -73,6 +74,50 @@ async fn set(
             id,
             counter,
             switches: Switches::of(&prefs, role),
+        })
+    })
+    .await
+    .map(Json)
+}
+
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetClaimsGiftAid {
+    /// The switch's counter as last read; absent (or null) if no
+    /// preference had been saved yet.
+    #[serde(default)]
+    #[ts(optional, type = "number | null")]
+    pub expected: Option<i64>,
+    pub on: bool,
+}
+
+/// What the save executed, and the switch as it now reads.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ClaimsGiftAidSaved {
+    pub id: String,
+    #[ts(type = "number")]
+    pub counter: i64,
+    pub claims_gift_aid: ClaimsGiftAid,
+}
+
+/// `POST preferences/claimsGiftAid {expected?, on}`: "We claim Gift Aid",
+/// on unless a group that isn't a charity switches it off. Admin only; a
+/// stale `expected` (or none, when a row exists) is `409 stale`.
+async fn set_claims_gift_aid(
+    Extension(t): Extension<Tenant>,
+    Body(req): Body<SetClaimsGiftAid>,
+) -> Result<Json<ClaimsGiftAidSaved>, ApiError> {
+    t.require_admin()?;
+    t.write(move |ctx| {
+        let Executed { id, counter } =
+            preferences::set_claims_gift_aid(ctx, req.on, req.expected, Source::Ui)?;
+        Ok(ClaimsGiftAidSaved {
+            id,
+            counter,
+            claims_gift_aid: preferences::read(ctx.tx.read())?.claims_gift_aid,
         })
     })
     .await
