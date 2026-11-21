@@ -342,6 +342,50 @@ async fn a_submission_alone_a_declined_card_and_an_expired_session_make_no_gift(
     p.consistent(&p.a);
 }
 
+#[tokio::test]
+async fn an_orphan_sessions_expiry_never_ends_the_attempt_its_submission_is_making() {
+    let p = world().await;
+    // A session whose create answer was lost: it carries the submission's
+    // id, but the submission holds the session made on the next try.
+    let s = submit(&p.a, jane(2500, false));
+    let orphan = p.session_event(
+        &p.acct_a,
+        "checkout.session.expired",
+        "cs_test_orphan",
+        &s.0,
+        None,
+    );
+    let id = p.deliver(Some(orphan)).await;
+    assert_eq!(p.t.event(&id).0.as_deref(), Some("unknown_resource"));
+    let state = |id: &str| {
+        read(&p.a, |c| cards::submission(c, id))
+            .unwrap()
+            .outcome
+            .state
+    };
+    assert_eq!(state(&s.0), cards::SubmissionStatus::Started);
+    // The same before any session is stored on the submission at all.
+    let bare = uuid::Uuid::new_v4().simple().to_string();
+    contracts::transact(&p.a, None, |ctx| {
+        cards::submit(ctx, &bare, jane(1000, false), true)
+    })
+    .unwrap();
+    let orphan = p.session_event(
+        &p.acct_a,
+        "checkout.session.expired",
+        "cs_test_orphan_2",
+        &bare,
+        None,
+    );
+    let id = p.deliver(Some(orphan)).await;
+    assert_eq!(p.t.event(&id).0.as_deref(), Some("unknown_resource"));
+    assert_eq!(state(&bare), cards::SubmissionStatus::Started);
+    // Its own session's expiry does end it.
+    let own = p.session_event(&p.acct_a, "checkout.session.expired", &s.1, &s.0, None);
+    p.deliver(Some(own)).await;
+    assert_eq!(state(&s.0), cards::SubmissionStatus::Expired);
+}
+
 // ── a paid session ─────────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -1225,7 +1225,9 @@ word. A payment event (`checkout.session.*`, `payment_intent.*`,
 PaymentIntent it names is read from Stripe as it is now, with its charge
 and disputes, and recorded (`giving.stripePayment`). A payment that
 hasn't succeeded (a declined card, a pending one) is a payment row and
-nothing else; an expired session marks its submission `expired`; a
+nothing else; an expired session marks the submission that holds its
+session id `expired` (never by `client_reference_id`: an orphan
+session's expiry mustn't end a live attempt); a
 payment not in pounds is reported and never recorded.
 
 A payment that has succeeded becomes, in one transaction under the

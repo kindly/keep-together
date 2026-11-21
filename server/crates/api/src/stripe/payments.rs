@@ -176,7 +176,8 @@ async fn write<T: Send + 'static>(
 /// stored with it: `done` (a gift made or brought up to date, or nothing
 /// to change), `recorded` (a payment that hasn't succeeded), `unmatched`
 /// (in the staff queue), `expired`, `ignored` (names no payment, or not
-/// in pounds), `unknown_resource` (an expired session that isn't ours).
+/// in pounds), `unknown_resource` (an expired session no submission here
+/// holds).
 pub async fn handle(
     store: &Arc<Store>,
     stripe: &Arc<Stripe>,
@@ -212,24 +213,17 @@ pub async fn handle(
     write(store, tenant, move |ctx| apply(ctx, now_is, &hints, &who)).await
 }
 
-/// A Checkout Session ran out unpaid: its submission is `expired` (one
-/// already paid stays paid).
+/// A Checkout Session ran out unpaid: the submission that session was
+/// made for is `expired` (one already paid stays paid). Tied by the
+/// session's own id as stored on the submission, never by
+/// `client_reference_id`: a session whose create answer was lost carries
+/// a real submission's id, and its expiry must not end the attempt the
+/// donor is still making on another session (S4 review, L3).
 fn expire(ctx: &Ctx, named: &Named) -> Result<&'static str, ContractError> {
-    let conn = ctx.tx.read();
-    let by_session = match named.session.as_deref() {
-        Some(session) => cards::submission_by_session(conn, session)?,
+    let found = match named.session.as_deref() {
+        Some(session) => cards::submission_by_session(ctx.tx.read(), session)?,
         None => None,
     };
-    let mut found = by_session;
-    for id in &named.submissions {
-        if found.is_none() {
-            // Only one that isn't another session's.
-            found = cards::submission(conn, id)?.filter(|s| {
-                s.outcome.checkout_session_id.is_none()
-                    || s.outcome.checkout_session_id == named.session
-            });
-        }
-    }
     let Some(submission) = found else {
         return Ok("unknown_resource");
     };
