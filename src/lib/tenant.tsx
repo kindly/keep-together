@@ -27,6 +27,13 @@ export type Tenant = {
   canManageSourceCodes: boolean
   /** Whether this caller may manage dropdown fields, given role and switch. */
   canManageFields: boolean
+  /**
+   * "We claim Gift Aid": on unless a group that isn't a charity switched
+   * it off, and then the app shows nothing of Gift Aid.
+   */
+  claimsGiftAid: boolean
+  /** Its counter, for the switch's save; null until first saved. */
+  claimsGiftAidVersion: number | null
 }
 
 export const TenantContext = createContext<Tenant | null>(null)
@@ -51,6 +58,25 @@ export function useCanWrite(): boolean {
  */
 export function useIsAdmin(): boolean {
   return useTenant().role === 'admin'
+}
+
+/**
+ * Whether the group claims Gift Aid (Settings › Gift Aid; plan stripe.sv,
+ * S5). Off, every page hides Gift Aid: the menu, a contact's
+ * declarations, a gift's coverage, the tick when recording a gift. The
+ * server's rules don't change; this only hides what a group that isn't a
+ * charity has no use for.
+ */
+export function useClaimsGiftAid(): boolean {
+  return claimsGiftAid(useTenant())
+}
+
+/**
+ * The same, of a group in hand. On unless the group said otherwise, as
+ * the server's default is: only an explicit "off" hides anything.
+ */
+export function claimsGiftAid(tenant: Pick<Tenant, 'claimsGiftAid'>): boolean {
+  return tenant.claimsGiftAid !== false
 }
 
 /**

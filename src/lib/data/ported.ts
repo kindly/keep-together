@@ -57,6 +57,11 @@ export const PORTED: ReadonlyArray<RouteId> = [
   // GoCardless D3: Settings › GoCardless and the unmatched payments.
   '/t/$slug/settings/gocardless',
   '/t/$slug/gocardless/unmatched',
+  // Stripe S5: Settings › Card donations and Gift Aid, the card payments
+  // to match.
+  '/t/$slug/settings/stripe',
+  '/t/$slug/settings/giftaid',
+  '/t/$slug/stripe/unmatched',
   // Regular-gift terms step 6: the expected vs actual report.
   '/t/$slug/reports/expected',
   // Bank transfers 6a: Settings › Bank accounts, the statements, an

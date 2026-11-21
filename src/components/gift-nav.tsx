@@ -3,9 +3,14 @@ import { useState } from 'react'
 import type { ComponentProps } from 'react'
 import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
 import type { RecentGift } from '../lib/gifts'
-import { FEATURES, useGoCardlessStatus } from '../lib/data'
+import { FEATURES, useGoCardlessStatus, useStripeStatus } from '../lib/data'
 import { STATUS_LABELS, isReceived } from '../lib/domain/gift-status'
-import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
+import {
+  useCanWrite,
+  useClaimsGiftAid,
+  useIsAdmin,
+  useTenant,
+} from '../lib/tenant'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -53,6 +58,7 @@ export const DONATIONS = {
   record: 'Record a gift',
   recent: 'My recent gifts',
   unmatched: 'Unmatched payments',
+  cards: 'Card payments to match',
   bank: 'Bank statements',
   batches: 'Paying-in batches',
   reconcile: 'Reconcile',
@@ -86,12 +92,14 @@ type GiftAidEntry = {
  * The Gift Aid entries the caller has: the claims (G3, admins only, as
  * every claims route is), "Scans to match" and a stack sitting (staff and
  * admins, declaration scans g2q3), and the "can be deleted" report
- * (admins). None for a viewer.
+ * (admins). None for a viewer, and none in a group that doesn't claim
+ * Gift Aid (Settings › Gift Aid).
  */
 export function useGiftAidEntries(): Array<GiftAidEntry> {
   const admin = useIsAdmin()
   const canWrite = useCanWrite()
-  if (!canWrite) return []
+  const claims = useClaimsGiftAid()
+  if (!canWrite || !claims) return []
   return [
     ...(admin && FEATURES.giftAidClaims
       ? [{ key: 'claims', to: '/t/$slug/giftaid' } as const]
@@ -172,8 +180,11 @@ export function GiftAidMenu() {
 export function useDonations(open: boolean) {
   const canWrite = useCanWrite()
   const enabled = useGoCardlessStatus()?.enabled === true
+  const stripe = useStripeStatus()?.enabled === true
   return {
     canWrite,
+    /** "Card payments to match": staff and admins, while Stripe is on. */
+    cards: stripe && canWrite,
     directDebit: enabled && canWrite,
     report: enabled,
     gifts: useMyRecentGifts(open),
@@ -242,6 +253,20 @@ export function UnmatchedAction(props: AnchorProps) {
   )
 }
 
+/** "Card payments to match" (Stripe): payments to match to a contact. */
+export function CardPaymentsAction(props: AnchorProps) {
+  const tenant = useTenant()
+  return (
+    <Link
+      to="/t/$slug/stripe/unmatched"
+      params={{ slug: tenant.slug }}
+      {...props}
+    >
+      {DONATIONS.cards}
+    </Link>
+  )
+}
+
 /**
  * "Record a gift": the record-gift page (step 3). Other props pass
  * through, as a menu item's do (asChild).
@@ -296,13 +321,14 @@ export function RecentGifts() {
 
 /**
  * The header's Donations ▾: "Record a gift", "Bank statements" and, with GoCardless on,
- * "Unmatched payments" (staff and admins); "Expected vs actual" (with
+ * "Unmatched payments" and, with Stripe on, "Card payments to match"
+ * (staff and admins); "Expected vs actual" (with
  * GoCardless on); then the caller's last 10 gifts. Fetched only while
  * open.
  */
 export function DonationsMenu() {
   const [open, setOpen] = useState(false)
-  const { canWrite, directDebit, report, gifts } = useDonations(open)
+  const { canWrite, cards, directDebit, report, gifts } = useDonations(open)
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger className="text-sm whitespace-nowrap hover:underline data-[state=open]:underline">
@@ -326,6 +352,11 @@ export function DonationsMenu() {
             {directDebit && (
               <DropdownMenuItem asChild>
                 <UnmatchedAction />
+              </DropdownMenuItem>
+            )}
+            {cards && (
+              <DropdownMenuItem asChild>
+                <CardPaymentsAction />
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />

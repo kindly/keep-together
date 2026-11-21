@@ -127,6 +127,13 @@ const INVALIDATES: Partial<
     keys.standing(slug),
   ],
   direct_debit_payments: (slug) => [keys.gocardless(slug)],
+  // Stripe S5: a card payment (the queue, the ones set aside; its gift
+  // shows its flags, and comes as a `gifts` event too when it changes),
+  // a submission (what a queued payment's donor typed) and the page's
+  // settings.
+  stripe_payments: (slug) => [keys.stripe(slug), keys.gifts(slug)],
+  donation_submissions: (slug) => [keys.stripe(slug)],
+  donation_page: (slug) => [keys.stripe(slug)],
   provider_requests: (slug) => [keys.gocardless(slug)],
   // Bank transfers 6a: an account (its name and layout show on every
   // import page) and an import (its account's list, its own page).

@@ -15,7 +15,8 @@
 use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
-use giving::stripe::UnmatchedCardPayment;
+use contracts::{Executed, Source};
+use giving::stripe::{DonationPage, DonationPagePayload, UnmatchedCardPayment};
 use giving::types::GiftView;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -30,6 +31,11 @@ pub fn router() -> Router {
         .route("/stripe/disconnect", post(disconnect))
         .route("/stripe/unmatched", get(unmatched))
         .route("/stripe/unmatched/{id}/match", post(match_payment))
+        .route("/stripe/unmatched/{id}/dismiss", post(dismiss))
+        .route("/stripe/unmatched/{id}/put-back", post(put_back))
+        .route("/stripe/dismissed", get(dismissed))
+        .route("/stripe/payments/{id}/name-checked", post(name_checked))
+        .route("/stripe/page", get(page).post(save_page))
 }
 
 /// `GET stripe`: on or off here, this organisation's Stripe account and
@@ -120,4 +126,160 @@ async fn match_payment(
         })
         .await?;
     Ok(Json(out))
+}
+
+/// `POST stripe/unmatched/{id}/dismiss`: not a donation, and why.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DismissCardPayment {
+    /// The payment's `matchVersion` as listed.
+    #[ts(type = "number")]
+    pub expected: i64,
+    /// Why it isn't a donation ("Stall hire"); needed.
+    pub reason: String,
+}
+
+/// `POST stripe/unmatched/{id}/put-back`, `POST
+/// stripe/payments/{id}/name-checked`: the payment's `matchVersion` as
+/// read.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CardPaymentExpected {
+    #[ts(type = "number")]
+    pub expected: i64,
+}
+
+/// `POST stripe/unmatched/{id}/dismiss {expected, reason}` → `Executed`:
+/// a payment taken some other way on the group's Stripe account (queued
+/// as `no_submission`) is set aside as not a donation. It leaves the
+/// queue for `stripe/dismissed` and makes no gift; nothing is deleted.
+/// Staff. No reason: `422 invalid`; a payment that came through the
+/// donation page: `422 rejected not_outside`; `409 stale`.
+async fn dismiss(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+    Body(req): Body<DismissCardPayment>,
+) -> Result<Json<Executed>, ApiError> {
+    t.stripe()?;
+    if req.reason.trim().is_empty() {
+        return Err(
+            contracts::ContractError::invalid("reason", "Say why it isn’t a donation").into(),
+        );
+    }
+    t.write(move |ctx| {
+        Ok(giving::stripe::set_dismissed(
+            ctx,
+            &id,
+            Some(&req.reason),
+            req.expected,
+        )?)
+    })
+    .await
+    .map(Json)
+}
+
+/// `POST stripe/unmatched/{id}/put-back {expected}` → `Executed`: a
+/// payment set aside goes back in the queue. Staff. Not set aside: `422
+/// rejected not_dismissed`; `409 stale`.
+async fn put_back(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+    Body(req): Body<CardPaymentExpected>,
+) -> Result<Json<Executed>, ApiError> {
+    t.stripe()?;
+    t.write(move |ctx| Ok(giving::stripe::set_dismissed(ctx, &id, None, req.expected)?))
+        .await
+        .map(Json)
+}
+
+/// `GET stripe/dismissed` → `UnmatchedCardPayment[]`: the payments staff
+/// set aside as not donations, newest first, at most 500, each with
+/// `dismissed` (why) and `dismissedAt`. Any member.
+async fn dismissed(
+    Extension(t): Extension<Tenant>,
+) -> Result<Json<Vec<UnmatchedCardPayment>>, ApiError> {
+    t.stripe()?;
+    t.read(|r| Ok(giving::stripe::dismissed_view(r)?))
+        .await
+        .map(Json)
+}
+
+/// `POST stripe/payments/{id}/name-checked {expected}` → the gift
+/// (`GiftView`, its `card.firstNameTyped` now null): staff looked at
+/// "first name differs" and it is the right person. Staff. `422 rejected
+/// not_flagged`; `409 stale`.
+async fn name_checked(
+    Extension(t): Extension<Tenant>,
+    Path(IdParam { id }): Path<IdParam>,
+    Body(req): Body<CardPaymentExpected>,
+) -> Result<Json<GiftView>, ApiError> {
+    t.stripe()?;
+    t.write(move |ctx| {
+        giving::stripe::name_checked(ctx, &id, req.expected)?;
+        let gift = giving::stripe::payment(ctx.tx.read(), &id)?
+            .and_then(|p| p.matched.gift_id)
+            .ok_or(ApiError::NotFound)?;
+        giving::get(ctx.tx.read(), &gift)?.ok_or(ApiError::NotFound)
+    })
+    .await
+    .map(Json)
+}
+
+/// `GET stripe/page` → `DonationPage`: the donation page's three
+/// amounts, minimum and maximum (pence), its source code, the counter a
+/// save sends and whether it is taking donations. Any member.
+async fn page(Extension(t): Extension<Tenant>) -> Result<Json<DonationPage>, ApiError> {
+    t.stripe()?;
+    t.read(|r| Ok(giving::stripe::page(r)?)).await.map(Json)
+}
+
+/// `POST stripe/page`: the page's settings.
+#[derive(Clone, Debug, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SaveDonationPage {
+    /// `version` as last read; absent (or null) if the page was never
+    /// saved.
+    #[serde(default)]
+    #[ts(optional, type = "number | null")]
+    pub expected: Option<i64>,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub page: DonationPagePayload,
+}
+
+/// What the save executed, and the page as it now reads.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DonationPageSaved {
+    pub id: String,
+    #[ts(type = "number")]
+    pub counter: i64,
+    pub page: DonationPage,
+}
+
+/// `POST stripe/page {expected?, amounts, minimum, maximum,
+/// sourceCodeId}` → `DonationPageSaved`: admin only. `422 invalid` for a
+/// minimum under £1, a maximum over £1,000, or buttons outside them or
+/// alike; a newly picked source code must be live; `409 stale`.
+async fn save_page(
+    Extension(t): Extension<Tenant>,
+    Body(req): Body<SaveDonationPage>,
+) -> Result<Json<DonationPageSaved>, ApiError> {
+    t.stripe()?;
+    t.require_admin()?;
+    t.write(move |ctx| {
+        let Executed { id, counter } =
+            giving::stripe::save_page(ctx, req.page, req.expected, Source::Ui)?;
+        Ok(DonationPageSaved {
+            id,
+            counter,
+            page: giving::stripe::page(ctx.tx.read())?,
+        })
+    })
+    .await
+    .map(Json)
 }

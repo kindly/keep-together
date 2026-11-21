@@ -39,6 +39,7 @@ import { Route as TSlugScansDeletableRouteImport } from './routes/t.$slug.scans.
 import { Route as TSlugSettingsIndexRouteImport } from './routes/t.$slug.settings.index'
 import { Route as TSlugSettingsBankRouteImport } from './routes/t.$slug.settings.bank'
 import { Route as TSlugSettingsFieldsRouteImport } from './routes/t.$slug.settings.fields'
+import { Route as TSlugSettingsGiftaidRouteImport } from './routes/t.$slug.settings.giftaid'
 import { Route as TSlugSettingsGocardlessRouteImport } from './routes/t.$slug.settings.gocardless'
 import { Route as TSlugSettingsGroupsRouteImport } from './routes/t.$slug.settings.groups'
 import { Route as TSlugSettingsHmrcRouteImport } from './routes/t.$slug.settings.hmrc'
@@ -46,7 +47,9 @@ import { Route as TSlugSettingsIdentifiersRouteImport } from './routes/t.$slug.s
 import { Route as TSlugSettingsMembersRouteImport } from './routes/t.$slug.settings.members'
 import { Route as TSlugSettingsSourcesRouteImport } from './routes/t.$slug.settings.sources'
 import { Route as TSlugSettingsStorageRouteImport } from './routes/t.$slug.settings.storage'
+import { Route as TSlugSettingsStripeRouteImport } from './routes/t.$slug.settings.stripe'
 import { Route as TSlugSettingsTagsRouteImport } from './routes/t.$slug.settings.tags'
+import { Route as TSlugStripeUnmatchedRouteImport } from './routes/t.$slug.stripe.unmatched'
 import { Route as TSlugBankBatchesIndexRouteImport } from './routes/t.$slug.bank.batches.index'
 import { Route as TSlugBankBatchesBatchIdRouteImport } from './routes/t.$slug.bank.batches.$batchId'
 import { Route as TSlugBankImportsImportIdRouteImport } from './routes/t.$slug.bank.imports.$importId'
@@ -203,6 +206,11 @@ const TSlugSettingsFieldsRoute = TSlugSettingsFieldsRouteImport.update({
   path: '/fields',
   getParentRoute: () => TSlugSettingsRoute,
 } as any)
+const TSlugSettingsGiftaidRoute = TSlugSettingsGiftaidRouteImport.update({
+  id: '/giftaid',
+  path: '/giftaid',
+  getParentRoute: () => TSlugSettingsRoute,
+} as any)
 const TSlugSettingsGocardlessRoute = TSlugSettingsGocardlessRouteImport.update({
   id: '/gocardless',
   path: '/gocardless',
@@ -239,10 +247,20 @@ const TSlugSettingsStorageRoute = TSlugSettingsStorageRouteImport.update({
   path: '/storage',
   getParentRoute: () => TSlugSettingsRoute,
 } as any)
+const TSlugSettingsStripeRoute = TSlugSettingsStripeRouteImport.update({
+  id: '/stripe',
+  path: '/stripe',
+  getParentRoute: () => TSlugSettingsRoute,
+} as any)
 const TSlugSettingsTagsRoute = TSlugSettingsTagsRouteImport.update({
   id: '/tags',
   path: '/tags',
   getParentRoute: () => TSlugSettingsRoute,
+} as any)
+const TSlugStripeUnmatchedRoute = TSlugStripeUnmatchedRouteImport.update({
+  id: '/stripe/unmatched',
+  path: '/stripe/unmatched',
+  getParentRoute: () => TSlugRoute,
 } as any)
 const TSlugBankBatchesIndexRoute = TSlugBankBatchesIndexRouteImport.update({
   id: '/bank/batches/',
@@ -292,6 +310,7 @@ export interface FileRoutesByFullPath {
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/bank': typeof TSlugSettingsBankRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
+  '/t/$slug/settings/giftaid': typeof TSlugSettingsGiftaidRoute
   '/t/$slug/settings/gocardless': typeof TSlugSettingsGocardlessRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
@@ -299,7 +318,9 @@ export interface FileRoutesByFullPath {
   '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/storage': typeof TSlugSettingsStorageRoute
+  '/t/$slug/settings/stripe': typeof TSlugSettingsStripeRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
+  '/t/$slug/stripe/unmatched': typeof TSlugStripeUnmatchedRoute
   '/t/$slug/bank/': typeof TSlugBankIndexRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
   '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
@@ -333,6 +354,7 @@ export interface FileRoutesByTo {
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/bank': typeof TSlugSettingsBankRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
+  '/t/$slug/settings/giftaid': typeof TSlugSettingsGiftaidRoute
   '/t/$slug/settings/gocardless': typeof TSlugSettingsGocardlessRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
@@ -340,7 +362,9 @@ export interface FileRoutesByTo {
   '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/storage': typeof TSlugSettingsStorageRoute
+  '/t/$slug/settings/stripe': typeof TSlugSettingsStripeRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
+  '/t/$slug/stripe/unmatched': typeof TSlugStripeUnmatchedRoute
   '/t/$slug/bank': typeof TSlugBankIndexRoute
   '/t/$slug/contacts': typeof TSlugContactsIndexRoute
   '/t/$slug/giftaid': typeof TSlugGiftaidIndexRoute
@@ -378,6 +402,7 @@ export interface FileRoutesById {
   '/t/$slug/scans/deletable': typeof TSlugScansDeletableRoute
   '/t/$slug/settings/bank': typeof TSlugSettingsBankRoute
   '/t/$slug/settings/fields': typeof TSlugSettingsFieldsRoute
+  '/t/$slug/settings/giftaid': typeof TSlugSettingsGiftaidRoute
   '/t/$slug/settings/gocardless': typeof TSlugSettingsGocardlessRoute
   '/t/$slug/settings/groups': typeof TSlugSettingsGroupsRoute
   '/t/$slug/settings/hmrc': typeof TSlugSettingsHmrcRoute
@@ -385,7 +410,9 @@ export interface FileRoutesById {
   '/t/$slug/settings/members': typeof TSlugSettingsMembersRoute
   '/t/$slug/settings/sources': typeof TSlugSettingsSourcesRoute
   '/t/$slug/settings/storage': typeof TSlugSettingsStorageRoute
+  '/t/$slug/settings/stripe': typeof TSlugSettingsStripeRoute
   '/t/$slug/settings/tags': typeof TSlugSettingsTagsRoute
+  '/t/$slug/stripe/unmatched': typeof TSlugStripeUnmatchedRoute
   '/t/$slug/bank/': typeof TSlugBankIndexRoute
   '/t/$slug/contacts/': typeof TSlugContactsIndexRoute
   '/t/$slug/giftaid/': typeof TSlugGiftaidIndexRoute
@@ -424,6 +451,7 @@ export interface FileRouteTypes {
     | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/bank'
     | '/t/$slug/settings/fields'
+    | '/t/$slug/settings/giftaid'
     | '/t/$slug/settings/gocardless'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/hmrc'
@@ -431,7 +459,9 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/storage'
+    | '/t/$slug/settings/stripe'
     | '/t/$slug/settings/tags'
+    | '/t/$slug/stripe/unmatched'
     | '/t/$slug/bank/'
     | '/t/$slug/contacts/'
     | '/t/$slug/giftaid/'
@@ -465,6 +495,7 @@ export interface FileRouteTypes {
     | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/bank'
     | '/t/$slug/settings/fields'
+    | '/t/$slug/settings/giftaid'
     | '/t/$slug/settings/gocardless'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/hmrc'
@@ -472,7 +503,9 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/storage'
+    | '/t/$slug/settings/stripe'
     | '/t/$slug/settings/tags'
+    | '/t/$slug/stripe/unmatched'
     | '/t/$slug/bank'
     | '/t/$slug/contacts'
     | '/t/$slug/giftaid'
@@ -509,6 +542,7 @@ export interface FileRouteTypes {
     | '/t/$slug/scans/deletable'
     | '/t/$slug/settings/bank'
     | '/t/$slug/settings/fields'
+    | '/t/$slug/settings/giftaid'
     | '/t/$slug/settings/gocardless'
     | '/t/$slug/settings/groups'
     | '/t/$slug/settings/hmrc'
@@ -516,7 +550,9 @@ export interface FileRouteTypes {
     | '/t/$slug/settings/members'
     | '/t/$slug/settings/sources'
     | '/t/$slug/settings/storage'
+    | '/t/$slug/settings/stripe'
     | '/t/$slug/settings/tags'
+    | '/t/$slug/stripe/unmatched'
     | '/t/$slug/bank/'
     | '/t/$slug/contacts/'
     | '/t/$slug/giftaid/'
@@ -749,6 +785,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugSettingsFieldsRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
+    '/t/$slug/settings/giftaid': {
+      id: '/t/$slug/settings/giftaid'
+      path: '/giftaid'
+      fullPath: '/t/$slug/settings/giftaid'
+      preLoaderRoute: typeof TSlugSettingsGiftaidRouteImport
+      parentRoute: typeof TSlugSettingsRoute
+    }
     '/t/$slug/settings/gocardless': {
       id: '/t/$slug/settings/gocardless'
       path: '/gocardless'
@@ -798,12 +841,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TSlugSettingsStorageRouteImport
       parentRoute: typeof TSlugSettingsRoute
     }
+    '/t/$slug/settings/stripe': {
+      id: '/t/$slug/settings/stripe'
+      path: '/stripe'
+      fullPath: '/t/$slug/settings/stripe'
+      preLoaderRoute: typeof TSlugSettingsStripeRouteImport
+      parentRoute: typeof TSlugSettingsRoute
+    }
     '/t/$slug/settings/tags': {
       id: '/t/$slug/settings/tags'
       path: '/tags'
       fullPath: '/t/$slug/settings/tags'
       preLoaderRoute: typeof TSlugSettingsTagsRouteImport
       parentRoute: typeof TSlugSettingsRoute
+    }
+    '/t/$slug/stripe/unmatched': {
+      id: '/t/$slug/stripe/unmatched'
+      path: '/stripe/unmatched'
+      fullPath: '/t/$slug/stripe/unmatched'
+      preLoaderRoute: typeof TSlugStripeUnmatchedRouteImport
+      parentRoute: typeof TSlugRoute
     }
     '/t/$slug/bank/batches/': {
       id: '/t/$slug/bank/batches/'
@@ -855,6 +912,7 @@ const TSlugGiftaidRouteWithChildren = TSlugGiftaidRoute._addFileChildren(
 interface TSlugSettingsRouteChildren {
   TSlugSettingsBankRoute: typeof TSlugSettingsBankRoute
   TSlugSettingsFieldsRoute: typeof TSlugSettingsFieldsRoute
+  TSlugSettingsGiftaidRoute: typeof TSlugSettingsGiftaidRoute
   TSlugSettingsGocardlessRoute: typeof TSlugSettingsGocardlessRoute
   TSlugSettingsGroupsRoute: typeof TSlugSettingsGroupsRoute
   TSlugSettingsHmrcRoute: typeof TSlugSettingsHmrcRoute
@@ -862,6 +920,7 @@ interface TSlugSettingsRouteChildren {
   TSlugSettingsMembersRoute: typeof TSlugSettingsMembersRoute
   TSlugSettingsSourcesRoute: typeof TSlugSettingsSourcesRoute
   TSlugSettingsStorageRoute: typeof TSlugSettingsStorageRoute
+  TSlugSettingsStripeRoute: typeof TSlugSettingsStripeRoute
   TSlugSettingsTagsRoute: typeof TSlugSettingsTagsRoute
   TSlugSettingsIndexRoute: typeof TSlugSettingsIndexRoute
 }
@@ -869,6 +928,7 @@ interface TSlugSettingsRouteChildren {
 const TSlugSettingsRouteChildren: TSlugSettingsRouteChildren = {
   TSlugSettingsBankRoute: TSlugSettingsBankRoute,
   TSlugSettingsFieldsRoute: TSlugSettingsFieldsRoute,
+  TSlugSettingsGiftaidRoute: TSlugSettingsGiftaidRoute,
   TSlugSettingsGocardlessRoute: TSlugSettingsGocardlessRoute,
   TSlugSettingsGroupsRoute: TSlugSettingsGroupsRoute,
   TSlugSettingsHmrcRoute: TSlugSettingsHmrcRoute,
@@ -876,6 +936,7 @@ const TSlugSettingsRouteChildren: TSlugSettingsRouteChildren = {
   TSlugSettingsMembersRoute: TSlugSettingsMembersRoute,
   TSlugSettingsSourcesRoute: TSlugSettingsSourcesRoute,
   TSlugSettingsStorageRoute: TSlugSettingsStorageRoute,
+  TSlugSettingsStripeRoute: TSlugSettingsStripeRoute,
   TSlugSettingsTagsRoute: TSlugSettingsTagsRoute,
   TSlugSettingsIndexRoute: TSlugSettingsIndexRoute,
 }
@@ -900,6 +961,7 @@ interface TSlugRouteChildren {
   TSlugReportsExpectedRoute: typeof TSlugReportsExpectedRoute
   TSlugScansScanIdRoute: typeof TSlugScansScanIdRoute
   TSlugScansDeletableRoute: typeof TSlugScansDeletableRoute
+  TSlugStripeUnmatchedRoute: typeof TSlugStripeUnmatchedRoute
   TSlugBankIndexRoute: typeof TSlugBankIndexRoute
   TSlugContactsIndexRoute: typeof TSlugContactsIndexRoute
   TSlugScansIndexRoute: typeof TSlugScansIndexRoute
@@ -925,6 +987,7 @@ const TSlugRouteChildren: TSlugRouteChildren = {
   TSlugReportsExpectedRoute: TSlugReportsExpectedRoute,
   TSlugScansScanIdRoute: TSlugScansScanIdRoute,
   TSlugScansDeletableRoute: TSlugScansDeletableRoute,
+  TSlugStripeUnmatchedRoute: TSlugStripeUnmatchedRoute,
   TSlugBankIndexRoute: TSlugBankIndexRoute,
   TSlugContactsIndexRoute: TSlugContactsIndexRoute,
   TSlugScansIndexRoute: TSlugScansIndexRoute,

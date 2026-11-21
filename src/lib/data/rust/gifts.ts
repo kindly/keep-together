@@ -28,6 +28,7 @@ import { localToday } from '../../../components/source-code-picker'
 import { ownWrite, showAnswer } from '../events'
 import type { AllocationView } from '../rust-types/AllocationView'
 import type { Cancelled } from '../rust-types/Cancelled'
+import type { CardPayment as WireCard } from '../rust-types/CardPayment'
 import type { DeclarationDetails } from '../rust-types/DeclarationDetails'
 import type { DeclarationDetailsHistory } from '../rust-types/DeclarationDetailsHistory'
 import type { DeclarationRow } from '../rust-types/DeclarationRow'
@@ -79,8 +80,19 @@ export type Gift = Omit<
   allocations: Array<Allocation>
 }
 
+/**
+ * A card gift's Stripe payment as its page shows it: the flags staff act
+ * on, and what Stripe has refunded.
+ */
+export type CardPayment = Omit<WireCard, 'amount' | 'refundedAmount'> & {
+  amount: bigint
+  refundedAmount: bigint
+}
+
 /** One gift for its page: the gift, its donor's name and kind. */
 export type GiftView = Gift & {
+  /** Its Stripe payment; null for every gift that isn't a card gift from Stripe. */
+  card: CardPayment | null
   contact: {
     _id: Id<'contacts'>
     displayName: string
@@ -196,9 +208,14 @@ export function giftFromWire(g: GiftRow): Gift {
 }
 
 export function giftViewFromWire(v: WireGiftView): GiftView {
-  const { contact, ...gift } = v
+  const { contact, card, ...gift } = v
   return {
     ...giftFromWire(gift),
+    card: card && {
+      ...card,
+      amount: pence(card.amount),
+      refundedAmount: pence(card.refundedAmount),
+    },
     contact: contact && {
       _id: contact.id as Id<'contacts'>,
       displayName: contact.displayName,

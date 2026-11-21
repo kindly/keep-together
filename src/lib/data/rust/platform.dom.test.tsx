@@ -87,6 +87,8 @@ test('a switch sends its own counter, null before any save', async () => {
     canManageIdentifierTypes: true,
     canManageSourceCodes: true,
     canManageFields: true,
+    claimsGiftAid: true,
+    claimsGiftAidVersion: null,
   }
   queryClient.setQueryData(keys.groups, [
     { slug: 'beta', name: 'Beta' },

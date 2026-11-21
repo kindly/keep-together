@@ -39,6 +39,11 @@ sourceCodeId: string | null,
  */
 candidates: Array<CardCandidate>, 
 /**
- * Pass as `expected` to match it.
+ * Pass as `expected` to match it, set it aside or put it back.
  */
-matchVersion: number, };
+matchVersion: number, 
+/**
+ * Set aside as not a donation: why, and when (ms). None in the
+ * queue.
+ */
+dismissed: string | null, dismissedAt: number | null, };

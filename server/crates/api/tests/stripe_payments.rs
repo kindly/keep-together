@@ -741,6 +741,16 @@ async fn a_refused_declaration_is_flagged_on_the_match_and_refused_up_front_to_s
         Some("not_individual")
     );
     p.consistent(&p.a);
+    // Staff are told on the gift's page.
+    let gift = ok(
+        &p.t.w,
+        "GET",
+        &format!("/api/t/alpha/gifts/{}", all[0].id),
+        &p.t.val,
+        None,
+    )
+    .await;
+    assert_eq!(gift["card"]["declarationRefused"], "not_individual");
 
     // Staff matching a Gift Aid payment to it are told, and nothing is made.
     contact(&p.a, "Janet", "Smith", "two@example.org");
@@ -897,6 +907,10 @@ async fn an_unmatched_payment_waits_in_the_queue_and_staff_match_it() {
             .await;
     assert_eq!(status, StatusCode::OK, "{out}");
     assert_eq!(out["gift"]["status"], "completed");
+    // The answer carries the card flags (none here: Jane is Jane).
+    assert_eq!(out["gift"]["card"]["paymentId"], pi_1.as_str());
+    assert_eq!(out["gift"]["card"]["fromPage"], true);
+    assert_eq!(out["gift"]["card"]["declarationRefused"], Value::Null);
     let all = gifts(&p.a);
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].id, out["giftId"].as_str().unwrap());
@@ -1013,6 +1027,400 @@ async fn a_payment_with_no_submission_is_queued_and_needs_a_source_code_to_match
     );
     assert_eq!(count(&p.a, "gift_aid_declarations"), 0);
     p.consistent(&p.a);
+}
+
+// ── S5: set aside, name checked, the page's settings ───────────────────────
+
+#[tokio::test]
+async fn an_outside_payment_is_set_aside_with_a_reason_never_deleted_and_can_be_put_back() {
+    let p = world().await;
+    p.t.http
+        .post(format!(
+            "{}/api/fake-stripe/simulate/accounts/{}/payment",
+            p.t.base, p.acct_a
+        ))
+        .json(&json!({ "amount": 4000 }))
+        .send()
+        .await
+        .unwrap();
+    p.t.settle().await;
+    let queue = p.queue("alpha", &p.t.sam).await;
+    assert_eq!(queue[0]["reason"], "no_submission");
+    assert_eq!(queue[0]["dismissed"], Value::Null);
+    let id = queue[0]["id"].as_str().unwrap().to_owned();
+    let version = queue[0]["matchVersion"].as_i64().unwrap();
+    let path = |slug: &str, what: &str| format!("/api/t/{slug}/stripe/unmatched/{id}/{what}");
+    let why = |expected: i64| json!({ "expected": expected, "reason": "  Stall  hire " });
+
+    // A's payment under B's slug is not found; a viewer can't; a
+    // stranger can't; a reason is needed; a stale version is stale.
+    for (slug, cookie, want) in [
+        ("beta", &p.t.bob, StatusCode::NOT_FOUND),
+        ("alpha", &p.t.val, StatusCode::FORBIDDEN),
+        ("alpha", &p.t.bob, StatusCode::FORBIDDEN),
+    ] {
+        let (status, _) =
+            p.t.w
+                .call("POST", &path(slug, "dismiss"), cookie, Some(why(version)))
+                .await;
+        assert_eq!(status, want);
+    }
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &path("alpha", "dismiss"),
+                &p.t.sam,
+                Some(json!({ "expected": version, "reason": "  " })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(out["problems"][0]["field"], "reason");
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &path("alpha", "dismiss"),
+                &p.t.sam,
+                Some(why(version + 1)),
+            )
+            .await;
+    assert_eq!(
+        (status, out["kind"].as_str()),
+        (StatusCode::CONFLICT, Some("stale"))
+    );
+    assert_eq!(
+        p.queue("alpha", &p.t.sam).await.as_array().unwrap().len(),
+        1
+    );
+
+    // Set aside: out of the queue, in the other list with why, by whom
+    // and when; the row and Stripe's record stay, and no gift is made.
+    ok(
+        &p.t.w,
+        "POST",
+        &path("alpha", "dismiss"),
+        &p.t.sam,
+        Some(why(version)),
+    )
+    .await;
+    assert_eq!(p.queue("alpha", &p.t.val).await, json!([]));
+    let aside = ok(
+        &p.t.w,
+        "GET",
+        "/api/t/alpha/stripe/dismissed",
+        &p.t.val,
+        None,
+    )
+    .await;
+    assert_eq!(aside.as_array().unwrap().len(), 1);
+    assert_eq!(aside[0]["id"], id.as_str());
+    assert_eq!(aside[0]["dismissed"], "Stall hire");
+    assert!(aside[0]["dismissedAt"].as_i64().unwrap() > 0);
+    assert_eq!(aside[0]["amount"], 4000);
+    assert_eq!(count(&p.a, "stripe_payments"), 1);
+    assert_eq!(count(&p.a, "gifts"), 0);
+    let by: Option<i64> = read(&p.a, |c| {
+        c.query_row("SELECT dismissed_by FROM stripe_payments", [], |r| r.get(0))
+    });
+    assert!(by.is_some(), "who set it aside is kept");
+    p.consistent(&p.a);
+    // Beta sees none of it, and a stranger can't read alpha's.
+    assert_eq!(
+        ok(
+            &p.t.w,
+            "GET",
+            "/api/t/beta/stripe/dismissed",
+            &p.t.bob,
+            None
+        )
+        .await,
+        json!([])
+    );
+    let (status, _) =
+        p.t.w
+            .call("GET", "/api/t/alpha/stripe/dismissed", &p.t.bob, None)
+            .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Put back, by staff only and only alpha's; then it isn't set aside.
+    let version = aside[0]["matchVersion"].as_i64().unwrap();
+    let back = json!({ "expected": version });
+    for (slug, cookie, want) in [
+        ("beta", &p.t.bob, StatusCode::NOT_FOUND),
+        ("alpha", &p.t.val, StatusCode::FORBIDDEN),
+    ] {
+        let (status, _) =
+            p.t.w
+                .call("POST", &path(slug, "put-back"), cookie, Some(back.clone()))
+                .await;
+        assert_eq!(status, want);
+    }
+    ok(
+        &p.t.w,
+        "POST",
+        &path("alpha", "put-back"),
+        &p.t.sam,
+        Some(back),
+    )
+    .await;
+    let queue = p.queue("alpha", &p.t.sam).await;
+    assert_eq!(queue[0]["id"], id.as_str());
+    assert_eq!(queue[0]["dismissed"], Value::Null);
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &path("alpha", "put-back"),
+                &p.t.sam,
+                Some(json!({ "expected": queue[0]["matchVersion"] })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(out["reason"], "not_dismissed");
+
+    // Set aside again, then found to be a donation after all: matching
+    // it makes its gift and it is nobody's set-aside payment.
+    ok(
+        &p.t.w,
+        "POST",
+        &path("alpha", "dismiss"),
+        &p.t.sam,
+        Some(why(queue[0]["matchVersion"].as_i64().unwrap())),
+    )
+    .await;
+    let jo = contact(&p.a, "Jo", "Jones", "jo@example.org");
+    let row = read(&p.a, |c| cards::payment(c, &id)).unwrap();
+    ok(
+        &p.t.w,
+        "POST",
+        &path("alpha", "match"),
+        &p.t.sam,
+        Some(json!({ "expected": row.match_version, "contactId": jo, "sourceCodeId": p.code_a })),
+    )
+    .await;
+    assert_eq!(count(&p.a, "gifts"), 1);
+    assert_eq!(
+        ok(
+            &p.t.w,
+            "GET",
+            "/api/t/alpha/stripe/dismissed",
+            &p.t.val,
+            None
+        )
+        .await,
+        json!([])
+    );
+    let row = read(&p.a, |c| cards::payment(c, &id)).unwrap();
+    assert_eq!(row.matched.dismissed, None);
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &path("alpha", "dismiss"),
+                &p.t.sam,
+                Some(why(row.match_version)),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(out["reason"], "already_matched");
+    p.consistent(&p.a);
+}
+
+#[tokio::test]
+async fn a_donation_from_the_page_is_never_set_aside() {
+    let p = world().await;
+    contact(&p.a, "Jane", "Smith", "jane@example.org");
+    contact(&p.a, "Janet", "Smith", "jane@example.org");
+    let s = submit(&p.a, jane(2500, false));
+    p.pay(&p.acct_a, &s, 2500).await;
+    let queue = p.queue("alpha", &p.t.sam).await;
+    assert_eq!(queue[0]["reason"], "ambiguous");
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &format!(
+                    "/api/t/alpha/stripe/unmatched/{}/dismiss",
+                    queue[0]["id"].as_str().unwrap()
+                ),
+                &p.t.sam,
+                Some(json!({ "expected": queue[0]["matchVersion"], "reason": "not ours" })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "not_outside");
+    assert_eq!(
+        p.queue("alpha", &p.t.sam).await.as_array().unwrap().len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_card_gift_shows_the_first_name_typed_and_staff_clear_it_once_checked() {
+    let p = world().await;
+    // A couple sharing an email address: John is the contact, Jane gives.
+    contact(&p.a, "John", "Smith", "jane@example.org");
+    let s = submit(&p.a, jane(2500, false));
+    let pi = p.pay(&p.acct_a, &s, 2500).await;
+    let gift_id = gifts(&p.a)[0].id.clone();
+    let gift = ok(
+        &p.t.w,
+        "GET",
+        &format!("/api/t/alpha/gifts/{gift_id}"),
+        &p.t.val,
+        None,
+    )
+    .await;
+    let card = &gift["card"];
+    assert_eq!(card["paymentId"], pi.as_str());
+    assert_eq!(card["firstNameTyped"], "Jane");
+    assert_eq!(card["fromPage"], true);
+    assert_eq!(card["partialRefundClaimed"], false);
+    assert_eq!(
+        (card["amount"].as_i64(), card["refundedAmount"].as_i64()),
+        (Some(2500), Some(0))
+    );
+    let id = card["id"].as_str().unwrap().to_owned();
+    let version = card["matchVersion"].as_i64().unwrap();
+    let path = |slug: &str| format!("/api/t/{slug}/stripe/payments/{id}/name-checked");
+    for (slug, cookie, expected, want) in [
+        ("beta", &p.t.bob, version, StatusCode::NOT_FOUND),
+        ("alpha", &p.t.val, version, StatusCode::FORBIDDEN),
+        ("alpha", &p.t.bob, version, StatusCode::FORBIDDEN),
+        ("alpha", &p.t.sam, version + 1, StatusCode::CONFLICT),
+    ] {
+        let (status, _) =
+            p.t.w
+                .call(
+                    "POST",
+                    &path(slug),
+                    cookie,
+                    Some(json!({ "expected": expected })),
+                )
+                .await;
+        assert_eq!(status, want);
+    }
+    assert_eq!(
+        p.record(&p.a, &pi).matched.first_name_typed.as_deref(),
+        Some("Jane")
+    );
+    let out = ok(
+        &p.t.w,
+        "POST",
+        &path("alpha"),
+        &p.t.sam,
+        Some(json!({ "expected": version })),
+    )
+    .await;
+    assert_eq!(out["id"], gift_id.as_str());
+    assert_eq!(out["card"]["firstNameTyped"], Value::Null);
+    let row = p.record(&p.a, &pi);
+    assert_eq!(row.matched.first_name_typed, None);
+    assert_eq!(row.matched.gift_id.as_deref(), Some(gift_id.as_str()));
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &path("alpha"),
+                &p.t.sam,
+                Some(json!({ "expected": row.match_version })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(out["reason"], "not_flagged");
+    // A gift entered by hand has no card.
+    p.consistent(&p.a);
+}
+
+#[tokio::test]
+async fn the_donation_pages_settings_are_each_groups_own_and_an_admins_to_change() {
+    let p = world().await;
+    let page = ok(&p.t.w, "GET", "/api/t/alpha/stripe/page", &p.t.val, None).await;
+    assert_eq!(page["amounts"], json!([1000, 2500, 5000]));
+    assert_eq!(
+        (page["minimum"].as_i64(), page["maximum"].as_i64()),
+        (Some(200), Some(100_000))
+    );
+    assert_eq!(page["sourceCodeId"], p.code_a.as_str());
+    assert_eq!(page["takingDonations"], true);
+    let version = page["version"].as_i64().unwrap();
+    let body = |expected: i64, minimum: i64, code: &str| {
+        json!({ "expected": expected, "amounts": [500, 1500, 3000], "minimum": minimum,
+            "maximum": 50_000, "sourceCodeId": code })
+    };
+    // Staff and viewers read it; only an admin saves; a stranger neither.
+    for (cookie, want) in [
+        (&p.t.sam, StatusCode::FORBIDDEN),
+        (&p.t.val, StatusCode::FORBIDDEN),
+        (&p.t.bob, StatusCode::FORBIDDEN),
+    ] {
+        let (status, _) =
+            p.t.w
+                .call(
+                    "POST",
+                    "/api/t/alpha/stripe/page",
+                    cookie,
+                    Some(body(version, 300, &p.code_a)),
+                )
+                .await;
+        assert_eq!(status, want);
+    }
+    let (status, _) =
+        p.t.w
+            .call("GET", "/api/t/alpha/stripe/page", &p.t.bob, None)
+            .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Under £1 is refused; so is beta's code; so is a stale counter.
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                "/api/t/alpha/stripe/page",
+                &p.t.ann,
+                Some(body(version, 50, &p.code_a)),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(out["problems"][0]["field"], "minimum");
+    let (status, _) =
+        p.t.w
+            .call(
+                "POST",
+                "/api/t/alpha/stripe/page",
+                &p.t.ann,
+                Some(body(version, 300, &p.code_b)),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                "/api/t/alpha/stripe/page",
+                &p.t.ann,
+                Some(body(version + 1, 300, &p.code_a)),
+            )
+            .await;
+    assert_eq!(
+        (status, out["kind"].as_str()),
+        (StatusCode::CONFLICT, Some("stale"))
+    );
+    let out = ok(
+        &p.t.w,
+        "POST",
+        "/api/t/alpha/stripe/page",
+        &p.t.ann,
+        Some(body(version, 300, &p.code_a)),
+    )
+    .await;
+    assert_eq!(out["page"]["amounts"], json!([500, 1500, 3000]));
+    assert_eq!(out["page"]["minimum"], 300);
+    assert_eq!(out["page"]["version"], out["counter"]);
+    // Beta's page is as it was.
+    let theirs = ok(&p.t.w, "GET", "/api/t/beta/stripe/page", &p.t.bob, None).await;
+    assert_eq!(theirs["amounts"], json!([1000, 2500, 5000]));
+    assert_eq!(theirs["sourceCodeId"], p.code_b.as_str());
 }
 
 // ── refunds and disputes ───────────────────────────────────────────────────

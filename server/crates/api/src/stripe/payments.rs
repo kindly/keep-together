@@ -565,6 +565,7 @@ fn complete(
             first_name_typed: m.first_name_typed,
             partial_refund_claimed: false,
             declaration_refused,
+            dismissed: None,
         },
         m.expected,
         m.source,

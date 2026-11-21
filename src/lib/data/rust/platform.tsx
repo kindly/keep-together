@@ -10,6 +10,8 @@ import { showAnswer } from '../events'
 import type { Group } from '../rust-types/Group'
 import type { ListKind } from '../rust-types/ListKind'
 import type { OpenedResult } from '../rust-types/OpenedResult'
+import type { ClaimsGiftAidSaved } from '../rust-types/ClaimsGiftAidSaved'
+import type { SetClaimsGiftAid } from '../rust-types/SetClaimsGiftAid'
 import type { SetPreference } from '../rust-types/SetPreference'
 import type { SwitchSaved } from '../rust-types/SwitchSaved'
 import type { Tenant } from '../../tenant'
@@ -61,6 +63,54 @@ export function useSetStaffCanManage(tenant: Tenant) {
           () =>
             postWrite<SwitchSaved>(
               tenantPath(tenant.slug, 'preferences', kind),
+              body,
+            ),
+          ({ switches }) => {
+            const groups = qc.getQueryData<Array<Group> | null>(keys.groups)
+            return groups
+              ? [
+                  [
+                    keys.groups,
+                    groups.map((g) =>
+                      g.slug === tenant.slug ? { ...g, ...switches } : g,
+                    ),
+                  ],
+                ]
+              : []
+          },
+        )
+        return 'saved'
+      } catch (e) {
+        await qc.invalidateQueries({ queryKey: keys.groups })
+        return e instanceof RustApiError && e.error.kind === 'stale'
+          ? 'stale'
+          : 'failed'
+      }
+    },
+    [tenant],
+  )
+}
+
+/**
+ * Turn "We claim Gift Aid" on or off, against the counter the caller's
+ * groups carry. Admin only. As the list switches: the answer's switches
+ * land in the caller's groups, so every page hides or shows Gift Aid at
+ * once; a refusal refetches them.
+ */
+export function useSetClaimsGiftAid(tenant: Tenant) {
+  return useCallback(
+    async (on: boolean): Promise<SwitchOutcome> => {
+      const body: SetClaimsGiftAid = {
+        expected: tenant.claimsGiftAidVersion,
+        on,
+      }
+      try {
+        await showAnswer(
+          qc,
+          tenant.slug,
+          () =>
+            postWrite<ClaimsGiftAidSaved>(
+              tenantPath(tenant.slug, 'preferences', 'claimsGiftAid'),
               body,
             ),
           ({ switches }) => {

@@ -368,6 +368,9 @@ pub struct GiftView {
     #[ts(flatten)]
     pub gift: GiftRow,
     pub contact: Option<GiftDonor>,
+    /// A card gift taken through Stripe: its payment, with the flags
+    /// for staff. None for every other gift.
+    pub card: Option<crate::stripe::CardPayment>,
 }
 
 /// `GET contacts/{id}/gifts?cursor&limit`: newest date first.

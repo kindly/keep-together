@@ -132,6 +132,17 @@ export const keys = {
   standingOrders: (slug: string, contactId: string) =>
     ['t', slug, 'standing', 'contact', contactId] as const,
   standingMissed: (slug: string) => ['t', slug, 'standing', 'missed'] as const,
+  /**
+   * Card donations (Stripe S5): the connection, the donation page's
+   * settings, the card payments to match and the ones set aside. One
+   * prefix, so a payment's or the page's event refetches whatever shows
+   * one.
+   */
+  stripe: (slug: string) => ['t', slug, 'stripe'] as const,
+  stripeStatus: (slug: string) => ['t', slug, 'stripe', 'status'] as const,
+  donationPage: (slug: string) => ['t', slug, 'stripe', 'page'] as const,
+  cardQueue: (slug: string) => ['t', slug, 'stripe', 'unmatched'] as const,
+  cardsSetAside: (slug: string) => ['t', slug, 'stripe', 'dismissed'] as const,
   /** The charity's HMRC details (Settings). */
   hmrcDetails: (slug: string) => ['t', slug, 'hmrcDetails'] as const,
   /**

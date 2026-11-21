@@ -16,7 +16,13 @@ import type {
   TestCase,
   TestResult,
 } from '@playwright/test/reporter'
-import { BULK_ROUTES, budgetFor, budgets, targetBudgets } from './budgets'
+import {
+  BULK_ROUTES,
+  QC_AWAITING_RECORD,
+  budgetFor,
+  budgets,
+  targetBudgets,
+} from './budgets'
 import type { Budget, FlowName } from './budgets'
 import { HOSTED, hostedUrl, qcTarget } from './target'
 import { RTT_CEILING_MS, rttCeilingMs } from './timing'
@@ -91,9 +97,16 @@ describe('per-target budgets (human, g2q6)', () => {
           expect(q.maxMs).toBe(pageUpload.includes(name) ? 1500 : 500)
         }
       } else {
-        // Not timed on keep-qc (the GoCardless fake's flows): unbudgeted,
-        // the house line kept for the timeout only.
-        expect(b.fakeGoCardless).toBe(true)
+        // Not timed on keep-qc (the GoCardless fake's flows, the Stripe
+        // fake's), or added since its last re-record
+        // (QC_AWAITING_RECORD): unbudgeted, the house line kept for the
+        // timeout only.
+        expect(
+          b.fakeGoCardless === true ||
+            b.fakeStripe === true ||
+            QC_AWAITING_RECORD.includes(name),
+          name,
+        ).toBe(true)
         expect(q.unbudgeted).toBe(true)
         expect(q.maxMs).toBe(b.maxMs)
       }

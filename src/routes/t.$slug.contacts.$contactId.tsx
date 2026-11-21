@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import type { Id } from '../lib/domain/ids'
-import { useTenant } from '../lib/tenant'
+import { claimsGiftAid, useTenant } from '../lib/tenant'
 import { contactSeed, dropContactSeed } from '../lib/contact-seed'
 import { FEATURES, preloadContact, useContact } from '../lib/data'
 import { ContactForm } from '../components/contact-form'
@@ -72,9 +72,12 @@ function ContactPage() {
           {/* Staff and admins: from statement lines (bank transfers 6b). */}
           {FEATURES.gifts && <BankPayers contactId={id} />}
           {/* Only a person can make a Gift Aid declaration (HMRC 3.6.7). */}
-          {FEATURES.gifts && data.contact.kind === 'individual' && (
-            <ContactGiftAid contactId={id} />
-          )}
+          {/* Nothing in a group that doesn't claim Gift Aid. */}
+          {FEATURES.gifts &&
+            claimsGiftAid(tenant) &&
+            data.contact.kind === 'individual' && (
+              <ContactGiftAid contactId={id} />
+            )}
         </div>
         {/* Keyed like the form: a restore notice belongs to its contact. */}
         <ContactHistory

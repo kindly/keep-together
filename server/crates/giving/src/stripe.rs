@@ -214,6 +214,25 @@ CREATE INDEX stripe_payments_unmatched ON stripe_payments (seq)
     WHERE gift_id IS NULL AND unmatched_reason IS NOT NULL;
 ";
 
+/// Org schema step 27 (S5): a payment in the queue as `no_submission`
+/// that isn't a donation at all (the group took it some other way on its
+/// Stripe account) can be set aside with a reason, by whom and when. The
+/// row stays, and so does its reason for being in the queue: setting
+/// aside is never a delete, and staff can put it back. The queue's index
+/// leaves the set-aside ones out; they have their own.
+pub const MIGRATION_DISMISS: &str = "
+ALTER TABLE stripe_payments ADD COLUMN dismissed_reason TEXT
+    CHECK (dismissed_reason IS NULL
+        OR (gift_id IS NULL AND unmatched_reason = 'no_submission'));
+ALTER TABLE stripe_payments ADD COLUMN dismissed_by INTEGER;
+ALTER TABLE stripe_payments ADD COLUMN dismissed_at INTEGER;
+DROP INDEX stripe_payments_unmatched;
+CREATE INDEX stripe_payments_unmatched ON stripe_payments (seq)
+    WHERE gift_id IS NULL AND unmatched_reason IS NOT NULL AND dismissed_reason IS NULL;
+CREATE INDEX stripe_payments_dismissed ON stripe_payments (seq)
+    WHERE dismissed_reason IS NOT NULL;
+";
+
 fn tidy(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -287,6 +306,9 @@ pub struct DonationPage {
     pub version: Option<i64>,
     /// A source code is set and still live: the page takes donations.
     pub taking_donations: bool,
+    /// The page's source code as it reads now (its name, whether it is
+    /// archived), for Settings to show; none when none is set.
+    pub source_code: Option<sources::types::CodeDescription>,
 }
 
 fn page_row(conn: &Connection) -> rusqlite::Result<Option<(String, DonationPagePayload, i64)>> {
@@ -316,14 +338,15 @@ pub fn page(conn: &Connection) -> rusqlite::Result<DonationPage> {
         Some((_, page, version)) => (page, Some(version)),
         None => (DonationPagePayload::default(), None),
     };
-    let taking_donations = match page.source_code_id.as_deref() {
-        Some(code) => sources::describe(conn, code)?.is_some_and(|c| c.is_active),
-        None => false,
+    let source_code = match page.source_code_id.as_deref() {
+        Some(code) => sources::describe(conn, code)?,
+        None => None,
     };
     Ok(DonationPage {
         page,
         version,
-        taking_donations,
+        taking_donations: source_code.as_ref().is_some_and(|c| c.is_active),
+        source_code,
     })
 }
 
@@ -1591,6 +1614,11 @@ pub struct StripePaymentMatchPayload {
     /// holds what they ticked.
     #[serde(default)]
     pub declaration_refused: Option<String>,
+    /// For staff (v3): set aside as not a donation, with why. Only a
+    /// payment in the queue with nothing a donor typed behind it
+    /// (`no_submission`); it leaves the queue and keeps its row.
+    #[serde(default)]
+    pub dismissed: Option<String>,
 }
 
 /// The match, with who matched it and when (the command's, set with the
@@ -1603,10 +1631,16 @@ pub struct MatchState {
     matched_by: Option<i64>,
     #[serde(skip)]
     matched_at: Option<i64>,
+    /// Who set it aside and when (the command's; not serialised).
+    #[serde(skip)]
+    dismissed_by: Option<i64>,
+    #[serde(skip)]
+    dismissed_at: Option<i64>,
 }
 
 const MATCH_COLUMNS: &str = "contact_id, gift_id, unmatched_reason, first_name_typed, \
-     partial_refund_claimed, matched_by, matched_at, declaration_refused";
+     partial_refund_claimed, matched_by, matched_at, declaration_refused, dismissed_reason, \
+     dismissed_by, dismissed_at";
 
 fn match_at(r: &Row, i: usize) -> rusqlite::Result<MatchState> {
     Ok(MatchState {
@@ -1620,9 +1654,12 @@ fn match_at(r: &Row, i: usize) -> rusqlite::Result<MatchState> {
             first_name_typed: r.get(i + 3)?,
             partial_refund_claimed: r.get(i + 4)?,
             declaration_refused: r.get(i + 7)?,
+            dismissed: r.get(i + 8)?,
         },
         matched_by: r.get(i + 5)?,
         matched_at: r.get(i + 6)?,
+        dismissed_by: r.get(i + 9)?,
+        dismissed_at: r.get(i + 10)?,
     })
 }
 
@@ -1631,8 +1668,8 @@ pub static STRIPE_PAYMENT_MATCH: StripePaymentMatch = StripePaymentMatch;
 
 impl Contract for StripePaymentMatch {
     const NAME: &'static str = "giving.stripePaymentMatch";
-    /// v2: `declarationRefused`.
-    const VERSION: u32 = 2;
+    /// v2: `declarationRefused`. v3: `dismissed`.
+    const VERSION: u32 = 3;
     const ENTITY: &'static str = PAYMENTS;
     const COUNTER: &'static str = "match_version";
     type Payload = StripePaymentMatchPayload;
@@ -1676,6 +1713,16 @@ impl Contract for StripePaymentMatch {
         if let Some(n) = &p.first_name_typed {
             too_long(&mut problems, "firstNameTyped", n, NAME_MAX);
         }
+        p.dismissed = p.dismissed.map(|r| tidy(&r)).filter(|r| !r.is_empty());
+        if let Some(why) = &p.dismissed {
+            too_long(&mut problems, "dismissed", why, REASON_MAX);
+            if p.gift_id.is_some() || p.unmatched != Some(UnmatchedReason::NoSubmission) {
+                problems.push(Problem::new(
+                    "dismissed",
+                    "Only a payment with no donation behind it can be set aside",
+                ));
+            }
+        }
         checked(p, problems)
     }
 
@@ -1705,7 +1752,15 @@ impl Contract for StripePaymentMatch {
             ));
         }
         let newly = current.matched.gift_id.is_none() && p.gift_id.is_some();
+        // Who set it aside is whoever first did, until it is put back.
+        let (dismissed_by, dismissed_at) = match (&p.dismissed, &current.matched.dismissed) {
+            (None, _) => (None, None),
+            (Some(_), Some(_)) => (current.dismissed_by, current.dismissed_at),
+            (Some(_), None) => (command.actor, Some(command.at)),
+        };
         Ok(MatchState {
+            dismissed_by,
+            dismissed_at,
             matched: p.clone(),
             matched_by: if newly {
                 command.actor
@@ -1756,7 +1811,8 @@ impl Contract for StripePaymentMatch {
         tx.prepare_cached(
             "UPDATE stripe_payments SET contact_id = ?2, gift_id = ?3, unmatched_reason = ?4,
                  first_name_typed = ?5, partial_refund_claimed = ?6, matched_by = ?7,
-                 matched_at = ?8, declaration_refused = ?9
+                 matched_at = ?8, declaration_refused = ?9, dismissed_reason = ?10,
+                 dismissed_by = ?11, dismissed_at = ?12
              WHERE id = ?1",
         )?
         .execute(params![
@@ -1768,14 +1824,18 @@ impl Contract for StripePaymentMatch {
             m.partial_refund_claimed,
             next.matched_by,
             next.matched_at,
-            m.declaration_refused
+            m.declaration_refused,
+            m.dismissed,
+            next.dismissed_by,
+            next.dismissed_at
         ])?;
         Ok(())
     }
 
-    /// v1 had no `declarationRefused`: the same JSON reads as v2.
+    /// v1 had no `declarationRefused` and v2 no `dismissed`: the same
+    /// JSON reads as the next version.
     fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
-        (from == 1).then_some(payload)
+        (from == 1 || from == 2).then_some(payload)
     }
 }
 
@@ -1789,6 +1849,9 @@ pub struct PaymentRecord {
     pub version: i64,
     pub matched: StripePaymentMatchPayload,
     pub match_version: i64,
+    /// When it was matched to its contact, and when it was set aside.
+    pub matched_at: Option<i64>,
+    pub dismissed_at: Option<i64>,
 }
 
 fn payment_where(
@@ -1805,12 +1868,15 @@ fn payment_where(
 }
 
 fn record_row(r: &Row) -> rusqlite::Result<PaymentRecord> {
+    let state = match_at(r, 12)?;
     Ok(PaymentRecord {
         id: r.get(0)?,
         version: r.get(1)?,
         match_version: r.get(2)?,
         payment: payment_at(r, 3)?,
-        matched: match_at(r, 12)?.matched,
+        matched_at: state.matched_at,
+        dismissed_at: state.dismissed_at,
+        matched: state.matched,
     })
 }
 
@@ -1901,16 +1967,74 @@ pub fn set_match(
 }
 
 /// "Card payments to match": payments nobody could be matched to (no
-/// gift), newest first, at most [`UNMATCHED_LIMIT`]. One indexed read.
+/// gift) and nobody has set aside, newest first, at most
+/// [`UNMATCHED_LIMIT`]. One indexed read.
 pub fn unmatched(conn: &Connection) -> rusqlite::Result<Vec<PaymentRecord>> {
     conn.prepare_cached(&format!(
         "SELECT id, version, match_version, {PAYMENT_COLUMNS}, {MATCH_COLUMNS}
          FROM stripe_payments INDEXED BY stripe_payments_unmatched
-         WHERE gift_id IS NULL AND unmatched_reason IS NOT NULL
+         WHERE gift_id IS NULL AND unmatched_reason IS NOT NULL AND dismissed_reason IS NULL
          ORDER BY seq DESC LIMIT {UNMATCHED_LIMIT}"
     ))?
     .query_map([], record_row)?
     .collect()
+}
+
+/// Payments staff set aside as not donations, newest first, at most
+/// [`UNMATCHED_LIMIT`]. One indexed read.
+pub fn dismissed(conn: &Connection) -> rusqlite::Result<Vec<PaymentRecord>> {
+    conn.prepare_cached(&format!(
+        "SELECT id, version, match_version, {PAYMENT_COLUMNS}, {MATCH_COLUMNS}
+         FROM stripe_payments INDEXED BY stripe_payments_dismissed
+         WHERE dismissed_reason IS NOT NULL
+         ORDER BY seq DESC LIMIT {UNMATCHED_LIMIT}"
+    ))?
+    .query_map([], record_row)?
+    .collect()
+}
+
+/// Set a queued payment aside as not a donation, with why (staff), or
+/// put it back (`reason: None`). Only one with nothing a donor typed
+/// behind it: a donation is always somebody's gift (`not_outside`).
+/// `expected` is `matchVersion` as listed (`409 stale`). Never a delete:
+/// the row, and Stripe's record in it, stay.
+pub fn set_dismissed(
+    ctx: &Ctx,
+    id: &str,
+    reason: Option<&str>,
+    expected: i64,
+) -> Result<Executed, ContractError> {
+    let record = payment(ctx.tx.read(), id)?.ok_or(ContractError::NotFound)?;
+    if record.matched.gift_id.is_some() {
+        return Err(ContractError::rejected(
+            "already_matched",
+            "This payment is already a donor’s gift",
+        ));
+    }
+    if record.matched.unmatched != Some(UnmatchedReason::NoSubmission) {
+        return Err(ContractError::rejected(
+            "not_outside",
+            "This payment came through the donation page: match it to its donor",
+        ));
+    }
+    let reason = reason.map(tidy).filter(|r| !r.is_empty());
+    if reason.is_none() && record.matched.dismissed.is_none() {
+        return Err(ContractError::rejected(
+            "not_dismissed",
+            "This payment is in the list to match already",
+        ));
+    }
+    set_match(
+        ctx,
+        id,
+        StripePaymentMatchPayload {
+            dismissed: reason,
+            ..record.matched
+        },
+        Some(expected),
+        Source::Ui,
+        None,
+    )
 }
 
 // ── the payment's gift ─────────────────────────────────────────────────────
@@ -2345,9 +2469,89 @@ pub struct UnmatchedCardPayment {
     pub source_code_id: Option<String>,
     /// The live contacts that have the donor's email address (at most 50).
     pub candidates: Vec<CardCandidate>,
-    /// Pass as `expected` to match it.
+    /// Pass as `expected` to match it, set it aside or put it back.
     #[ts(type = "number")]
     pub match_version: i64,
+    /// Set aside as not a donation: why, and when (ms). None in the
+    /// queue.
+    pub dismissed: Option<String>,
+    #[ts(type = "number | null")]
+    pub dismissed_at: Option<i64>,
+}
+
+/// What a card gift's page shows of its Stripe payment (`GiftView.card`):
+/// the flags staff act on, and what Stripe has refunded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CardPayment {
+    /// Our row id: `stripe/payments/{id}/name-checked`.
+    pub id: String,
+    /// Stripe's PaymentIntent id.
+    pub payment_id: String,
+    /// What the donor paid and what Stripe has refunded of it, in pence.
+    #[ts(type = "number")]
+    pub amount: i64,
+    #[ts(type = "number")]
+    pub refunded_amount: i64,
+    pub dispute: Option<DisputeState>,
+    /// The donor came through the donation page (false: staff matched a
+    /// payment taken some other way).
+    pub from_page: bool,
+    /// The first name the donor typed, when it isn't the contact's:
+    /// perhaps someone else at that email address.
+    pub first_name_typed: Option<String>,
+    /// Part was refunded after the gift went into a Gift Aid claim,
+    /// which keeps the amount it claimed.
+    pub partial_refund_claimed: bool,
+    /// The donor ticked Gift Aid and their declaration couldn't be
+    /// recorded on this contact: Gift Aid's reason (`not_individual`, …).
+    pub declaration_refused: Option<String>,
+    /// Pass as `expected` to clear `firstNameTyped`.
+    #[ts(type = "number")]
+    pub match_version: i64,
+}
+
+/// A gift's Stripe payment as its page shows it; `None`: not a card gift
+/// from Stripe.
+pub fn card_of_gift(conn: &Connection, gift_id: &str) -> rusqlite::Result<Option<CardPayment>> {
+    Ok(payment_of_gift(conn, gift_id)?.map(|r| CardPayment {
+        id: r.id,
+        payment_id: r.payment.payment_id,
+        amount: r.payment.amount,
+        refunded_amount: r.payment.refunded_amount,
+        dispute: r.payment.dispute,
+        from_page: r.payment.submission_id.is_some(),
+        first_name_typed: r.matched.first_name_typed,
+        partial_refund_claimed: r.matched.partial_refund_claimed,
+        declaration_refused: r.matched.declaration_refused,
+        match_version: r.match_version,
+    }))
+}
+
+/// Staff have looked at "first name differs" on a matched payment and it
+/// is the right person: the flag is cleared (the declaration keeps the
+/// name the donor typed). `expected`: `matchVersion` as read (`409
+/// stale`). Nothing to clear: `422 rejected not_flagged`.
+pub fn name_checked(ctx: &Ctx, id: &str, expected: i64) -> Result<Executed, ContractError> {
+    let record = payment(ctx.tx.read(), id)?.ok_or(ContractError::NotFound)?;
+    if record.matched.first_name_typed.is_none() {
+        return Err(ContractError::rejected(
+            "not_flagged",
+            "This gift isn’t marked with a different first name",
+        ));
+    }
+    set_match(
+        ctx,
+        id,
+        StripePaymentMatchPayload {
+            first_name_typed: None,
+            ..record.matched
+        },
+        Some(expected),
+        Source::Ui,
+        None,
+    )
 }
 
 /// The submission behind a payment, if what the donor typed is still
@@ -2388,8 +2592,21 @@ pub fn donor_candidates(
 /// "Card payments to match", as staff see them: [`unmatched`], each with
 /// what its donor typed and the contacts that have their email address.
 pub fn unmatched_view(conn: &Connection) -> rusqlite::Result<Vec<UnmatchedCardPayment>> {
+    card_views(conn, unmatched(conn)?)
+}
+
+/// The payments staff set aside as not donations ([`dismissed`]), in the
+/// queue's shape, each with why and when.
+pub fn dismissed_view(conn: &Connection) -> rusqlite::Result<Vec<UnmatchedCardPayment>> {
+    card_views(conn, dismissed(conn)?)
+}
+
+fn card_views(
+    conn: &Connection,
+    records: Vec<PaymentRecord>,
+) -> rusqlite::Result<Vec<UnmatchedCardPayment>> {
     let mut out = Vec::new();
-    for r in unmatched(conn)? {
+    for r in records {
         let Some(reason) = r.matched.unmatched else {
             continue;
         };
@@ -2428,6 +2645,8 @@ pub fn unmatched_view(conn: &Connection) -> rusqlite::Result<Vec<UnmatchedCardPa
             }),
             candidates,
             match_version: r.match_version,
+            dismissed: r.matched.dismissed,
+            dismissed_at: r.dismissed_at,
             payment_id: r.payment.payment_id,
             id: r.id,
         });

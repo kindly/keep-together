@@ -614,6 +614,8 @@ describe('cold load', () => {
         canManageIdentifierTypes: false,
         canManageSourceCodes: false,
         canManageFields: true,
+        claimsGiftAid: true,
+        claimsGiftAidVersion: null,
       },
     ]
     answers.push((c) =>

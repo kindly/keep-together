@@ -74,7 +74,12 @@ vi.mock('../lib/data', () => ({
 vi.mock('../components/source-code-picker', () => ({
   localToday: () => '2026-10-28',
 }))
+/** "We claim Gift Aid" (Settings): a test switches it off to see what hides. */
+const giftAidSwitch = vi.hoisted(() => ({ on: true }))
 vi.mock('../lib/tenant', () => ({
+  // On, as every group is unless it says otherwise.
+  claimsGiftAid: () => giftAidSwitch.on,
+  useClaimsGiftAid: () => giftAidSwitch.on,
   useTenant: () => ({ _id: 'tenantA', slug: 'a', role }),
   useIsAdmin: () => role === 'admin',
 }))

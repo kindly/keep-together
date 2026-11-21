@@ -213,6 +213,9 @@ async function startApi(i, bin) {
         // consent and sign-up pages are reached through this instance's
         // serve.mjs origin.
         KEEP_GOCARDLESS: 'fake',
+        // Card donations on the fake Stripe mounted on the api (Stripe S5):
+        // its onboarding and payment pages, its simulators, no network.
+        KEEP_STRIPE: 'fake',
         KEEP_APP_ORIGIN: `http://localhost:${SERVE_PORT + i}`,
         RUST_LOG: process.env.RUST_LOG ?? 'warn',
       },

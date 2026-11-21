@@ -64,6 +64,7 @@ function wireGift(over: Partial<WireGift> = {}): WireGift {
     statusVersion: 1,
     lineVersion: 0,
     contact: { id: 'c1', displayName: 'Jo Bloggs', kind: 'individual' },
+    card: null,
     ...over,
   }
 }

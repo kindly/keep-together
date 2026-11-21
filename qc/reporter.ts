@@ -587,11 +587,13 @@ export function notFakeBanner(
   tests: Map<string, string>,
   flows: Array<string>,
   routes: Array<string>,
+  /** Whose fake: the banner's name and "the … screens". */
+  provider: 'GoCardless' | 'Stripe' = 'GoCardless',
 ): Array<string> {
   if (!tests.size) return []
   const modes = [...new Set(tests.values())].sort().join(', ')
   return banner([
-    `GOCARDLESS NOT FAKE on the target (${modes}): ${tests.size} test${tests.size === 1 ? '' : 's'} skipped; the GoCardless screens were NOT tested:`,
+    `${provider.toUpperCase()} NOT FAKE on the target (${modes}): ${tests.size} test${tests.size === 1 ? '' : 's'} skipped; the ${provider} screens were NOT tested:`,
     ...[...tests.keys()].sort(),
     ...(flows.length ? [`not timed: ${flows.join(', ')}`] : []),
     ...(routes.length ? [`not covered: ${routes.join(', ')}`] : []),
@@ -669,6 +671,9 @@ export default class QcReporter implements Reporter {
   private notFake = new Map<string, string>()
   /** The routes those tests are annotated with. */
   private notFakeRoutes = new Set<string>()
+  /** The same for the Stripe fake (`stripeNotFake`; keep-qc has Stripe off). */
+  private stripeNotFake = new Map<string, string>()
+  private stripeNotFakeRoutes = new Set<string>()
   /** The GoCardless sandbox spec's notices (`goCardlessQcBanner`). */
   private gcQc = {
     late: new Map<string, Array<string>>(),
@@ -726,6 +731,19 @@ export default class QcReporter implements Reporter {
       for (const a of [...test.annotations, ...result.annotations]) {
         if (a.type === 'route' && a.description)
           this.notFakeRoutes.add(a.description)
+      }
+    }
+    const stripeNotFake = result.annotations.find(
+      (a) => a.type === 'stripeNotFake',
+    )
+    if (stripeNotFake && result.status === 'skipped') {
+      this.stripeNotFake.set(
+        test.titlePath().filter(Boolean).slice(1).join(' › '),
+        stripeNotFake.description ?? '',
+      )
+      for (const a of [...test.annotations, ...result.annotations]) {
+        if (a.type === 'route' && a.description)
+          this.stripeNotFakeRoutes.add(a.description)
       }
     }
     if (result.status === 'failed' || result.status === 'timedOut') {
@@ -836,16 +854,18 @@ export default class QcReporter implements Reporter {
 
     const timed = new Set(records.map((r) => r.flow))
     const offFake = this.notFake.size > 0
+    const offStripe = this.stripeNotFake.size > 0
     const untimed = (Object.entries(budgets) as Array<[FlowName, Budget]>)
       .filter(([name, b]) => !b.selfTest && !b.pendingPort && !timed.has(name))
       .map(([name, b]) => ({
         name,
         pending: b.pending === true,
         notFake: offFake && b.fakeGoCardless === true,
+        stripeNotFake: offStripe && b.fakeStripe === true,
       }))
     const pending = untimed.filter((u) => u.pending).map((u) => u.name)
     const missing = untimed
-      .filter((u) => !u.pending && !u.notFake)
+      .filter((u) => !u.pending && !u.notFake && !u.stripeNotFake)
       .map((u) => u.name)
     if (pending.length) {
       out.push(`not timed yet (pending): ${pending.join(', ')}`)
@@ -857,13 +877,24 @@ export default class QcReporter implements Reporter {
     }
 
     // Routes being ported are listed in the pendingPort banner instead.
-    // So are those only the GoCardless fake's skipped tests cover.
+    // So are those only the GoCardless fake's skipped tests cover, and
+    // the Stripe fake's.
     const all = coverageGaps(routes, this.routes)
     const ported = all.uncovered.filter(isPorted)
     const gaps = {
       ...all,
-      uncovered: ported.filter((r) => !this.notFakeRoutes.has(r)),
+      uncovered: ported.filter(
+        (r) => !this.notFakeRoutes.has(r) && !this.stripeNotFakeRoutes.has(r),
+      ),
     }
+    out.push(
+      ...notFakeBanner(
+        this.stripeNotFake,
+        untimed.filter((u) => u.stripeNotFake).map((u) => u.name),
+        ported.filter((r) => this.stripeNotFakeRoutes.has(r)),
+        'Stripe',
+      ),
+    )
     out.push(
       ...notFakeBanner(
         this.notFake,

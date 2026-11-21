@@ -4,4 +4,9 @@
  * A group's Settings switches, their counters, and what they mean for
  * the caller: in `GET /api/groups`, and in a switch's save answer.
  */
-export type Switches = { staffCanManageIdentifierTypes: boolean, identifierTypesVersion: number | null, staffCanManageSourceCodes: boolean, sourceCodesVersion: number | null, staffCanManageFields: boolean, fieldsVersion: number | null, canManageIdentifierTypes: boolean, canManageSourceCodes: boolean, canManageFields: boolean, };
+export type Switches = { staffCanManageIdentifierTypes: boolean, identifierTypesVersion: number | null, staffCanManageSourceCodes: boolean, sourceCodesVersion: number | null, staffCanManageFields: boolean, fieldsVersion: number | null, canManageIdentifierTypes: boolean, canManageSourceCodes: boolean, canManageFields: boolean, 
+/**
+ * "We claim Gift Aid" (on unless a group that isn't a charity
+ * switched it off: the app then hides Gift Aid), and its counter.
+ */
+claimsGiftAid: boolean, claimsGiftAidVersion: number | null, };

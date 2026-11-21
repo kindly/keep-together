@@ -207,6 +207,7 @@ vi.mock('../lib/data', async (original) => {
     useOpened: () => opened,
     useOrgEvents: () => {},
     useGoCardlessStatus: () => gocardless,
+    useStripeStatus: () => stripe,
     // Home's standing orders with a missed payment: none here.
     useMissedStandingOrders: () => ({
       data: [],
@@ -218,6 +219,7 @@ vi.mock('../lib/data', async (original) => {
 
 let gifts: Array<RecentGift> = []
 let gocardless: { enabled: boolean } | undefined
+let stripe: { enabled: boolean } | undefined
 vi.mock('../lib/gifts', async (original) => ({
   ...(await original<typeof GiftsLib>()),
   useMyRecentGifts: (enabled = true) => (enabled ? gifts : undefined),
@@ -257,6 +259,7 @@ beforeEach(() => {
   tenants = [group('alpha')]
   gifts = []
   gocardless = undefined
+  stripe = undefined
   routeSearch = {}
   navigated.length = 0
   opened.mockReset().mockResolvedValue(null)
@@ -371,6 +374,55 @@ test('Gift Aid claims and HMRC details are for admins: staff and viewers see nei
     // Scans storage: staff (their scans), not a viewer.
     expect(text().includes('Scans storage')).toBe(role === 'staff')
   }
+})
+
+test('a group that doesn’t claim Gift Aid has no Gift Aid menu, HMRC details or Scans storage, and keeps the switch', async () => {
+  tenants = [group('alpha', { claimsGiftAid: false })]
+  await page(import('./t.$slug'))
+  const nav = el.querySelector('nav[aria-label="Main"]')!
+  expect(links(nav).map(([name]) => name)).toEqual([
+    'Alpha',
+    'Contacts',
+    'Settings',
+  ])
+  expect(text()).not.toContain('Gift Aid ▾')
+  await page(import('./t.$slug.settings'))
+  expect(text()).not.toContain('HMRC details')
+  expect(text()).not.toContain('Scans storage')
+  // The way to switch it back on stays.
+  expect(links()).toContainEqual(['Gift Aid', '/t/alpha/settings/giftaid'])
+  // On (and for a group that never said): as before.
+  tenants = [group('alpha', { claimsGiftAid: true })]
+  await page(import('./t.$slug.settings'))
+  expect(text()).toContain('HMRC details')
+  expect(text()).toContain('Scans storage')
+})
+
+test('with Stripe on: Card payments to match for staff, Settings › Card donations for admins', async () => {
+  const tab = ['Card donations', '/t/alpha/settings/stripe']
+  // Off on this server: neither.
+  await page(import('./t.$slug.settings'))
+  expect(links()).not.toContainEqual(tab)
+  stripe = { enabled: true }
+  await page(import('./t.$slug.settings'))
+  expect(links()).toContainEqual(tab)
+  tenants = [group('alpha', { role: 'staff' })]
+  await page(import('./t.$slug.settings'))
+  expect(links()).not.toContainEqual(tab)
+  await page(import('./t.$slug'))
+  const trigger = [...el.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Donations ▾',
+  )!
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+    )
+  })
+  expect(
+    [...document.querySelectorAll('[role="menu"] [role="menuitem"]')].map(
+      (i) => [i.textContent, i.getAttribute('href')],
+    ),
+  ).toContainEqual(['Card payments to match', '/t/alpha/stripe/unmatched'])
 })
 
 test('header: a slug that is not yours offers the way home', async () => {
@@ -668,6 +720,7 @@ test('this build serves every list tab: Settings opens on Fields', async () => {
     ['Fields', '/t/alpha/settings/fields'],
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
+    ['Gift Aid', '/t/alpha/settings/giftaid'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
     ['Bank accounts', '/t/alpha/settings/bank'],
     ['GoCardless', '/t/alpha/settings/gocardless'],
@@ -692,6 +745,7 @@ test('settings: the first tab is Fields once every list is ported', async () => 
     ['Fields', '/t/alpha/settings/fields'],
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
+    ['Gift Aid', '/t/alpha/settings/giftaid'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
     ['Bank accounts', '/t/alpha/settings/bank'],
     ['GoCardless', '/t/alpha/settings/gocardless'],

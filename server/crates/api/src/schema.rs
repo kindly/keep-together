@@ -89,6 +89,10 @@ pub fn org_migrations() -> Migrations<'static> {
             "",
             rebuild_with_deferred_keys(giving::stripe::MIGRATION_NO_SUBMISSION),
         ),
+        // 27: a payment that isn't a donation can be set aside with a
+        // reason (plan stripe.sv, S5): new columns, and the queue's index
+        // leaves the set-aside ones out
+        M::up(giving::stripe::MIGRATION_DISMISS),
     ])
 }
 

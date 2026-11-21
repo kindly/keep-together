@@ -655,6 +655,8 @@ describe('settings lists', () => {
         canManageIdentifierTypes: true,
         canManageSourceCodes: true,
         canManageFields: true,
+        claimsGiftAid: true,
+        claimsGiftAidVersion: null,
       }) satisfies Group
     reads.groups = [group(false, null)]
     const h = mount(() => {

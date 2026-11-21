@@ -420,11 +420,11 @@ and its revisions.
 
 | route | |
 |---|---|
-| `GET /api/groups` | `Group[]`: the caller's groups with role, `lastUsedAt`, the switches and `canManage*` |
+| `GET /api/groups` | `Group[]`: the caller's groups with role, `lastUsedAt`, the switches and `canManage*`, and `claimsGiftAid` with its counter (the SPA hides Gift Aid from a group that has it off, with no request of its own) |
 | `POST /api/groups/{slug}/opened` | `OpenedResult`; not a member: `404` |
 | `GET /api/t/{slug}/preferences` | `Preferences` |
 | `POST /api/t/{slug}/preferences/{identifierTypes\|sourceCodes\|fields}` | `{expected?, staffCanManage}` → `Executed`; admin only; `409 stale` |
-| `POST /api/t/{slug}/preferences/claimsGiftAid` | `{expected?, on}` → `ClaimsGiftAidSaved {id, counter, claimsGiftAid: {on, version}}`; admin only; `409 stale`. Off is for a group that isn't a charity: its donation page offers no Gift Aid and the staff app hides it (plan stripe.sv, S4 and S5); the server's Gift Aid rules don't change |
+| `POST /api/t/{slug}/preferences/claimsGiftAid` | `{expected?, on}` → `ClaimsGiftAidSaved {id, counter, claimsGiftAid: {on, version}, switches}` (`switches` as `GET /api/groups` answers them); admin only; `409 stale`. Off is for a group that isn't a charity: its donation page offers no Gift Aid and the staff app hides it (plan stripe.sv, S4 and S5); the server's Gift Aid rules don't change |
 
 The tenant middleware refuses any non-`GET` from a viewer before the
 handler runs; `api/tests/roles.rs` reads the route table from
@@ -572,7 +572,7 @@ processing and pages are later steps). Org schema step 24, all in
 | `giving.donationSubmission` | `donation_submissions.version` | what the donor typed on the donation page: amount (pence), name, email, Gift Aid ticked with its scope, wording version, house name or number and postcode, the page's source code; when is the command's time. Create-only: it is the evidence |
 | `giving.donationSubmissionOutcome` | `donation_submissions.outcome_version` | the Checkout session (set once), `started → paid / expired` (paid is final and names the payment that came from it; an expired one may still turn out paid), personal data cleared on |
 | `giving.stripePayment` | `stripe_payments.version` | Stripe's raw record: PaymentIntent id (fixed), the submission it came from (set once), amount, currency (`gbp` or it is refused: never recorded), status, paid on, refunded amount, dispute state, reason |
-| `giving.stripePaymentMatch` | `stripe_payments.match_version` | whose it is: a contact and that contact's gift, together, the gift for the payment's whole life; or unmatched with why (`ambiguous`, `name_differs`, and from org schema step 26 `no_submission`, `deceased`, `contact_refused`). The staff flags: `firstNameTyped` (the donor's first name isn't the contact's), `partialRefundClaimed` and (v2) `declarationRefused` (why the donor's ticked declaration couldn't be recorded) |
+| `giving.stripePaymentMatch` | `stripe_payments.match_version` | whose it is: a contact and that contact's gift, together, the gift for the payment's whole life; or unmatched with why (`ambiguous`, `name_differs`, and from org schema step 26 `no_submission`, `deceased`, `contact_refused`). The staff flags: `firstNameTyped` (the donor's first name isn't the contact's; staff clear it with "Name checked"), `partialRefundClaimed` and (v2) `declarationRefused` (why the donor's ticked declaration couldn't be recorded). And (v3, org schema step 27) `dismissed`: a `no_submission` payment staff set aside as not a donation, with why; who and when are the command's (`dismissed_by`, `dismissed_at`). Setting aside is never a delete: the row and its reason for being queued stay, it leaves the queue's index for its own, and it can be put back or matched after all |
 | `giving.donationPage` | `donation_page.version` (one row) | three button amounts, minimum, maximum (pence), the source code page gifts get |
 
 None of the first four can be restored. Rules, each with a named test
@@ -1157,9 +1157,11 @@ timeout; it can't be reached: `503 gocardless_unavailable`.
 ## Stripe (card donations)
 
 `api::stripe`, plan `factory/plans/stripe.sv`. **Built so far: S1**
-(Connect and plumbing), S2 (schema and contracts, above) and S3
-(processing, below); the donor's page (S4) and the staff screens (S5)
-follow.
+(Connect and plumbing), S2 (schema and contracts, above), S3
+(processing, below), the donor's page (S4) and the staff screens (S5:
+the routes at the end of this section; the pages are
+`src/routes/t.$slug.settings.stripe.tsx`, `…settings.giftaid.tsx` and
+`…stripe.unmatched.tsx`).
 
 Each organisation gets its own Stripe account, made by us and filled in
 on Stripe's hosted form: the full Stripe Dashboard, its own fees, Stripe
@@ -1296,7 +1298,28 @@ payment, and no succeeded payment is outside both a gift and the queue.
 | `POST …/stripe/connect` | → `StripeConnectStart {url, status}`: send the browser to `url` (null once Stripe takes payments for the account); admin within the step-up hour; `503 stripe_unavailable` |
 | `POST …/stripe/disconnect` | → `StripeStatus`, `connected: false`; admin within the step-up hour |
 | `GET …/stripe/unmatched` | `UnmatchedCardPayment[] {id, paymentId, amount, paidOn, status, reason: ambiguous\|name_differs\|no_submission\|deceased\|contact_refused, donor: {firstName, lastName, email, giftAid, addressLine1, postcode} \| null, sourceCodeId, candidates: [{id, displayName}], matchVersion}`: succeeded payments nobody could be matched to (no gift), newest first, at most 500, each with what its donor typed and the live contacts that have their email; any member |
-| `POST …/stripe/unmatched/{id}/match` | `MatchCardPayment {expected, contactId, sourceCodeId?}` → `MatchedCardPayment {giftId, gift}`: the contact's gift, with Stripe's amount, date and status, to the page's code when they gave (or `sourceCodeId`, live; required when the payment has no submission: `422 invalid`), and the donor's declaration if they ticked Gift Aid, as the staff member; staff; `409 stale`; `422 rejected already_matched` / `unknown_contact` / `archived_contact` / `not_individual` (the donor ticked Gift Aid and the contact isn't a person) |
+| `POST …/stripe/unmatched/{id}/match` | `MatchCardPayment {expected, contactId, sourceCodeId?}` → `MatchedCardPayment {giftId, gift}`: the contact's gift, with Stripe's amount, date and status, to the page's code when they gave (or `sourceCodeId`, live; required when the payment has no submission: `422 invalid`), and the donor's declaration if they ticked Gift Aid, as the staff member; staff; `409 stale`; `422 rejected already_matched` / `unknown_contact` / `archived_contact` / `not_individual` (the donor ticked Gift Aid and the contact isn't a person). `gift.card.declarationRefused` says when the declaration couldn't be recorded |
+| `POST …/stripe/unmatched/{id}/dismiss` | `DismissCardPayment {expected, reason}` → `Executed`: a payment queued as `no_submission` (taken some other way on the group's Stripe account) is set aside as not a donation; it leaves the queue and makes no gift, and nothing is deleted. Staff; no reason: `422 invalid`; `422 rejected not_outside` (it came through the donation page: match it) / `already_matched`; `409 stale` |
+| `POST …/stripe/unmatched/{id}/put-back` | `{expected}` → `Executed`: back in the queue. Staff; `422 rejected not_dismissed`; `409 stale` |
+| `GET …/stripe/dismissed` | `UnmatchedCardPayment[]` with `dismissed` (why) and `dismissedAt`: the payments set aside, newest first, at most 500; any member |
+| `POST …/stripe/payments/{id}/name-checked` | `{expected}` → `GiftView`: staff looked at "first name differs" on a matched payment and it is the right person; `card.firstNameTyped` is cleared. Staff; `422 rejected not_flagged`; `409 stale` |
+| `GET …/stripe/page` | `DonationPage {amounts, minimum, maximum, sourceCodeId, sourceCode, version, takingDonations}` (pence; `sourceCode` describes the code as it reads now); any member |
+| `POST …/stripe/page` | `SaveDonationPage {expected?, amounts, minimum, maximum, sourceCodeId}` → `DonationPageSaved {id, counter, page}`; admin only; the page's rules (above) are `422 invalid`; `409 stale` |
+
+A card gift's `GiftView` (`GET gifts/{id}`, every gift write's answer,
+the match's) carries `card: CardPayment {id, paymentId, amount,
+refundedAmount, dispute, fromPage, firstNameTyped, partialRefundClaimed,
+declarationRefused, matchVersion}`: its Stripe payment and the flags
+staff act on; `null` for every other gift (one indexed read, made only
+for a Stripe gift).
+
+**Not built: moving a matched gift to another contact** ("first name
+differs", and it is someone else at that email address). A gift's donor
+can't change and a payment keeps its gift for life, so today staff void
+the gift with a reason (a void stands whatever Stripe says later, and
+`giving-consistency` allows it) and record a card gift for the other
+person by hand. A move that takes the gift, the payment and the
+declaration together awaits the human's decision.
 
 The fake (`KEEP_STRIPE=fake`, `api::stripe::fake`, what `pnpm dev` runs)
 answers the client's calls in Stripe's shapes (both Accounts APIs),

@@ -54,6 +54,7 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::standing::MIGRATION),
         M::up(giving::stripe::MIGRATION),
         M::up(giving::stripe::MIGRATION_NO_SUBMISSION),
+        M::up(giving::stripe::MIGRATION_DISMISS),
     ])
 }
 
@@ -1240,6 +1241,104 @@ fn an_unmatched_payment_has_no_gift_and_is_listed_for_staff_until_matched() {
     assert!(at.is_some());
     // Stripe's record was untouched: its counter is its own.
     assert_eq!(now.version, 0);
+}
+
+#[test]
+fn only_a_payment_with_no_donation_behind_it_is_set_aside_and_it_keeps_its_row() {
+    let w = world();
+    let (outside, _) = record(&w.a, report("pi_1", None)).unwrap();
+    let (typed, _) = record(&w.a, report("pi_2", None)).unwrap();
+    for (payment, why) in [
+        (&outside, UnmatchedReason::NoSubmission),
+        (&typed, UnmatchedReason::NameDiffers),
+    ] {
+        let unmatched = StripePaymentMatchPayload {
+            unmatched: Some(why),
+            ..StripePaymentMatchPayload::default()
+        };
+        system(&w.a, NOON, |ctx| {
+            stripe::set_match(ctx, &payment.id, unmatched, None, Source::System, None)
+        })
+        .unwrap();
+    }
+    let dismiss = |id: &str, why: Option<&str>, expected: i64| {
+        tx(&w.a, |ctx| stripe::set_dismissed(ctx, id, why, expected))
+    };
+    // A donor's payment is somebody's gift: never set aside. Nor by the
+    // contract itself, whoever calls it.
+    assert_eq!(
+        reason(dismiss(&typed.id, Some("not ours"), 1).unwrap_err()),
+        "not_outside"
+    );
+    let forced = StripePaymentMatchPayload {
+        unmatched: Some(UnmatchedReason::NameDiffers),
+        dismissed: Some("not ours".into()),
+        ..StripePaymentMatchPayload::default()
+    };
+    assert_eq!(
+        reason(set_match(&w.a, &typed.id, forced, Some(1)).unwrap_err()),
+        "invalid dismissed"
+    );
+    assert_eq!(
+        reason(dismiss(&outside.id, None, 1).unwrap_err()),
+        "not_dismissed"
+    );
+    assert_eq!(
+        reason(dismiss(&outside.id, Some("Stall hire"), 0).unwrap_err()),
+        "stale"
+    );
+
+    dismiss(&outside.id, Some("  Stall   hire "), 1).unwrap();
+    let queue = read(&w.a, stripe::unmatched);
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].id, typed.id);
+    let aside = read(&w.a, stripe::dismissed);
+    assert_eq!(aside.len(), 1);
+    assert_eq!(aside[0].id, outside.id);
+    assert_eq!(aside[0].matched.dismissed.as_deref(), Some("Stall hire"));
+    // Still why it was queued, still Stripe's record, and no gift.
+    assert_eq!(
+        aside[0].matched.unmatched,
+        Some(UnmatchedReason::NoSubmission)
+    );
+    assert_eq!(aside[0].payment, outside.payment);
+    assert!(aside[0].dismissed_at.is_some());
+    assert_eq!(count(&w.a, "stripe_payments"), 2);
+    assert_eq!(count(&w.a, "gifts"), 0);
+    assert!(read(&w.a, stripe::consistency).is_empty());
+    let by: Option<i64> = read(&w.a, |c| {
+        c.query_row(
+            "SELECT dismissed_by FROM stripe_payments WHERE id = ?1",
+            [&outside.id],
+            |r| r.get(0),
+        )
+    });
+    assert_eq!(by, Some(ANN));
+
+    // Put back: in the queue again, set aside by nobody.
+    dismiss(&outside.id, None, 2).unwrap();
+    assert_eq!(read(&w.a, stripe::unmatched).len(), 2);
+    assert!(read(&w.a, stripe::dismissed).is_empty());
+    let (by, at): (Option<i64>, Option<i64>) = read(&w.a, |c| {
+        c.query_row(
+            "SELECT dismissed_by, dismissed_at FROM stripe_payments WHERE id = ?1",
+            [&outside.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    });
+    assert_eq!((by, at), (None, None));
+
+    // Set aside, then matched after all: a gift's payment is never set
+    // aside, and can't be afterwards.
+    dismiss(&outside.id, Some("Stall hire"), 3).unwrap();
+    let jo = contact(&w.a, "Jo", "Bloggs");
+    let g = gift(&w.a, &jo, &w.code, 2500);
+    set_match(&w.a, &outside.id, matched(&jo, &g), Some(4)).unwrap();
+    assert!(read(&w.a, stripe::dismissed).is_empty());
+    assert_eq!(
+        reason(dismiss(&outside.id, Some("Stall hire"), 5).unwrap_err()),
+        "already_matched"
+    );
 }
 
 #[test]

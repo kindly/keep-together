@@ -1,14 +1,21 @@
 import { Outlet, createFileRoute } from '@tanstack/react-router'
+import { GiftAidOnly } from '../components/no-gift-aid'
 import { useIsAdmin } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/giftaid')({
-  component: GiftAidLayout,
+  component: () => (
+    <GiftAidOnly>
+      <GiftAidLayout />
+    </GiftAidOnly>
+  ),
 })
 
 /**
  * Gift Aid claims (G3): admin only, as every claims route is. The header
  * shows the link only to admins; a staff member or viewer who follows a
- * bookmark here is told, not shown a refusal per read.
+ * bookmark here is told, not shown a refusal per read. A group that
+ * doesn't claim Gift Aid (Settings › Gift Aid) has no claims pages: a
+ * bookmark is told so too.
  */
 function GiftAidLayout() {
   const admin = useIsAdmin()
