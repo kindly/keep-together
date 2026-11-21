@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { expect, skipUnlessFakeStripe } from '../fixtures'
+import { expect, skipUnlessFakeStripe, test } from '../fixtures'
 import type { Page } from '@playwright/test'
 import type { ContactRow } from '../../src/lib/data/rust-types/ContactRow'
 import type { DonationPage } from '../../src/lib/data/rust-types/DonationPage'
@@ -97,6 +97,21 @@ export async function takingDonations(
 const LIMIT_WAIT_MS = 16_000
 const LIMIT_TRIES = 6
 
+/**
+ * Wait for the next donation the limit allows. The wait is added to the
+ * test's timeout (30 s locally, half of it gone in one wait) and noted
+ * on the test, so a run that was limited says so.
+ */
+async function waitOutLimit(page: Page) {
+  const info = test.info()
+  info.setTimeout(info.timeout + LIMIT_WAIT_MS)
+  info.annotations.push({
+    type: 'giveRateLimited',
+    description: `waited ${LIMIT_WAIT_MS / 1000} s for the donor page's rate limit`,
+  })
+  await page.waitForTimeout(LIMIT_WAIT_MS)
+}
+
 export interface Donor {
   firstName: string
   lastName: string
@@ -129,7 +144,7 @@ export async function startDonation(
       data: { id: randomBytes(16).toString('hex'), ...data },
     })
     if (res.status() === 429 && i < LIMIT_TRIES) {
-      await page.waitForTimeout(LIMIT_WAIT_MS)
+      await waitOutLimit(page)
       continue
     }
     expect(res.ok(), `POST donations: ${res.status()}`).toBe(true)
@@ -177,7 +192,7 @@ export async function pressGive(donorPage: Page, left: () => Promise<unknown>) {
     const said = (await notice.textContent()) ?? ''
     expect(said, 'the donor’s form').toContain('Too many tries')
     expect(i, 'still limited after waiting').toBeLessThan(LIMIT_TRIES)
-    await donorPage.waitForTimeout(LIMIT_WAIT_MS)
+    await waitOutLimit(donorPage)
   }
 }
 

@@ -1316,7 +1316,7 @@ organisation's file.
 
 `api::stripe::payments`. Gifts only on Stripe's word. A payment event
 (`checkout.session.*`, `payment_intent.*`, `charge.refunded`,
-`charge.dispute.*`) is good for ids only: the PaymentIntent it names is
+`charge.refund.updated`, `charge.dispute.*`) is good for ids only: the PaymentIntent it names is
 read from Stripe as it is now, with its charge and disputes, and
 recorded (`giving.stripePayment`). A payment that hasn't succeeded (a
 declined card, a pending one) is a payment row and nothing else; an
@@ -1391,7 +1391,7 @@ payment, and no succeeded payment is outside both a gift and the queue.
 | `POST …/stripe/connect` | → `StripeConnectStart {url, status}`: send the browser to `url` (null once Stripe takes payments for the account); admin within the step-up hour; `503 stripe_unavailable` |
 | `POST …/stripe/disconnect` | → `StripeStatus`, `connected: false`; admin within the step-up hour |
 | `GET …/stripe/unmatched` | `UnmatchedCardPayment[] {id, paymentId, amount, paidOn, status, reason: ambiguous\|name_differs\|no_submission\|deceased\|contact_refused, donor: {firstName, lastName, email, giftAid, addressLine1, postcode} \| null, sourceCodeId, candidates: [{id, displayName}], matchVersion}`: succeeded payments nobody could be matched to (no gift), newest first, at most 500, each with what its donor typed and the live contacts that have their email; any member |
-| `POST …/stripe/unmatched/{id}/match` | `MatchCardPayment {expected, contactId, sourceCodeId?}` → `MatchedCardPayment {giftId, gift}`: the contact's gift, with Stripe's amount, date and status, to the page's code when they gave (or `sourceCodeId`, live; required when the payment has no submission: `422 invalid`), and the donor's declaration if they ticked Gift Aid, as the staff member; staff; `409 stale`; `422 rejected already_matched` / `unknown_contact` / `archived_contact` / `not_individual` (the donor ticked Gift Aid and the contact isn't a person). `gift.card.declarationRefused` says when the declaration couldn't be recorded |
+| `POST …/stripe/unmatched/{id}/match` | `MatchCardPayment {expected, contactId, sourceCodeId?}` → `MatchedCardPayment {giftId, gift}`: the contact's gift, with Stripe's amount, date and status, to the page's code when they gave (or `sourceCodeId`, live; required when the payment has no submission: `422 invalid`), and the donor's declaration if they ticked Gift Aid, as the staff member; staff; `409 stale`; `422 rejected already_matched` / `unknown_contact` / `archived_contact` / `not_individual` (the donor ticked Gift Aid and the contact isn't a person) / `unknown_source_code` / `archived_source_code` (the `sourceCodeId` given). `gift.card.declarationRefused` says when the declaration couldn't be recorded |
 | `POST …/stripe/unmatched/{id}/dismiss` | `DismissCardPayment {expected, reason}` → `Executed`: a payment queued as `no_submission` (taken some other way on the group's Stripe account) is set aside as not a donation; it leaves the queue and makes no gift, and nothing is deleted. Staff; no reason, or one over 500 characters: `422 invalid` (field `reason`); `422 rejected not_outside` (it came through the donation page, or names a submission: match it) / `already_matched`; `409 stale`. A set-aside payment that a later event ties to a submission is a donation after all: processing makes its gift or puts it back in the queue with the real reason (`no_submission` still, when what its donor typed has been cleared), set aside no longer |
 | `POST …/stripe/unmatched/{id}/put-back` | `{expected}` → `Executed`: back in the queue. Staff; `422 rejected not_dismissed`; `409 stale` |
 | `GET …/stripe/dismissed?before&limit` | `DismissedCardPayments {rows, nextBefore}`: the payments set aside, newest first, 50 a page at most, each row an `UnmatchedCardPayment` with `dismissed` (why) and `dismissedAt`; `nextBefore` is the next page's `before` (null on the last), so every one can be reached; any member |
@@ -1442,7 +1442,8 @@ signs its webhooks like Stripe. `api/tests/stripe_*.rs` run on it.
   `/api/fake-stripe/simulate/`: `accounts/{id}/update` (a JSON patch of
   the account, with its `account.updated`), `accounts/{id}/deauthorize`,
   `webhooks/hold` and `webhooks/release?reverse&count=`, `outage {calls,
-  status?, path?}`, `GET webhooks`.
+  status?, path?, after?}` (`after`: the call is done at Stripe and only
+  its answer lost), `GET webhooks`.
 - **Checkout** (`fake_checkout.rs`): `POST v1/checkout/sessions` and `GET
   v1/checkout/sessions/{id}` (refused: no account, one that can't take
   payments, under 30p, an `expires_at` outside 30 minutes to 24 hours,
@@ -1473,7 +1474,8 @@ with the variable (never `live`: the boot refuses the variable with
 
 From there it is production's path: the donor's page, Stripe's Checkout,
 the webhook routed by account. Events kept for the account aren't
-replayed into the new organisation, but the catch-up reads the account's
-last weeks, so earlier runs' payments can appear in its queue as
-`no_submission`. `qc/flows/stripe-sandbox.spec.ts` uses it;
+replayed into the new organisation, and its first catch-up reads from an
+hour before the connect; but a later event about an earlier run's
+payment (a dispute closing) is routed to whoever holds the account now,
+so such payments can appear in its queue as `no_submission`. `qc/flows/stripe-sandbox.spec.ts` uses it;
 `api/tests/qc_stripe.rs` covers the gate.

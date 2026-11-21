@@ -16,9 +16,11 @@
 //! From there on it is production's path: the donor's page, Stripe's
 //! Checkout, the platform's webhook endpoint routed by account id.
 //! Events kept for the account from earlier runs are not replayed into
-//! the new organisation, but the daily catch-up reads the account's last
-//! 29 days, so an earlier run's payments can turn up in its "Card
-//! payments to match" as taken some other way.
+//! the new organisation, and its first catch-up reads only from an hour
+//! before this connect. But an event Stripe sends later about an earlier
+//! run's payment (a dispute closing days on) is routed to whoever holds
+//! the account now, so that payment can turn up in the new
+//! organisation's "Card payments to match" as taken some other way.
 //!
 //! The token route sits behind [`QcCaller`] (the `/api/qc/*` rules:
 //! `KEEP_ENV=staging`, `KEEP_QC_TOKEN`, rate limits). Its dev twin,

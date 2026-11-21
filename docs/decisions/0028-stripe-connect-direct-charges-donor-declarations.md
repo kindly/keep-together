@@ -135,4 +135,11 @@ first real run".
   a Stripe sandbox; `live` only on prod, which is deferred.
 - QC can't complete Stripe's onboarding form, so keep-qc holds one
   connected account onboarded by hand (`KEEP_QC_STRIPE_ACCOUNT`) that
-  the run's group is given through `/api/qc/stripe/connect`.
+  the run's group is given through `/api/qc/stripe/connect`. That is the
+  only way an account changes hands, against decision 2's "a group's
+  account is its own", so it is fenced: behind `KEEP_QC_TOKEN` (staging
+  environments only); only in a sandbox or on the fake, never `live`
+  (the boot refuses the variable on prod); only to a `qc-` group; only
+  that one named account; and an account a real group holds is never
+  taken from it (`409`). Events kept for the account aren't replayed
+  into the group that receives it.

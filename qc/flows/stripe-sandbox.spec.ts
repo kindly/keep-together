@@ -109,6 +109,12 @@ async function until<T>(
   return last!
 }
 
+/** Today in the UK, YYYY-MM-DD: the zone the app dates a gift in. */
+const ukToday = () =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(
+    new Date(),
+  )
+
 const named = async (lastName: string) =>
   (
     await app<SearchResult>(
@@ -252,13 +258,10 @@ test.describe('Stripe sandbox', () => {
       off = `KEEP_STRIPE=off on ${instance.name}`
       return
     }
-    let connected: Awaited<ReturnType<typeof qcStripeConnect>>
-    try {
-      connected = await qcStripeConnect(instance, slug)
-    } catch (err) {
-      unreachable = `connect: no answer (${err instanceof Error ? err.name : String(err)})`
-      return
-    }
+    // No answer from our own api (a hang, a dropped connection, a body
+    // that isn't JSON) is a fault here, not Stripe's: it throws and fails
+    // the run. Stripe not answering is the api's 503, below.
+    const connected = await qcStripeConnect(instance, slug)
     if (connected.status === 404) {
       off = `KEEP_STRIPE=${mode} on ${instance.name} with no QC account (KEEP_QC_STRIPE_ACCOUNT)`
       return
@@ -316,6 +319,7 @@ test.describe('Stripe sandbox', () => {
     await toStripe(donor, who, '7.50', true)
     // Giving wrote nothing: only a paid session makes a gift.
     expect(await named(who.lastName)).toHaveLength(0)
+    const paidFrom = ukToday()
     await pay(donor, who)
     await donor.context().close()
 
@@ -324,7 +328,9 @@ test.describe('Stripe sandbox', () => {
     expect(gift.provider).toBe('stripe')
     expect(gift.method).toBe('card')
     expect(gift.providerPaymentId).toMatch(/^pi_/)
-    expect(gift.receivedOn).toBe(new Date().toISOString().slice(0, 10))
+    // Dated the UK day it was paid: the day before or after the payment
+    // came through, if midnight fell between.
+    expect([paidFrom, ukToday()]).toContain(gift.receivedOn)
     const view = await app<GiftView>('GET', `gifts/${gift.id}`)
     expect(view.card?.declarationRefused ?? null).toBeNull()
     // The declaration the donor ticked: theirs, made today, on screen.

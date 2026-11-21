@@ -1,9 +1,11 @@
 //! `stripe_accounts` in `platform.db`: which Stripe account is which
 //! organisation's, and how far its onboarding has got.
 //!
-//! One row per organisation, and an account is only ever one
-//! organisation's (we made it for them; there is no OAuth, so no account
-//! arrives from elsewhere). "Connected" is a row with an account id and
+//! One row per organisation, and an account is one organisation's at a
+//! time. A group's account is only ever its own: we made it for them,
+//! and there is no OAuth, so none arrives from elsewhere. The one
+//! exception is the QC run's account ([`attach`]), which exists already
+//! and moves between `qc-` organisations. "Connected" is a row with an account id and
 //! no `disconnected_at`: only then are the account's events run.
 //! Disconnecting keeps the row, so connecting again is the same account
 //! and the events that came meanwhile are replayed.
@@ -218,7 +220,9 @@ pub fn disconnect(store: &Store, tenant: &TenantId, now: i64) -> Result<bool, St
 /// connected to it, back in the queue in arrival order: those set aside
 /// (`not_connected`), and those that came before we had stored the id
 /// Stripe gave the account (`unknown_account`; the account was made for
-/// this organisation and no other). How many.
+/// this organisation and no other: [`connect`] is the only caller, and
+/// [`attach`], whose account had other holders, doesn't requeue). How
+/// many.
 pub fn requeue_set_aside(
     tx: &Transaction,
     tenant: &TenantId,

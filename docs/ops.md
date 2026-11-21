@@ -275,9 +275,12 @@ with a `STRIPE SANDBOX NOT RUN` banner saying which part is missing
 (`KEEP_STRIPE=off`, or no QC account), and the run stays green. An
 account whose onboarding isn't finished **fails** the run and says so.
 Nothing is cleaned up at Stripe: the QC account collects the runs' test
-payments. The daily catch-up reads the account's last 29 days, so a
+payments. A later event about an earlier run's payment (a dispute
+closing days on) goes to whichever group holds the account now, so a
 run's "Card payments to match" can list earlier runs' payments as taken
-some other way; the spec looks only for its own donors.
+some other way; the spec looks only for its own donors. (The catch-up
+doesn't bring them: a group's first read starts an hour before it was
+connected.)
 
 ## Backups
 
