@@ -4,7 +4,9 @@
 //!
 //! Any path that isn't a file gets `index.html` (the router resolves it in
 //! the browser), except `/api/*` and `/healthz`, which answer a JSON 404:
-//! a mistyped API call must never come back as a 200 HTML page.
+//! a mistyped API call must never come back as a 200 HTML page. `/give/…`
+//! (the donor's page, plan stripe.sv S4) gets `give.html` instead: its own
+//! entry, with none of the app's bundle.
 
 use std::path::{Path, PathBuf};
 
@@ -45,7 +47,7 @@ async fn serve(dir: PathBuf, req: Request) -> Response {
         ServeDir::new(&dir).oneshot(req).await
     } else {
         ServeDir::new(&dir)
-            .fallback(ServeFile::new(index(&dir)))
+            .fallback(ServeFile::new(index(&dir, &path)))
             .oneshot(req)
             .await
     };
@@ -66,8 +68,13 @@ async fn serve(dir: PathBuf, req: Request) -> Response {
     res
 }
 
-fn index(dir: &Path) -> PathBuf {
-    dir.join("index.html")
+/// The page a path that isn't a file gets.
+fn index(dir: &Path, path: &str) -> PathBuf {
+    if path == "/give" || path.starts_with("/give/") {
+        dir.join("give.html")
+    } else {
+        dir.join("index.html")
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +121,7 @@ mod tests {
         let dist = tmp.path().join("dist");
         std::fs::create_dir_all(dist.join("assets")).unwrap();
         std::fs::write(dist.join("index.html"), "<html>spa</html>").unwrap();
+        std::fs::write(dist.join("give.html"), "<html>give</html>").unwrap();
         std::fs::write(dist.join("assets/app-abc123.js"), "js").unwrap();
         std::fs::write(tmp.path().join("secret.txt"), "s").unwrap();
         Dist(tmp)
@@ -139,6 +147,25 @@ mod tests {
             );
             assert_eq!(cache, "no-cache", "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_donors_page_is_its_own_entry() {
+        let tmp = dist();
+        for path in ["/give/riverside", "/give/riverside/thanks", "/give"] {
+            let (status, cache, body) = get_path(app(&tmp.path()), path).await;
+            assert_eq!(
+                (status, body.as_str()),
+                (StatusCode::OK, "<html>give</html>"),
+                "{path}"
+            );
+            assert_eq!(cache, "no-cache", "{path}");
+        }
+        // Only that prefix: a group called "giveaway" is the app's.
+        let (_, _, body) = get_path(app(&tmp.path()), "/t/giveaway").await;
+        assert_eq!(body, "<html>spa</html>");
+        let (_, _, body) = get_path(app(&tmp.path()), "/giveaway").await;
+        assert_eq!(body, "<html>spa</html>");
     }
 
     #[tokio::test]

@@ -66,6 +66,10 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+/// Checkout Sessions and their hosted page (S4).
+#[path = "fake_checkout.rs"]
+pub mod checkout;
+
 use super::client::{ACCOUNT_DEAUTHORIZED, ACCOUNT_UPDATED, VERSION};
 use super::webhook::{SIGNATURE_HEADER, sign};
 
@@ -143,6 +147,7 @@ pub struct Fake {
     webhook_url: String,
     http: reqwest::Client,
     world: Mutex<World>,
+    checkout: Mutex<checkout::Checkout>,
 }
 
 impl Fake {
@@ -155,6 +160,7 @@ impl Fake {
                 .build()
                 .expect("a reqwest client"),
             world: Mutex::new(World::default()),
+            checkout: Mutex::default(),
         }
     }
 
@@ -403,9 +409,11 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
         .route("/v2/core/account_links", post(create_link_v2))
         .route("/v1/account_links", post(create_link_v1))
         .merge(payments::api())
+        .merge(checkout::api())
         .layer(axum::middleware::from_fn_with_state(fake.clone(), gate));
     Router::new()
         .merge(api)
+        .merge(checkout::pages())
         .route("/onboarding/{token}", get(onboarding_page))
         .route("/onboarding/{token}/decide", post(onboarding_decide))
         .route("/simulate/accounts/{id}/update", post(simulate_update))

@@ -260,6 +260,7 @@ async fn main() {
             std::env::var("KEEP_RELEASE").ok().as_deref(),
         ));
     jobs.register(api::auth::LimitSweep(state.auth.clone()));
+    jobs.register(api::routes::give::LimitSweep(state.give.clone()));
     jobs.spawn();
 
     let mut router = app(state, api::routes::router());

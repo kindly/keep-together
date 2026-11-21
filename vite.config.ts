@@ -1,11 +1,30 @@
 import { fileURLToPath } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
+import type { Connect, Plugin } from 'vite'
 import { devtools } from '@tanstack/devtools-vite'
 
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 
 import viteReact from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+/**
+ * `/give/<group>` (and `/give/<group>/thanks`) is the donor's page,
+ * `give.html`: in dev and preview as the api serves it from `dist/`
+ * (`api::static_files`). Without this Vite would answer with the app.
+ */
+function givePage(): Plugin {
+  const rewrite: Connect.NextHandleFunction = (req, _res, next) => {
+    const path = (req.url ?? '').split('?')[0]
+    if (path === '/give' || path.startsWith('/give/')) req.url = '/give.html'
+    next()
+  }
+  return {
+    name: 'keep-give-page',
+    configureServer: (server) => void server.middlewares.use(rewrite),
+    configurePreviewServer: (server) => void server.middlewares.use(rewrite),
+  }
+}
 
 const config = defineConfig(({ mode }) => {
   // `.env.local` included, as the SPA sees it.
@@ -28,16 +47,19 @@ const config = defineConfig(({ mode }) => {
     preview: { proxy },
     resolve: { tsconfigPaths: true },
     build: {
-      // Two pages: the app, and the phone's scanning page (src/scan/),
-      // which shares no code with it and so never loads its bundle.
+      // Three pages: the app, the phone's scanning page (src/scan/) and
+      // the donor's page (src/give/). The last two share no code with the
+      // app and so never load its bundle.
       rolldownOptions: {
         input: {
           main: fileURLToPath(new URL('index.html', import.meta.url)),
           scan: fileURLToPath(new URL('scan.html', import.meta.url)),
+          give: fileURLToPath(new URL('give.html', import.meta.url)),
         },
       },
     },
     plugins: [
+      givePage(),
       devtools(),
       tailwindcss(),
       tanstackRouter({ target: 'react', autoCodeSplitting: true }),

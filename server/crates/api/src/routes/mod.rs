@@ -12,6 +12,7 @@ pub mod fields;
 mod giftaid;
 mod giftaid_claims;
 pub mod gifts;
+pub mod give;
 pub mod gocardless;
 pub mod groups;
 mod identifiers;
