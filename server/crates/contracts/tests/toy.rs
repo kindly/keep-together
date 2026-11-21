@@ -18,7 +18,9 @@ CREATE TABLE toys (
     name TEXT NOT NULL,
     colour TEXT,
     details_version INTEGER NOT NULL DEFAULT 0,
-    emails_version INTEGER NOT NULL DEFAULT 0
+    emails_version INTEGER NOT NULL DEFAULT 0,
+    forgotten_at INTEGER,
+    forgotten_version INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE toy_emails (
     id TEXT PRIMARY KEY,
@@ -1419,4 +1421,179 @@ fn a_table_sharing_a_projections_prefix_is_not_a_projection() {
     })
     .unwrap_err();
     assert!(err.to_string().contains("not authorized"), "{err}");
+}
+
+/// `toys.forgotten`: the toy's name is cleared, from its row and from
+/// every `toys.details` revision. With `also` it tries another toy's
+/// history too, which no command may clear.
+struct Forgotten {
+    also: Option<String>,
+}
+
+impl Contract for Forgotten {
+    const NAME: &'static str = "toys.forgotten";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = "toys";
+    const COUNTER: &'static str = "forgotten_version";
+    type Payload = i64;
+    type State = Option<i64>;
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<Option<i64>, ContractError> {
+        Ok(tx
+            .read()
+            .query_row("SELECT forgotten_at FROM toys WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })?)
+    }
+
+    fn apply(
+        &self,
+        _: Option<&Option<i64>>,
+        at: &i64,
+        _: &Command,
+    ) -> Result<Option<i64>, ContractError> {
+        Ok(Some(*at))
+    }
+
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        _: Option<&Option<i64>>,
+        next: &Option<i64>,
+    ) -> Result<(), ContractError> {
+        tx.execute(
+            "UPDATE toys SET name = '', colour = NULL, forgotten_at = ?2 WHERE id = ?1",
+            params![id, next],
+        )?;
+        tx.redact_revisions::<Details>(id, &details(""))?;
+        if let Some(other) = &self.also {
+            tx.redact_revisions::<Details>(other, &details(""))?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn redacting_rewrites_one_slices_revisions_of_one_root_and_is_itself_a_revision() {
+    let (_tmp, db) = org();
+    let bear = create(&db, "Bear");
+    let fox = create(&db, "Fox");
+    write(&db, |ctx| {
+        execute(
+            ctx,
+            &Details,
+            DetailsSlice {
+                name: "Big bear".into(),
+                colour: Some("brown".into()),
+            },
+            Exec::update(&bear, Some(0), Source::Ui),
+        )?;
+        execute(
+            ctx,
+            &Emails,
+            EmailsSlice {
+                emails: vec![email(None, "bear@x.org", "home")],
+            },
+            Exec::update(&bear, Some(0), Source::Ui),
+        )
+    })
+    .unwrap();
+
+    write(&db, |ctx| {
+        execute(
+            ctx,
+            &Forgotten { also: None },
+            5000,
+            Exec::update(&bear, Some(0), Source::System),
+        )
+    })
+    .unwrap();
+
+    let revisions = |id: &str| -> Vec<(String, i64, i64, String, Option<i64>)> {
+        db.read(|r| {
+            r.prepare(
+                "SELECT contract, version, counter, payload, actor FROM revisions
+                 WHERE entity_id = ?1 ORDER BY id",
+            )?
+            .query_map([id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect()
+        })
+        .unwrap()
+    };
+    let blank = serde_json::to_string(&details("")).unwrap();
+    let bears = revisions(&bear);
+    // Both details revisions are blank; who, the counters and the order stay.
+    assert_eq!(
+        bears[0],
+        ("toys.details".into(), 2, 0, blank.clone(), Some(7))
+    );
+    assert_eq!(bears[1], ("toys.details".into(), 2, 1, blank, Some(7)));
+    // Another slice of the same root keeps its payload.
+    assert_eq!(bears[2].0, "toys.emails");
+    assert!(bears[2].3.contains("bear@x.org"));
+    // The clearing is a command of its own.
+    assert_eq!(
+        (bears[3].0.as_str(), bears[3].2, bears[3].3.as_str()),
+        ("toys.forgotten", 1, "5000")
+    );
+    assert_eq!(bears.len(), 4);
+    // Another root's revisions are untouched.
+    assert!(revisions(&fox)[0].3.contains("Fox"));
+    let name: String = db
+        .read(|r| {
+            r.query_row("SELECT name FROM toys WHERE id = ?1", [&bear], |row| {
+                row.get(0)
+            })
+        })
+        .unwrap();
+    assert_eq!(name, "");
+}
+
+#[test]
+fn a_command_cannot_redact_the_history_of_a_root_it_is_not_writing() {
+    let (_tmp, db) = org();
+    let bear = create(&db, "Bear");
+    let fox = create(&db, "Fox");
+    let err = write(&db, |ctx| {
+        execute(
+            ctx,
+            &Forgotten {
+                also: Some(fox.clone()),
+            },
+            5000,
+            Exec::update(&bear, Some(0), Source::System),
+        )
+    })
+    .unwrap_err();
+    match err {
+        ContractError::Rejected { reason, .. } => assert_eq!(reason, "redact_other_root"),
+        other => panic!("{other:?}"),
+    }
+    // The whole command left nothing: neither toy's row or history changed.
+    let payloads: Vec<String> = db
+        .read(|r| {
+            r.prepare("SELECT payload FROM revisions ORDER BY id")?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()
+        })
+        .unwrap();
+    assert_eq!(payloads.len(), 2);
+    assert!(payloads[0].contains("Bear") && payloads[1].contains("Fox"));
+    let names: Vec<String> = db
+        .read(|r| {
+            r.prepare("SELECT name FROM toys ORDER BY name")?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()
+        })
+        .unwrap();
+    assert_eq!(names, ["Bear", "Fox"]);
 }

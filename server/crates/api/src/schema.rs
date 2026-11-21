@@ -74,6 +74,13 @@ pub fn org_migrations() -> Migrations<'static> {
         // frequency widened to quarterly (a rebuild), a standing order's
         // bank reference and its missed flag
         M::up_with_hook("", rebuild_with_deferred_keys(giving::standing::MIGRATION)),
+        // 24: card gifts through Stripe (plan stripe.sv, S2): what donors
+        // typed on the donation page and what became of it, Stripe's
+        // payments and whose they are, the page's settings. New tables
+        // only: `gifts` already has `provider` and `method = 'card'`
+        M::up(giving::stripe::MIGRATION),
+        // 25: "We claim Gift Aid", a preference, on by default
+        M::up(platform::preferences::MIGRATION_CLAIMS_GIFT_AID),
     ])
 }
 

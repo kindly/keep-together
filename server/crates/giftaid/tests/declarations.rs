@@ -466,7 +466,9 @@ fn at_2330_utc_in_bst_the_uk_date_stores_and_the_day_after_is_refused() {
     assert_eq!(reason(err), "invalid");
 }
 
-/// "onScreenByDonor is refused until a donor screen exists; staff ticked stores"
+/// "onScreenByDonor is refused until a donor screen exists; staff ticked
+/// stores". The donor's own page exists now (plan stripe.sv), and the
+/// method is still refused in every payload staff send.
 #[test]
 fn on_screen_is_refused_and_staff_ticked_stores() {
     let w = world();
@@ -1364,4 +1366,209 @@ fn the_history_reads_a_v1_declaration_through_its_upcasters() {
         matches!(err, ContractError::NewerThanCode { .. }),
         "{err:?}"
     );
+}
+
+// ── the donor's own declaration (plan stripe.sv) ───────────────────────────
+
+fn donor_declared(w: &World, gift_id: &str, made_on: &str) -> giftaid::DonorDeclaration {
+    giftaid::DonorDeclaration {
+        contact_id: w.jo.clone(),
+        gift_id: gift_id.into(),
+        scope: Scope::FutureAndPast4y,
+        made_on: made_on.into(),
+        wording_version: HMRC_MODEL_WORDING_VERSION.into(),
+        first_name: " Joanna ".into(),
+        last_name: "Bloggs".into(),
+        address_line1: "12  High Street".into(),
+        postcode: "sw1a 1aa".into(),
+    }
+}
+
+fn donor_declare(
+    db: &OrgDb,
+    declared: giftaid::DonorDeclaration,
+) -> Result<giftaid::DonorDeclared, ContractError> {
+    // Nobody is signed in when a donor's payment completes.
+    contracts::transact(db, None, |ctx| {
+        let group = contracts::command_group(ctx, "stripe.donation")?;
+        giftaid::make_donor_declaration(ctx, declared, &group)
+    })
+}
+
+#[test]
+fn a_donors_declaration_is_on_screen_by_donor_dated_the_day_they_ticked_it() {
+    let w = world();
+    let gift = gift_for(&w.a, &w.jo, "2026-11-03", false);
+    let made = match donor_declare(&w.a, donor_declared(&w, &gift, "2026-11-02")).unwrap() {
+        giftaid::DonorDeclared::Made(made) => made,
+        other => panic!("{other:?}"),
+    };
+    let d = w.declaration(&made.id);
+    assert_eq!(d.payload.method, Method::OnScreenByDonor);
+    assert_eq!(d.payload.scope, Scope::FutureAndPast4y);
+    assert_eq!(d.payload.made_on, "2026-11-02");
+    assert_eq!(d.payload.gift_id.as_deref(), Some(gift.as_str()));
+    assert_eq!(d.payload.wording_version, HMRC_MODEL_WORDING_VERSION);
+    // The name and address the donor typed, tidied like any snapshot.
+    assert_eq!(
+        (
+            d.payload.first_name.as_str(),
+            d.payload.address_line1.as_str(),
+            d.payload.postcode.as_str()
+        ),
+        ("Joanna", "12 High Street", "SW1A 1AA")
+    );
+    // Made by nobody on the staff, as the system, in the caller's group.
+    assert_eq!(d.entered_by, None);
+    let (source, group): (String, String) = read(&w.a, |c| {
+        Ok(c.query_row(
+            "SELECT source, group_name FROM revisions
+             WHERE entity_id = ?1 AND contract = 'giftaid.declaration'",
+            [&made.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?)
+    });
+    assert_eq!(
+        (source.as_str(), group.as_str()),
+        ("system", "stripe.donation")
+    );
+    // It covers its gift, and it is a link in the chain like any other.
+    assert_eq!(w.covering("2026-11-03", Some(&gift)).unwrap().id, made.id);
+    assert_eq!(w.covering("2027-01-01", None).unwrap().id, made.id);
+    assert_eq!(w.panel("2026-11-18").declarations.len(), 1);
+}
+
+#[test]
+fn a_second_gift_under_an_enduring_declaration_adds_nothing() {
+    let w = world();
+    let first = gift_for(&w.a, &w.jo, "2026-11-03", false);
+    let made = match donor_declare(&w.a, donor_declared(&w, &first, "2026-11-03")).unwrap() {
+        giftaid::DonorDeclared::Made(made) => made,
+        other => panic!("{other:?}"),
+    };
+    let second = gift_for(&w.a, &w.jo, "2026-11-10", false);
+    match donor_declare(&w.a, donor_declared(&w, &second, "2026-11-10")).unwrap() {
+        giftaid::DonorDeclared::AlreadyCovered(held) => assert_eq!(held.id, made.id),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(w.panel("2026-11-18").declarations.len(), 1);
+    // A cancelled one no longer covers: the donor's next tick is a new link.
+    w.cancel("2026-11-12", None).unwrap();
+    let third = gift_for(&w.a, &w.jo, "2026-11-15", false);
+    assert!(matches!(
+        donor_declare(&w.a, donor_declared(&w, &third, "2026-11-15")).unwrap(),
+        giftaid::DonorDeclared::Made(_)
+    ));
+    assert_eq!(w.panel("2026-11-18").declarations.len(), 2);
+}
+
+#[test]
+fn a_donors_declaration_needs_the_name_house_and_postcode_they_typed() {
+    let w = world();
+    let gift = gift_for(&w.a, &w.jo, "2026-11-03", false);
+    let blank = giftaid::DonorDeclaration {
+        first_name: " ".into(),
+        last_name: String::new(),
+        address_line1: String::new(),
+        postcode: "  ".into(),
+        ..donor_declared(&w, &gift, "2026-11-03")
+    };
+    match donor_declare(&w.a, blank).unwrap_err() {
+        ContractError::Invalid(problems) => assert_eq!(
+            problems
+                .iter()
+                .map(|p| p.field.as_str())
+                .collect::<Vec<_>>(),
+            ["firstName", "lastName", "addressLine1", "postcode"]
+        ),
+        other => panic!("{other:?}"),
+    }
+    assert!(w.panel("2026-11-18").declarations.is_empty());
+}
+
+#[test]
+fn a_donors_declaration_is_refused_like_any_other() {
+    let w = world();
+    // A gift that isn't this contact's.
+    let other = contact(&w.a, person("Sam", "Jones"));
+    let theirs = gift_for(&w.a, &other, "2026-11-03", false);
+    assert_eq!(
+        reason(donor_declare(&w.a, donor_declared(&w, &theirs, "2026-11-03")).unwrap_err()),
+        "unknown_gift"
+    );
+    // A void gift.
+    let void = gift_for(&w.a, &w.jo, "2026-11-03", true);
+    assert_eq!(
+        reason(donor_declare(&w.a, donor_declared(&w, &void, "2026-11-03")).unwrap_err()),
+        "void_gift"
+    );
+    // A date after today.
+    let gift = gift_for(&w.a, &w.jo, "2026-11-03", false);
+    assert_eq!(
+        reason(donor_declare(&w.a, donor_declared(&w, &gift, "2999-01-01")).unwrap_err()),
+        "invalid"
+    );
+    assert!(w.panel("2026-11-18").declarations.is_empty());
+}
+
+#[test]
+fn the_staff_contract_refuses_on_screen_by_donor_on_every_path() {
+    let w = world();
+    let gift = gift_for(&w.a, &w.jo, "2026-11-03", false);
+    let payload = DeclarationPayload {
+        method: Method::OnScreenByDonor,
+        gift_id: Some(gift.clone()),
+        made_on: "2026-11-03".into(),
+        ..w.payload()
+    };
+    // The contract every route and restore reaches, for any source.
+    for source in [Source::Ui, Source::System, Source::Import, Source::Restore] {
+        let err = tx(&w.a, |ctx| {
+            execute(
+                ctx,
+                &giftaid::DECLARATION,
+                payload.clone(),
+                Exec::create(source),
+            )
+        })
+        .unwrap_err();
+        match err {
+            ContractError::Invalid(p) => assert_eq!(p[0].field, "method"),
+            other => panic!("{other:?}"),
+        }
+    }
+    // A donor's declaration, once made, can't be replayed through it either.
+    let made = match donor_declare(&w.a, donor_declared(&w, &gift, "2026-11-03")).unwrap() {
+        giftaid::DonorDeclared::Made(made) => made,
+        other => panic!("{other:?}"),
+    };
+    let revision: i64 = read(&w.a, |c| {
+        Ok(c.query_row(
+            "SELECT id FROM revisions WHERE entity_id = ?1 AND contract = 'giftaid.declaration'",
+            [&made.id],
+            |r| r.get(0),
+        )?)
+    });
+    assert!(tx(&w.a, |ctx| restore(ctx, &REGISTRY, revision, None)).is_err());
+    assert_eq!(w.panel("2026-11-18").declarations.len(), 1);
+}
+
+#[test]
+fn a_donors_declaration_stays_in_its_own_organisation() {
+    let w = world();
+    let gift = gift_for(&w.a, &w.jo, "2026-11-03", false);
+    donor_declare(&w.a, donor_declared(&w, &gift, "2026-11-03")).unwrap();
+    // B has no such contact or gift: refused, and nothing is written there.
+    assert_eq!(
+        reason(donor_declare(&w.b, donor_declared(&w, &gift, "2026-11-03")).unwrap_err()),
+        "unknown_gift"
+    );
+    let rows: i64 = read(&w.b, |c| {
+        Ok(
+            c.query_row("SELECT count(*) FROM gift_aid_declarations", [], |r| {
+                r.get(0)
+            })?,
+        )
+    });
+    assert_eq!(rows, 0);
 }

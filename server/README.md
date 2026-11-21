@@ -401,7 +401,10 @@ control-plane crate (`store::PlatformSchema`, versions in
 `auth` functions so several compose into one.
 
 Preferences are org data: `tenant_preferences` (one row, created by the
-first save) in the org file, three contracts with a counter each. Routes
+first save) in the org file, four contracts with a counter each: the
+three "staff can manage" switches and `tenantPreferences.claimsGiftAid`
+("We claim Gift Aid", on by default; org schema step 25;
+`platform::preferences::claims_gift_aid`). Routes
 check a list manager with `platform::may_manage_list(conn, role, kind)`.
 Tenant settings are AES-256-GCM under `KEEP_SETTINGS_KEY` (32 bytes,
 base64), the name as associated data; only ciphertext reaches the file
@@ -413,6 +416,7 @@ and its revisions.
 | `POST /api/groups/{slug}/opened` | `OpenedResult`; not a member: `404` |
 | `GET /api/t/{slug}/preferences` | `Preferences` |
 | `POST /api/t/{slug}/preferences/{identifierTypes\|sourceCodes\|fields}` | `{expected?, staffCanManage}` → `Executed`; admin only; `409 stale` |
+| `POST /api/t/{slug}/preferences/claimsGiftAid` | `{expected?, on}` → `ClaimsGiftAidSaved {id, counter, claimsGiftAid: {on, version}}`; admin only; `409 stale`. Off is for a group that isn't a charity: its donation page offers no Gift Aid and the staff app hides it (plan stripe.sv, S4 and S5); the server's Gift Aid rules don't change |
 
 The tenant middleware refuses any non-`GET` from a viewer before the
 handler runs; `api/tests/roles.rs` reads the route table from
@@ -547,6 +551,68 @@ gift: a confirmed one keeps its gift, which takes the payment's status
 (a staff void stays void); one never confirmed gets a new gift with its
 status, to its regular gift's code; a D2 gift a retry superseded keeps
 `provider` with no payment id (void, out of the unique pair).
+
+## Card gifts through Stripe: the org model
+
+Plan `factory/plans/stripe.sv`, step S2 (the Stripe client, webhooks,
+processing and pages are later steps). Org schema step 24, all in
+`giving::stripe`; nothing in it calls Stripe or names a Stripe account
+(rule 6: routing by account id and page slug is the api's).
+
+| Contract | Root, counter | Slice |
+|---|---|---|
+| `giving.donationSubmission` | `donation_submissions.version` | what the donor typed on the donation page: amount (pence), name, email, Gift Aid ticked with its scope, wording version, house name or number and postcode, the page's source code; when is the command's time. Create-only: it is the evidence |
+| `giving.donationSubmissionOutcome` | `donation_submissions.outcome_version` | the Checkout session (set once), `started → paid / expired` (paid is final and names the payment that came from it; an expired one may still turn out paid), personal data cleared on |
+| `giving.stripePayment` | `stripe_payments.version` | Stripe's raw record: PaymentIntent id (fixed), the submission it came from (set once), amount, currency (`gbp` or it is refused: never recorded), status, paid on, refunded amount, dispute state, reason |
+| `giving.stripePaymentMatch` | `stripe_payments.match_version` | whose it is: a contact and that contact's gift, together, the gift for the payment's whole life; or unmatched with why (`ambiguous`, `name_differs`). The staff flags: `firstNameTyped` (the donor's first name isn't the contact's) and `partialRefundClaimed` |
+| `giving.donationPage` | `donation_page.version` (one row) | three button amounts, minimum, maximum (pence), the source code page gifts get |
+
+None of the first four can be restored. Rules, each with a named test
+(`giving/src/stripe.rs`, `giving/tests/stripe.rs`):
+
+- **Never optimistic.** `stripe::submit` stores a submission and makes
+  nothing else; `record_payment`, `mark_paid` and `set_match` make no
+  gift either. The command that turns a paid submission into a contact,
+  a gift, a declaration and a match spans modules, so it is the api's
+  (S3), one transaction under one command group. `stripe::gift_status`
+  says which status a payment's gift has: only `succeeded` is
+  `completed`; a full refund `refunded`; a partial one stays `completed`
+  at `kept_amount`; a dispute open or lost `charged_back`, won
+  `completed`.
+- **The page.** Defaults £10, £25, £50, £2 to £1,000. A group sets its
+  own, never a minimum under £1 or a maximum over £1,000
+  (`giving::rules::ONE_OFF_MAX`), the three buttons different and inside
+  the range. No source code, or one archived since: the page takes no
+  donations (`422 rejected not_taking_donations`). An amount outside
+  the group's range is `422 invalid`. A ticked submission when the group
+  doesn't claim Gift Aid (the preference, passed in by the api) is
+  `422 rejected gift_aid_not_offered`.
+- **Matching** (`stripe::match_donor`, pure): nobody has the donor's
+  email → a new contact; exactly one live contact has it and the last
+  name agrees, ignoring case, accents, spacing and punctuation
+  (`name_key`) → linked, whatever the first name, which is carried for
+  staff when it differs; more than one contact or a truncated lookup →
+  `ambiguous`; another last name → `name_differs`.
+- **Retention.** `stripe::clear_unpaid` clears an unpaid submission's
+  name, email and address 30 days after it was made: from its row and,
+  through `WriteTx::redact_revisions` (ADR 0013's erasure seam), from
+  its revisions. The row, its amount and what was ticked stay; the
+  clearing is a revision of the outcome slice. A paid submission is
+  never cleared, nor one that a payment which succeeded names (a
+  payment waiting in the staff queue, not marked paid yet:
+  `422 rejected paid_for`). `redact_revisions` works only on the root
+  the command is writing (`redact_other_root` otherwise). A submission
+  becomes `paid` only by a payment that has succeeded
+  (`payment_not_succeeded`).
+
+**The donor's declaration.** `giftaid::make_donor_declaration` is the
+one way an `onScreenByDonor` declaration is recorded: `giftaid.declaration`
+through a contract value only that function holds, as the system, in the
+caller's command group, dated the day the donor ticked it, with the name
+and address they typed (none may be blank). Every payload staff send,
+and every restore, goes through `giftaid::DECLARATION`, which still
+refuses the method. A gift a declaration already covers adds nothing to
+the chain (rule 1).
 
 ## Bank transfers (ADR 0027)
 

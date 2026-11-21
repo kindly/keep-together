@@ -5,7 +5,8 @@
  * conditions aren't met yet: an oral one only takes effect once the
  * donor is sent a written record (3.10.1), and staff ticking a box is
  * not "on screen by the donor". `staffTickedNoEvidence` is the honest
- * default the gift form's tick records. `onScreenByDonor` is refused
- * until a donor-facing screen exists.
+ * default the gift form's tick records. `onScreenByDonor` is the donor's
+ * own, on the donation page: only `giftaid::make_donor_declaration`
+ * records it, and it is refused in any payload staff send.
  */
 export type DeclarationMethod = "staffTickedNoEvidence" | "paperForm" | "onScreenByDonor" | "oral";

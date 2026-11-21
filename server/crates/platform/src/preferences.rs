@@ -34,6 +34,14 @@ CREATE TABLE tenant_preferences (
 ) STRICT;
 ";
 
+/// Org schema step: "We claim Gift Aid" (plan stripe.sv), on by default,
+/// so nothing changes for a group that never touches it. Its own counter.
+pub const MIGRATION_CLAIMS_GIFT_AID: &str = "
+ALTER TABLE tenant_preferences ADD COLUMN claims_gift_aid INTEGER NOT NULL DEFAULT 1
+    CHECK (claims_gift_aid IN (0, 1));
+ALTER TABLE tenant_preferences ADD COLUMN claims_gift_aid_version INTEGER NOT NULL DEFAULT 0;
+";
+
 const ENTITY: &str = "tenant_preferences";
 
 /// The lists an organisation's staff may be allowed to manage, one switch
@@ -106,7 +114,19 @@ pub struct Switch {
     pub version: Option<i64>,
 }
 
-/// Every switch, in `ListKind` order of fields.
+/// "We claim Gift Aid" as the Settings page shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ClaimsGiftAid {
+    pub on: bool,
+    /// The counter its save sends as `expected`; `null` before any
+    /// preference was saved (the save then sends none).
+    #[ts(type = "number | null")]
+    pub version: Option<i64>,
+}
+
+/// Every switch, in `ListKind` order of fields, then `claimsGiftAid`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -114,6 +134,7 @@ pub struct Preferences {
     pub identifier_types: Switch,
     pub source_codes: Switch,
     pub fields: Switch,
+    pub claims_gift_aid: ClaimsGiftAid,
 }
 
 impl Preferences {
@@ -141,7 +162,8 @@ pub fn read(conn: &Connection) -> rusqlite::Result<Preferences> {
         .query_row(
             "SELECT staff_can_manage_identifier_types, identifier_types_version,
                     staff_can_manage_source_codes, source_codes_version,
-                    staff_can_manage_fields, fields_version
+                    staff_can_manage_fields, fields_version,
+                    claims_gift_aid, claims_gift_aid_version
              FROM tenant_preferences",
             [],
             |r| {
@@ -149,6 +171,7 @@ pub fn read(conn: &Connection) -> rusqlite::Result<Preferences> {
                     (r.get::<_, bool>(0)?, r.get::<_, i64>(1)?),
                     (r.get(2)?, r.get(3)?),
                     (r.get(4)?, r.get(5)?),
+                    (r.get(6)?, r.get(7)?),
                 ])
             },
         )
@@ -167,7 +190,30 @@ pub fn read(conn: &Connection) -> rusqlite::Result<Preferences> {
         identifier_types: switch(0),
         source_codes: switch(1),
         fields: switch(2),
+        claims_gift_aid: match row {
+            Some(row) => ClaimsGiftAid {
+                on: row[3].0,
+                version: Some(row[3].1),
+            },
+            None => ClaimsGiftAid {
+                on: true,
+                version: None,
+            },
+        },
     })
+}
+
+/// Whether the organisation claims Gift Aid (no row: yes). Off for a
+/// group that isn't a charity: its donation page offers no Gift Aid and
+/// refuses a ticked submission, and the staff app hides Gift Aid. The
+/// server's Gift Aid rules are the same either way.
+pub fn claims_gift_aid(conn: &Connection) -> rusqlite::Result<bool> {
+    Ok(conn
+        .query_row(&format!("SELECT claims_gift_aid FROM {ENTITY}"), [], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .unwrap_or(true))
 }
 
 fn row_id(conn: &Connection) -> rusqlite::Result<Option<String>> {
@@ -223,6 +269,93 @@ pub fn set(
             opts,
         ),
     }
+}
+
+/// `tenantPreferences.claimsGiftAid`: payload = state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ClaimsGiftAidSwitch {
+    pub claims_gift_aid: bool,
+}
+
+pub struct ClaimsGiftAidContract;
+pub static CLAIMS_GIFT_AID: ClaimsGiftAidContract = ClaimsGiftAidContract;
+
+impl Contract for ClaimsGiftAidContract {
+    const NAME: &'static str = "tenantPreferences.claimsGiftAid";
+    const VERSION: u32 = 1;
+    const ENTITY: &'static str = ENTITY;
+    const COUNTER: &'static str = "claims_gift_aid_version";
+    type Payload = ClaimsGiftAidSwitch;
+    type State = ClaimsGiftAidSwitch;
+
+    fn load(&self, tx: &OrgTx, id: &str) -> Result<ClaimsGiftAidSwitch, ContractError> {
+        Ok(tx.read().query_row(
+            &format!("SELECT claims_gift_aid FROM {ENTITY} WHERE id = ?1"),
+            [id],
+            |r| {
+                Ok(ClaimsGiftAidSwitch {
+                    claims_gift_aid: r.get(0)?,
+                })
+            },
+        )?)
+    }
+
+    fn apply(
+        &self,
+        _: Option<&ClaimsGiftAidSwitch>,
+        p: &ClaimsGiftAidSwitch,
+        _: &Command,
+    ) -> Result<ClaimsGiftAidSwitch, ContractError> {
+        Ok(p.clone())
+    }
+
+    fn write(
+        &self,
+        tx: &WriteTx,
+        id: &str,
+        before: Option<&ClaimsGiftAidSwitch>,
+        next: &ClaimsGiftAidSwitch,
+    ) -> Result<(), ContractError> {
+        if before.is_none() {
+            tx.execute(
+                &format!("INSERT INTO {ENTITY} (id, claims_gift_aid) VALUES (?1, ?2)"),
+                rusqlite::params![id, next.claims_gift_aid],
+            )?;
+        } else {
+            tx.execute(
+                &format!("UPDATE {ENTITY} SET claims_gift_aid = ?2 WHERE id = ?1"),
+                rusqlite::params![id, next.claims_gift_aid],
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Turn "We claim Gift Aid" on or off (the route checks admin).
+/// `expected` as [`set`]'s: the switch's counter as last read, `None` if
+/// the caller saw no row.
+pub fn set_claims_gift_aid(
+    ctx: &Ctx,
+    on: bool,
+    expected: Option<i64>,
+    source: Source,
+) -> Result<Executed, ContractError> {
+    let id = row_id(ctx.tx.read())?;
+    let opts = match (&id, expected) {
+        (None, _) => Exec::create(source),
+        (Some(id), Some(expected)) => Exec::update(id, Some(expected), source),
+        (Some(id), None) => Exec::update(id, Some(-1), source),
+    };
+    execute(
+        ctx,
+        &CLAIMS_GIFT_AID,
+        ClaimsGiftAidSwitch {
+            claims_gift_aid: on,
+        },
+        opts,
+    )
 }
 
 /// One contract per switch: payload = state = `{staffCanManage<List>}`.

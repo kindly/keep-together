@@ -261,12 +261,18 @@ impl OrgTx<'_> {
 
 /// The writable connection a contract's `write` gets. Only [`execute`]
 /// constructs one.
-pub struct WriteTx<'a>(&'a Connection);
+pub struct WriteTx<'a> {
+    conn: &'a Connection,
+    /// The root the command is writing: what [`Self::redact_revisions`]
+    /// is held to.
+    entity: &'static str,
+    id: &'a str,
+}
 
 impl Deref for WriteTx<'_> {
     type Target = Connection;
     fn deref(&self) -> &Connection {
-        self.0
+        self.conn
     }
 }
 
@@ -276,13 +282,13 @@ impl WriteTx<'_> {
     /// `first`. For system-owned numbers a create hands out.
     pub fn take_sequence(&self, table: &str, first: i64) -> rusqlite::Result<i64> {
         let next: Option<i64> = self
-            .0
+            .conn
             .query_row(&format!("SELECT next FROM {table} WHERE id = 1"), [], |r| {
                 r.get(0)
             })
             .optional()?;
         let value = next.unwrap_or(first);
-        self.0.execute(
+        self.conn.execute(
             &format!(
                 "INSERT INTO {table} (id, next) VALUES (1, ?1)
                  ON CONFLICT (id) DO UPDATE SET next = excluded.next"
@@ -290,6 +296,53 @@ impl WriteTx<'_> {
             [value + 1],
         )?;
         Ok(value)
+    }
+
+    /// Clear personal data from history (ADR 0013: erasure must scrub an
+    /// entity's revision rows as well as its row). Every revision contract
+    /// `C` wrote for root `id` has its stored payload replaced by
+    /// `payload`, the slice with its personal fields blanked, at `C`'s
+    /// current version; who, when, the counters and the groups stay. The
+    /// answer is how many revisions it rewrote.
+    ///
+    /// It is for a root's own personal fields and nothing else:
+    ///
+    /// - Only a contract's `write` can call it, so the clearing is itself
+    ///   a command with a counter and a revision that says it happened.
+    /// - Only on the root that command is writing: `C` is a contract of
+    ///   the same entity (another slice of it, or the caller's own) and
+    ///   `id` is the command's id. Anything else is refused
+    ///   (`redact_other_root`) and nothing is rewritten.
+    /// - `payload` is `C`'s slice as it stood with only the personal
+    ///   fields blanked: what isn't personal (amounts, dates, what was
+    ///   ticked) stays as history recorded it. That part is the caller's
+    ///   to get right; nothing here can check it.
+    /// - The caller blanks the row's own columns in the same `write`.
+    /// - A redacted revision restores as its blank payload, so `C` must
+    ///   refuse a restore (or be create-only, as its one caller is:
+    ///   `giving.donationSubmission`, cleared by its outcome slice).
+    pub fn redact_revisions<C: Contract>(
+        &self,
+        id: &str,
+        payload: &C::Payload,
+    ) -> Result<usize, ContractError> {
+        if C::ENTITY != self.entity || id != self.id {
+            return Err(ContractError::rejected(
+                "redact_other_root",
+                "History is cleared only on the root a command is writing",
+            ));
+        }
+        Ok(self.conn.execute(
+            "UPDATE revisions SET payload = ?1, version = ?2
+             WHERE entity = ?3 AND entity_id = ?4 AND contract = ?5",
+            params![
+                serde_json::to_string(payload)?,
+                C::VERSION,
+                C::ENTITY,
+                id,
+                C::NAME
+            ],
+        )?)
     }
 }
 
@@ -609,7 +662,12 @@ pub fn execute<C: Contract>(
     let next = contract.apply(before.as_ref(), &payload, &command)?;
     let seq = tx.writes(|conn| {
         atomically(conn, || {
-            contract.write(&WriteTx(conn), &id, before.as_ref(), &next)?;
+            let write = WriteTx {
+                conn,
+                entity: C::ENTITY,
+                id: &id,
+            };
+            contract.write(&write, &id, before.as_ref(), &next)?;
             let bumped = conn.execute(
                 &format!("UPDATE {} SET {} = ?1 WHERE id = ?2", C::ENTITY, C::COUNTER),
                 params![counter, id],
