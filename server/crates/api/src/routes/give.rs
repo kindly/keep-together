@@ -35,16 +35,24 @@
 //! showed any other wording is refused (`422 rejected wording_changed`),
 //! because the submission is the evidence of what the donor agreed to.
 //!
-//! **One donation per `id`.** `id` (32 hex) is the page's key for the
-//! attempt. A repeat while the first is still being answered waits for
-//! it; once an attempt has its Checkout Session, a repeat is `409
-//! duplicate` and the page starts another under a new id. So a double
-//! press is one submission and one session.
+//! **One donation per `id`, and it is what was on screen.** `id` (32 hex)
+//! is the page's key for the attempt. A repeat while the first is still
+//! being answered waits for it. A repeat is the same attempt only if it
+//! says exactly what the first said and that attempt has no Checkout
+//! Session yet (Stripe failed last time): then it carries on. Anything
+//! else is `409 duplicate` and the page starts another under a new id:
+//! an attempt that has its session, one that is over, and one whose body
+//! differs from what is stored. A stored submission is never replayed for
+//! a body that says something else, so the declaration, name, address and
+//! email recorded are the ones the donor pressed Give on. An attempt whose
+//! email Stripe refused is spent (marked `expired`): the corrected one is
+//! a new submission.
 //!
 //! **Rate limits** ([`Limits`], in memory like auth's): pages per
 //! address, donations per address, and donations per group. Over any:
-//! `429 rate_limited`. A group's limit is only reached for a page that
-//! exists, so it says nothing more about a slug than the page does.
+//! `429 rate_limited`. A group's limit is spent only for a page that
+//! exists (connected *and* published), so it says nothing more about a
+//! slug than the page does.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -57,7 +65,9 @@ use axum::http::HeaderValue;
 use axum::http::header::CACHE_CONTROL;
 use axum::response::{IntoResponse, Response};
 use contracts::Problem;
-use giving::stripe::{DeclarationScope, DonorForm, SubmissionGiftAid, SubmissionStatus};
+use giving::stripe::{
+    DeclarationScope, DonationSubmissionPayload, DonorForm, SubmissionGiftAid, SubmissionStatus,
+};
 use serde::{Deserialize, Serialize};
 use store::{OrgDb, Store};
 use ts_rs::TS;
@@ -116,21 +126,42 @@ impl Give {
         }
     }
 
-    fn turn(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.in_flight
+    /// `key`'s lock, to be taken in turn. Dropping the [`Turn`] forgets
+    /// the lock unless another request holds it too, whether the request
+    /// finished or was dropped part way (the client went away).
+    fn turn(self: &Arc<Self>, key: String) -> Turn {
+        let lock = self
+            .in_flight
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .entry(key.to_owned())
+            .entry(key.clone())
             .or_default()
-            .clone()
+            .clone();
+        Turn {
+            give: self.clone(),
+            key,
+            lock,
+        }
     }
+}
 
-    /// Forget `key`'s lock unless another request is waiting on it.
-    fn done(&self, key: &str, turn: Arc<tokio::sync::Mutex<()>>) {
-        let mut map = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
-        // The map's and ours.
-        if Arc::strong_count(&turn) <= 2 {
-            map.remove(key);
+/// One request's hold on its attempt's lock ([`Give::turn`]).
+struct Turn {
+    give: Arc<Give>,
+    key: String,
+    lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        let mut map = self
+            .give
+            .in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // The map's and ours: nobody else is waiting.
+        if Arc::strong_count(&self.lock) <= 2 {
+            map.remove(&self.key);
         }
     }
 }
@@ -262,6 +293,19 @@ fn group(store: &Store, slug: &str) -> Result<Group, ApiError> {
     })
 }
 
+/// [`group`], and its page published (a live source code): the page
+/// exists. Blocking.
+fn published(store: &Store, slug: &str) -> Result<Group, ApiError> {
+    let group = group(store, slug)?;
+    let taking = group
+        .db
+        .read(|r| Ok::<_, rusqlite::Error>(giving::stripe::page(r)?.taking_donations))?;
+    if !taking {
+        return Err(ApiError::NotFound);
+    }
+    Ok(group)
+}
+
 fn no_store(mut res: Response) -> Response {
     res.headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -341,7 +385,7 @@ fn checked(d: GiveDonation) -> Result<(String, DonorForm), ApiError> {
             if g.wording_version.trim() != giftaid::HMRC_MODEL_WORDING_VERSION {
                 return Err(ApiError::Rejected {
                     reason: "wording_changed".into(),
-                    message: "This page is out of date: reload it and try again".into(),
+                    message: "This page is out of date.".into(),
                 });
             }
             Some(SubmissionGiftAid {
@@ -377,19 +421,19 @@ pub(crate) async fn donate(
     let stripe = state.stripe.clone().ok_or(ApiError::NotFound)?;
     let (id, form) = checked(donation)?;
     let store = state.store.clone();
-    let group = Arc::new(blocking(move || group(&store, &slug)).await?);
+    // The whole of "a page exists" before the group's limit is spent:
+    // a connected group that hasn't published reads as an unknown slug.
+    let group = Arc::new(blocking(move || published(&store, &slug)).await?);
     if !allow(&state.give.limits.donate_group, group.tenant.id.as_str()) {
         return Err(ApiError::RateLimited);
     }
 
-    let key = format!("{}/{id}", group.tenant.id.as_str());
-    let turn = state.give.turn(&key);
-    let out = {
-        let _mine = turn.lock().await;
-        start(&stripe, &group, &id, form).await
-    };
-    state.give.done(&key, turn);
-    Ok(no_store(Json(out?).into_response()))
+    let turn = state
+        .give
+        .turn(format!("{}/{id}", group.tenant.id.as_str()));
+    let _mine = turn.lock.lock().await;
+    let out = start(&stripe, &group, &id, form).await?;
+    Ok(no_store(Json(out).into_response()))
 }
 
 /// One attempt, alone: the submission stored, its Checkout Session made
@@ -408,6 +452,23 @@ async fn start(
             // same 404 as every other reason (`submit` would say why).
             if !giving::stripe::page(conn)?.taking_donations {
                 return Err(ApiError::NotFound);
+            }
+            // A repeat of an attempt on record is that attempt only if
+            // it says what the record says: what the donor typed is
+            // never replaced by, or answered for, something else.
+            if let Some(held) = giving::stripe::submission(conn, &sid)? {
+                let again = giving::stripe::prepare_submission(DonationSubmissionPayload {
+                    amount: form.amount,
+                    first_name: form.first_name,
+                    last_name: form.last_name,
+                    email: form.email,
+                    gift_aid: form.gift_aid,
+                    source_code_id: held.typed.source_code_id.clone(),
+                });
+                return match again {
+                    Ok(again) if again == held.typed => Ok(held),
+                    _ => Err(ApiError::Duplicate { id: held.id }),
+                };
             }
             let claims = platform::preferences::claims_gift_aid(conn)?;
             Ok(giving::stripe::submit(ctx, &sid, form, claims)?)
@@ -442,6 +503,13 @@ async fn start(
     let session = match made {
         Ok(session) => session,
         Err(e) if checkout::email_refused(&e) => {
+            // Stripe will never take this attempt as typed: it is spent,
+            // and the corrected address is a new one.
+            let (g, sid) = (group.clone(), id.to_owned());
+            blocking(move || {
+                contracts::transact(&g.db, None, |ctx| giving::stripe::mark_expired(ctx, &sid))
+            })
+            .await?;
             return Err(invalid("email", "Enter your email address"));
         }
         Err(e) => {
@@ -539,13 +607,14 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_is_forgotten_when_nobody_waits() {
-        let give = Give::default();
-        let first = give.turn("a/1");
-        let second = give.turn("a/1");
-        give.done("a/1", first);
+    fn a_lock_is_forgotten_when_nobody_holds_it_however_the_request_ended() {
+        let give = Arc::new(Give::default());
+        let first = give.turn("a/1".into());
+        let second = give.turn("a/1".into());
+        drop(first);
         assert_eq!(give.in_flight.lock().unwrap().len(), 1, "one still waits");
-        give.done("a/1", second);
+        // Dropped without ever taking its turn: a request that went away.
+        drop(second);
         assert!(give.in_flight.lock().unwrap().is_empty());
     }
 }

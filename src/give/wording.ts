@@ -17,30 +17,39 @@
 export interface Wording {
   /** Above the tick box. */
   heading: string
-  intro: string
+  /** What Gift Aid is, and why the address is asked. */
+  intro: Array<string>
   /** The tick box's label: the declaration itself. */
   declaration: (amount: string, charity: string) => string
   /** The tax statement the donor agrees to with it (HMRC 3.6.2). */
   taxpayer: string
-  /** Why the address is asked. */
-  address: string
-  /** What to tell the charity later. */
-  notify: string
+  /** What to tell the charity later: a lead-in and its list. */
+  notify: { lead: string; items: Array<string> }
+  /** For donors who pay tax above the basic rate. */
+  higherRate: string
 }
 
 const WORDINGS: Record<string, Wording | undefined> = {
   'hmrc-2016-04': {
     heading: 'Boost your donation by 25p of Gift Aid for every £1 you donate',
-    intro:
+    intro: [
       'Gift Aid is reclaimed by the charity from the tax you pay for the current tax year.',
+      'Your address is needed to identify you as a current UK taxpayer.',
+    ],
     declaration: (amount, charity) =>
       `I want to Gift Aid my donation of ${amount} and any donations I make in the future or have made in the past 4 years to ${charity}.`,
     taxpayer:
       'I am a UK taxpayer and understand that if I pay less Income Tax and/or Capital Gains Tax than the amount of Gift Aid claimed on all my donations in that tax year it is my responsibility to pay any difference.',
-    address:
-      'Your home address is needed to identify you as a current UK taxpayer.',
-    notify:
-      'Please tell the charity if you want to cancel this declaration, change your name or home address, or no longer pay sufficient tax on your income and/or capital gains.',
+    notify: {
+      lead: 'Please notify the charity if you:',
+      items: [
+        'want to cancel this declaration',
+        'change your name or home address',
+        'no longer pay sufficient tax on your income and/or capital gains',
+      ],
+    },
+    higherRate:
+      'If you pay Income Tax at the higher or additional rate and want to receive the additional tax relief due to you, you must include all your Gift Aid donations on your Self-Assessment tax return or ask HM Revenue and Customs to adjust your tax code.',
   },
 }
 

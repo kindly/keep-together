@@ -240,9 +240,19 @@ input[aria-invalid='true'] {
   accent-color: var(--accent);
 }
 
-.boost {
-  display: block;
-  margin-top: 4px;
+.agreed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.after ul {
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+}
+
+.after > :last-child {
+  margin-bottom: 0;
 }
 
 /* ── sending ── */

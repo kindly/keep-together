@@ -1239,7 +1239,10 @@ group's three amounts and "other", takes a first and last name and an
 email, offers HMRC's enduring Gift Aid declaration with the donor's house
 name or number and postcode, sends it all once, and goes to Stripe
 Checkout for the card. `/give/{slug}/thanks` is where Stripe sends the
-donor back: it reads the group's name, writes nothing and proves nothing.
+donor back: it reads the group's name (and thanks the donor without it
+if that read fails), writes nothing and proves nothing. The Gift Aid
+box has HMRC's declaration and tax statement beside it from the start;
+only the address fields wait for the tick.
 
 Two public routes, outside the tenant prefix (`api::routes::give`,
 registered in `lib.rs`): nobody is signed in, and the slug reaches one
@@ -1274,12 +1277,18 @@ organisation's file.
   (Stripe is sent it for its receipt and refuses anything less, so here,
   unlike on a contact, it is unstorable); ticked without a house name or
   number or a postcode.
-- **One donation per `id`**, the page's key for the attempt. Two
-  requests for one id take turns (in process); an attempt that already
-  has its Checkout Session, or is paid, expired or cleared, is `409
-  duplicate`, and the page starts another under a new id. Stripe failing
-  is `503 stripe_unavailable` with the submission kept and no session;
-  the same id carries on.
+- **One donation per `id`, and it is what was on screen.** `id` is the
+  page's key for the attempt; two requests for one id take turns (in
+  process). A repeat is the same attempt only if its body, tidied as it
+  would be stored, equals the stored submission and that submission has
+  no Checkout Session yet (Stripe failed: `503 stripe_unavailable`, the
+  submission kept): then it carries on. Anything else is `409
+  duplicate`, and the page starts another under a new id: an attempt
+  that has its session, one paid, expired or cleared, and one whose body
+  differs. So a donor who changes the form after a failed send (unticks
+  Gift Aid, corrects an address or email) is never answered with what
+  they typed before. An attempt whose email Stripe refused (`422 invalid
+  email`) is spent: marked `expired`.
 - **The Checkout Session** (`api::stripe::checkout`): on the group's
   account (`Stripe-Account`: a direct charge), `mode=payment`,
   `submit_type=donate`, cards only, one line "Donation to <group>" in
@@ -1293,8 +1302,9 @@ organisation's file.
   by `KEEP_CLIENT_IP_HEADER`'s address): the page 60 then one a second
   per address; donations 20 then one every 15 s per address, and 60 then
   one every 5 s per group. Over: `429 rate_limited`, before anything is
-  stored or Stripe is asked. The group's limit is only reached for a
-  page that exists.
+  stored or Stripe is asked. The group's limit is spent only for a page
+  that exists (connected and published), so it never tells a slug with
+  no page from an unknown one.
 - Non-`GET`s pass the same origin check as every `/api` write, so
   another site can't post the form.
 

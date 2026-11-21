@@ -197,14 +197,21 @@ test('Gift Aid: the declaration shown, the address asked, the wording named', as
     'I want to Gift Aid my donation of £25 and any donations I make in the future or have made in the past 4 years to Riverside Food Bank.',
   )
   expect(declaration()).toContain('Adds £6.25')
-  // The address is asked only once Gift Aid is ticked.
+  // What the donor agrees to is beside the box before it is ticked: the
+  // declaration and the tax statement, with HMRC's lines around them.
+  expect(declaration()).toContain('I am a UK taxpayer and understand')
+  const all = $<HTMLElement>('.giftaid').textContent
+  expect(all).toContain('Your address is needed to identify you')
+  expect(all).toContain('Please notify the charity if you:')
+  expect(all).toContain('higher or additional rate')
+  // Only the address fields wait for the tick.
   expect($<HTMLElement>('.home').hidden).toBe(true)
+  expect($<HTMLElement>('.home').textContent).not.toContain('taxpayer')
   pick($('input[name=amount][value="1000"]'))
   expect(declaration()).toContain('my donation of £10 ')
 
   pick($('#give-giftaid'))
   expect($<HTMLElement>('.home').hidden).toBe(false)
-  expect($<HTMLElement>('.home').textContent).toContain('I am a UK taxpayer')
   fillWho()
   await submit()
   expect($<HTMLElement>('#give-addressLine1-error').textContent).toBe(
@@ -275,10 +282,19 @@ test('the server’s refusals land on their fields', async () => {
       422,
       {
         kind: 'rejected',
-        reason: 'wording_changed',
-        message: 'This page is out of date',
+        reason: 'gift_aid_not_offered',
+        message: 'This group doesn’t claim Gift Aid',
       },
-      'This page is out of date',
+      'This group doesn’t claim Gift Aid. Reload this page and try again.',
+    ],
+    [
+      422,
+      {
+        kind: 'rejected',
+        reason: 'wording_changed',
+        message: 'This page is out of date.',
+      },
+      'This page is out of date. Reload this page and try again.',
     ],
   ] as const) {
     fetch.mockReturnValueOnce(json(status, body))
@@ -343,6 +359,23 @@ test('the thank-you page asks for the group’s name and sends nothing', async (
   expect(fetch).toHaveBeenCalledTimes(1)
   expect(fetch.mock.calls[0][0]).toBe('/api/give/riverside')
   expect(fetch.mock.calls[0][1]?.method).toBeUndefined()
+})
+
+test('a donor who has paid is thanked even when the page cannot be read', async () => {
+  for (const answer of [
+    () => json(404, { kind: 'not_found' }),
+    () => json(429, { kind: 'rate_limited' }),
+    () => Promise.reject(new TypeError('offline')),
+  ]) {
+    vi.resetModules()
+    document.body.innerHTML = '<main id="give"></main>'
+    fetch.mockImplementationOnce(answer)
+    const screen = await open('/give/riverside/thanks')
+    expect(screen.dataset.screen).toBe('thanks')
+    expect(screen.textContent).toContain('Thank you for your gift.')
+    expect(screen.textContent).not.toContain('isn’t taking donations')
+    expect(document.querySelector('a')).toBeNull()
+  }
 })
 
 test('nothing the donor types is kept in the browser', async () => {

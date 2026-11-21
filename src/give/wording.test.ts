@@ -14,6 +14,16 @@ test('the page has the text of the wording the server records', () => {
   expect(w.taxpayer).toBe(
     'I am a UK taxpayer and understand that if I pay less Income Tax and/or Capital Gains Tax than the amount of Gift Aid claimed on all my donations in that tax year it is my responsibility to pay any difference.',
   )
+  // The model's own lines around them.
+  expect(w.intro).toEqual([
+    'Gift Aid is reclaimed by the charity from the tax you pay for the current tax year.',
+    'Your address is needed to identify you as a current UK taxpayer.',
+  ])
+  expect(w.notify.lead).toBe('Please notify the charity if you:')
+  expect(w.notify.items).toHaveLength(3)
+  expect(w.higherRate).toBe(
+    'If you pay Income Tax at the higher or additional rate and want to receive the additional tax relief due to you, you must include all your Gift Aid donations on your Self-Assessment tax return or ask HM Revenue and Customs to adjust your tax code.',
+  )
 })
 
 test('a wording the page has no text for is not offered', () => {

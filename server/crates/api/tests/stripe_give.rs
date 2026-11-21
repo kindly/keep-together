@@ -1128,3 +1128,224 @@ async fn a_page_on_another_site_cannot_post_a_donation() {
     assert_eq!(send(&t, req).await.0, StatusCode::FORBIDDEN);
     assert_eq!(count(&org(&t, &t.w.alpha.id), "donation_submissions"), 0);
 }
+
+// ── the review's H1: what is recorded is what was on screen ───────────────
+
+const ID3: &str = "000000000000000000000000000000d3";
+
+/// Stripe fails once for `first` under `id` (so it is stored with no
+/// session); then the donor changes the form and presses again: `changed`
+/// under the same id is refused, and under a new id it is what is stored.
+async fn changed_after_a_503(first: Value, change: impl Fn(&mut Value)) -> (T, Arc<OrgDb>) {
+    let t = setup().await;
+    alpha_ready(&t).await;
+    let alpha = org(&t, &t.w.alpha.id);
+    t.outage(1, 503, "checkout").await;
+    assert_eq!(
+        give(&t, "alpha", &first).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let before = submission(&alpha, ID1);
+
+    let mut changed = first.clone();
+    change(&mut changed);
+    let (s, out) = give(&t, "alpha", &changed).await;
+    assert_eq!(
+        (s, &out),
+        (
+            StatusCode::CONFLICT,
+            &json!({ "kind": "duplicate", "id": ID1 })
+        ),
+        "a body that differs is never answered with the stored one"
+    );
+    // Nothing of the first was replaced, and no session was made for it.
+    assert_eq!(submission(&alpha, ID1), before);
+    assert_eq!(before.10, None);
+    assert_eq!(t.fake.checkout_sessions().len(), 0);
+
+    // The page's next move: the same form under a new id.
+    changed["id"] = json!(ID2);
+    let (s, out) = give(&t, "alpha", &changed).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let session = session_of(out["url"].as_str().unwrap()).to_owned();
+    assert_eq!(
+        submission(&alpha, ID2).10.as_deref(),
+        Some(session.as_str())
+    );
+    assert_eq!(
+        t.fake.checkout_session(&session).unwrap()["client_reference_id"],
+        ID2
+    );
+    assert_eq!(t.fake.checkout_sessions().len(), 1);
+    (t, alpha)
+}
+
+#[tokio::test]
+async fn a_declaration_unticked_after_a_503_is_not_recorded() {
+    let (_t, alpha) = changed_after_a_503(with_gift_aid(ID1), |d| {
+        d.as_object_mut().unwrap().remove("giftAid");
+    })
+    .await;
+    let row = submission(&alpha, ID2);
+    assert_eq!(
+        (row.4, row.5, row.6, row.7.as_str(), row.8.as_str()),
+        (false, None, None, "", "")
+    );
+}
+
+#[tokio::test]
+async fn a_declaration_ticked_after_a_503_is_recorded() {
+    let (_t, alpha) = changed_after_a_503(donation(ID1), |d| {
+        d["giftAid"] = with_gift_aid(ID1)["giftAid"].clone();
+    })
+    .await;
+    let row = submission(&alpha, ID2);
+    assert_eq!(
+        (row.4, row.5.as_deref(), row.7.as_str(), row.8.as_str()),
+        (true, Some("futureAndPast4y"), "12 Mill Lane", "AB1 2CD")
+    );
+    // The first attempt, which had no declaration, still has none.
+    assert!(!submission(&alpha, ID1).4);
+}
+
+#[tokio::test]
+async fn an_address_corrected_after_a_503_is_the_one_recorded() {
+    let (_t, alpha) = changed_after_a_503(with_gift_aid(ID1), |d| {
+        d["giftAid"]["addressLine1"] = json!("14 Mill Lane");
+        d["giftAid"]["postcode"] = json!("AB1 2CE");
+    })
+    .await;
+    let row = submission(&alpha, ID2);
+    assert_eq!(
+        (row.7.as_str(), row.8.as_str()),
+        ("14 Mill Lane", "AB1 2CE")
+    );
+}
+
+#[tokio::test]
+async fn an_email_or_name_or_amount_changed_after_a_503_is_the_one_used() {
+    let (t, alpha) = changed_after_a_503(with_gift_aid(ID1), |d| {
+        d["email"] = json!("jane.smith@example.org");
+        d["lastName"] = json!("Smyth");
+        d["amount"] = json!(5000);
+    })
+    .await;
+    let row = submission(&alpha, ID2);
+    assert_eq!(
+        (row.0, row.2.as_str(), row.3.as_str()),
+        (5000, "Smyth", "jane.smith@example.org")
+    );
+    let s = &t.fake.checkout_sessions()[0];
+    assert_eq!(
+        (&s["amount_total"], &s["customer_email"]),
+        (&json!(5000), &json!("jane.smith@example.org"))
+    );
+}
+
+#[tokio::test]
+async fn the_same_form_again_is_the_same_attempt_however_it_is_spaced() {
+    let t = setup().await;
+    alpha_ready(&t).await;
+    let alpha = org(&t, &t.w.alpha.id);
+    t.outage(1, 503, "checkout").await;
+    assert_eq!(
+        give(&t, "alpha", &with_gift_aid(ID1)).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    // What is compared is what would be stored: spacing and the
+    // postcode's case don't make it another donation.
+    let mut again = with_gift_aid(ID1);
+    again["firstName"] = json!("Jane");
+    again["giftAid"]["postcode"] = json!("AB1  2CD");
+    again["giftAid"]["addressLine1"] = json!(" 12 Mill Lane ");
+    let (s, out) = give(&t, "alpha", &again).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    assert_eq!(count(&alpha, "donation_submissions"), 1);
+    // A repeat that couldn't be stored at all is no match either.
+    t.outage(1, 503, "checkout").await;
+    assert_eq!(
+        give(&t, "alpha", &donation(ID2)).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let mut blank = donation(ID2);
+    blank["lastName"] = json!(" ");
+    assert_eq!(give(&t, "alpha", &blank).await.0, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn an_attempt_whose_email_stripe_refused_is_spent() {
+    let t = setup().await;
+    alpha_ready(&t).await;
+    let alpha = org(&t, &t.w.alpha.id);
+    // Passes our own check; Stripe refuses it.
+    let mut d = with_gift_aid(ID1);
+    d["email"] = json!("jane..smith@example.org");
+    let (s, out) = give(&t, "alpha", &d).await;
+    assert_eq!(
+        (s, &out["kind"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid")),
+        "{out}"
+    );
+    assert_eq!(out["problems"][0]["field"], "email");
+    let row = submission(&alpha, ID1);
+    assert_eq!((row.10.as_deref(), row.11.as_str()), (None, "expired"));
+
+    // The corrected address under the same id is not that attempt, and
+    // the same address again isn't sent to Stripe a second time.
+    let mut fixed = d.clone();
+    fixed["email"] = json!("jane.smith@example.org");
+    assert_eq!(give(&t, "alpha", &fixed).await.0, StatusCode::CONFLICT);
+    let asked = sessions_made(&t);
+    assert_eq!(give(&t, "alpha", &d).await.0, StatusCode::CONFLICT);
+    assert_eq!(sessions_made(&t), asked);
+
+    fixed["id"] = json!(ID3);
+    let (s, out) = give(&t, "alpha", &fixed).await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    let session = session_of(out["url"].as_str().unwrap());
+    assert_eq!(
+        t.fake.checkout_session(session).unwrap()["customer_email"],
+        "jane.smith@example.org"
+    );
+    assert_eq!(submission(&alpha, ID3).3, "jane.smith@example.org");
+}
+
+// ── the review's L1 ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_connected_group_with_no_page_reads_as_an_unknown_slug_however_often() {
+    let t = limited(Limits {
+        page_ip: limiter(100, HOUR),
+        donate_ip: limiter(100, HOUR),
+        donate_group: limiter(2, HOUR),
+    })
+    .await;
+    // Connected and taking payments, but no source code picked.
+    t.connect("alpha", &t.ann).await;
+    for n in 1..=8 {
+        let ip = format!("198.51.100.{n}");
+        assert_eq!(
+            give_from(&t, &ip, "alpha", n).await,
+            StatusCode::NOT_FOUND,
+            "{n}"
+        );
+        assert_eq!(
+            give_from(&t, &ip, "nobody", n + 20).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // Its limit was never spent: once published, donations pass.
+    publish(&org(&t, &t.w.alpha.id), [1000, 2500, 5000], 200, 100_000);
+    assert_eq!(
+        give_from(&t, "198.51.100.1", "alpha", 40).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        give_from(&t, "198.51.100.2", "alpha", 41).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        give_from(&t, "198.51.100.3", "alpha", 42).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}

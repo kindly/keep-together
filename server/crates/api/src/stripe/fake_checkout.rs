@@ -216,7 +216,10 @@ async fn create(
     };
     if let Some(email) = field("customer_email")
         && !email.split_once('@').is_some_and(|(local, domain)| {
-            !local.is_empty() && domain.contains('.') && !email.contains(char::is_whitespace)
+            !local.is_empty()
+                && !local.contains("..")
+                && domain.contains('.')
+                && !email.contains(char::is_whitespace)
         })
     {
         return invalid("email_invalid", "Invalid email address");

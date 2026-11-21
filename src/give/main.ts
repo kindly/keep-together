@@ -55,6 +55,12 @@ const RETRY: Record<RetryWhy, string> = {
     'Something went wrong on our side. Nothing has been taken. Try again in a moment.',
 }
 
+/** `text` as a sentence of its own: with its full stop. */
+function sentence(text: string): string {
+  const trimmed = text.trim()
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
 function absent() {
   document.title = 'Not taking donations'
   show(
@@ -79,18 +85,27 @@ function unreachable(why: RetryWhy) {
   )
 }
 
-function thanks(page: GivePage, slug: string) {
-  document.title = `Thank you · ${page.name}`
+/**
+ * Where Stripe sends the donor after paying. `name` is null when the
+ * group's page couldn't be read just now (it went, or we are limited or
+ * unreachable): the donor has paid all the same, and is thanked.
+ */
+function thanks(name: string | null, slug: string) {
+  document.title = name ? `Thank you · ${name}` : 'Thank you'
   show(
     'thanks',
     h('h1', {}, 'Thank you'),
-    h('p', {}, `Thank you for giving to ${page.name}.`),
+    h(
+      'p',
+      {},
+      name ? `Thank you for giving to ${name}.` : 'Thank you for your gift.',
+    ),
     h(
       'p',
       { class: 'muted' },
       'Stripe emails your receipt once the card payment has gone through. If you closed its page before paying, nothing was taken.',
     ),
-    h('p', {}, h('a', { href: `/give/${slug}` }, 'Give again')),
+    name ? h('p', {}, h('a', { href: `/give/${slug}` }, 'Give again')) : null,
   )
 }
 
@@ -223,6 +238,7 @@ function form(page: GivePage, slug: string) {
     name: 'giftAid',
   })
   const declaration = h('span', {})
+  const boost = h('span', { class: 'muted small', hidden: true })
   const line1 = field('addressLine1', 'House name or number', {
     type: 'text',
     autocomplete: 'address-line1',
@@ -233,16 +249,11 @@ function form(page: GivePage, slug: string) {
     autocomplete: 'postal-code',
     maxlength: '20',
   })
+  // The address is asked only once the box is ticked. Everything the
+  // donor agrees to (the declaration and the tax statement) is beside
+  // the box from the start, as HMRC's model has it.
   const home = wording
-    ? h(
-        'div',
-        { class: 'home', hidden: true },
-        h('p', {}, wording.taxpayer),
-        h('p', { class: 'muted small' }, wording.address),
-        line1.row,
-        postcode.row,
-        h('p', { class: 'muted small' }, wording.notify),
-      )
+    ? h('div', { class: 'home', hidden: true }, line1.row, postcode.row)
     : null
   const giftAid = wording
     ? h(
@@ -250,9 +261,27 @@ function form(page: GivePage, slug: string) {
         { class: 'giftaid' },
         h('legend', {}, 'Gift Aid'),
         h('p', { class: 'lead' }, wording.heading),
-        h('p', { class: 'muted small' }, wording.intro),
-        h('label', { class: 'tick', for: 'give-giftaid' }, tick, declaration),
+        ...wording.intro.map((line) => h('p', { class: 'muted small' }, line)),
+        h(
+          'label',
+          { class: 'tick', for: 'give-giftaid' },
+          tick,
+          h(
+            'span',
+            { class: 'agreed' },
+            declaration,
+            h('span', { class: 'taxpayer' }, wording.taxpayer),
+            boost,
+          ),
+        ),
         home,
+        h(
+          'div',
+          { class: 'muted small after' },
+          h('p', {}, wording.notify.lead),
+          h('ul', {}, ...wording.notify.items.map((item) => h('li', {}, item))),
+          h('p', {}, wording.higherRate),
+        ),
       )
     : null
 
@@ -293,15 +322,10 @@ function form(page: GivePage, slug: string) {
         page.name,
       )
       home.hidden = !tick.checked
-      if (shown && inRange(pence)) {
-        declaration.append(
-          h(
-            'span',
-            { class: 'muted small boost' },
-            ` Adds ${formatPence(giftAidOn(pence))} at no cost to you.`,
-          ),
-        )
-      }
+      boost.hidden = !inRange(pence)
+      boost.textContent = inRange(pence)
+        ? `Adds ${formatPence(giftAidOn(pence))} at no cost to you.`
+        : ''
     }
   }
 
@@ -401,7 +425,7 @@ function form(page: GivePage, slug: string) {
         break
       }
       case 'changed':
-        say(`${sent.message} Reload this page and try again.`)
+        say(`${sentence(sent.message)} Reload this page and try again.`)
         break
       case 'duplicate':
         attempt = newId()
@@ -466,9 +490,10 @@ async function start() {
   if (!route) return absent()
   show('loading', h('p', { class: 'muted' }, 'Loading…'))
   const loaded = await loadPage(route.slug)
+  if (route.view === 'thanks')
+    return thanks(loaded.kind === 'ok' ? loaded.page.name : null, route.slug)
   if (loaded.kind === 'absent') return absent()
   if (loaded.kind === 'retry') return unreachable(loaded.why)
-  if (route.view === 'thanks') return thanks(loaded.page, route.slug)
   form(loaded.page, route.slug)
 }
 
