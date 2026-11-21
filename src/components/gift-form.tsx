@@ -52,7 +52,7 @@ import {
 import type { GiftMethod } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
 import { METHOD_LABELS, formatPence, refusal } from '../lib/gifts'
-import { useTenant } from '../lib/tenant'
+import { claimsGiftAid, useTenant } from '../lib/tenant'
 import { useReportUnsaved } from '../lib/unsaved'
 import { ScanWithPhone } from './scans'
 import { batchLabel } from './bank'
@@ -298,7 +298,11 @@ export function GiftForm({ batch }: { batch?: string } = {}) {
     typeof pence === 'bigint' && pence > 0n && draft.receivedOn
       ? giftWarnings({ receivedOn: draft.receivedOn, amount: pence }, today)
       : []
-  const offer = giftAidOffer(draft.donor, shownInfo)
+  // A group that doesn't claim Gift Aid is offered none of it: no tick,
+  // no "covered", no "only for a person" (Settings › Gift Aid).
+  const offer = claimsGiftAid(tenant)
+    ? giftAidOffer(draft.donor, shownInfo)
+    : 'hidden'
   const onFile = homeOnFile(draft.donor, shownInfo)
   const addressWarning = noAddressWarning(draft, shownInfo)
   const differs = differsNote(draft, shownInfo)

@@ -2,8 +2,9 @@ import { Link } from '@tanstack/react-router'
 import { STATUS_LABELS, bankNote, isReceived } from '../lib/domain/gift-status'
 import type { Id } from '../lib/domain/ids'
 import { useContactGifts } from '../lib/data'
-import { METHOD_LABELS, formatDay, formatPence } from '../lib/gifts'
+import { formatDay, formatPence, methodLabel } from '../lib/gifts'
 import { giftCoverage, useDeclarations } from '../lib/giftaid'
+import { useGiftAid } from '../lib/gift-aid-shown'
 import { useTenant } from '../lib/tenant'
 
 /**
@@ -25,7 +26,12 @@ export function ContactGifts({
 }) {
   const tenant = useTenant()
   const gifts = useContactGifts(contactId)
-  const declarations = useDeclarations(individual ? contactId : undefined)
+  // Coverage is Gift Aid's: not read, not shown, where none is claimed
+  // and none is on record.
+  const { shown: claims } = useGiftAid()
+  const declarations = useDeclarations(
+    individual && claims ? contactId : undefined,
+  )
   return (
     <section aria-labelledby="contact-gifts">
       <h2 id="contact-gifts" className="mb-3 text-lg font-medium">
@@ -41,7 +47,7 @@ export function ContactGifts({
             const received = isReceived(g.status)
             const note = g.status === 'void' ? null : bankNote(g)
             const covered =
-              individual && received && giftCoverage(declarations, g)
+              individual && claims && received && giftCoverage(declarations, g)
             return (
               <li key={g._id} className="text-sm">
                 <Link
@@ -58,7 +64,7 @@ export function ContactGifts({
                     {formatPence(g.amount)}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-neutral-600">
-                    {METHOD_LABELS[g.method]}
+                    {methodLabel(g)}
                     {' · '}
                     {g.allocations.map((a) => a.code ?? '?').join(', ')}
                   </span>

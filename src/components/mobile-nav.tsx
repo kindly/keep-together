@@ -14,6 +14,7 @@ import {
   GiftAidEntryLink,
   GiftLink,
   BankStatementsAction,
+  CardPaymentsAction,
   BatchesAction,
   ReconcileAction,
   ExpectedReportAction,
@@ -271,6 +272,7 @@ function Donations({ follow }: { follow: Follow }) {
     select: (s) =>
       s.location.pathname.startsWith(`/t/${slug}/gifts/`) ||
       s.location.pathname.startsWith(`/t/${slug}/gocardless/`) ||
+      s.location.pathname.startsWith(`/t/${slug}/stripe/`) ||
       s.location.pathname.startsWith(`/t/${slug}/bank/`) ||
       s.location.pathname.startsWith(`/t/${slug}/reports/`),
   })
@@ -278,7 +280,7 @@ function Donations({ follow }: { follow: Follow }) {
   useEffect(() => {
     if (onDonations) store(true)
   }, [onDonations])
-  const { canWrite, directDebit, report, gifts } = useDonations(open)
+  const { canWrite, cards, directDebit, report, gifts } = useDonations(open)
   const id = useId()
   const toggle = () => {
     store(!open)
@@ -308,6 +310,7 @@ function Donations({ follow }: { follow: Follow }) {
         {canWrite && <ReconcileAction className={item} {...follow} />}
         {canWrite && <BatchesAction className={item} {...follow} />}
         {directDebit && <UnmatchedAction className={item} {...follow} />}
+        {cards && <CardPaymentsAction className={item} {...follow} />}
         {report && <ExpectedReportAction className={item} {...follow} />}
         <p className={heading}>{DONATIONS.recent}</p>
         {gifts === undefined ? (

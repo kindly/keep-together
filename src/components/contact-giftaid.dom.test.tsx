@@ -34,7 +34,10 @@ vi.mock('../lib/data', () => ({
   // Scans: none held (scans.dom.test.tsx covers them).
   useDeclarationScans: () => undefined,
 }))
+/** "We claim Gift Aid" (Settings): off, the panel is read-only. */
+const giftAidSwitch = vi.hoisted(() => ({ on: true }))
 vi.mock('../lib/tenant', () => ({
+  useClaimsGiftAid: () => giftAidSwitch.on,
   useTenant: () => ({ _id: 'tenantA', slug: 'alpha' }),
   useCanWrite: () => canWrite,
 }))
@@ -167,6 +170,27 @@ test('a viewer sees them but changes nothing', () => {
   expect(buttons(el, 'Mark made in error')).toHaveLength(0)
   expect(buttons(el, 'Edit details')).toHaveLength(0)
   expect(buttons(el, 'Record cancellation')).toHaveLength(0)
+})
+
+test('a group that stopped claiming keeps the declarations: none edited, but one can still be cancelled or marked made in error', () => {
+  giftAidSwitch.on = false
+  declarations = { declarations: [declaration({})], currentId: null }
+  render()
+  // Still there: what was declared is the evidence for claims made.
+  expect(cards()).toHaveLength(1)
+  expect(buttons(el, 'Edit details')).toHaveLength(0)
+  // A donor withdrawing is a real event, whatever the switch says.
+  expect(buttons(el, 'Record cancellation')).toHaveLength(1)
+  expect(buttons(el, 'Mark made in error')).toHaveLength(1)
+  expect(
+    el.querySelector('[data-testid="gift-aid-off"]')!.textContent,
+  ).toContain('None can be added or edited; a cancellation')
+  // A viewer still changes nothing.
+  canWrite = false
+  render()
+  expect(buttons(el, 'Record cancellation')).toHaveLength(0)
+  expect(buttons(el, 'Mark made in error')).toHaveLength(0)
+  giftAidSwitch.on = true
 })
 
 test('Mark made in error needs a reason, then a confirm', async () => {

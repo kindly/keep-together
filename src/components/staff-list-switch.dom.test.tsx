@@ -34,6 +34,8 @@ const tenant = (over: Partial<Tenant> = {}): Tenant => ({
   canManageIdentifierTypes: true,
   canManageSourceCodes: true,
   canManageFields: true,
+  claimsGiftAid: true,
+  claimsGiftAidVersion: null,
   ...over,
 })
 

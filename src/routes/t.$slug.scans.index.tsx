@@ -2,6 +2,7 @@ import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ScanThumb, ScanWithPhone, pagesText } from '../components/scans'
 import { ReadRefused } from '../components/claims-ui'
 import { useMembers, useScanInbox } from '../lib/data'
+import { GiftAidOnly } from '../components/no-gift-aid'
 import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
 
 /**
@@ -14,7 +15,13 @@ type Search = { sitting?: true | string }
 const PAIRING_ID = /^[0-9a-f]{32}$/
 
 export const Route = createFileRoute('/t/$slug/scans/')({
-  component: ScansToMatch,
+  // Matching a scan records a declaration: only while the group claims
+  // Gift Aid (Settings › Gift Aid), whatever it has on record.
+  component: () => (
+    <GiftAidOnly offering="no scan can be matched to a declaration">
+      <ScansToMatch />
+    </GiftAidOnly>
+  ),
   validateSearch: (s: Record<string, unknown>): Search =>
     s.sitting === true || s.sitting === 'true'
       ? { sitting: true }

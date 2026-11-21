@@ -101,6 +101,9 @@ pub struct ClaimsGiftAidSaved {
     #[ts(type = "number")]
     pub counter: i64,
     pub claims_gift_aid: ClaimsGiftAid,
+    /// The group's switches as `GET /api/groups` answers them for the
+    /// caller after it.
+    pub switches: Switches,
 }
 
 /// `POST preferences/claimsGiftAid {expected?, on}`: "We claim Gift Aid",
@@ -111,13 +114,16 @@ async fn set_claims_gift_aid(
     Body(req): Body<SetClaimsGiftAid>,
 ) -> Result<Json<ClaimsGiftAidSaved>, ApiError> {
     t.require_admin()?;
+    let role = t.role;
     t.write(move |ctx| {
         let Executed { id, counter } =
             preferences::set_claims_gift_aid(ctx, req.on, req.expected, Source::Ui)?;
+        let prefs = preferences::read(ctx.tx.read())?;
         Ok(ClaimsGiftAidSaved {
             id,
             counter,
-            claims_gift_aid: preferences::read(ctx.tx.read())?.claims_gift_aid,
+            switches: Switches::of(&prefs, role),
+            claims_gift_aid: prefs.claims_gift_aid,
         })
     })
     .await

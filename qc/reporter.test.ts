@@ -219,6 +219,8 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
       retries?: Array<SetupRetry>
       /** Tests skipped off the GoCardless fake: title path, routes. */
       notFake?: Array<{ title: Array<string>; routes: Array<string> }>
+      /** Tests skipped off the Stripe fake: title path, routes. */
+      stripeNotFake?: Array<{ title: Array<string>; routes: Array<string> }>
       filtered?: boolean
     } = {},
   ) => {
@@ -284,7 +286,24 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
           status: 'skipped',
           annotations: [
             ...t.routes.map((r) => ({ type: 'route', description: r })),
-            { type: 'gocardlessNotFake', description: 'KEEP_GOCARDLESS=sandbox' },
+            {
+              type: 'gocardlessNotFake',
+              description: 'KEEP_GOCARDLESS=sandbox',
+            },
+          ],
+        } as unknown as TestResult,
+      )
+    for (const t of opts.stripeNotFake ?? [])
+      reporter.onTestEnd(
+        {
+          annotations: [],
+          titlePath: () => ['', 'chromium', ...t.title],
+        } as unknown as TestCase,
+        {
+          status: 'skipped',
+          annotations: [
+            ...t.routes.map((r) => ({ type: 'route', description: r })),
+            { type: 'stripeNotFake', description: 'KEEP_STRIPE=off' },
           ],
         } as unknown as TestResult,
       )
@@ -423,6 +442,42 @@ describe('onEnd: the server rule, pending ports and coverage', () => {
     const none = await runReporter('r3', records('r3'))
     expect(none.out).not.toContain('SETUP RETRIES')
     expect(none.history.every((l) => !('setupRetries' in l))).toBe(true)
+  })
+
+  test('with Stripe off on the target: the Stripe fake’s flows and routes are listed, not failed', async () => {
+    const fakeRoutes = ['/t/$slug/settings/stripe', '/t/$slug/stripe/unmatched']
+    const ported = routes.filter((r) => isPorted(r))
+    const covered = ported.filter((r) => !fakeRoutes.includes(r))
+    const r = await runReporter('s1', records('s1'), {
+      covered,
+      stripeNotFake: [
+        {
+          title: ['flows/stripe-ui.spec.ts', 'card payments to match'],
+          routes: fakeRoutes,
+        },
+      ],
+      filtered: false,
+    })
+    expect(r.gates.filter((g) => g.includes('coverage:'))).toEqual([])
+    const notTimed = r.out
+      .split('\n')
+      .find((l) => l.includes('(in qc/budgets.ts without'))
+    expect(notTimed).not.toMatch(/stripe\./)
+    // The switch needs no Stripe: it is still owed.
+    expect(notTimed).toMatch(/settings\.claimsGiftAid\.toggle/)
+    expect(r.out).toMatch(
+      /STRIPE NOT FAKE on the target \(KEEP_STRIPE=off\): 1 test skipped; the Stripe screens were NOT tested:\n!! flows\/stripe-ui\.spec\.ts › card payments to match\n!! not timed: [^\n]*stripe\.settings[^\n]*stripe\.nameChecked[^\n]*\n!! not covered: \/t\/\$slug\/settings\/stripe, \/t\/\$slug\/stripe\/unmatched/,
+    )
+    // On the fake (nothing skipped for its mode) they fail as any other.
+    const fake = await runReporter('s2', records('s2'), {
+      covered,
+      filtered: false,
+    })
+    expect(fake.status).toBe('failed')
+    expect(fake.out).not.toContain('STRIPE NOT FAKE')
+    expect(fake.gates.join('\n')).toMatch(
+      /coverage: no test that ran covers \/t\/\$slug\/settings\/stripe, \/t\/\$slug\/stripe\/unmatched/,
+    )
   })
 
   test('off the GoCardless fake: its flows and routes are listed, not failed (nightly 2026-10-30)', async () => {

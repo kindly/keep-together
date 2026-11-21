@@ -12,6 +12,19 @@ export const METHOD_LABELS: Record<GiftMethod, string> = {
   cheque: 'Cheque',
 }
 
+/**
+ * A gift's method as a page says it: a card gift that came through
+ * Stripe is the donation page's, not the separate reader's.
+ */
+export function methodLabel(gift: {
+  method: GiftMethod
+  provider: string | null
+}): string {
+  return gift.method === 'card' && gift.provider === 'stripe'
+    ? 'Card (donation page)'
+    : METHOD_LABELS[gift.method]
+}
+
 const POUNDS = new Intl.NumberFormat('en-GB', {
   style: 'currency',
   currency: 'GBP',

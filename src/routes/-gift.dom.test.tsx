@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { Id } from '../lib/domain/ids'
 import type { GiftView as Gift } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
+import type * as GiftAidShown from '../lib/gift-aid-shown'
 
 // The gift page (cash gifts step 5): someone else's edit while the form is
 // open merges in field by field and moves `expected`, so typed changes
@@ -38,6 +39,7 @@ const mutations: Record<string, ReturnType<typeof vi.fn>> = {
   setStatus: vi.fn(),
 }
 let gift: Gift
+const nameChecked = vi.fn()
 let members: Array<{ userId: string; name: string }> | undefined
 let claimList: Array<{ id: string; number: number; status: string }> | undefined
 vi.mock('../lib/data', () => ({
@@ -49,6 +51,7 @@ vi.mock('../lib/data', () => ({
   useMembers: () => members,
   useDeclarations: () => ({ declarations: [], currentId: null }),
   useGiftWrites: () => mutations,
+  useNameChecked: () => nameChecked,
   useBatch: (id: string | null) => ({
     data: id === null ? undefined : { batch: { status: batchStatus } },
   }),
@@ -65,11 +68,44 @@ vi.mock('../components/source-code-picker', () => ({
   localToday: () => '2026-10-23',
 }))
 let admin = true
+/** "We claim Gift Aid" (Settings): a test switches it off to see what hides. */
+const giftAidSwitch = vi.hoisted(() => ({ on: true }))
 vi.mock('../lib/tenant', () => ({
+  // On, as every group is unless it says otherwise.
+  claimsGiftAid: () => giftAidSwitch.on,
+  useClaimsGiftAid: () => giftAidSwitch.on,
   useTenant: () => ({ _id: 'tenantA', slug: 'a' }),
   useCanWrite: () => true,
   useIsAdmin: () => admin,
 }))
+/** What the group holds on record, for the switch off (gift-aid-shown.ts). */
+const onRecord = vi.hoisted(() => ({
+  declarations: 0,
+  claims: 0,
+  /** Not known yet (the switch off): still loading, or the read failed. */
+  unknown: null as 'loading' | 'failed' | null,
+  retry: vi.fn(),
+}))
+vi.mock('../lib/gift-aid-shown', async (original) => {
+  const view = (on: boolean) => ({
+    offered: on,
+    shown:
+      on ||
+      (onRecord.unknown === null &&
+        onRecord.declarations + onRecord.claims > 0),
+    unknown: on ? null : onRecord.unknown,
+    retry: onRecord.retry,
+  })
+  return {
+    ...(await original<typeof GiftAidShown>()),
+    useGiftAidOnRecord: () => ({
+      declarations: onRecord.declarations,
+      claims: onRecord.claims,
+    }),
+    useGiftAidOf: (_slug: string, on: boolean) => view(on),
+    useGiftAid: () => view(giftAidSwitch.on),
+  }
+})
 
 const { Route } = await import('./t.$slug.gifts.$giftId')
 const GiftPage = (Route as unknown as { options: { component: ComponentType } })
@@ -114,6 +150,9 @@ beforeEach(() => {
   claimList = [{ id: 'claim7', number: 7, status: 'submitted' }]
   admin = true
   batchStatus = 'open'
+  nameChecked.mockReset().mockResolvedValue(undefined)
+  giftAidSwitch.on = true
+  Object.assign(onRecord, { declarations: 0, claims: 0 })
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -486,4 +525,134 @@ test('a gift in an open batch can be edited and voided', () => {
   expect(el.querySelector('[data-testid="gift-slip-held"]')).toBeNull()
   expect(button(el, 'Edit').disabled).toBe(false)
   expect(button(el, 'Void').disabled).toBe(false)
+})
+
+// ── a card gift from the donation page (Stripe S5) ────────────────────────
+
+const cardGift = (card: Partial<NonNullable<Gift['card']>> = {}) =>
+  makeGift({
+    method: 'card',
+    provider: 'stripe',
+    providerPaymentId: 'pi_1',
+    card: {
+      id: 'p1',
+      paymentId: 'pi_1',
+      amount: 2000n,
+      refundedAmount: 0n,
+      dispute: null,
+      fromPage: true,
+      firstNameTyped: null,
+      partialRefundClaimed: false,
+      declarationRefused: null,
+      matchVersion: 3,
+      ...card,
+    },
+  })
+
+test('a card gift says it came from the donation page, and a gift by hand has no card section', async () => {
+  await render()
+  expect(el.querySelector('[data-testid="gift-card"]')).toBeNull()
+  expect(el.textContent).toContain('Cash')
+
+  gift = cardGift({ refundedAmount: 500n })
+  await render()
+  const card = el.querySelector('[data-testid="gift-card"]')!
+  expect(card.textContent).toContain('Given by card on the donation page')
+  expect(card.textContent).toContain('pi_1')
+  expect(card.textContent).toContain('£5.00 of £20.00 refunded')
+  // Not "Card (separate reader)": that is a gift keyed in by staff.
+  expect(el.textContent).toContain('Card (donation page)')
+  expect(el.textContent).not.toContain('separate reader')
+  expect(el.querySelector('[data-testid="card-first-name"]')).toBeNull()
+})
+
+test('first name differs: the typed name is shown, and "Name checked" clears it only on the server’s word', async () => {
+  gift = cardGift({ firstNameTyped: 'Jane' })
+  await render()
+  const mark = () => el.querySelector('[data-testid="card-first-name"]')
+  expect(mark()!.textContent).toContain(
+    'the donor typed “Jane”, and this contact is Jo Bloggs',
+  )
+  // The move isn't available, and the page says so. It never suggests
+  // voiding the gift and recording another by hand: that one would never
+  // hear of a refund or a dispute.
+  expect(mark()!.textContent).toContain(
+    'moving it to their contact isn’t available yet',
+  )
+  expect(mark()!.textContent).toContain('keeps following its payment')
+  expect(mark()!.textContent).not.toMatch(/void|by hand/i)
+  const check = [...mark()!.querySelectorAll('button')][0]
+  expect(check.textContent).toBe('Name checked: it’s the right person')
+
+  // Refused (someone else changed it): said, and the mark stays.
+  nameChecked.mockRejectedValueOnce(
+    new RustApiError(409, {
+      kind: 'stale',
+      contract: 'giving.stripePaymentMatch',
+      counter: 4,
+      current: null,
+    } as never),
+  )
+  await click(check)
+  expect(nameChecked).toHaveBeenLastCalledWith('p1', 3)
+  expect(el.querySelector('[role="alert"]')!.textContent).toContain(
+    'Someone else changed this gift’s payment just now',
+  )
+  expect(mark()).not.toBeNull()
+
+  // Accepted: still shown until the gift itself reads without it (never
+  // optimistic); then gone.
+  await click([...mark()!.querySelectorAll('button')][0])
+  expect(nameChecked).toHaveBeenCalledTimes(2)
+  expect(mark()).not.toBeNull()
+  gift = cardGift()
+  await render()
+  expect(mark()).toBeNull()
+})
+
+test('a refused declaration and a part refund on a claimed gift are said plainly', async () => {
+  gift = cardGift({
+    declarationRefused: 'not_individual',
+    partialRefundClaimed: true,
+    refundedAmount: 500n,
+  })
+  await render()
+  expect(
+    el.querySelector('[data-testid="card-declaration-refused"]')!.textContent,
+  ).toContain('this contact isn’t a person, so no declaration was recorded')
+  expect(
+    el.querySelector('[data-testid="card-partial-refund"]')!.textContent,
+  ).toContain('the group kept £15.00')
+})
+
+test('a group that stopped claiming keeps a gift’s coverage, declaration note and claim link once anything is on record', async () => {
+  giftAidSwitch.on = false
+  Object.assign(onRecord, { declarations: 1, claims: 1 })
+  gift = cardGift({ declarationRefused: 'not_individual' })
+  gift = { ...gift, claimId: 'claim7' }
+  await render()
+  expect(el.querySelector('[data-testid="gift-coverage"]')).not.toBeNull()
+  expect(
+    el.querySelector('[data-testid="card-declaration-refused"]'),
+  ).not.toBeNull()
+  // The claim it is in: a financial record, always shown.
+  expect(el.querySelector('[data-testid="claim-badge"]')!.textContent).toBe(
+    'Claimed in claim 7',
+  )
+  expect(el.querySelector('[data-testid="claim-lock"]')).not.toBeNull()
+})
+
+test('a group that doesn’t claim Gift Aid and has none on record sees no coverage and no declaration note on a gift', async () => {
+  await render()
+  expect(el.querySelector('[data-testid="gift-coverage"]')).not.toBeNull()
+  giftAidSwitch.on = false
+  gift = cardGift({ declarationRefused: 'not_individual' })
+  await render()
+  expect(el.querySelector('[data-testid="gift-coverage"]')).toBeNull()
+  expect(el.textContent).not.toContain('Gift Aid')
+  expect(
+    el.querySelector('[data-testid="card-declaration-refused"]'),
+  ).toBeNull()
+  // The card section itself stays: it is about the payment.
+  expect(el.querySelector('[data-testid="gift-card"]')).not.toBeNull()
 })

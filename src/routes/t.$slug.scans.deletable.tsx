@@ -7,10 +7,16 @@ import { localToday } from '../components/source-code-picker'
 import { useDeletableScans, useScanWrites } from '../lib/data'
 import type { DeletableScan } from '../lib/data'
 import { formatDay, refusal } from '../lib/gifts'
+import { GiftAidOnly } from '../components/no-gift-aid'
 import { useIsAdmin, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/scans/deletable')({
-  component: Deletable,
+  // Nothing in a group that doesn't claim Gift Aid (Settings › Gift Aid).
+  component: () => (
+    <GiftAidOnly>
+      <Deletable />
+    </GiftAidOnly>
+  ),
 })
 
 /**

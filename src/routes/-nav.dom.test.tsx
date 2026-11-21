@@ -8,6 +8,7 @@ import type { RecentGift } from '../lib/gifts'
 import type { Tenant } from '../lib/tenant'
 import type * as GiftsLib from '../lib/gifts'
 import type * as DataLib from '../lib/data'
+import type * as GiftAidShown from '../lib/gift-aid-shown'
 
 // The navigation (cash-gifts step 4): header, group home, landing on "/",
 // and Settings → Switch group. The router is reduced to plain links with
@@ -186,6 +187,34 @@ vi.mock('@tanstack/react-router', () => ({
 const opened = vi.fn()
 const signOut = vi.fn()
 let tenants: Array<Tenant> | undefined
+/** What the group holds on record, for the switch off (gift-aid-shown.ts). */
+const onRecord = vi.hoisted(() => ({
+  declarations: 0,
+  claims: 0,
+  /** Not known yet (the switch off): still loading, or the read failed. */
+  unknown: null as 'loading' | 'failed' | null,
+  retry: vi.fn(),
+}))
+vi.mock('../lib/gift-aid-shown', async (original) => {
+  const view = (on: boolean) => ({
+    offered: on,
+    shown:
+      on ||
+      (onRecord.unknown === null &&
+        onRecord.declarations + onRecord.claims > 0),
+    unknown: on ? null : onRecord.unknown,
+    retry: onRecord.retry,
+  })
+  return {
+    ...(await original<typeof GiftAidShown>()),
+    useGiftAidOnRecord: () => ({
+      declarations: onRecord.declarations,
+      claims: onRecord.claims,
+    }),
+    useGiftAidOf: (_slug: string, on: boolean) => view(on),
+    useGiftAid: () => view(tenants?.[0]?.claimsGiftAid !== false),
+  }
+})
 vi.mock('../lib/data', async (original) => {
   const real = await original<typeof DataLib>()
   return {
@@ -207,6 +236,7 @@ vi.mock('../lib/data', async (original) => {
     useOpened: () => opened,
     useOrgEvents: () => {},
     useGoCardlessStatus: () => gocardless,
+    useStripeStatus: () => stripe,
     // Home's standing orders with a missed payment: none here.
     useMissedStandingOrders: () => ({
       data: [],
@@ -218,6 +248,7 @@ vi.mock('../lib/data', async (original) => {
 
 let gifts: Array<RecentGift> = []
 let gocardless: { enabled: boolean } | undefined
+let stripe: { enabled: boolean } | undefined
 vi.mock('../lib/gifts', async (original) => ({
   ...(await original<typeof GiftsLib>()),
   useMyRecentGifts: (enabled = true) => (enabled ? gifts : undefined),
@@ -257,6 +288,8 @@ beforeEach(() => {
   tenants = [group('alpha')]
   gifts = []
   gocardless = undefined
+  stripe = undefined
+  Object.assign(onRecord, { declarations: 0, claims: 0 })
   routeSearch = {}
   navigated.length = 0
   opened.mockReset().mockResolvedValue(null)
@@ -371,6 +404,78 @@ test('Gift Aid claims and HMRC details are for admins: staff and viewers see nei
     // Scans storage: staff (their scans), not a viewer.
     expect(text().includes('Scans storage')).toBe(role === 'staff')
   }
+})
+
+test('a group that doesn’t claim Gift Aid and has none on record has no Gift Aid menu or tabs; with any on record they stay', async () => {
+  tenants = [group('alpha', { claimsGiftAid: false })]
+  await page(import('./t.$slug'))
+  const nav = el.querySelector('nav[aria-label="Main"]')!
+  expect(links(nav).map(([name]) => name)).toEqual([
+    'Alpha',
+    'Contacts',
+    'Settings',
+  ])
+  expect(text()).not.toContain('Gift Aid ▾')
+  await page(import('./t.$slug.settings'))
+  expect(text()).not.toContain('HMRC details')
+  expect(text()).not.toContain('Scans storage')
+  // The way to switch it back on stays.
+  expect(links()).toContainEqual(['Gift Aid', '/t/alpha/settings/giftaid'])
+  // With a claim or a declaration on record, switching off never hides
+  // them (rule 4): the menu keeps the claims and the scans that can be
+  // deleted, and loses what records a declaration ("Scans to match", a
+  // stack sitting); both tabs stay.
+  Object.assign(onRecord, { declarations: 2, claims: 1 })
+  await page(import('./t.$slug'))
+  const trigger = [...el.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Gift Aid ▾',
+  )!
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+    )
+  })
+  expect(
+    [...document.querySelectorAll('[role="menu"] [role="menuitem"]')].map(
+      (i) => i.textContent,
+    ),
+  ).toEqual(['Claims', 'Scans that can be deleted'])
+  await page(import('./t.$slug.settings'))
+  expect(text()).toContain('HMRC details')
+  expect(text()).toContain('Scans storage')
+  Object.assign(onRecord, { declarations: 0, claims: 0 })
+  // On (and for a group that never said): as before.
+  tenants = [group('alpha', { claimsGiftAid: true })]
+  await page(import('./t.$slug.settings'))
+  expect(text()).toContain('HMRC details')
+  expect(text()).toContain('Scans storage')
+})
+
+test('with Stripe on: Card payments to match for staff, Settings › Card donations for admins', async () => {
+  const tab = ['Card donations', '/t/alpha/settings/stripe']
+  // Off on this server: neither.
+  await page(import('./t.$slug.settings'))
+  expect(links()).not.toContainEqual(tab)
+  stripe = { enabled: true }
+  await page(import('./t.$slug.settings'))
+  expect(links()).toContainEqual(tab)
+  tenants = [group('alpha', { role: 'staff' })]
+  await page(import('./t.$slug.settings'))
+  expect(links()).not.toContainEqual(tab)
+  await page(import('./t.$slug'))
+  const trigger = [...el.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Donations ▾',
+  )!
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+    )
+  })
+  expect(
+    [...document.querySelectorAll('[role="menu"] [role="menuitem"]')].map(
+      (i) => [i.textContent, i.getAttribute('href')],
+    ),
+  ).toContainEqual(['Card payments to match', '/t/alpha/stripe/unmatched'])
 })
 
 test('header: a slug that is not yours offers the way home', async () => {
@@ -668,6 +773,7 @@ test('this build serves every list tab: Settings opens on Fields', async () => {
     ['Fields', '/t/alpha/settings/fields'],
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
+    ['Gift Aid', '/t/alpha/settings/giftaid'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
     ['Bank accounts', '/t/alpha/settings/bank'],
     ['GoCardless', '/t/alpha/settings/gocardless'],
@@ -692,6 +798,7 @@ test('settings: the first tab is Fields once every list is ported', async () => 
     ['Fields', '/t/alpha/settings/fields'],
     ['Identifier types', '/t/alpha/settings/identifiers'],
     ['Source codes', '/t/alpha/settings/sources'],
+    ['Gift Aid', '/t/alpha/settings/giftaid'],
     ['HMRC details', '/t/alpha/settings/hmrc'],
     ['Bank accounts', '/t/alpha/settings/bank'],
     ['GoCardless', '/t/alpha/settings/gocardless'],

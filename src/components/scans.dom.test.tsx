@@ -52,9 +52,12 @@ vi.mock('../lib/data', () => ({
   useScanWrites: () => writes,
   useStartScanPairing: () => start,
 }))
+/** "We claim Gift Aid" (Settings): off, a scan can't be matched. */
+const giftAidSwitch = vi.hoisted(() => ({ on: true }))
 vi.mock('../lib/tenant', () => ({
   useTenant: () => ({ _id: 'tenantA', slug: 'alpha' }),
   useCanWrite: () => canWrite,
+  useClaimsGiftAid: () => giftAidSwitch.on,
 }))
 
 function scanView(over: Partial<ScanView> = {}): ScanView {
@@ -330,6 +333,17 @@ test('discard asks first, with an optional reason', async () => {
   ].find((b) => b.textContent === 'Discard') as HTMLElement
   await click(confirm)
   expect(writes.discard).toHaveBeenCalledWith(scan, 'blurred')
+})
+
+test('with Gift Aid switched off a draft scan can be looked at, not matched or changed', async () => {
+  giftAidSwitch.on = false
+  await render(<ScanReview scanId="s1" onDone={() => {}} />)
+  expect(
+    document.querySelector('[data-testid="gift-aid-off"]')!.textContent,
+  ).toContain('this scan can’t be matched to a declaration')
+  // No match form: nothing here records a declaration.
+  expect(document.querySelector('form')).toBeNull()
+  giftAidSwitch.on = true
 })
 
 test('a draft’s pages move and go; a reviewed scan’s are fixed', async () => {

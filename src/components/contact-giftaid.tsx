@@ -18,7 +18,7 @@ import {
   useDeclarations,
 } from '../lib/giftaid'
 import type { Declaration } from '../lib/giftaid'
-import { useCanWrite, useTenant } from '../lib/tenant'
+import { useCanWrite, useClaimsGiftAid, useTenant } from '../lib/tenant'
 import { ConfirmDialog } from './confirm-dialog'
 import { DeclarationScanLine, ScanWithPhone } from './scans'
 import { localToday } from './source-code-picker'
@@ -47,6 +47,12 @@ const small =
  * scans step 4).
  */
 export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
+  // A group that switched Gift Aid off keeps its declarations in view.
+  // Nothing new is recorded or scanned and none is edited; but a donor
+  // withdrawing, or a declaration found to be a mistake, is a real event
+  // (a claim under way may rest on it), so cancelling and "made in
+  // error" stay.
+  const offered = useClaimsGiftAid()
   const canWrite = useCanWrite()
   const data = useDeclarations(contactId)
   const members = useMembers()
@@ -105,7 +111,15 @@ export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
       )}
       {/* A paper form to record, or the scan for one recorded already
           (declaration scans, g2q3). */}
-      <ScanWithPhone purpose="contact" contactId={contactId} />
+      {offered ? (
+        <ScanWithPhone purpose="contact" contactId={contactId} />
+      ) : (
+        <p data-testid="gift-aid-off" className="text-sm text-neutral-600">
+          This group no longer claims Gift Aid: these declarations are kept on
+          record. None can be added or edited; a cancellation, or one made in
+          error, can still be recorded.
+        </p>
+      )}
       {canWrite &&
         cancellable &&
         (cancelling ? (
@@ -150,6 +164,8 @@ function DeclarationCard({
   label: string
   name: (userId: number | undefined) => string
 }) {
+  // Off: ending it stays possible, editing it doesn't.
+  const offered = useClaimsGiftAid()
   const canWrite = useCanWrite()
   const voided = d.voidedAt !== undefined
   const snapshot = [
@@ -240,14 +256,16 @@ function DeclarationCard({
           />
         ) : (
           <div className="flex gap-2">
-            <button
-              type="button"
-              className={small}
-              aria-label={`Edit details: ${label}`}
-              onClick={() => setOpen('details')}
-            >
-              Edit details
-            </button>
+            {offered && (
+              <button
+                type="button"
+                className={small}
+                aria-label={`Edit details: ${label}`}
+                onClick={() => setOpen('details')}
+              >
+                Edit details
+              </button>
+            )}
             <button
               type="button"
               className={small}

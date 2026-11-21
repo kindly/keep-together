@@ -304,6 +304,23 @@ export function skipUnlessFakeGoCardless(mode: string) {
 }
 
 /**
+ * Skip a test that drives the Stripe fake (its onboarding and payment
+ * pages, its simulators) when the target runs Stripe in another mode, or
+ * not at all (keep-qc: `off`). Annotated `stripeNotFake`, so the run
+ * excuses its flows (qc/budgets.ts `fakeStripe`) and the routes only it
+ * covers, and the STRIPE banner lists what went untested. `mode` is GET
+ * /api/t/{slug}/stripe's.
+ */
+export function skipUnlessFakeStripe(mode: string) {
+  if (mode === 'fake') return
+  base.info().annotations.push({
+    type: 'stripeNotFake',
+    description: `KEEP_STRIPE=${mode}`,
+  })
+  base.skip(true, `needs KEEP_STRIPE=fake; the target runs ${mode}`)
+}
+
+/**
  * A world of its own for `worker` (not the worker's shared one): for a
  * spec that connects its group to GoCardless's QC account and must not
  * move another spec's connection (gocardless-sandbox.spec.ts).

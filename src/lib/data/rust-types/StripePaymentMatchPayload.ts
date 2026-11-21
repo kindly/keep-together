@@ -28,4 +28,10 @@ partialRefundClaimed: boolean,
  * (`not_individual`, `declaration_limit`, …). The submission still
  * holds what they ticked.
  */
-declarationRefused: string | null, };
+declarationRefused: string | null, 
+/**
+ * For staff (v3): set aside as not a donation, with why. Only a
+ * payment in the queue with nothing a donor typed behind it
+ * (`no_submission`); it leaves the queue and keeps its row.
+ */
+dismissed: string | null, };

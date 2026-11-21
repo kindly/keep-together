@@ -184,6 +184,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /giftaid/claims/{id}/schedule",
             "GET /giftaid/claims/{id}/xml",
             "GET /giftaid/hmrc-details",
+            "GET /giftaid/on-record",
             "GET /giftaid/scans/deletable",
             "GET /giftaid/{id}/history",
             "GET /giftaid/{id}/scans",
@@ -211,6 +212,8 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /standing-orders/missed",
             "GET /standing-orders/{id}",
             "GET /stripe",
+            "GET /stripe/dismissed",
+            "GET /stripe/page",
             "GET /stripe/unmatched",
             "POST /address-lookup",
             "POST /bank/accept",
@@ -300,7 +303,11 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /standing-orders/{id}/end",
             "POST /stripe/connect",
             "POST /stripe/disconnect",
+            "POST /stripe/page",
+            "POST /stripe/payments/{id}/name-checked",
+            "POST /stripe/unmatched/{id}/dismiss",
             "POST /stripe/unmatched/{id}/match",
+            "POST /stripe/unmatched/{id}/put-back",
         ],
         "the route table changed: check any new GET only reads, then update this list"
     );

@@ -220,7 +220,17 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<GiftView>> {
             display_name,
             kind,
         });
-    Ok(Some(GiftView { gift, contact }))
+    // One indexed read, and only for a Stripe gift.
+    let card = if gift.provider == Some(Provider::Stripe) {
+        crate::stripe::card_of_gift(conn, &gift.id)?
+    } else {
+        None
+    };
+    Ok(Some(GiftView {
+        gift,
+        contact,
+        card,
+    }))
 }
 
 // ── history ────────────────────────────────────────────────────────────────

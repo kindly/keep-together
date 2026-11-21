@@ -382,6 +382,10 @@ const FIXTURES: &[&str] = &[
      VALUES (3, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c7', 'pi_3QcFixture0003', NULL, 4000, 'gbp',
          'succeeded', '2026-11-20', 0, NULL, NULL, 0, NULL, NULL, 'no_submission', NULL, 0,
          NULL, NULL, 1);",
+    // v27: that payment set aside as not a donation, by a staff member.
+    "UPDATE stripe_payments SET dismissed_reason = 'Stall hire, not a donation',
+         dismissed_by = 1, dismissed_at = 8000, match_version = 2
+     WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c7';",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";

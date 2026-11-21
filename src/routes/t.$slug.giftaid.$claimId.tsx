@@ -15,6 +15,7 @@ import { localToday } from '../components/source-code-picker'
 import { downloadClaim, useClaim, useClaimStep } from '../lib/data'
 import type { Claim, ClaimDownload, ClaimStep } from '../lib/data'
 import { formatDay, formatPence, parsePounds, penceToInput } from '../lib/gifts'
+import { GiftAidOffNotice } from '../components/no-gift-aid'
 import { useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/giftaid/$claimId')({
@@ -183,6 +184,10 @@ function ClaimView({ claim }: { claim: Claim }) {
 
       {stepUp.form}
 
+      {/* A claim that exists stays finishable while Gift Aid is off: its
+          steps record what really happened with HMRC, whose payment
+          arrives whatever the switch says. Only a new claim is blocked. */}
+      <GiftAidOffNotice what="This claim stays on record and can still be taken through: mark it ready, submitted or paid as that happens with HMRC. Only a new claim can’t be started." />
       <Steps
         claim={claim}
         busy={busy}

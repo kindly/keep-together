@@ -55,6 +55,7 @@ async fn mine_lists_only_the_callers_groups_with_role_and_switches() {
             "staffCanManageFields": false, "fieldsVersion": null,
             "canManageIdentifierTypes": true, "canManageSourceCodes": true,
             "canManageFields": true,
+            "claimsGiftAid": true, "claimsGiftAidVersion": null,
         }])
     );
     let sam = w.login("sam@alpha.org").await;
@@ -244,7 +245,7 @@ async fn preferences_only_admins_switch_staff_follow_viewers_never() {
     for (k, v) in out["switches"].as_object().unwrap() {
         assert_eq!(&g[0][k], v, "{k}");
     }
-    assert_eq!(out["switches"].as_object().unwrap().len(), 9);
+    assert_eq!(out["switches"].as_object().unwrap().len(), 11);
     let (_, g) = w.call("GET", "/api/groups", &val, None).await;
     assert_eq!(g[0]["canManageFields"], false);
     assert_eq!(g[0]["staffCanManageFields"], true);
@@ -357,6 +358,13 @@ async fn claims_gift_aid_is_on_by_default_and_only_admins_switch_it() {
     assert_eq!(s, StatusCode::OK, "{out}");
     assert_eq!(out["counter"], 0);
     assert_eq!(out["claimsGiftAid"], json!({ "on": false, "version": 0 }));
+    // The answer carries the group's switches, and the caller's groups
+    // say so too: every page hides Gift Aid from them.
+    assert_eq!(out["switches"]["claimsGiftAid"], false);
+    assert_eq!(out["switches"]["claimsGiftAidVersion"], 0);
+    let (_, groups) = w.call("GET", "/api/groups", &val, None).await;
+    assert_eq!(groups[0]["slug"], "alpha");
+    assert_eq!(groups[0]["claimsGiftAid"], false);
     let (_, prefs) = w.call("GET", "/api/t/alpha/preferences", &sam, None).await;
     assert_eq!(prefs["claimsGiftAid"]["on"], false);
     // It never touches a list switch, and their saves never conflict with it.

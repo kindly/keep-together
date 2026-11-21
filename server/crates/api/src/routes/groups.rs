@@ -53,6 +53,11 @@ pub struct Switches {
     pub can_manage_identifier_types: bool,
     pub can_manage_source_codes: bool,
     pub can_manage_fields: bool,
+    /// "We claim Gift Aid" (on unless a group that isn't a charity
+    /// switched it off: the app then hides Gift Aid), and its counter.
+    pub claims_gift_aid: bool,
+    #[ts(type = "number | null")]
+    pub claims_gift_aid_version: Option<i64>,
 }
 
 impl Switches {
@@ -68,6 +73,8 @@ impl Switches {
             can_manage_identifier_types: prefs.may_manage(role, ListKind::IdentifierTypes),
             can_manage_source_codes: prefs.may_manage(role, ListKind::SourceCodes),
             can_manage_fields: prefs.may_manage(role, ListKind::Fields),
+            claims_gift_aid: prefs.claims_gift_aid.on,
+            claims_gift_aid_version: prefs.claims_gift_aid.version,
         }
     }
 }

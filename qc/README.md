@@ -203,6 +203,11 @@ Banners to look for:
   page). The banner lists them, the flows (`fakeGoCardless` in
   `qc/budgets.ts`) and routes they alone cover; those don't fail the
   "not timed" and coverage gates. The GoCardless screens were not tested.
+- **`STRIPE NOT FAKE`**: the same for the Stripe fake
+  (`skipUnlessFakeStripe`, flows marked `fakeStripe`): the target runs
+  Stripe in another mode or not at all (keep-qc: off), so
+  `qc/flows/stripe-ui.spec.ts`'s Stripe tests skipped. The card donation
+  screens were not tested. Locally the pool runs `KEEP_STRIPE=fake`.
 - **`NO BUDGETS on target qc`**: flows the target has no budget for yet
   (`targetBudgets` in `qc/budgets.ts`): timed and recorded, latency not
   judged. On keep-qc, the flows only the GoCardless fake times.
@@ -316,6 +321,9 @@ GitHub's runners, whose machine and network aren't the house's. A flow
 missing from a target's set is timed and recorded but not judged
 (`unbudgeted` in history, `not judged (no budget)` in the table); the
 harness's self-tests keep their budgets everywhere.
+A flow added since the target's last re-record that the target does time
+is named in `QC_AWAITING_RECORD` (`qc/budgets.ts`) until the next
+re-record gives it a line; it is never a way round one.
 
 The `qc` set was recorded by plan step A3 and approved by the human
 (2026-11-01), then re-recorded the same way after keep-qc moved to iad

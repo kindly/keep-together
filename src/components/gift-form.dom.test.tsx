@@ -58,7 +58,12 @@ vi.mock('@tanstack/react-query', async (original) => ({
   ...(await original<object>()),
   useQueryClient: () => ({}),
 }))
+/** "We claim Gift Aid" (Settings): a test switches it off to see what hides. */
+const giftAidSwitch = vi.hoisted(() => ({ on: true }))
 vi.mock('../lib/tenant', () => ({
+  // On, as every group is unless it says otherwise.
+  claimsGiftAid: () => giftAidSwitch.on,
+  useClaimsGiftAid: () => giftAidSwitch.on,
   useTenant: () => ({ _id: 'tenantA', slug: 'alpha' }),
   useCanWrite: () => true,
 }))

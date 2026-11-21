@@ -28,7 +28,27 @@ export * from './rust/auth'
 export { useAddressLookup } from './rust/address'
 export type { LookupAddress, LookupOutcome } from './rust/address'
 export { useOrgEvents } from './events'
-export { useOpened, useSetStaffCanManage } from './rust/platform'
+export {
+  useOpened,
+  useSetClaimsGiftAid,
+  useSetStaffCanManage,
+} from './rust/platform'
+export {
+  useCardQueue,
+  useCardQueueWrites,
+  useCardsSetAside,
+  useDonationPage,
+  useNameChecked,
+  useSaveDonationPage,
+  useStripeAdmin,
+  useStripeStatus,
+} from './rust/stripe'
+export type {
+  DonationPage,
+  DonationPageFields,
+  StripeStatus,
+  UnmatchedCardPayment,
+} from './rust/stripe'
 export {
   useEmailContext,
   useIdentifierTypes,
@@ -76,6 +96,7 @@ export {
   useRecordGift,
 } from './rust/gifts'
 export type {
+  CardPayment,
   ContactDeclarations,
   Declaration,
   DeclarationDetails,

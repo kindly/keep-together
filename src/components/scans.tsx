@@ -42,7 +42,7 @@ import {
 } from '../lib/giftaid'
 import type { Declaration } from '../lib/giftaid'
 import { formatDay, refusal } from '../lib/gifts'
-import { useCanWrite, useTenant } from '../lib/tenant'
+import { useCanWrite, useClaimsGiftAid, useTenant } from '../lib/tenant'
 import { useStepUp } from './claims-ui'
 import { ConfirmDialog } from './confirm-dialog'
 import { localToday } from './source-code-picker'
@@ -625,6 +625,7 @@ export function ScanReview({
   onDone: () => void
 }) {
   const scan = useScan(scanId)
+  const offered = useClaimsGiftAid()
   if (scan.isPending)
     return <p className="text-sm text-neutral-500">Loading…</p>
   if (scan.error)
@@ -637,10 +638,17 @@ export function ScanReview({
   const s = scan.data
   return (
     <div className="grid gap-6 md:grid-cols-2">
-      <ScanPages scan={s} editable={s.status === 'draft'} />
+      <ScanPages scan={s} editable={offered && s.status === 'draft'} />
       <div className="flex flex-col gap-4">
         <ScanFacts scan={s} />
-        {s.status === 'draft' ? (
+        {s.status === 'draft' && !offered ? (
+          // Matching it would record a declaration: not while the group
+          // has Gift Aid switched off. The scan itself stays viewable.
+          <p data-testid="gift-aid-off" className="text-sm text-neutral-600">
+            This group no longer claims Gift Aid (Settings › Gift Aid), so this
+            scan can’t be matched to a declaration. It is kept as it is.
+          </p>
+        ) : s.status === 'draft' ? (
           <MatchForm scan={s} contactId={contactId} onDone={onDone} />
         ) : (
           <p className="text-sm">

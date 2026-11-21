@@ -1,9 +1,16 @@
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ScanReview } from '../components/scans'
+import { GiftAidOnly } from '../components/no-gift-aid'
 import { useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/scans/$scanId')({
-  component: ReviewScan,
+  // A scan stays viewable while the group has Gift Aid on record; with
+  // the switch off it can't be matched (ScanReview).
+  component: () => (
+    <GiftAidOnly>
+      <ReviewScan />
+    </GiftAidOnly>
+  ),
 })
 
 /**

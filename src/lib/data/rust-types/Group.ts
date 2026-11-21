@@ -10,4 +10,9 @@ export type Group = { slug: string, name: string, role: Role,
  * When the caller last opened this group (ms); null if never
  * recorded (or they belong to only one).
  */
-lastUsedAt: number | null, staffCanManageIdentifierTypes: boolean, identifierTypesVersion: number | null, staffCanManageSourceCodes: boolean, sourceCodesVersion: number | null, staffCanManageFields: boolean, fieldsVersion: number | null, canManageIdentifierTypes: boolean, canManageSourceCodes: boolean, canManageFields: boolean, };
+lastUsedAt: number | null, staffCanManageIdentifierTypes: boolean, identifierTypesVersion: number | null, staffCanManageSourceCodes: boolean, sourceCodesVersion: number | null, staffCanManageFields: boolean, fieldsVersion: number | null, canManageIdentifierTypes: boolean, canManageSourceCodes: boolean, canManageFields: boolean, 
+/**
+ * "We claim Gift Aid" (on unless a group that isn't a charity
+ * switched it off: the app then hides Gift Aid), and its counter.
+ */
+claimsGiftAid: boolean, claimsGiftAidVersion: number | null, };

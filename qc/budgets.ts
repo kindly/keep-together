@@ -75,6 +75,13 @@ export interface Budget {
    * is listed in the GOCARDLESS banner instead of failing the run.
    */
   fakeGoCardless?: true
+  /**
+   * Timed only against the Stripe fake: untimed in a run whose tests
+   * skipped because the target has Stripe off or in another mode
+   * (`stripeNotFake`; keep-qc), it is listed in the STRIPE banner instead
+   * of failing the run.
+   */
+  fakeStripe?: true
 }
 
 const repeatable = { kind: 'repeatable', maxMs: 150, targetMs: 100 } as const
@@ -85,6 +92,7 @@ const rare = { kind: 'rare', maxMs: 250, targetMs: 200 } as const
 // keep-qc's page-upload flows have their own line, QC_FIXED).
 const bulk = { kind: 'bulk', maxMs: 500 } as const
 const fake = { fakeGoCardless: true } as const
+const fakeStripe = { fakeStripe: true } as const
 
 export const budgets = {
   // Step 9b, recorded 2026-10-18 in runs tn357fbu, tn35ew84, tn35t6tx
@@ -223,6 +231,21 @@ export const budgets = {
   'gocardless.instantPayment': { ...infrequent, ...fake },
   'gocardless.cancel': { ...infrequent, ...fake },
   'gocardless.match': { ...infrequent, ...fake },
+  // Stripe S5 (qc/flows/stripe-ui.spec.ts). PROVISIONAL: classes proposed
+  // by builder s5 for the human's OK, not recorded. Opening Settings ›
+  // Card donations and the card payments to match are reads: repeatable,
+  // as GoCardless's. Saving the donation page, matching a payment (its
+  // gift is made), setting one aside and "Name checked" each change one
+  // record and none calls Stripe: infrequent, as gocardless.match.
+  // "We claim Gift Aid" is a Settings switch: repeatable, as the list
+  // switches; it needs no Stripe, so it is timed on every target.
+  'stripe.settings': { ...repeatable, ...fakeStripe },
+  'stripe.savePage': { ...infrequent, ...fakeStripe },
+  'stripe.unmatched': { ...repeatable, ...fakeStripe },
+  'stripe.match': { ...infrequent, ...fakeStripe },
+  'stripe.setAside': { ...infrequent, ...fakeStripe },
+  'stripe.nameChecked': { ...infrequent, ...fakeStripe },
+  'settings.claimsGiftAid.toggle': repeatable,
   // Declaration scans step 6 (qc/flows/scans-e2e.spec.ts). Approved
   // (human, 2026-10-30): recorded 2026-10-29 in runs tnoxdojv,
   // tnoxdz0z, tnoxea0c with netem off and load under 2 (worst 182 ms),
@@ -328,7 +351,8 @@ export interface TargetBudgets {
 // human's fixed lines (QC_FIXED) stay. Bulk flows are not recorded.
 //
 // Not here: flows timed only against the GoCardless fake (untimed on
-// keep-qc, which runs the sandbox), so they stay unbudgeted there.
+// keep-qc, which runs the sandbox) or the Stripe fake (keep-qc has Stripe
+// off), so they stay unbudgeted there; and QC_AWAITING_RECORD, below.
 const QC_RTT_CEILING_MS = 90
 const QC_RECORDED: Partial<Record<FlowName, Budget>> = {
   'auth.signIn': { kind: 'oncePerSession', maxMs: 440 }, // worst 234/242/289
@@ -422,6 +446,18 @@ const QC_FIXED: Partial<Record<FlowName, Budget>> = {
   'bank.acceptTicked': bulk, // worst 214/231/181
   'contacts.bulkSetField': bulk, // worst 46/51/82
 }
+
+/**
+ * Flows added since keep-qc's last re-record that the target does time:
+ * no line there yet, so they are timed and recorded but not judged (the
+ * NO BUDGETS banner lists them) until the human's next re-record puts
+ * them in QC_RECORDED and takes them off this list. Never a way round a
+ * line: a flow here has none.
+ */
+export const QC_AWAITING_RECORD: ReadonlyArray<FlowName> = [
+  // Stripe S5: "We claim Gift Aid" (needs no Stripe, so keep-qc runs it).
+  'settings.claimsGiftAid.toggle',
+]
 
 export const targetBudgets: Partial<Record<QcTarget, TargetBudgets>> = {
   qc: {

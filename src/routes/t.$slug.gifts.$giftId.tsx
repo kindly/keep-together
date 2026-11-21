@@ -17,6 +17,7 @@ import {
   METHOD_LABELS,
   formatDay,
   formatPence,
+  methodLabel,
   penceToInput,
   refusal,
 } from '../lib/gifts'
@@ -33,8 +34,10 @@ import {
   useGift,
   useGiftWrites,
   useMembers,
+  useNameChecked,
 } from '../lib/data'
 import type {
+  CardPayment,
   ClaimSummary,
   GiftMethod,
   GiftStatus,
@@ -45,6 +48,8 @@ import { tenantPath } from '../lib/data/rust/client'
 import { keys } from '../lib/data/rust/keys'
 import { threeWayMerge } from '../lib/merge'
 import { AMOUNT_MESSAGES, amountPence } from '../lib/gift-form'
+import { declarationRefusedText } from '../lib/domain/card-payments'
+import { useGiftAid } from '../lib/gift-aid-shown'
 import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/gifts/$giftId')({
@@ -82,7 +87,10 @@ function GiftView({ gift }: { gift: Gift }) {
   const tenant = useTenant()
   const canWrite = useCanWrite()
   const members = useMembers()
-  const declarations = useDeclarations(gift.contactId)
+  // Gift Aid is hidden where none is claimed and none is on record
+  // (Settings › Gift Aid); the claim badge and lock always show.
+  const { shown: giftAid } = useGiftAid()
+  const declarations = useDeclarations(giftAid ? gift.contactId : undefined)
   // Never optimistic (gifts are financial records): the page shows the
   // new status once the server confirms it, from its answer.
   const writes = useGiftWrites(gift._id)
@@ -219,7 +227,7 @@ function GiftView({ gift }: { gift: Gift }) {
             <dt className="text-neutral-500">Amount</dt>
             <dd>{formatPence(gift.amount)}</dd>
             <dt className="text-neutral-500">Method</dt>
-            <dd>{METHOD_LABELS[gift.method]}</dd>
+            <dd>{methodLabel(gift)}</dd>
             {gift.method !== 'cash' && (
               <>
                 <dt className="text-neutral-500">Reference</dt>
@@ -263,23 +271,31 @@ function GiftView({ gift }: { gift: Gift }) {
                 ))}
               </ul>
             </dd>
-            <dt className="text-neutral-500">Gift Aid</dt>
-            <dd data-testid="gift-coverage">
-              {gift.contact?.kind !== 'individual'
-                ? 'Not for an organisation or household'
-                : isVoid
-                  ? 'None: a void gift is never claimed'
-                  : !received
-                    ? 'None until the money is received'
-                    : coverage === undefined
-                      ? '…'
-                      : coverage
-                        ? `✓ Covered by ${describeDeclaration(coverage)}`
-                        : 'Not covered by a declaration'}
-            </dd>
+            {giftAid && (
+              <>
+                <dt className="text-neutral-500">Gift Aid</dt>
+                <dd data-testid="gift-coverage">
+                  {gift.contact?.kind !== 'individual'
+                    ? 'Not for an organisation or household'
+                    : isVoid
+                      ? 'None: a void gift is never claimed'
+                      : !received
+                        ? 'None until the money is received'
+                        : coverage === undefined
+                          ? '…'
+                          : coverage
+                            ? `✓ Covered by ${describeDeclaration(coverage)}`
+                            : 'Not covered by a declaration'}
+                </dd>
+              </>
+            )}
             <dt className="text-neutral-500">Entered by</dt>
             <dd>{name(gift.enteredBy)}</dd>
           </dl>
+        )}
+
+        {!editing && gift.card && (
+          <CardPaymentNotes gift={gift} card={gift.card} />
         )}
 
         {!editing && warnings.length > 0 && (
@@ -400,7 +416,7 @@ function GiftView({ gift }: { gift: Gift }) {
                 ? {
                     title: 'Unvoid this gift?',
                     description: gift.provider
-                      ? 'It takes its payment’s status again: it counts once GoCardless says the money was collected. You can void it again later.'
+                      ? `It takes its payment’s status again: it counts once ${gift.provider === 'stripe' ? 'Stripe says the card was charged' : 'GoCardless says the money was collected'}. You can void it again later.`
                       : 'It counts again, and Gift Aid can be claimed on it if a declaration covers it. You can void it again later.',
                     confirm: 'Unvoid',
                   }
@@ -440,6 +456,112 @@ function GiftView({ gift }: { gift: Gift }) {
       </div>
       <GiftHistory id={gift._id} members={members} />
     </main>
+  )
+}
+
+/**
+ * A card gift from the donation page (Stripe S5): Stripe's payment, what
+ * it has refunded or disputed, and the three things staff may need to
+ * act on. "First name differs": the donor typed another first name than
+ * the contact's (a couple sharing an email address). Moving the gift to
+ * another contact isn't available yet, and the page says so. It does not
+ * suggest voiding it and recording another by hand: a gift made by hand
+ * never hears of a refund or dispute on the payment (review s5r M2).
+ * "Name checked" clears the mark when it is the right person. A refused
+ * declaration and a part refund on a claimed gift are said plainly.
+ * Never optimistic: the mark goes when the server says so.
+ */
+function CardPaymentNotes({ gift, card }: { gift: Gift; card: CardPayment }) {
+  const canWrite = useCanWrite()
+  const { shown: claims } = useGiftAid()
+  const checked = useNameChecked(gift._id)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function nameChecked() {
+    setBusy(true)
+    setError(null)
+    try {
+      await checked(card.id, card.matchVersion)
+    } catch (err) {
+      setError(
+        refusal(
+          err,
+          'Couldn’t clear the mark',
+          'Someone else changed this gift’s payment just now: check it, then try again',
+        ),
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const note =
+    'rounded border border-amber-300 bg-amber-50 px-2 py-1 text-sm text-amber-900'
+  return (
+    <section
+      aria-label="Card payment"
+      data-testid="gift-card"
+      data-match-version={card.matchVersion}
+      className="flex flex-col gap-2"
+    >
+      <p className="text-sm text-neutral-600">
+        {card.fromPage
+          ? 'Given by card on the donation page.'
+          : 'A card payment on the group’s Stripe account, matched to this donor by hand.'}{' '}
+        Its amount, date and status are Stripe’s:{' '}
+        <span className="font-mono text-xs">{card.paymentId}</span>
+        {card.refundedAmount > 0n &&
+          ` · ${formatPence(card.refundedAmount)} of ${formatPence(card.amount)} refunded`}
+        {card.dispute &&
+          ` · dispute ${card.dispute === 'open' ? 'open' : card.dispute}`}
+        . Refunds are made in the group’s Stripe Dashboard and show here.
+      </p>
+      {card.firstNameTyped && (
+        <div data-testid="card-first-name" className={note}>
+          <p>
+            First name differs: the donor typed “{card.firstNameTyped}”, and
+            this contact is {gift.contact?.displayName ?? 'someone else'}. It
+            may be another person at the same email address.
+          </p>
+          <p className="mt-1">
+            If it is someone else’s gift, moving it to their contact isn’t
+            available yet. It stays here for now and keeps following its
+            payment: a refund or a dispute at Stripe still shows on this gift.
+          </p>
+          {canWrite && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void nameChecked()}
+              className={`${secondary} mt-2`}
+            >
+              {busy ? 'Saving…' : 'Name checked: it’s the right person'}
+            </button>
+          )}
+        </div>
+      )}
+      {claims && card.declarationRefused && (
+        <p data-testid="card-declaration-refused" className={note}>
+          {declarationRefusedText(card.declarationRefused)}
+        </p>
+      )}
+      {card.partialRefundClaimed && (
+        <p data-testid="card-partial-refund" className={note}>
+          Part of this payment was refunded after the gift went into a Gift Aid
+          claim. The gift keeps the amount that was claimed (
+          {formatPence(gift.amount)}); the group kept{' '}
+          {formatPence(card.amount - card.refundedAmount)}. Paying the tax on
+          the difference back to HMRC isn’t automatic yet: tell whoever does the
+          group’s claims.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-red-700">
+          {error}
+        </p>
+      )}
+    </section>
   )
 }
 
