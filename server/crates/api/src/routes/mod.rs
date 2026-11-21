@@ -20,6 +20,7 @@ mod notes;
 mod preferences;
 pub mod qc_gocardless;
 pub mod qc_seed;
+pub mod qc_stripe;
 mod relationships;
 mod scans;
 mod sources;

@@ -250,6 +250,11 @@ pub fn app(state: AppState, domain: Router) -> Router {
             "/api/dev/qc-gocardless/cleanup",
             post(routes::qc_gocardless::cleanup),
         )
+        .route("/api/qc/stripe/connect", post(routes::qc_stripe::connect))
+        .route(
+            "/api/dev/qc-stripe/connect",
+            post(routes::qc_stripe::connect),
+        )
         .route("/api/me", get(auth::me))
         .route("/api/groups", get(routes::groups::mine))
         .route("/api/groups/{slug}/opened", post(routes::groups::opened))

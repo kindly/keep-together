@@ -25,6 +25,8 @@
 //!   `KEEP_STRIPE_WEBHOOK_SECRET`: card donations (`stripe`); `fake` and
 //!   `test` are refused with `KEEP_ENV=prod`, `live` without it, and
 //!   `test`/`live` without the key (of that mode) and the secret
+//! - `KEEP_QC_STRIPE_ACCOUNT`: the QC run's connected account in the
+//!   sandbox (`routes::qc_stripe`); refused with `KEEP_ENV=prod`
 //! - `KEEP_QC_GOCARDLESS_TOKEN`, `KEEP_QC_GOCARDLESS_ORGANISATION`: the QC
 //!   sandbox account (`routes::qc_gocardless`); both or neither, refused
 //!   with `KEEP_ENV=prod` or `KEEP_GOCARDLESS=live`
@@ -140,6 +142,9 @@ async fn main() {
     .map(Arc::new);
     if let Some(s) = &stripe {
         eprintln!("stripe {:?}: webhook endpoint {}", s.mode, s.webhook_url());
+        if let Some(account) = &s.qc_account {
+            eprintln!("stripe QC account {account} (/api/qc/stripe/connect with KEEP_QC_TOKEN)");
+        }
     }
     if let Some(lookup) = &address {
         eprintln!(

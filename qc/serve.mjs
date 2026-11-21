@@ -64,11 +64,19 @@ http
       req.pipe(up)
       return
     }
-    const p = path.join(dir, decodeURIComponent(req.url.split('?')[0]))
+    const pathname = decodeURIComponent(req.url.split('?')[0])
+    const p = path.join(dir, pathname)
+    // As the api serves the build (server/crates/api/src/static_files.rs):
+    // `/give/…` is the donor's page, its own entry; anything else that
+    // isn't a file is the app.
+    const fallback =
+      pathname === '/give' || pathname.startsWith('/give/')
+        ? 'give.html'
+        : 'index.html'
     const file =
       p.startsWith(dir) && existsSync(p) && statSync(p).isFile()
         ? p
-        : path.join(dir, 'index.html')
+        : path.join(dir, fallback)
     res.writeHead(200, {
       'content-type': types[path.extname(file)] ?? 'application/octet-stream',
     })

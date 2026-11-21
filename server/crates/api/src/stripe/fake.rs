@@ -130,6 +130,8 @@ struct World {
     payments: HashMap<String, Value>,
     /// Every dispute, oldest first, each naming its `payment_intent`.
     disputes: Vec<Value>,
+    /// The QC run's account ([`Fake::qc_account`]), once made.
+    qc_account: Option<String>,
 }
 
 impl World {
@@ -299,9 +301,44 @@ impl Fake {
     pub fn wipe(&self) {
         let mut w = self.world();
         w.accounts.clear();
+        w.qc_account = None;
         w.idempotency.clear();
         w.failed_keys.clear();
         w.links.clear();
+    }
+
+    /// The QC run's connected account, as the one onboarded by hand in a
+    /// sandbox is: Stripe's form sent in and card payments on. Made on
+    /// first use and the same from then on (`routes::qc_stripe`).
+    pub fn qc_account(&self) -> String {
+        let mut w = self.world();
+        if let Some(id) = w
+            .qc_account
+            .clone()
+            .filter(|id| w.accounts.contains_key(id))
+        {
+            return id;
+        }
+        let made = Self::new_account(
+            &mut w,
+            "QC",
+            "gb",
+            "full",
+            "account",
+            "stripe",
+            json!({ "keep_qc": "1" }),
+        );
+        let id = made["id"].as_str().expect("an account id").to_owned();
+        let a = w.accounts.get_mut(&id).expect("just made");
+        for flag in ["details_submitted", "charges_enabled", "payouts_enabled"] {
+            a[flag] = json!(true);
+        }
+        a["requirements"] = json!({
+            "currently_due": [], "past_due": [], "eventually_due": [],
+            "disabled_reason": null
+        });
+        w.qc_account = Some(id.clone());
+        id
     }
 
     fn new_account(

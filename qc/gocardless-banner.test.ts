@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, test } from 'vitest'
 import type { TestCase, TestResult } from '@playwright/test/reporter'
-import QcReporter, { goCardlessQcBanner } from './reporter'
+import QcReporter, { goCardlessQcBanner, stripeQcBanner } from './reporter'
 
 // The GoCardless sandbox spec's banners (qc/flows/gocardless-sandbox.spec.ts,
 // plan gocardless-sandbox-qc.sv G3): a late webhook passes with a
@@ -126,5 +126,60 @@ describe('the reporter collects the spec’s annotations', () => {
     expect([...(notes.estimate ?? new Map())]).toEqual([
       ['gocardless-sandbox.spec.ts › first charge', ['day 3']],
     ])
+  })
+})
+
+describe('the Stripe sandbox spec’s skips', () => {
+  const testCase = (title: string) =>
+    ({
+      titlePath: () => ['', 'chromium', 'stripe-sandbox.spec.ts', title],
+      annotations: [],
+    }) as unknown as TestCase
+  const result = (
+    status: TestResult['status'],
+    annotations: Array<{ type: string; description?: string }>,
+  ) =>
+    ({
+      status,
+      annotations,
+      startTime: new Date(),
+      duration: 1,
+    }) as unknown as TestResult
+
+  test('nothing skipped: no banner', () => {
+    expect(stripeQcBanner({ off: new Map(), unreachable: new Map() })).toEqual(
+      [],
+    )
+  })
+
+  test('Stripe off on the target: a banner naming each test and why, from skipped tests only', () => {
+    const r = new QcReporter()
+    r.onTestEnd(
+      testCase('a donation with Gift Aid'),
+      result('skipped', [
+        { type: 'stripeSandboxOff', description: 'KEEP_STRIPE=off on qc' },
+      ]),
+    )
+    r.onTestEnd(
+      testCase('a disputed payment'),
+      result('skipped', [
+        { type: 'stripeUnreachable', description: 'connect: 503' },
+      ]),
+    )
+    // An annotation on a test that still ran isn't a skip.
+    r.onTestEnd(
+      testCase('ran'),
+      result('passed', [{ type: 'stripeSandboxOff', description: 'x' }]),
+    )
+    const notes = (r as unknown as { stripeQc: Parameters<typeof stripeQcBanner>[0] })
+      .stripeQc
+    const text = stripeQcBanner(notes).join('\n')
+    expect(text).toMatch(
+      /STRIPE SANDBOX NOT RUN on the target: 1 test skipped; card donations against Stripe were NOT tested[^\n]*\n!! stripe-sandbox\.spec\.ts › a donation with Gift Aid: KEEP_STRIPE=off on qc/,
+    )
+    expect(text).toMatch(
+      /STRIPE UNREACHABLE: 1 test skipped[^\n]*\n!! stripe-sandbox\.spec\.ts › a disputed payment: connect: 503/,
+    )
+    expect(text).not.toContain('› ran')
   })
 })

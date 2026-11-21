@@ -1,18 +1,22 @@
-import { randomBytes } from 'node:crypto'
 import { expect, skipUnlessFakeStripe, test } from '../fixtures'
 import type { Page } from '@playwright/test'
-import type { ContactRow } from '../../src/lib/data/rust-types/ContactRow'
 import type { DonationPage } from '../../src/lib/data/rust-types/DonationPage'
 import type { GiftAidOnRecord } from '../../src/lib/data/rust-types/GiftAidOnRecord'
 import type { GiftPage } from '../../src/lib/data/rust-types/GiftPage'
 import type { GiftView } from '../../src/lib/data/rust-types/GiftView'
 import type { Preferences } from '../../src/lib/data/rust-types/Preferences'
-import type { SearchResult } from '../../src/lib/data/rust-types/SearchResult'
-import type { SourcePicker } from '../../src/lib/data/rust-types/SourcePicker'
-import type { StripeStatus } from '../../src/lib/data/rust-types/StripeStatus'
 import type { UnmatchedCardPayment } from '../../src/lib/data/rust-types/UnmatchedCardPayment'
 import { createContact, uniqueName, want } from './contact.helpers'
-import { GIFT_ROUTE, today } from './gift.helpers'
+import { GIFT_ROUTE } from './gift.helpers'
+import {
+  CODE,
+  contactOnce,
+  contactsNamed,
+  give,
+  json,
+  statusOf,
+  takingDonations,
+} from './stripe.helpers'
 
 // Stripe S5's staff screens on the fake (factory/plans/stripe.sv):
 // Settings › Card donations (connecting through Stripe's hosted form and
@@ -32,77 +36,6 @@ import { GIFT_ROUTE, today } from './gift.helpers'
 const SETTINGS = { type: 'route', description: '/t/$slug/settings/stripe' }
 const QUEUE = { type: 'route', description: '/t/$slug/stripe/unmatched' }
 const GIFT_AID = { type: 'route', description: '/t/$slug/settings/giftaid' }
-const CODE = 'Event-Gala-001'
-
-async function json<T>(
-  page: Page,
-  method: 'GET' | 'POST',
-  path: string,
-  data?: unknown,
-): Promise<T> {
-  const res =
-    method === 'GET'
-      ? await page.request.get(path)
-      : await page.request.post(path, { data: data ?? {} })
-  expect(res.ok(), `${method} ${path}: ${res.status()}`).toBe(true)
-  return (await res.json()) as T
-}
-
-const statusOf = (page: Page, slug: string) =>
-  json<StripeStatus>(page, 'GET', `/api/t/${slug}/stripe`)
-
-/**
- * The group taking card donations, set up through the API and the fake's
- * onboarding page when it isn't: connected, Stripe's form sent in
- * ("Complete"), and the donation page given a source code. Off the fake:
- * skipped before anything loads.
- */
-async function takingDonations(
-  page: Page,
-  slug: string,
-): Promise<StripeStatus> {
-  let now = await statusOf(page, slug)
-  skipUnlessFakeStripe(now.mode)
-  if (!now.chargesEnabled) {
-    const { url } = await json<{ url: string | null }>(
-      page,
-      'POST',
-      `/api/t/${slug}/stripe/connect`,
-    )
-    if (url) {
-      await page.goto(url)
-      await page.getByRole('button', { name: 'Complete' }).click()
-      await page.waitForURL(/\/settings\/stripe\?stripe=return$/)
-    }
-    await expect
-      .poll(async () => (await statusOf(page, slug)).chargesEnabled, {
-        timeout: 10_000,
-      })
-      .toBe(true)
-    now = await statusOf(page, slug)
-  }
-  const held = await json<DonationPage>(
-    page,
-    'GET',
-    `/api/t/${slug}/stripe/page`,
-  )
-  if (!held.takingDonations) {
-    const q = new URLSearchParams({ today: today(), search: CODE })
-    const { codes } = await json<SourcePicker>(
-      page,
-      'GET',
-      `/api/t/${slug}/sources/picker?${q.toString()}`,
-    )
-    await json(page, 'POST', `/api/t/${slug}/stripe/page`, {
-      expected: held.version,
-      amounts: held.amounts,
-      minimum: held.minimum,
-      maximum: held.maximum,
-      sourceCodeId: codes[0].versionId,
-    })
-  }
-  return now
-}
 
 /** A payment taken some other way on the group's account, once queued. */
 async function outsidePayment(
@@ -131,23 +64,6 @@ async function outsidePayment(
     )
     .toBe(true)
   return out.payment_intent
-}
-
-/** A donor gives £10 on the group's page and pays on Stripe's (the fake's). */
-async function give(
-  page: Page,
-  slug: string,
-  donor: { firstName: string; lastName: string; email: string },
-) {
-  const { url } = await json<{ url: string }>(
-    page,
-    'POST',
-    `/api/give/${slug}/donations`,
-    { id: randomBytes(16).toString('hex'), amount: 1000, ...donor },
-  )
-  await page.goto(url)
-  await page.getByRole('button', { name: 'Pay' }).click()
-  await page.waitForURL(new RegExp(`/give/${slug}/`))
 }
 
 /** The contact's card gift still marked with another first name, once made. */
@@ -490,28 +406,13 @@ test.describe('Stripe screens (fake)', () => {
     const lastName = uniqueName('pair')
     const email = `${lastName}@qc.keep-together.invalid`
     await give(page, slug, { firstName: 'John', lastName, email })
-    let contact: ContactRow | undefined
-    await expect
-      .poll(
-        async () => {
-          const q = new URLSearchParams({ q: lastName })
-          const { rows } = await json<SearchResult>(
-            page,
-            'GET',
-            `/api/t/${slug}/contacts/search?${q.toString()}`,
-          )
-          contact = rows.at(0)
-          return rows.length
-        },
-        { timeout: 10_000 },
-      )
-      .toBe(1)
+    const contact = await contactOnce(page, slug, lastName)
 
     // Each repeat is another gift from Jane.
     await flow(page, 'stripe.nameChecked', {
       before: async () => {
         await give(page, slug, { firstName: 'Jane', lastName, email })
-        const giftId = await flaggedGift(page, slug, contact!.id)
+        const giftId = await flaggedGift(page, slug, contact.id)
         await page.goto(`/t/${slug}/gifts/${giftId}`)
         await expect(page.getByTestId('card-first-name')).toContainText(
           'the donor typed “Jane”',
@@ -528,12 +429,7 @@ test.describe('Stripe screens (fake)', () => {
     )
     await expect(page.getByText('Card (donation page)')).toBeVisible()
     // Still one contact: Jane's gifts went to John's record, marked.
-    const q = new URLSearchParams({ q: lastName })
-    const { rows } = await json<SearchResult>(
-      page,
-      'GET',
-      `/api/t/${slug}/contacts/search?${q.toString()}`,
-    )
+    const rows = await contactsNamed(page, slug, lastName)
     expect(rows).toHaveLength(1)
   })
 })

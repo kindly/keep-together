@@ -246,6 +246,13 @@ export const budgets = {
   'stripe.setAside': { ...infrequent, ...fakeStripe },
   'stripe.nameChecked': { ...infrequent, ...fakeStripe },
   'settings.claimsGiftAid.toggle': repeatable,
+  // Stripe S6 (qc/flows/give.spec.ts): the donor's page's first load, from
+  // the link to the form on screen. PROVISIONAL, for the human's OK: a
+  // first load is oncePerSession, whose budget is recorded (1.5× the worst
+  // of three record runs under netem); until then it is held to the
+  // repeatable line. The page needs a group taking card donations, so it
+  // is timed only on the fake.
+  'give.open': { kind: 'oncePerSession', maxMs: 150, ...fakeStripe },
   // Declaration scans step 6 (qc/flows/scans-e2e.spec.ts). Approved
   // (human, 2026-10-30): recorded 2026-10-29 in runs tnoxdojv,
   // tnoxdz0z, tnoxea0c with netem off and load under 2 (worst 182 ms),
