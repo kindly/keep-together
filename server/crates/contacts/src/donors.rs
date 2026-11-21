@@ -149,11 +149,71 @@ pub fn kind_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<Kind>> {
         .optional()
 }
 
+/// Whether the contact is archived; `None` for an unknown id.
+pub fn is_archived(conn: &Connection, id: &str) -> rusqlite::Result<Option<bool>> {
+    conn.prepare_cached("SELECT archived FROM contacts WHERE id = ?1")?
+        .query_row([id], |r| r.get(0))
+        .optional()
+}
+
 /// The contact's display name and kind as they read now, or `None`.
 pub fn name_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, Kind)>> {
     conn.prepare_cached("SELECT display_name, kind FROM contacts WHERE id = ?1")?
         .query_row([id], |r| Ok((r.get(0)?, kind(&r.get::<_, String>(1)?))))
         .optional()
+}
+
+/// A contact that has an email address, as donor matching needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailHolder {
+    pub id: String,
+    pub display_name: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub archived: bool,
+    pub deceased: bool,
+}
+
+/// The contacts that have an email address, archived ones included.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EmailHolders {
+    pub contacts: Vec<EmailHolder>,
+    /// More rows have the address than were read: "exactly one" can't be
+    /// said.
+    pub truncated: bool,
+}
+
+/// Who has `address` (case and surrounding space ignored), oldest first:
+/// [`crate::queries::find_by_email`] with each contact's name. A blank
+/// address finds nobody.
+pub fn by_email(conn: &Connection, address: &str) -> rusqlite::Result<EmailHolders> {
+    let found = crate::queries::find_by_email(conn, address)?;
+    let mut contacts = Vec::with_capacity(found.ids.len());
+    for id in found.ids {
+        let row = conn
+            .prepare_cached(
+                "SELECT display_name, first_name, last_name, archived, is_deceased
+                 FROM contacts WHERE id = ?1",
+            )?
+            .query_row([&id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .optional()?;
+        if let Some((display_name, first_name, last_name, archived, deceased)) = row {
+            contacts.push(EmailHolder {
+                id,
+                display_name,
+                first_name,
+                last_name,
+                archived,
+                deceased,
+            });
+        }
+    }
+    Ok(EmailHolders {
+        contacts,
+        truncated: found.truncated,
+    })
 }
 
 /// A new contact (`contacts.details`, which takes its contact number),

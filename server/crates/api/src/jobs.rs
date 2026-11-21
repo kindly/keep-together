@@ -393,6 +393,8 @@ pub fn standard(store: &Arc<Store>) -> Jobs {
         // Bank transfers step 5: standing orders' missed payments.
         .register(crate::routes::standing_orders::StandingOrdersMissed(
             store.clone(),
-        ));
+        ))
+        // Stripe plan S3: unpaid donation submissions past their 30 days.
+        .register(crate::stripe::payments::RetentionJob(store.clone()));
     jobs
 }

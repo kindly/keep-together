@@ -1442,6 +1442,9 @@ fn sync_gift(
 /// date than the gift (which a claim holds): a draft claim holding it is
 /// held back (Gift Aid's Ready check, review L4).
 pub fn payment_moved(conn: &Connection, gift_id: &str) -> rusqlite::Result<bool> {
+    if crate::stripe::payment_moved(conn, gift_id)? {
+        return Ok(true);
+    }
     conn.prepare_cached(
         "SELECT 1 FROM direct_debit_payments p JOIN gifts g ON g.id = p.gift_id
          WHERE p.gift_id = ?1 AND (p.amount <> g.amount OR p.charge_date <> g.received_on)
@@ -1463,7 +1466,8 @@ pub fn resync_gift(ctx: &Ctx, gift_id: &str, group: &CommandGroup) -> Result<(),
         .query_row([gift_id], payment_row)
         .optional()?
     else {
-        return Ok(());
+        // A card gift follows its Stripe payment the same way.
+        return crate::stripe::resync_gift(ctx, gift_id, group);
     };
     let report = PaymentReport {
         payment_id: p.payment_id,
@@ -1565,13 +1569,18 @@ pub fn payment_status_of_gift(
     conn: &Connection,
     gift_id: &str,
 ) -> rusqlite::Result<Option<(Status, Option<String>)>> {
-    conn.prepare_cached("SELECT status, reason FROM direct_debit_payments WHERE gift_id = ?1")?
+    let direct_debit = conn
+        .prepare_cached("SELECT status, reason FROM direct_debit_payments WHERE gift_id = ?1")?
         .query_row([gift_id], |r| {
             let status = PaymentStatus::parse(&r.get::<_, String>(0)?);
             let reason: Option<String> = r.get(1)?;
             Ok((status.gift_status(), gift_reason(status, reason.as_deref())))
         })
-        .optional()
+        .optional()?;
+    match direct_debit {
+        Some(found) => Ok(Some(found)),
+        None => crate::stripe::payment_status_of_gift(conn, gift_id),
+    }
 }
 
 /// A payment we couldn't tie to a donor, as staff see it to match it.

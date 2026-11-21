@@ -133,33 +133,29 @@ pub struct DonorDeclaration {
     pub postcode: String,
 }
 
-/// What [`make_donor_declaration`] did.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DonorDeclared {
-    /// A new declaration joined the contact's chain.
-    Made(Executed),
-    /// A declaration in the chain already covers the gift: nothing added.
-    AlreadyCovered(DeclarationSummary),
-}
-
 /// The declaration a donor made themselves on the donation page: the one
 /// way an `onScreenByDonor` declaration is recorded. The api calls it
 /// when the donor's payment completes, in the same transaction and
-/// command group as the gift, as the system; no payload staff send can
-/// reach it ([`rules::prepare_declaration`] still refuses the method).
+/// command group as the gift. Its source is always the system's (the
+/// donor made it, not staff); the caller's actor is recorded as who
+/// entered it (nobody, or the staff member who matched the payment). No
+/// payload staff send can reach it ([`rules::prepare_declaration`] still refuses the method).
 ///
-/// It adds to the chain, never sets a flag (rule 1): a gift a declaration
-/// already covers (a second gift under an enduring one) adds nothing.
-/// Refused like any declaration for a contact that isn't a person, a
-/// gift that isn't the contact's or is void, or a date after today; and
-/// with any of the donor's name, house name or number, or postcode blank.
+/// It adds to the chain, never sets a flag (rule 1), and it is always
+/// kept: a donor who ticks the box has made a declaration, whether or
+/// not an older one in the chain already covers the gift (the human's
+/// decision, 2026-11-21: the newer one may be the better evidence, and
+/// it outlives the older one's cancellation). Refused like any
+/// declaration for a contact that isn't a person, a gift that isn't the
+/// contact's or is void, or a date after today; and with any of the
+/// donor's name, house name or number, or postcode blank.
 pub fn make_donor_declaration(
     ctx: &Ctx,
     declared: DonorDeclaration,
     group: &CommandGroup,
-) -> Result<DonorDeclared, ContractError> {
+) -> Result<Executed, ContractError> {
     let conn = ctx.tx.read();
-    let gift = giving::describe_gift(conn, &declared.gift_id)?
+    giving::describe_gift(conn, &declared.gift_id)?
         .filter(|g| g.contact_id == declared.contact_id)
         .ok_or_else(|| {
             ContractError::rejected(
@@ -167,14 +163,6 @@ pub fn make_donor_declaration(
                 "A declaration can only name one of this contact’s gifts",
             )
         })?;
-    if let Some(held) = coverage(
-        conn,
-        &declared.contact_id,
-        &gift.received_on,
-        Some(&declared.gift_id),
-    )? {
-        return Ok(DonorDeclared::AlreadyCovered(held));
-    }
     execute(
         ctx,
         &declarations::DONOR_DECLARATION,
@@ -192,7 +180,6 @@ pub fn make_donor_declaration(
         },
         Exec::create(Source::System).in_group(group),
     )
-    .map(DonorDeclared::Made)
 }
 
 /// "Record cancellation" on the contact page: cancels from

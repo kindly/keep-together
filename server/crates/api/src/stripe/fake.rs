@@ -48,9 +48,11 @@
 //!   we never heard so);
 //! - `GET simulate/webhooks`: what was delivered (ids, types, landed).
 //!
-//! S3 and S4 add Checkout Sessions, payments, refunds, disputes and `GET
-//! v1/events` here; [`Fake::event`] and [`Fake::deliver`] are theirs to
-//! use.
+//! Payments, refunds, disputes and `GET v1/events` are in [`payments`]
+//! (`fake_payments.rs`, S3); Checkout Sessions are S4's.
+
+#[path = "fake_payments.rs"]
+pub mod payments;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -119,6 +121,11 @@ struct World {
     outage: Option<Outage>,
     /// API requests answered, by `"<METHOD> <path without ids>"`.
     calls: HashMap<String, usize>,
+    /// PaymentIntent id → the intent in Stripe's shape, its charge under
+    /// `latest_charge` and its connected `account` ([`payments`]).
+    payments: HashMap<String, Value>,
+    /// Every dispute, oldest first, each naming its `payment_intent`.
+    disputes: Vec<Value>,
 }
 
 impl World {
@@ -395,6 +402,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
         .route("/v1/accounts/{id}", get(get_account))
         .route("/v2/core/account_links", post(create_link_v2))
         .route("/v1/account_links", post(create_link_v1))
+        .merge(payments::api())
         .layer(axum::middleware::from_fn_with_state(fake.clone(), gate));
     Router::new()
         .merge(api)
@@ -409,6 +417,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(fake: Arc<Fake>) -> Router<S> {
         .route("/simulate/webhooks/hold", post(hold_webhooks))
         .route("/simulate/webhooks/release", post(release_webhooks))
         .route("/simulate/outage", post(outage))
+        .merge(payments::simulators())
         .with_state(fake)
 }
 

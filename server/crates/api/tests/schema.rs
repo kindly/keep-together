@@ -373,6 +373,15 @@ const FIXTURES: &[&str] = &[
      WHERE id = '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c3';",
     // v25: a group that isn't a charity switched Gift Aid off.
     "UPDATE tenant_preferences SET claims_gift_aid = 0, claims_gift_aid_version = 1;",
+    // v26: a payment taken some other way on the group's Stripe account,
+    // in the staff queue with nothing a donor typed behind it.
+    "INSERT INTO stripe_payments (seq, id, payment_id, submission_id, amount, currency,
+         status, paid_on, refunded_amount, dispute_state, reason, version, contact_id,
+         gift_id, unmatched_reason, first_name_typed, partial_refund_claimed, matched_by,
+         matched_at, match_version)
+     VALUES (3, '0190f0c0a0b0c0d0e0f0a0b0c0d0e1c7', 'pi_3QcFixture0003', NULL, 4000, 'gbp',
+         'succeeded', '2026-11-20', 0, NULL, NULL, 0, NULL, NULL, 'no_submission', NULL, 0,
+         NULL, NULL, 1);",
 ];
 
 const TENANT: &str = "0190f0c0a0b0c0d0e0f0a0b0c0d0e0ff";

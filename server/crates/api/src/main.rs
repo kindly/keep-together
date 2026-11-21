@@ -244,6 +244,10 @@ async fn main() {
             store: store.clone(),
             stripe: s.clone(),
         });
+        jobs.register(api::stripe::catchup::CatchUpJob {
+            store: store.clone(),
+            stripe: s.clone(),
+        });
     }
     let state = AppState::new(store, dev_auth)
         .with_scan_limits(Arc::new(scan_limits))

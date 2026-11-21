@@ -211,6 +211,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /standing-orders/missed",
             "GET /standing-orders/{id}",
             "GET /stripe",
+            "GET /stripe/unmatched",
             "POST /address-lookup",
             "POST /bank/accept",
             "POST /bank/accounts",
@@ -299,6 +300,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "POST /standing-orders/{id}/end",
             "POST /stripe/connect",
             "POST /stripe/disconnect",
+            "POST /stripe/unmatched/{id}/match",
         ],
         "the route table changed: check any new GET only reads, then update this list"
     );

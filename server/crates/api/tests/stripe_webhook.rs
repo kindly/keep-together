@@ -377,19 +377,31 @@ async fn handled_events_are_purged_and_kept_ones_stay() {
     let kept = t
         .simulate(account, json!({ "payouts_enabled": true }))
         .await;
-    let long_after = contracts::now_ms() + api::stripe::process::KEEP_HANDLED_MS + 1000;
-    api::stripe::process::purge(&t.w.store, long_after).unwrap();
-    let left: Vec<String> =
+    let left = |at: i64| -> Vec<String> {
+        api::stripe::process::purge(&t.w.store, at).unwrap();
         t.w.store
             .platform()
             .with_read(|c| {
                 Ok::<_, store::StoreError>(
-                    c.prepare("SELECT id FROM stripe_events")?
+                    c.prepare("SELECT id FROM stripe_events ORDER BY rowid")?
                         .query_map([], |r| r.get(0))?
                         .collect::<rusqlite::Result<_>>()?,
                 )
             })
-            .unwrap();
-    assert_eq!(left, [kept["event"].as_str().unwrap().to_owned()]);
-    assert!(!left.contains(&done["event"].as_str().unwrap().to_owned()));
+            .unwrap()
+    };
+    let (done, kept) = (
+        done["event"].as_str().unwrap().to_owned(),
+        kept["event"].as_str().unwrap().to_owned(),
+    );
+    let now = contracts::now_ms();
+    // One set aside for a reconnect is kept 30 days (human, 2026-11-21),
+    // a handled one 90.
+    let aside = api::stripe::process::KEEP_SET_ASIDE_MS;
+    assert!(left(now + aside - 60_000).contains(&kept));
+    let after_aside = left(now + aside + 60_000);
+    assert!(!after_aside.contains(&kept));
+    assert!(after_aside.contains(&done));
+    let long_after = now + api::stripe::process::KEEP_HANDLED_MS + 60_000;
+    assert!(!left(long_after).contains(&done));
 }

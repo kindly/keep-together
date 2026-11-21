@@ -81,6 +81,14 @@ pub fn org_migrations() -> Migrations<'static> {
         M::up(giving::stripe::MIGRATION),
         // 25: "We claim Gift Aid", a preference, on by default
         M::up(platform::preferences::MIGRATION_CLAIMS_GIFT_AID),
+        // 26: a Stripe payment that succeeded with no submission behind
+        // it has a place in the staff queue (plan stripe.sv, S3):
+        // `stripe_payments.unmatched_reason` widened to `no_submission`
+        // (a rebuild; `donation_submissions` points at the table)
+        M::up_with_hook(
+            "",
+            rebuild_with_deferred_keys(giving::stripe::MIGRATION_NO_SUBMISSION),
+        ),
     ])
 }
 

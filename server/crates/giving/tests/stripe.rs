@@ -53,6 +53,7 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::bank::MIGRATION),
         M::up(giving::standing::MIGRATION),
         M::up(giving::stripe::MIGRATION),
+        M::up(giving::stripe::MIGRATION_NO_SUBMISSION),
     ])
 }
 

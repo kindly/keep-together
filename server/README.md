@@ -359,7 +359,9 @@ on), and `scan-pairing-sweep`, `scan-orphan-sweep` and
 registers the same way. With GoCardless on: `gocardless-events` (30 s),
 `gocardless-catchup` (daily) and `regular-terms-sync` (hourly, first
 run 10 minutes after boot; also run for one organisation after a terms
-change is saved). With Stripe on: `stripe-events` (30 s). Always:
+change is saved). With Stripe on: `stripe-events` (30 s) and
+`stripe-catchup` (daily). Always: `donation-retention` (daily: unpaid
+donation submissions' personal fields, 30 days after they were made) and
 `standing-orders-missed` (6 h: standing
 orders' payments still unmatched 14 days after they were due; "Bank
 transfers"). A job's first run is `first_after()` after boot
@@ -569,7 +571,7 @@ processing and pages are later steps). Org schema step 24, all in
 | `giving.donationSubmission` | `donation_submissions.version` | what the donor typed on the donation page: amount (pence), name, email, Gift Aid ticked with its scope, wording version, house name or number and postcode, the page's source code; when is the command's time. Create-only: it is the evidence |
 | `giving.donationSubmissionOutcome` | `donation_submissions.outcome_version` | the Checkout session (set once), `started → paid / expired` (paid is final and names the payment that came from it; an expired one may still turn out paid), personal data cleared on |
 | `giving.stripePayment` | `stripe_payments.version` | Stripe's raw record: PaymentIntent id (fixed), the submission it came from (set once), amount, currency (`gbp` or it is refused: never recorded), status, paid on, refunded amount, dispute state, reason |
-| `giving.stripePaymentMatch` | `stripe_payments.match_version` | whose it is: a contact and that contact's gift, together, the gift for the payment's whole life; or unmatched with why (`ambiguous`, `name_differs`). The staff flags: `firstNameTyped` (the donor's first name isn't the contact's) and `partialRefundClaimed` |
+| `giving.stripePaymentMatch` | `stripe_payments.match_version` | whose it is: a contact and that contact's gift, together, the gift for the payment's whole life; or unmatched with why (`ambiguous`, `name_differs`, and from org schema step 26 `no_submission`, `deceased`, `contact_refused`). The staff flags: `firstNameTyped` (the donor's first name isn't the contact's), `partialRefundClaimed` and (v2) `declarationRefused` (why the donor's ticked declaration couldn't be recorded) |
 | `giving.donationPage` | `donation_page.version` (one row) | three button amounts, minimum, maximum (pence), the source code page gifts get |
 
 None of the first four can be restored. Rules, each with a named test
@@ -616,8 +618,9 @@ through a contract value only that function holds, as the system, in the
 caller's command group, dated the day the donor ticked it, with the name
 and address they typed (none may be blank). Every payload staff send,
 and every restore, goes through `giftaid::DECLARATION`, which still
-refuses the method. A gift a declaration already covers adds nothing to
-the chain (rule 1).
+refuses the method. A donor's tick is always kept as a new link in the
+chain, even when an older declaration already covers the gift (the
+human's decision, 2026-11-21).
 
 ## Bank transfers (ADR 0027)
 
@@ -1153,8 +1156,9 @@ timeout; it can't be reached: `503 gocardless_unavailable`.
 ## Stripe (card donations)
 
 `api::stripe`, plan `factory/plans/stripe.sv`. **Built so far: S1**
-(Connect and plumbing); schema and contracts (S2), processing (S3), the
-donor's page (S4) and the staff screens (S5) follow.
+(Connect and plumbing), S2 (schema and contracts, above) and S3
+(processing, below); the donor's page (S4) and the staff screens (S5)
+follow.
 
 Each organisation gets its own Stripe account, made by us and filled in
 on Stripe's hosted form: the full Stripe Dashboard, its own fees, Stripe
@@ -1209,7 +1213,80 @@ requeued when it connects again), an event of the other mode
 event's account. Stripe promises no order, so a handler never trusts an
 event's snapshot: `account.updated` reads the account from Stripe and
 stores that; `account.application.deauthorized` (the owner removed us in
-their Dashboard) disconnects the organisation here.
+their Dashboard) disconnects the organisation here once Stripe itself
+answers `account_invalid` for the account. Events set aside as
+`not_connected` are kept 30 days (as long as Stripe keeps events), then
+purged; events of an organisation that no longer exists are closed
+(`no_organisation`).
+
+**Processing (S3, `api::stripe::payments`).** Gifts only on Stripe's
+word. A payment event (`checkout.session.*`, `payment_intent.*`,
+`charge.refunded`, `charge.dispute.*`) is good for ids only: the
+PaymentIntent it names is read from Stripe as it is now, with its charge
+and disputes, and recorded (`giving.stripePayment`). A payment that
+hasn't succeeded (a declined card, a pending one) is a payment row and
+nothing else; an expired session marks the submission that holds its
+session id `expired` (never by `client_reference_id`: an orphan
+session's expiry mustn't end a live attempt); a
+payment not in pounds is reported and never recorded.
+
+A payment that has succeeded becomes, in one transaction under the
+command group `stripe.donation`: its submission found (the one the
+session event names by Checkout Session, `client_reference_id` or
+`metadata.keep_submission`, or the PaymentIntent's own
+`metadata.keep_submission`; it must be for the same amount and no other
+payment's); the donor matched (`giving::stripe::match_donor`: no contact
+has the email → a new contact with the name, email, the page's code as
+acquisition code and, with Gift Aid, the home address; one live contact
+with the email and last name → that contact, marked with the typed first
+name when it differs, and given the typed home address if it has no
+postcode and the first name agrees; one marked deceased is never
+linked); the gift (`provider = stripe`, `method = card`, the
+PaymentIntent id as reference and origin, dated the UK day it was paid,
+to the page's source code when they gave); the donor's declaration when
+they ticked Gift Aid (dated the day they sent the page; refused by Gift
+Aid's own rules, e.g. a contact that isn't a person: the gift stands,
+the match says why in `declarationRefused` and Sentry is told); the
+match; and the submission marked `paid`. Anything else waits in the
+staff queue with no gift: `ambiguous`, `name_differs`, `deceased`,
+`no_submission` (taken some other way on the group's Stripe account;
+picked up from the queue if a later event names its submission), or
+`contact_refused`: a contract refused something on the way (what the
+donor typed can't be made a contact), so that try is rolled back and the
+payment is recorded and queued in a second transaction. A succeeded
+payment is always a gift or in the queue. The submission is `paid`
+either way: Stripe took the money. A submission is held to the widths a
+contact takes (names and house name or number 200 characters, email 254,
+postcode 20), so the page refuses what couldn't become one.
+
+Afterwards the same gift follows its payment
+(`giving::stripe::follow_payment`): refunded in full → `refunded`; in
+part → `completed` at what the group kept, the difference off its newest
+allocation (a gift in a Gift Aid claim keeps its amount, the match is
+flagged `partialRefundClaimed`, and a draft claim holding it is held
+back: `payment_moved`); a dispute open or lost → `charged_back`, won →
+`completed`; an inquiry (`warning_…`) is not a dispute. A staff void
+stands, and un-voiding gives the gift its payment's status again. Staff
+can't change a Stripe gift's method, amount, date or reference
+(`direct_debit_fixed`).
+
+**Catch-up** (`api::stripe::catchup`, job `stripe-catchup`, daily, first
+run 15 minutes after boot): for each connected organisation, Stripe's
+events for its account since the last run (`GET /v1/events` on the
+account, the handled types, 100 a page, at most 200 pages; the cursor
+per organisation and account in `platform.db`'s `stripe_catchup`
+(platform step 2), read again from an hour before; an account's first
+run from its connection, at most a week back; never further back than
+29 days, since Stripe keeps 30; a run that runs out of pages leaves the
+cursor where it read from, so the next reads the window again) go into
+the same event store, a repeat being a no-op. How many were new is logged, and sent to Sentry as a
+warning when not zero; then a processing run handles them.
+
+`keep giving-consistency <slug>` also runs
+`giving::stripe::consistency`: every matched Stripe payment has exactly
+one gift, its contact's, with its status, amount and date (a claimed
+gift's own amount and date; a staff void), no Stripe gift lacks its
+payment, and no succeeded payment is outside both a gift and the queue.
 
 | route | |
 |---|---|
@@ -1217,6 +1294,8 @@ their Dashboard) disconnects the organisation here.
 | `GET /api/t/{slug}/stripe` | `StripeStatus {enabled, mode, connected, accountId, connectedAt, connectedBy, onboarding: none\|pending\|restricted\|complete, detailsSubmitted, chargesEnabled, payoutsEnabled, requirementsDue, disabledReason, statusAt, failedEvents}`, any member; the only route that answers when off |
 | `POST …/stripe/connect` | → `StripeConnectStart {url, status}`: send the browser to `url` (null once Stripe takes payments for the account); admin within the step-up hour; `503 stripe_unavailable` |
 | `POST …/stripe/disconnect` | → `StripeStatus`, `connected: false`; admin within the step-up hour |
+| `GET …/stripe/unmatched` | `UnmatchedCardPayment[] {id, paymentId, amount, paidOn, status, reason: ambiguous\|name_differs\|no_submission\|deceased\|contact_refused, donor: {firstName, lastName, email, giftAid, addressLine1, postcode} \| null, sourceCodeId, candidates: [{id, displayName}], matchVersion}`: succeeded payments nobody could be matched to (no gift), newest first, at most 500, each with what its donor typed and the live contacts that have their email; any member |
+| `POST …/stripe/unmatched/{id}/match` | `MatchCardPayment {expected, contactId, sourceCodeId?}` → `MatchedCardPayment {giftId, gift}`: the contact's gift, with Stripe's amount, date and status, to the page's code when they gave (or `sourceCodeId`, live; required when the payment has no submission: `422 invalid`), and the donor's declaration if they ticked Gift Aid, as the staff member; staff; `409 stale`; `422 rejected already_matched` / `unknown_contact` / `archived_contact` / `not_individual` (the donor ticked Gift Aid and the contact isn't a person) |
 
 The fake (`KEEP_STRIPE=fake`, `api::stripe::fake`, what `pnpm dev` runs)
 answers the client's calls in Stripe's shapes (both Accounts APIs),
@@ -1225,5 +1304,11 @@ and signs its webhooks like Stripe. Simulators under
 `/api/fake-stripe/simulate/`: `accounts/{id}/update` (a JSON patch of
 the account, with its `account.updated`), `accounts/{id}/deauthorize`,
 `webhooks/hold` and `webhooks/release?reverse&count=`, `outage {calls,
-status?, path?}`, `GET webhooks`. `api/tests/stripe_connect.rs` and
-`stripe_webhook.rs` run on it.
+status?, path?}`, `GET webhooks`. Payments (`fake_payments.rs`): `GET
+v1/payment_intents/{id}`, `GET v1/disputes`, `GET v1/events`, and
+`simulate/accounts/{id}/payment {amount, currency?, submission?,
+declined?}` (a payment outside Checkout), `simulate/payments/{pi}/refund
+{amount?}`, `…/dispute` and `…/dispute/close {outcome}`; `Fake::pay` is
+what a Checkout Session's Pay button calls (S4). `api/tests/
+stripe_connect.rs`, `stripe_webhook.rs` and `stripe_payments.rs` run on
+it.
