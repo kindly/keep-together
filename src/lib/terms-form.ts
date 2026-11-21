@@ -3,6 +3,7 @@ import type { RegularGiftFrequency } from './data/rust-types/RegularGiftFrequenc
 import type { TermChangeKind } from './data/rust-types/TermChangeKind'
 import type { TermStatus } from './data/rust-types/TermStatus'
 import {
+  addDays,
   downgradeSplit,
   isDueDate,
   nextDue,
@@ -10,6 +11,8 @@ import {
   upgradeSplit,
 } from './domain/regular-terms'
 import type { Share, Terms } from './domain/regular-terms'
+
+export { addDays }
 
 // "Change amount or schedule" on a regular gift's card (regular-gift
 // terms step 6): what the dialog proposes before anything is sent, from
@@ -97,13 +100,6 @@ export function proposedSplit(
 ): Array<Share> {
   if (amount >= total(before)) return upgradeSplit(before, amount, code ?? '')
   return downgradeSplit(before, amount)
-}
-
-/** `YYYY-MM-DD` plus `n` days. */
-export function addDays(date: string, n: number): string {
-  const d = new Date(`${date}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + n)
-  return d.toISOString().slice(0, 10)
 }
 
 /** Whether `next`'s schedule is `prev`'s. */

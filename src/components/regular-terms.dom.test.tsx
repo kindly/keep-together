@@ -263,6 +263,36 @@ test('an upgrade: the difference to the code that won it, annualised, from a pay
   expect(args.clientKey).toMatch(/^[0-9a-f]{32}$/)
 })
 
+test('a payment within a fortnight: the dialog warns the change goes to GoCardless at once, and still saves', async () => {
+  // Today is 2026-10-29: the 9th is 11 days off, the 8th of December 40.
+  render(
+    gift({
+      upcoming: [
+        { chargeDate: '2026-11-09', amount: 1000n, changeable: true },
+        { chargeDate: '2026-12-08', amount: 1000n, changeable: true },
+      ],
+    }),
+  )
+  await click(button('Change amount or schedule'))
+  await type(amount(), '8')
+  // Nothing picked, nothing warned.
+  expect(byTestId('change-sends-now')).toBeUndefined()
+  await choose(starts(), '2026-12-08')
+  expect(byTestId('change-sends-now')).toBeUndefined()
+  await choose(starts(), '2026-11-09')
+  expect(byTestId('change-sends-now')).toMatch(
+    /goes\s+to GoCardless as soon as you save it\. It can’t be held, edited or\s+withdrawn here/,
+  )
+  // A warning, not a refusal (ADR 0015).
+  expect(byTestId('change-problem')).toBeUndefined()
+  expect(submitButton()?.disabled).toBe(false)
+  await act(async () => dialog().querySelector('form')!.requestSubmit())
+  expect(writes.change.mock.calls[0][1]).toMatchObject({
+    effectiveFrom: '2026-11-09',
+    amount: 800n,
+  })
+})
+
 test('a downgrade comes off the newest money first', async () => {
   const upgraded = term({
     id: 't1',
