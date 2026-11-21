@@ -11,6 +11,7 @@ import {
   want,
 } from './contact.helpers'
 import { contactIdOf, recorder } from './gift.helpers'
+import { heldPayment, utcToday } from '../held-change'
 
 // Regular-gift terms step 6 on the fake GoCardless (ADR 0026): on a
 // regular gift's card, "Change amount or schedule" (the code that won
@@ -220,11 +221,19 @@ test.describe('regular-gift terms (fake)', () => {
     await page.goto(contactUrl)
     await expect(card.getByTestId('regular-gift-status')).toHaveText('Active')
 
-    // £10 → £12 from the first payment GoCardless can still change: an
-    // upgrade, £2 a month to the code that won it.
+    // £10 → £12 from the first payment whose change is held (not sent at
+    // once: held-change.ts): an upgrade, £2 a month to the code that won it.
     await flow(page, 'terms.change', {
       before: async () => {
         await withdrawScheduled(page, slug, gift.id)
+        // A payment over a fortnight off: a change nearer than that is
+        // sent to GoCardless on saving and is no longer scheduled.
+        const v = await json<RegularGiftView>(
+          page,
+          'GET',
+          `/api/t/${slug}/regular-gifts/${gift.id}`,
+        )
+        const at = heldPayment(v.upcoming, utcToday())
         await page.goto(contactUrl)
         await card
           .getByRole('button', { name: 'Change amount or schedule' })
@@ -232,7 +241,7 @@ test.describe('regular-gift terms (fake)', () => {
         const dialog = page.getByRole('dialog')
         await dialog.getByLabel('New amount (£)').fill('12')
         const starts = dialog.getByLabel('Starts with the payment on')
-        await starts.selectOption({ index: 1 })
+        await starts.selectOption(at)
         await pickCode(page, 'Event-Gala-002', 'Code that won it')
         await expect(dialog.getByTestId('change-kind')).toHaveText('Upgrade')
         await expect(dialog.getByTestId('change-annual')).toContainText(
@@ -292,7 +301,7 @@ test.describe('regular-gift terms (fake)', () => {
           `/api/t/${slug}/regular-gifts/${gift.id}`,
         )
         if (!v.scheduled) {
-          const at = v.upcoming.find((u) => u.changeable)!.chargeDate
+          const at = heldPayment(v.upcoming, utcToday())
           await json(
             page,
             'POST',
