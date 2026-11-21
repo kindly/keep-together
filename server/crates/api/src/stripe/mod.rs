@@ -23,6 +23,7 @@
 //! | `KEEP_STRIPE` | `off` (default: every route but `GET stripe` 404), `fake` ([`fake`]: a Stripe mock mounted on this server, no network; `KEEP_ENV=prod` refuses it), `test` (a Stripe sandbox; refused by `prod`), `live` (only with `KEEP_ENV=prod`). Anything else stops the boot |
 //! | `KEEP_STRIPE_API_KEY` | the platform's restricted key; required for `test`/`live`, and it must be that mode's (`…_test_…` or `…_live_…`) |
 //! | `KEEP_STRIPE_WEBHOOK_SECRET` | the connected-accounts webhook endpoint's signing secret (`whsec_…`); required for `test`/`live` |
+//! | `KEEP_QC_STRIPE_ACCOUNT` | the QC run's connected account (`acct_…`), onboarded once by hand in keep-qc's sandbox: `routes::qc_stripe` attaches it to the run's `qc-` organisation. Not a secret. Refused with `KEEP_ENV=prod`; optional on the fake, which otherwise makes one |
 //!
 //! Secrets are never logged, put in an error, a URL or argv. The webhook
 //! endpoint is `{KEEP_APP_ORIGIN}/api/stripe/webhook`, registered on the
@@ -91,6 +92,33 @@ pub struct Stripe {
     pub(crate) connecting: tokio::sync::Mutex<()>,
     /// The mock, in `fake` mode: mounted at [`FAKE_PREFIX`].
     pub fake: Option<Arc<fake::Fake>>,
+    /// `KEEP_QC_STRIPE_ACCOUNT`: the connected account the QC run's
+    /// organisation is given (`routes::qc_stripe`). Never with `live`.
+    pub qc_account: Option<String>,
+}
+
+/// The variable naming the QC run's connected account.
+pub const QC_ACCOUNT_VAR: &str = "KEEP_QC_STRIPE_ACCOUNT";
+
+/// `KEEP_QC_STRIPE_ACCOUNT`, if set: a Stripe account id and nothing
+/// else. Refused with `KEEP_ENV=prod` whatever `KEEP_STRIPE` says.
+fn qc_account(var: &impl Fn(&str) -> Option<String>, prod: bool) -> Result<Option<String>, String> {
+    let Some(id) = var(QC_ACCOUNT_VAR)
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok(None);
+    };
+    if prod {
+        return Err(format!("{QC_ACCOUNT_VAR} is refused with KEEP_ENV=prod"));
+    }
+    let tail = id.strip_prefix("acct_").unwrap_or("");
+    if tail.is_empty() || tail.len() > 64 || !tail.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(format!(
+            "{QC_ACCOUNT_VAR} must be a Stripe account id (acct_…)"
+        ));
+    }
+    Ok(Some(id))
 }
 
 /// What [`from_vars`] needs beyond the environment.
@@ -109,6 +137,7 @@ pub fn from_vars(
     origins: Origins<'_>,
 ) -> Result<Option<Stripe>, String> {
     let prod = var("KEEP_ENV").as_deref() == Some("prod");
+    let qc_account = qc_account(&var, prod)?;
     let mode = match var("KEEP_STRIPE").as_deref() {
         None | Some("off") => return Ok(None),
         Some("fake") => Mode::Fake,
@@ -181,6 +210,7 @@ pub fn from_vars(
         processing: tokio::sync::Mutex::new(()),
         connecting: tokio::sync::Mutex::new(()),
         fake,
+        qc_account,
     }))
 }
 
@@ -494,6 +524,49 @@ mod tests {
                 .err()
                 .unwrap_or_else(|| panic!("{pairs:?} booted"));
             assert!(err.contains(needle), "{err}");
+            assert!(!err.contains("s3cret"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_qc_account_is_an_account_id_and_never_on_prod() {
+        let qc = |id: &'static str| (QC_ACCOUNT_VAR, id);
+        let fake = boot(&[("KEEP_STRIPE", "fake")]).unwrap().unwrap();
+        assert_eq!(fake.qc_account, None);
+        let test = boot(&[
+            ("KEEP_STRIPE", "test"),
+            ("KEEP_ENV", "staging"),
+            ("KEEP_STRIPE_API_KEY", "rk_test_s3cret"),
+            WEBHOOK,
+            qc(" acct_1QcAccount "),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(test.qc_account.as_deref(), Some("acct_1QcAccount"));
+        // Empty is unset.
+        let unset = boot(&[("KEEP_STRIPE", "fake"), qc("  ")]).unwrap().unwrap();
+        assert_eq!(unset.qc_account, None);
+        // Prod refuses it, whatever Stripe's mode: live never has one.
+        for stripe in [
+            vec![],
+            vec![("KEEP_STRIPE", "off")],
+            vec![
+                ("KEEP_STRIPE", "live"),
+                ("KEEP_STRIPE_API_KEY", "rk_live_s3cret"),
+                WEBHOOK,
+            ],
+        ] {
+            let mut pairs = stripe;
+            pairs.extend([("KEEP_ENV", "prod"), qc("acct_1QcAccount")]);
+            let err = boot(&pairs).err().expect("prod took a QC account");
+            assert!(err.contains("KEEP_QC_STRIPE_ACCOUNT"), "{err}");
+            assert!(err.contains("KEEP_ENV=prod"), "{err}");
+        }
+        for bad in ["rk_test_s3cret", "acct_", "acct_has space", "acct_a/b"] {
+            let err = boot(&[("KEEP_STRIPE", "fake"), (QC_ACCOUNT_VAR, bad)])
+                .err()
+                .unwrap_or_else(|| panic!("{bad:?} booted"));
+            assert!(err.contains("KEEP_QC_STRIPE_ACCOUNT"), "{err}");
             assert!(!err.contains("s3cret"), "{err}");
         }
     }

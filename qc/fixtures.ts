@@ -321,9 +321,60 @@ export function skipUnlessFakeStripe(mode: string) {
 }
 
 /**
+ * The QC run's Stripe account given to `slug` (a `qc-` group) through the
+ * QC Stripe surface (`/api/dev/qc-stripe/connect` locally,
+ * `/api/qc/stripe/connect` with the token; server/README.md "Stripe").
+ * Untimed. The answer with its status: 404 when the target has no such
+ * surface (Stripe off, or a sandbox without `KEEP_QC_STRIPE_ACCOUNT`),
+ * 503 when Stripe didn't answer. A network error is thrown.
+ */
+export async function qcStripeConnect(
+  inst: Instance,
+  slug: string,
+): Promise<{
+  status: number
+  data: { accountId: string; chargesEnabled: boolean } | null
+  text: string
+}> {
+  const route = setupRoute(inst, 'qc-stripe/connect', 'stripe/connect')
+  const res = await fetch(`${inst.api}${route}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...setupHeaders(inst) },
+    body: JSON.stringify({ slug }),
+    signal: AbortSignal.timeout(60_000),
+  })
+  const text = await res.text()
+  let data = null
+  if (res.ok) data = JSON.parse(text)
+  return { status: res.status, data, text }
+}
+
+/**
+ * The target can't run card donations against Stripe for QC: Stripe is
+ * off there, or it has no QC account. Annotated `stripeSandboxOff` (the
+ * STRIPE SANDBOX NOT RUN banner) and skipped. Throws, as `test.skip` does.
+ */
+export function skipNoQcStripe(why: string): never {
+  base.info().annotations.push({ type: 'stripeSandboxOff', description: why })
+  base.skip(true, `no Stripe for QC: ${why}`)
+  throw new Error('unreachable')
+}
+
+/**
+ * Stripe (or its payment page) didn't answer: annotated
+ * `stripeUnreachable` (the STRIPE UNREACHABLE banner) and skipped.
+ */
+export function skipStripeUnreachable(why: string): never {
+  base.info().annotations.push({ type: 'stripeUnreachable', description: why })
+  base.skip(true, `Stripe unreachable: ${why}`)
+  throw new Error('unreachable')
+}
+
+/**
  * A world of its own for `worker` (not the worker's shared one): for a
- * spec that connects its group to GoCardless's QC account and must not
- * move another spec's connection (gocardless-sandbox.spec.ts).
+ * spec that connects its group to GoCardless's or Stripe's QC account and
+ * must not move another spec's connection (gocardless-sandbox.spec.ts,
+ * stripe-sandbox.spec.ts).
  */
 export async function seedWorld(
   inst: Instance,

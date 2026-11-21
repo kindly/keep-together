@@ -655,6 +655,37 @@ export function goCardlessQcBanner(notes: {
   ]
 }
 
+/**
+ * The Stripe sandbox spec's skips (qc/fixtures.ts): the target has Stripe
+ * off or no QC Stripe account, or Stripe didn't answer. Each is title
+ * path → why. A green run with either banner never tested a card
+ * donation against Stripe. Exported for qc/reporter.test.ts.
+ */
+export function stripeQcBanner(notes: {
+  off: Map<string, string>
+  unreachable: Map<string, string>
+}): Array<string> {
+  const lines = (m: Map<string, string>) =>
+    [...m]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([t, why]) => `${t}: ${why}`)
+  const s = (n: number) => (n === 1 ? '' : 's')
+  return [
+    ...(notes.off.size
+      ? banner([
+          `STRIPE SANDBOX NOT RUN on the target: ${notes.off.size} test${s(notes.off.size)} skipped; card donations against Stripe were NOT tested (docs/ops.md "Stripe" says what to set):`,
+          ...lines(notes.off),
+        ])
+      : []),
+    ...(notes.unreachable.size
+      ? banner([
+          `STRIPE UNREACHABLE: ${notes.unreachable.size} test${s(notes.unreachable.size)} skipped; card donations against Stripe were NOT tested:`,
+          ...lines(notes.unreachable),
+        ])
+      : []),
+  ]
+}
+
 const banner = (lines: Array<string>) => {
   const bar = '!'.repeat(72)
   return [bar, ...lines.map((l) => `!! ${l}`), bar]
@@ -680,6 +711,11 @@ export default class QcReporter implements Reporter {
     estimate: new Map<string, Array<string>>(),
     unreachable: new Map<string, string>(),
     noQc: new Map<string, string>(),
+  }
+  /** The Stripe sandbox spec's skips (`stripeQcBanner`). */
+  private stripeQc = {
+    off: new Map<string, string>(),
+    unreachable: new Map<string, string>(),
   }
   /** Failed tests and when they ran (epoch ms), for the LINK banner. */
   private failed: Array<{ title: string; from: number; to: number }> = []
@@ -716,6 +752,17 @@ export default class QcReporter implements Reporter {
         const why = of(type)
         if (why.length && result.status === 'skipped') into.set(title, why[0])
       }
+    }
+    for (const [type, into] of [
+      ['stripeSandboxOff', this.stripeQc.off],
+      ['stripeUnreachable', this.stripeQc.unreachable],
+    ] as const) {
+      const why = result.annotations.find((a) => a.type === type)
+      if (why && result.status === 'skipped')
+        into.set(
+          test.titlePath().filter(Boolean).slice(1).join(' › '),
+          why.description ?? '',
+        )
     }
     // Retries add the annotation again: one entry per test.
     if (result.annotations.some((a) => a.type === 'mailOff'))
@@ -850,6 +897,7 @@ export default class QcReporter implements Reporter {
     out.push(...pendingBanner(this.pending, routes))
     out.push(...mailOffBanner([...this.mailOff]))
     out.push(...goCardlessQcBanner(this.gcQc))
+    out.push(...stripeQcBanner(this.stripeQc))
     out.push(...retryBanner(retries, past, env))
 
     const timed = new Set(records.map((r) => r.flow))

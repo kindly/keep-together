@@ -232,3 +232,74 @@ pub fn requeue_set_aside(
         params![tenant.as_str(), account_id],
     )
 }
+
+/// What [`attach`] did, or why not.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Attached {
+    /// The organisation holds the account; `moved_from` is the slug of
+    /// the organisation that gave it up, if one held it.
+    Done {
+        row: Row,
+        moved_from: Option<String>,
+    },
+    /// Another organisation holds it and may not be made to give it up.
+    Taken,
+}
+
+/// Give `tenant` an account that already exists at Stripe, connected,
+/// with what Stripe says of it now (the QC run's account,
+/// `routes::qc_stripe`: nothing else attaches an account we didn't make
+/// for the organisation). An organisation holding it gives it up when
+/// `may_take` says so of its slug: its row is as new, as
+/// [`forget_account`] leaves one. An account `tenant` had before is
+/// forgotten the same way. Events kept for the account are **not** put
+/// back in the queue: they were another organisation's.
+pub fn attach(
+    store: &Store,
+    tenant: &TenantId,
+    account: &Account,
+    user: i64,
+    now: i64,
+    may_take: impl Fn(&str) -> bool,
+) -> Result<Attached, StoreError> {
+    store.platform().with_write(|tx| {
+        let holder: Option<(String, String)> = tx
+            .query_row(
+                "SELECT a.tenant_id, t.slug FROM stripe_accounts a
+                 JOIN tenants t ON t.id = a.tenant_id
+                 WHERE a.account_id = ?1 AND a.tenant_id <> ?2",
+                params![account.id, tenant.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((holder, slug)) = &holder {
+            if !may_take(slug) {
+                return Ok(Attached::Taken);
+            }
+            tx.execute(
+                "UPDATE stripe_accounts SET account_id = NULL, create_key = ?2,
+                     details_submitted = 0, charges_enabled = 0, payouts_enabled = 0,
+                     requirements_due = 0, disabled_reason = NULL, status_at = NULL
+                 WHERE tenant_id = ?1",
+                params![holder, new_key()],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO stripe_accounts (tenant_id, account_id, create_key, connected_at,
+                 connected_by)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (tenant_id) DO UPDATE SET
+                 connected_at = CASE WHEN account_id IS excluded.account_id
+                     AND disconnected_at IS NULL THEN connected_at ELSE excluded.connected_at END,
+                 connected_by = CASE WHEN account_id IS excluded.account_id
+                     AND disconnected_at IS NULL THEN connected_by ELSE excluded.connected_by END,
+                 account_id = excluded.account_id, disconnected_at = NULL",
+            params![tenant.as_str(), account.id, new_key(), now, user],
+        )?;
+        set_status(tx, account, now)?;
+        Ok(Attached::Done {
+            row: get(tx, tenant)?.expect("just written"),
+            moved_from: holder.map(|(_, slug)| slug),
+        })
+    })
+}
