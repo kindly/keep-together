@@ -46,6 +46,8 @@ pub const CHANGED_IN_GOCARDLESS: &str = "changed in GoCardless";
 pub const AMENDMENT_LIMIT: i64 = 10;
 /// A scheduled change is sent this many days before it takes effect:
 /// after the payment before it was created, before its own is.
+/// `src/lib/domain/regular-terms.ts` and `qc/held-change.ts` carry the
+/// same number: keep them in step.
 pub const SEND_AHEAD_DAYS: i64 = 14;
 
 /// One layer of a row's split: pence to a source code (a version).

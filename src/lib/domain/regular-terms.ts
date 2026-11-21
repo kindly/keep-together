@@ -237,3 +237,26 @@ export function expectedPeriods(
   }
   return out
 }
+
+/** `YYYY-MM-DD` plus `n` days (`terms_rules::add_days`). */
+export function addDays(date: string, n: number): string {
+  const d = new Date(`${date}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * `giving::terms::SEND_AHEAD_DAYS`: a scheduled change is sent to
+ * GoCardless this many days before it takes effect (ADR 0026 decision 5).
+ */
+export const SEND_AHEAD_DAYS = 14
+
+/**
+ * Whether a change starting on `effectiveOn` is sent as soon as it is
+ * saved, not held: it is already within [`SEND_AHEAD_DAYS`] of `today`
+ * (the horizon `giving::terms::due` reads, the day itself included).
+ * From then it can't be edited or withdrawn.
+ */
+export function sentAtOnce(effectiveOn: string, today: string): boolean {
+  return effectiveOn !== '' && effectiveOn <= addDays(today, SEND_AHEAD_DAYS)
+}

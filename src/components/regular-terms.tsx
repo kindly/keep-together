@@ -14,7 +14,13 @@ import {
   monthName,
   scheduleText,
 } from '../lib/domain/direct-debit'
-import { annualValue, changeKind, total } from '../lib/domain/regular-terms'
+import {
+  SEND_AHEAD_DAYS,
+  annualValue,
+  changeKind,
+  sentAtOnce,
+  total,
+} from '../lib/domain/regular-terms'
 import type { Share, Terms } from '../lib/domain/regular-terms'
 import {
   formatDay,
@@ -548,6 +554,10 @@ function ChangeDialog({
                 ? 'A new frequency needs its split: edit the split'
                 : null)
   const ready = pence !== null && problem === null && !busy
+  // Storable, so a warning and not a refusal (ADR 0015): a payment this
+  // near is past holding, and the change goes out when it is saved.
+  const sendsNow =
+    options.includes(effectiveFrom) && sentAtOnce(effectiveFrom, today)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -679,6 +689,17 @@ function ChangeDialog({
             ))}
           </select>
         </label>
+        {sendsNow && (
+          <p
+            role="status"
+            data-testid="change-sends-now"
+            className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-sm text-amber-900"
+          >
+            This payment is within {SEND_AHEAD_DAYS} days, so the change goes
+            to GoCardless as soon as you save it. It can’t be held, edited or
+            withdrawn here after that.
+          </p>
+        )}
         <CodeField label="Code that won it" code={code} onChange={setCode} />
         <div
           data-testid="change-preview"

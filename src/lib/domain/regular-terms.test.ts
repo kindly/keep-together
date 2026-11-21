@@ -9,6 +9,7 @@ import {
   isDueDate,
   monthIndex,
   nextDue,
+  sentAtOnce,
   splitForCollected,
   termInForce,
   total,
@@ -186,5 +187,19 @@ describe('regular gift terms', () => {
     expect(monthIndex('2026/05')).toBeUndefined()
     expect(monthIndex('+026-05')).toBeUndefined()
     expect(monthIndex('2026-05')).toBe(monthIndex('2026-05-01'))
+  })
+})
+
+describe('sentAtOnce', () => {
+  test('a change within a fortnight of today goes to GoCardless on saving', () => {
+    // `giving::terms::due`: effective on or before today + 14.
+    expect(sentAtOnce('2026-11-06', '2026-10-29')).toBe(true)
+    expect(sentAtOnce('2026-11-12', '2026-10-29')).toBe(true)
+    expect(sentAtOnce('2026-11-13', '2026-10-29')).toBe(false)
+    expect(sentAtOnce('2026-12-01', '2026-10-29')).toBe(false)
+    // Over a year's end; and no date picked yet.
+    expect(sentAtOnce('2027-01-04', '2026-12-21')).toBe(true)
+    expect(sentAtOnce('2027-01-05', '2026-12-21')).toBe(false)
+    expect(sentAtOnce('', '2026-10-29')).toBe(false)
   })
 })
