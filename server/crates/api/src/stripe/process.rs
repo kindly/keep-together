@@ -35,10 +35,19 @@
 //! - `account.updated`: the account is read from Stripe and its
 //!   onboarding state stored ([`super::accounts::set_status`]);
 //! - `account.application.deauthorized`: the organisation removed us in
-//!   its Stripe Dashboard: it is disconnected here;
-//! - anything else: `ignored`. **S3 adds the payment events here**
-//!   (`checkout.session.*`, `charge.refunded`, `charge.dispute.*`), each
-//!   in its own org-file transaction.
+//!   its Stripe Dashboard: it is disconnected here, once Stripe itself
+//!   says the account is no longer ours (the event alone isn't believed);
+//! - a Checkout Session's, a PaymentIntent's, a refund's or a dispute's
+//!   ([`super::payments`]): the payment is read from Stripe and recorded,
+//!   with everything that follows from it, in one org-file transaction;
+//! - anything else: `ignored`.
+//!
+//! Events routed to an organisation that no longer exists are closed
+//! (`no_organisation`) instead of waiting for ever. Events set aside for
+//! a reconnect (`not_connected`) are kept [`KEEP_SET_ASIDE_MS`] (30 days,
+//! the human's decision of 2026-11-21: as long as Stripe itself keeps
+//! events, so the catch-up can still read whatever a reconnect needs),
+//! then purged with the rest.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,6 +66,10 @@ pub const MAX_ATTEMPTS: i64 = 50;
 /// Handled events are kept this long, then purged (Stripe itself keeps
 /// 30 days; the catch-up reads inside that). Parked ones are kept.
 pub const KEEP_HANDLED_MS: i64 = 90 * 24 * 60 * 60 * 1000;
+/// Events set aside because their organisation had disconnected
+/// (`not_connected`) are kept this long for a reconnect to replay, then
+/// purged: Stripe keeps events 30 days itself.
+pub const KEEP_SET_ASIDE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 /// How long an event waits after its `attempts`-th failed try: 30 s,
 /// doubling, at most an hour.
@@ -192,13 +205,20 @@ pub async fn process_pending(store: Arc<Store>, stripe: Arc<Stripe>) -> Result<u
     let tenants = crate::blocking(move || s.each_org())
         .await
         .map_err(|e| format!("{e:?}"))?;
+    // An organisation that no longer exists: its events are closed, not
+    // left pending for ever.
+    let mut vanished: Vec<String> = Vec::new();
     let pending: Vec<Pending> = pending
         .into_iter()
         .filter_map(
             |(id, tenant, account, kind, body, attempts, next_attempt_at)| {
+                let Some(tenant) = tenants.iter().find(|t| t.as_str() == tenant) else {
+                    vanished.push(id);
+                    return None;
+                };
                 Some(Pending {
                     id,
-                    tenant: tenants.iter().find(|t| t.as_str() == tenant)?.clone(),
+                    tenant: tenant.clone(),
                     account,
                     kind,
                     body,
@@ -208,6 +228,23 @@ pub async fn process_pending(store: Arc<Store>, stripe: Arc<Stripe>) -> Result<u
             },
         )
         .collect();
+    if !vanished.is_empty() {
+        let s = store.clone();
+        crate::blocking(move || {
+            s.platform().with_write(|tx| {
+                for id in &vanished {
+                    tx.execute(
+                        "UPDATE stripe_events SET outcome = 'no_organisation', processed_at = ?2
+                         WHERE id = ?1 AND processed_at IS NULL",
+                        params![id, contracts::now_ms()],
+                    )?;
+                }
+                Ok::<_, store::StoreError>(())
+            })
+        })
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    }
 
     let mut handled = 0;
     let mut errors = Vec::new();
@@ -349,6 +386,20 @@ async fn handle(
     match ev.kind.as_str() {
         ACCOUNT_UPDATED => refresh_account(store, stripe, tenant, &ev.account).await,
         ACCOUNT_DEAUTHORIZED => {
+            // The event says the owner removed us; Stripe's own answer
+            // for the account decides (an event is never believed alone).
+            match stripe.api.get_account(&ev.account).await {
+                Err(e) if e.account_gone() => {}
+                Err(e) => return Err(e.into()),
+                Ok(_) => {
+                    crate::observe::warning(&format!(
+                        "stripe: an event says {tenant}'s account {} removed us, but \
+                         Stripe still answers for it: left connected",
+                        ev.account
+                    ));
+                    return Ok("ignored");
+                }
+            }
             let (s, t) = (store.clone(), tenant.clone());
             crate::blocking(move || accounts::disconnect(&s, &t, contracts::now_ms())).await?;
             crate::observe::warning(&format!(
@@ -358,7 +409,9 @@ async fn handle(
             ));
             Ok("disconnected")
         }
-        // S3: the payment events.
+        kind if super::payments::handles(kind) => {
+            super::payments::handle(store, stripe, tenant, ev).await
+        }
         _ => Ok("ignored"),
     }
 }
@@ -415,15 +468,17 @@ pub fn requeue_failed(store: &Store, tenant: &TenantId) -> Result<usize, store::
     })
 }
 
-/// Forget handled events older than [`KEEP_HANDLED_MS`]; parked ones, and
-/// those set aside for a reconnect, stay.
+/// Forget handled events older than [`KEEP_HANDLED_MS`], and those set
+/// aside for a reconnect (`not_connected`) older than
+/// [`KEEP_SET_ASIDE_MS`]; parked ones stay.
 pub fn purge(store: &Store, now: i64) -> Result<usize, store::StoreError> {
     store.platform().with_write(|tx| {
         Ok(tx.execute(
             "DELETE FROM stripe_events
-             WHERE processed_at IS NOT NULL AND processed_at < ?1
-               AND outcome NOT IN ('failed', 'not_connected')",
-            [now - KEEP_HANDLED_MS],
+             WHERE processed_at IS NOT NULL
+               AND ((processed_at < ?1 AND outcome NOT IN ('failed', 'not_connected'))
+                 OR (processed_at < ?2 AND outcome = 'not_connected'))",
+            params![now - KEEP_HANDLED_MS, now - KEEP_SET_ASIDE_MS],
         )?)
     })
 }

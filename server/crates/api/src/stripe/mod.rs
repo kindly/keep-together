@@ -37,13 +37,17 @@
 //! Where the pieces are: [`client`] (the HTTP calls, and the one place
 //! that knows which Accounts API we use), [`connect`] (connect,
 //! disconnect, status), [`webhook`] (the endpoint, its signature, the
-//! event store), [`process`] (handling stored events; S3 adds the
-//! payment events there), [`fake`].
+//! event store), [`process`] (the queue of stored events), [`payments`]
+//! (what a payment event does: the gift, the contact, the declaration,
+//! refunds and disputes, the staff match), [`catchup`] (the daily read of
+//! events webhooks missed), [`fake`].
 
 pub mod accounts;
+pub mod catchup;
 pub mod client;
 pub mod connect;
 pub mod fake;
+pub mod payments;
 pub mod process;
 pub mod webhook;
 
@@ -250,6 +254,15 @@ pub const SCHEMA: PlatformSchema = PlatformSchema {
          CREATE INDEX stripe_events_pending ON stripe_events (tenant_id)
              WHERE processed_at IS NULL;
          CREATE INDEX stripe_events_by_account ON stripe_events (account_id, outcome);",
+        // 2: the catch-up's cursor ([`catchup`]): per organisation, the
+        // account it was read for and where the next run reads from (ms).
+        "CREATE TABLE stripe_catchup (
+             tenant_id TEXT PRIMARY KEY REFERENCES tenants (id),
+             account_id TEXT NOT NULL,
+             since INTEGER NOT NULL,
+             last_run_at INTEGER NOT NULL,
+             last_found INTEGER NOT NULL DEFAULT 0
+         ) STRICT;",
     ],
 };
 

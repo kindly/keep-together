@@ -156,6 +156,55 @@ pub fn name_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, 
         .optional()
 }
 
+/// A contact that has an email address, as donor matching needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailHolder {
+    pub id: String,
+    pub display_name: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub archived: bool,
+}
+
+/// The contacts that have an email address, archived ones included.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EmailHolders {
+    pub contacts: Vec<EmailHolder>,
+    /// More rows have the address than were read: "exactly one" can't be
+    /// said.
+    pub truncated: bool,
+}
+
+/// Who has `address` (case and surrounding space ignored), oldest first:
+/// [`crate::queries::find_by_email`] with each contact's name. A blank
+/// address finds nobody.
+pub fn by_email(conn: &Connection, address: &str) -> rusqlite::Result<EmailHolders> {
+    let found = crate::queries::find_by_email(conn, address)?;
+    let mut contacts = Vec::with_capacity(found.ids.len());
+    for id in found.ids {
+        let row = conn
+            .prepare_cached(
+                "SELECT display_name, first_name, last_name, archived FROM contacts
+                 WHERE id = ?1",
+            )?
+            .query_row([&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .optional()?;
+        if let Some((display_name, first_name, last_name, archived)) = row {
+            contacts.push(EmailHolder {
+                id,
+                display_name,
+                first_name,
+                last_name,
+                archived,
+            });
+        }
+    }
+    Ok(EmailHolders {
+        contacts,
+        truncated: found.truncated,
+    })
+}
+
 /// A new contact (`contacts.details`, which takes its contact number),
 /// with its acquisition code when given, both in `group`. A `clientKey`
 /// already on a contact is `Duplicate`.

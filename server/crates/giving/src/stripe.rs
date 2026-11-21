@@ -30,7 +30,8 @@
 //!
 //! **Never optimistic**: a submission is not a gift and makes none. Only
 //! a payment Stripe reports as succeeded is money received
-//! ([`gift_status`]).
+//! ([`gift_status`]), and only such a payment gets a gift ([`make_gift`]),
+//! which then follows it ([`follow_payment`]).
 //!
 //! **Retention** (rule 3): an unpaid submission's personal fields are
 //! cleared 30 days after it was made, from its row and from its
@@ -48,7 +49,10 @@ use ts_rs::TS;
 
 use crate::regular::{REASON_MAX, check_live_code};
 use crate::rules::{ONE_OFF_MAX, format_pence, is_iso_date};
-use crate::types::Status;
+use crate::terms_rules::Share;
+use crate::types::{
+    AllocationRow, GiftPayload, Method, Provider, ProviderRef, Status, StatusPayload,
+};
 
 pub const SUBMISSIONS: &str = "donation_submissions";
 pub const PAYMENTS: &str = "stripe_payments";
@@ -148,6 +152,57 @@ CREATE TABLE donation_page (
     source_code_id TEXT REFERENCES source_codes (id),
     version INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+";
+
+/// Org schema step 26 (S3): `stripe_payments.unmatched_reason` also takes
+/// `no_submission`, for a payment that succeeded on the group's account
+/// with no submission of ours behind it (taken some other way, or its
+/// submission's details cleared): without a reason it would be in nobody's
+/// queue. SQLite can't widen a CHECK in place, so the table is rebuilt
+/// (`donation_submissions` points at it: foreign keys deferred, the api's
+/// `rebuild_with_deferred_keys`).
+pub const MIGRATION_NO_SUBMISSION: &str = "
+CREATE TABLE stripe_payments_widen AS SELECT * FROM stripe_payments;
+DROP TABLE stripe_payments;
+CREATE TABLE stripe_payments (
+    seq INTEGER PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    payment_id TEXT NOT NULL UNIQUE,
+    submission_id TEXT REFERENCES donation_submissions (id),
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    currency TEXT NOT NULL CHECK (currency = 'gbp'),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed', 'cancelled')),
+    paid_on TEXT,
+    refunded_amount INTEGER NOT NULL DEFAULT 0
+        CHECK (refunded_amount >= 0 AND refunded_amount <= amount),
+    dispute_state TEXT CHECK (dispute_state IN ('open', 'won', 'lost')),
+    reason TEXT,
+    version INTEGER NOT NULL DEFAULT 0,
+    contact_id TEXT REFERENCES contacts (id),
+    gift_id TEXT UNIQUE REFERENCES gifts (id),
+    unmatched_reason TEXT
+        CHECK (unmatched_reason IN ('ambiguous', 'name_differs', 'no_submission')),
+    first_name_typed TEXT,
+    partial_refund_claimed INTEGER NOT NULL DEFAULT 0 CHECK (partial_refund_claimed IN (0, 1)),
+    matched_by INTEGER,
+    matched_at INTEGER,
+    match_version INTEGER NOT NULL DEFAULT 0,
+    CHECK ((contact_id IS NULL) = (gift_id IS NULL)),
+    CHECK (gift_id IS NULL OR unmatched_reason IS NULL)
+) STRICT;
+INSERT INTO stripe_payments (seq, id, payment_id, submission_id, amount, currency, status,
+    paid_on, refunded_amount, dispute_state, reason, version, contact_id, gift_id,
+    unmatched_reason, first_name_typed, partial_refund_claimed, matched_by, matched_at,
+    match_version)
+SELECT seq, id, payment_id, submission_id, amount, currency, status, paid_on, refunded_amount,
+    dispute_state, reason, version, contact_id, gift_id, unmatched_reason, first_name_typed,
+    partial_refund_claimed, matched_by, matched_at, match_version
+FROM stripe_payments_widen;
+DROP TABLE stripe_payments_widen;
+CREATE INDEX stripe_payments_by_submission ON stripe_payments (submission_id)
+    WHERE submission_id IS NOT NULL;
+CREATE INDEX stripe_payments_unmatched ON stripe_payments (seq)
+    WHERE gift_id IS NULL AND unmatched_reason IS NOT NULL;
 ";
 
 fn tidy(value: &str) -> String {
@@ -1461,6 +1516,10 @@ pub enum UnmatchedReason {
     Ambiguous,
     /// One contact has it, under another last name.
     NameDiffers,
+    /// The payment succeeded with nothing a donor typed behind it: taken
+    /// some other way on the group's Stripe account, or its submission's
+    /// details are gone.
+    NoSubmission,
 }
 
 impl UnmatchedReason {
@@ -1468,6 +1527,7 @@ impl UnmatchedReason {
         match self {
             UnmatchedReason::Ambiguous => "ambiguous",
             UnmatchedReason::NameDiffers => "name_differs",
+            UnmatchedReason::NoSubmission => "no_submission",
         }
     }
 
@@ -1475,6 +1535,7 @@ impl UnmatchedReason {
         match s {
             "ambiguous" => Some(UnmatchedReason::Ambiguous),
             "name_differs" => Some(UnmatchedReason::NameDiffers),
+            "no_submission" => Some(UnmatchedReason::NoSubmission),
             _ => None,
         }
     }
@@ -1692,16 +1753,18 @@ fn payment_where(
         "SELECT id, version, match_version, {PAYMENT_COLUMNS}, {MATCH_COLUMNS}
          FROM stripe_payments WHERE {filter} = ?1"
     ))?
-    .query_row([key], |r| {
-        Ok(PaymentRecord {
-            id: r.get(0)?,
-            version: r.get(1)?,
-            match_version: r.get(2)?,
-            payment: payment_at(r, 3)?,
-            matched: match_at(r, 12)?.matched,
-        })
-    })
+    .query_row([key], record_row)
     .optional()
+}
+
+fn record_row(r: &Row) -> rusqlite::Result<PaymentRecord> {
+    Ok(PaymentRecord {
+        id: r.get(0)?,
+        version: r.get(1)?,
+        match_version: r.get(2)?,
+        payment: payment_at(r, 3)?,
+        matched: match_at(r, 12)?.matched,
+    })
 }
 
 /// One payment by our row id, or `None`.
@@ -1799,16 +1862,528 @@ pub fn unmatched(conn: &Connection) -> rusqlite::Result<Vec<PaymentRecord>> {
          WHERE gift_id IS NULL AND unmatched_reason IS NOT NULL
          ORDER BY seq DESC LIMIT {UNMATCHED_LIMIT}"
     ))?
-    .query_map([], |r| {
-        Ok(PaymentRecord {
-            id: r.get(0)?,
-            version: r.get(1)?,
-            match_version: r.get(2)?,
-            payment: payment_at(r, 3)?,
-            matched: match_at(r, 12)?.matched,
-        })
-    })?
+    .query_map([], record_row)?
     .collect()
+}
+
+// ── the payment's gift ─────────────────────────────────────────────────────
+
+/// The amount a payment's gift has: what the group kept. A payment
+/// refunded in full keeps its whole amount on the gift (which is
+/// `refunded` and counts for nothing; a gift's amount is over £0).
+pub fn gift_amount(p: &StripePaymentPayload) -> i64 {
+    if p.refunded_amount >= p.amount {
+        p.amount
+    } else {
+        kept_amount(p)
+    }
+}
+
+/// Why the payment's gift doesn't count, from Stripe: "Refunded
+/// (Stripe): requested_by_customer". None for money received.
+pub fn gift_reason(p: &StripePaymentPayload) -> Option<String> {
+    let what = match gift_status(p) {
+        Status::Completed => return None,
+        Status::Pending => "Not paid yet",
+        Status::Failed => "Failed",
+        Status::Refunded => "Refunded",
+        Status::ChargedBack => "Disputed",
+        _ => "Cancelled",
+    };
+    Some(match p.reason.as_deref() {
+        Some(r) => format!("{what} (Stripe): {r}"),
+        None => format!("{what} (Stripe)"),
+    })
+}
+
+/// "paid", "refunded", "disputed": what a payment's state says, for a
+/// command group's name.
+pub fn said(p: &StripePaymentPayload) -> &'static str {
+    match gift_status(p) {
+        Status::Completed if p.dispute == Some(DisputeState::Won) => "dispute won",
+        Status::Completed if p.refunded_amount > 0 => "partly refunded",
+        Status::Completed => "paid",
+        Status::Pending => "pending",
+        Status::Failed => "failed",
+        Status::Refunded => "refunded",
+        Status::ChargedBack => "disputed",
+        _ => "cancelled",
+    }
+}
+
+/// The gift of a payment that has succeeded and has none yet, for
+/// `contact_id`, all of it to `source_code_id`, in `group`: a card gift
+/// whose origin is the payment (one gift per payment for its whole life),
+/// dated the day it was paid, with the status the payment gives it now.
+/// Made as the caller's actor: nobody when Stripe's event matched it, the
+/// staff member who matched it by hand. Never for a payment that hasn't
+/// succeeded (`payment_not_succeeded`): gifts come only on Stripe's word
+/// that the money arrived. The caller records the match ([`set_match`]).
+pub fn make_gift(
+    ctx: &Ctx,
+    record: &PaymentRecord,
+    contact_id: &str,
+    source_code_id: &str,
+    group: &CommandGroup,
+) -> Result<String, ContractError> {
+    let p = &record.payment;
+    if record.matched.gift_id.is_some() {
+        return Err(ContractError::rejected(
+            "already_matched",
+            "This payment is already a donor’s gift",
+        ));
+    }
+    let Some(paid_on) = p
+        .paid_on
+        .clone()
+        .filter(|_| p.status == StripePaymentStatus::Succeeded)
+    else {
+        return Err(ContractError::rejected(
+            "payment_not_succeeded",
+            "A gift is made once its payment has succeeded",
+        ));
+    };
+    let amount = gift_amount(p);
+    crate::create_provider_gift(
+        ctx,
+        GiftPayload {
+            contact_id: contact_id.to_owned(),
+            received_on: paid_on,
+            amount,
+            method: Method::Card,
+            reference: Some(p.payment_id.clone()),
+            allocations: vec![AllocationRow {
+                key: None,
+                source_code_id: source_code_id.to_owned(),
+                amount,
+            }],
+            client_key: None,
+            from_line: None,
+            paying_in_batch_id: None,
+            instalment: None,
+            origin: Some(ProviderRef {
+                provider: Provider::Stripe,
+                payment_id: p.payment_id.clone(),
+                regular_gift_id: None,
+                scheduled_on: None,
+            }),
+        },
+        gift_status(p),
+        gift_reason(p),
+        group,
+    )
+}
+
+/// The matched payment's gift takes what the payment now says, in
+/// `group`, as the system: its status (with Stripe's reason when that
+/// isn't money received), and its amount and date ([`gift_amount`]: what
+/// the group kept after a partial refund). A gift in a Gift Aid claim
+/// keeps the amount and date it was claimed on, and the match is flagged
+/// for staff instead (`partialRefundClaimed`; cleared once they agree
+/// again); its status still follows, so a claimed gift refunded in full
+/// is paid back by the next claim. A gift staff voided stays void.
+/// Whether anything changed; a payment with no gift changes nothing.
+pub fn follow_payment(
+    ctx: &Ctx,
+    record: &PaymentRecord,
+    group: &CommandGroup,
+) -> Result<bool, ContractError> {
+    let Some(gift) = record.matched.gift_id.as_deref() else {
+        return Ok(false);
+    };
+    let p = &record.payment;
+    let conn = ctx.tx.read();
+    let (status, claimed, held_reason): (Status, bool, Option<String>) = conn
+        .prepare_cached(
+            "SELECT status, claim_id IS NOT NULL, void_reason FROM gifts WHERE id = ?1
+             /* any status: one gift */",
+        )?
+        .query_row([gift], |r| {
+            Ok((Status::parse(&r.get::<_, String>(0)?), r.get(1)?, r.get(2)?))
+        })
+        .optional()?
+        .ok_or(ContractError::NotFound)?;
+    let current = crate::get(conn, gift)?.ok_or(ContractError::NotFound)?.gift;
+    let amount = gift_amount(p);
+    let date = p.paid_on.clone().unwrap_or(current.received_on.clone());
+    let mut changed = false;
+    let differs = current.amount != amount || current.received_on != date;
+    if differs && !claimed {
+        // The gift's own split (staff may have corrected it): pence come
+        // off, or go on, its newest layer; a layer kept keeps its key.
+        let split: Vec<Share> = current
+            .allocations
+            .iter()
+            .map(|a| Share::new(&a.source_code_id, a.amount))
+            .collect();
+        let allocations = crate::terms_rules::split_for_collected(&split, amount)
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| AllocationRow {
+                key: current
+                    .allocations
+                    .get(i)
+                    .filter(|a| a.source_code_id == s.source_code_id)
+                    .map(|a| a.key.clone()),
+                source_code_id: s.source_code_id,
+                amount: s.amount,
+            })
+            .collect();
+        execute(
+            ctx,
+            &crate::GIFT,
+            GiftPayload {
+                contact_id: current.contact_id.clone(),
+                received_on: date,
+                amount,
+                method: current.method,
+                reference: current.reference.clone(),
+                allocations,
+                client_key: None,
+                from_line: None,
+                paying_in_batch_id: None,
+                instalment: None,
+                origin: None,
+            },
+            Exec::update(gift, None, Source::System).in_group(group),
+        )?;
+        changed = true;
+    }
+    let flag = claimed && current.amount != amount;
+    if flag != record.matched.partial_refund_claimed {
+        set_match(
+            ctx,
+            &record.id,
+            StripePaymentMatchPayload {
+                partial_refund_claimed: flag,
+                ..record.matched.clone()
+            },
+            None,
+            Source::System,
+            Some(group),
+        )?;
+        changed = true;
+    }
+    // A void is staff's: it outlives what Stripe says next.
+    let (target, reason) = (gift_status(p), gift_reason(p));
+    if status != Status::Void
+        && (status != target || (!target.is_received() && held_reason != reason))
+    {
+        execute(
+            ctx,
+            &crate::STATUS,
+            StatusPayload {
+                status: target,
+                reason,
+            },
+            Exec::update(gift, None, Source::System).in_group(group),
+        )?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// The status a card gift's payment gives it now, and Stripe's reason:
+/// what un-voiding the gift restores. None: not a Stripe payment's gift.
+pub fn payment_status_of_gift(
+    conn: &Connection,
+    gift_id: &str,
+) -> rusqlite::Result<Option<(Status, Option<String>)>> {
+    Ok(payment_of_gift(conn, gift_id)?.map(|r| (gift_status(&r.payment), gift_reason(&r.payment))))
+}
+
+/// Whether gift `gift_id`'s Stripe payment now says another amount or
+/// date than the gift (which a claim holds): a draft claim holding it is
+/// held back, as for a Direct Debit payment that moved.
+pub fn payment_moved(conn: &Connection, gift_id: &str) -> rusqlite::Result<bool> {
+    let Some(record) = payment_of_gift(conn, gift_id)? else {
+        return Ok(false);
+    };
+    let Some(gift) = crate::get(conn, gift_id)? else {
+        return Ok(false);
+    };
+    Ok(gift.gift.amount != gift_amount(&record.payment)
+        || record
+            .payment
+            .paid_on
+            .as_deref()
+            .is_some_and(|d| d != gift.gift.received_on))
+}
+
+/// Bring a card gift up to its payment again (after a claim let it go:
+/// what the claim held may have moved since), under `group`. A gift
+/// that isn't a Stripe payment's is left as it is.
+pub fn resync_gift(ctx: &Ctx, gift_id: &str, group: &CommandGroup) -> Result<(), ContractError> {
+    if let Some(record) = payment_of_gift(ctx.tx.read(), gift_id)? {
+        follow_payment(ctx, &record, group)?;
+    }
+    Ok(())
+}
+
+/// Every way a Stripe payment and the gifts disagree (ADR 0025, decision
+/// 7; `keep giving-consistency`): a matched payment without exactly one
+/// gift, a gift another row names, a gift of another donor, a gift whose
+/// status, amount or date isn't its payment's (a claimed gift keeps its
+/// claimed amount and date; a staff void stands), a card gift from
+/// Stripe with no payment on record, an unmatched payment that has a
+/// gift all the same, and a payment that succeeded and is in nobody's
+/// queue. Empty when consistent. Read-only.
+pub fn consistency(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let rows: Vec<PaymentRecord> = conn
+        .prepare(&format!(
+            "SELECT id, version, match_version, {PAYMENT_COLUMNS}, {MATCH_COLUMNS}
+             FROM stripe_payments ORDER BY seq"
+        ))?
+        .query_map([], record_row)?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut problems = Vec::new();
+    for r in rows {
+        let p = &r.payment;
+        let gifts: Vec<(String, String, i64, String, String, bool)> = conn
+            .prepare_cached(
+                "SELECT id, contact_id, amount, received_on, status, claim_id IS NOT NULL
+                 FROM gifts WHERE provider = 'stripe' AND provider_payment_id = ?1
+                 /* any status: the payment's */",
+            )?
+            .query_map([&p.payment_id], |g| {
+                Ok((
+                    g.get(0)?,
+                    g.get(1)?,
+                    g.get(2)?,
+                    g.get(3)?,
+                    g.get(4)?,
+                    g.get(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let id = &p.payment_id;
+        let Some(linked) = r.matched.gift_id.as_deref() else {
+            if !gifts.is_empty() {
+                problems.push(format!(
+                    "payment {id}: {} gift(s), though it is matched to nobody",
+                    gifts.len()
+                ));
+            } else if p.status == StripePaymentStatus::Succeeded && r.matched.unmatched.is_none() {
+                problems.push(format!(
+                    "payment {id}: succeeded, with no gift and in nobody's queue"
+                ));
+            }
+            continue;
+        };
+        let [(gift, contact, amount, date, status, claimed)] = gifts.as_slice() else {
+            problems.push(format!("payment {id}: {} gifts, not one", gifts.len()));
+            continue;
+        };
+        if gift != linked {
+            problems.push(format!(
+                "payment {id}: its gift is {linked}, but {gift} names it"
+            ));
+            continue;
+        }
+        if r.matched.contact_id.as_deref() != Some(contact.as_str()) {
+            problems.push(format!("payment {id}: its gift {gift} is another donor's"));
+        }
+        let (want, on) = (gift_amount(p), p.paid_on.clone().unwrap_or_default());
+        if !claimed && (*amount != want || *date != on) {
+            problems.push(format!(
+                "payment {id}: gift is {amount}p on {date}, payment {want}p on {on}"
+            ));
+        }
+        let target = gift_status(p).as_str();
+        if status != target && status != "void" {
+            problems.push(format!(
+                "payment {id}: gift is {status}, payment says {target}"
+            ));
+        }
+    }
+    let orphans: Vec<String> = conn
+        .prepare(
+            "SELECT g.id, g.provider_payment_id FROM gifts g
+             WHERE g.provider = 'stripe' AND g.provider_payment_id IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM stripe_payments p
+                               WHERE p.payment_id = g.provider_payment_id AND p.gift_id = g.id)
+             /* any status: every provider gift */",
+        )?
+        .query_map([], |r| {
+            Ok(format!(
+                "gift {}: payment {} isn't on record as its payment",
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    problems.extend(orphans);
+    Ok(problems)
+}
+
+/// The submission a payment came from, among the ones its events point
+/// at (`candidates`: submission ids, likeliest first; unknown ones are
+/// skipped): the first that is for the same amount, isn't another
+/// payment's, and that no other payment already names. `payment_id` is
+/// Stripe's PaymentIntent id.
+pub fn submission_for_payment(
+    conn: &Connection,
+    candidates: &[String],
+    payment_id: &str,
+    amount: i64,
+) -> rusqlite::Result<Option<String>> {
+    for id in candidates {
+        let Some(found) = submission(conn, id)? else {
+            continue;
+        };
+        if found.typed.amount != amount {
+            continue;
+        }
+        let elsewhere: bool = conn
+            .prepare_cached(
+                "SELECT EXISTS (SELECT 1 FROM stripe_payments
+                                WHERE submission_id = ?1 AND payment_id <> ?2)",
+            )?
+            .query_row([id.as_str(), payment_id], |r| r.get(0))?;
+        if !elsewhere {
+            return Ok(Some(found.id));
+        }
+    }
+    Ok(None)
+}
+
+// ── "Card payments to match" ───────────────────────────────────────────────
+
+/// What the donor typed for a payment in the queue, for staff to decide
+/// whose it is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TypedDonor {
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    /// They ticked Gift Aid: matching makes their declaration.
+    pub gift_aid: bool,
+    pub address_line1: String,
+    pub postcode: String,
+}
+
+/// A contact that has the donor's email address.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CardCandidate {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// A card payment nobody could be matched to, as staff see it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct UnmatchedCardPayment {
+    /// Our row id: `stripe/unmatched/{id}/match`.
+    pub id: String,
+    /// Stripe's PaymentIntent id.
+    pub payment_id: String,
+    /// What the gift would be, in pence ([`gift_amount`]).
+    #[ts(type = "number")]
+    pub amount: i64,
+    pub paid_on: Option<String>,
+    /// The status its gift would have.
+    pub status: Status,
+    pub reason: UnmatchedReason,
+    /// What the donor typed; none for a payment with no submission (or
+    /// one whose details are gone).
+    pub donor: Option<TypedDonor>,
+    /// The page's source code when they gave: the gift's, unless staff
+    /// choose another. None: staff must choose.
+    pub source_code_id: Option<String>,
+    /// The live contacts that have the donor's email address (at most 50).
+    pub candidates: Vec<CardCandidate>,
+    /// Pass as `expected` to match it.
+    #[ts(type = "number")]
+    pub match_version: i64,
+}
+
+/// The submission behind a payment, if what the donor typed is still
+/// there (not cleared).
+pub fn typed_for(
+    conn: &Connection,
+    p: &StripePaymentPayload,
+) -> rusqlite::Result<Option<Submission>> {
+    Ok(match p.submission_id.as_deref() {
+        Some(id) => submission(conn, id)?.filter(|s| s.outcome.personal_cleared_at.is_none()),
+        None => None,
+    })
+}
+
+/// The live contacts that have `email`, for [`match_donor`], and whether
+/// the lookup read no further.
+pub fn donor_candidates(
+    conn: &Connection,
+    email: &str,
+) -> rusqlite::Result<(Vec<Candidate>, bool)> {
+    let found = contacts::donors::by_email(conn, email)?;
+    Ok((
+        found
+            .contacts
+            .into_iter()
+            .filter(|c| !c.archived)
+            .map(|c| Candidate {
+                contact_id: c.id,
+                first_name: c.first_name,
+                last_name: c.last_name,
+            })
+            .collect(),
+        found.truncated,
+    ))
+}
+
+/// "Card payments to match", as staff see them: [`unmatched`], each with
+/// what its donor typed and the contacts that have their email address.
+pub fn unmatched_view(conn: &Connection) -> rusqlite::Result<Vec<UnmatchedCardPayment>> {
+    let mut out = Vec::new();
+    for r in unmatched(conn)? {
+        let Some(reason) = r.matched.unmatched else {
+            continue;
+        };
+        let typed = typed_for(conn, &r.payment)?;
+        let candidates = match &typed {
+            Some(s) => contacts::donors::by_email(conn, &s.typed.email)?
+                .contacts
+                .into_iter()
+                .filter(|c| !c.archived)
+                .map(|c| CardCandidate {
+                    id: c.id,
+                    display_name: c.display_name,
+                })
+                .collect(),
+            None => vec![],
+        };
+        out.push(UnmatchedCardPayment {
+            amount: gift_amount(&r.payment),
+            paid_on: r.payment.paid_on.clone(),
+            status: gift_status(&r.payment),
+            reason,
+            source_code_id: typed.as_ref().map(|s| s.typed.source_code_id.clone()),
+            donor: typed.map(|s| {
+                let aid = s.typed.gift_aid;
+                TypedDonor {
+                    first_name: s.typed.first_name,
+                    last_name: s.typed.last_name,
+                    email: s.typed.email,
+                    gift_aid: aid.is_some(),
+                    address_line1: aid
+                        .as_ref()
+                        .map(|g| g.address_line1.clone())
+                        .unwrap_or_default(),
+                    postcode: aid.map(|g| g.postcode).unwrap_or_default(),
+                }
+            }),
+            candidates,
+            match_version: r.match_version,
+            payment_id: r.payment.payment_id,
+            id: r.id,
+        });
+    }
+    Ok(out)
 }
 
 // ── the matching rule ──────────────────────────────────────────────────────
@@ -2243,7 +2818,11 @@ mod tests {
         for s in [DisputeState::Open, DisputeState::Won, DisputeState::Lost] {
             assert_eq!(DisputeState::parse(s.as_str()), Some(s));
         }
-        for s in [UnmatchedReason::Ambiguous, UnmatchedReason::NameDiffers] {
+        for s in [
+            UnmatchedReason::Ambiguous,
+            UnmatchedReason::NameDiffers,
+            UnmatchedReason::NoSubmission,
+        ] {
             assert_eq!(UnmatchedReason::parse(s.as_str()), Some(s));
         }
         for s in [

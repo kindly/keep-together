@@ -3,4 +3,4 @@
 /**
  * Why a payment went to the staff queue instead of a contact.
  */
-export type UnmatchedReason = "ambiguous" | "name_differs";
+export type UnmatchedReason = "ambiguous" | "name_differs" | "no_submission";

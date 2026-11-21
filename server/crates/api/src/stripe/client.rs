@@ -59,6 +59,46 @@ pub const ACCOUNT_UPDATED: &str = "account.updated";
 /// The account's owner removed the platform from their Stripe account.
 pub const ACCOUNT_DEAUTHORIZED: &str = "account.application.deauthorized";
 
+/// The payment events of a connected account that processing handles
+/// ([`super::payments`]), and the catch-up asks for. A Checkout Session's
+/// events name its PaymentIntent and our submission; the rest name the
+/// PaymentIntent, on the object itself (`payment_intent.*`) or as its
+/// `payment_intent` (a charge, a refund, a dispute).
+pub const SESSION_EVENTS: &[&str] = &[
+    "checkout.session.completed",
+    "checkout.session.async_payment_succeeded",
+    "checkout.session.async_payment_failed",
+    "checkout.session.expired",
+];
+pub const SESSION_EXPIRED: &str = "checkout.session.expired";
+pub const PAYMENT_INTENT_EVENTS: &[&str] = &[
+    "payment_intent.succeeded",
+    "payment_intent.payment_failed",
+    "payment_intent.canceled",
+];
+pub const CHARGE_EVENTS: &[&str] = &[
+    "charge.refunded",
+    "charge.refund.updated",
+    "charge.dispute.created",
+    "charge.dispute.updated",
+    "charge.dispute.closed",
+    "charge.dispute.funds_withdrawn",
+    "charge.dispute.funds_reinstated",
+];
+
+/// Every event type the catch-up reads for an account.
+pub fn handled_events() -> Vec<&'static str> {
+    [ACCOUNT_UPDATED, ACCOUNT_DEAUTHORIZED]
+        .into_iter()
+        .chain(SESSION_EVENTS.iter().copied())
+        .chain(PAYMENT_INTENT_EVENTS.iter().copied())
+        .chain(CHARGE_EVENTS.iter().copied())
+        .collect()
+}
+
+/// The most events Stripe lists in one page.
+pub const EVENTS_PAGE: usize = 100;
+
 /// A secret string whose `Debug` never prints it.
 #[derive(Clone)]
 pub struct Secret(String);
@@ -198,6 +238,88 @@ impl Account {
     }
 }
 
+/// A PaymentIntent as Stripe has it now, with its latest charge: what we
+/// keep of a payment (<https://docs.stripe.com/api/payment_intents/object>,
+/// <https://docs.stripe.com/api/charges/object>). Amounts are minor units.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaymentIntent {
+    /// `pi_…`.
+    pub id: String,
+    pub amount: i64,
+    /// Lower case, as Stripe sends it (`gbp`).
+    pub currency: String,
+    /// Stripe's own: `succeeded`, `processing`, `requires_payment_method`,
+    /// `canceled`, …
+    pub status: String,
+    /// When the money was taken (its charge's `created`, unix seconds);
+    /// the intent's own `created` when it has no charge.
+    pub paid_at: i64,
+    /// `latest_charge.amount_refunded`: refunded in all.
+    pub refunded: i64,
+    /// Why the last attempt failed (`last_payment_error`: its decline
+    /// code, else its code), or why it was cancelled.
+    pub failure: Option<String>,
+    /// The last attempt failed (`last_payment_error` is set).
+    pub attempt_failed: bool,
+    /// `metadata.keep_submission`: the submission whose Checkout Session
+    /// made it (Stripe copies it from the session's
+    /// `payment_intent_data.metadata`), when it carries one.
+    pub submission: Option<String>,
+}
+
+impl PaymentIntent {
+    /// From `GET /v1/payment_intents/{id}?expand[]=latest_charge`.
+    pub fn from_v1(v: &Value) -> Result<Self, CallError> {
+        let text = |p: &str| v.pointer(p).and_then(Value::as_str).map(str::to_owned);
+        let number = |p: &str| v.pointer(p).and_then(Value::as_i64);
+        let (Some(id), Some(amount), Some(currency), Some(status)) = (
+            text("/id"),
+            number("/amount"),
+            text("/currency"),
+            text("/status"),
+        ) else {
+            return Err(CallError::Malformed(
+                "a payment intent with no id, amount, currency or status".into(),
+            ));
+        };
+        Ok(Self {
+            id,
+            amount,
+            currency: currency.to_lowercase(),
+            status,
+            paid_at: number("/latest_charge/created")
+                .or_else(|| number("/created"))
+                .unwrap_or(0),
+            refunded: number("/latest_charge/amount_refunded").unwrap_or(0),
+            failure: text("/last_payment_error/decline_code")
+                .or_else(|| text("/last_payment_error/code"))
+                .or_else(|| text("/cancellation_reason")),
+            attempt_failed: v.get("last_payment_error").is_some_and(|e| !e.is_null()),
+            submission: text("/metadata/keep_submission"),
+        })
+    }
+}
+
+/// A card dispute as Stripe has it now
+/// (<https://docs.stripe.com/api/disputes/object>).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dispute {
+    pub id: String,
+    /// `needs_response`, `under_review`, `won`, `lost`, or a `warning_…`
+    /// (an inquiry: no money has moved).
+    pub status: String,
+    /// The cardholder's bank's reason (`fraudulent`, `duplicate`, …).
+    pub reason: Option<String>,
+    pub created: i64,
+}
+
+/// One page of `GET /v1/events`, newest first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventPage {
+    pub events: Vec<Value>,
+    pub has_more: bool,
+}
+
 /// What a request carries.
 enum Payload<'a> {
     None,
@@ -267,6 +389,20 @@ impl Api {
         payload: Payload<'_>,
         idempotency_key: Option<&str>,
     ) -> Result<Value, CallError> {
+        self.call_with(method, path, &[], account, payload, idempotency_key)
+            .await
+    }
+
+    /// [`Self::call`] with a query string (a `GET`'s filters).
+    async fn call_with(
+        &self,
+        method: Method,
+        path: &[&str],
+        query: &[(&str, &str)],
+        account: Option<&str>,
+        payload: Payload<'_>,
+        idempotency_key: Option<&str>,
+    ) -> Result<Value, CallError> {
         let header = |v: &str, what: &str| {
             HeaderValue::from_str(v).map_err(|_| CallError::Malformed(what.into()))
         };
@@ -281,7 +417,11 @@ impl Api {
         if let Some(key) = idempotency_key {
             headers.insert("Idempotency-Key", header(key, "idempotency key")?);
         }
-        let mut req = self.http.request(method, self.url(path)).headers(headers);
+        let mut url = self.url(path);
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+        let mut req = self.http.request(method, url).headers(headers);
         req = match payload {
             Payload::None => req,
             Payload::Form(pairs) => req.form(pairs),
@@ -308,6 +448,98 @@ impl Api {
         let payload = form.map_or(Payload::None, Payload::Form);
         self.call(method, path, Some(account), payload, idempotency_key)
             .await
+    }
+
+    /// The PaymentIntent `id` on connected `account`, as it is now, with
+    /// its latest charge (what was refunded, when it was taken).
+    pub async fn get_payment_intent(
+        &self,
+        account: &str,
+        id: &str,
+    ) -> Result<PaymentIntent, CallError> {
+        let v = self
+            .call_with(
+                Method::GET,
+                &["v1", "payment_intents", id],
+                &[("expand[]", "latest_charge")],
+                Some(account),
+                Payload::None,
+                None,
+            )
+            .await?;
+        PaymentIntent::from_v1(&v)
+    }
+
+    /// The disputes on a PaymentIntent, newest first (a payment has one
+    /// at most at a time; an inquiry may come before a chargeback).
+    pub async fn list_disputes(
+        &self,
+        account: &str,
+        payment_intent: &str,
+    ) -> Result<Vec<Dispute>, CallError> {
+        let v = self
+            .call_with(
+                Method::GET,
+                &["v1", "disputes"],
+                &[("payment_intent", payment_intent), ("limit", "10")],
+                Some(account),
+                Payload::None,
+                None,
+            )
+            .await?;
+        let mut out: Vec<Dispute> = v
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| CallError::Malformed("a dispute list with no data".into()))?
+            .iter()
+            .filter_map(|d| {
+                Some(Dispute {
+                    id: d.get("id")?.as_str()?.to_owned(),
+                    status: d.get("status")?.as_str()?.to_owned(),
+                    reason: d.get("reason").and_then(Value::as_str).map(str::to_owned),
+                    created: d.get("created").and_then(Value::as_i64).unwrap_or(0),
+                })
+            })
+            .collect();
+        out.sort_by_key(|d| std::cmp::Reverse(d.created));
+        Ok(out)
+    }
+
+    /// One page of connected `account`'s events of `types` created at or
+    /// after `since` (unix seconds), newest first; `starting_after`: the
+    /// last event id of the page before (<https://docs.stripe.com/api/events/list>;
+    /// Stripe keeps 30 days).
+    pub async fn list_events(
+        &self,
+        account: &str,
+        since: i64,
+        types: &[&str],
+        starting_after: Option<&str>,
+    ) -> Result<EventPage, CallError> {
+        let (since, limit) = (since.to_string(), EVENTS_PAGE.to_string());
+        let mut query = vec![("created[gte]", since.as_str()), ("limit", limit.as_str())];
+        query.extend(types.iter().map(|t| ("types[]", *t)));
+        if let Some(after) = starting_after {
+            query.push(("starting_after", after));
+        }
+        let v = self
+            .call_with(
+                Method::GET,
+                &["v1", "events"],
+                &query,
+                Some(account),
+                Payload::None,
+                None,
+            )
+            .await?;
+        Ok(EventPage {
+            events: v
+                .get("data")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| CallError::Malformed("an event list with no data".into()))?,
+            has_more: v.get("has_more").and_then(Value::as_bool).unwrap_or(false),
+        })
     }
 
     /// Make the organisation's Stripe account, answering its id
@@ -482,6 +714,33 @@ mod tests {
         assert!(!bare.details_submitted && !bare.charges_enabled);
         assert_eq!(bare.requirements_due, 0);
         assert!(Account::from_v1(&json!({})).is_err());
+    }
+
+    #[test]
+    fn a_payment_intent_is_read_with_its_charge() {
+        let p = PaymentIntent::from_v1(&json!({
+            "id": "pi_1", "amount": 2500, "currency": "GBP", "status": "succeeded",
+            "created": 100,
+            "latest_charge": { "id": "ch_1", "created": 160, "amount_refunded": 500 },
+            "last_payment_error": null,
+            "metadata": { "keep_submission": "abc" }
+        }))
+        .unwrap();
+        assert_eq!((p.amount, p.currency.as_str()), (2500, "gbp"));
+        assert_eq!((p.paid_at, p.refunded), (160, 500));
+        assert_eq!(p.submission.as_deref(), Some("abc"));
+        assert!(!p.attempt_failed);
+        let declined = PaymentIntent::from_v1(&json!({
+            "id": "pi_2", "amount": 1000, "currency": "gbp",
+            "status": "requires_payment_method", "created": 100, "latest_charge": null,
+            "last_payment_error": { "code": "card_declined",
+                "decline_code": "insufficient_funds" }
+        }))
+        .unwrap();
+        assert!(declined.attempt_failed);
+        assert_eq!(declined.failure.as_deref(), Some("insufficient_funds"));
+        assert_eq!((declined.paid_at, declined.refunded), (100, 0));
+        assert!(PaymentIntent::from_v1(&json!({ "id": "pi_3" })).is_err());
     }
 
     #[test]

@@ -45,6 +45,9 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::terms::MIGRATION),
         M::up(giving::bank::MIGRATION),
         M::up(giving::standing::MIGRATION),
+        // A card gift follows its Stripe payment: gifts read these tables.
+        M::up(giving::stripe::MIGRATION),
+        M::up(giving::stripe::MIGRATION_NO_SUBMISSION),
     ])
 }
 
@@ -1387,7 +1390,7 @@ fn donor_declared(w: &World, gift_id: &str, made_on: &str) -> giftaid::DonorDecl
 fn donor_declare(
     db: &OrgDb,
     declared: giftaid::DonorDeclaration,
-) -> Result<giftaid::DonorDeclared, ContractError> {
+) -> Result<contracts::Executed, ContractError> {
     // Nobody is signed in when a donor's payment completes.
     contracts::transact(db, None, |ctx| {
         let group = contracts::command_group(ctx, "stripe.donation")?;
@@ -1399,10 +1402,7 @@ fn donor_declare(
 fn a_donors_declaration_is_on_screen_by_donor_dated_the_day_they_ticked_it() {
     let w = world();
     let gift = gift_for(&w.a, &w.jo, "2026-11-03", false);
-    let made = match donor_declare(&w.a, donor_declared(&w, &gift, "2026-11-02")).unwrap() {
-        giftaid::DonorDeclared::Made(made) => made,
-        other => panic!("{other:?}"),
-    };
+    let made = donor_declare(&w.a, donor_declared(&w, &gift, "2026-11-02")).unwrap();
     let d = w.declaration(&made.id);
     assert_eq!(d.payload.method, Method::OnScreenByDonor);
     assert_eq!(d.payload.scope, Scope::FutureAndPast4y);
@@ -1439,27 +1439,17 @@ fn a_donors_declaration_is_on_screen_by_donor_dated_the_day_they_ticked_it() {
 }
 
 #[test]
-fn a_second_gift_under_an_enduring_declaration_adds_nothing() {
+fn a_donors_new_declaration_is_kept_even_when_an_older_one_covers_the_gift() {
     let w = world();
     let first = gift_for(&w.a, &w.jo, "2026-11-03", false);
-    let made = match donor_declare(&w.a, donor_declared(&w, &first, "2026-11-03")).unwrap() {
-        giftaid::DonorDeclared::Made(made) => made,
-        other => panic!("{other:?}"),
-    };
+    let made = donor_declare(&w.a, donor_declared(&w, &first, "2026-11-03")).unwrap();
+    // The donor ticks the box again with a second gift: a new link in the
+    // chain, though the first already covers it (human, 2026-11-21).
     let second = gift_for(&w.a, &w.jo, "2026-11-10", false);
-    match donor_declare(&w.a, donor_declared(&w, &second, "2026-11-10")).unwrap() {
-        giftaid::DonorDeclared::AlreadyCovered(held) => assert_eq!(held.id, made.id),
-        other => panic!("{other:?}"),
-    }
-    assert_eq!(w.panel("2026-11-18").declarations.len(), 1);
-    // A cancelled one no longer covers: the donor's next tick is a new link.
-    w.cancel("2026-11-12", None).unwrap();
-    let third = gift_for(&w.a, &w.jo, "2026-11-15", false);
-    assert!(matches!(
-        donor_declare(&w.a, donor_declared(&w, &third, "2026-11-15")).unwrap(),
-        giftaid::DonorDeclared::Made(_)
-    ));
+    let again = donor_declare(&w.a, donor_declared(&w, &second, "2026-11-10")).unwrap();
+    assert_ne!(again.id, made.id);
     assert_eq!(w.panel("2026-11-18").declarations.len(), 2);
+    assert!(w.covering("2026-11-10", Some(&second)).is_some());
 }
 
 #[test]
@@ -1538,10 +1528,7 @@ fn the_staff_contract_refuses_on_screen_by_donor_on_every_path() {
         }
     }
     // A donor's declaration, once made, can't be replayed through it either.
-    let made = match donor_declare(&w.a, donor_declared(&w, &gift, "2026-11-03")).unwrap() {
-        giftaid::DonorDeclared::Made(made) => made,
-        other => panic!("{other:?}"),
-    };
+    let made = donor_declare(&w.a, donor_declared(&w, &gift, "2026-11-03")).unwrap();
     let revision: i64 = read(&w.a, |c| {
         Ok(c.query_row(
             "SELECT id FROM revisions WHERE entity_id = ?1 AND contract = 'giftaid.declaration'",

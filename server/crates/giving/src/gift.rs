@@ -330,9 +330,18 @@ impl Contract for Gift {
                 || was.received_on != now.received_on
                 || was.reference != now.reference)
         {
+            let stripe = was
+                .origin
+                .as_ref()
+                .is_some_and(|o| o.provider == Provider::Stripe);
             return Err(ContractError::rejected(
                 "direct_debit_fixed",
-                "A Direct Debit gift’s method, amount, date and payment are GoCardless’s",
+                if stripe {
+                    "A card gift taken through Stripe keeps Stripe’s method, amount, date \
+                     and payment"
+                } else {
+                    "A Direct Debit gift’s method, amount, date and payment are GoCardless’s"
+                },
             ));
         }
         // A gift made from a statement line is the line's, as a

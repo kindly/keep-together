@@ -48,6 +48,9 @@ fn migrations() -> Migrations<'static> {
         M::up(giving::terms::MIGRATION),
         M::up(giving::bank::MIGRATION),
         M::up(giving::standing::MIGRATION),
+        // A card gift follows its Stripe payment: gifts read these tables.
+        M::up(giving::stripe::MIGRATION),
+        M::up(giving::stripe::MIGRATION_NO_SUBMISSION),
     ])
 }
 
