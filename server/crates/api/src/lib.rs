@@ -47,6 +47,8 @@ pub struct AppState {
     pub gocardless: Option<Arc<gocardless::GoCardless>>,
     /// `KEEP_STRIPE` ([`stripe`]); off when `None`.
     pub stripe: Option<Arc<stripe::Stripe>>,
+    /// The donor's page: its rate limits ([`routes::give`]).
+    pub give: Arc<routes::give::Give>,
     /// Scan uploads' cap, disk reserve and slots ([`scans::limits`]).
     pub scans: Arc<scans::limits::ScanLimits>,
     /// The commit this build is (`KEEP_RELEASE`, [`health::commit`]),
@@ -66,6 +68,7 @@ impl AppState {
             address: None,
             gocardless: None,
             stripe: None,
+            give: Arc::default(),
             scans: Arc::default(),
             commit: None,
         }
@@ -88,6 +91,11 @@ impl AppState {
 
     pub fn with_stripe(mut self, stripe: Option<Arc<stripe::Stripe>>) -> Self {
         self.stripe = stripe;
+        self
+    }
+
+    pub fn with_give_limits(mut self, limits: routes::give::Limits) -> Self {
+        self.give = Arc::new(routes::give::Give::with_limits(limits));
         self
     }
 
@@ -252,6 +260,8 @@ pub fn app(state: AppState, domain: Router) -> Router {
             post(gocardless::webhook::receive),
         )
         .route("/api/stripe/webhook", post(stripe::webhook::receive))
+        .route("/api/give/{slug}", get(routes::give::page))
+        .route("/api/give/{slug}/donations", post(routes::give::donate))
         .merge(auth::routes())
         .merge(scans::phone::router())
         .nest("/api/t/{slug}", tenant_routes);

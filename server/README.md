@@ -137,7 +137,7 @@ request, an SSE stream) is never closed.
   | 409 | `duplicate` | `{id}`: create with a pre-generated id that exists |
   | 422 | `invalid` | `{problems: [{field, message}]}`: unstorable input, including a malformed body |
   | 422 | `rejected` | `{reason, message}`: refused (e.g. `identity_immutable`) |
-  | 429 | `rate_limited` | auth's rate limits |
+  | 429 | `rate_limited` | auth's rate limits; the donor's page's (per address, per group) |
   | 429 | `lookup_cap` | the organisation's address lookups for the month are used up |
   | 503 | `lookup_unavailable` | the address lookup provider is down, slow (5 s), out of credit, or the daily ceiling is reached |
   | 503 | `gocardless_unavailable` | GoCardless didn't answer or failed; nothing changed here |
@@ -360,6 +360,7 @@ registers the same way. With GoCardless on: `gocardless-events` (30 s),
 `gocardless-catchup` (daily) and `regular-terms-sync` (hourly, first
 run 10 minutes after boot; also run for one organisation after a terms
 change is saved). With Stripe on: `stripe-events` (30 s). Always:
+`give-limit-sweep` (hourly: the donor's page's rate-limit keys) and
 `standing-orders-missed` (6 h: standing
 orders' payments still unmatched 14 days after they were due; "Bank
 transfers"). A job's first run is `first_after()` after boot
@@ -1227,3 +1228,81 @@ the account, with its `account.updated`), `accounts/{id}/deauthorize`,
 `webhooks/hold` and `webhooks/release?reverse&count=`, `outage {calls,
 status?, path?}`, `GET webhooks`. `api/tests/stripe_connect.rs` and
 `stripe_webhook.rs` run on it.
+
+### The donor's page (S4)
+
+`/give/{slug}` is `give.html` with `src/give/`: its own Vite entry with
+none of the app's bundle (as `scan.html`), served from `dist/` for any
+path under `/give/` (`api::static_files`; Vite rewrites the same paths in
+dev and preview). No React, nothing kept in the browser. It shows the
+group's three amounts and "other", takes a first and last name and an
+email, offers HMRC's enduring Gift Aid declaration with the donor's house
+name or number and postcode, sends it all once, and goes to Stripe
+Checkout for the card. `/give/{slug}/thanks` is where Stripe sends the
+donor back: it reads the group's name, writes nothing and proves nothing.
+
+Two public routes, outside the tenant prefix (`api::routes::give`,
+registered in `lib.rs`): nobody is signed in, and the slug reaches one
+organisation's file.
+
+| route | |
+|---|---|
+| `GET /api/give/{slug}` | `GivePage {name, amounts: [3], minimum, maximum, giftAid: {wordingVersion} \| null}` (pence), `no-store`. `giftAid` is null when the group doesn't claim Gift Aid (`claimsGiftAid`) |
+| `POST /api/give/{slug}/donations` | `GiveDonation {id, amount, firstName, lastName, email, giftAid?: {wordingVersion, addressLine1, postcode}}` → `GiveStarted {url}`: Stripe's payment page. Body ≤ 16 KiB |
+
+- **A page exists** when Stripe is on, the slug is a group's, the group
+  is connected to a Stripe account that takes card payments
+  (`chargesEnabled`), and its `giving.donationPage` has a live source
+  code. Anything less is `404 not_found` on both routes, identical for
+  every reason, so a slug can't be probed.
+- **Never optimistic.** `POST` runs `giving::stripe::submit` (the
+  submission, as the system) and then `set_checkout_session`: two
+  revisions, and no contact, gift or declaration. It reads no contact
+  either, so the answer is the same whether or not the group knows the
+  donor: matching happens when the payment arrives (S3).
+- **The declaration's scope and wording are the server's.** The body has
+  no field for a scope (unknown fields are `422 invalid`): every page
+  declaration is `futureAndPast4y`. `giftAid.wordingVersion` is the
+  wording the page *showed*, and must be
+  `giftaid::HMRC_MODEL_WORDING_VERSION` (`422 rejected wording_changed`
+  otherwise): the submission is the evidence of what the donor agreed
+  to. The text is in `src/give/wording.ts`, by version; a version the
+  page has no text for is not offered. Ticked for a group that doesn't
+  claim: `422 rejected gift_aid_not_offered`.
+- **`422 invalid`**: `id` not 32 lower-case hex; an amount outside the
+  group's range; a blank name; an `email` that couldn't be an address
+  (Stripe is sent it for its receipt and refuses anything less, so here,
+  unlike on a contact, it is unstorable); ticked without a house name or
+  number or a postcode.
+- **One donation per `id`**, the page's key for the attempt. Two
+  requests for one id take turns (in process); an attempt that already
+  has its Checkout Session, or is paid, expired or cleared, is `409
+  duplicate`, and the page starts another under a new id. Stripe failing
+  is `503 stripe_unavailable` with the submission kept and no session;
+  the same id carries on.
+- **The Checkout Session** (`api::stripe::checkout`): on the group's
+  account (`Stripe-Account`: a direct charge), `mode=payment`,
+  `submit_type=donate`, cards only, one line "Donation to <group>" in
+  pence, the donor's email, the submission id as `client_reference_id`
+  and as `metadata[keep_submission]` on the session and its
+  PaymentIntent, 31 minutes to pay, back to `/give/{slug}/thanks` or
+  `/give/{slug}`. No name, address or declaration goes to Stripe. No
+  idempotency key: a create whose answer was lost leaves a session
+  nobody has the address of.
+- **Rate limits** (`routes::give::Limits`, in memory like auth's, keyed
+  by `KEEP_CLIENT_IP_HEADER`'s address): the page 60 then one a second
+  per address; donations 20 then one every 15 s per address, and 60 then
+  one every 5 s per group. Over: `429 rate_limited`, before anything is
+  stored or Stripe is asked. The group's limit is only reached for a
+  page that exists.
+- Non-`GET`s pass the same origin check as every `/api` write, so
+  another site can't post the form.
+
+The fake (`stripe::fake::checkout`, file `fake_checkout.rs`): `POST
+v1/checkout/sessions` and `GET v1/checkout/sessions/{id}` with Stripe's
+refusals (no account, an account that can't take payments, under 30p, an
+`expires_at` outside 30 minutes to 24 hours, `email_invalid`); the hosted
+page `checkout/{id}` with `Pay` (the session completes with a `pi_…`,
+`checkout.session.completed` is delivered, the browser goes to
+`success_url`) and `Back` (`cancel_url`); `simulate/checkout/{id}/expire`
+(`checkout.session.expired`). `api/tests/stripe_give.rs` runs on it.

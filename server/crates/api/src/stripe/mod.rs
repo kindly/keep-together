@@ -41,6 +41,7 @@
 //! payment events there), [`fake`].
 
 pub mod accounts;
+pub mod checkout;
 pub mod client;
 pub mod connect;
 pub mod fake;
@@ -194,6 +195,13 @@ impl Stripe {
     /// link has expired or been used (`refresh`: ask for a new one).
     pub fn landing(&self, slug: &str, outcome: &str) -> String {
         format!("{}/t/{slug}/settings?stripe={outcome}", self.app_origin)
+    }
+
+    /// The donor's page for `slug` (`/give/{slug}`), or a page under it
+    /// (`tail`: `"/thanks"`): where Stripe's payment page sends the donor
+    /// back to.
+    pub fn give_url(&self, slug: &str, tail: &str) -> String {
+        format!("{}/give/{slug}{tail}", self.app_origin)
     }
 
     /// Where the webhook endpoint is, to register at Stripe.

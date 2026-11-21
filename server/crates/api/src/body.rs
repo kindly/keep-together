@@ -14,7 +14,8 @@
 //! Scan uploads (phone and `/api/t/{slug}/scans…`) take at most
 //! [`crate::scans::UPLOAD_BODY_LIMIT`]. A bank statement upload takes at
 //! most [`banking::import::FILE_BYTES_MAX`], and past it answers `413
-//! too_large`.
+//! too_large`. The donor's page (`/api/give/*`, nobody signed in) takes
+//! at most [`crate::routes::give::BODY_LIMIT`].
 
 use std::time::Duration;
 
@@ -72,6 +73,9 @@ pub async fn buffer(State(state): State<AppState>, mut req: Request, next: Next)
     let statement = post && is_tenant_statement(path);
     let limit = if path.starts_with("/api/auth/") {
         AUTH_BODY_LIMIT
+    } else if path.starts_with(crate::routes::give::PREFIX) {
+        // The donor's page: nobody is signed in, so no more than a form.
+        crate::routes::give::BODY_LIMIT
     } else if phone && !post {
         // The phone's only other route is its `GET`: no body.
         0

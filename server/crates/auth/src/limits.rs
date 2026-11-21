@@ -19,7 +19,7 @@ pub type Limiter = RateLimiter<
     NoOpMiddleware<std::time::Instant>,
 >;
 
-fn limiter(burst: u32, one_per: Duration) -> Limiter {
+pub fn limiter(burst: u32, one_per: Duration) -> Limiter {
     RateLimiter::new(
         quota(burst, one_per),
         DefaultKeyedStateStore::default(),
