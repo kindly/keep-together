@@ -3,6 +3,9 @@
 Status: accepted (2026-07) — implementation deferred to a later phase.
 Amended by [ADR 0025](0025-gifts-are-every-payment-attempt.md): the
 status enum's values, and one gift per provider payment.
+Amended by [ADR 0028](0028-stripe-connect-direct-charges-donor-declarations.md):
+how Stripe is done (Connect with direct charges to each group's own
+account, and Gift Aid declarations made by the donor on our page).
 
 ## Context
 

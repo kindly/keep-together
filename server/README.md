@@ -46,6 +46,7 @@ Env (`api`):
 | `KEEP_QC_GOCARDLESS_TOKEN`, `KEEP_QC_GOCARDLESS_ORGANISATION` | unset | the QC sandbox account's permanent token and `OR…` id (`scripts/fly/gocardless-qc-token.sh`): with `sandbox`, the QC GoCardless surface (below). Both or neither; `KEEP_ENV=prod` or `KEEP_GOCARDLESS=live` stops the boot. Never logged |
 | `KEEP_STRIPE` | `off` | card donations (`api::stripe`; "Stripe" below): `fake` (a Stripe mock mounted on this server at `/api/fake-stripe`, no network; `KEEP_ENV=prod` refuses it), `test` (a Stripe sandbox; `prod` refuses it), `live` (only with `KEEP_ENV=prod`). Any other value stops the boot |
 | `KEEP_STRIPE_API_KEY`, `KEEP_STRIPE_WEBHOOK_SECRET` | unset | the platform's restricted key and the connected-accounts webhook endpoint's signing secret; `test`/`live` stop the boot without them, or with a key of the other mode (`…_test_…`/`…_live_…`) (`scripts/fly/stripe-secrets.sh`). Never logged, never in a URL or an error |
+| `KEEP_QC_STRIPE_ACCOUNT` | unset | the connected account (`acct_…`) QC's organisation is given on keep-qc (`routes::qc_stripe`; "Stripe" below); an id, not a secret; with `KEEP_ENV=prod` the boot stops |
 | `KEEP_FILES_CAP_BYTES` | unset: no cap | bytes of scanned pages an organisation's files db may hold (`422 rejected files_full` past it). Unset, none: the volume's reserve (`507`) is the only stop (human, 2026-10-29) |
 | `KEEP_FILES_DISK_RESERVE_BYTES` | see `api::scans::limits` | free bytes the data volume keeps after a scan upload (`507 storage_full` otherwise). Default: twice the largest database on the volume (the snapshot's copy and its `.zst`), and deployed (`prod`/`staging`) at least a quarter of the volume. `0` turns the guard off |
 | `KEEP_RESET_SEED` | unset | `riverside`: seed `seed::riverside` at boot (`api::reset`; `KEEP_ENV=dev\|staging` only, staging with `KEEP_RIVERSIDE_<ROLE>_{PASSWORD,TOTP}`; on dev under `KEEP_AUTH_POLICY=relaxed` a missing password is `riverside` and a missing TOTP is none) |
@@ -424,7 +425,7 @@ and its revisions.
 | `POST /api/groups/{slug}/opened` | `OpenedResult`; not a member: `404` |
 | `GET /api/t/{slug}/preferences` | `Preferences` |
 | `POST /api/t/{slug}/preferences/{identifierTypes\|sourceCodes\|fields}` | `{expected?, staffCanManage}` → `Executed`; admin only; `409 stale` |
-| `POST /api/t/{slug}/preferences/claimsGiftAid` | `{expected?, on}` → `ClaimsGiftAidSaved {id, counter, claimsGiftAid: {on, version}, switches}` (`switches` as `GET /api/groups` answers them); admin only; `409 stale`. Off is for a group that isn't a charity: its donation page offers no Gift Aid and the staff app hides it (plan stripe.sv, S4 and S5); the server's Gift Aid rules don't change |
+| `POST /api/t/{slug}/preferences/claimsGiftAid` | `{expected?, on}` → `ClaimsGiftAidSaved {id, counter, claimsGiftAid: {on, version}, switches}` (`switches` as `GET /api/groups` answers them); admin only; `409 stale`. Off is for a group that isn't a charity: its donation page offers no Gift Aid and the staff app stops offering it ("Stripe", below); the server's Gift Aid rules don't change |
 
 The tenant middleware refuses any non-`GET` from a viewer before the
 handler runs; `api/tests/roles.rs` reads the route table from
@@ -562,9 +563,9 @@ status, to its regular gift's code; a D2 gift a retry superseded keeps
 
 ## Card gifts through Stripe: the org model
 
-Plan `factory/plans/stripe.sv`, step S2 (the Stripe client, webhooks,
-processing and pages are later steps). Org schema step 24, all in
-`giving::stripe`; nothing in it calls Stripe or names a Stripe account
+Plan `factory/plans/stripe.sv`, ADR 0028 (the Stripe client, webhooks,
+processing and pages are "Stripe (card donations)", below). Org schema
+step 24, extended by steps 26 and 27, all in `giving::stripe`; nothing in it calls Stripe or names a Stripe account
 (rule 6: routing by account id and page slug is the api's).
 
 | Contract | Root, counter | Slice |
@@ -582,7 +583,7 @@ None of the first four can be restored. Rules, each with a named test
   nothing else; `record_payment`, `mark_paid` and `set_match` make no
   gift either. The command that turns a paid submission into a contact,
   a gift, a declaration and a match spans modules, so it is the api's
-  (S3), one transaction under one command group. `stripe::gift_status`
+  (`api::stripe::payments`), one transaction under one command group. `stripe::gift_status`
   says which status a payment's gift has: only `succeeded` is
   `completed`; a full refund `refunded`; a partial one stays `completed`
   at `kept_amount`; a dispute open or lost `charged_back`, won
@@ -1156,12 +1157,13 @@ timeout; it can't be reached: `503 gocardless_unavailable`.
 
 ## Stripe (card donations)
 
-`api::stripe`, plan `factory/plans/stripe.sv`. **Built so far: S1**
-(Connect and plumbing), S2 (schema and contracts, above), S3
-(processing, below), the donor's page (S4) and the staff screens (S5:
-the routes at the end of this section; the pages are
-`src/routes/t.$slug.settings.stripe.tsx`, `…settings.giftaid.tsx` and
-`…stripe.unmatched.tsx`).
+`api::stripe`; plan `factory/plans/stripe.sv`, decisions in ADR 0028. The
+org-side contracts and their rules are "Card gifts through Stripe: the
+org model", above; this section is everything that names Stripe: the
+client, connecting, webhooks, the donor's page, processing, the staff
+routes, the fake and QC's surface. The pages are `give.html` with
+`src/give/`, and `src/routes/t.$slug.settings.stripe.tsx`,
+`…settings.giftaid.tsx` and `…stripe.unmatched.tsx`.
 
 Each organisation gets its own Stripe account, made by us and filled in
 on Stripe's hosted form: the full Stripe Dashboard, its own fees, Stripe
@@ -1170,15 +1172,20 @@ never hold funds. There is no secret per organisation: every call is the
 platform's key plus the account id (`Stripe-Account`). So `platform.db`
 holds everything (`api::stripe::SCHEMA`): `stripe_accounts` (one row per
 organisation: the account, who connected it and when, `disconnected_at`,
-and Stripe's onboarding answers as last read) and `stripe_events` (every
-webhook event by Stripe's id).
+and Stripe's onboarding answers as last read), `stripe_events` (every
+webhook event by Stripe's id) and `stripe_catchup` (the catch-up's
+cursor).
 
 `api::stripe::client` pins `Stripe-Version` (`VERSION`) on every call
 and is the one place that knows which Accounts API makes an account:
 `ACCOUNTS_API`, v2 (`POST /v2/core/accounts`), with v1 (`POST
 /v1/accounts` and `controller` properties) beside it. Either way the
 account is read through `GET /v1/accounts/{id}` and followed by v1
-`account.updated` events.
+`account.updated` events. Nothing has run against Stripe itself yet:
+docs/ops.md "To verify on the first real run" lists what a sandbox must
+confirm.
+
+### Connecting
 
 Connecting (`api::stripe::connect`), one at a time: the organisation's
 row is reserved with the idempotency key its account is made under (a
@@ -1197,7 +1204,9 @@ Disconnecting calls nothing at Stripe and keeps the row: the account's
 events from then on are kept, not run, and connecting again is the same
 account, replaying them.
 
-Webhooks: `POST /api/stripe/webhook`, one route for every organisation,
+### Webhooks
+
+`POST /api/stripe/webhook`: one route for every organisation,
 registered at Stripe as a *connected accounts* endpoint.
 `Stripe-Signature` (`t=…,v1=…`: HMAC-SHA256 of `<t>.<raw body>` under
 the endpoint secret, any `v1`, constant time, `t` within 5 minutes) or
@@ -1222,16 +1231,98 @@ answers `account_invalid` for the account. Events set aside as
 purged; events of an organisation that no longer exists are closed
 (`no_organisation`).
 
-**Processing (S3, `api::stripe::payments`).** Gifts only on Stripe's
-word. A payment event (`checkout.session.*`, `payment_intent.*`,
-`charge.refunded`, `charge.dispute.*`) is good for ids only: the
-PaymentIntent it names is read from Stripe as it is now, with its charge
-and disputes, and recorded (`giving.stripePayment`). A payment that
-hasn't succeeded (a declined card, a pending one) is a payment row and
-nothing else; an expired session marks the submission that holds its
-session id `expired` (never by `client_reference_id`: an orphan
-session's expiry mustn't end a live attempt); a
-payment not in pounds is reported and never recorded.
+### The donor's page
+
+`/give/{slug}` is `give.html` with `src/give/`: its own Vite entry with
+none of the app's bundle (as `scan.html`), served from `dist/` for any
+path under `/give/` (`api::static_files`; Vite rewrites the same paths in
+dev and preview, `qc/serve.mjs` in QC). No React, nothing kept in the
+browser. It shows the group's three amounts and "other", takes a first
+and last name and an email, offers HMRC's enduring Gift Aid declaration
+with the donor's house name or number and postcode, sends it all once,
+and goes to Stripe Checkout for the card. `/give/{slug}/thanks` is where
+Stripe sends the donor back: it reads the group's name (and thanks the
+donor without it if that read fails), writes nothing and proves nothing.
+The Gift Aid box has HMRC's declaration and tax statement beside it from
+the start; only the address fields wait for the tick.
+
+Two public routes, outside the tenant prefix (`api::routes::give`,
+registered in `lib.rs`): nobody is signed in, and the slug reaches one
+organisation's file.
+
+| route | |
+|---|---|
+| `GET /api/give/{slug}` | `GivePage {name, amounts: [3], minimum, maximum, giftAid: {wordingVersion} \| null}` (pence), `no-store`. `giftAid` is null when the group doesn't claim Gift Aid (`claimsGiftAid`) |
+| `POST /api/give/{slug}/donations` | `GiveDonation {id, amount, firstName, lastName, email, giftAid?: {wordingVersion, addressLine1, postcode}}` → `GiveStarted {url}`: Stripe's payment page. Body ≤ 16 KiB |
+
+- **A page exists** when Stripe is on, the slug is a group's, the group
+  is connected to a Stripe account that takes card payments
+  (`chargesEnabled`), and its `giving.donationPage` has a live source
+  code. Anything less is `404 not_found` on both routes, identical for
+  every reason, so a slug can't be probed.
+- **Never optimistic.** `POST` runs `giving::stripe::submit` (the
+  submission, as the system) and then `set_checkout_session`: two
+  revisions, and no contact, gift or declaration. It reads no contact
+  either, so the answer is the same whether or not the group knows the
+  donor: matching happens when the payment arrives.
+- **The declaration's scope and wording are the server's.** The body has
+  no field for a scope (unknown fields are `422 invalid`): every page
+  declaration is `futureAndPast4y`. `giftAid.wordingVersion` is the
+  wording the page *showed*, and must be
+  `giftaid::HMRC_MODEL_WORDING_VERSION` (`422 rejected wording_changed`
+  otherwise): the submission is the evidence of what the donor agreed
+  to. The text is in `src/give/wording.ts`, by version; a version the
+  page has no text for is not offered. Ticked for a group that doesn't
+  claim: `422 rejected gift_aid_not_offered`.
+- **`422 invalid`**: `id` not 32 lower-case hex; an amount outside the
+  group's range; a blank name; an `email` that couldn't be an address
+  (Stripe is sent it for its receipt and refuses anything less, so here,
+  unlike on a contact, it is unstorable); ticked without a house name or
+  number or a postcode. The form holds each field to the width the
+  submission stores (`src/give/limits.ts`: names and house 200, email
+  254, postcode 20 characters, trimmed).
+- **One donation per `id`, and it is what was on screen.** `id` is the
+  page's key for the attempt; two requests for one id take turns (in
+  process). A repeat is the same attempt only if its body, tidied as it
+  would be stored, equals the stored submission and that submission has
+  no Checkout Session yet (Stripe failed: `503 stripe_unavailable`, the
+  submission kept): then it carries on. Anything else is `409
+  duplicate`, and the page starts another under a new id: an attempt
+  that has its session, one paid, expired or cleared, and one whose body
+  differs. So a donor who changes the form after a failed send (unticks
+  Gift Aid, corrects an address or email) is never answered with what
+  they typed before. An attempt whose email Stripe refused (`422 invalid
+  email`) is spent: marked `expired`.
+- **The Checkout Session** (`api::stripe::checkout`): on the group's
+  account (`Stripe-Account`: a direct charge), `mode=payment`,
+  `submit_type=donate`, cards only, one line "Donation to <group>" in
+  pence, the donor's email, the submission id as `client_reference_id`
+  and as `metadata[keep_submission]` on the session and its
+  PaymentIntent, 31 minutes to pay, back to `/give/{slug}/thanks` or
+  `/give/{slug}`. No name, address or declaration goes to Stripe. No
+  idempotency key: a create whose answer was lost leaves a session
+  nobody has the address of.
+- **Rate limits** (`routes::give::Limits`, in memory like auth's, keyed
+  by `KEEP_CLIENT_IP_HEADER`'s address): the page 60 then one a second
+  per address; donations 20 then one every 15 s per address, and 60 then
+  one every 5 s per group. Over: `429 rate_limited`, before anything is
+  stored or Stripe is asked. The group's limit is spent only for a page
+  that exists (connected and published), so it never tells a slug with
+  no page from an unknown one.
+- Non-`GET`s pass the same origin check as every `/api` write, so
+  another site can't post the form.
+
+### Processing
+
+`api::stripe::payments`. Gifts only on Stripe's word. A payment event
+(`checkout.session.*`, `payment_intent.*`, `charge.refunded`,
+`charge.dispute.*`) is good for ids only: the PaymentIntent it names is
+read from Stripe as it is now, with its charge and disputes, and
+recorded (`giving.stripePayment`). A payment that hasn't succeeded (a
+declined card, a pending one) is a payment row and nothing else; an
+expired session marks the submission that holds its session id `expired`
+(never by `client_reference_id`: an orphan session's expiry mustn't end
+a live attempt); a payment not in pounds is reported and never recorded.
 
 A payment that has succeeded becomes, in one transaction under the
 command group `stripe.donation`: its submission found (the one the
@@ -1291,6 +1382,8 @@ one gift, its contact's, with its status, amount and date (a claimed
 gift's own amount and date; a staff void), no Stripe gift lacks its
 payment, and no succeeded payment is outside both a gift and the queue.
 
+### Staff routes
+
 | route | |
 |---|---|
 | `POST /api/stripe/webhook` | above |
@@ -1337,108 +1430,50 @@ gift's coverage and claim link stay in view
 so, and a failed read is an error with a retry, never "nothing here".
 With none, Gift Aid leaves the app.
 
-The fake (`KEEP_STRIPE=fake`, `api::stripe::fake`, what `pnpm dev` runs)
-answers the client's calls in Stripe's shapes (both Accounts APIs),
-hosts the onboarding page (`Complete`, `Submit, more needed`, `Leave`)
-and signs its webhooks like Stripe. Simulators under
-`/api/fake-stripe/simulate/`: `accounts/{id}/update` (a JSON patch of
-the account, with its `account.updated`), `accounts/{id}/deauthorize`,
-`webhooks/hold` and `webhooks/release?reverse&count=`, `outage {calls,
-status?, path?}`, `GET webhooks`. Payments (`fake_payments.rs`): `GET
-v1/payment_intents/{id}`, `GET v1/disputes`, `GET v1/events`, and
-`simulate/accounts/{id}/payment {amount, currency?, submission?,
-declined?}` (a payment outside Checkout), `simulate/payments/{pi}/refund
-{amount?}`, `…/dispute` and `…/dispute/close {outcome}`; `Fake::pay` is
-what a Checkout Session's Pay button calls (S4). `api/tests/
-stripe_connect.rs`, `stripe_webhook.rs` and `stripe_payments.rs` run on
-it.
+### The fake and QC
 
-### The donor's page (S4)
+The fake (`KEEP_STRIPE=fake`, `api::stripe::fake`, what `pnpm dev` and
+the QC pool run) answers the client's calls in Stripe's shapes with
+Stripe's refusals, hosts the pages a browser would visit at Stripe, and
+signs its webhooks like Stripe. `api/tests/stripe_*.rs` run on it.
 
-`/give/{slug}` is `give.html` with `src/give/`: its own Vite entry with
-none of the app's bundle (as `scan.html`), served from `dist/` for any
-path under `/give/` (`api::static_files`; Vite rewrites the same paths in
-dev and preview). No React, nothing kept in the browser. It shows the
-group's three amounts and "other", takes a first and last name and an
-email, offers HMRC's enduring Gift Aid declaration with the donor's house
-name or number and postcode, sends it all once, and goes to Stripe
-Checkout for the card. `/give/{slug}/thanks` is where Stripe sends the
-donor back: it reads the group's name (and thanks the donor without it
-if that read fails), writes nothing and proves nothing. The Gift Aid
-box has HMRC's declaration and tax statement beside it from the start;
-only the address fields wait for the tick.
+- **Accounts** (`fake.rs`): both Accounts APIs; the onboarding page
+  (`Complete`, `Submit, more needed`, `Leave`). Simulators under
+  `/api/fake-stripe/simulate/`: `accounts/{id}/update` (a JSON patch of
+  the account, with its `account.updated`), `accounts/{id}/deauthorize`,
+  `webhooks/hold` and `webhooks/release?reverse&count=`, `outage {calls,
+  status?, path?}`, `GET webhooks`.
+- **Checkout** (`fake_checkout.rs`): `POST v1/checkout/sessions` and `GET
+  v1/checkout/sessions/{id}` (refused: no account, one that can't take
+  payments, under 30p, an `expires_at` outside 30 minutes to 24 hours,
+  `email_invalid`); the hosted page `checkout/{id}` with `Pay` (the
+  session completes with a `pi_…`, `checkout.session.completed` is
+  delivered, the browser goes to `success_url`) and `Back`
+  (`cancel_url`); `simulate/checkout/{id}/expire`.
+- **Payments** (`fake_payments.rs`): `GET v1/payment_intents/{id}`, `GET
+  v1/disputes`, `GET v1/events`; `simulate/accounts/{id}/payment
+  {amount, currency?, submission?, declined?}` (a payment outside
+  Checkout), `simulate/payments/{pi}/refund {amount?}`, `…/dispute` and
+  `…/dispute/close {outcome}`.
 
-Two public routes, outside the tenant prefix (`api::routes::give`,
-registered in `lib.rs`): nobody is signed in, and the slug reaches one
-organisation's file.
+**The QC Stripe surface** (`routes::qc_stripe`): every QC run seeds new
+organisations, and one that connects gets an account that takes no
+payment until a person has filled in Stripe's form. So the run's
+organisation is given an account onboarded once by hand in keep-qc's
+sandbox, `KEEP_QC_STRIPE_ACCOUNT` (docs/ops.md "Stripe"; on the fake,
+one the fake makes). `/api/qc/stripe/connect` sits behind the `/api/qc/*`
+token rules, `/api/dev/qc-stripe/connect` behind dev auth and
+`KEEP_QC_SEED=1`. Both are 404 unless `KEEP_STRIPE` is `fake`, or `test`
+with the variable (never `live`: the boot refuses the variable with
+`KEEP_ENV=prod`), and for any slug that isn't a `qc-` organisation's.
 
 | route | |
 |---|---|
-| `GET /api/give/{slug}` | `GivePage {name, amounts: [3], minimum, maximum, giftAid: {wordingVersion} \| null}` (pence), `no-store`. `giftAid` is null when the group doesn't claim Gift Aid (`claimsGiftAid`) |
-| `POST /api/give/{slug}/donations` | `GiveDonation {id, amount, firstName, lastName, email, giftAid?: {wordingVersion, addressLine1, postcode}}` → `GiveStarted {url}`: Stripe's payment page. Body ≤ 16 KiB |
+| `POST …/connect {slug}` | the organisation is connected to the QC account, with what Stripe says of it now → `QcStripeConnected {accountId, chargesEnabled}`. An older `qc-` organisation holding it gives it up (its row as new); a real one holding it is `409 taken`; an account the organisation made for itself is forgotten. `422 rejected account_gone` when Stripe doesn't know the account as ours; `503 stripe_unavailable` |
 
-- **A page exists** when Stripe is on, the slug is a group's, the group
-  is connected to a Stripe account that takes card payments
-  (`chargesEnabled`), and its `giving.donationPage` has a live source
-  code. Anything less is `404 not_found` on both routes, identical for
-  every reason, so a slug can't be probed.
-- **Never optimistic.** `POST` runs `giving::stripe::submit` (the
-  submission, as the system) and then `set_checkout_session`: two
-  revisions, and no contact, gift or declaration. It reads no contact
-  either, so the answer is the same whether or not the group knows the
-  donor: matching happens when the payment arrives (S3).
-- **The declaration's scope and wording are the server's.** The body has
-  no field for a scope (unknown fields are `422 invalid`): every page
-  declaration is `futureAndPast4y`. `giftAid.wordingVersion` is the
-  wording the page *showed*, and must be
-  `giftaid::HMRC_MODEL_WORDING_VERSION` (`422 rejected wording_changed`
-  otherwise): the submission is the evidence of what the donor agreed
-  to. The text is in `src/give/wording.ts`, by version; a version the
-  page has no text for is not offered. Ticked for a group that doesn't
-  claim: `422 rejected gift_aid_not_offered`.
-- **`422 invalid`**: `id` not 32 lower-case hex; an amount outside the
-  group's range; a blank name; an `email` that couldn't be an address
-  (Stripe is sent it for its receipt and refuses anything less, so here,
-  unlike on a contact, it is unstorable); ticked without a house name or
-  number or a postcode. The form holds each field to the width the
-  submission stores (`src/give/limits.ts`: names and house 200, email
-  254, postcode 20 characters, trimmed).
-- **One donation per `id`, and it is what was on screen.** `id` is the
-  page's key for the attempt; two requests for one id take turns (in
-  process). A repeat is the same attempt only if its body, tidied as it
-  would be stored, equals the stored submission and that submission has
-  no Checkout Session yet (Stripe failed: `503 stripe_unavailable`, the
-  submission kept): then it carries on. Anything else is `409
-  duplicate`, and the page starts another under a new id: an attempt
-  that has its session, one paid, expired or cleared, and one whose body
-  differs. So a donor who changes the form after a failed send (unticks
-  Gift Aid, corrects an address or email) is never answered with what
-  they typed before. An attempt whose email Stripe refused (`422 invalid
-  email`) is spent: marked `expired`.
-- **The Checkout Session** (`api::stripe::checkout`): on the group's
-  account (`Stripe-Account`: a direct charge), `mode=payment`,
-  `submit_type=donate`, cards only, one line "Donation to <group>" in
-  pence, the donor's email, the submission id as `client_reference_id`
-  and as `metadata[keep_submission]` on the session and its
-  PaymentIntent, 31 minutes to pay, back to `/give/{slug}/thanks` or
-  `/give/{slug}`. No name, address or declaration goes to Stripe. No
-  idempotency key: a create whose answer was lost leaves a session
-  nobody has the address of.
-- **Rate limits** (`routes::give::Limits`, in memory like auth's, keyed
-  by `KEEP_CLIENT_IP_HEADER`'s address): the page 60 then one a second
-  per address; donations 20 then one every 15 s per address, and 60 then
-  one every 5 s per group. Over: `429 rate_limited`, before anything is
-  stored or Stripe is asked. The group's limit is spent only for a page
-  that exists (connected and published), so it never tells a slug with
-  no page from an unknown one.
-- Non-`GET`s pass the same origin check as every `/api` write, so
-  another site can't post the form.
-
-The fake (`stripe::fake::checkout`, file `fake_checkout.rs`): `POST
-v1/checkout/sessions` and `GET v1/checkout/sessions/{id}` with Stripe's
-refusals (no account, an account that can't take payments, under 30p, an
-`expires_at` outside 30 minutes to 24 hours, `email_invalid`); the hosted
-page `checkout/{id}` with `Pay` (the session completes with a `pi_…`,
-`checkout.session.completed` is delivered, the browser goes to
-`success_url`) and `Back` (`cancel_url`); `simulate/checkout/{id}/expire`
-(`checkout.session.expired`). `api/tests/stripe_give.rs` runs on it.
+From there it is production's path: the donor's page, Stripe's Checkout,
+the webhook routed by account. Events kept for the account aren't
+replayed into the new organisation, but the catch-up reads the account's
+last weeks, so earlier runs' payments can appear in its queue as
+`no_submission`. `qc/flows/stripe-sandbox.spec.ts` uses it;
+`api/tests/qc_stripe.rs` covers the gate.

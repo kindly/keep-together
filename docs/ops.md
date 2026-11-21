@@ -198,6 +198,12 @@ per group: every call is the platform's key plus the group's account id.
 | `KEEP_STRIPE` | `off` (default), `fake` (a Stripe mock on the server, no network: local, the preview, tests), `test` (a Stripe sandbox: staging and keep-qc), `live` (prod) |
 | `KEEP_STRIPE_API_KEY` | Fly secret: the platform's **restricted** key for that sandbox (`rk_test_…`) or for live mode (`rk_live_…`) |
 | `KEEP_STRIPE_WEBHOOK_SECRET` | Fly secret: the signing secret (`whsec_…`) of that environment's webhook endpoint |
+| `KEEP_QC_STRIPE_ACCOUNT` | keep-qc only: the connected account (`acct_…`) the QC run's group is given ("The QC account", below). An id, not a secret. The boot refuses it with `KEEP_ENV=prod` |
+
+The api refuses to boot with `fake` or `test` on prod, with `live`
+anywhere else, with `test`/`live` and either secret missing, and with a
+key of the other mode. `off` needs nothing. No Fly config sets
+`KEEP_STRIPE` yet: every hosted app runs with Stripe off until step 4.
 
 Setting it up (the human, plan step S0; nothing on prod yet):
 
@@ -209,6 +215,19 @@ Setting it up (the human, plan step S0; nothing on prod yet):
    listens to events on **connected accounts**, at
    `<app origin>/api/stripe/webhook` (`https://keep-qc.fly.dev/…` for
    keep-qc).
+   - The key's calls: make connected accounts and their onboarding
+     links (Accounts v2), read an account (v1), and on connected
+     accounts make Checkout Sessions and read PaymentIntents, disputes
+     and events. Stripe doesn't list the permission names; a missing
+     one is a 403 that names it, and the event that needed it waits and
+     is retried once the key is put right.
+   - The endpoint's events (`api::stripe::client`): `account.updated`,
+     `account.application.deauthorized`, `checkout.session.completed`,
+     `.async_payment_succeeded`, `.async_payment_failed` and `.expired`,
+     `payment_intent.succeeded`, `.payment_failed` and `.canceled`,
+     `charge.refunded`, `charge.refund.updated`, and
+     `charge.dispute.created`, `.updated`, `.closed`, `.funds_withdrawn`
+     and `.funds_reinstated`. Anything else is stored and ignored.
 3. `fly auth login`, then `scripts/fly/stripe-secrets.sh staging` and
    `scripts/fly/stripe-secrets.sh qc`: type the key and the endpoint's
    signing secret at the hidden prompts. They are staged on Fly from
@@ -216,8 +235,49 @@ Setting it up (the human, plan step S0; nothing on prod yet):
    wrong mode for the app (a live key on staging or keep-qc, a sandbox
    key on prod) and a secret key (`sk_…`). Re-running is safe: an empty
    answer keeps what is set.
-4. Set `KEEP_STRIPE = "test"` in the app's `[env]` and deploy, once the
-   api reads it (plan step S1).
+4. Set `KEEP_STRIPE = "test"` in the `[env]` of `fly.staging.toml` and
+   `fly.qc.toml` and push: the deploy applies step 3's staged secrets
+   with it. Only after step 3, since `test` without both secrets stops
+   the boot. For keep-qc do "The QC account" first, or the nightly's
+   Stripe tests skip (below).
+
+Afterwards, on staging: Settings › Card donations › Connect Stripe as
+an admin, fill in Stripe's form with its test values, choose the page's
+source code, and give on `/give/<group>` with card 4242 4242 4242 4242.
+Parked events: `keep stripe requeue <slug>`. The daily `stripe-catchup`
+job reads what webhooks missed.
+
+**The QC account** (keep-qc; plan step S6). Every QC run seeds new
+groups, and a group that connects gets a new Stripe account that takes
+no payment until a person has filled in Stripe's form. So keep-qc holds
+one connected account, onboarded once by hand, and each run's group is
+given it (`POST /api/qc/stripe/connect`, behind `KEEP_QC_TOKEN`,
+`qc-` groups only; server/README.md "Stripe"):
+
+1. In the **keep-qc sandbox's** Stripe Dashboard, under Connect, create
+   a connected account in the United Kingdom with the properties the
+   app gives a group's: the full Stripe Dashboard, Stripe collecting
+   its fees from the account, Stripe carrying the losses (what
+   "Standard" was). Open its onboarding link and fill the form with
+   Stripe's test values until the account shows card payments enabled.
+   Copy its id (`acct_…`).
+2. `fly secrets set --stage -a keep-qc KEEP_QC_STRIPE_ACCOUNT=acct_…`
+   (an id, so argv is fine; a secret only so that no deploy or config
+   change is needed to replace it).
+3. Step 4 above for `fly.qc.toml`.
+
+`qc/flows/stripe-sandbox.spec.ts` then runs in the nightly ("Nightly
+QC", below): a donor gives on the group's page, pays on Stripe's own
+Checkout page with a test card, and the gift, contact and declaration
+are checked once Stripe's webhook has made them; a second payment is
+disputed and its gift charged back. Until all of this is set it skips
+with a `STRIPE SANDBOX NOT RUN` banner saying which part is missing
+(`KEEP_STRIPE=off`, or no QC account), and the run stays green. An
+account whose onboarding isn't finished **fails** the run and says so.
+Nothing is cleaned up at Stripe: the QC account collects the runs' test
+payments. The daily catch-up reads the account's last 29 days, so a
+run's "Card payments to match" can list earlier runs' payments as taken
+some other way; the spec looks only for its own donors.
 
 ## Backups
 
@@ -895,7 +955,9 @@ QC runs against a hosted app from **GitHub Actions against keep-qc**
 (`.github/workflows/qc.yml`; plan `factory/plans/gocardless-sandbox-qc.sv`,
 A2): after every keep-qc deploy, nightly at 03:00 UTC, and by hand.
 Failures open or comment on the `qc-nightly` issue (the label kept the
-name of the house nightly it replaced, below). Staging has no QC token:
+name of the house nightly it replaced, below). Card donations against
+Stripe's sandbox run in it once keep-qc has Stripe set up ("Stripe",
+above); until then they skip with a `STRIPE SANDBOX NOT RUN` banner. Staging has no QC token:
 `/api/qc/*` is 404 there.
 
 ### On GitHub Actions (keep-qc)
@@ -1083,6 +1145,33 @@ sandbox):
   staging's reset doesn't wipe the restored data.
 - The Docker build on Fly's builder: `node:24-trixie-slim`,
   `rust:1.97-slim-trixie`, BuildKit cache mounts.
+
+### Stripe (nothing has run against Stripe yet)
+
+Everything Stripe was built and tested on the fake, from Stripe's
+documentation. The first run on a sandbox (staging by hand, keep-qc's
+nightly) must confirm:
+
+- `POST /v2/core/accounts` and `POST /v2/core/account_links` accept our
+  bodies on the pinned `Stripe-Version` (`api::stripe::client::VERSION`),
+  and what a repeated idempotency key answers there. If v2 is refused,
+  `ACCOUNTS_API` flips to v1.
+- `GET /v1/accounts/{id}` on a v2-made account carries
+  `details_submitted`, `charges_enabled`, `payouts_enabled` and
+  `requirements`, and a v1 `account.updated` reaches the connected
+  accounts endpoint with a top-level `account`.
+- The webhook signature verifies with the `whsec_…` secret used whole.
+- The restricted key's permissions cover every call (a missing one is a
+  403 naming it).
+- Stripe accepts the platform for "Stripe carries the losses".
+- An account that isn't ours answers `403 account_invalid`.
+- A direct-charge Checkout Session's events (`checkout.session.completed`,
+  then the dispute's) arrive on the connected accounts endpoint, and the
+  session and its PaymentIntent carry our `keep_submission` metadata.
+- Stripe's own Checkout page still has the field ids
+  `qc/flows/stripe-sandbox.spec.ts` fills in (`realCheckout`), and its
+  test card 4000 0000 0000 0259 disputes within the spec's two minutes.
+  That driver was written without a sandbox to run it against.
 
 ## Drill log
 

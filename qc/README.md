@@ -205,9 +205,18 @@ Banners to look for:
   "not timed" and coverage gates. The GoCardless screens were not tested.
 - **`STRIPE NOT FAKE`**: the same for the Stripe fake
   (`skipUnlessFakeStripe`, flows marked `fakeStripe`): the target runs
-  Stripe in another mode or not at all (keep-qc: off), so
-  `qc/flows/stripe-ui.spec.ts`'s Stripe tests skipped. The card donation
+  Stripe in another mode or not at all (keep-qc: off, later `test`), so
+  the Stripe tests of `qc/flows/stripe-ui.spec.ts` and all of
+  `qc/flows/give.spec.ts` (the donor's page) skipped. The card donation
   screens were not tested. Locally the pool runs `KEEP_STRIPE=fake`.
+- **`STRIPE SANDBOX NOT RUN`**: `qc/flows/stripe-sandbox.spec.ts` (card
+  donations against Stripe itself: the sandbox on keep-qc, the fake
+  locally; untimed, serial, a world of its own) skipped because the
+  target has Stripe off or no QC Stripe account
+  (`KEEP_QC_STRIPE_ACCOUNT`); the banner says which. docs/ops.md
+  "Stripe" has the human's steps. **`STRIPE UNREACHABLE`**: Stripe
+  didn't answer, and the rest skipped. Green with either banner means
+  no card donation was tested against Stripe.
 - **`NO BUDGETS on target qc`**: flows the target has no budget for yet
   (`targetBudgets` in `qc/budgets.ts`): timed and recorded, latency not
   judged. On keep-qc, the flows only the GoCardless fake times.
