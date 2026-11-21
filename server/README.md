@@ -1276,7 +1276,9 @@ organisation's file.
   group's range; a blank name; an `email` that couldn't be an address
   (Stripe is sent it for its receipt and refuses anything less, so here,
   unlike on a contact, it is unstorable); ticked without a house name or
-  number or a postcode.
+  number or a postcode. The form holds each field to the width the
+  submission stores (`src/give/limits.ts`: names and house 200, email
+  254, postcode 20 characters, trimmed).
 - **One donation per `id`, and it is what was on screen.** `id` is the
   page's key for the attempt; two requests for one id take turns (in
   process). A repeat is the same attempt only if its body, tidied as it

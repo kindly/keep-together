@@ -189,6 +189,52 @@ test('nothing is sent until the form is whole', async () => {
   expect(fetch).toHaveBeenCalledTimes(1)
 })
 
+test('each field is held to the width the server stores', async () => {
+  fetch.mockReturnValueOnce(json(200, PAGE))
+  await open('/give/riverside')
+  const widths = {
+    '#give-firstName': '200',
+    '#give-lastName': '200',
+    '#give-email': '254',
+    '#give-addressLine1': '200',
+    '#give-postcode': '20',
+  }
+  for (const [selector, max] of Object.entries(widths))
+    expect($(selector).getAttribute('maxlength'), selector).toBe(max)
+
+  // Past `maxlength` all the same (a paste, an autofill): not sent.
+  type('#give-firstName', 'J'.repeat(201))
+  type('#give-lastName', 'S'.repeat(201))
+  type('#give-email', `${'j'.repeat(250)}@example.org`)
+  await submit()
+  for (const [selector, max] of Object.entries(widths).slice(0, 3))
+    expect($<HTMLElement>(`${selector}-error`).textContent, selector).toBe(
+      `At most ${max} characters`,
+    )
+  expect(fetch).toHaveBeenCalledTimes(1)
+
+  // The address is checked only when Gift Aid is ticked.
+  fillWho()
+  type('#give-addressLine1', 'x'.repeat(201))
+  type('#give-postcode', 'AB1 2CD and then some more')
+  pick($('#give-giftaid'))
+  await submit()
+  expect($<HTMLElement>('#give-addressLine1-error').textContent).toBe(
+    'At most 200 characters',
+  )
+  expect($<HTMLElement>('#give-postcode-error').textContent).toBe(
+    'At most 20 characters',
+  )
+  expect(fetch).toHaveBeenCalledTimes(1)
+
+  // At the width exactly, with spaces round it: sent.
+  type('#give-addressLine1', 'x'.repeat(200))
+  type('#give-postcode', ` ${'x'.repeat(20)} `)
+  fetch.mockReturnValueOnce(json(200, { url: 'u' }))
+  await submit()
+  expect(fetch).toHaveBeenCalledTimes(2)
+})
+
 test('Gift Aid: the declaration shown, the address asked, the wording named', async () => {
   fetch.mockReturnValueOnce(json(200, PAGE))
   await open('/give/riverside')

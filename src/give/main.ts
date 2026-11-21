@@ -1,6 +1,7 @@
 import './give.css'
 import { leaveFor, loadPage, newId, routeFrom, sendDonation } from './api'
 import type { Field, RetryWhy } from './api'
+import { LIMITS, tooLong } from './limits'
 import { formatPence, fromWire, giftAidOn, parsePounds, toWire } from './money'
 import { wordingFor } from './wording'
 import type { Wording } from './wording'
@@ -217,18 +218,18 @@ function form(page: GivePage, slug: string) {
   const first = field('firstName', 'First name', {
     type: 'text',
     autocomplete: 'given-name',
-    maxlength: '200',
+    maxlength: String(LIMITS.firstName),
   })
   const last = field('lastName', 'Last name', {
     type: 'text',
     autocomplete: 'family-name',
-    maxlength: '200',
+    maxlength: String(LIMITS.lastName),
   })
   const email = field('email', 'Email', {
     type: 'email',
     autocomplete: 'email',
     inputmode: 'email',
-    maxlength: '320',
+    maxlength: String(LIMITS.email),
   })
 
   // ── Gift Aid ──
@@ -242,12 +243,12 @@ function form(page: GivePage, slug: string) {
   const line1 = field('addressLine1', 'House name or number', {
     type: 'text',
     autocomplete: 'address-line1',
-    maxlength: '200',
+    maxlength: String(LIMITS.addressLine1),
   })
   const postcode = field('postcode', 'Postcode', {
     type: 'text',
     autocomplete: 'postal-code',
-    maxlength: '20',
+    maxlength: String(LIMITS.postcode),
   })
   // The address is asked only once the box is ticked. Everything the
   // donor agrees to (the declaration and the tax statement) is beside
@@ -356,6 +357,20 @@ function form(page: GivePage, slug: string) {
       if (!line1.input.value.trim())
         fail('addressLine1', 'Enter your house name or number')
       if (!postcode.input.value.trim()) fail('postcode', 'Enter your postcode')
+    }
+    // Widths, as the server stores them. `maxlength` stops typing past
+    // them; this catches a paste or an autofill that got round it.
+    const typed = {
+      firstName: first,
+      lastName: last,
+      email,
+      ...(aided ? { addressLine1: line1, postcode } : {}),
+    }
+    for (const [name, f] of Object.entries(typed) as Array<
+      [Exclude<Field, 'amount'>, FieldRow]
+    >) {
+      const over = tooLong(name, f.input.value)
+      if (over && !faults.includes(name)) fail(name, over)
     }
     if (faults.length > 0 || pence === null)
       return { at: faults.length > 0 ? faults[0] : 'amount' }
