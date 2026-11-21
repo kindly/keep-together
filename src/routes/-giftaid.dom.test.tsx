@@ -258,7 +258,7 @@ test('off with nothing on record: the claims pages say there is nothing here', a
   expect(el.querySelector('[data-testid="outlet"]')).toBeNull()
 })
 
-test('off with claims on record: the list and each claim stay, read-only, and no new claim is offered', async () => {
+test('off with claims on record: the list and each claim stay, a claim under way can be finished, and no new claim is offered', async () => {
   giftAidSwitch.on = false
   Object.assign(onRecord, { declarations: 3, claims: 1 })
   // The layout lets the pages through: a claim is a financial record.
@@ -275,13 +275,14 @@ test('off with claims on record: the list and each claim stay, read-only, and no
     'The claims already made stay on record here; no new claim can be made.',
   )
 
-  // A claim's page: its figures and downloads, no next step.
+  // A claim's page: it stays finishable. Its steps record what really
+  // happened with HMRC, whose payment arrives whatever the switch says.
   claim = read(makeClaim({ status: 'ready' }))
   await page(import('./t.$slug.giftaid.$claimId'))
   expect(
     el.querySelector('[data-testid="gift-aid-off"]')!.textContent,
-  ).toContain('This claim stays on record, with its downloads.')
-  expect(button(el, 'Mark submitted')).toBeUndefined()
+  ).toContain('can still be taken through')
+  expect(button(el, 'Mark submitted')).toBeDefined()
   expect(el.querySelector('section[aria-label="Downloads"]')).not.toBeNull()
 
   // A new claim is offering Gift Aid: refused, with the way back.

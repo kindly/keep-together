@@ -5,8 +5,10 @@
  * scanning forms. It never hides what is on record: a claim is a
  * financial record (rule 4) and a declaration its evidence, so once the
  * group has either, its claims, each claim's page, a contact's
- * declarations and a gift's coverage and claim link stay in view,
- * read-only. A group with neither sees no Gift Aid at all.
+ * declarations (read-only) and a gift's coverage and claim link stay in
+ * view. A claim that exists stays finishable: marking it ready,
+ * submitted or paid records what really happened with HMRC. A group with
+ * neither sees no Gift Aid at all.
  *
  * `GET giftaid/on-record` is asked only while the switch is off (a group
  * that claims shows everything anyway), and read again when a claim or a

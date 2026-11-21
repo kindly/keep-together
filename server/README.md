@@ -1324,7 +1324,8 @@ together awaits the human's decision.
 
 **"We claim Gift Aid" off** stops the app offering Gift Aid (the donation
 page's declaration, the tick when recording a gift, new declarations and
-scans, new claims, a claim's next step). It never hides what is on
+scans, new claims). A claim that exists stays finishable (ready,
+submitted, paid record what happened with HMRC). It never hides what is on
 record (rule 4): `GET giftaid/on-record` → `GiftAidOnRecord
 {declarations, claims}` (any member) says what the organisation holds,
 Settings › Gift Aid says it before the switch saves, and while there is
