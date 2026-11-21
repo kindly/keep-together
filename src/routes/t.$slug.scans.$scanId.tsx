@@ -4,7 +4,8 @@ import { GiftAidOnly } from '../components/no-gift-aid'
 import { useCanWrite, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/scans/$scanId')({
-  // Nothing in a group that doesn't claim Gift Aid (Settings › Gift Aid).
+  // A scan stays viewable while the group has Gift Aid on record; with
+  // the switch off it can't be matched (ScanReview).
   component: () => (
     <GiftAidOnly>
       <ReviewScan />

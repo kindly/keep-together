@@ -15,9 +15,10 @@ type Search = { sitting?: true | string }
 const PAIRING_ID = /^[0-9a-f]{32}$/
 
 export const Route = createFileRoute('/t/$slug/scans/')({
-  // Nothing in a group that doesn't claim Gift Aid (Settings › Gift Aid).
+  // Matching a scan records a declaration: only while the group claims
+  // Gift Aid (Settings › Gift Aid), whatever it has on record.
   component: () => (
-    <GiftAidOnly>
+    <GiftAidOnly offering="no scan can be matched to a declaration">
       <ScansToMatch />
     </GiftAidOnly>
   ),

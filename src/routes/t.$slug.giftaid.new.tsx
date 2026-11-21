@@ -19,7 +19,7 @@ import { useTenant } from '../lib/tenant'
 export const Route = createFileRoute('/t/$slug/giftaid/new')({
   // Making a claim is offering Gift Aid: only while the group claims.
   component: () => (
-    <GiftAidOnly offering>
+    <GiftAidOnly offering="no new claim can be made">
       <NewClaim />
     </GiftAidOnly>
   ),

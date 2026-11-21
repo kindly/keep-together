@@ -87,15 +87,29 @@ vi.mock('../lib/tenant', () => ({
   useIsAdmin: () => role === 'admin',
 }))
 /** What the group holds on record, for the switch off (gift-aid-shown.ts). */
-const onRecord = vi.hoisted(() => ({ declarations: 0, claims: 0 }))
+const onRecord = vi.hoisted(() => ({
+  declarations: 0,
+  claims: 0,
+  /** Not known yet (the switch off): still loading, or the read failed. */
+  unknown: null as 'loading' | 'failed' | null,
+  retry: vi.fn(),
+}))
 vi.mock('../lib/gift-aid-shown', async (original) => {
   const view = (on: boolean) => ({
     offered: on,
-    shown: on || onRecord.declarations + onRecord.claims > 0,
+    shown:
+      on ||
+      (onRecord.unknown === null &&
+        onRecord.declarations + onRecord.claims > 0),
+    unknown: on ? null : onRecord.unknown,
+    retry: onRecord.retry,
   })
   return {
     ...(await original<typeof GiftAidShown>()),
-    useGiftAidOnRecord: () => ({ ...onRecord }),
+    useGiftAidOnRecord: () => ({
+      declarations: onRecord.declarations,
+      claims: onRecord.claims,
+    }),
     useGiftAidOf: (_slug: string, on: boolean) => view(on),
     useGiftAid: () => view(giftAidSwitch.on),
   }
@@ -181,7 +195,8 @@ let el: HTMLDivElement
 beforeEach(() => {
   role = 'admin'
   giftAidSwitch.on = true
-  Object.assign(onRecord, { declarations: 0, claims: 0 })
+  Object.assign(onRecord, { declarations: 0, claims: 0, unknown: null })
+  onRecord.retry.mockReset()
   setClaims.mockReset()
   claims = read<Array<ClaimSummary>>([])
   preview = Object.assign(read(makePreview()), { fetching: false })
@@ -258,6 +273,28 @@ test('off with nothing on record: the claims pages say there is nothing here', a
   expect(el.querySelector('[data-testid="outlet"]')).toBeNull()
 })
 
+test('off, and what is on record not known yet: loading, or an error with a retry, never "nothing here"', async () => {
+  giftAidSwitch.on = false
+  onRecord.unknown = 'loading'
+  await page(import('./t.$slug.giftaid'))
+  expect(el.textContent).toBe('Loading…')
+  expect(el.querySelector('[data-testid="no-gift-aid"]')).toBeNull()
+
+  onRecord.unknown = 'failed'
+  await page(import('./t.$slug.giftaid'))
+  expect(el.querySelector('[data-testid="no-gift-aid"]')).toBeNull()
+  expect(
+    el.querySelector('[data-testid="gift-aid-unknown"]')!.textContent,
+  ).toContain('Couldn’t check what Gift Aid records the group has')
+  await click(button(el, 'Try again')!)
+  expect(onRecord.retry).toHaveBeenCalledOnce()
+
+  // Known, and there are some: the page.
+  Object.assign(onRecord, { claims: 1, unknown: null })
+  await page(import('./t.$slug.giftaid'))
+  expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
+})
+
 test('off with claims on record: the list and each claim stay, a claim under way can be finished, and no new claim is offered', async () => {
   giftAidSwitch.on = false
   Object.assign(onRecord, { declarations: 3, claims: 1 })
@@ -285,6 +322,13 @@ test('off with claims on record: the list and each claim stay, a claim under way
   expect(button(el, 'Mark submitted')).toBeDefined()
   expect(el.querySelector('section[aria-label="Downloads"]')).not.toBeNull()
 
+  // "Scans to match" records declarations: it follows the switch, not
+  // what is on record.
+  await page(import('./t.$slug.scans.index'))
+  expect(
+    el.querySelector('[data-testid="no-gift-aid"]')!.textContent,
+  ).toContain('no scan can be matched to a declaration')
+
   // A new claim is offering Gift Aid: refused, with the way back.
   await page(import('./t.$slug.giftaid.new'))
   expect(
@@ -310,13 +354,16 @@ test('the switch says what is on record and what stays visible before it saves',
   expect(setClaims).not.toHaveBeenCalled()
   const dialog = document.querySelector('[role="alertdialog"]')!
   expect(dialog.textContent).toContain(
-    'The group has 3 declarations and 1 claim on record. They are kept and stay visible, read-only',
+    'The group has 3 declarations and 1 claim on record. They are kept and stay visible:',
   )
   expect(dialog.textContent).toContain(
     'the list of claims and each claim’s page',
   )
   expect(dialog.textContent).toContain('each contact’s declarations')
   expect(dialog.textContent).toContain('the claim a gift is in')
+  expect(dialog.textContent).toContain(
+    'A claim already started can still be finished, and a declaration can still be cancelled',
+  )
   await click(button(dialog, 'Keep claiming')!)
   expect(setClaims).not.toHaveBeenCalled()
   await act(async () => sw.click())

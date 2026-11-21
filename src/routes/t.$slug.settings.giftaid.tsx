@@ -11,10 +11,10 @@ export const Route = createFileRoute('/t/$slug/settings/giftaid')({
 
 /** What switching off stops, whatever is on record. */
 const STOPS =
-  'the donation page asking donors for a Gift Aid declaration, the Gift Aid tick when recording a gift, recording or scanning declarations, and making new claims'
-/** What stays in view, read-only, once anything is on record. */
+  'the donation page asking donors for a Gift Aid declaration, the Gift Aid tick when recording a gift, recording, editing or scanning declarations (matching scans included), and starting new claims'
+/** What stays, once anything is on record. */
 const STAYS =
-  'the list of claims and each claim’s page (under Gift Aid in the menu), each contact’s declarations, and the claim a gift is in'
+  'the list of claims and each claim’s page (under Gift Aid in the menu), each contact’s declarations, and the claim a gift is in. A claim already started can still be finished, and a declaration can still be cancelled'
 
 /**
  * Settings › Gift Aid (Stripe S5): "We claim Gift Aid", on unless a
@@ -22,7 +22,7 @@ const STAYS =
  * Gift Aid; it never hides what is on record (rule 4: a claim is a
  * financial record). Before it saves, the switch says what the group
  * holds and what stays visible: with declarations or claims on record
- * those stay, read-only; with none, Gift Aid leaves the app entirely.
+ * those stay; with none, Gift Aid leaves the app entirely.
  * Nothing recorded is changed and the server's rules stay as they are.
  * Admin only.
  */
@@ -88,7 +88,7 @@ function GiftAidSettings() {
           {held === undefined
             ? 'Checking what is on record…'
             : recorded
-              ? `On record: ${recorded}. ${on ? 'Switching off keeps them in view' : 'They stay in view'}, read-only: ${STAYS}.`
+              ? `On record: ${recorded}. ${on ? 'Switching off keeps them in view' : 'They stay in view'}: ${STAYS}.`
               : on
                 ? 'Nothing is on record: no declarations and no claims. Switching off hides Gift Aid across the app.'
                 : 'Nothing is on record: no declarations and no claims. So Gift Aid is hidden across the app.'}
@@ -106,7 +106,7 @@ function GiftAidSettings() {
           held === undefined
             ? 'Checking what the group has on record…'
             : recorded
-              ? `The group has ${recorded} on record. They are kept and stay visible, read-only: ${STAYS}. What stops: ${STOPS}. You can switch it back on at any time.`
+              ? `The group has ${recorded} on record. They are kept and stay visible: ${STAYS}. What stops: ${STOPS}. You can switch it back on at any time.`
               : `The group has no declarations and no claims on record, so Gift Aid disappears from the app: its menu, the Gift Aid panel on contacts and on gifts, HMRC details and scans. What stops: ${STOPS}. You can switch it back on at any time.`
         }
         confirm="Switch off"

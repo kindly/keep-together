@@ -188,15 +188,29 @@ const opened = vi.fn()
 const signOut = vi.fn()
 let tenants: Array<Tenant> | undefined
 /** What the group holds on record, for the switch off (gift-aid-shown.ts). */
-const onRecord = vi.hoisted(() => ({ declarations: 0, claims: 0 }))
+const onRecord = vi.hoisted(() => ({
+  declarations: 0,
+  claims: 0,
+  /** Not known yet (the switch off): still loading, or the read failed. */
+  unknown: null as 'loading' | 'failed' | null,
+  retry: vi.fn(),
+}))
 vi.mock('../lib/gift-aid-shown', async (original) => {
   const view = (on: boolean) => ({
     offered: on,
-    shown: on || onRecord.declarations + onRecord.claims > 0,
+    shown:
+      on ||
+      (onRecord.unknown === null &&
+        onRecord.declarations + onRecord.claims > 0),
+    unknown: on ? null : onRecord.unknown,
+    retry: onRecord.retry,
   })
   return {
     ...(await original<typeof GiftAidShown>()),
-    useGiftAidOnRecord: () => ({ ...onRecord }),
+    useGiftAidOnRecord: () => ({
+      declarations: onRecord.declarations,
+      claims: onRecord.claims,
+    }),
     useGiftAidOf: (_slug: string, on: boolean) => view(on),
     useGiftAid: () => view(tenants?.[0]?.claimsGiftAid !== false),
   }
@@ -408,8 +422,9 @@ test('a group that doesn’t claim Gift Aid and has none on record has no Gift A
   // The way to switch it back on stays.
   expect(links()).toContainEqual(['Gift Aid', '/t/alpha/settings/giftaid'])
   // With a claim or a declaration on record, switching off never hides
-  // them (rule 4): the menu keeps the claims and the scans, and loses
-  // only the stack sitting, which makes something new; both tabs stay.
+  // them (rule 4): the menu keeps the claims and the scans that can be
+  // deleted, and loses what records a declaration ("Scans to match", a
+  // stack sitting); both tabs stay.
   Object.assign(onRecord, { declarations: 2, claims: 1 })
   await page(import('./t.$slug'))
   const trigger = [...el.querySelectorAll('button')].find(
@@ -424,7 +439,7 @@ test('a group that doesn’t claim Gift Aid and has none on record has no Gift A
     [...document.querySelectorAll('[role="menu"] [role="menuitem"]')].map(
       (i) => i.textContent,
     ),
-  ).toEqual(['Claims', 'Scans to match', 'Scans that can be deleted'])
+  ).toEqual(['Claims', 'Scans that can be deleted'])
   await page(import('./t.$slug.settings'))
   expect(text()).toContain('HMRC details')
   expect(text()).toContain('Scans storage')

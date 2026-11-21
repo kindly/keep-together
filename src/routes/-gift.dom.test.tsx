@@ -79,15 +79,29 @@ vi.mock('../lib/tenant', () => ({
   useIsAdmin: () => admin,
 }))
 /** What the group holds on record, for the switch off (gift-aid-shown.ts). */
-const onRecord = vi.hoisted(() => ({ declarations: 0, claims: 0 }))
+const onRecord = vi.hoisted(() => ({
+  declarations: 0,
+  claims: 0,
+  /** Not known yet (the switch off): still loading, or the read failed. */
+  unknown: null as 'loading' | 'failed' | null,
+  retry: vi.fn(),
+}))
 vi.mock('../lib/gift-aid-shown', async (original) => {
   const view = (on: boolean) => ({
     offered: on,
-    shown: on || onRecord.declarations + onRecord.claims > 0,
+    shown:
+      on ||
+      (onRecord.unknown === null &&
+        onRecord.declarations + onRecord.claims > 0),
+    unknown: on ? null : onRecord.unknown,
+    retry: onRecord.retry,
   })
   return {
     ...(await original<typeof GiftAidShown>()),
-    useGiftAidOnRecord: () => ({ ...onRecord }),
+    useGiftAidOnRecord: () => ({
+      declarations: onRecord.declarations,
+      claims: onRecord.claims,
+    }),
     useGiftAidOf: (_slug: string, on: boolean) => view(on),
     useGiftAid: () => view(giftAidSwitch.on),
   }

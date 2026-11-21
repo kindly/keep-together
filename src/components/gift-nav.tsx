@@ -90,8 +90,9 @@ type GiftAidEntry = {
  * admins, declaration scans g2q3), and the "can be deleted" report
  * (admins). None for a viewer. A group that switched Gift Aid off
  * (Settings › Gift Aid) keeps the entries to what it has on record (the
- * claims, the scans) and loses only the one that makes something new, a
- * stack sitting; with nothing on record it has none.
+ * claims, the scans that can be deleted) and loses the ones that record
+ * a declaration: "Scans to match" and a stack sitting. With nothing on
+ * record it has none.
  */
 export function useGiftAidEntries(): Array<GiftAidEntry> {
   const admin = useIsAdmin()
@@ -102,9 +103,11 @@ export function useGiftAidEntries(): Array<GiftAidEntry> {
     ...(admin && FEATURES.giftAidClaims
       ? [{ key: 'claims', to: '/t/$slug/giftaid' } as const]
       : []),
-    { key: 'scans', to: '/t/$slug/scans' },
+    // Matching scans and a stack sitting record declarations: offered
+    // only while the group claims.
     ...(offered
       ? [
+          { key: 'scans', to: '/t/$slug/scans' } as const,
           {
             key: 'stack',
             to: '/t/$slug/scans',

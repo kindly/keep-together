@@ -172,18 +172,24 @@ test('a viewer sees them but changes nothing', () => {
   expect(buttons(el, 'Record cancellation')).toHaveLength(0)
 })
 
-test('a group that stopped claiming keeps the declarations in view, read-only', () => {
+test('a group that stopped claiming keeps the declarations: none edited, but one can still be cancelled or marked made in error', () => {
   giftAidSwitch.on = false
   declarations = { declarations: [declaration({})], currentId: null }
   render()
   // Still there: what was declared is the evidence for claims made.
   expect(cards()).toHaveLength(1)
-  expect(buttons(el, 'Mark made in error')).toHaveLength(0)
   expect(buttons(el, 'Edit details')).toHaveLength(0)
-  expect(buttons(el, 'Record cancellation')).toHaveLength(0)
+  // A donor withdrawing is a real event, whatever the switch says.
+  expect(buttons(el, 'Record cancellation')).toHaveLength(1)
+  expect(buttons(el, 'Mark made in error')).toHaveLength(1)
   expect(
     el.querySelector('[data-testid="gift-aid-off"]')!.textContent,
-  ).toContain('these declarations are kept on record and can’t be changed here')
+  ).toContain('None can be added or edited; a cancellation')
+  // A viewer still changes nothing.
+  canWrite = false
+  render()
+  expect(buttons(el, 'Record cancellation')).toHaveLength(0)
+  expect(buttons(el, 'Mark made in error')).toHaveLength(0)
   giftAidSwitch.on = true
 })
 

@@ -1324,14 +1324,18 @@ together awaits the human's decision.
 
 **"We claim Gift Aid" off** stops the app offering Gift Aid (the donation
 page's declaration, the tick when recording a gift, new declarations and
-scans, new claims). A claim that exists stays finishable (ready,
-submitted, paid record what happened with HMRC). It never hides what is on
+scans (matching a scan included), editing a declaration, new claims).
+What records a real event stays: a claim that exists can be finished
+(ready, submitted, paid), and a declaration can be cancelled or marked
+made in error. It never hides what is on
 record (rule 4): `GET giftaid/on-record` → `GiftAidOnRecord
 {declarations, claims}` (any member) says what the organisation holds,
 Settings › Gift Aid says it before the switch saves, and while there is
 any, the claims list, each claim's page, a contact's declarations and a
-gift's coverage and claim link stay in view, read-only
-(`src/lib/gift-aid-shown.ts`). With none, Gift Aid leaves the app.
+gift's coverage and claim link stay in view
+(`src/lib/gift-aid-shown.ts`); while that read is loading a page says
+so, and a failed read is an error with a retry, never "nothing here".
+With none, Gift Aid leaves the app.
 
 The fake (`KEEP_STRIPE=fake`, `api::stripe::fake`, what `pnpm dev` runs)
 answers the client's calls in Stripe's shapes (both Accounts APIs),
