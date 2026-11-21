@@ -288,6 +288,59 @@ impl P {
         .await
     }
 
+    /// Alpha's payments set aside (the first page's rows).
+    async fn aside(&self) -> Value {
+        ok(
+            &self.t.w,
+            "GET",
+            "/api/t/alpha/stripe/dismissed",
+            &self.t.val,
+            None,
+        )
+        .await["rows"]
+            .clone()
+    }
+
+    /// A payment on alpha's account heard of before its session (no
+    /// metadata on the intent), so queued as `no_submission`, and set
+    /// aside by staff who took it for something else: Stripe's id and
+    /// our row's.
+    async fn heard_and_set_aside(&self, amount: i64) -> (String, String) {
+        let intent = self.t.fake.pay(&self.acct_a, amount, "gbp", None);
+        let pi = intent["id"].as_str().unwrap().to_owned();
+        let event = self
+            .t
+            .fake
+            .event(&self.acct_a, "payment_intent.succeeded", intent);
+        self.deliver(Some(event)).await;
+        let row = self.record(&self.a, &pi);
+        assert_eq!(
+            row.matched.unmatched,
+            Some(cards::UnmatchedReason::NoSubmission)
+        );
+        ok(
+            &self.t.w,
+            "POST",
+            &format!("/api/t/alpha/stripe/unmatched/{}/dismiss", row.id),
+            &self.t.sam,
+            Some(json!({ "expected": row.match_version, "reason": "Stall hire" })),
+        )
+        .await;
+        (pi, row.id)
+    }
+
+    /// The Checkout Session's event for `submission` lands, naming `pi`.
+    async fn late_session(&self, submission: &(String, String), pi: &str) {
+        let event = self.session_event(
+            &self.acct_a,
+            "checkout.session.completed",
+            &submission.1,
+            &submission.0,
+            Some(pi),
+        );
+        self.deliver(Some(event)).await;
+    }
+
     fn consistent(&self, db: &OrgDb) {
         assert_eq!(read(db, cards::consistency), Vec::<String>::new());
         assert_eq!(read(db, giving::regular::consistency), Vec::<String>::new());
@@ -1076,6 +1129,19 @@ async fn an_outside_payment_is_set_aside_with_a_reason_never_deleted_and_can_be_
             .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(out["problems"][0]["field"], "reason");
+    // Too long: refused under the same field's name, not the contract's.
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &path("alpha", "dismiss"),
+                &p.t.sam,
+                Some(json!({ "expected": version, "reason": "x".repeat(501) })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(out["problems"][0]["field"], "reason");
+    assert_eq!(out["problems"][0]["message"], "At most 500 characters");
     let (status, out) =
         p.t.w
             .call(
@@ -1113,6 +1179,8 @@ async fn an_outside_payment_is_set_aside_with_a_reason_never_deleted_and_can_be_
         None,
     )
     .await;
+    assert_eq!(aside["nextBefore"], Value::Null);
+    let aside = aside["rows"].clone();
     assert_eq!(aside.as_array().unwrap().len(), 1);
     assert_eq!(aside[0]["id"], id.as_str());
     assert_eq!(aside[0]["dismissed"], "Stall hire");
@@ -1134,7 +1202,7 @@ async fn an_outside_payment_is_set_aside_with_a_reason_never_deleted_and_can_be_
             &p.t.bob,
             None
         )
-        .await,
+        .await["rows"],
         json!([])
     );
     let (status, _) =
@@ -1208,7 +1276,7 @@ async fn an_outside_payment_is_set_aside_with_a_reason_never_deleted_and_can_be_
             &p.t.val,
             None
         )
-        .await,
+        .await["rows"],
         json!([])
     );
     let row = read(&p.a, |c| cards::payment(c, &id)).unwrap();
@@ -1225,6 +1293,166 @@ async fn an_outside_payment_is_set_aside_with_a_reason_never_deleted_and_can_be_
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(out["reason"], "already_matched");
     p.consistent(&p.a);
+}
+
+#[tokio::test]
+async fn a_set_aside_payment_a_late_session_event_names_is_a_donation_after_all() {
+    let p = world().await;
+    // 1. The session lands and the donor is new: the gift is made, and
+    //    the payment is nobody's set-aside one.
+    let s = submit(&p.a, jane(2500, false));
+    let (pi, row) = p.heard_and_set_aside(2500).await;
+    assert_eq!(p.aside().await.as_array().unwrap().len(), 1);
+    let stale = p.record(&p.a, &pi).match_version;
+    p.late_session(&s, &pi).await;
+    let now = p.record(&p.a, &pi);
+    assert!(now.matched.gift_id.is_some());
+    assert_eq!(now.matched.dismissed, None);
+    assert_eq!(p.aside().await, json!([]));
+    assert_eq!(gifts(&p.a).len(), 1);
+    // The staff member's page is behind: putting it back is refused.
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &format!("/api/t/alpha/stripe/unmatched/{row}/put-back"),
+                &p.t.sam,
+                Some(json!({ "expected": stale })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "already_matched");
+
+    // 2. The session lands and two contacts share the email: back in the
+    //    queue with the real reason, set aside no longer.
+    contact(&p.a, "Ann", "Other", "two@example.org");
+    contact(&p.a, "Anne", "Other", "two@example.org");
+    let s = submit(
+        &p.a,
+        DonorForm {
+            email: "two@example.org".into(),
+            ..jane(1500, false)
+        },
+    );
+    let (pi, _) = p.heard_and_set_aside(1500).await;
+    p.late_session(&s, &pi).await;
+    let now = p.record(&p.a, &pi);
+    assert_eq!(
+        now.matched.unmatched,
+        Some(cards::UnmatchedReason::Ambiguous)
+    );
+    assert_eq!(now.matched.dismissed, None);
+    assert_eq!(p.aside().await, json!([]));
+    assert_eq!(p.queue("alpha", &p.t.sam).await[0]["reason"], "ambiguous");
+
+    // 3. The session lands 30 days late, what the donor typed already
+    //    cleared: nobody to match, but it came through the page, so it is
+    //    back in the queue and can't be set aside again.
+    let s = submit_at(&p.a, jane(1000, false), contracts::now_ms() - 31 * DAY);
+    payments::run_retention(&p.t.w.store).await.unwrap();
+    let (pi, row) = p.heard_and_set_aside(1000).await;
+    p.late_session(&s, &pi).await;
+    let now = p.record(&p.a, &pi);
+    assert_eq!(now.payment.submission_id.as_deref(), Some(s.0.as_str()));
+    assert_eq!(
+        now.matched.unmatched,
+        Some(cards::UnmatchedReason::NoSubmission)
+    );
+    assert_eq!(now.matched.dismissed, None, "no longer set aside");
+    assert_eq!(p.aside().await, json!([]));
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &format!("/api/t/alpha/stripe/unmatched/{row}/dismiss"),
+                &p.t.sam,
+                Some(json!({ "expected": now.match_version, "reason": "Stall hire" })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "not_outside");
+    p.consistent(&p.a);
+}
+
+#[tokio::test]
+async fn the_set_aside_list_is_paged_so_every_payment_can_be_reached() {
+    let p = world().await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(p.heard_and_set_aside(4000).await.1);
+    }
+    // Newest first.
+    ids.reverse();
+    let got = |v: &Value| -> Vec<String> {
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let first = ok(
+        &p.t.w,
+        "GET",
+        "/api/t/alpha/stripe/dismissed?limit=2",
+        &p.t.val,
+        None,
+    )
+    .await;
+    assert_eq!(got(&first), ids[..2]);
+    let before = first["nextBefore"].as_i64().expect("a second page");
+    let second = ok(
+        &p.t.w,
+        "GET",
+        &format!("/api/t/alpha/stripe/dismissed?limit=2&before={before}"),
+        &p.t.val,
+        None,
+    )
+    .await;
+    assert_eq!(got(&second), ids[2..]);
+    assert_eq!(second["nextBefore"], Value::Null);
+    // Beta's pages are its own, whatever cursor is sent.
+    let theirs = ok(
+        &p.t.w,
+        "GET",
+        &format!("/api/t/beta/stripe/dismissed?before={before}"),
+        &p.t.bob,
+        None,
+    )
+    .await;
+    assert_eq!(theirs["rows"], json!([]));
+}
+
+#[tokio::test]
+async fn gift_aid_on_record_counts_this_groups_declarations_and_claims_only() {
+    let p = world().await;
+    let read = |slug: &'static str, cookie: String| {
+        let p = &p;
+        async move {
+            ok(
+                &p.t.w,
+                "GET",
+                &format!("/api/t/{slug}/giftaid/on-record"),
+                &cookie,
+                None,
+            )
+            .await
+        }
+    };
+    let none = json!({ "declarations": 0, "claims": 0 });
+    assert_eq!(read("alpha", p.t.val.clone()).await, none);
+    let s = submit(&p.a, jane(2500, true));
+    p.pay(&p.acct_a, &s, 2500).await;
+    assert_eq!(
+        read("alpha", p.t.val.clone()).await,
+        json!({ "declarations": 1, "claims": 0 })
+    );
+    assert_eq!(read("beta", p.t.bob.clone()).await, none);
+    let (status, _) =
+        p.t.w
+            .call("GET", "/api/t/alpha/giftaid/on-record", &p.t.bob, None)
+            .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

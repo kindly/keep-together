@@ -1,7 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import type { Id } from '../lib/domain/ids'
-import { claimsGiftAid, useTenant } from '../lib/tenant'
+import { useGiftAid } from '../lib/gift-aid-shown'
+import { useTenant } from '../lib/tenant'
 import { contactSeed, dropContactSeed } from '../lib/contact-seed'
 import { FEATURES, preloadContact, useContact } from '../lib/data'
 import { ContactForm } from '../components/contact-form'
@@ -26,6 +27,7 @@ export const Route = createFileRoute('/t/$slug/contacts/$contactId')({
 
 function ContactPage() {
   const tenant = useTenant()
+  const giftAid = useGiftAid()
   const { contactId } = Route.useParams()
   const id = contactId as Id<'contacts'>
   // The form, note editors and composer report here; the guard reads it.
@@ -72,9 +74,10 @@ function ContactPage() {
           {/* Staff and admins: from statement lines (bank transfers 6b). */}
           {FEATURES.gifts && <BankPayers contactId={id} />}
           {/* Only a person can make a Gift Aid declaration (HMRC 3.6.7). */}
-          {/* Nothing in a group that doesn't claim Gift Aid. */}
+          {/* Nothing in a group that doesn't claim Gift Aid and has none
+              on record; read-only in one that stopped claiming. */}
           {FEATURES.gifts &&
-            claimsGiftAid(tenant) &&
+            giftAid.shown &&
             data.contact.kind === 'individual' && (
               <ContactGiftAid contactId={id} />
             )}

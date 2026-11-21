@@ -100,7 +100,13 @@ const INVALIDATES: Partial<
     // A standing order's expected vs actual reads its instalments.
     keys.standing(slug),
   ],
-  gift_aid_declarations: (slug) => [keys.declarations(slug), keys.gifts(slug)],
+  // What a group that switched Gift Aid off still sees turns on whether
+  // it holds any declaration or claim (gift-aid-shown.ts).
+  gift_aid_declarations: (slug) => [
+    keys.declarations(slug),
+    keys.gifts(slug),
+    keys.giftAidOnRecord(slug),
+  ],
   // G3: a claim shows in the list, on its page and in every preview
   // (its gifts are no longer eligible). Its gifts' locks come as `gifts`
   // events (`giving.claimLock`).

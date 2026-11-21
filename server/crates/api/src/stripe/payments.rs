@@ -368,14 +368,18 @@ fn outcome(record: &PaymentRecord) -> &'static str {
     }
 }
 
-/// Put the payment in the staff queue with `why`.
+/// Put the payment in the staff queue with `why`. One staff set aside
+/// goes back in too: this is only reached for a payment whose donor is
+/// being looked for, so it names a submission now and was never an
+/// outside payment (even when what its donor typed is gone and the
+/// reason stays `no_submission`).
 fn queue(
     ctx: &Ctx,
     record: &PaymentRecord,
     why: UnmatchedReason,
     group: &CommandGroup,
 ) -> Result<(), ContractError> {
-    if record.matched.unmatched != Some(why) {
+    if record.matched.unmatched != Some(why) || record.matched.dismissed.is_some() {
         cards::set_match(
             ctx,
             &record.id,

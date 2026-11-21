@@ -3,6 +3,7 @@ import { expect, skipUnlessFakeStripe, test } from '../fixtures'
 import type { Page } from '@playwright/test'
 import type { ContactRow } from '../../src/lib/data/rust-types/ContactRow'
 import type { DonationPage } from '../../src/lib/data/rust-types/DonationPage'
+import type { GiftAidOnRecord } from '../../src/lib/data/rust-types/GiftAidOnRecord'
 import type { GiftPage } from '../../src/lib/data/rust-types/GiftPage'
 import type { GiftView } from '../../src/lib/data/rust-types/GiftView'
 import type { Preferences } from '../../src/lib/data/rust-types/Preferences'
@@ -19,7 +20,8 @@ import { GIFT_ROUTE, today } from './gift.helpers'
 // payments to match" (an outside payment matched to a contact, another
 // set aside with a reason and put back), a card gift from the donation
 // page whose donor typed another first name ("Name checked"), and
-// Settings › Gift Aid ("We claim Gift Aid", and what it hides). Signed in
+// Settings › Gift Aid ("We claim Gift Aid": what it says is on record
+// before it saves, what stays in view and what stops). Signed in
 // as user A, an admin. Stripe's own moves go through the fake's pages and
 // simulators, untimed. The Stripe tests need KEEP_STRIPE=fake and skip
 // elsewhere; the Gift Aid switch needs no Stripe and runs everywhere.
@@ -243,9 +245,10 @@ function nameMarkGone() {
 
 /**
  * "We claim Gift Aid" reads window.__qcWant, and the header agrees: its
- * Gift Aid menu is there only while the group claims.
+ * Gift Aid menu is there while the group claims, or holds a declaration
+ * or a claim (`arg`).
  */
-function giftAidIsWant() {
+function giftAidIsWant(onRecord: boolean) {
   const on = (window as unknown as { __qcWant?: string }).__qcWant === 'on'
   const s = [...document.querySelectorAll('label')]
     .find((l) => l.textContent === 'We claim Gift Aid')
@@ -253,7 +256,13 @@ function giftAidIsWant() {
   const menu = [
     ...document.querySelectorAll('nav[aria-label="Main"] button'),
   ].some((b) => b.textContent.startsWith('Gift Aid'))
-  return s != null && s.checked === on && menu === on
+  // With anything on record the menu stays whatever the switch says.
+  return (
+    s != null &&
+    s.checked === on &&
+    menu === (on || onRecord) &&
+    !document.querySelector('[role="alertdialog"]')
+  )
 }
 
 test.describe('Stripe screens (fake)', () => {
@@ -530,7 +539,7 @@ test.describe('Stripe screens (fake)', () => {
 })
 
 test.describe('Settings › Gift Aid', { annotation: GIFT_AID }, () => {
-  test('"We claim Gift Aid": off hides Gift Aid across the app, on shows it again', async ({
+  test('"We claim Gift Aid": switching off says what is on record, never hides it, and stops only the offering', async ({
     page,
     flow,
     users,
@@ -540,38 +549,86 @@ test.describe('Settings › Gift Aid', { annotation: GIFT_AID }, () => {
     const header = page.getByRole('navigation', { name: 'Main' })
     const menu = header.getByRole('button', { name: 'Gift Aid', exact: true })
     const tabs = page.getByRole('navigation', { name: 'Settings sections' })
+    const confirm = page.getByRole('alertdialog')
     try {
       await page.goto(`/t/${slug}/settings/giftaid`)
       const sw = page.getByRole('switch', { name: label })
       // The tenant is shared by the worker's tests: it starts, and is left, on.
       await expect(sw).toBeChecked()
       await expect(menu).toBeVisible()
+      // What the group holds is said before anything is switched.
+      const held = await json<GiftAidOnRecord>(
+        page,
+        'GET',
+        `/api/t/${slug}/giftaid/on-record`,
+      )
+      const any = held.declarations + held.claims > 0
+      await expect(page.getByTestId('gift-aid-on-record')).toContainText(
+        any ? 'On record:' : 'Nothing is on record',
+      )
       // The input is visually hidden; its label takes the (trusted) click.
       const toggle = page.getByText(label, { exact: true })
+      // Off is asked about first; the timed gesture is the confirm (off)
+      // or the click (on): each ends with the server's answer on screen.
+      let asked = false
       await flow(page, 'settings.claimsGiftAid.toggle', {
-        before: async () => want(page, (await sw.isChecked()) ? 'off' : 'on'),
-        action: () => toggle.click(),
+        before: async () => {
+          const on = await sw.isChecked()
+          asked = on
+          await want(page, on ? 'off' : 'on')
+          if (on) {
+            await toggle.click()
+            await expect(confirm).toContainText(
+              any
+                ? 'They are kept and stay visible'
+                : 'no declarations and no claims',
+            )
+          }
+        },
+        action: () =>
+          asked
+            ? confirm.getByRole('button', { name: 'Switch off' }).click()
+            : toggle.click(),
         until: giftAidIsWant,
+        arg: any,
       })
-      if (await sw.isChecked()) await toggle.click()
+      if (await sw.isChecked()) {
+        await toggle.click()
+        await confirm.getByRole('button', { name: 'Switch off' }).click()
+      }
       await expect(sw).not.toBeChecked()
 
-      // Off: no Gift Aid menu, no HMRC details or Scans storage tab; a
-      // bookmarked Gift Aid page says why; the switch stays.
-      await expect(menu).toHaveCount(0)
+      if (any) {
+        // On record: the claims and the tabs stay, read-only; only the
+        // offering goes (no new claim).
+        await expect(menu).toBeVisible()
+        await expect(
+          tabs.getByRole('link', { name: 'HMRC details' }),
+        ).toBeVisible()
+        await page.goto(`/t/${slug}/giftaid`)
+        await expect(page.getByTestId('gift-aid-off')).toBeVisible()
+        await expect(page.getByRole('link', { name: 'New claim' })).toHaveCount(
+          0,
+        )
+        await page.goto(`/t/${slug}/giftaid/new`)
+        await expect(page.getByTestId('no-gift-aid')).toContainText(
+          'no new claim can be made',
+        )
+      } else {
+        // Nothing on record: Gift Aid leaves the app; a bookmark says why.
+        await expect(menu).toHaveCount(0)
+        await expect(
+          tabs.getByRole('link', { name: 'HMRC details' }),
+        ).toHaveCount(0)
+        await page.goto(`/t/${slug}/giftaid`)
+        await expect(page.getByTestId('no-gift-aid')).toBeVisible()
+      }
+      // Either way the tick is gone from recording a gift.
+      await page.goto(`/t/${slug}/gifts/new`)
       await expect(
-        tabs.getByRole('link', { name: 'HMRC details' }),
-      ).toHaveCount(0)
-      await expect(
-        tabs.getByRole('link', { name: 'Scans storage' }),
-      ).toHaveCount(0)
-      await expect(page.getByTestId('claims-gift-aid-help')).toContainText(
-        'Declarations and claims already recorded are kept',
-      )
-      await page.goto(`/t/${slug}/giftaid`)
-      await expect(page.getByTestId('no-gift-aid')).toBeVisible()
-      await page.goto(`/t/${slug}/scans`)
-      await expect(page.getByTestId('no-gift-aid')).toBeVisible()
+        page.getByRole('form', { name: 'Record a gift' }),
+      ).toBeVisible()
+      await expect(page.getByTestId('gift-aid')).toHaveCount(0)
 
       // On again: everything is back.
       await page.goto(`/t/${slug}/settings/giftaid`)

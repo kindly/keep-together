@@ -75,7 +75,9 @@ export function useClaimsGiftAid(): boolean {
  * The same, of a group in hand. On unless the group said otherwise, as
  * the server's default is: only an explicit "off" hides anything.
  */
-export function claimsGiftAid(tenant: Pick<Tenant, 'claimsGiftAid'>): boolean {
+export function claimsGiftAid(tenant: {
+  claimsGiftAid?: boolean | null
+}): boolean {
   return tenant.claimsGiftAid !== false
 }
 

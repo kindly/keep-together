@@ -12,6 +12,7 @@ import type {
   HmrcDetailsView,
 } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
+import type * as GiftAidShown from '../lib/gift-aid-shown'
 
 // The Gift Aid pages (G3): the claims list, a new claim's preview, a
 // claim's page with the steps its status allows, and Settings › HMRC
@@ -58,6 +59,7 @@ const step = vi.fn()
 const saveDetails = vi.fn()
 const download = vi.fn()
 const stepUpCall = vi.fn()
+const setClaims = vi.fn()
 let role: 'admin' | 'staff' = 'admin'
 vi.mock('../lib/data', () => ({
   useClaims: () => claims,
@@ -68,6 +70,7 @@ vi.mock('../lib/data', () => ({
   useClaimStep: () => step,
   useSaveHmrcDetails: () => saveDetails,
   downloadClaim: (...a: Array<unknown>) => download(...a),
+  useSetClaimsGiftAid: () => setClaims,
   useAuthState: () => ({ method: 'totp' }),
   useSignInSteps: () => ({ stepUp: stepUpCall }),
 }))
@@ -83,6 +86,20 @@ vi.mock('../lib/tenant', () => ({
   useTenant: () => ({ _id: 'tenantA', slug: 'a', role }),
   useIsAdmin: () => role === 'admin',
 }))
+/** What the group holds on record, for the switch off (gift-aid-shown.ts). */
+const onRecord = vi.hoisted(() => ({ declarations: 0, claims: 0 }))
+vi.mock('../lib/gift-aid-shown', async (original) => {
+  const view = (on: boolean) => ({
+    offered: on,
+    shown: on || onRecord.declarations + onRecord.claims > 0,
+  })
+  return {
+    ...(await original<typeof GiftAidShown>()),
+    useGiftAidOnRecord: () => ({ ...onRecord }),
+    useGiftAidOf: (_slug: string, on: boolean) => view(on),
+    useGiftAid: () => view(giftAidSwitch.on),
+  }
+})
 
 const totals = (over = {}) => ({
   lines: 2,
@@ -163,6 +180,9 @@ let root: Root
 let el: HTMLDivElement
 beforeEach(() => {
   role = 'admin'
+  giftAidSwitch.on = true
+  Object.assign(onRecord, { declarations: 0, claims: 0 })
+  setClaims.mockReset()
   claims = read<Array<ClaimSummary>>([])
   preview = Object.assign(read(makePreview()), { fetching: false })
   claim = read<Claim | null>(makeClaim())
@@ -225,6 +245,107 @@ test('the Gift Aid pages are for admins: anyone else is told, not shown', async 
   role = 'admin'
   await page(import('./t.$slug.giftaid'))
   expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
+})
+
+// ── "We claim Gift Aid" off (Stripe S5; review s5r M1) ─────────────────────
+
+test('off with nothing on record: the claims pages say there is nothing here', async () => {
+  giftAidSwitch.on = false
+  await page(import('./t.$slug.giftaid'))
+  expect(
+    el.querySelector('[data-testid="no-gift-aid"]')!.textContent,
+  ).toContain('This group doesn’t claim Gift Aid, so there is nothing here.')
+  expect(el.querySelector('[data-testid="outlet"]')).toBeNull()
+})
+
+test('off with claims on record: the list and each claim stay, read-only, and no new claim is offered', async () => {
+  giftAidSwitch.on = false
+  Object.assign(onRecord, { declarations: 3, claims: 1 })
+  // The layout lets the pages through: a claim is a financial record.
+  await page(import('./t.$slug.giftaid'))
+  expect(el.querySelector('[data-testid="outlet"]')).not.toBeNull()
+
+  claims = read<Array<ClaimSummary>>([{ ...makeClaim({ status: 'paid' }) }])
+  await page(import('./t.$slug.giftaid.index'))
+  expect(el.querySelector('[data-testid="claim-row"]')).not.toBeNull()
+  expect(links().map(([name]) => name)).not.toContain('New claim')
+  expect(
+    el.querySelector('[data-testid="gift-aid-off"]')!.textContent,
+  ).toContain(
+    'The claims already made stay on record here; no new claim can be made.',
+  )
+
+  // A claim's page: its figures and downloads, no next step.
+  claim = read(makeClaim({ status: 'ready' }))
+  await page(import('./t.$slug.giftaid.$claimId'))
+  expect(
+    el.querySelector('[data-testid="gift-aid-off"]')!.textContent,
+  ).toContain('This claim stays on record, with its downloads.')
+  expect(button(el, 'Mark submitted')).toBeUndefined()
+  expect(el.querySelector('section[aria-label="Downloads"]')).not.toBeNull()
+
+  // A new claim is offering Gift Aid: refused, with the way back.
+  await page(import('./t.$slug.giftaid.new'))
+  expect(
+    el.querySelector('[data-testid="no-gift-aid"]')!.textContent,
+  ).toContain('no new claim can be made')
+  expect(links()).toContainEqual(['still here', '/t/a/giftaid'])
+  expect(el.querySelector('form')).toBeNull()
+})
+
+test('the switch says what is on record and what stays visible before it saves', async () => {
+  setClaims.mockResolvedValue('saved')
+  Object.assign(onRecord, { declarations: 3, claims: 1 })
+  await page(import('./t.$slug.settings.giftaid'))
+  const sw = el.querySelector<HTMLInputElement>('input[role="switch"]')!
+  expect(sw.checked).toBe(true)
+  expect(
+    el.querySelector('[data-testid="gift-aid-on-record"]')!.textContent,
+  ).toContain(
+    'On record: 3 declarations and 1 claim. Switching off keeps them in view',
+  )
+  await act(async () => sw.click())
+  // Asked first: nothing saved yet.
+  expect(setClaims).not.toHaveBeenCalled()
+  const dialog = document.querySelector('[role="alertdialog"]')!
+  expect(dialog.textContent).toContain(
+    'The group has 3 declarations and 1 claim on record. They are kept and stay visible, read-only',
+  )
+  expect(dialog.textContent).toContain(
+    'the list of claims and each claim’s page',
+  )
+  expect(dialog.textContent).toContain('each contact’s declarations')
+  expect(dialog.textContent).toContain('the claim a gift is in')
+  await click(button(dialog, 'Keep claiming')!)
+  expect(setClaims).not.toHaveBeenCalled()
+  await act(async () => sw.click())
+  await click(
+    button(document.querySelector('[role="alertdialog"]')!, 'Switch off')!,
+  )
+  expect(setClaims).toHaveBeenCalledExactlyOnceWith(false)
+
+  // Nothing on record: it says Gift Aid leaves the app entirely.
+  Object.assign(onRecord, { declarations: 0, claims: 0 })
+  await page(import('./t.$slug.settings.giftaid'))
+  await act(async () =>
+    el.querySelector<HTMLInputElement>('input[role="switch"]')!.click(),
+  )
+  expect(document.querySelector('[role="alertdialog"]')!.textContent).toContain(
+    'no declarations and no claims on record, so Gift Aid disappears from the app',
+  )
+  await click(
+    button(document.querySelector('[role="alertdialog"]')!, 'Keep claiming')!,
+  )
+
+  // Switching on asks nothing.
+  setClaims.mockClear()
+  giftAidSwitch.on = false
+  await page(import('./t.$slug.settings.giftaid'))
+  await act(async () =>
+    el.querySelector<HTMLInputElement>('input[role="switch"]')!.click(),
+  )
+  expect(setClaims).toHaveBeenCalledExactlyOnceWith(true)
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull()
 })
 
 // ── list ───────────────────────────────────────────────────────────────────

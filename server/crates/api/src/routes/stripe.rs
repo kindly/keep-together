@@ -16,11 +16,14 @@ use axum::extract::Path;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use contracts::{Executed, Source};
-use giving::stripe::{DonationPage, DonationPagePayload, UnmatchedCardPayment};
+use giving::stripe::{
+    DismissedCardPayments, DonationPage, DonationPagePayload, UnmatchedCardPayment,
+};
 use giving::types::GiftView;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::Params;
 use crate::stripe::{StripeConnectStart, StripeStatus};
 use crate::{ApiError, Body, IdParam, Tenant};
 
@@ -163,6 +166,15 @@ async fn dismiss(
     Body(req): Body<DismissCardPayment>,
 ) -> Result<Json<Executed>, ApiError> {
     t.stripe()?;
+    // The contract holds the same width under its own field's name
+    // (`dismissed`): the route answers for the field the caller sent.
+    if req.reason.trim().chars().count() > giving::stripe::DISMISS_REASON_MAX {
+        return Err(contracts::ContractError::invalid(
+            "reason",
+            format!("At most {} characters", giving::stripe::DISMISS_REASON_MAX),
+        )
+        .into());
+    }
     if req.reason.trim().is_empty() {
         return Err(
             contracts::ContractError::invalid("reason", "Say why it isn’t a donation").into(),
@@ -194,16 +206,32 @@ async fn put_back(
         .map(Json)
 }
 
-/// `GET stripe/dismissed` → `UnmatchedCardPayment[]`: the payments staff
-/// set aside as not donations, newest first, at most 500, each with
-/// `dismissed` (why) and `dismissedAt`. Any member.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DismissedQuery {
+    before: Option<i64>,
+    limit: Option<usize>,
+}
+
+/// `GET stripe/dismissed?before&limit` → `DismissedCardPayments {rows,
+/// nextBefore}`: the payments staff set aside as not donations, newest
+/// first, 50 a page at most, each row an `UnmatchedCardPayment` with
+/// `dismissed` (why) and `dismissedAt`; `nextBefore` is the next page's
+/// `before`, null on the last. Any member.
 async fn dismissed(
     Extension(t): Extension<Tenant>,
-) -> Result<Json<Vec<UnmatchedCardPayment>>, ApiError> {
+    Params(q): Params<DismissedQuery>,
+) -> Result<Json<DismissedCardPayments>, ApiError> {
     t.stripe()?;
-    t.read(|r| Ok(giving::stripe::dismissed_view(r)?))
-        .await
-        .map(Json)
+    t.read(move |r| {
+        Ok(giving::stripe::dismissed_view(
+            r,
+            q.before,
+            q.limit.unwrap_or(giving::stripe::DISMISSED_PAGE),
+        )?)
+    })
+    .await
+    .map(Json)
 }
 
 /// `POST stripe/payments/{id}/name-checked {expected}` → the gift

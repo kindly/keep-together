@@ -1,38 +1,52 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
+import { ConfirmDialog } from '../components/confirm-dialog'
 import { useSetClaimsGiftAid } from '../lib/data'
+import { onRecordText, useGiftAidOnRecord } from '../lib/gift-aid-shown'
 import { claimsGiftAid, useIsAdmin, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings/giftaid')({
   component: GiftAidSettings,
 })
 
+/** What switching off stops, whatever is on record. */
+const STOPS =
+  'the donation page asking donors for a Gift Aid declaration, the Gift Aid tick when recording a gift, recording or scanning declarations, and making new claims'
+/** What stays in view, read-only, once anything is on record. */
+const STAYS =
+  'the list of claims and each claim’s page (under Gift Aid in the menu), each contact’s declarations, and the claim a gift is in'
+
 /**
  * Settings › Gift Aid (Stripe S5): "We claim Gift Aid", on unless a
- * group that isn't a charity switches it off. Off, the donation page
- * offers no Gift Aid and the app shows none of it: the Gift Aid menu, a
- * contact's declarations, a gift's coverage, the tick when recording a
- * gift, HMRC details and the scans. Nothing recorded is changed or
- * removed, and the server's rules stay as they are: switching it back
- * on shows everything again. Admin only.
+ * group that isn't a charity switches it off. Off stops the app offering
+ * Gift Aid; it never hides what is on record (rule 4: a claim is a
+ * financial record). Before it saves, the switch says what the group
+ * holds and what stays visible: with declarations or claims on record
+ * those stay, read-only; with none, Gift Aid leaves the app entirely.
+ * Nothing recorded is changed and the server's rules stay as they are.
+ * Admin only.
  */
 function GiftAidSettings() {
   const admin = useIsAdmin()
   const tenant = useTenant()
+  const on = claimsGiftAid(tenant)
   const save = useSetClaimsGiftAid(tenant)
+  const held = useGiftAidOnRecord(tenant.slug, admin)
   const [error, setError] = useState<string | null>(null)
+  const [asking, setAsking] = useState(false)
   if (!admin)
     return (
       <p className="text-sm text-neutral-600">
         Whether the group claims Gift Aid is for its admins to say.
       </p>
     )
+  const recorded = held && onRecordText(held)
 
   // No optimistic update: the switch moves when the server's answer
   // lands in the caller's groups, with the counter the next save needs.
-  async function toggle(on: boolean) {
+  async function set(to: boolean) {
     setError(null)
-    const outcome = await save(on)
+    const outcome = await save(to)
     if (outcome === 'stale')
       setError('Another admin changed this just now; check it and try again')
     else if (outcome === 'failed') setError('Could not save')
@@ -46,8 +60,11 @@ function GiftAidSettings() {
           <input
             type="checkbox"
             role="switch"
-            checked={claimsGiftAid(tenant)}
-            onChange={(e) => void toggle(e.target.checked)}
+            checked={on}
+            // Off is asked about first; on is nothing to warn of.
+            onChange={(e) =>
+              e.target.checked ? void set(true) : setAsking(true)
+            }
             className="peer sr-only"
           />
           <span
@@ -60,9 +77,21 @@ function GiftAidSettings() {
           data-testid="claims-gift-aid-help"
           className="text-sm text-neutral-600"
         >
-          {claimsGiftAid(tenant)
-            ? 'On: for a charity or CASC that reclaims tax on its donations. Switch it off if the group isn’t one: the donation page then asks nobody for a Gift Aid declaration, and Gift Aid is hidden across the app.'
-            : 'Off: the donation page offers no Gift Aid, and Gift Aid is hidden across the app. Declarations and claims already recorded are kept, and show again if this is switched on.'}
+          {on
+            ? 'On: for a charity or CASC that reclaims tax on its donations. Switch it off if the group isn’t one.'
+            : `Off: the app no longer offers Gift Aid (${STOPS}).`}
+        </p>
+        <p
+          data-testid="gift-aid-on-record"
+          className="text-sm text-neutral-600"
+        >
+          {held === undefined
+            ? 'Checking what is on record…'
+            : recorded
+              ? `On record: ${recorded}. ${on ? 'Switching off keeps them in view' : 'They stay in view'}, read-only: ${STAYS}.`
+              : on
+                ? 'Nothing is on record: no declarations and no claims. Switching off hides Gift Aid across the app.'
+                : 'Nothing is on record: no declarations and no claims. So Gift Aid is hidden across the app.'}
         </p>
         {error && (
           <span role="alert" className="text-sm text-red-700">
@@ -70,6 +99,26 @@ function GiftAidSettings() {
           </span>
         )}
       </div>
+      <ConfirmDialog
+        open={asking}
+        title="Stop claiming Gift Aid?"
+        description={
+          held === undefined
+            ? 'Checking what the group has on record…'
+            : recorded
+              ? `The group has ${recorded} on record. They are kept and stay visible, read-only: ${STAYS}. What stops: ${STOPS}. You can switch it back on at any time.`
+              : `The group has no declarations and no claims on record, so Gift Aid disappears from the app: its menu, the Gift Aid panel on contacts and on gifts, HMRC details and scans. What stops: ${STOPS}. You can switch it back on at any time.`
+        }
+        confirm="Switch off"
+        cancel="Keep claiming"
+        // What is on record is said before it saves, never guessed.
+        confirmDisabled={held === undefined}
+        onCancel={() => setAsking(false)}
+        onConfirm={() => {
+          setAsking(false)
+          void set(false)
+        }}
+      />
     </section>
   )
 }

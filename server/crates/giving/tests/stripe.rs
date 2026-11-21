@@ -1292,7 +1292,7 @@ fn only_a_payment_with_no_donation_behind_it_is_set_aside_and_it_keeps_its_row()
     let queue = read(&w.a, stripe::unmatched);
     assert_eq!(queue.len(), 1);
     assert_eq!(queue[0].id, typed.id);
-    let aside = read(&w.a, stripe::dismissed);
+    let aside = read(&w.a, |c| stripe::dismissed(c, None, 50)).0;
     assert_eq!(aside.len(), 1);
     assert_eq!(aside[0].id, outside.id);
     assert_eq!(aside[0].matched.dismissed.as_deref(), Some("Stall hire"));
@@ -1318,7 +1318,7 @@ fn only_a_payment_with_no_donation_behind_it_is_set_aside_and_it_keeps_its_row()
     // Put back: in the queue again, set aside by nobody.
     dismiss(&outside.id, None, 2).unwrap();
     assert_eq!(read(&w.a, stripe::unmatched).len(), 2);
-    assert!(read(&w.a, stripe::dismissed).is_empty());
+    assert!(read(&w.a, |c| stripe::dismissed(c, None, 50)).0.is_empty());
     let (by, at): (Option<i64>, Option<i64>) = read(&w.a, |c| {
         c.query_row(
             "SELECT dismissed_by, dismissed_at FROM stripe_payments WHERE id = ?1",
@@ -1328,13 +1328,42 @@ fn only_a_payment_with_no_donation_behind_it_is_set_aside_and_it_keeps_its_row()
     });
     assert_eq!((by, at), (None, None));
 
+    // The set-aside list is paged, newest first, and reaches every row.
+    let mut made = Vec::new();
+    for n in 0..3 {
+        let (p, _) = record(&w.a, report(&format!("pi_page_{n}"), None)).unwrap();
+        let queued = StripePaymentMatchPayload {
+            unmatched: Some(UnmatchedReason::NoSubmission),
+            ..StripePaymentMatchPayload::default()
+        };
+        system(&w.a, NOON, |ctx| {
+            stripe::set_match(ctx, &p.id, queued, None, Source::System, None)
+        })
+        .unwrap();
+        dismiss(&p.id, Some("Ticket"), 1).unwrap();
+        made.push(p.id);
+    }
+    let (first, next) = read(&w.a, |c| stripe::dismissed(c, None, 2));
+    assert_eq!(
+        first.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+        [made[2].as_str(), made[1].as_str()]
+    );
+    let (rest, end) = read(&w.a, |c| stripe::dismissed(c, next, 2));
+    assert!(next.is_some());
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest[0].id, made[0]);
+    assert_eq!(end, None);
+    for id in &made {
+        dismiss(id, None, 2).unwrap();
+    }
+
     // Set aside, then matched after all: a gift's payment is never set
     // aside, and can't be afterwards.
     dismiss(&outside.id, Some("Stall hire"), 3).unwrap();
     let jo = contact(&w.a, "Jo", "Bloggs");
     let g = gift(&w.a, &jo, &w.code, 2500);
     set_match(&w.a, &outside.id, matched(&jo, &g), Some(4)).unwrap();
-    assert!(read(&w.a, stripe::dismissed).is_empty());
+    assert!(read(&w.a, |c| stripe::dismissed(c, None, 50)).0.is_empty());
     assert_eq!(
         reason(dismiss(&outside.id, Some("Stall hire"), 5).unwrap_err()),
         "already_matched"

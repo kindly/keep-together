@@ -18,7 +18,7 @@ import {
   useDeclarations,
 } from '../lib/giftaid'
 import type { Declaration } from '../lib/giftaid'
-import { useCanWrite, useTenant } from '../lib/tenant'
+import { useCanWrite, useClaimsGiftAid, useTenant } from '../lib/tenant'
 import { ConfirmDialog } from './confirm-dialog'
 import { DeclarationScanLine, ScanWithPhone } from './scans'
 import { localToday } from './source-code-picker'
@@ -47,7 +47,10 @@ const small =
  * scans step 4).
  */
 export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
-  const canWrite = useCanWrite()
+  // A group that switched Gift Aid off keeps its declarations in view,
+  // read-only: nothing new is recorded, cancelled or scanned.
+  const offered = useClaimsGiftAid()
+  const canWrite = useCanWrite() && offered
   const data = useDeclarations(contactId)
   const members = useMembers()
   // "system" means an import or a webhook: never say it while loading.
@@ -105,7 +108,14 @@ export function ContactGiftAid({ contactId }: { contactId: Id<'contacts'> }) {
       )}
       {/* A paper form to record, or the scan for one recorded already
           (declaration scans, g2q3). */}
-      <ScanWithPhone purpose="contact" contactId={contactId} />
+      {offered ? (
+        <ScanWithPhone purpose="contact" contactId={contactId} />
+      ) : (
+        <p data-testid="gift-aid-off" className="text-sm text-neutral-600">
+          This group no longer claims Gift Aid: these declarations are kept on
+          record and can’t be changed here.
+        </p>
+      )}
       {canWrite &&
         cancellable &&
         (cancelling ? (
@@ -150,7 +160,8 @@ function DeclarationCard({
   label: string
   name: (userId: number | undefined) => string
 }) {
-  const canWrite = useCanWrite()
+  const offered = useClaimsGiftAid()
+  const canWrite = useCanWrite() && offered
   const voided = d.voidedAt !== undefined
   const snapshot = [
     [d.firstName, d.lastName].filter(Boolean).join(' '),

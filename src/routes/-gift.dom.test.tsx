@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { Id } from '../lib/domain/ids'
 import type { GiftView as Gift } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
+import type * as GiftAidShown from '../lib/gift-aid-shown'
 
 // The gift page (cash gifts step 5): someone else's edit while the form is
 // open merges in field by field and moves `expected`, so typed changes
@@ -77,6 +78,20 @@ vi.mock('../lib/tenant', () => ({
   useCanWrite: () => true,
   useIsAdmin: () => admin,
 }))
+/** What the group holds on record, for the switch off (gift-aid-shown.ts). */
+const onRecord = vi.hoisted(() => ({ declarations: 0, claims: 0 }))
+vi.mock('../lib/gift-aid-shown', async (original) => {
+  const view = (on: boolean) => ({
+    offered: on,
+    shown: on || onRecord.declarations + onRecord.claims > 0,
+  })
+  return {
+    ...(await original<typeof GiftAidShown>()),
+    useGiftAidOnRecord: () => ({ ...onRecord }),
+    useGiftAidOf: (_slug: string, on: boolean) => view(on),
+    useGiftAid: () => view(giftAidSwitch.on),
+  }
+})
 
 const { Route } = await import('./t.$slug.gifts.$giftId')
 const GiftPage = (Route as unknown as { options: { component: ComponentType } })
@@ -123,6 +138,7 @@ beforeEach(() => {
   batchStatus = 'open'
   nameChecked.mockReset().mockResolvedValue(undefined)
   giftAidSwitch.on = true
+  Object.assign(onRecord, { declarations: 0, claims: 0 })
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -543,9 +559,14 @@ test('first name differs: the typed name is shown, and "Name checked" clears it 
   expect(mark()!.textContent).toContain(
     'the donor typed “Jane”, and this contact is Jo Bloggs',
   )
-  // What staff can do today, said plainly; the move isn't built.
-  expect(mark()!.textContent).toContain('void it with a reason')
-  expect(mark()!.textContent).toContain('isn’t built yet')
+  // The move isn't available, and the page says so. It never suggests
+  // voiding the gift and recording another by hand: that one would never
+  // hear of a refund or a dispute.
+  expect(mark()!.textContent).toContain(
+    'moving it to their contact isn’t available yet',
+  )
+  expect(mark()!.textContent).toContain('keeps following its payment')
+  expect(mark()!.textContent).not.toMatch(/void|by hand/i)
   const check = [...mark()!.querySelectorAll('button')][0]
   expect(check.textContent).toBe('Name checked: it’s the right person')
 
@@ -590,7 +611,24 @@ test('a refused declaration and a part refund on a claimed gift are said plainly
   ).toContain('the group kept £15.00')
 })
 
-test('a group that doesn’t claim Gift Aid sees no coverage and no declaration note on a gift', async () => {
+test('a group that stopped claiming keeps a gift’s coverage, declaration note and claim link once anything is on record', async () => {
+  giftAidSwitch.on = false
+  Object.assign(onRecord, { declarations: 1, claims: 1 })
+  gift = cardGift({ declarationRefused: 'not_individual' })
+  gift = { ...gift, claimId: 'claim7' }
+  await render()
+  expect(el.querySelector('[data-testid="gift-coverage"]')).not.toBeNull()
+  expect(
+    el.querySelector('[data-testid="card-declaration-refused"]'),
+  ).not.toBeNull()
+  // The claim it is in: a financial record, always shown.
+  expect(el.querySelector('[data-testid="claim-badge"]')!.textContent).toBe(
+    'Claimed in claim 7',
+  )
+  expect(el.querySelector('[data-testid="claim-lock"]')).not.toBeNull()
+})
+
+test('a group that doesn’t claim Gift Aid and has none on record sees no coverage and no declaration note on a gift', async () => {
   await render()
   expect(el.querySelector('[data-testid="gift-coverage"]')).not.toBeNull()
   giftAidSwitch.on = false

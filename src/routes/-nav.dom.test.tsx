@@ -8,6 +8,7 @@ import type { RecentGift } from '../lib/gifts'
 import type { Tenant } from '../lib/tenant'
 import type * as GiftsLib from '../lib/gifts'
 import type * as DataLib from '../lib/data'
+import type * as GiftAidShown from '../lib/gift-aid-shown'
 
 // The navigation (cash-gifts step 4): header, group home, landing on "/",
 // and Settings → Switch group. The router is reduced to plain links with
@@ -186,6 +187,20 @@ vi.mock('@tanstack/react-router', () => ({
 const opened = vi.fn()
 const signOut = vi.fn()
 let tenants: Array<Tenant> | undefined
+/** What the group holds on record, for the switch off (gift-aid-shown.ts). */
+const onRecord = vi.hoisted(() => ({ declarations: 0, claims: 0 }))
+vi.mock('../lib/gift-aid-shown', async (original) => {
+  const view = (on: boolean) => ({
+    offered: on,
+    shown: on || onRecord.declarations + onRecord.claims > 0,
+  })
+  return {
+    ...(await original<typeof GiftAidShown>()),
+    useGiftAidOnRecord: () => ({ ...onRecord }),
+    useGiftAidOf: (_slug: string, on: boolean) => view(on),
+    useGiftAid: () => view(tenants?.[0]?.claimsGiftAid !== false),
+  }
+})
 vi.mock('../lib/data', async (original) => {
   const real = await original<typeof DataLib>()
   return {
@@ -260,6 +275,7 @@ beforeEach(() => {
   gifts = []
   gocardless = undefined
   stripe = undefined
+  Object.assign(onRecord, { declarations: 0, claims: 0 })
   routeSearch = {}
   navigated.length = 0
   opened.mockReset().mockResolvedValue(null)
@@ -376,7 +392,7 @@ test('Gift Aid claims and HMRC details are for admins: staff and viewers see nei
   }
 })
 
-test('a group that doesn’t claim Gift Aid has no Gift Aid menu, HMRC details or Scans storage, and keeps the switch', async () => {
+test('a group that doesn’t claim Gift Aid and has none on record has no Gift Aid menu or tabs; with any on record they stay', async () => {
   tenants = [group('alpha', { claimsGiftAid: false })]
   await page(import('./t.$slug'))
   const nav = el.querySelector('nav[aria-label="Main"]')!
@@ -391,6 +407,28 @@ test('a group that doesn’t claim Gift Aid has no Gift Aid menu, HMRC details o
   expect(text()).not.toContain('Scans storage')
   // The way to switch it back on stays.
   expect(links()).toContainEqual(['Gift Aid', '/t/alpha/settings/giftaid'])
+  // With a claim or a declaration on record, switching off never hides
+  // them (rule 4): the menu keeps the claims and the scans, and loses
+  // only the stack sitting, which makes something new; both tabs stay.
+  Object.assign(onRecord, { declarations: 2, claims: 1 })
+  await page(import('./t.$slug'))
+  const trigger = [...el.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Gift Aid ▾',
+  )!
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0 }),
+    )
+  })
+  expect(
+    [...document.querySelectorAll('[role="menu"] [role="menuitem"]')].map(
+      (i) => i.textContent,
+    ),
+  ).toEqual(['Claims', 'Scans to match', 'Scans that can be deleted'])
+  await page(import('./t.$slug.settings'))
+  expect(text()).toContain('HMRC details')
+  expect(text()).toContain('Scans storage')
+  Object.assign(onRecord, { declarations: 0, claims: 0 })
   // On (and for a group that never said): as before.
   tenants = [group('alpha', { claimsGiftAid: true })]
   await page(import('./t.$slug.settings'))

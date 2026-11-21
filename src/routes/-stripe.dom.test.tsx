@@ -25,6 +25,8 @@ let role: 'admin' | 'staff' | 'viewer' = 'admin'
 let page: DonationPage | undefined
 let queue: Array<UnmatchedCardPayment> | undefined
 let aside: Array<UnmatchedCardPayment> | undefined
+let moreAside = false
+const loadMore = vi.fn()
 const polled = vi.fn()
 const admin = { connect: vi.fn(), disconnect: vi.fn() }
 const savePage = vi.fn()
@@ -43,7 +45,11 @@ vi.mock('../lib/data', () => ({
   useDonationPage: () => read(page),
   useSaveDonationPage: () => savePage,
   useCardQueue: () => read(queue),
-  useCardsSetAside: () => read(aside),
+  useCardsSetAside: () => ({
+    ...read(aside),
+    loadMore: moreAside ? loadMore : null,
+    loadingMore: false,
+  }),
   useCardQueueWrites: () => writes,
   useAuthState: () => ({ method: 'password' }),
 }))
@@ -181,6 +187,8 @@ beforeEach(() => {
   for (const f of [...Object.values(admin), ...Object.values(writes), savePage])
     f.mockReset()
   polled.mockReset()
+  loadMore.mockReset()
+  moreAside = false
   status = TAKING
   search = {}
   role = 'admin'
@@ -642,4 +650,45 @@ test('a group that doesn’t claim Gift Aid isn’t shown "Not ticked", but a ti
   const rows = [...el.querySelectorAll('[data-testid="card-queue"] > li')]
   expect(rows[0].textContent).not.toContain('Gift Aid')
   expect(rows[1].textContent).toContain('Ticked, from 12 High Street')
+})
+
+test('the set-aside list offers the older ones while the server has more', async () => {
+  aside = [
+    payment({
+      id: 'p9',
+      paymentId: 'pi_9',
+      reason: 'no_submission',
+      donor: null,
+      dismissed: 'Ticket',
+      dismissedAt: 1,
+    }),
+  ]
+  await queuePage()
+  expect(button('Show older ones')).toBeUndefined()
+  moreAside = true
+  await queuePage()
+  await click(button('Show older ones'))
+  expect(loadMore).toHaveBeenCalledOnce()
+})
+
+test('the donation page: another admin’s save never replaces what is being typed; it is said, with their version on offer', async () => {
+  await settings()
+  // Nothing typed: the form simply follows the server.
+  page = { ...PAGE, amounts: [1100n, 2500n, 5000n], version: 5 }
+  await settings()
+  expect(input('amounts.0').value).toBe('11.00')
+  expect(byTestId('page-changed')).toBeUndefined()
+
+  // Half way through new amounts when the other admin saves again.
+  await type(input('amounts.0'), '17')
+  page = { ...PAGE, amounts: [1200n, 2500n, 5000n], version: 6 }
+  await settings()
+  expect(input('amounts.0').value).toBe('17')
+  expect(byTestId('page-changed')).toContain(
+    'Another admin saved the donation page while you were editing',
+  )
+  // Their version, when asked for.
+  await click(button('Load their version'))
+  expect(input('amounts.0').value).toBe('12.00')
+  expect(byTestId('page-changed')).toBeUndefined()
 })

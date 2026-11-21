@@ -527,6 +527,17 @@ function SetAside({
           </li>
         ))}
       </ul>
+      {/* Every one can be reached, however many have been set aside. */}
+      {list.loadMore && (
+        <button
+          type="button"
+          disabled={list.loadingMore}
+          className={`${small} self-start`}
+          onClick={list.loadMore}
+        >
+          {list.loadingMore ? 'Loading…' : 'Show older ones'}
+        </button>
+      )}
       {error && (
         <p role="alert" className="text-sm text-red-700">
           {error}

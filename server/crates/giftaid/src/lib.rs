@@ -263,6 +263,35 @@ pub fn save_details(
     )
 }
 
+/// How much Gift Aid the organisation has on record: every declaration
+/// (cancelled and voided ones too) and every claim. A group that switches
+/// "We claim Gift Aid" off keeps what these count in view: a claim is a
+/// financial record (rule 4) and a declaration its evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename = "GiftAidOnRecord")]
+pub struct OnRecord {
+    #[ts(type = "number")]
+    pub declarations: i64,
+    #[ts(type = "number")]
+    pub claims: i64,
+}
+
+/// [`OnRecord`] for this organisation. Two counts, read-only.
+pub fn on_record(conn: &Connection) -> rusqlite::Result<OnRecord> {
+    conn.query_row(
+        "SELECT (SELECT COUNT(*) FROM gift_aid_declarations),
+                (SELECT COUNT(*) FROM gift_aid_claims)",
+        [],
+        |r| {
+            Ok(OnRecord {
+                declarations: r.get(0)?,
+                claims: r.get(1)?,
+            })
+        },
+    )
+}
+
 /// The contact page's Gift Aid panel: a contact's declarations, newest
 /// made first, each with its warnings (none on a voided one), and which
 /// is current on `today` (the caller's date), if any. At most

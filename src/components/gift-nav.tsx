@@ -5,12 +5,8 @@ import { formatDay, formatPence, useMyRecentGifts } from '../lib/gifts'
 import type { RecentGift } from '../lib/gifts'
 import { FEATURES, useGoCardlessStatus, useStripeStatus } from '../lib/data'
 import { STATUS_LABELS, isReceived } from '../lib/domain/gift-status'
-import {
-  useCanWrite,
-  useClaimsGiftAid,
-  useIsAdmin,
-  useTenant,
-} from '../lib/tenant'
+import { useGiftAid } from '../lib/gift-aid-shown'
+import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -92,20 +88,30 @@ type GiftAidEntry = {
  * The Gift Aid entries the caller has: the claims (G3, admins only, as
  * every claims route is), "Scans to match" and a stack sitting (staff and
  * admins, declaration scans g2q3), and the "can be deleted" report
- * (admins). None for a viewer, and none in a group that doesn't claim
- * Gift Aid (Settings › Gift Aid).
+ * (admins). None for a viewer. A group that switched Gift Aid off
+ * (Settings › Gift Aid) keeps the entries to what it has on record (the
+ * claims, the scans) and loses only the one that makes something new, a
+ * stack sitting; with nothing on record it has none.
  */
 export function useGiftAidEntries(): Array<GiftAidEntry> {
   const admin = useIsAdmin()
   const canWrite = useCanWrite()
-  const claims = useClaimsGiftAid()
-  if (!canWrite || !claims) return []
+  const { offered, shown } = useGiftAid()
+  if (!canWrite || !shown) return []
   return [
     ...(admin && FEATURES.giftAidClaims
       ? [{ key: 'claims', to: '/t/$slug/giftaid' } as const]
       : []),
     { key: 'scans', to: '/t/$slug/scans' },
-    { key: 'stack', to: '/t/$slug/scans', search: { sitting: true } },
+    ...(offered
+      ? [
+          {
+            key: 'stack',
+            to: '/t/$slug/scans',
+            search: { sitting: true },
+          } as const,
+        ]
+      : []),
     ...(admin
       ? [{ key: 'deletable', to: '/t/$slug/scans/deletable' } as const]
       : []),

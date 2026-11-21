@@ -4,7 +4,8 @@ import type { Id } from '../lib/domain/ids'
 import { useContactGifts } from '../lib/data'
 import { formatDay, formatPence, methodLabel } from '../lib/gifts'
 import { giftCoverage, useDeclarations } from '../lib/giftaid'
-import { claimsGiftAid, useTenant } from '../lib/tenant'
+import { useGiftAid } from '../lib/gift-aid-shown'
+import { useTenant } from '../lib/tenant'
 
 /**
  * A contact's gifts, newest date first, a page at a time like the
@@ -25,8 +26,9 @@ export function ContactGifts({
 }) {
   const tenant = useTenant()
   const gifts = useContactGifts(contactId)
-  // Coverage is Gift Aid's: not read, not shown, where none is claimed.
-  const claims = claimsGiftAid(tenant)
+  // Coverage is Gift Aid's: not read, not shown, where none is claimed
+  // and none is on record.
+  const { shown: claims } = useGiftAid()
   const declarations = useDeclarations(
     individual && claims ? contactId : undefined,
   )

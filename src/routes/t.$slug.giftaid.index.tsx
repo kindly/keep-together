@@ -3,6 +3,8 @@ import { ReadRefused, StatusBadge, claimPeriod } from '../components/claims-ui'
 import { useClaims } from '../lib/data'
 import type { ClaimSummary } from '../lib/data'
 import { formatDay, formatPence } from '../lib/gifts'
+import { GiftAidOffNotice } from '../components/no-gift-aid'
+import { useGiftAid } from '../lib/gift-aid-shown'
 import { useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/giftaid/')({
@@ -16,18 +18,23 @@ export const Route = createFileRoute('/t/$slug/giftaid/')({
 function Claims() {
   const { slug } = useTenant()
   const claims = useClaims()
+  const { offered } = useGiftAid()
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-6 p-6">
       <header className="flex flex-wrap items-baseline justify-between gap-3">
         <h1 className="text-xl font-semibold">Gift Aid claims</h1>
-        <Link
-          to="/t/$slug/giftaid/new"
-          params={{ slug }}
-          className="rounded bg-neutral-900 px-3 py-1 text-sm text-white hover:bg-neutral-700"
-        >
-          New claim
-        </Link>
+        {/* A new claim is offered only while the group claims. */}
+        {offered && (
+          <Link
+            to="/t/$slug/giftaid/new"
+            params={{ slug }}
+            className="rounded bg-neutral-900 px-3 py-1 text-sm text-white hover:bg-neutral-700"
+          >
+            New claim
+          </Link>
+        )}
       </header>
+      <GiftAidOffNotice what="The claims already made stay on record here; no new claim can be made." />
       {claims.error ? (
         <ReadRefused error={claims.error} retry={claims.refetch} />
       ) : claims.data === undefined ? (

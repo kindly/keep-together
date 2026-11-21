@@ -1299,9 +1299,9 @@ payment, and no succeeded payment is outside both a gift and the queue.
 | `POST …/stripe/disconnect` | → `StripeStatus`, `connected: false`; admin within the step-up hour |
 | `GET …/stripe/unmatched` | `UnmatchedCardPayment[] {id, paymentId, amount, paidOn, status, reason: ambiguous\|name_differs\|no_submission\|deceased\|contact_refused, donor: {firstName, lastName, email, giftAid, addressLine1, postcode} \| null, sourceCodeId, candidates: [{id, displayName}], matchVersion}`: succeeded payments nobody could be matched to (no gift), newest first, at most 500, each with what its donor typed and the live contacts that have their email; any member |
 | `POST …/stripe/unmatched/{id}/match` | `MatchCardPayment {expected, contactId, sourceCodeId?}` → `MatchedCardPayment {giftId, gift}`: the contact's gift, with Stripe's amount, date and status, to the page's code when they gave (or `sourceCodeId`, live; required when the payment has no submission: `422 invalid`), and the donor's declaration if they ticked Gift Aid, as the staff member; staff; `409 stale`; `422 rejected already_matched` / `unknown_contact` / `archived_contact` / `not_individual` (the donor ticked Gift Aid and the contact isn't a person). `gift.card.declarationRefused` says when the declaration couldn't be recorded |
-| `POST …/stripe/unmatched/{id}/dismiss` | `DismissCardPayment {expected, reason}` → `Executed`: a payment queued as `no_submission` (taken some other way on the group's Stripe account) is set aside as not a donation; it leaves the queue and makes no gift, and nothing is deleted. Staff; no reason: `422 invalid`; `422 rejected not_outside` (it came through the donation page: match it) / `already_matched`; `409 stale` |
+| `POST …/stripe/unmatched/{id}/dismiss` | `DismissCardPayment {expected, reason}` → `Executed`: a payment queued as `no_submission` (taken some other way on the group's Stripe account) is set aside as not a donation; it leaves the queue and makes no gift, and nothing is deleted. Staff; no reason, or one over 500 characters: `422 invalid` (field `reason`); `422 rejected not_outside` (it came through the donation page, or names a submission: match it) / `already_matched`; `409 stale`. A set-aside payment that a later event ties to a submission is a donation after all: processing makes its gift or puts it back in the queue with the real reason (`no_submission` still, when what its donor typed has been cleared), set aside no longer |
 | `POST …/stripe/unmatched/{id}/put-back` | `{expected}` → `Executed`: back in the queue. Staff; `422 rejected not_dismissed`; `409 stale` |
-| `GET …/stripe/dismissed` | `UnmatchedCardPayment[]` with `dismissed` (why) and `dismissedAt`: the payments set aside, newest first, at most 500; any member |
+| `GET …/stripe/dismissed?before&limit` | `DismissedCardPayments {rows, nextBefore}`: the payments set aside, newest first, 50 a page at most, each row an `UnmatchedCardPayment` with `dismissed` (why) and `dismissedAt`; `nextBefore` is the next page's `before` (null on the last), so every one can be reached; any member |
 | `POST …/stripe/payments/{id}/name-checked` | `{expected}` → `GiftView`: staff looked at "first name differs" on a matched payment and it is the right person; `card.firstNameTyped` is cleared. Staff; `422 rejected not_flagged`; `409 stale` |
 | `GET …/stripe/page` | `DonationPage {amounts, minimum, maximum, sourceCodeId, sourceCode, version, takingDonations}` (pence; `sourceCode` describes the code as it reads now); any member |
 | `POST …/stripe/page` | `SaveDonationPage {expected?, amounts, minimum, maximum, sourceCodeId}` → `DonationPageSaved {id, counter, page}`; admin only; the page's rules (above) are `422 invalid`; `409 stale` |
@@ -1315,11 +1315,22 @@ for a Stripe gift).
 
 **Not built: moving a matched gift to another contact** ("first name
 differs", and it is someone else at that email address). A gift's donor
-can't change and a payment keeps its gift for life, so today staff void
-the gift with a reason (a void stands whatever Stripe says later, and
-`giving-consistency` allows it) and record a card gift for the other
-person by hand. A move that takes the gift, the payment and the
-declaration together awaits the human's decision.
+can't change and a payment keeps its gift for life. The page says the
+move isn't available and offers "Name checked"; it does not suggest
+voiding the gift and recording another by hand, because a gift made by
+hand has no payment behind it and never hears of a later refund or
+dispute. A move that takes the gift, the payment and the declaration
+together awaits the human's decision.
+
+**"We claim Gift Aid" off** stops the app offering Gift Aid (the donation
+page's declaration, the tick when recording a gift, new declarations and
+scans, new claims, a claim's next step). It never hides what is on
+record (rule 4): `GET giftaid/on-record` → `GiftAidOnRecord
+{declarations, claims}` (any member) says what the organisation holds,
+Settings › Gift Aid says it before the switch saves, and while there is
+any, the claims list, each claim's page, a contact's declarations and a
+gift's coverage and claim link stay in view, read-only
+(`src/lib/gift-aid-shown.ts`). With none, Gift Aid leaves the app.
 
 The fake (`KEEP_STRIPE=fake`, `api::stripe::fake`, what `pnpm dev` runs)
 answers the client's calls in Stripe's shapes (both Accounts APIs),

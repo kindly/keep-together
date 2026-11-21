@@ -13,10 +13,16 @@ import { useClaimPreview, useCreateClaims } from '../lib/data'
 import type { ClaimPreview } from '../lib/data'
 import { RustApiError } from '../lib/data/rust/client'
 import { formatDay, formatPence } from '../lib/gifts'
+import { GiftAidOnly } from '../components/no-gift-aid'
 import { useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/giftaid/new')({
-  component: NewClaim,
+  // Making a claim is offering Gift Aid: only while the group claims.
+  component: () => (
+    <GiftAidOnly offering>
+      <NewClaim />
+    </GiftAidOnly>
+  ),
 })
 
 const field = 'rounded border border-neutral-300 px-2 py-1 text-sm'

@@ -10,10 +10,15 @@
  * is shown as matched, set aside or saved before then. Pence cross the
  * wire as JSON integers and become `bigint` here (rule 7).
  */
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { useTenant } from '../../tenant'
 import type { CardPaymentExpected } from '../rust-types/CardPaymentExpected'
 import type { DismissCardPayment } from '../rust-types/DismissCardPayment'
+import type { DismissedCardPayments } from '../rust-types/DismissedCardPayments'
 import type { DonationPage as WirePage } from '../rust-types/DonationPage'
 import type { DonationPageSaved } from '../rust-types/DonationPageSaved'
 import type { Executed } from '../rust-types/Executed'
@@ -131,18 +136,37 @@ export function useCardQueue(): Read<Array<UnmatchedCardPayment>> {
   return { data: q.data, error: q.error, refetch: q.refetch }
 }
 
-/** Card payments set aside as not donations, newest first; any member. */
-export function useCardsSetAside(): Read<Array<UnmatchedCardPayment>> {
+/**
+ * Card payments set aside as not donations, newest first, a page (50) at
+ * a time; any member. `data` is every page loaded so far; `loadMore` is
+ * there while the server has more, so every one can be reached however
+ * many a group has set aside.
+ */
+export function useCardsSetAside(): Read<Array<UnmatchedCardPayment>> & {
+  loadMore: (() => void) | null
+  loadingMore: boolean
+} {
   const { slug } = useTenant()
-  const q = useQuery({
+  const q = useInfiniteQuery({
     queryKey: keys.cardsSetAside(slug),
     retry: false,
-    queryFn: async () =>
-      (
-        await get<Array<WireUnmatched>>(tenantPath(slug, 'stripe', 'dismissed'))
-      ).map(cardFromWire),
+    initialPageParam: null as number | null,
+    queryFn: ({ pageParam }) =>
+      get<DismissedCardPayments>(
+        tenantPath(slug, 'stripe', 'dismissed'),
+        pageParam === null
+          ? undefined
+          : new URLSearchParams({ before: String(pageParam) }),
+      ),
+    getNextPageParam: (last) => last.nextBefore,
   })
-  return { data: q.data, error: q.error, refetch: q.refetch }
+  return {
+    data: q.data?.pages.flatMap((p) => p.rows.map(cardFromWire)),
+    error: q.error,
+    refetch: q.refetch,
+    loadMore: q.hasNextPage ? () => void q.fetchNextPage() : null,
+    loadingMore: q.isFetchingNextPage,
+  }
 }
 
 // ── writes ─────────────────────────────────────────────────────────────────

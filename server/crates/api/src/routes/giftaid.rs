@@ -31,6 +31,7 @@ pub fn router() -> Router {
         .route("/giftaid/{id}/void", post(void))
         .route("/giftaid/{id}/details", post(details))
         .route("/giftaid/{id}/history", get(history))
+        .route("/giftaid/on-record", get(on_record))
 }
 
 #[derive(Deserialize)]
@@ -207,4 +208,13 @@ async fn history(
     t.read(move |r| giftaid::details_history(r, &id)?.ok_or(ApiError::NotFound))
         .await
         .map(Json)
+}
+
+/// `GET giftaid/on-record` → `GiftAidOnRecord {declarations, claims}`:
+/// how many declarations and claims the organisation holds. Any member.
+/// Settings › Gift Aid says them before "We claim Gift Aid" is switched
+/// off, and a group with any keeps its claims and declarations in view
+/// while it is off (plan stripe.sv, S5).
+async fn on_record(Extension(t): Extension<Tenant>) -> Result<Json<giftaid::OnRecord>, ApiError> {
+    t.read(|r| Ok(giftaid::on_record(r)?)).await.map(Json)
 }

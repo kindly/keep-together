@@ -49,13 +49,8 @@ import { keys } from '../lib/data/rust/keys'
 import { threeWayMerge } from '../lib/merge'
 import { AMOUNT_MESSAGES, amountPence } from '../lib/gift-form'
 import { declarationRefusedText } from '../lib/domain/card-payments'
-import {
-  claimsGiftAid,
-  useCanWrite,
-  useClaimsGiftAid,
-  useIsAdmin,
-  useTenant,
-} from '../lib/tenant'
+import { useGiftAid } from '../lib/gift-aid-shown'
+import { useCanWrite, useIsAdmin, useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/gifts/$giftId')({
   component: GiftPage,
@@ -92,8 +87,9 @@ function GiftView({ gift }: { gift: Gift }) {
   const tenant = useTenant()
   const canWrite = useCanWrite()
   const members = useMembers()
-  // Gift Aid is hidden where none is claimed (Settings › Gift Aid).
-  const giftAid = claimsGiftAid(tenant)
+  // Gift Aid is hidden where none is claimed and none is on record
+  // (Settings › Gift Aid); the claim badge and lock always show.
+  const { shown: giftAid } = useGiftAid()
   const declarations = useDeclarations(giftAid ? gift.contactId : undefined)
   // Never optimistic (gifts are financial records): the page shows the
   // new status once the server confirms it, from its answer.
@@ -467,16 +463,17 @@ function GiftView({ gift }: { gift: Gift }) {
  * A card gift from the donation page (Stripe S5): Stripe's payment, what
  * it has refunded or disputed, and the three things staff may need to
  * act on. "First name differs": the donor typed another first name than
- * the contact's (a couple sharing an email address). The gift's donor
- * can't be changed, so a gift that is someone else's is voided and
- * recorded by hand for them (a void stands whatever Stripe says later);
+ * the contact's (a couple sharing an email address). Moving the gift to
+ * another contact isn't available yet, and the page says so. It does not
+ * suggest voiding it and recording another by hand: a gift made by hand
+ * never hears of a refund or dispute on the payment (review s5r M2).
  * "Name checked" clears the mark when it is the right person. A refused
  * declaration and a part refund on a claimed gift are said plainly.
  * Never optimistic: the mark goes when the server says so.
  */
 function CardPaymentNotes({ gift, card }: { gift: Gift; card: CardPayment }) {
   const canWrite = useCanWrite()
-  const claims = useClaimsGiftAid()
+  const { shown: claims } = useGiftAid()
   const checked = useNameChecked(gift._id)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -528,12 +525,9 @@ function CardPaymentNotes({ gift, card }: { gift: Gift; card: CardPayment }) {
             may be another person at the same email address.
           </p>
           <p className="mt-1">
-            If it is someone else’s gift: void it with a reason, then record a
-            card gift for them by hand
-            {claims
-              ? ', and check which of them the Gift Aid declaration belongs to.'
-              : '.'}{' '}
-            Moving a gift to another contact in one step isn’t built yet.
+            If it is someone else’s gift, moving it to their contact isn’t
+            available yet. It stays here for now and keeps following its
+            payment: a refund or a dispute at Stripe still shows on this gift.
           </p>
           {canWrite && (
             <button

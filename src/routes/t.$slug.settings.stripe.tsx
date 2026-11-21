@@ -237,10 +237,6 @@ const label = 'flex flex-col gap-1 text-sm'
  */
 function DonationPageSettings({ status }: { status: StripeStatus }) {
   const page = useDonationPage()
-  // The counter our last save made: "Saved." shows while the page still
-  // has it and nothing has been typed since (the form itself starts
-  // again on every new counter, so it can't hold this).
-  const [saved, setSaved] = useState<number | null>(null)
   return (
     <section
       aria-labelledby="donation-page"
@@ -261,14 +257,7 @@ function DonationPageSettings({ status }: { status: StripeStatus }) {
       ) : (
         <>
           <PageLink status={status} page={page.data} />
-          {/* Keyed by the counter: someone else's save, or ours, starts
-              the form again from what the server holds. */}
-          <PageForm
-            key={page.data.version ?? -1}
-            page={page.data}
-            saved={saved !== null && saved === page.data.version}
-            onSaved={setSaved}
-          />
+          <PageEditor page={page.data} />
         </>
       )}
     </section>
@@ -335,16 +324,90 @@ function PageLink({
   )
 }
 
+/**
+ * The form, started from the page as the server had it (`shown`). When
+ * the server's page moves on (another admin saved; the event re-reads
+ * it): with nothing typed the form follows it; with something typed it
+ * is left alone, and a notice says someone else saved and offers their
+ * version. Typing is never replaced unasked (review s5r L4), and a save
+ * from a form that is behind is refused by its counter, as before.
+ */
+function PageEditor({ page }: { page: DonationPage }) {
+  const [shown, setShown] = useState(page)
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  // Our own save moves the server's page a moment before its answer
+  // reaches the form: that is not someone else's.
+  // Only a newer counter is someone else's save: this component can
+  // render with our own answer before the page read catches up.
+  const behind = !saving && (page.version ?? -1) > (shown.version ?? -1)
+  if (behind && !dirty) {
+    setShown(page)
+    setSaved(false)
+  }
+  return (
+    <>
+      {behind && dirty && (
+        <div
+          role="status"
+          data-testid="page-changed"
+          className="flex flex-wrap items-baseline gap-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-sm text-amber-900"
+        >
+          <span>
+            Another admin saved the donation page while you were editing. What
+            you typed is still here, but it can’t be saved over theirs.
+          </span>
+          <button
+            type="button"
+            className="underline"
+            onClick={() => {
+              setShown(page)
+              setDirty(false)
+              setSaved(false)
+            }}
+          >
+            Load their version
+          </button>
+        </div>
+      )}
+      {/* Keyed by the counter it started from: it starts again only when
+          this component says so. */}
+      <PageForm
+        key={shown.version ?? -1}
+        page={shown}
+        saved={saved}
+        onTouched={() => {
+          setDirty(true)
+          setSaved(false)
+        }}
+        onSaving={setSaving}
+        onSaved={(now) => {
+          setShown(now)
+          setDirty(false)
+          setSaved(true)
+        }}
+      />
+    </>
+  )
+}
+
 function PageForm({
   page,
   saved,
+  onTouched,
+  onSaving,
   onSaved,
 }: {
   page: DonationPage
   /** This is the page as our own save left it. */
   saved: boolean
-  /** Saved, with the page's new counter (null: typed since). */
-  onSaved: (version: number | null) => void
+  /** Something was typed or picked. */
+  onTouched: () => void
+  /** A save is in flight. */
+  onSaving: (saving: boolean) => void
+  /** Saved: the page as the server read it back. */
+  onSaved: (now: DonationPage) => void
 }) {
   const { slug } = Route.useParams()
   const save = useSaveDonationPage()
@@ -380,7 +443,7 @@ function PageForm({
   const problems = { ...refused, ...pageProblems(parsed) }
   const ready = Object.keys(pageProblems(parsed)).length === 0 && !busy
   const touched = () => {
-    onSaved(null)
+    onTouched()
     setRefused({})
   }
 
@@ -388,6 +451,7 @@ function PageForm({
     e.preventDefault()
     if (!ready) return
     setBusy(true)
+    onSaving(true)
     setError(null)
     try {
       const now = await save(page.version, {
@@ -396,7 +460,7 @@ function PageForm({
         maximum: parsed.maximum as bigint,
         sourceCodeId: code?.id ?? null,
       })
-      onSaved(now.version)
+      onSaved(now)
     } catch (err) {
       if (err instanceof RustApiError && err.error.kind === 'invalid')
         setRefused(
@@ -412,6 +476,7 @@ function PageForm({
         ),
       )
     } finally {
+      onSaving(false)
       setBusy(false)
     }
   }

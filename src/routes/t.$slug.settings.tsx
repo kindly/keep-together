@@ -10,7 +10,9 @@ import {
   useSignOut,
   useStripeStatus,
 } from '../lib/data'
+import { useGiftAidOf } from '../lib/gift-aid-shown'
 import { portedListTabs } from '../lib/settings-tabs'
+import { claimsGiftAid } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/settings')({
   component: SettingsLayout,
@@ -30,8 +32,8 @@ const activeTab = 'border-neutral-900 font-medium text-neutral-900'
  * GoCardless and Card donations (admins: connecting the group's
  * accounts; Card donations only while Stripe is on here), Gift Aid
  * (admins: whether the group claims it) and Scans storage (staff and
- * admins: the scans are theirs). A group that doesn't claim Gift Aid has
- * no HMRC details or Scans storage tab.
+ * admins: the scans are theirs). A group that doesn't claim Gift Aid and
+ * holds no claim or declaration has no HMRC details or Scans storage tab.
  * Each list's tab opens with its admin-only switch, and is editable by
  * whoever may manage that list (read-only for the rest). The backend
  * enforces it. Then the account's own: Switch group (only for people in
@@ -45,9 +47,13 @@ function SettingsLayout() {
   const several = (tenants?.length ?? 0) > 1
   const role = tenants?.find((t) => t.slug === slug)?.role
   const admin = role === 'admin'
-  // A group that doesn't claim Gift Aid has no HMRC details to keep and
-  // no declaration scans to store (Stripe S5).
-  const claims = tenants?.find((t) => t.slug === slug)?.claimsGiftAid !== false // as claimsGiftAid()
+  // A group that doesn't claim Gift Aid and has none on record has no
+  // HMRC details to keep and no declaration scans to store (Stripe S5);
+  // one with claims or declarations keeps both tabs.
+  const { shown: claims } = useGiftAidOf(
+    slug,
+    claimsGiftAid(tenants?.find((t) => t.slug === slug) ?? {}),
+  )
   const cards = useStripeStatus()?.enabled === true
   return (
     <main className="mx-auto flex max-w-4xl flex-col gap-6 p-6">

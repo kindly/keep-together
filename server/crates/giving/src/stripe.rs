@@ -80,6 +80,10 @@ pub const WORDING_VERSION_MAX: usize = 50;
 pub const PROVIDER_ID_MAX: usize = 255;
 /// "Card payments to match", newest first.
 pub const UNMATCHED_LIMIT: usize = 500;
+/// The payments set aside, a page at a time.
+pub const DISMISSED_PAGE: usize = 50;
+/// The longest reason a payment is set aside with.
+pub const DISMISS_REASON_MAX: usize = REASON_MAX;
 
 /// Org schema step: new tables only (`gifts` already has `provider` and
 /// `method = 'card'`). The two roots point at each other (a payment at
@@ -1980,17 +1984,36 @@ pub fn unmatched(conn: &Connection) -> rusqlite::Result<Vec<PaymentRecord>> {
     .collect()
 }
 
-/// Payments staff set aside as not donations, newest first, at most
-/// [`UNMATCHED_LIMIT`]. One indexed read.
-pub fn dismissed(conn: &Connection) -> rusqlite::Result<Vec<PaymentRecord>> {
-    conn.prepare_cached(&format!(
-        "SELECT id, version, match_version, {PAYMENT_COLUMNS}, {MATCH_COLUMNS}
-         FROM stripe_payments INDEXED BY stripe_payments_dismissed
-         WHERE dismissed_reason IS NOT NULL
-         ORDER BY seq DESC LIMIT {UNMATCHED_LIMIT}"
-    ))?
-    .query_map([], record_row)?
-    .collect()
+/// Payments staff set aside as not donations, newest first, a page at a
+/// time: at most `limit` (1 to [`DISMISSED_PAGE`]) after `before` (the
+/// cursor the page before answered; none: from the newest), and the
+/// cursor for the next page when there is one. One indexed read, so every
+/// one of them can be reached however many a group sets aside.
+pub fn dismissed(
+    conn: &Connection,
+    before: Option<i64>,
+    limit: usize,
+) -> rusqlite::Result<(Vec<PaymentRecord>, Option<i64>)> {
+    let limit = limit.clamp(1, DISMISSED_PAGE);
+    let mut rows: Vec<(PaymentRecord, i64)> = conn
+        .prepare_cached(&format!(
+            "SELECT id, version, match_version, {PAYMENT_COLUMNS}, {MATCH_COLUMNS}, seq
+             FROM stripe_payments INDEXED BY stripe_payments_dismissed
+             WHERE dismissed_reason IS NOT NULL AND seq < ?1
+             ORDER BY seq DESC LIMIT ?2"
+        ))?
+        .query_map(params![before.unwrap_or(i64::MAX), limit as i64 + 1], |r| {
+            Ok((record_row(r)?, r.get(23)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let more = rows.len() > limit;
+    rows.truncate(limit);
+    let next = if more {
+        rows.last().map(|(_, seq)| *seq)
+    } else {
+        None
+    };
+    Ok((rows.into_iter().map(|(r, _)| r).collect(), next))
 }
 
 /// Set a queued payment aside as not a donation, with why (staff), or
@@ -2011,7 +2034,12 @@ pub fn set_dismissed(
             "This payment is already a donor’s gift",
         ));
     }
-    if record.matched.unmatched != Some(UnmatchedReason::NoSubmission) {
+    // A payment that names a submission came through the page, even
+    // when what its donor typed is gone: it is a donation, never set
+    // aside (and processing would only put it back).
+    let outside = record.matched.unmatched == Some(UnmatchedReason::NoSubmission)
+        && record.payment.submission_id.is_none();
+    if reason.is_some() && !outside {
         return Err(ContractError::rejected(
             "not_outside",
             "This payment came through the donation page: match it to its donor",
@@ -2595,10 +2623,29 @@ pub fn unmatched_view(conn: &Connection) -> rusqlite::Result<Vec<UnmatchedCardPa
     card_views(conn, unmatched(conn)?)
 }
 
+/// One page of the payments set aside.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DismissedCardPayments {
+    pub rows: Vec<UnmatchedCardPayment>,
+    /// Pass as `before` for the next page; null on the last.
+    #[ts(type = "number | null")]
+    pub next_before: Option<i64>,
+}
+
 /// The payments staff set aside as not donations ([`dismissed`]), in the
-/// queue's shape, each with why and when.
-pub fn dismissed_view(conn: &Connection) -> rusqlite::Result<Vec<UnmatchedCardPayment>> {
-    card_views(conn, dismissed(conn)?)
+/// queue's shape, each with why and when, a page at a time.
+pub fn dismissed_view(
+    conn: &Connection,
+    before: Option<i64>,
+    limit: usize,
+) -> rusqlite::Result<DismissedCardPayments> {
+    let (records, next_before) = dismissed(conn, before, limit)?;
+    Ok(DismissedCardPayments {
+        rows: card_views(conn, records)?,
+        next_before,
+    })
 }
 
 fn card_views(

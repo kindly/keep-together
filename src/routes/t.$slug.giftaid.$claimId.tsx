@@ -15,6 +15,8 @@ import { localToday } from '../components/source-code-picker'
 import { downloadClaim, useClaim, useClaimStep } from '../lib/data'
 import type { Claim, ClaimDownload, ClaimStep } from '../lib/data'
 import { formatDay, formatPence, parsePounds, penceToInput } from '../lib/gifts'
+import { GiftAidOffNotice } from '../components/no-gift-aid'
+import { useGiftAid } from '../lib/gift-aid-shown'
 import { useTenant } from '../lib/tenant'
 
 export const Route = createFileRoute('/t/$slug/giftaid/$claimId')({
@@ -71,6 +73,7 @@ function ClaimView({ claim }: { claim: Claim }) {
   const { slug } = useTenant()
   const navigate = useNavigate()
   const step = useClaimStep(claim.id)
+  const { offered } = useGiftAid()
   const stepUp = useStepUp()
   const [asking, setAsking] = useState<Asking | null>(null)
   const [confirming, setConfirming] = useState<'ready' | 'deleted' | null>(null)
@@ -183,20 +186,24 @@ function ClaimView({ claim }: { claim: Claim }) {
 
       {stepUp.form}
 
-      <Steps
-        claim={claim}
-        busy={busy}
-        asking={asking}
-        setAsking={(a) => {
-          setError(null)
-          setAsking(a)
-        }}
-        confirm={(c) => {
-          setError(null)
-          setConfirming(c)
-        }}
-        go={(s) => void go(s, claim.statusVersion)}
-      />
+      <GiftAidOffNotice what="This claim stays on record, with its downloads. To take it further (mark it ready, submitted or paid), switch Gift Aid back on." />
+      {/* A claim's next step is the group claiming: not while it is off. */}
+      {offered && (
+        <Steps
+          claim={claim}
+          busy={busy}
+          asking={asking}
+          setAsking={(a) => {
+            setError(null)
+            setAsking(a)
+          }}
+          confirm={(c) => {
+            setError(null)
+            setConfirming(c)
+          }}
+          go={(s) => void go(s, claim.statusVersion)}
+        />
+      )}
       {error && (
         <p role="alert" className="text-sm text-red-700">
           {error}

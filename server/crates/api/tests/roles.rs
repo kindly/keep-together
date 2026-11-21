@@ -184,6 +184,7 @@ fn the_route_table_is_pinned_and_read_only_on_get() {
             "GET /giftaid/claims/{id}/schedule",
             "GET /giftaid/claims/{id}/xml",
             "GET /giftaid/hmrc-details",
+            "GET /giftaid/on-record",
             "GET /giftaid/scans/deletable",
             "GET /giftaid/{id}/history",
             "GET /giftaid/{id}/scans",

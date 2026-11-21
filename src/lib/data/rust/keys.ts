@@ -72,6 +72,9 @@ export const keys = {
   claims: (slug: string) => ['t', slug, 'giftaid', 'list'] as const,
   claim: (slug: string, id: string) =>
     ['t', slug, 'giftaid', 'one', id] as const,
+  /** How many declarations and claims the group holds (gift-aid-shown.ts). */
+  giftAidOnRecord: (slug: string) =>
+    ['t', slug, 'giftaid', 'onRecord'] as const,
   claimPreview: (slug: string, periodEnd: string) =>
     ['t', slug, 'giftaid', 'preview', periodEnd] as const,
   /**
