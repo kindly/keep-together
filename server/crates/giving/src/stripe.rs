@@ -70,8 +70,12 @@ pub const DEFAULT_MAXIMUM: i64 = DONATION_CEILING;
 pub const UNPAID_RETENTION_DAYS: i64 = 30;
 const DAY_MS: i64 = 86_400_000;
 
-pub const NAME_MAX: usize = 200;
-pub const EMAIL_MAX: usize = 320;
+/// What the donor types is held to the widths a contact takes, so a paid
+/// submission can always become one: names and the house name or number
+/// 200 characters, an email address 254, a postcode 20.
+pub const NAME_MAX: usize = contacts::rules::NAME_MAX;
+pub const EMAIL_MAX: usize = contacts::rules::EMAIL_MAX;
+pub const POSTCODE_MAX: usize = contacts::rules::POSTCODE_MAX;
 pub const WORDING_VERSION_MAX: usize = 50;
 pub const PROVIDER_ID_MAX: usize = 255;
 /// "Card payments to match", newest first.
@@ -158,7 +162,10 @@ CREATE TABLE donation_page (
 /// `no_submission`, for a payment that succeeded on the group's account
 /// with no submission of ours behind it (taken some other way, or its
 /// submission's details cleared): without a reason it would be in nobody's
-/// queue. SQLite can't widen a CHECK in place, so the table is rebuilt
+/// queue; `deceased` (the one contact with the donor's email is marked
+/// deceased) and `contact_refused` (what the donor typed couldn't be made
+/// a contact). And `declaration_refused`: why a matched payment's Gift
+/// Aid declaration couldn't be recorded, for staff. SQLite can't widen a CHECK in place, so the table is rebuilt
 /// (`donation_submissions` points at it: foreign keys deferred, the api's
 /// `rebuild_with_deferred_keys`).
 pub const MIGRATION_NO_SUBMISSION: &str = "
@@ -180,15 +187,17 @@ CREATE TABLE stripe_payments (
     version INTEGER NOT NULL DEFAULT 0,
     contact_id TEXT REFERENCES contacts (id),
     gift_id TEXT UNIQUE REFERENCES gifts (id),
-    unmatched_reason TEXT
-        CHECK (unmatched_reason IN ('ambiguous', 'name_differs', 'no_submission')),
+    unmatched_reason TEXT CHECK (unmatched_reason IN ('ambiguous', 'name_differs',
+        'no_submission', 'deceased', 'contact_refused')),
     first_name_typed TEXT,
     partial_refund_claimed INTEGER NOT NULL DEFAULT 0 CHECK (partial_refund_claimed IN (0, 1)),
     matched_by INTEGER,
     matched_at INTEGER,
     match_version INTEGER NOT NULL DEFAULT 0,
+    declaration_refused TEXT,
     CHECK ((contact_id IS NULL) = (gift_id IS NULL)),
-    CHECK (gift_id IS NULL OR unmatched_reason IS NULL)
+    CHECK (gift_id IS NULL OR unmatched_reason IS NULL),
+    CHECK (gift_id IS NOT NULL OR declaration_refused IS NULL)
 ) STRICT;
 INSERT INTO stripe_payments (seq, id, payment_id, submission_id, amount, currency, status,
     paid_on, refunded_amount, dispute_state, reason, version, contact_id, gift_id,
@@ -609,18 +618,24 @@ pub fn prepare_submission(
             &g.wording_version,
             WORDING_VERSION_MAX,
         );
-        for (field, value, what) in [
+        for (field, value, what, max) in [
             (
                 "giftAid.addressLine1",
                 &g.address_line1,
                 "Enter your house name or number",
+                NAME_MAX,
             ),
-            ("giftAid.postcode", &g.postcode, "Enter your postcode"),
+            (
+                "giftAid.postcode",
+                &g.postcode,
+                "Enter your postcode",
+                POSTCODE_MAX,
+            ),
         ] {
             if value.is_empty() {
                 problems.push(Problem::new(field, what));
             }
-            too_long(&mut problems, field, value, NAME_MAX);
+            too_long(&mut problems, field, value, max);
         }
     }
     checked(out, problems)
@@ -1520,6 +1535,12 @@ pub enum UnmatchedReason {
     /// some other way on the group's Stripe account, or its submission's
     /// details are gone.
     NoSubmission,
+    /// The one contact that has the donor's email address is marked
+    /// deceased: never linked without someone looking.
+    Deceased,
+    /// What the donor typed couldn't be made a contact (a contact
+    /// contract refused it): staff pick or make the contact.
+    ContactRefused,
 }
 
 impl UnmatchedReason {
@@ -1528,6 +1549,8 @@ impl UnmatchedReason {
             UnmatchedReason::Ambiguous => "ambiguous",
             UnmatchedReason::NameDiffers => "name_differs",
             UnmatchedReason::NoSubmission => "no_submission",
+            UnmatchedReason::Deceased => "deceased",
+            UnmatchedReason::ContactRefused => "contact_refused",
         }
     }
 
@@ -1536,6 +1559,8 @@ impl UnmatchedReason {
             "ambiguous" => Some(UnmatchedReason::Ambiguous),
             "name_differs" => Some(UnmatchedReason::NameDiffers),
             "no_submission" => Some(UnmatchedReason::NoSubmission),
+            "deceased" => Some(UnmatchedReason::Deceased),
+            "contact_refused" => Some(UnmatchedReason::ContactRefused),
             _ => None,
         }
     }
@@ -1560,6 +1585,12 @@ pub struct StripePaymentMatchPayload {
     /// into a Gift Aid claim, which keeps the amount it claimed.
     #[serde(default)]
     pub partial_refund_claimed: bool,
+    /// For staff (v2): the donor ticked Gift Aid, but their declaration
+    /// couldn't be recorded on this contact; Gift Aid's reason
+    /// (`not_individual`, `declaration_limit`, …). The submission still
+    /// holds what they ticked.
+    #[serde(default)]
+    pub declaration_refused: Option<String>,
 }
 
 /// The match, with who matched it and when (the command's, set with the
@@ -1575,7 +1606,7 @@ pub struct MatchState {
 }
 
 const MATCH_COLUMNS: &str = "contact_id, gift_id, unmatched_reason, first_name_typed, \
-     partial_refund_claimed, matched_by, matched_at";
+     partial_refund_claimed, matched_by, matched_at, declaration_refused";
 
 fn match_at(r: &Row, i: usize) -> rusqlite::Result<MatchState> {
     Ok(MatchState {
@@ -1588,6 +1619,7 @@ fn match_at(r: &Row, i: usize) -> rusqlite::Result<MatchState> {
                 .and_then(UnmatchedReason::parse),
             first_name_typed: r.get(i + 3)?,
             partial_refund_claimed: r.get(i + 4)?,
+            declaration_refused: r.get(i + 7)?,
         },
         matched_by: r.get(i + 5)?,
         matched_at: r.get(i + 6)?,
@@ -1599,7 +1631,8 @@ pub static STRIPE_PAYMENT_MATCH: StripePaymentMatch = StripePaymentMatch;
 
 impl Contract for StripePaymentMatch {
     const NAME: &'static str = "giving.stripePaymentMatch";
-    const VERSION: u32 = 1;
+    /// v2: `declarationRefused`.
+    const VERSION: u32 = 2;
     const ENTITY: &'static str = PAYMENTS;
     const COUNTER: &'static str = "match_version";
     type Payload = StripePaymentMatchPayload;
@@ -1626,7 +1659,15 @@ impl Contract for StripePaymentMatch {
                 "A matched payment has no reason to be in the queue",
             ));
         }
-        if p.gift_id.is_none() && (p.first_name_typed.is_some() || p.partial_refund_claimed) {
+        p.declaration_refused = p
+            .declaration_refused
+            .map(|r| r.trim().chars().take(REASON_MAX).collect::<String>())
+            .filter(|r| !r.is_empty());
+        if p.gift_id.is_none()
+            && (p.first_name_typed.is_some()
+                || p.partial_refund_claimed
+                || p.declaration_refused.is_some())
+        {
             problems.push(Problem::new(
                 "giftId",
                 "Only a matched payment carries flags for staff",
@@ -1715,7 +1756,7 @@ impl Contract for StripePaymentMatch {
         tx.prepare_cached(
             "UPDATE stripe_payments SET contact_id = ?2, gift_id = ?3, unmatched_reason = ?4,
                  first_name_typed = ?5, partial_refund_claimed = ?6, matched_by = ?7,
-                 matched_at = ?8
+                 matched_at = ?8, declaration_refused = ?9
              WHERE id = ?1",
         )?
         .execute(params![
@@ -1726,9 +1767,15 @@ impl Contract for StripePaymentMatch {
             m.first_name_typed,
             m.partial_refund_claimed,
             next.matched_by,
-            next.matched_at
+            next.matched_at,
+            m.declaration_refused
         ])?;
         Ok(())
+    }
+
+    /// v1 had no `declarationRefused`: the same JSON reads as v2.
+    fn upcast(&self, from: u32, payload: serde_json::Value) -> Option<serde_json::Value> {
+        (from == 1).then_some(payload)
     }
 }
 
@@ -1915,8 +1962,9 @@ pub fn said(p: &StripePaymentPayload) -> &'static str {
 /// `contact_id`, all of it to `source_code_id`, in `group`: a card gift
 /// whose origin is the payment (one gift per payment for its whole life),
 /// dated the day it was paid, with the status the payment gives it now.
-/// Made as the caller's actor: nobody when Stripe's event matched it, the
-/// staff member who matched it by hand. Never for a payment that hasn't
+/// The caller's actor is who entered it (nobody when Stripe's event
+/// matched it, the staff member who matched it by hand); the source is
+/// always the system's, since every fact in it is Stripe's. Never for a payment that hasn't
 /// succeeded (`payment_not_succeeded`): gifts come only on Stripe's word
 /// that the money arrived. The caller records the match ([`set_match`]).
 pub fn make_gift(
@@ -2330,6 +2378,7 @@ pub fn donor_candidates(
                 contact_id: c.id,
                 first_name: c.first_name,
                 last_name: c.last_name,
+                deceased: c.deceased,
             })
             .collect(),
         found.truncated,
@@ -2394,6 +2443,8 @@ pub struct Candidate {
     pub contact_id: String,
     pub first_name: String,
     pub last_name: String,
+    /// Marked deceased: never linked without staff looking.
+    pub deceased: bool,
 }
 
 /// Whose a donor's gift is.
@@ -2428,9 +2479,9 @@ pub fn name_key(name: &str) -> String {
 ///   → linked, whatever the first name, which is carried for staff when
 ///   it differs;
 /// - anything else → the staff queue: more than one contact or a
-///   truncated lookup (`ambiguous`), or another last name
-///   (`name_differs`; a last name that is blank on either side never
-///   agrees).
+///   truncated lookup (`ambiguous`), the one contact marked deceased
+///   (`deceased`), or another last name (`name_differs`; a last name
+///   that is blank on either side never agrees).
 ///
 /// The public page's answer never depends on which.
 pub fn match_donor(
@@ -2445,6 +2496,9 @@ pub fn match_donor(
     let Some(only) = candidates.first() else {
         return DonorMatch::New;
     };
+    if only.deceased {
+        return DonorMatch::Unmatched(UnmatchedReason::Deceased);
+    }
     let last = name_key(last_name);
     if last.is_empty() || last != name_key(&only.last_name) {
         return DonorMatch::Unmatched(UnmatchedReason::NameDiffers);
@@ -2465,6 +2519,7 @@ mod tests {
             contact_id: "ann".into(),
             first_name: "Ann".into(),
             last_name: "O’Brien-Müller".into(),
+            deceased: false,
         }
     }
 
@@ -2524,6 +2579,7 @@ mod tests {
             contact_id: "ann".into(),
             first_name: "Zoë".into(),
             last_name: "Smith".into(),
+            deceased: false,
         };
         assert_eq!(match_donor("ZOE", "smith", &[zoe], false), linked(None));
     }
@@ -2545,6 +2601,7 @@ mod tests {
             contact_id: "org".into(),
             first_name: String::new(),
             last_name: String::new(),
+            deceased: false,
         };
         assert_eq!(
             match_donor("Ann", " - ", std::slice::from_ref(&organisation), false),
@@ -2562,10 +2619,49 @@ mod tests {
             contact_id: "bob".into(),
             first_name: "Bob".into(),
             last_name: "Jones".into(),
+            deceased: false,
         };
         assert_eq!(
             match_donor("Ann", "O’Brien-Müller", &[ann(), other], false),
             DonorMatch::Unmatched(UnmatchedReason::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn a_deceased_contact_is_never_linked() {
+        let late = Candidate {
+            deceased: true,
+            ..ann()
+        };
+        assert_eq!(
+            match_donor("Ann", "O’Brien-Müller", &[late], false),
+            DonorMatch::Unmatched(UnmatchedReason::Deceased)
+        );
+    }
+
+    #[test]
+    fn a_submission_is_no_wider_than_a_contact_takes() {
+        let aid = |postcode: String| SubmissionGiftAid {
+            scope: DeclarationScope::FutureAndPast4y,
+            wording_version: "hmrc-2016-04".into(),
+            address_line1: "12 High Street".into(),
+            postcode,
+        };
+        assert_eq!(
+            submission_fields(DonationSubmissionPayload {
+                email: format!("{}@x.org", "a".repeat(249)),
+                gift_aid: Some(aid("SW1A 1AA, Westminster".into())),
+                ..typed()
+            }),
+            ["email", "giftAid.postcode"]
+        );
+        assert!(
+            submission_fields(DonationSubmissionPayload {
+                email: format!("{}@x.org", "a".repeat(248)),
+                gift_aid: Some(aid("x".repeat(20))),
+                ..typed()
+            })
+            .is_empty()
         );
     }
 
@@ -2822,6 +2918,8 @@ mod tests {
             UnmatchedReason::Ambiguous,
             UnmatchedReason::NameDiffers,
             UnmatchedReason::NoSubmission,
+            UnmatchedReason::Deceased,
+            UnmatchedReason::ContactRefused,
         ] {
             assert_eq!(UnmatchedReason::parse(s.as_str()), Some(s));
         }

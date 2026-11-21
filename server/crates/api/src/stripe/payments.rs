@@ -22,14 +22,20 @@
 //! - the donor is matched ([`giving::stripe::match_donor`]): nobody has
 //!   their email → a new contact (name, email, and the home address when
 //!   Gift Aid was ticked); one live contact has it under the same last
-//!   name → that contact; otherwise the payment waits in the staff queue
-//!   with why, and no gift;
+//!   name → that contact (never one marked deceased); otherwise the
+//!   payment waits in the staff queue with why, and no gift;
 //! - the gift (`provider = stripe`, `method = card`, to the page's source
 //!   code when they gave), with the status the payment gives it;
 //! - the donor's Gift Aid declaration, when they ticked it
 //!   ([`giftaid::make_donor_declaration`]): always kept, whatever older
-//!   declaration covers the gift;
+//!   declaration covers the gift; if Gift Aid's rules refuse it, the gift
+//!   stands and the match says why (`declarationRefused`);
 //! - the match, and the submission marked paid.
+//!
+//! If a contract refuses anything on the way (what the donor typed
+//! can't be made a contact), nothing of that try is kept and the payment
+//! is recorded and queued as `contact_refused`: a succeeded payment is
+//! always a gift or in the queue.
 //!
 //! A payment that succeeded with no submission behind it (taken some
 //! other way on the group's Stripe account) goes to the queue as
@@ -209,8 +215,42 @@ pub async fn handle(
     let mut hints = named.clone();
     hints.submissions.extend(intent.submission.clone());
     let now_is = report(&intent, &disputes);
-    let who = tenant.clone();
-    write(store, tenant, move |ctx| apply(ctx, now_is, &hints, &who)).await
+    let (s, who) = (store.clone(), tenant.clone());
+    tokio::task::spawn_blocking(move || {
+        let db = s.org(&who).map_err(|e| Failed::Retry(format!("{e:?}")))?;
+        let (first, hinted) = (now_is.clone(), hints.clone());
+        match contracts::transact(&db, None, |ctx| {
+            apply(ctx, first, &hinted, &who, Donor::Find)
+        }) {
+            // A contract refused something on the way to the gift (what
+            // the donor typed can't be made a contact, say) and the whole
+            // transaction is gone. Stripe has the money all the same: the
+            // payment is recorded and queued for staff, never lost.
+            Err(e @ (ContractError::Invalid(_) | ContractError::Rejected { .. })) => {
+                crate::observe::warning(&format!(
+                    "stripe: {who}: payment {} couldn't be made a gift ({e}): queued for staff",
+                    now_is.payment_id
+                ));
+                contracts::transact(&db, None, |ctx| {
+                    apply(ctx, now_is, &hints, &who, Donor::Queue)
+                })
+                .map_err(Failed::from)
+            }
+            other => other.map_err(Failed::from),
+        }
+    })
+    .await
+    .map_err(|e| Failed::Retry(e.to_string()))?
+}
+
+/// What [`apply`] does about a succeeded payment's donor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Donor {
+    /// Match them and make their records, or queue the payment with why.
+    Find,
+    /// Queue the payment as `contact_refused`, trying nothing: the try
+    /// was refused.
+    Queue,
 }
 
 /// A Checkout Session ran out unpaid: the submission that session was
@@ -252,6 +292,7 @@ pub fn apply(
     mut now_is: StripePaymentPayload,
     hints: &Named,
     tenant: &TenantId,
+    donor: Donor,
 ) -> Result<&'static str, ContractError> {
     let conn = ctx.tx.read();
     let held = cards::payment_by_stripe_id(conn, &now_is.payment_id)?;
@@ -278,8 +319,15 @@ pub fn apply(
             return Ok(outcome(h));
         }
     }
-    let donating = held.as_ref().is_none_or(|h| h.matched.gift_id.is_none())
-        && now_is.status == StripePaymentStatus::Succeeded;
+    // Only when a donor is about to be looked for: a refund or a dispute
+    // on a payment still in the queue donates nothing.
+    let donating = match &held {
+        None => now_is.status == StripePaymentStatus::Succeeded,
+        Some(h) => wants_donor(&PaymentRecord {
+            payment: now_is.clone(),
+            ..h.clone()
+        }),
+    };
     let group = command_group(
         ctx,
         &if donating {
@@ -296,7 +344,15 @@ pub fn apply(
     if record.matched.gift_id.is_some() {
         cards::follow_payment(ctx, &record, &group)?;
     } else if wants_donor(&record) {
-        donate(ctx, &record, &group, tenant)?;
+        match donor {
+            Donor::Find => donate(ctx, &record, &group, tenant)?,
+            Donor::Queue => {
+                queue(ctx, &record, UnmatchedReason::ContactRefused, &group)?;
+                if let Some(submission) = record.payment.submission_id.as_deref() {
+                    cards::mark_paid(ctx, submission, &record.id, &group)?;
+                }
+            }
+        }
     }
     let after = cards::payment(ctx.tx.read(), &record.id)?.ok_or(ContractError::NotFound)?;
     Ok(outcome(&after))
@@ -436,6 +492,69 @@ fn complete(
     whose: &str,
 ) -> Result<String, ContractError> {
     let gift = cards::make_gift(ctx, record, m.contact_id, m.source_code_id, group)?;
+    let mut declaration_refused = None;
+    if let Some(aid) = submission.and_then(|s| s.typed.gift_aid.as_ref().map(|aid| (s, aid))) {
+        let (s, aid) = aid;
+        // Claims use the contact's current address: one with no postcode
+        // takes the home address the donor typed. An address the contact
+        // already has is staff's, and stays; and when the first name
+        // differs the donor may be someone else at that email address,
+        // so nothing of theirs is written onto the contact. The
+        // declaration keeps what the donor typed either way.
+        let home = contacts::donors::describe_donor(ctx.tx.read(), m.contact_id)?
+            .map(|d| d.home)
+            .unwrap_or_default();
+        if home.postcode.trim().is_empty() && m.first_name_typed.is_none() {
+            // One command under its own savepoint: refused (a submission
+            // from before the widths were aligned), it leaves nothing,
+            // and the gift goes on without it.
+            match contacts::donors::set_home_address(
+                ctx,
+                m.contact_id,
+                &aid.address_line1,
+                &aid.postcode,
+                m.source,
+                group,
+            ) {
+                Ok(_) | Err(ContractError::Invalid(_) | ContractError::Rejected { .. }) => {}
+                Err(other) => return Err(other),
+            }
+        }
+        let declared = giftaid::make_donor_declaration(
+            ctx,
+            giftaid::DonorDeclaration {
+                contact_id: m.contact_id.to_owned(),
+                gift_id: gift.clone(),
+                scope: giftaid::types::Scope::parse(aid.scope.as_str()),
+                made_on: giftaid::uk_date(s.submitted_at),
+                wording_version: aid.wording_version.clone(),
+                first_name: s.typed.first_name.clone(),
+                last_name: s.typed.last_name.clone(),
+                address_line1: aid.address_line1.clone(),
+                postcode: aid.postcode.clone(),
+            },
+            group,
+        );
+        match declared {
+            Ok(_) => {}
+            // The gift stands without it; the match says so for staff
+            // (`declarationRefused`), the submission keeps what the donor
+            // ticked, and Sentry is told. Ids only.
+            Err(e @ (ContractError::Rejected { .. } | ContractError::Invalid(_))) => {
+                let why = match &e {
+                    ContractError::Rejected { reason, .. } => reason.clone(),
+                    _ => "invalid".to_owned(),
+                };
+                crate::observe::warning(&format!(
+                    "stripe: {whose}: the donor's Gift Aid declaration for gift {gift} \
+                     (submission {}) was refused ({why}): the gift is recorded without it",
+                    s.id
+                ));
+                declaration_refused = Some(why);
+            }
+            Err(other) => return Err(other),
+        }
+    }
     cards::set_match(
         ctx,
         &record.id,
@@ -445,58 +564,13 @@ fn complete(
             unmatched: None,
             first_name_typed: m.first_name_typed,
             partial_refund_claimed: false,
+            declaration_refused,
         },
         m.expected,
         m.source,
         Some(group),
     )?;
     if let Some(s) = submission {
-        if let Some(aid) = &s.typed.gift_aid {
-            // Claims use the contact's current address: one with no
-            // postcode takes the home address the donor typed. An
-            // address the contact already has is staff's, and stays; the
-            // declaration keeps what the donor typed either way.
-            let home = contacts::donors::describe_donor(ctx.tx.read(), m.contact_id)?
-                .map(|d| d.home)
-                .unwrap_or_default();
-            if home.postcode.trim().is_empty() {
-                contacts::donors::set_home_address(
-                    ctx,
-                    m.contact_id,
-                    &aid.address_line1,
-                    &aid.postcode,
-                    m.source,
-                    group,
-                )?;
-            }
-            let declared = giftaid::make_donor_declaration(
-                ctx,
-                giftaid::DonorDeclaration {
-                    contact_id: m.contact_id.to_owned(),
-                    gift_id: gift.clone(),
-                    scope: giftaid::types::Scope::parse(aid.scope.as_str()),
-                    made_on: giftaid::uk_date(s.submitted_at),
-                    wording_version: aid.wording_version.clone(),
-                    first_name: s.typed.first_name.clone(),
-                    last_name: s.typed.last_name.clone(),
-                    address_line1: aid.address_line1.clone(),
-                    postcode: aid.postcode.clone(),
-                },
-                group,
-            );
-            match declared {
-                Ok(_) => {}
-                // The gift stands without it (a contact that isn't a
-                // person, say); the submission keeps what the donor
-                // ticked, and someone is told. Ids only.
-                Err(ContractError::Rejected { reason, .. }) => crate::observe::warning(&format!(
-                    "stripe: {whose}: the donor's Gift Aid declaration for gift {gift} \
-                     (submission {}) was refused ({reason}): the gift is recorded without it",
-                    s.id
-                )),
-                Err(other) => return Err(other),
-            }
-        }
         cards::mark_paid(ctx, &s.id, &record.id, group)?;
     }
     Ok(gift)
@@ -508,8 +582,10 @@ fn complete(
 /// `source_code_id`, which must be live; needed when the payment has no
 /// submission). The donor's declaration is made if they ticked Gift Aid,
 /// in the name they typed, and the gift is marked with the first name
-/// they typed when it isn't the contact's. `expected`: `matchVersion` as
-/// listed (`409 stale`). The gift's id.
+/// they typed when it isn't the contact's. Refused for an archived
+/// contact (`archived_contact`), and for a Gift Aid payment matched to a
+/// contact that isn't a person (`not_individual`). `expected`:
+/// `matchVersion` as listed (`409 stale`). The gift's id.
 pub fn match_by_staff(
     ctx: &Ctx,
     id: &str,
@@ -532,7 +608,26 @@ pub fn match_by_staff(
             "Contact must exist",
         ));
     };
+    if contacts::donors::is_archived(conn, contact_id)? == Some(true) {
+        return Err(ContractError::rejected(
+            "archived_contact",
+            "This contact is archived: restore it, or choose another",
+        ));
+    }
     let submission = cards::typed_for(conn, &record.payment)?;
+    // The donor ticked Gift Aid, and only a person can make a
+    // declaration: say so now, rather than drop it quietly.
+    if submission
+        .as_ref()
+        .is_some_and(|s| s.typed.gift_aid.is_some())
+        && donor.kind != contacts::types::Kind::Individual
+    {
+        return Err(ContractError::rejected(
+            "not_individual",
+            "This donor ticked Gift Aid, and only a person can make a declaration: \
+             match the payment to a person",
+        ));
+    }
     let code = match source_code_id.map(str::trim).filter(|c| !c.is_empty()) {
         Some(chosen) => match sources::describe(conn, chosen)? {
             None => {

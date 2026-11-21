@@ -63,6 +63,16 @@ pub struct Caught {
 /// found are handled by a processing run. One organisation's failure
 /// (Stripe down, an account gone) is reported and the rest go on.
 pub async fn catch_up(store: Arc<Store>, stripe: Arc<Stripe>) -> Result<Vec<Caught>, String> {
+    catch_up_paged(store, stripe, MAX_PAGES).await
+}
+
+/// [`catch_up`] reading at most `max_pages` pages per organisation (tests
+/// pass a small number).
+pub async fn catch_up_paged(
+    store: Arc<Store>,
+    stripe: Arc<Stripe>,
+    max_pages: usize,
+) -> Result<Vec<Caught>, String> {
     let s = store.clone();
     let connected: Vec<(String, String, i64)> = crate::blocking(move || {
         s.platform().with_read(|c| {
@@ -81,7 +91,7 @@ pub async fn catch_up(store: Arc<Store>, stripe: Arc<Stripe>) -> Result<Vec<Caug
     let mut out = vec![];
     let mut errors = vec![];
     for (tenant, account, connected_at) in connected {
-        match one(&store, &stripe, &tenant, &account, connected_at).await {
+        match one(&store, &stripe, &tenant, &account, connected_at, max_pages).await {
             Ok(Some(caught)) => {
                 if caught.missed > 0 {
                     crate::observe::warning(&format!(
@@ -116,6 +126,7 @@ async fn one(
     tenant: &str,
     account: &str,
     connected_at: i64,
+    max_pages: usize,
 ) -> Result<Option<Caught>, String> {
     let (s, raw, acct) = (store.clone(), tenant.to_owned(), account.to_owned());
     let found = crate::blocking(move || {
@@ -147,7 +158,7 @@ async fn one(
     let mut events: Vec<Value> = vec![];
     let mut after: Option<String> = None;
     let mut more = true;
-    for _ in 0..MAX_PAGES {
+    for _ in 0..max_pages {
         let page = stripe
             .api
             .list_events(account, since / 1000, &types, after.as_deref())
@@ -166,12 +177,12 @@ async fn one(
         }
     }
     if more {
-        // Stripe lists newest first: the oldest beyond the pages read are
-        // never reached, so say so and move on.
+        // Stripe lists newest first: the oldest beyond the pages read
+        // weren't reached, so say so; the cursor doesn't move (below).
         crate::observe::warning(&format!(
             "stripe catch-up: {tenant}: more than {} events since {since}; only the newest \
-             were read, older ones are not caught up",
-            EVENTS_PAGE * MAX_PAGES
+             were read, the next run reads the window again",
+            EVENTS_PAGE * max_pages
         ));
     }
     // Oldest first, as webhooks would have brought them (the list is
@@ -198,6 +209,10 @@ async fn one(
         })
         .collect();
     let read = incoming.len();
+    // Pages ran out: the oldest events of the window weren't reached, so
+    // the cursor stays where this run read from and the next run reads
+    // the window again (by then webhooks or this run have most of it).
+    let next = if more { since + OVERLAP_MS } else { started };
     let (s, t, acct) = (store.clone(), tenant.to_owned(), account.to_owned());
     let missed = crate::blocking(move || {
         let now = contracts::now_ms();
@@ -215,7 +230,7 @@ async fn one(
                  ON CONFLICT (tenant_id) DO UPDATE SET account_id = excluded.account_id,
                      since = excluded.since, last_run_at = excluded.last_run_at,
                      last_found = excluded.last_found",
-                params![t, acct, started, now, missed as i64],
+                params![t, acct, next, now, missed as i64],
             )?;
             Ok::<_, store::StoreError>(())
         })?;

@@ -21,4 +21,11 @@ firstNameTyped: string | null,
  * For staff: part of the payment was refunded after its gift went
  * into a Gift Aid claim, which keeps the amount it claimed.
  */
-partialRefundClaimed: boolean, };
+partialRefundClaimed: boolean, 
+/**
+ * For staff (v2): the donor ticked Gift Aid, but their declaration
+ * couldn't be recorded on this contact; Gift Aid's reason
+ * (`not_individual`, `declaration_limit`, …). The submission still
+ * holds what they ticked.
+ */
+declarationRefused: string | null, };

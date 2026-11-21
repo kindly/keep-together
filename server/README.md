@@ -571,7 +571,7 @@ processing and pages are later steps). Org schema step 24, all in
 | `giving.donationSubmission` | `donation_submissions.version` | what the donor typed on the donation page: amount (pence), name, email, Gift Aid ticked with its scope, wording version, house name or number and postcode, the page's source code; when is the command's time. Create-only: it is the evidence |
 | `giving.donationSubmissionOutcome` | `donation_submissions.outcome_version` | the Checkout session (set once), `started → paid / expired` (paid is final and names the payment that came from it; an expired one may still turn out paid), personal data cleared on |
 | `giving.stripePayment` | `stripe_payments.version` | Stripe's raw record: PaymentIntent id (fixed), the submission it came from (set once), amount, currency (`gbp` or it is refused: never recorded), status, paid on, refunded amount, dispute state, reason |
-| `giving.stripePaymentMatch` | `stripe_payments.match_version` | whose it is: a contact and that contact's gift, together, the gift for the payment's whole life; or unmatched with why (`ambiguous`, `name_differs`, `no_submission`: org schema step 26). The staff flags: `firstNameTyped` (the donor's first name isn't the contact's) and `partialRefundClaimed` |
+| `giving.stripePaymentMatch` | `stripe_payments.match_version` | whose it is: a contact and that contact's gift, together, the gift for the payment's whole life; or unmatched with why (`ambiguous`, `name_differs`, and from org schema step 26 `no_submission`, `deceased`, `contact_refused`). The staff flags: `firstNameTyped` (the donor's first name isn't the contact's), `partialRefundClaimed` and (v2) `declarationRefused` (why the donor's ticked declaration couldn't be recorded) |
 | `giving.donationPage` | `donation_page.version` (one row) | three button amounts, minimum, maximum (pence), the source code page gifts get |
 
 None of the first four can be restored. Rules, each with a named test
@@ -1240,16 +1240,24 @@ has the email → a new contact with the name, email, the page's code as
 acquisition code and, with Gift Aid, the home address; one live contact
 with the email and last name → that contact, marked with the typed first
 name when it differs, and given the typed home address if it has no
-postcode); the gift (`provider = stripe`, `method = card`, the
+postcode and the first name agrees; one marked deceased is never
+linked); the gift (`provider = stripe`, `method = card`, the
 PaymentIntent id as reference and origin, dated the UK day it was paid,
 to the page's source code when they gave); the donor's declaration when
 they ticked Gift Aid (dated the day they sent the page; refused by Gift
-Aid's own rules, e.g. a contact that isn't a person: the gift stands and
-Sentry is told); the match; and the submission marked `paid`. Anything
-else waits in the staff queue with no gift: `ambiguous`, `name_differs`,
-or `no_submission` (taken some other way on the group's Stripe account;
-picked up from the queue if a later event names its submission). The
-submission is `paid` either way: Stripe took the money.
+Aid's own rules, e.g. a contact that isn't a person: the gift stands,
+the match says why in `declarationRefused` and Sentry is told); the
+match; and the submission marked `paid`. Anything else waits in the
+staff queue with no gift: `ambiguous`, `name_differs`, `deceased`,
+`no_submission` (taken some other way on the group's Stripe account;
+picked up from the queue if a later event names its submission), or
+`contact_refused`: a contract refused something on the way (what the
+donor typed can't be made a contact), so that try is rolled back and the
+payment is recorded and queued in a second transaction. A succeeded
+payment is always a gift or in the queue. The submission is `paid`
+either way: Stripe took the money. A submission is held to the widths a
+contact takes (names and house name or number 200 characters, email 254,
+postcode 20), so the page refuses what couldn't become one.
 
 Afterwards the same gift follows its payment
 (`giving::stripe::follow_payment`): refunded in full → `refunded`; in
@@ -1269,8 +1277,9 @@ account, the handled types, 100 a page, at most 200 pages; the cursor
 per organisation and account in `platform.db`'s `stripe_catchup`
 (platform step 2), read again from an hour before; an account's first
 run from its connection, at most a week back; never further back than
-29 days, since Stripe keeps 30) go into the same event store, a repeat
-being a no-op. How many were new is logged, and sent to Sentry as a
+29 days, since Stripe keeps 30; a run that runs out of pages leaves the
+cursor where it read from, so the next reads the window again) go into
+the same event store, a repeat being a no-op. How many were new is logged, and sent to Sentry as a
 warning when not zero; then a processing run handles them.
 
 `keep giving-consistency <slug>` also runs
@@ -1285,8 +1294,8 @@ payment, and no succeeded payment is outside both a gift and the queue.
 | `GET /api/t/{slug}/stripe` | `StripeStatus {enabled, mode, connected, accountId, connectedAt, connectedBy, onboarding: none\|pending\|restricted\|complete, detailsSubmitted, chargesEnabled, payoutsEnabled, requirementsDue, disabledReason, statusAt, failedEvents}`, any member; the only route that answers when off |
 | `POST …/stripe/connect` | → `StripeConnectStart {url, status}`: send the browser to `url` (null once Stripe takes payments for the account); admin within the step-up hour; `503 stripe_unavailable` |
 | `POST …/stripe/disconnect` | → `StripeStatus`, `connected: false`; admin within the step-up hour |
-| `GET …/stripe/unmatched` | `UnmatchedCardPayment[] {id, paymentId, amount, paidOn, status, reason: ambiguous\|name_differs\|no_submission, donor: {firstName, lastName, email, giftAid, addressLine1, postcode} \| null, sourceCodeId, candidates: [{id, displayName}], matchVersion}`: succeeded payments nobody could be matched to (no gift), newest first, at most 500, each with what its donor typed and the live contacts that have their email; any member |
-| `POST …/stripe/unmatched/{id}/match` | `MatchCardPayment {expected, contactId, sourceCodeId?}` → `MatchedCardPayment {giftId, gift}`: the contact's gift, with Stripe's amount, date and status, to the page's code when they gave (or `sourceCodeId`, live; required when the payment has no submission: `422 invalid`), and the donor's declaration if they ticked Gift Aid, as the staff member; staff; `409 stale`; `422 rejected already_matched` / `unknown_contact` |
+| `GET …/stripe/unmatched` | `UnmatchedCardPayment[] {id, paymentId, amount, paidOn, status, reason: ambiguous\|name_differs\|no_submission\|deceased\|contact_refused, donor: {firstName, lastName, email, giftAid, addressLine1, postcode} \| null, sourceCodeId, candidates: [{id, displayName}], matchVersion}`: succeeded payments nobody could be matched to (no gift), newest first, at most 500, each with what its donor typed and the live contacts that have their email; any member |
+| `POST …/stripe/unmatched/{id}/match` | `MatchCardPayment {expected, contactId, sourceCodeId?}` → `MatchedCardPayment {giftId, gift}`: the contact's gift, with Stripe's amount, date and status, to the page's code when they gave (or `sourceCodeId`, live; required when the payment has no submission: `422 invalid`), and the donor's declaration if they ticked Gift Aid, as the staff member; staff; `409 stale`; `422 rejected already_matched` / `unknown_contact` / `archived_contact` / `not_individual` (the donor ticked Gift Aid and the contact isn't a person) |
 
 The fake (`KEEP_STRIPE=fake`, `api::stripe::fake`, what `pnpm dev` runs)
 answers the client's calls in Stripe's shapes (both Accounts APIs),

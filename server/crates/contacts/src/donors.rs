@@ -149,6 +149,13 @@ pub fn kind_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<Kind>> {
         .optional()
 }
 
+/// Whether the contact is archived; `None` for an unknown id.
+pub fn is_archived(conn: &Connection, id: &str) -> rusqlite::Result<Option<bool>> {
+    conn.prepare_cached("SELECT archived FROM contacts WHERE id = ?1")?
+        .query_row([id], |r| r.get(0))
+        .optional()
+}
+
 /// The contact's display name and kind as they read now, or `None`.
 pub fn name_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<(String, Kind)>> {
     conn.prepare_cached("SELECT display_name, kind FROM contacts WHERE id = ?1")?
@@ -164,6 +171,7 @@ pub struct EmailHolder {
     pub first_name: String,
     pub last_name: String,
     pub archived: bool,
+    pub deceased: bool,
 }
 
 /// The contacts that have an email address, archived ones included.
@@ -184,18 +192,21 @@ pub fn by_email(conn: &Connection, address: &str) -> rusqlite::Result<EmailHolde
     for id in found.ids {
         let row = conn
             .prepare_cached(
-                "SELECT display_name, first_name, last_name, archived FROM contacts
-                 WHERE id = ?1",
+                "SELECT display_name, first_name, last_name, archived, is_deceased
+                 FROM contacts WHERE id = ?1",
             )?
-            .query_row([&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .query_row([&id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
             .optional()?;
-        if let Some((display_name, first_name, last_name, archived)) = row {
+        if let Some((display_name, first_name, last_name, archived, deceased)) = row {
             contacts.push(EmailHolder {
                 id,
                 display_name,
                 first_name,
                 last_name,
                 archived,
+                deceased,
             });
         }
     }

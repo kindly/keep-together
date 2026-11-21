@@ -136,9 +136,10 @@ pub struct DonorDeclaration {
 /// The declaration a donor made themselves on the donation page: the one
 /// way an `onScreenByDonor` declaration is recorded. The api calls it
 /// when the donor's payment completes, in the same transaction and
-/// command group as the gift, as the caller's actor (nobody, or the
-/// staff member who matched the payment); no payload staff send can
-/// reach it ([`rules::prepare_declaration`] still refuses the method).
+/// command group as the gift. Its source is always the system's (the
+/// donor made it, not staff); the caller's actor is recorded as who
+/// entered it (nobody, or the staff member who matched the payment). No
+/// payload staff send can reach it ([`rules::prepare_declaration`] still refuses the method).
 ///
 /// It adds to the chain, never sets a flag (rule 1), and it is always
 /// kept: a donor who ticks the box has made a declaration, whether or

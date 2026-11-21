@@ -550,11 +550,226 @@ async fn one_contact_with_the_email_and_last_name_is_linked_and_a_different_firs
         )
     });
     assert_eq!(name, "Jane");
-    // John had no address: he has the one the donor typed.
+    // John has no address, and doesn't get Jane's: she may be someone
+    // else at that email address (the gift is marked for staff).
     let donor = read(&p.a, |c| contacts::donors::describe_donor(c, &john)).unwrap();
-    assert_eq!(donor.home.postcode, "AB1 2CD");
+    assert_eq!(donor.home.postcode, "");
     assert_eq!(p.queue("alpha", &p.t.ann).await, json!([]));
     p.consistent(&p.a);
+}
+
+#[tokio::test]
+async fn a_linked_contact_with_no_postcode_takes_the_donors_address_and_one_with_keeps_its_own() {
+    let p = world().await;
+    let jane_c = contact(&p.a, "jane", "Smith", "jane@example.org");
+    let first = submit(&p.a, jane(2500, true));
+    p.pay(&p.acct_a, &first, 2500).await;
+    let home = |id: &str| {
+        read(&p.a, |c| contacts::donors::describe_donor(c, id))
+            .unwrap()
+            .home
+    };
+    assert_eq!(home(&jane_c).postcode, "AB1 2CD");
+    // She gives again from another address: the contact's stays.
+    let mut moved = jane(1000, true);
+    moved.gift_aid.as_mut().unwrap().postcode = "ZZ9 9ZZ".into();
+    let second = submit(&p.a, moved);
+    p.pay(&p.acct_a, &second, 1000).await;
+    assert_eq!(home(&jane_c).postcode, "AB1 2CD");
+    assert_eq!(count(&p.a, "gift_aid_declarations"), 2);
+    assert_eq!(count(&p.a, "contact_addresses"), 1);
+}
+
+#[tokio::test]
+async fn a_deceased_contact_is_never_linked_and_staff_cannot_match_an_archived_one() {
+    let p = world().await;
+    let late = contact(&p.a, "Jane", "Smith", "jane@example.org");
+    p.a.write_raw(|tx| {
+        tx.conn()
+            .execute_batch("UPDATE contacts SET is_deceased = 1")
+    })
+    .unwrap();
+    let s = submit(&p.a, jane(2500, true));
+    p.pay(&p.acct_a, &s, 2500).await;
+    assert_eq!(count(&p.a, "gifts"), 0);
+    assert_eq!(count(&p.a, "gift_aid_declarations"), 0);
+    let queue = p.queue("alpha", &p.t.sam).await;
+    assert_eq!(queue[0]["reason"], "deceased");
+    // Staff, having looked, may not put it on an archived contact.
+    let gone = contact(&p.a, "Jo", "Jones", "jo@example.org");
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &format!("/api/t/alpha/contacts/{gone}/archive"),
+                &p.t.sam,
+                Some(json!({ "expected": 0, "archived": true })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let path = format!(
+        "/api/t/alpha/stripe/unmatched/{}/match",
+        queue[0]["id"].as_str().unwrap()
+    );
+    let body =
+        |contact: &str| json!({ "expected": queue[0]["matchVersion"], "contactId": contact });
+    let (status, out) = p.t.w.call("POST", &path, &p.t.sam, Some(body(&gone))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "archived_contact");
+    assert_eq!(count(&p.a, "gifts"), 0);
+    // But may decide it is the late donor's all the same.
+    let (status, out) = p.t.w.call("POST", &path, &p.t.sam, Some(body(&late))).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    p.consistent(&p.a);
+}
+
+#[tokio::test]
+async fn a_donation_a_contact_contract_refuses_is_recorded_and_queued_never_lost() {
+    let p = world().await;
+    // A submission from before the page's widths were the contact's: an
+    // email address no contact takes.
+    let s = submit(&p.a, jane(2500, true));
+    let wide = format!("{}@example.org", "j".repeat(290));
+    p.a.write_raw(|tx| {
+        tx.conn().execute(
+            "UPDATE donation_submissions SET email = ?1",
+            [wide.as_str()],
+        )
+    })
+    .unwrap();
+    let pi = p.pay(&p.acct_a, &s, 2500).await;
+    // Nothing of the refused try is left, but the payment is on record,
+    // in the queue, and its submission paid.
+    assert_eq!(count(&p.a, "gifts"), 0);
+    assert_eq!(count(&p.a, "contacts"), 0);
+    assert_eq!(count(&p.a, "gift_aid_declarations"), 0);
+    let row = p.record(&p.a, &pi);
+    assert_eq!(row.payment.status, cards::StripePaymentStatus::Succeeded);
+    assert_eq!(
+        row.matched.unmatched,
+        Some(cards::UnmatchedReason::ContactRefused)
+    );
+    let held = read(&p.a, |c| cards::submission(c, &s.0)).unwrap();
+    assert_eq!(held.outcome.state, cards::SubmissionStatus::Paid);
+    let event = p.t.fake.events().last().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(p.t.event(&event).0.as_deref(), Some("unmatched"));
+    assert_eq!(
+        ok(&p.t.w, "GET", "/api/t/alpha/stripe", &p.t.ann, None).await["failedEvents"],
+        0
+    );
+    p.consistent(&p.a);
+
+    // A refund on the queued payment is recorded under its own name: no
+    // donation is made by it.
+    p.deliver(p.t.fake.refund(&pi, Some(500))).await;
+    assert_eq!(p.record(&p.a, &pi).payment.refunded_amount, 500);
+    let group: String = read(&p.a, |c| {
+        c.query_row(
+            "SELECT name FROM command_groups ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+    });
+    assert_eq!(group, "Card payment £25 partly refunded");
+
+    // Staff make the contact and match it: the gift, at what was kept,
+    // and the donor's declaration.
+    let jane_c = contact(&p.a, "Jane", "Smith", "jane@smith.example");
+    let queue = p.queue("alpha", &p.t.sam).await;
+    assert_eq!(queue[0]["reason"], "contact_refused");
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &format!(
+                    "/api/t/alpha/stripe/unmatched/{}/match",
+                    queue[0]["id"].as_str().unwrap()
+                ),
+                &p.t.sam,
+                Some(json!({ "expected": queue[0]["matchVersion"], "contactId": jane_c })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let all = gifts(&p.a);
+    assert_eq!((all[0].amount, all[0].status.as_str()), (2000, "completed"));
+    assert_eq!(count(&p.a, "gift_aid_declarations"), 1);
+    p.consistent(&p.a);
+}
+
+#[tokio::test]
+async fn a_postcode_the_contact_refuses_leaves_the_gift_and_the_declaration() {
+    let p = world().await;
+    let jane_c = contact(&p.a, "Jane", "Smith", "jane@example.org");
+    let s = submit(&p.a, jane(2500, true));
+    p.a.write_raw(|tx| {
+        tx.conn()
+            .execute_batch("UPDATE donation_submissions SET postcode = 'SW1A 1AA, WESTMINSTER'")
+    })
+    .unwrap();
+    p.pay(&p.acct_a, &s, 2500).await;
+    let all = gifts(&p.a);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].contact, jane_c);
+    assert_eq!(count(&p.a, "gift_aid_declarations"), 1);
+    assert_eq!(count(&p.a, "contact_addresses"), 0);
+    p.consistent(&p.a);
+}
+
+#[tokio::test]
+async fn a_refused_declaration_is_flagged_on_the_match_and_refused_up_front_to_staff() {
+    let p = world().await;
+    // The email's one contact is an organisation that happens to carry
+    // the donor's last name: linked, but only a person can declare.
+    let org = contact(&p.a, "Jane", "Smith", "jane@example.org");
+    p.a.write_raw(|tx| {
+        tx.conn()
+            .execute_batch("UPDATE contacts SET kind = 'organization'")
+    })
+    .unwrap();
+    let s = submit(&p.a, jane(2500, true));
+    let pi = p.pay(&p.acct_a, &s, 2500).await;
+    let all = gifts(&p.a);
+    assert_eq!(all.len(), 1, "the gift stands");
+    assert_eq!(all[0].contact, org);
+    assert_eq!(count(&p.a, "gift_aid_declarations"), 0);
+    let row = p.record(&p.a, &pi);
+    assert_eq!(
+        row.matched.declaration_refused.as_deref(),
+        Some("not_individual")
+    );
+    p.consistent(&p.a);
+
+    // Staff matching a Gift Aid payment to it are told, and nothing is made.
+    contact(&p.a, "Janet", "Smith", "two@example.org");
+    contact(&p.a, "Jan", "Smith", "two@example.org");
+    let queued = submit(
+        &p.a,
+        DonorForm {
+            email: "two@example.org".into(),
+            ..jane(1000, true)
+        },
+    );
+    p.pay(&p.acct_a, &queued, 1000).await;
+    let queue = p.queue("alpha", &p.t.sam).await;
+    assert_eq!(queue[0]["reason"], "ambiguous");
+    let (status, out) =
+        p.t.w
+            .call(
+                "POST",
+                &format!(
+                    "/api/t/alpha/stripe/unmatched/{}/match",
+                    queue[0]["id"].as_str().unwrap()
+                ),
+                &p.t.sam,
+                Some(json!({ "expected": queue[0]["matchVersion"], "contactId": org })),
+            )
+            .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{out}");
+    assert_eq!(out["reason"], "not_individual");
+    assert_eq!(count(&p.a, "gifts"), 1);
 }
 
 #[tokio::test]
@@ -1259,6 +1474,34 @@ async fn the_catch_up_reads_events_no_webhook_brought_and_a_second_run_finds_non
     assert!(again.iter().all(|c| c.missed == 0), "{again:?}");
     assert_eq!(count(&p.a, "gifts"), 1);
 
+    // Pages run out before the window is read: the cursor stays where
+    // the run read from, so the next run reads the window again.
+    let cursor = || -> i64 {
+        p.t.w
+            .store
+            .platform()
+            .with_read(|c| {
+                Ok::<_, store::StoreError>(c.query_row(
+                    "SELECT since FROM stripe_catchup WHERE tenant_id = ?1",
+                    [p.t.w.alpha.id.as_str()],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap()
+    };
+    let moved = cursor();
+    let short = catchup::catch_up_paged(p.t.w.store.clone(), p.t.stripe.clone(), 1)
+        .await
+        .unwrap();
+    let alpha = short.iter().find(|c| c.tenant == p.t.w.alpha.id).unwrap();
+    assert_eq!(alpha.read, 100);
+    assert_eq!(cursor(), moved, "not past what was left unread");
+    assert_eq!(cursor(), alpha.since + catchup::OVERLAP_MS);
+    catchup::catch_up(p.t.w.store.clone(), p.t.stripe.clone())
+        .await
+        .unwrap();
+    assert!(cursor() >= moved);
+
     // A disconnected organisation isn't read.
     ok(
         &p.t.w,
@@ -1333,6 +1576,19 @@ async fn the_retention_job_clears_unpaid_submissions_after_thirty_days_and_never
     let old_paid = submit_at(&p.a, jane(1000, true), now - 31 * DAY);
     p.pay(&p.acct_a, &old_paid, 1000).await;
     let theirs = submit_at(&p.b, jane(2500, true), now - 31 * DAY);
+    // An attempt spent before any Checkout Session existed (Stripe
+    // refused it): expired with no session, and cleared like any other.
+    let sessionless = uuid::Uuid::new_v4().simple().to_string();
+    contracts::transact(&p.a, None, |ctx| {
+        let ctx = Ctx {
+            tx: ctx.tx,
+            actor: None,
+            at: now - 31 * DAY,
+        };
+        cards::submit(&ctx, &sessionless, jane(2500, true), true)?;
+        cards::mark_expired(&ctx, &sessionless)
+    })
+    .unwrap();
     payments::run_retention(&p.t.w.store).await.unwrap();
     let typed = |db: &OrgDb, id: &str| read(db, |c| cards::submission(c, id)).unwrap();
     let cleared = typed(&p.a, &old_unpaid.0);
@@ -1345,5 +1601,10 @@ async fn the_retention_job_clears_unpaid_submissions_after_thirty_days_and_never
     assert!(typed(&p.b, &theirs.0).outcome.personal_cleared_at.is_some());
     // Nothing cascaded from anywhere: the paid one's contact and gift stand.
     assert_eq!(count(&p.a, "gifts"), 1);
-    assert_eq!(count(&p.a, "donation_submissions"), 3);
+    let spent = typed(&p.a, &sessionless);
+    assert_eq!(spent.outcome.checkout_session_id, None);
+    assert_eq!(spent.outcome.state, cards::SubmissionStatus::Expired);
+    assert!(spent.outcome.personal_cleared_at.is_some());
+    assert_eq!(count(&p.a, "donation_submissions"), 4);
+    p.consistent(&p.a);
 }
